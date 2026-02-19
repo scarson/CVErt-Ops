@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.opencve.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:betterstack.com)",
+      "WebFetch(domain:www.dash0.com)",
+      "WebFetch(domain:huma.rocks)",
+      "WebFetch(domain:cheatsheetseries.owasp.org)"
+    ]
+  }
+}

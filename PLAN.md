@@ -1,19 +1,19 @@
 # Product Requirements Document: **CVErt Ops**
 
-> **Version:** 5.2.0-go-draft  
-> **Author:** Sam (Enterprise Solutions Architect)  
-> **Date:** 2026-02-19  
-> **Status:** Updated PRD intended as the seed `plan.md` for an AI coding agent (Research → Plan → Annotate → Implement)  
-> **Language:** Go (1.23+)
+> **Version:** 6.0.0
+> **Author:** Sam (Enterprise Solutions Architect)
+> **Date:** 2026-02-19
+> **Status:** All research decisions resolved. Ready for implementation. See `research.md` for detailed findings.
+> **Language:** Go 1.26
 
 ---
 
 ## How to Use This Document (AI Agent Workflow)
 
-1. This file is `plan.md`. For greenfield, "research" means external APIs, libraries, and prior art. Research items are explicitly marked **(RESEARCH DECISION)** and their outputs must be written to `research/*.md`.
+1. This file is `plan.md`. All research decisions have been resolved; see `research.md` for detailed findings.
 2. Annotate in this document after each planning/research pass before allowing implementation.
 3. Do not implement until explicitly told. Planning ends in written artifacts, not code.
-4. Prescriptive snippets are decisions, not suggestions, unless labeled **(RESEARCH DECISION)**.
+4. Prescriptive snippets are decisions, not suggestions.
 5. Security is first-class. Treat CVErt Ops as a security product; shortcuts that weaken security are not allowed.
 
 ---
@@ -32,17 +32,24 @@ The product ships as:
 
 | Layer | Choice | Notes |
 |---|---|---|
-| **Language** | Go 1.23+ | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); strong security tooling ecosystem |
-| **HTTP framework** | `chi` or `echo` | **(RESEARCH DECISION)** — see section 18.2 |
-| **Database** | Postgres 15+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) |
-| **Migrations** | `golang-migrate` | SQL migration files; one per change |
-| **Validation** | `go-playground/validator` + custom | Struct tag validation + handwritten rules for security-critical inputs |
+| **Language** | Go 1.26 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
+| **HTTP framework** | `huma` + `chi` | Code-first OpenAPI 3.1; automatic struct-tag validation; RFC 9457 errors. See section 18.2 |
+| **Database** | Postgres 15+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
+| **Migrations** | `golang-migrate` | SQL migration files; one per change; embedded via `embed.FS` |
+| **Validation** | `go-playground/validator` + huma struct tags | Struct tag validation (huma auto-validates requests) + handwritten rules for security-critical inputs |
 | **Auth / JWT** | `golang-jwt/jwt/v5` | Access + refresh tokens |
-| **OAuth / OIDC** | **(RESEARCH DECISION)** — see section 7.2 | `coreos/go-oidc` + `golang.org/x/oauth2` is the leading candidate |
-| **Templates** | Go `html/template` / `text/template` | Notification rendering; sandboxed by design |
-| **AI / LLM** | **(RESEARCH DECISION)** — see section 13.4 | Official Go SDKs available for Gemini (`google.golang.org/genai`), OpenAI (`github.com/openai/openai-go`); Anthropic via REST |
+| **OAuth / OIDC** | `coreos/go-oidc/v3` + `golang.org/x/oauth2` | GitHub + Google OAuth (MVP); generic OIDC deferred to Enterprise |
+| **Password hashing** | `argon2id` via `alexedwards/argon2id` | OWASP params: m=19456, t=2, p=1. See section 7.1 |
+| **Templates** | Go `html/template` / `text/template` | Notification rendering; sandboxed by design; embedded via `embed.FS` |
+| **AI / LLM** | Google Gemini (`google.golang.org/genai`) | Official Go SDK; `LLMClient` interface for vendor abstraction. See section 13.4 |
 | **Background jobs** | Goroutine worker pool + Postgres job queue | See section 18.1 |
-| **Static analysis** | `go vet`, `staticcheck`, `gosec`, `govulncheck` | CI pipeline |
+| **CLI** | `cobra` | Subcommands: `serve`, `worker`, `migrate` |
+| **Logging** | `slog` (stdlib) | Structured JSON logging; `NewMultiHandler` (Go 1.26) for multi-destination |
+| **Configuration** | `caarlos0/env/v10` + `go-playground/validator` | Env var parsing with startup validation |
+| **Metrics** | `prometheus/client_golang` | `/metrics` endpoint from Phase 0 |
+| **SSRF prevention** | `doyensec/safeurl` | Drop-in safe HTTP client for outbound webhooks |
+| **JSON canonicalization** | `cyberphone/json-canonicalization` | JCS/RFC 8785 for deterministic `material_hash` |
+| **Static analysis** | `go vet`, `staticcheck`, `gosec`, `govulncheck` | CI pipeline (GitHub Actions) |
 | **Container** | `distroless:static-debian12` (default) | Includes CA certs/timezone data; still minimal for a static Go binary. See Decision D1. |
 
 ---
@@ -114,6 +121,8 @@ type FetchResult struct {
 ```
 
 Adapters must be pure functions + minimal I/O wrappers (HTTP client injected), so they can be unit-tested with recorded responses.
+
+**Per-adapter rate limiting:** Each adapter manages its own client-side rate limiter based on the upstream API's constraints (e.g., NVD: 5 req/30s with API key; GHSA: GitHub token rate limits). Rate limiters are configured per adapter, not shared globally, since each upstream has different limits.
 
 **Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
 
@@ -240,7 +249,7 @@ Define precedence **per field**, not globally:
 - Build a canonical record by selecting highest-precedence non-null value per field.
 - For list-like fields (CWEs, references, affected products): **union + normalize + dedupe**.
 - Preserve all per-source normalized documents in `cve_sources`.
-- On each adapter write, the merge function re-reads all `cve_sources` rows for the given `cve_id` and recomputes the canonical record from scratch. This ensures consistency regardless of ingestion order and makes the merge purely a function of current source state.
+- On each adapter write, the merge function re-reads all `cve_sources` rows for the given `cve_id` and recomputes the canonical record from scratch. This ensures consistency regardless of ingestion order and makes the merge purely a function of current source state. The write amplification (~5 source rows read per CVE upsert) is acceptable at MVP scale; an incremental merge approach would be more complex and prone to drift.
 
 ### 5.3 Material Change Definition (for Alert Dedup)
 A "material change" is any change to one of these, after normalization:
@@ -277,12 +286,16 @@ Implementation: `material_hash = sha256(json_canonical(material_fields))`. If ha
 - integration tests asserting no cross-org access
 - defensive DB constraints: every tenant table includes `org_id` NOT NULL + indexed
 
-**(RESEARCH DECISION: Postgres RLS in P1 hardening)**  
-RLS gives stronger guarantees but adds operational complexity (session variables, migrations, test harness changes). If adopted, implement **in hosted/SaaS mode** first, keep self-hosted default app-layer. Research should cover:
-- session variable strategy (e.g., `SET app.org_id = ...`)
-- RLS policy templates per table
-- performance impact and debugging ergonomics
-- how to prevent bypass in raw SQL paths
+**Postgres RLS (P1 — RESOLVED, implementation deferred)**
+
+RLS will be implemented in P1 for SaaS hardening. Research is complete (see `research.md` section 7):
+
+- **Session variable strategy:** `SET LOCAL app.org_id = $1` per-transaction via pgx. Auto-resets on commit/rollback.
+- **Policy pattern:** `USING (org_id = current_setting('app.org_id')::uuid)` + `WITH CHECK (...)` on all org-scoped tables. `FORCE ROW LEVEL SECURITY` to prevent owner bypass.
+- **Performance:** <5% overhead with simple comparison policies. Requires `BTREE(org_id)` index on every org-scoped table (already planned).
+- **Bypass prevention:** App DB role uses `NOBYPASSRLS`. No raw SQL paths; all queries via sqlc/squirrel.
+- **Self-hosted vs SaaS:** Always enable RLS; self-hosted uses a fixed org_id from env or auto-generated at first startup. Same codebase, same migrations, same policies.
+- **Migration strategy:** Disable RLS during schema changes, re-enable after. Policies are part of migration files.
 
 ---
 
@@ -293,24 +306,23 @@ RLS gives stronger guarantees but adds operational complexity (session variables
 - **Transport:** HttpOnly secure cookies (SameSite=Lax) for the web app
 - API keys for automation (hashed-at-rest with `crypto/sha256`, scoped to org + role)
 
+**Password hashing (native auth):**
+- Algorithm: argon2id via `alexedwards/argon2id` wrapper (uses `golang.org/x/crypto/argon2`)
+- Parameters per OWASP Password Storage Cheat Sheet: memory=19456 KiB (19 MiB), iterations=2, parallelism=1, salt=16 bytes, key=32 bytes
+- Storage format: `$argon2id$v=19$m=19456,t=2,p=1$[base64(salt)]$[base64(hash)]`
+- `users` table includes `password_hash_version INT DEFAULT 2` column (1=bcrypt legacy, 2=argon2id) for future algorithm migration via lazy upgrade on login
+
 **CSRF**
 - Use SameSite cookies + CSRF token for state-changing requests (double-submit token or header token).
 
-### 7.2 Federation Strategy (Decision)
-**(RESEARCH DECISION: OIDC/OAuth library selection)**  
-MVP requires: native auth + at least one social provider (GitHub or Google) + a clean path to OIDC/SAML later.
+### 7.2 Federation Strategy (RESOLVED)
+**Decision:** `coreos/go-oidc/v3` for OIDC discovery/verification + `golang.org/x/oauth2` for OAuth2 flows. This is the standard pairing in the Go ecosystem (v3.17.0, actively maintained as of Nov 2025).
 
-Leading candidate: `coreos/go-oidc/v3` for OIDC discovery/verification + `golang.org/x/oauth2` for OAuth2 flows. This is the standard pairing in the Go ecosystem.
-
-Research considerations:
-- OIDC discovery + token verification support
-- SAML complexity (likely deferred; `crewjam/saml` is the main Go option)
-- security track record and ease of correct configuration
-- testability (mocking IdPs via `httptest`)
-
-MVP may ship with:
-- native email/password + GitHub OAuth (lowest friction)
-- generic OIDC and SAML deferred to Enterprise milestones.
+**MVP auth scope:**
+- Native email/password (argon2id hashing, see 7.1)
+- GitHub OAuth
+- Google OAuth
+- Generic OIDC and SAML deferred to Enterprise milestones (`crewjam/saml` if needed)
 
 **`user_identities` table:** Each row links a `user_id` to a federated identity provider (e.g., `provider=github, provider_user_id=12345, email=...`). A user may have multiple identities (e.g., email/password + GitHub). This table is the reason `user_identities` appears in org/tenant tables (see 4.2) and is required for MVP to support the native + GitHub auth paths.
 
@@ -372,18 +384,15 @@ Groups do **not** define roles. Every user's permissions come from their org-lev
 - Full text search across: description + vendor/product tokens + package names + CWE titles (if dictionary present)
 - Facets: severity, CVSS range, date range, CWE, ecosystem/package, exploit status, CISA KEV, EPSS range
 
-### 8.2 CWE Titles (Decision)
-**(RESEARCH DECISION: include CWE dictionary ingestion?)**  
-Options:
-1) **IDs only** (fastest): store `cwe_ids[]` and filter by ID; no title search.
-2) **Dictionary ingestion** (better UX): ingest MITRE CWE list into `cwe_dictionary(id, name, description)` and include `name` in FTS.
+### 8.2 CWE Titles (RESOLVED)
+**Decision: Full dictionary ingestion.**
 
-Considerations:
-- data source and licensing
-- update cadence and ingestion method
-- how to map ambiguous CWEs
+Ingest MITRE CWE list into `cwe_dictionary(cwe_id TEXT PK, name TEXT, description TEXT)` and include `name` in FTS `tsvector` document for search enrichment. Users can search "buffer overflow" and find CVEs with CWE-120.
 
-MVP recommendation for agent: implement dictionary ingestion if it's straightforward; otherwise ship IDs-only and leave hooks.
+- **Data source:** https://cwe.mitre.org/data/downloads.html (XML or JSON, freely available)
+- **Update cadence:** Low (CWE list changes infrequently); periodic refresh via CLI command or scheduled job
+- **Ingestion:** `cvert-ops import-cwe` CLI command or auto-ingest on first run
+- **FTS integration:** Join CWE names into CVE's `fts_document` tsvector during merge
 
 ---
 
@@ -477,7 +486,7 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
 
 ### 10.3 Execution Model (Deterministic)
 - Rules compile to SQL queries over canonical tables (no "scan in Go"), with the exception of regex post-filtering described in 10.2.
-- Query builder uses a strict allowlist mapping field → SQL expression/join. SQL is generated via `sqlc`-compatible parameterized queries or a safe query-builder (e.g., `squirrel`), never string concatenation.
+- **Query builder:** Dynamic DSL queries use `squirrel` (safe query builder with parameterized output). All static CRUD queries use `sqlc`. This split exists because `sqlc` requires all queries written upfront in `.sql` files, but DSL rules produce dynamic WHERE clauses at runtime. `squirrel` generates parameterized SQL (never string concatenation).
 - Alerts run:
   - **Realtime**: on CVE upsert that results in changed `material_hash`
   - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor)
@@ -496,6 +505,13 @@ Alert rules are versioned to handle schema evolution safely:
 - **Removing or renaming fields:** the old version's compiler continues to support the field with a deprecation warning. A background migration job rewrites affected rules to the new version (with admin review for ambiguous cases). Rules that cannot be auto-migrated are **disabled with an admin notification**, never silently dropped or allowed to fail open.
 - **Fail-closed policy:** if a rule references a field or operator that the current compiler does not recognize (e.g., due to a corrupted or hand-edited rule), the rule evaluation fails closed (no alerts fire, an error is logged, and the rule is marked `status=error`). This is a security product; a broken rule must not silently miss alerts.
 
+### 10.6 Rule Validation & Dry-Run Endpoints
+
+- `POST /api/v1/orgs/{org_id}/alert-rules/validate` — Syntax/schema validation without saving. Returns parsed rule structure and any validation errors. Allows users to check a rule before committing.
+- `POST /api/v1/orgs/{org_id}/alert-rules/{id}/dry-run` — Runs the saved rule against current CVE data and returns matching CVEs **without firing alerts or creating alert events**. Returns the match count, sample CVEs, and execution metadata (candidates evaluated, time elapsed). Subject to the same candidate cap as real execution.
+
+These endpoints prevent users from discovering rule errors only at the next batch evaluation (which could be hours later).
+
 ---
 
 ## 11. Notification Channels & Delivery Semantics
@@ -513,11 +529,12 @@ Alert rules are versioned to handle schema evolution safely:
 
 ### 11.3 Webhook Security (Required)
 - HMAC signature header: `X-CVErtOps-Signature: sha256=<hex>` (using `crypto/hmac` + `crypto/sha256`)
-- Prevent SSRF:
-  - block private IPs and link-local ranges (custom `net.Dialer` with IP check in `Control` callback)
-  - resolve DNS and re-check IP on every request
-  - disallow non-HTTP(S)
+- Prevent SSRF using `doyensec/safeurl` as the HTTP client for all outbound webhook calls:
+  - blocks private IPs (RFC 1918) and link-local ranges by default
+  - mitigates DNS rebinding attacks
+  - disallows non-HTTP(S)
   - enforce timeout + max response size (`http.Client` with `Timeout`; `io.LimitReader` on response body)
+- Validate webhook URLs at registration time (not just request time)
 - Allow per-channel headers but denylist dangerous ones (`Host`, `Content-Length`, etc.)
 
 ### 11.4 Notification Content & Templates
@@ -601,23 +618,14 @@ type LLMClient interface {
 ```
 This abstraction allows swapping LLM vendors without changing application code.
 
-**(RESEARCH DECISION: model/vendor choice)**  
-All three major providers have Go SDK support. Research should evaluate:
+**Decision: Google Gemini** (`google.golang.org/genai`, official Go SDK, GA status).
 
-| Vendor | Go SDK | Status |
-|---|---|---|
-| **Google Gemini** | `google.golang.org/genai` (official, GA) | First-party; supports structured output, Vertex AI |
-| **OpenAI** | `github.com/openai/openai-go` (official) | First-party; JSON mode, function calling |
-| **Anthropic** | No official Go SDK; REST API via `net/http` | Viable but requires hand-rolled client |
+Gemini was chosen for:
+- Official first-party Go SDK with structured output support
+- Competitive pricing
+- JSON-mode reliability for NL → structured query JSON
 
-Research should document for each candidate:
-- best-fit model tiers (latency vs cost)
-- JSON-mode / structured-output reliability for NL → query
-- retry strategies and error handling
-- data retention and privacy contract implications
-- Go SDK maturity and maintenance cadence
-
-**Recommendation direction:** Gemini or OpenAI are preferred for MVP due to official Go SDK support. The `LLMClient` interface ensures the choice is not permanent.
+The `LLMClient` interface ensures the vendor choice is not permanent; switching to OpenAI or another provider requires only implementing the interface.
 
 ---
 
@@ -655,12 +663,12 @@ Feature flag precedence:
 
 - Base path: `/api/v1`
 - Pagination: `limit`, `cursor` (opaque), deterministic ordering (by `date_modified_canonical` desc, then `cve_id` for tiebreak, unless otherwise specified)
-- Error format:
+- Error format: RFC 9457 Problem Details (generated automatically by huma):
 ```json
-{ "error": { "code": "string", "message": "string", "details": {} } }
+{ "type": "https://api.cvertops.dev/errors/validation", "title": "Validation Error", "status": 422, "detail": "Request validation failed", "errors": [{ "location": "body.name", "message": "minimum length is 3" }] }
 ```
 - All timestamps UTC ISO8601.
-- OpenAPI spec is source of truth. Generated from code annotations (e.g., `swaggo/swag` or `oapi-codegen` for code-first or spec-first workflow — see section 18.2 for decision). Generate client types from spec.
+- OpenAPI 3.1 spec is generated automatically by huma from Go type definitions. Served at `/openapi` endpoint. Used for client type generation and API documentation.
 
 ### Decision D5 — How org context is carried in the API (MVP)
 
@@ -726,9 +734,11 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 ## 18. Implementation Phases (Tracker)
 
 **Phase 0 — Repo + CI skeleton** (no product code)
-- Go module init, linter config (`golangci-lint`), test harness, docker compose dev stack
-- Skeleton HTTP server + worker process + DB migrations (`golang-migrate`)
-- **(RESEARCH DECISION: HTTP framework + OpenAPI strategy)** — see section 18.2
+- Go 1.26 module init (`github.com/scarson/cvert-ops`), linter config (`golangci-lint`), test harness (`testcontainers-go`), docker compose dev stack (Postgres + Mailpit)
+- Skeleton HTTP server (huma + chi) + worker process (cobra subcommands) + DB migrations (`golang-migrate`, embedded)
+- Prometheus `/metrics` + `/healthz` endpoints
+- GitHub Actions CI pipeline
+- `.env.example` with documented config vars
 
 **Phase 1 — Data ingestion + canonical storage + search** (MVP core)
 - adapters: NVD, MITRE, CISA KEV, OSV, GHSA, EPSS (poll)
@@ -759,9 +769,19 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 
 Go's goroutine model makes the task queue decision fundamentally different from Python. The system does not need an external task queue framework for MVP.
 
-**Architecture: single binary with embedded worker pool**
+**Architecture: single binary with embedded worker pool, cobra subcommands**
 
-The CVErt Ops binary runs as a single process with two logical components:
+The CVErt Ops binary uses cobra for CLI subcommands:
+- `cvert-ops serve` (default) — runs HTTP server + worker pool in one process. Suitable for self-hosted single-instance deployments.
+- `cvert-ops worker` — runs standalone worker pool only. For SaaS scaling where API and workers run separately.
+- `cvert-ops migrate` — runs pending database migrations and exits.
+
+**Graceful shutdown:**
+- On SIGTERM/SIGINT: stop accepting new HTTP requests and new jobs
+- Wait for in-flight requests and jobs to complete (up to configurable deadline, default 60s via `SHUTDOWN_TIMEOUT_SECONDS`)
+- After deadline: force exit; in-flight jobs are reclaimed by stale lock detection (worker heartbeat timeout)
+
+The binary runs two logical components:
 - **HTTP server** (goroutines managed by `net/http`)
 - **Worker pool** (goroutines managed by an internal scheduler)
 
@@ -842,40 +862,141 @@ ptz,
 - Throughput ceiling of Postgres `SKIP LOCKED` is well above MVP needs (thousands of jobs/sec).
 - If SaaS scaling demands exceed Postgres queue throughput, the `job_queue` table can be replaced with Redis/NATS without changing the worker goroutine structure — only the "claim next job" function changes.
 
-### 18.2 HTTP Framework + OpenAPI Strategy (RESEARCH DECISION)
+### 18.2 HTTP Framework + OpenAPI Strategy (RESOLVED)
 
-This decision is **blocking for Phase 0.** Research should evaluate two approaches and document the decision in `research/http-framework.md`:
+**Decision: huma + chi (code-first, OpenAPI 3.1)**
 
-**Option A: Spec-first with `oapi-codegen`**
-- Write the OpenAPI 3.1 spec by hand (or derive from Appendix B).
-- Generate Go server interfaces, request/response types, and validation from the spec.
-- Implement handlers by satisfying the generated interface.
-- Pros: OpenAPI spec is always in sync; generated types enforce contract; works well with `chi` or `echo`.
-- Cons: spec authoring has a learning curve; generated code can be opaque.
+huma (`github.com/danielgtaylor/huma`, v2.37.1) wraps chi as the underlying router. Go types and handler definitions automatically generate an OpenAPI 3.1 specification served at `/openapi`.
 
-**Option B: Code-first with `swaggo/swag` or `huma`**
-- Write handlers with annotated comments or struct tags.
-- Generate OpenAPI spec from code.
-- Pros: feels more natural for Go developers; less boilerplate.
-- Cons: spec can drift if annotations are incomplete; less strict contract enforcement.
+**Why huma + chi:**
+1. **OpenAPI 3.1 native** — future-proof; oapi-codegen only supports 3.0.x
+2. **Automatic struct-tag validation** — `minLength`, `maxLength`, `format:"uuid"` validated without manual code; reduces security bugs
+3. **RFC 9457 Problem Details** — modern structured error responses out of the box
+4. **Chi middleware preserved** — huma wraps chi, so the full chi middleware ecosystem (20+ built-in, 100+ third-party) is available for auth, CORS, rate limiting, request ID
+5. **Natural for Go development** — write Go code, not OpenAPI YAML; spec can never drift from code
+6. **Go 1.26 compatible** — requires Go 1.25+ (satisfied)
 
-**Recommendation direction:** Option A (spec-first with `oapi-codegen`) is preferred for a security product where the API contract is a first-class artifact. The PRD already defines the endpoint skeleton (Appendix B), making spec-first a natural fit.
+**Alternative considered:** Spec-first with oapi-codegen + chi. Stronger contract enforcement but OpenAPI 3.0 only, more ceremony for a solo developer, and higher learning curve (OpenAPI YAML + generated code).
 
 ---
 
-## 19. Research Decision Backlog (Start Here)
+## 19. Research Decision Backlog (ALL RESOLVED)
 
-1) OIDC/OAuth library selection (`coreos/go-oidc` + `golang.org/x/oauth2` vs alternatives)
-2) CWE dictionary ingestion (data source + update cadence)
-3) Postgres RLS for hosted mode (policy patterns + operational ergonomics)
-4) LLM vendor/model — Gemini vs OpenAI vs Anthropic (Go SDK maturity, JSON-mode reliability, cost)
-5) HTTP framework + OpenAPI strategy (see 18.2)
+All research decisions have been resolved. See `research.md` for detailed findings and rationale.
 
-Each decision must produce a `research/<topic>.md` with:
-- recommendation + rationale
-- security considerations
-- implementation plan + pitfalls
-- minimal spike steps if needed
+1) ~~OIDC/OAuth library selection~~ → **RESOLVED:** `coreos/go-oidc/v3` + `golang.org/x/oauth2`. MVP: email/password + GitHub + Google OAuth. See section 7.2.
+2) ~~CWE dictionary ingestion~~ → **RESOLVED:** Full dictionary ingestion from MITRE CWE. See section 8.2.
+3) ~~Postgres RLS for hosted mode~~ → **RESOLVED:** `SET LOCAL app.org_id` per-transaction; always enable RLS; implementation deferred to P1. See section 6.2.
+4) ~~LLM vendor/model~~ → **RESOLVED:** Google Gemini (`google.golang.org/genai`). See section 13.4.
+5) ~~HTTP framework + OpenAPI strategy~~ → **RESOLVED:** huma + chi (code-first, OpenAPI 3.1). See section 18.2.
+
+---
+
+## 19.1 Observability
+
+**Logging:** `slog` (Go stdlib, zero dependencies). JSON output in production, text in dev. Go 1.26 adds `slog.NewMultiHandler()` for distributing to multiple destinations.
+
+Context propagation: HTTP middleware adds `request_id`, `org_id`, `user_id` to request context. Custom slog handler extracts these and includes them in all downstream log records. Implement `slog.LogValuer` interface on types containing sensitive data to ensure redaction.
+
+**Metrics:** `prometheus/client_golang` with `/metrics` endpoint from Phase 0. Expose:
+- Go runtime metrics (goroutines, memory, GC)
+- HTTP request latency/count per endpoint
+- Feed ingestion items/errors per source
+- Job queue depth and processing time
+- Notification delivery success/failure counts
+
+**Tracing:** Deferred to P1. Structured logs with request_id provide basic correlation for MVP.
+
+## 19.2 Configuration
+
+**Library:** `caarlos0/env/v10` for env var parsing + `go-playground/validator` for startup validation.
+
+All configuration via environment variables (12-factor). Docker Compose `.env` files are the primary config surface for self-hosted deployments.
+
+- Nested config structs supported (e.g., `SMTPConfig`, `DatabaseConfig`)
+- Validation at startup via struct tags (`required`, `min`, `max`, `url`)
+- Secret redaction: config types implement custom `String()` method that masks sensitive fields
+- `.env.example` file in repo documents all available config vars with defaults and descriptions
+
+## 19.3 Testing Strategy
+
+- **Unit tests:** Table-driven tests for pure logic (merge rules, DSL compiler, validation). Mock HTTP responses (recorded fixtures) for feed adapter tests.
+- **Integration tests:** `testcontainers-go` for ephemeral Postgres containers per test suite. Realistic database testing without a shared dev instance.
+- **Pre-populated DB snapshots:** For tests that need feed data (alert evaluation, search, digests), load pre-built Postgres snapshots to avoid hitting real APIs and rate limits during CI.
+- **Email testing:** Mailpit in docker-compose as a local SMTP trap for dev/test. Real SMTP configured via env vars for production.
+- **CI pipeline:** GitHub Actions — lint (`golangci-lint`), vet (`go vet`), test (`go test` with testcontainers), vulnerability scan (`govulncheck`), build binary, build Docker image.
+- **RBAC test matrix:** Integration tests must cover each role × each endpoint from the permission matrix (section 7.3).
+- **RLS isolation tests (P1):** Verify cross-org isolation with RLS enabled (Org A creates data → Org B queries → 0 results).
+
+## 19.4 Registration Mode
+
+Configurable via `REGISTRATION_MODE` env var:
+- `invite-only` (default): only org owners/admins can invite new members. Most secure for self-hosted security teams.
+- `open`: anyone can register and create their own org. Suitable for SaaS or community instances.
+- First user auto-becomes owner of a default org regardless of mode (preserves homelab single-user simplicity).
+
+## 19.5 New Features (from Competitive Analysis)
+
+### CVE Assignment (P1)
+Add `assignee_user_id UUID REFERENCES users(id)` to `cve_annotations` table. Allows security teams to assign CVEs to team members for triage.
+- Endpoint: `PATCH /api/v1/orgs/{org_id}/cves/{cve_id}/annotations` (set assignee, tags, notes, snooze state)
+- Shows in digest emails and future dashboard widgets
+- Inspired by OpenCVE's "assigned CVEs" feature
+
+### Saved Searches
+Reusable filter presets independent of alert rules. Users save search queries and share them within an org.
+- Table: `saved_searches(id UUID PK, org_id UUID NOT NULL, user_id UUID NOT NULL, name TEXT NOT NULL, query_json JSONB NOT NULL, is_shared BOOLEAN DEFAULT false, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)`
+- Constraints: `UNIQUE(org_id, name)`
+- Endpoints: `GET/POST /api/v1/orgs/{org_id}/saved-searches`, `GET/PATCH/DELETE /api/v1/orgs/{org_id}/saved-searches/{id}`
+- `is_shared` flag controls org-wide visibility (respects RBAC: viewers can use shared searches, members can create their own, admins can manage all)
+
+### Watchlist Bootstrap Templates
+Pre-built watchlist templates that users can import during onboarding to reduce friction (inspired by OpenCVE's vendor/product auto-discovery).
+
+Ship embedded preset watchlists (JSON files via `embed.FS`):
+- **Web frameworks:** React, Angular, Vue, Django, Rails, Express, Spring, etc.
+- **Databases:** PostgreSQL, MySQL, MongoDB, Redis, Elasticsearch, etc.
+- **Container base images:** alpine, debian, ubuntu, node, python, golang, etc.
+- **Language runtimes:** Node.js, Python, Go, Java, Rust, Ruby, PHP, etc.
+- **Infrastructure:** Nginx, Apache, OpenSSL, Linux kernel, curl, etc.
+
+Endpoints:
+- `GET /api/v1/watchlist-templates` — list available templates (public, no auth required)
+- `POST /api/v1/orgs/{org_id}/watchlists/from-template` — create a watchlist from a template
+
+## 19.6 Project Layout
+
+```
+cvert-ops/
+├── cmd/cvert-ops/        # cobra CLI (main.go, serve.go, worker.go, migrate.go)
+├── internal/
+│   ├── api/              # HTTP handlers + huma operations + middleware
+│   ├── config/           # caarlos0/env config structs
+│   ├── feed/             # Feed adapters (nvd, mitre, kev, osv, ghsa, epss)
+│   ├── merge/            # CVE merge pipeline
+│   ├── alert/            # Alert DSL compiler + evaluator
+│   ├── notify/           # Notification channels + delivery
+│   ├── auth/             # JWT, OAuth, API keys, argon2id
+│   ├── worker/           # Job queue + goroutine pool
+│   ├── search/           # FTS + facets
+│   ├── report/           # Digest generation
+│   ├── ai/               # LLMClient interface + Gemini adapter
+│   ├── metrics/          # Prometheus counters/histograms
+│   └── store/            # Repository layer (sqlc generated + squirrel dynamic)
+├── migrations/           # SQL migration files (embedded via embed.FS)
+├── templates/            # Notification + watchlist templates (embedded via embed.FS)
+├── openapi/              # Exported OpenAPI spec (generated by huma)
+├── research/             # Research decision docs
+├── .github/workflows/    # GitHub Actions CI
+├── compose.yml           # Dev stack (Postgres + Mailpit)
+├── Dockerfile            # Multi-stage build → distroless:static-debian12
+├── .env.example          # Documented env vars
+├── go.mod / go.sum
+├── PLAN.md
+├── CLAUDE.md
+├── research.md
+└── README.md
+```
 
 ---
 
@@ -1046,16 +1167,17 @@ Append-only log of internal system jobs (retention cleanup, index rebuilds, etc.
 See section 18.1 for full schema.
 
 ## A.3 Org/Tenant Tables (Core)
-`organizations`, `users`, `user_identities`, `org_members` (includes `role`), `groups`, `group_members`, `watchlists` (includes `group_id` nullable), `watchlist_items`, `cve_annotations`, `alert_rules` (includes `watchlist_ids uuid[]`, `dsl_version int`), `alert_rule_runs`, `alert_events`, `notification_channels`, `notification_deliveries`, `scheduled_reports`, `report_runs`, `ai_usage_counters`.
+`organizations`, `users` (includes `password_hash_version int`), `user_identities`, `org_members` (includes `role`), `groups`, `group_members`, `watchlists` (includes `group_id` nullable), `watchlist_items`, `cve_annotations` (includes `assignee_user_id uuid` nullable), `alert_rules` (includes `watchlist_ids uuid[]`, `dsl_version int`), `alert_rule_runs`, `alert_events`, `notification_channels`, `notification_deliveries`, `scheduled_reports`, `report_runs`, `ai_usage_counters`, `saved_searches` (includes `query_json jsonb`, `is_shared boolean`).
 
 ## A.4 Migration Order
-1) Global CVE tables + feed state/log + job_queue  
-2) Org/auth tables (including `user_identities`, `groups`, `group_members`)  
-3) Watchlists + annotations  
-4) Alerts (including `dsl_version`, `watchlist_ids`)  
-5) Notifications  
-6) Reports  
-7) AI counters
+1) Global CVE tables + CWE dictionary + feed state/log + job_queue
+2) Org/auth tables (including `user_identities`, `groups`, `group_members`, `password_hash_version`)
+3) Watchlists + annotations (including `assignee_user_id`)
+4) Saved searches
+5) Alerts (including `dsl_version`, `watchlist_ids`)
+6) Notifications
+7) Reports
+8) AI counters
 
 ---
 
@@ -1093,6 +1215,8 @@ See section 18.1 for full schema.
 **Alert rules:**
 - `GET/POST /api/v1/orgs/{org_id}/alert-rules`
 - `GET/PATCH/DELETE /api/v1/orgs/{org_id}/alert-rules/{id}`
+- `POST /api/v1/orgs/{org_id}/alert-rules/validate` — syntax/schema validation without saving
+- `POST /api/v1/orgs/{org_id}/alert-rules/{id}/dry-run` — run rule against current data without firing alerts
 - `GET /api/v1/orgs/{org_id}/alert-rules/{id}/events` — alert history for a rule
 
 **Notification channels:**
@@ -1107,6 +1231,17 @@ See section 18.1 for full schema.
 **API keys:**
 - `GET/POST /api/v1/orgs/{org_id}/api-keys`
 - `DELETE /api/v1/orgs/{org_id}/api-keys/{id}`
+
+**Saved searches:**
+- `GET/POST /api/v1/orgs/{org_id}/saved-searches`
+- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/saved-searches/{id}`
+
+**CVE annotations (including assignment):**
+- `GET/PATCH /api/v1/orgs/{org_id}/cves/{cve_id}/annotations` — set assignee, tags, notes, snooze state
+
+**Watchlist templates:**
+- `GET /api/v1/watchlist-templates` — list available bootstrap templates (public)
+- `POST /api/v1/orgs/{org_id}/watchlists/from-template` — create watchlist from template
 
 **AI:**
 - `POST /api/v1/orgs/{org_id}/ai/nl-search`

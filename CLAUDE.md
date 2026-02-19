@@ -8,6 +8,8 @@ CVErt Ops is an open-source vulnerability intelligence and alerting application 
 
 ## Build & Dev Commands
 
+# IMPORTANT: This is a Windows development environment. Use PowerShell and/or CMD, not bash.
+
 ```bash
 golangci-lint run                    # lint (NOT go vet alone)
 sqlc generate                        # regenerate type-safe query code after changing .sql files

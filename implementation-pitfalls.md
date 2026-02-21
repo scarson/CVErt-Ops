@@ -1,7 +1,7 @@
 # CVErt Ops — Implementation Pitfalls & Review Findings
 
 > **Date:** 2026-02-21
-> **Source:** 8 rounds of Gemini Pro architectural review of PLAN.md before implementation began
+> **Source:** 9 rounds of Gemini Pro architectural review of PLAN.md before implementation began
 > **Purpose:** Document implementation traps, design flaws, and corrected decisions as a learning artifact for future development and similar projects.
 
 ---
@@ -249,6 +249,50 @@ Both statements run for every CSV row. The database handles all three cases corr
 
 ---
 
+### 2.6 `SELECT expr WHERE condition` Without `FROM` — Reliable for Postgres, Unreliable for sqlc
+
+**The Flaw:** The two-statement EPSS pattern used `SELECT $2, $1, $3 WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cve_id = $2)` — a SELECT without a FROM clause.
+
+**Why It Matters:** This is valid PostgreSQL syntax (PostgreSQL allows `SELECT expr WHERE condition` without FROM, treating it as a zero-or-one-row evaluation). The review feedback claimed this was a syntax error — that claim is factually incorrect. However, there is a real problem: the parameters are out-of-order (`$2, $1, $3`) in a typeless SELECT without a FROM clause. sqlc uses the INSERT target column list to infer parameter types, but out-of-order parameters in this context make that inference unreliable. sqlc may generate incorrect parameter types or fail to compile the query at all, blocking the entire `sqlc generate` step.
+
+**The Fix:** Use a VALUES expression with explicit type casts as the FROM source, which makes types unambiguous:
+```sql
+INSERT INTO epss_staging (cve_id, epss_score, as_of_date)
+SELECT t.cve_id, t.epss_score, t.as_of_date
+FROM (VALUES ($2::text, $1::double precision, $3::date)) AS t(cve_id, epss_score, as_of_date)
+WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cve_id = t.cve_id)
+ON CONFLICT (cve_id) DO UPDATE
+    SET epss_score = EXCLUDED.epss_score,
+        as_of_date = EXCLUDED.as_of_date;
+```
+The VALUES approach also uses `t.cve_id` in the NOT EXISTS subquery (by name, not parameter position), making the query self-documenting and immune to parameter-order confusion.
+
+**The Lesson:** Verify SQL correctness at two levels: (1) valid PostgreSQL, and (2) parseable by your code generation tool. A query can be valid Postgres but still fail `sqlc generate` if the tool cannot reliably infer parameter types. Always include explicit type casts (`$1::text`) in sqlc queries, especially for parameters in positions where type cannot be inferred from schema context alone.
+
+---
+
+### 2.7 EPSS Staging Table Has No Lifecycle Management in the Merge Pipeline
+
+**The Flaw:** Decision D4's transaction boundary listed 5 explicit steps (lock → upsert sources → recompute → upsert cves → commit). Section 3.1 states that staged EPSS scores are "applied on next CVE upsert," but this is a requirements statement, not an implementation directive — the merge transaction steps contained no instructions to read from, apply, or clean up `epss_staging`.
+
+**Why It Matters:** An AI implementing the 5-step merge function writes exactly those 5 steps and nothing else. Without explicit instruction:
+- The staging table is never read — staged EPSS scores are orphaned permanently. New CVEs added via bulk import or incremental ingest never get their EPSS scores, regardless of how long they wait in staging.
+- If the staging table IS read but never deleted, it grows without bound and old staged scores take priority over fresh daily EPSS feed updates (since staging is only overwritten by `ON CONFLICT DO UPDATE`, meaning a score staged at Day 1 could suppress a higher-priority live score at Day 30).
+
+**The Fix:** Add steps 4a and 4b to the D4 transaction, inside the same transaction before commit:
+```
+4a) SELECT epss_score, as_of_date FROM epss_staging WHERE cve_id = $1
+    If found: UPDATE cves SET epss_score = staged, date_epss_updated = now()
+              WHERE cve_id = $1 AND epss_score IS DISTINCT FROM staged
+4b) DELETE FROM epss_staging WHERE cve_id = $1
+    (execute regardless of whether 4a found a row — prevents stale accumulation)
+```
+Both steps are inside the merge transaction. If the transaction rolls back, the staging row is preserved for retry.
+
+**The Lesson:** "Applied on next upsert" in a PRD is an intent, not an implementation directive. Any time a data lifecycle operation spans two code paths (EPSS adapter writes to staging; merge pipeline reads from staging), the receiving side's implementation must explicitly be specified. "The merge pipeline applies staged data" requires listing it as a named step in the pipeline — otherwise it silently doesn't happen.
+
+---
+
 ## 3. Security Vulnerabilities
 
 ### 3.1 JWT Algorithm Confusion and `alg: none` Bypass
@@ -376,6 +420,26 @@ For a security alerting product, a user-defined threshold must be honored exactl
 
 ---
 
+### 4.4 Activation Scan Executed Synchronously in HTTP Handler
+
+**The Flaw:** Section 10.3 said the activation scan is "enqueued as a job" but never specified the HTTP handler behavior: what status code to return, whether the rule has an `activating` state, or that the handler must return before the scan completes.
+
+**Why It Matters:** "Enqueued as a job" is ambiguous. An AI implementing `POST /api/v1/orgs/{org_id}/alert-rules` would plausibly interpret this as: save the rule, run the scan inline, return 201 Created after the scan completes — because that's the simplest implementation that satisfies "the scan runs when a rule is saved." A full-corpus DSL evaluation against 250,000+ CVEs takes multiple seconds to minutes of CPU time. Synchronous execution means:
+- The HTTP request hangs past any standard load balancer timeout (30–60 seconds), dropping the connection
+- Multiple concurrent rule creations consume unbounded API server goroutines and memory
+- An attacker can trivially DOS the application by repeatedly `POST`ing alert rules to trigger expensive synchronous scans
+
+**The Fix:** The HTTP handler must:
+1. Insert the rule with `status = 'activating'`
+2. Enqueue the scan as a background job with `lock_key = 'alert_activation:<rule_id>'`
+3. Return `202 Accepted` (or `201 Created` with `status: "activating"`) **immediately**
+
+The worker runs the scan asynchronously using `workerTx`, writes to `alert_events`, and transitions the rule to `status = 'active'`. The `alert_rules.status` field has valid values: `draft` | `activating` | `active` | `error` | `disabled`.
+
+**The Lesson:** "Enqueued as a job" in a PRD is ambiguous about the HTTP response behavior. Any spec that mandates background work must also explicitly state: what HTTP status the handler returns, what intermediate state the resource has during processing, and how the client polls for completion. Without these, the "obvious" implementation is synchronous.
+
+---
+
 ## 5. Architectural Decisions Validated Early
 
 ### 5.1 RLS Must Be Implemented Alongside Initial Org Table Migrations (Not Deferred)
@@ -415,12 +479,15 @@ For a security alerting product, a user-defined threshold must be honored exactl
 | 2.3 | DB | Advisory lock: internal Postgres hash API + imprecise isolation claim | Medium | FNV-1a in Go; domain prefix corrected to accurate description |
 | 2.4 | DB | RLS `missing_ok` fail-closed blindfolds background workers | Critical | `app.bypass_rls` session variable + `workerTx` helper; `SET LOCAL` scoped |
 | 2.5 | DB | `RowsAffected == 0` ambiguous after `IS DISTINCT FROM` guard | High | Two-statement pattern; staging insert uses `WHERE NOT EXISTS`; no `RowsAffected` branching |
+| 2.6 | DB | `SELECT expr WHERE condition` without `FROM` — out-of-order params make sqlc type inference unreliable | Medium | VALUES with explicit type casts (`$1::double precision`) and named column aliases |
+| 2.7 | DB | EPSS staging table has no lifecycle management in the merge pipeline | Critical | Steps 4a (SELECT + conditional UPDATE) and 4b (DELETE) added to D4 transaction |
 | 3.1 | Security | JWT algorithm confusion / `alg: none` bypass | Critical | `jwt.WithValidMethods([]string{"HS256"})` + `WithExpirationRequired()` required |
 | 3.2 | Security | Argon2id OOM denial of service under concurrent load | Critical | Non-blocking semaphore (default: 5) with immediate 503 on excess |
 | 3.3 | Security | Blocking semaphore converts OOM-DOS into connection-starvation DOS | Critical | `select/default` — reject immediately, never block on semaphore send |
 | 4.1 | Operational | Activation scan drops thousands of outbound notifications | Critical | Silent mode: write `alert_events`, suppress outbound delivery |
 | 4.2 | Operational | EPSS threshold gate creates user-defined threshold blind zones | High | Remove EPSS from `material_hash`; dedicated cursor-based evaluator |
 | 4.3 | Operational | `token_version` causes global logout (undocumented scope) | Low | Documented as MVP limitation; P1 = per-JTI `sessions` table |
+| 4.4 | Operational | Activation scan executed synchronously in HTTP handler | Critical | `status='activating'`; return 202 immediately; worker runs async scan |
 | 5.1 | Architecture | RLS deferred to "a future phase" | High | RLS in Phase 2 alongside org table migrations; `NOBYPASSRLS` |
 | 5.2 | Architecture | Relying on API polling for initial corpus population | High | Bulk import CLI with feed-specific archive sources |
 

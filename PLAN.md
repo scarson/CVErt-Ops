@@ -252,6 +252,8 @@ Within the same DB transaction:
 2) Upsert/replace the per-source normalized row in `cve_sources` (and store raw payload separately).
 3) Recompute the canonical CVE row **from the current set of `cve_sources`** for that CVE (read-your-writes).
 4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`.
+4a) Apply staged EPSS score (required): `SELECT epss_score, as_of_date FROM epss_staging WHERE cve_id = $1`. If a row is found, apply via `UPDATE cves SET epss_score = staged, date_epss_updated = now() WHERE cve_id = $1 AND epss_score IS DISTINCT FROM staged`.
+4b) Delete the staging row (required): `DELETE FROM epss_staging WHERE cve_id = $1`. This must execute regardless of whether 4a found a row — prevents stale rows from accumulating. Both 4a and 4b are inside the same transaction; if the merge rolls back, the staging row is preserved for retry.
 5) Commit.
 
 **Considerations (multiple angles):**
@@ -398,11 +400,15 @@ UPDATE cves
 SET epss_score = $1, date_epss_updated = now()
 WHERE cve_id = $2 AND epss_score IS DISTINCT FROM $1;
 
--- Statement 2: write to staging only if CVE does not exist in cves
--- (runs unconditionally; WHERE NOT EXISTS makes it a no-op when CVE is present)
+-- Statement 2: write to staging only if CVE does not exist in cves.
+-- Uses VALUES with explicit type casts so sqlc can infer parameter types
+-- unambiguously. Do NOT use "SELECT $2, $1, $3 WHERE NOT EXISTS (...)" —
+-- while valid PostgreSQL, the out-of-order parameters in a typeless SELECT
+-- without FROM make sqlc's type inference unreliable.
 INSERT INTO epss_staging (cve_id, epss_score, as_of_date)
-SELECT $2, $1, $3
-WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cve_id = $2)
+SELECT t.cve_id, t.epss_score, t.as_of_date
+FROM (VALUES ($2::text, $1::double precision, $3::date)) AS t(cve_id, epss_score, as_of_date)
+WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cve_id = t.cve_id)
 ON CONFLICT (cve_id) DO UPDATE
     SET epss_score = EXCLUDED.epss_score,
         as_of_date = EXCLUDED.as_of_date;
@@ -790,7 +796,18 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
   - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor). Evaluates all rules EXCEPT those whose only conditions reference `epss_score`.
   - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while non-EPSS fields stay unchanged.
   - **Digest-only**: no immediate alerts; included in scheduled reports
-- **New rule activation scan (required, silent mode):** When an alert rule is first saved and enabled, a one-time full-corpus scan is enqueued as a job to catch CVEs that already meet the rule's conditions at the time of creation. The scan writes matching CVEs to the `alert_events` table (establishing the dedup baseline and making historical matches visible in the UI and API) but **does NOT fan out to external notification channels**. Outbound notifications (Slack, email, webhook) must only fire for new data changes after the rule is created — sending outbound alerts for thousands of historical corpus matches would trigger immediate permanent API bans from Slack (which enforces a 1 message/sec webhook rate limit) and suspend the account from email providers for spam. After the activation scan completes, normal cursor-based batch evaluation takes over and fires outbound notifications only for subsequent changes. The activation scan is subject to the same candidate cap as regular evaluation.
+- **New rule activation scan (required, silent mode, async):** When an alert rule is first saved and enabled, a one-time full-corpus scan runs as an **asynchronous background job**. The HTTP handler must:
+  1. Insert the rule with `status = 'activating'`
+  2. Enqueue the activation scan job to the worker pool
+  3. Return **`202 Accepted`** (or `201 Created` with `status: "activating"`) **immediately** — it must NOT block on or await the scan result
+
+  The HTTP handler must not execute the scan inline. Loading the DSL and evaluating it against 250,000+ CVEs takes multiple seconds of CPU time. Executing synchronously in the handler causes the HTTP request to hang past any standard load balancer timeout (typically 30–60 seconds), drops the connection, and creates a trivial DOS: repeatedly `POST`ing new alert rules triggers unlimited expensive scans in the API goroutine pool.
+
+  The worker runs the scan using `workerTx` (RLS bypass), writes matching CVEs to the `alert_events` table (establishing the dedup baseline, visible in UI and API), and then transitions the rule to `status = 'active'`. Outbound notifications (Slack, email, webhook) are suppressed for historical matches — only new data changes after activation fire outbound delivery.
+
+  **`alert_rules.status` field values:** `draft` (saved but disabled) | `activating` (activation scan in progress) | `active` (scan complete, normal evaluation running) | `error` (scan or compiler failure — rule is disabled until fixed) | `disabled` (manually disabled by user).
+
+  The activation scan is subject to the same candidate cap as regular evaluation. The scan job uses `lock_key = 'alert_activation:<rule_id>'` in `job_queue` to prevent duplicate activation jobs if the rule is saved twice rapidly.
 
 ### 10.4 Dedup Model
 Table `alert_events(org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, times_fired)`

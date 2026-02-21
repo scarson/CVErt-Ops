@@ -10,6 +10,8 @@
 
 ## How to Use This Document (AI Agent Workflow)
 
+**Guiding workflow:** https://boristane.com/blog/how-i-use-claude-code/ 
+
 1. This file is `plan.md`. All research decisions have been resolved; see `research.md` for detailed findings.
 2. Annotate in this document after each planning/research pass before allowing implementation.
 3. Do not implement until explicitly told. Planning ends in written artifacts, not code.
@@ -43,7 +45,7 @@ The product ships as:
 | **Templates** | Go `html/template` / `text/template` | Notification rendering; sandboxed by design; embedded via `embed.FS` |
 | **AI / LLM** | Google Gemini (`google.golang.org/genai`) | Official Go SDK; `LLMClient` interface for vendor abstraction. See section 13.4 |
 | **Background jobs** | Goroutine worker pool + Postgres job queue | See section 18.1 |
-| **CLI** | `cobra` | Subcommands: `serve`, `worker`, `migrate` |
+| **CLI** | `cobra` | Subcommands: `serve`, `worker`, `migrate`, `import-bulk` |
 | **Logging** | `slog` (stdlib) | Structured JSON logging; `NewMultiHandler` (Go 1.26) for multi-destination |
 | **Configuration** | `caarlos0/env/v10` + `go-playground/validator` | Env var parsing with startup validation |
 | **Metrics** | `prometheus/client_golang` | `/metrics` endpoint from Phase 0 |
@@ -143,9 +145,71 @@ Adapters must be pure functions + minimal I/O wrappers (HTTP client injected), s
 - `date_first_seen` never changes after first insert.
 - `date_modified_source_max` is the maximum of all per-source `source_date_modified` values and is recomputed on each merge.
 
-**Backfill**
-- First run performs a full historical sync per feed, with rate limiting + progress logging.
-- Backfill runs in bounded windows (e.g., NVD pages) to avoid huge transactions.
+**Backfill — Initial Data Population**
+
+Initial population of a new instance MUST NOT rely solely on API polling for large feeds. The NVD API rate limit (5 req/30s with API key, ~2000 results/page) makes a from-scratch API sync slow and brittle — a single network error partway through a multi-hundred-page run requires retry logic, and any API downtime blocks the instance from becoming useful. Instead, each large feed has a preferred bulk source for initial load:
+
+| Feed | Bulk source | Notes |
+|---|---|---|
+| NVD | Annual JSON feed archives from [nvd.nist.gov/vuln/data-feeds](https://nvd.nist.gov/vuln/data-feeds) | One `.json.gz` file per year; download all years for full history |
+| OSV | GCS bucket `gs://osv-vulnerabilities` (or equivalent HTTP mirror) | Per-ecosystem JSON archives; publicly accessible without auth |
+| MITRE CVE | GitHub: [CVEProject/cvelistV5](https://github.com/CVEProject/cvelistV5) | Bulk JSON export; also available as a `.zip` archive |
+| CISA KEV | Single JSON file via API — small enough to fetch directly | No bulk alternative needed |
+| GHSA | GraphQL pagination — acceptable at current volume | No bulk alternative needed |
+| EPSS | Daily CSV from first.org — small file | No bulk alternative needed |
+
+The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see section 17). After bulk import completes, the feed's cursor is initialized to a timestamp just before the bulk file's "as-of" date, and normal incremental API polling takes over from there.
+
+- **Streaming parse (required):** Bulk files and large API responses must be parsed as streams using `json.Decoder`. Never buffer the full body in memory. NVD annual files and OSV ecosystem archives can be hundreds of MB. **Critical Go implementation notes:**
+  - `json.NewDecoder(r).Decode(&bigSlice)` still reads the entire stream into memory before returning, even though it uses a Decoder — there is no streaming benefit when decoding into a slice. **`Decode(&slice)` is forbidden for large feeds.**
+  - **Feed-specific wire format (required knowledge):** Real vulnerability feeds are rarely top-level JSON arrays. Each adapter must handle its feed's actual structure:
+    - **NVD API 2.0** returns a top-level JSON object: `{"resultsPerPage":2000,"vulnerabilities":[{...}]}`. The adapter uses `Token()` to navigate the object and locate the `"vulnerabilities"` key, then enters the `More()` loop on the nested array.
+    - **MITRE bulk (cvelistV5)** and **OSV ecosystem bulk** are ZIP archives containing one JSON file per CVE or advisory. **Critical Go constraint:** `archive/zip.NewReader` requires `io.ReaderAt` (seekable) plus the total byte count — an HTTP response body (`io.ReadCloser`) satisfies neither interface. **DO NOT** use `io.ReadAll()` to buffer a multi-GB archive into a `*bytes.Reader`; this is the OOM crash the streaming requirement exists to prevent. The required bridging pattern is to stream the HTTP body to a temporary disk file first:
+      ```go
+      f, err := os.CreateTemp("", "cvert-bulk-*.zip")
+      if err != nil { return err }
+      defer os.Remove(f.Name())
+      defer f.Close()
+      if _, err := io.Copy(f, resp.Body); err != nil { return err }
+      info, err := f.Stat()
+      if err != nil { return err }
+      zr, err := zip.NewReader(f, info.Size()) // os.File implements io.ReaderAt
+      if err != nil { return err }
+      for _, entry := range zr.File {
+          rc, err := entry.Open()
+          if err != nil { return err }
+          var record AdvisoryRecord
+          if err := json.NewDecoder(rc).Decode(&record); err != nil { rc.Close(); return err }
+          rc.Close()
+          // process record through merge pipeline
+      }
+      ```
+      For the `import-bulk` CLI path with a local file, skip the temp file step and pass the local `os.File` directly to `zip.NewReader`.
+    - **CISA KEV** is a JSON object `{"vulnerabilities":[{...}]}` — same object-navigation pattern as NVD.
+  - The correct streaming pattern for a **nested** array within a top-level JSON object (NVD, KEV):
+  ```go
+  dec := json.NewDecoder(resp.Body)
+  // Navigate to the target array key within the top-level object
+  for {
+      t, err := dec.Token()
+      if err != nil { return err }
+      if key, ok := t.(string); ok && key == "vulnerabilities" {
+          break // next token is the array '['
+      }
+  }
+  // Consume opening '['
+  if _, err := dec.Token(); err != nil { return err }
+  for dec.More() {
+      var record FeedRecord
+      if err := dec.Decode(&record); err != nil { return err }
+      // process record — only one object in memory at a time
+  }
+  // Consume closing ']'
+  if _, err := dec.Token(); err != nil { return err }
+  ```
+  The target key name (`"vulnerabilities"`, `"CVE_Items"`, etc.) and navigation depth must match each feed's actual schema. Implementers MUST use feed-appropriate streaming; `Decode(&slice)` is forbidden for any response or file that could be large.
+- **Per-CVE transaction constraint:** The per-CVE advisory lock (Decision D4) is transaction-scoped. Each CVE merge must be its own DB transaction. There is no multi-CVE batch transaction path. The pattern is: stream records, for each CVE open transaction → acquire advisory lock → merge → commit.
+- Normal incremental polling runs in bounded page windows (already planned) for the same reasons — no huge transactions.
 
 **Backfill ordering and serialization**
 - Feeds are backfilled sequentially in precedence order: MITRE → NVD → CISA KEV → OSV → GHSA → EPSS. This ensures higher-precedence sources establish the baseline before lower-precedence sources merge in.
@@ -154,11 +218,37 @@ Adapters must be pure functions + minimal I/O wrappers (HTTP client injected), s
 
 ### Decision D4 — Per-CVE merge serialization (MVP)
 
-**Decision (MVP):** Serialize merges **per CVE ID** using `pg_advisory_xact_lock(hashtext(cve_id))` so concurrent feed polls cannot clobber each other.
+**Decision (MVP):** Serialize merges **per CVE ID** using a Go-computed advisory lock key passed to `pg_advisory_xact_lock($1::bigint)`.
+
+**Lock key computation (Go, required):**
+```go
+import “hash/fnv”
+
+func cveAdvisoryKey(cveID string) int64 {
+    h := fnv.New64a()
+    h.Write([]byte(cveID))
+    return int64(h.Sum64())
+}
+```
+`hash/fnv.New64a()` is in the Go standard library, deterministic (no random seed), and produces a stable 64-bit output for the same input across restarts and builds. The lock key is computed in Go and passed as an `int64` parameter; Postgres never needs to compute it.
+
+**Why Go-side, not `hashtextextended`:** `hashtextextended` is an internal Postgres partitioning utility, not part of the documented public API. It may be unavailable or restricted in managed Postgres environments. Computing the hash in Go makes the approach portable to any Postgres version, explicitly testable, and transparent. `pg_advisory_xact_lock(bigint)` has been part of the Postgres public API since version 9.1.
+
+**Advisory lock namespace isolation (required):** `pg_advisory_xact_lock(bigint)` operates in a single global namespace for the entire Postgres cluster. If any other part of the application (future background job locking, rate limiters, etc.) also acquires advisory locks with numeric keys derived from their own domains, a key collision between a CVE hash and another lock key would cause spurious blocking. Prevent this by embedding a domain prefix in the string before hashing — not by switching to the two-argument `(int, int)` form, which would reduce the CVE hash space back to 32 bits and re-introduce Birthday Paradox collisions.
+
+**Required pattern:** All advisory lock key computations in the application must hash a domain-qualified string:
+```go
+// CVE merge — domain "cve:"
+h.Write([]byte("cve:" + cveID))
+
+// Any future advisory lock user — different domain prefix
+h.Write([]byte("some_other_domain:" + id))
+```
+The distinct prefix ensures identical IDs in different domains produce different hash inputs, preventing exact-input cross-domain collisions. It does not create mathematically non-overlapping hash spaces — all inputs map to the same 64-bit output pool. What prevents spurious blocking in practice is the sheer size of that pool: at 64 bits, random collisions between any two domain-qualified strings are statistically negligible (Birthday Paradox probability is effectively zero for our key population size).
 
 **Transaction boundary (required):**
 Within the same DB transaction:
-1) `SELECT pg_advisory_xact_lock(hashtext($cve_id));`
+1) `SELECT pg_advisory_xact_lock($1)` where `$1 = cveAdvisoryKey(cve_id)` (int64)
 2) Upsert/replace the per-source normalized row in `cve_sources` (and store raw payload separately).
 3) Recompute the canonical CVE row **from the current set of `cve_sources`** for that CVE (read-your-writes).
 4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`.
@@ -167,6 +257,7 @@ Within the same DB transaction:
 **Considerations (multiple angles):**
 - **Correctness:** prevents lost updates when two sources update the same CVE near-simultaneously.
 - **Performance:** lock contention should be low because contention only occurs per single CVE ID; different CVEs merge in parallel.
+- **Hash space:** FNV-1a 64-bit gives effectively zero collision probability across 250k+ CVEs; the Birthday Paradox probability is negligible at 64 bits.
 - **Operational debugging:** advisory locks are invisible unless queried; add metrics on “lock wait time” to detect contention.
 - **Failure mode:** the lock is xact-scoped; crashes release it automatically.
 
@@ -183,7 +274,8 @@ Within the same DB transaction:
 
 ### 4.2 Tables (High level)
 **Global**
-- `cves` (canonical fields + computed material-change hash)
+- `cves` (canonical fields + computed material-change hash; no FTS column)
+- `cve_search_index` (1:1 with `cves` on `cve_id`; holds `fts_document tsvector` + GIN index; isolated from `cves` write churn)
 - `cve_sources` (per-source normalized subdocuments)
 - `cve_references`
 - `cve_affected_packages` (ecosystem + package + version range)
@@ -207,17 +299,22 @@ Fields (illustrative):
 - `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`
 - `description_primary`
 - `severity` (`none|low|medium|high|critical`)
-- `cvss_v3_score`, `cvss_v3_vector`, `cvss_v4_score`, `cvss_v4_vector`
+- `cvss_v3_score`, `cvss_v3_vector`, `cvss_v3_source` (which source provided these)
+- `cvss_v4_score`, `cvss_v4_vector`, `cvss_v4_source` (which source provided these)
+- `cvss_score_diverges` (bool) — set when available sources disagree on CVSS v3 score by ≥2.0 points; signals analysts to check `cve_sources` for per-source assessments
 - `cwe_ids[]`
 - `exploit_available` (bool)
 - `in_cisa_kev` (bool)
-- `epss_score` (float, nullable)
-- `material_hash` (hash of "material fields" used for alert dedupe)
-- `fts_document` (tsvector) for Postgres full-text search
+- `epss_score` (float, nullable) — current score from FIRST.org; updated by the EPSS adapter only when the score actually changes (see section 5.3 for required `IS DISTINCT FROM` guard)
+- `date_epss_updated` (timestamptz, nullable) — timestamp of the most recent `epss_score` write; used as cursor by the dedicated EPSS rule evaluator (see section 5.3 and 10.3); set to `now()` only when the score actually changes (not on no-op writes suppressed by `IS DISTINCT FROM`)
+- `material_hash` (hash of "material fields" used for alert dedupe; does NOT include `epss_score` — see section 5.3)
+
+Note: `fts_document` is **not** on `cves`. It lives in `cve_search_index` (see section 4.2). This separates high-frequency `cves` writes (timestamps, epss_score) from GIN index writes.
 
 **Timestamp semantics:**
 - `date_modified_source_max`: the latest `source_date_modified` across all sources for this CVE. Tracks when upstream data last changed.
-- `date_modified_canonical`: when the CVErt Ops canonical record itself was last changed (i.e., when a merge resulted in a different `material_hash` or any field change). Used for cursor-based polling by alert batch jobs and API pagination.
+- `date_modified_canonical`: when the CVErt Ops canonical record itself was last changed (i.e., when a merge resulted in a different `material_hash`). Updates only on hash changes; EPSS updates do NOT change this timestamp, keeping the cursor-based batch evaluator efficient. Used for cursor-based polling by non-EPSS alert batch jobs and API pagination.
+- `date_epss_updated`: when `epss_score` was last written. The EPSS-specific rule evaluator uses this as its cursor (see section 10.3) to find CVEs with new EPSS data without relying on `date_modified_canonical`.
 - `date_first_seen`: when CVErt Ops first ingested this CVE. Immutable after insert.
 
 ### 4.4 Per-Source Storage (`cve_sources`)
@@ -245,11 +342,19 @@ Define precedence **per field**, not globally:
 | References | Union (dedupe by URL canonicalization), keep tags per-source |
 | `epss_score` | FIRST.org EPSS (sole source; not merged) |
 
+**NVD enrichment backlog (known limitation):** NVD has a documented history of enrichment backlogs where recently-published CVEs sit without CVSS scores or CWE assignments for weeks to months. The GHSA/OSV fallback in the precedence table handles the common case (NVD has no score → use GHSA/OSV). However, when NVD *has* scored a CVE with a stale or generic assessment and GHSA/OSV has a more accurate ecosystem-specific score, NVD still wins. For package-ecosystem CVEs (npm, Go, PyPI, RubyGems, Maven, etc.), GHSA and OSV maintainers often have deeper context than NVD's generalist analysts.
+
+**Consequence and mitigation:**
+- `cvss_v3_source` / `cvss_v4_source` columns on `cves` record which source provided the winning score, giving analysts full transparency.
+- `cvss_score_diverges` is set when available sources differ by ≥2.0 points on v3 score, prompting analysts to check `cve_sources` for the full picture.
+- **P1 improvement:** implement ecosystem-aware CVSS precedence — for CVEs with `cve_affected_packages` entries in npm/Go/PyPI/etc. ecosystems, elevate GHSA/OSV score precedence above NVD when both are present. MVP uses static precedence; P1 adds the ecosystem-aware branch.
+
 ### 5.2 Merge Strategy
 - Build a canonical record by selecting highest-precedence non-null value per field.
 - For list-like fields (CWEs, references, affected products): **union + normalize + dedupe**.
 - Preserve all per-source normalized documents in `cve_sources`.
 - On each adapter write, the merge function re-reads all `cve_sources` rows for the given `cve_id` and recomputes the canonical record from scratch. This ensures consistency regardless of ingestion order and makes the merge purely a function of current source state. The write amplification (~5 source rows read per CVE upsert) is acceptable at MVP scale; an incremental merge approach would be more complex and prone to drift.
+- **FTS lives in a separate `cve_search_index` table.** Postgres MVCC means that any UPDATE to an indexed column on `cves` (including the frequently-updated `date_modified_canonical`, `epss_score`) writes a new physical row tuple and forces all index entries — including GIN — to be updated, even if `fts_document` is unchanged. Application-level conditional regeneration of the column value does not avoid this. The correct solution is to put `fts_document tsvector` and its GIN index in a dedicated 1:1 table `cve_search_index(cve_id text PRIMARY KEY REFERENCES cves, fts_document tsvector NOT NULL)`. The merge function only writes to `cve_search_index` when text-contributing fields (description, CWE titles) actually change. Routine timestamp/score updates to `cves` never touch `cve_search_index` and therefore never trigger a GIN index write. Search queries use a JOIN: `SELECT c.* FROM cves c JOIN cve_search_index si ON c.cve_id = si.cve_id WHERE si.fts_document @@ query`.
 
 ### 5.3 Material Change Definition (for Alert Dedup)
 A "material change" is any change to one of these, after normalization:
@@ -258,15 +363,60 @@ A "material change" is any change to one of these, after normalization:
 - `cvss_v4_score`, `cvss_v4_vector`
 - `exploit_available`
 - `in_cisa_kev`
-- `epss_score` (change exceeding configurable threshold, default 0.1)
 - affected packages (ecosystem/package/version range set)
 - affected CPE set
 - `status` transition to `rejected` or from `rejected` to active
 - description changes are **non-material by default** (stored but do not re-fire alerts)
 
+**`epss_score` is NOT in `material_hash`** (see below).
+
 Implementation: `material_hash = sha256(json_canonical(material_fields))`. If hash changes, alerts may re-fire depending on rule settings. JSON canonicalization uses deterministic key ordering and encoding (e.g., `github.com/cyberphone/json-canonicalization` or equivalent).
 
-**Note on EPSS:** Because EPSS scores update daily for many CVEs, raw score changes would create excessive alert noise. EPSS changes are material only when the score crosses a configurable threshold delta (default: absolute change ≥ 0.1). The `material_hash` computation buckets `epss_score` into bands (0.0–0.1, 0.1–0.2, …, 0.9–1.0) so that minor fluctuations within a band do not trigger re-firing.
+**CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: parse the vector into its structured metric components per the CVSS specification, then re-serialize in canonical CVSS spec metric order (the order defined in the spec, not alphabetical). This ensures the hash is stable regardless of which source provided the vector.
+
+**EPSS is handled outside material_hash (required design decision):**
+
+Including `epss_score` in `material_hash` requires a dedup gate (±threshold comparison) to avoid daily hash churn from minor EPSS fluctuations. Any such gate creates a "blind zone": a rule `epss_score > 0.90` will not fire when a score drifts 0.85 → 0.94 (delta 0.09, below any reasonable gate) even though the user-defined threshold is breached. For a security alerting product this is unacceptable — a user's explicit threshold must be honored.
+
+**Design (required):**
+- The EPSS adapter updates `cves` using a conditional SQL write: `UPDATE cves SET epss_score = $1, date_epss_updated = now() WHERE cve_id = $2 AND epss_score IS DISTINCT FROM $1`. This ensures `date_epss_updated` is bumped **only when the score actually changes**. Without this guard, every daily EPSS run (~250,000 rows) would write 250k dead tuples to Postgres via MVCC and cause the EPSS evaluator to needlessly re-evaluate every CVE against all active alert rules. `IS DISTINCT FROM` handles NULL-safe comparison (`NULL IS DISTINCT FROM 0.5` → true; `NULL IS DISTINCT FROM NULL` → false). No dedup gate. No baseline column.
+- `date_epss_updated` is set to `now()` only when the score actually changes (when the `IS DISTINCT FROM` guard allows the write through).
+
+**Critical implementation detail — `RowsAffected` is ambiguous after `IS DISTINCT FROM` (required):**
+
+After the UPDATE with `IS DISTINCT FROM`, `pgx`'s `RowsAffected() == 0` has two distinct meanings that cannot be distinguished:
+- (A) The CVE does not exist in `cves` → score should be written to `epss_staging`
+- (B) The CVE exists, but the score hasn't changed → do nothing
+
+If Go code does `if rowsAffected == 0 { insertIntoStaging() }`, it inserts 250,000 unchanged EPSS scores into `epss_staging` every day — the exact thrashing the `IS DISTINCT FROM` clause was designed to prevent.
+
+**Required pattern:** Do not inspect `RowsAffected`. Instead, run a second SQL statement unconditionally that delegates the existence check to the database:
+
+```sql
+-- Statement 1: update cves only if CVE exists AND score changed
+UPDATE cves
+SET epss_score = $1, date_epss_updated = now()
+WHERE cve_id = $2 AND epss_score IS DISTINCT FROM $1;
+
+-- Statement 2: write to staging only if CVE does not exist in cves
+-- (runs unconditionally; WHERE NOT EXISTS makes it a no-op when CVE is present)
+INSERT INTO epss_staging (cve_id, epss_score, as_of_date)
+SELECT $2, $1, $3
+WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cve_id = $2)
+ON CONFLICT (cve_id) DO UPDATE
+    SET epss_score = EXCLUDED.epss_score,
+        as_of_date = EXCLUDED.as_of_date;
+```
+
+Both statements run for every row in the EPSS CSV. The database handles all cases:
+- CVE exists + score changed → Statement 1 updates; Statement 2 WHERE NOT EXISTS is false (no-op)
+- CVE exists + score unchanged → Statement 1 IS DISTINCT FROM suppresses write; Statement 2 WHERE NOT EXISTS is false (no-op)
+- CVE does not exist → Statement 1 finds no row (no-op); Statement 2 WHERE NOT EXISTS is true → insert/update staging
+
+Go code never inspects `RowsAffected`. Staging logic is entirely DB-side and unambiguous.
+- Alert rules containing `epss_score` conditions are evaluated by a **dedicated daily EPSS rule evaluator** that uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data (see section 10.3). This cursor is separate from `date_modified_canonical` so that the general-purpose batch evaluator remains efficient.
+- `alert_events` dedup (keyed by `material_hash`) still applies: after an EPSS rule fires for a (rule, CVE) pair, it suppresses re-fires while non-EPSS fields stay unchanged. First match always fires (no prior `alert_events` row). Re-crossing alerts (score drops below then crosses threshold again) are a **P1 improvement** requiring per-(rule, CVE) EPSS state tracking in `alert_events`.
+- The `epss_score_baseline` column is **not present** in `cves`. It was added to support a flawed hash-based EPSS dedup mechanism that has been replaced by this design.
 
 ---
 
@@ -280,22 +430,61 @@ Implementation: `material_hash = sha256(json_canonical(material_fields))`. If ha
 | Annotations/tags/snoozes | Org |
 | AI quota usage + billing counters | Org |
 
-### 6.2 Enforcement Model (MVP Decision)
-**MVP decision:** enforce tenant isolation at the **application query layer** with:
-- a required `orgID` parameter in every org-scoped repository/service method
-- integration tests asserting no cross-org access
-- defensive DB constraints: every tenant table includes `org_id` NOT NULL + indexed
+### 6.2 Enforcement Model (MVP — dual-layer from day one)
 
-**Postgres RLS (P1 — RESOLVED, implementation deferred)**
+Tenant isolation is enforced at **two layers simultaneously** from the first org-scoped table created:
 
-RLS will be implemented in P1 for SaaS hardening. Research is complete (see `research.md` section 7):
+**Layer 1 — Application query layer:**
+- Required `orgID` parameter in every org-scoped repository/service method.
+- Integration tests asserting no cross-org data access.
+- Defensive DB constraints: every tenant table includes `org_id` NOT NULL + indexed.
 
-- **Session variable strategy:** `SET LOCAL app.org_id = $1` per-transaction via pgx. Auto-resets on commit/rollback.
-- **Policy pattern:** `USING (org_id = current_setting('app.org_id')::uuid)` + `WITH CHECK (...)` on all org-scoped tables. `FORCE ROW LEVEL SECURITY` to prevent owner bypass.
-- **Performance:** <5% overhead with simple comparison policies. Requires `BTREE(org_id)` index on every org-scoped table (already planned).
-- **Bypass prevention:** App DB role uses `NOBYPASSRLS`. No raw SQL paths; all queries via sqlc/squirrel.
-- **Self-hosted vs SaaS:** Always enable RLS; self-hosted uses a fixed org_id from env or auto-generated at first startup. Same codebase, same migrations, same policies.
-- **Migration strategy:** Disable RLS during schema changes, re-enable after. Policies are part of migration files.
+**Layer 2 — Postgres RLS (MVP, implemented in Phase 2):**
+
+RLS is implemented alongside org table migrations in Phase 2, not deferred. See `research.md` section 7 for full rationale.
+
+**Why MVP, not later:**
+- All org-scoped tables already need `org_id NOT NULL` + `BTREE(org_id)` index — the schema is identical with or without RLS. Adding the policies is a few lines per migration file.
+- The `SET LOCAL app.org_id = $1` per-transaction pgx middleware is ~10 lines of Go. The marginal implementation cost is negligible.
+- Retrofitting RLS after the application is built requires auditing every query path for implicit cross-tenant access, identifying query patterns that bypass org filters, and re-running the full integration test matrix. This is far more expensive and error-prone than building it in.
+- This is a security product. Application-layer-only isolation is insufficient defense-in-depth. A bug in a single store method can expose cross-tenant data; RLS ensures the database itself rejects the query.
+
+**Implementation (required, Phase 2):**
+- **Session variable:** `SET LOCAL app.org_id = $1` at the start of every org-scoped transaction via a pgx middleware helper. Auto-resets on commit/rollback; safe for connection pooling.
+- **Policy pattern per org-scoped table:**
+  ```sql
+  ALTER TABLE watchlists ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE watchlists FORCE ROW LEVEL SECURITY;
+  CREATE POLICY org_isolation ON watchlists
+      USING (
+          current_setting('app.bypass_rls', TRUE) = 'on'
+          OR org_id = current_setting('app.org_id', TRUE)::uuid
+      )
+      WITH CHECK (
+          current_setting('app.bypass_rls', TRUE) = 'on'
+          OR org_id = current_setting('app.org_id', TRUE)::uuid
+      );
+  ```
+  Both `app.org_id` and `app.bypass_rls` use `missing_ok=TRUE`. When `app.org_id` is unset, `current_setting` returns NULL and `NULL::uuid = org_id` evaluates to NULL (FALSE in USING) — fail-closed. When `app.bypass_rls` is unset, `current_setting` returns NULL and `NULL = 'on'` is NULL (FALSE) — bypass is inactive by default. `FORCE ROW LEVEL SECURITY` prevents the table owner (superuser role) from bypassing the policy. Apply to all org-scoped tables.
+
+- **Background worker escape hatch (required):** Background workers (batch alert evaluator, EPSS evaluator, retention cleanup) operate outside any user HTTP session and have no `app.org_id` context. Without a bypass, the fail-closed RLS policy hides all rows from workers — they silently read 0 alert rules, evaluate 0 rules, and fire 0 alerts. Workers must set the bypass flag inside their transaction before querying org-scoped tables:
+  ```go
+  // Worker transaction helper — do NOT call from API handler code paths
+  func workerTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) error {
+      tx, err := pool.Begin(ctx)
+      if err != nil { return err }
+      defer tx.Rollback(ctx)
+      if _, err := tx.Exec(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil { return err }
+      if err := fn(tx); err != nil { return err }
+      return tx.Commit(ctx)
+  }
+  ```
+  `SET LOCAL` is transaction-scoped and auto-resets on commit/rollback — the bypass cannot leak to subsequent transactions on the same connection. This helper must be the **only** code path that sets `app.bypass_rls`; it must never be called from API request handlers. The WITH CHECK bypass allows workers to write `alert_events`, `notification_deliveries`, etc. on behalf of any org without needing to switch `app.org_id` per-row.
+
+- **Performance:** <5% overhead with simple equality comparison policies and `BTREE(org_id)` index.
+- **Bypass prevention:** App DB role is created with `NOBYPASSRLS`. All queries go through sqlc/squirrel (no raw SQL escape hatches). The `app.bypass_rls` session variable is the only sanctioned bypass and is transaction-scoped.
+- **Self-hosted vs SaaS:** RLS is always enabled. Self-hosted deployments use a fixed `org_id` set at first startup (auto-generated or from env); the middleware always sets it. Same codebase, same migrations, same policies.
+- **Migration strategy:** RLS `ENABLE` + `CREATE POLICY` statements are part of each table's migration file (up). The down migration drops policies and disables RLS before altering the table.
 
 ---
 
@@ -306,11 +495,84 @@ RLS will be implemented in P1 for SaaS hardening. Research is complete (see `res
 - **Transport:** HttpOnly secure cookies (SameSite=Lax) for the web app
 - API keys for automation (hashed-at-rest with `crypto/sha256`, scoped to org + role)
 
+**JWT algorithm and parser security (required):**
+
+The JWT parser MUST explicitly whitelist the expected signing algorithm. Without this, permissive parsers enable two critical attacks: (a) **algorithm confusion** — attacker changes the header `alg` from asymmetric RS256 to symmetric HS256, then signs with the server's public key as the HMAC secret, forging valid tokens; (b) **`alg: none` bypass** — attacker removes the signature and sets `alg: none`, which naive parsers accept as a valid unsigned token.
+
+```go
+// Required pattern — never call jwt.ParseWithClaims without WithValidMethods
+token, err := jwt.ParseWithClaims(tokenString, &Claims{}, keyFunc,
+    jwt.WithValidMethods([]string{"HS256"}),
+    jwt.WithExpirationRequired(),
+)
+```
+
+- **Algorithm:** `HS256` (HMAC-SHA256, symmetric) for MVP. Single binary with a shared signing secret; no key distribution needed. Configurable via `JWT_ALGORITHM` env var for future flexibility.
+- **Secret:** `JWT_SECRET` env var; minimum 32 cryptographically random bytes; validated at startup (reject startup if too short or not set).
+- **`WithValidMethods` is mandatory** on every parse call — including refresh token validation. Add a linting check or code review gate to prevent unguarded `jwt.Parse`/`jwt.ParseWithClaims` calls.
+- **`WithExpirationRequired`** rejects tokens without an `exp` claim, preventing accidentally-issued non-expiring tokens from being permanently valid.
+
+**Refresh token revocation via `token_version`:**
+
+Purely stateless refresh tokens cannot be immediately revoked. If a user is removed from an org, their account is compromised, or permissions change drastically, their refresh token remains valid for up to 7 days without a server-side invalidation mechanism.
+
+The `users` table includes `token_version INT NOT NULL DEFAULT 1`. This value is embedded in both access token and refresh token JWT claims at issuance. The refresh endpoint validates the claim version against `users.token_version` before issuing a new access token:
+- If claim version matches DB version → valid; issue new access token
+- If claim version < DB version → revoked; return 401 and force re-login
+
+**Revocation actions that increment `token_version`:**
+- User removed from an org (owner/admin action)
+- Admin-forced logout / account lock
+- User changes their own password
+- Detected credential compromise
+
+Incrementing `token_version` immediately invalidates all active refresh tokens for that user. Because access tokens are short-lived (≤15 min), the maximum window of unauthorized access after revocation is the remaining lifetime of any already-issued access token.
+
+**UX implication — global logout:** Incrementing `token_version` invalidates all sessions across all devices simultaneously. This is appropriate for the security-critical revocation events listed above (org member removal, password change, account lock, credential compromise). Granular single-session revocation (e.g., "sign out of my phone, keep my desktop session active") is a **P1 feature** requiring a separate `sessions` or `refresh_tokens` table with per-token JTI tracking and individual revocation records. MVP accepts global logout as the revocation granularity for security events.
+
 **Password hashing (native auth):**
 - Algorithm: argon2id via `alexedwards/argon2id` wrapper (uses `golang.org/x/crypto/argon2`)
 - Parameters per OWASP Password Storage Cheat Sheet: memory=19456 KiB (19 MiB), iterations=2, parallelism=1, salt=16 bytes, key=32 bytes
 - Storage format: `$argon2id$v=19$m=19456,t=2,p=1$[base64(salt)]$[base64(hash)]`
 - `users` table includes `password_hash_version INT DEFAULT 2` column (1=bcrypt legacy, 2=argon2id) for future algorithm migration via lazy upgrade on login
+
+**Argon2id concurrency limiter (required, anti-DOS):**
+
+Each argon2id hash operation allocates ~19.5 MB of RAM (m=19456 KiB). Without a concurrency cap, an attacker sending 50 concurrent login requests causes ~975 MB of simultaneous allocation — sufficient to OOM-kill the server container on the constrained hardware that homelab/self-hosted users typically run.
+
+The authentication layer MUST enforce a strict global semaphore before reaching the hashing function. **The semaphore must be non-blocking** — excess requests are immediately rejected with 503, not queued:
+
+```go
+// Initialized at server startup; configurable via ARGON2_MAX_CONCURRENT (default 5)
+var argon2Sem = make(chan struct{}, cfg.Argon2MaxConcurrent)
+
+func acquireArgon2Slot() bool {
+    select {
+    case argon2Sem <- struct{}{}:
+        return true // slot acquired
+    default:
+        return false // all slots busy; reject immediately
+    }
+}
+
+func releaseArgon2Slot() { <-argon2Sem }
+```
+
+Handler usage:
+```go
+if !acquireArgon2Slot() {
+    // Return 503 Service Unavailable immediately
+    // Do NOT block — blocking turns this into a connection-starvation DOS
+    return huma.Error503ServiceUnavailable("server busy, retry shortly")
+}
+defer releaseArgon2Slot()
+// ... proceed to hash
+```
+
+- **Default cap:** 5 concurrent hashing operations globally (configurable via `ARGON2_MAX_CONCURRENT` env var).
+- **Reject, do not queue:** A blocking channel send (`sem <- struct{}{}`) turns an OOM-crash risk into a connection-starvation Layer 7 DOS. With 1,000 concurrent bad login requests, 5 goroutines proceed and 995 block indefinitely, each holding an open HTTP connection. This exhausts the connection pool and starves all other API endpoints — including non-auth endpoints that have nothing to do with login. Immediate 503 + `Retry-After` header is the correct response; legitimate users rarely have more than 1–2 simultaneous login attempts.
+- **Complementary protection:** IP-based rate limiting on `POST /api/v1/auth/login` (see section 16.1) is the first line of defense, capping the request rate before the semaphore is reached. The semaphore is the backstop that bounds worst-case RAM consumption even if the rate limiter is bypassed.
+- **Why not just rate-limit:** Rate limiting operates at request ingress; a burst that slips past the rate limiter can still exhaust memory. Defense-in-depth requires both layers.
 
 **CSRF**
 - Use SameSite cookies + CSRF token for state-changing requests (double-submit token or header token).
@@ -323,6 +585,42 @@ RLS will be implemented in P1 for SaaS hardening. Research is complete (see `res
 - GitHub OAuth
 - Google OAuth
 - Generic OIDC and SAML deferred to Enterprise milestones (`crewjam/saml` if needed)
+
+**Critical implementation split — GitHub is OAuth 2.0 only, NOT OIDC (required):**
+
+GitHub **does not support OpenID Connect**. It does not expose a `.well-known/openid-configuration` discovery endpoint. Attempting to initialize a `coreos/go-oidc/v3` provider for GitHub will immediately return a 404 and fail the auth sprint.
+
+The implementation must branch on provider:
+
+| Provider | Library | Identity extraction |
+|---|---|---|
+| **Google** | `coreos/go-oidc/v3` (OIDC) | ID token claims: `sub`, `email`, `email_verified` |
+| **GitHub** | `golang.org/x/oauth2` only (raw OAuth 2.0) | Manual REST call: `GET https://api.github.com/user` + `GET https://api.github.com/user/emails` (to get primary verified email, which is not guaranteed in the `/user` response) |
+| **Future enterprise OIDC** | `coreos/go-oidc/v3` | OIDC discovery URL from config |
+
+GitHub-specific flow:
+1. Redirect user to GitHub OAuth authorize URL (standard `oauth2.Config`) — **MUST include `user:email` scope** (see critical note below)
+2. Exchange code for access token (standard `oauth2.Config.Exchange`)
+3. `GET https://api.github.com/user` with `Authorization: Bearer <token>` → get `id` (GitHub numeric user ID) and `login`
+4. `GET https://api.github.com/user/emails` → find the entry with `primary: true, verified: true` to get the authoritative email address
+5. Upsert `user_identities(provider="github", provider_user_id=strconv.Itoa(githubID), email=primaryEmail)`
+
+**`user:email` scope is mandatory (required):**
+
+GitHub's default OAuth flow grants access to public profile data only. The `/user/emails` endpoint requires the `user:email` scope to be explicitly requested. Without it, the token lacks permission and the API returns either an empty array or 403 Forbidden — permanently blocking signup for any GitHub user whose email is set to private (which is the GitHub default setting).
+
+The GitHub `oauth2.Config` must include this scope:
+```go
+githubOAuthConfig := &oauth2.Config{
+    ClientID:     cfg.GitHubClientID,
+    ClientSecret: cfg.GitHubClientSecret,
+    RedirectURL:  cfg.GitHubCallbackURL,
+    Endpoint:     github.Endpoint,
+    Scopes:       []string{"user:email"}, // REQUIRED — do not omit
+}
+```
+
+Note: `read:user` scope alone is NOT sufficient. `user:email` is the specific scope that grants `/user/emails` access.
 
 **`user_identities` table:** Each row links a `user_id` to a federated identity provider (e.g., `provider=github, provider_user_id=12345, email=...`). A user may have multiple identities (e.g., email/password + GitHub). This table is the reason `user_identities` appears in org/tenant tables (see 4.2) and is required for MVP to support the native + GitHub auth paths.
 
@@ -392,7 +690,7 @@ Ingest MITRE CWE list into `cwe_dictionary(cwe_id TEXT PK, name TEXT, descriptio
 - **Data source:** https://cwe.mitre.org/data/downloads.html (XML or JSON, freely available)
 - **Update cadence:** Low (CWE list changes infrequently); periodic refresh via CLI command or scheduled job
 - **Ingestion:** `cvert-ops import-cwe` CLI command or auto-ingest on first run
-- **FTS integration:** Join CWE names into CVE's `fts_document` tsvector during merge
+- **FTS integration:** Join CWE names into the `fts_document` tsvector in `cve_search_index` during merge (not in `cves` directly — see section 5.2 for why)
 
 ---
 
@@ -489,8 +787,10 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
 - **Query builder:** Dynamic DSL queries use `squirrel` (safe query builder with parameterized output). All static CRUD queries use `sqlc`. This split exists because `sqlc` requires all queries written upfront in `.sql` files, but DSL rules produce dynamic WHERE clauses at runtime. `squirrel` generates parameterized SQL (never string concatenation).
 - Alerts run:
   - **Realtime**: on CVE upsert that results in changed `material_hash`
-  - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor)
+  - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor). Evaluates all rules EXCEPT those whose only conditions reference `epss_score`.
+  - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while non-EPSS fields stay unchanged.
   - **Digest-only**: no immediate alerts; included in scheduled reports
+- **New rule activation scan (required, silent mode):** When an alert rule is first saved and enabled, a one-time full-corpus scan is enqueued as a job to catch CVEs that already meet the rule's conditions at the time of creation. The scan writes matching CVEs to the `alert_events` table (establishing the dedup baseline and making historical matches visible in the UI and API) but **does NOT fan out to external notification channels**. Outbound notifications (Slack, email, webhook) must only fire for new data changes after the rule is created — sending outbound alerts for thousands of historical corpus matches would trigger immediate permanent API bans from Slack (which enforces a 1 message/sec webhook rate limit) and suspend the account from email providers for spam. After the activation scan completes, normal cursor-based batch evaluation takes over and fires outbound notifications only for subsequent changes. The activation scan is subject to the same candidate cap as regular evaluation.
 
 ### 10.4 Dedup Model
 Table `alert_events(org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, times_fired)`
@@ -526,6 +826,7 @@ These endpoints prevent users from discovering rule errors only at the next batc
 - **At-least-once** delivery.
 - Each delivery has an **idempotency key**: `sha256(org_id + event_id + channel_id)`.
 - Retry policy: 3 retries with exponential backoff (e.g., 1m, 5m, 30m), then dead-letter.
+- **Per-org delivery concurrency limit (noisy neighbor prevention):** Outbound notification delivery is subject to a per-org concurrency cap (default: 5 concurrent deliveries per org). A single org with a broken or slow webhook endpoint cannot monopolize the delivery worker goroutines at the expense of other orgs. Implemented as a per-org semaphore within the notification worker. The cap is configurable via `NOTIFY_MAX_CONCURRENT_PER_ORG`. Enterprise orgs may have higher configured limits.
 
 ### 11.3 Webhook Security (Required)
 - HMAC signature header: `X-CVErtOps-Signature: sha256=<hex>` (using `crypto/hmac` + `crypto/sha256`)
@@ -647,6 +948,7 @@ Feature flag precedence:
 ## 15. Security Requirements (Non-negotiable)
 
 - Parameterized queries only (`sqlc` + `pgx` parameterized queries; no string concatenation)
+- JWT parser must always use `jwt.WithValidMethods([]string{"HS256"})` and `jwt.WithExpirationRequired()` — no unguarded `jwt.Parse`/`jwt.ParseWithClaims` calls (see section 7.1)
 - Auth required for all non-public endpoints
 - Strict input validation via `go-playground/validator` struct tags with length bounds; security-critical fields (webhook URLs, regex patterns, etc.) validated with additional handwritten checks
 - Secrets never logged; use env + secret manager pattern
@@ -729,6 +1031,25 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
   - retry dead-letter deliveries
 - Audit log (Enterprise P1)
 
+### 17.1 Bulk Import CLI (`import-bulk`)
+
+The `cvert-ops import-bulk` cobra subcommand handles initial population of a new instance from bulk data files. It is a one-time operation (or run again when a full re-sync is needed) and does not affect normal incremental polling.
+
+```
+cvert-ops import-bulk --source nvd --input /path/to/nvdcve-1.1-2024.json.gz
+cvert-ops import-bulk --source nvd --input https://nvd.nist.gov/.../nvdcve-1.1-2024.json.gz
+cvert-ops import-bulk --source osv --ecosystem npm --input gs://osv-vulnerabilities/npm/all.zip
+cvert-ops import-bulk --source mitre --input /path/to/cvelistV5.zip
+```
+
+Behavior:
+- Reads the bulk file (local path or HTTPS URL; GCS path via `gsutil`-compatible URL or pre-downloaded file).
+- Streams and parses the file using `json.Decoder` (never buffers the full file in memory).
+- Feeds records through the same merge pipeline as normal adapter output (`CanonicalPatch` → advisory lock → upsert → commit per CVE).
+- After completion, initializes the feed cursor to the bulk file's `as-of` timestamp so incremental API polling continues from that point without re-processing.
+- Logs progress (CVEs processed/sec, errors) to stdout and records a `system_jobs_log` entry.
+- Idempotent: can be re-run; upserts are safe to replay.
+
 ---
 
 ## 18. Implementation Phases (Tracker)
@@ -747,6 +1068,7 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 
 **Phase 2 — Org model + RBAC + watchlists + alert rules**
 - org/user auth, org-scoped tables, RBAC (section 7.3)
+- Postgres RLS policies on all org-scoped tables (section 6.2); pgx middleware for `SET LOCAL app.org_id`
 - watchlist CRUD + matching joins
 - alert DSL compiler → SQL + event generation
 
@@ -761,7 +1083,6 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 - quotas + caching + metrics
 
 **Phase 5 — Hardening and SaaS readiness**
-- optional Postgres RLS (if chosen)
 - audit log, billing hooks, SSO (as planned)
 - data retention policy automation (section 21)
 
@@ -775,6 +1096,7 @@ The CVErt Ops binary uses cobra for CLI subcommands:
 - `cvert-ops serve` (default) — runs HTTP server + worker pool in one process. Suitable for self-hosted single-instance deployments.
 - `cvert-ops worker` — runs standalone worker pool only. For SaaS scaling where API and workers run separately.
 - `cvert-ops migrate` — runs pending database migrations and exits.
+- `cvert-ops import-bulk` — imports a bulk data file for a given feed source (see section 17.1). Used for initial instance population; exits on completion.
 
 **Graceful shutdown:**
 - On SIGTERM/SIGINT: stop accepting new HTTP requests and new jobs
@@ -968,7 +1290,7 @@ Endpoints:
 
 ```
 cvert-ops/
-├── cmd/cvert-ops/        # cobra CLI (main.go, serve.go, worker.go, migrate.go)
+├── cmd/cvert-ops/        # cobra CLI (main.go, serve.go, worker.go, migrate.go, import_bulk.go)
 ├── internal/
 │   ├── api/              # HTTP handlers + huma operations + middleware
 │   ├── config/           # caarlos0/env config structs
@@ -1126,8 +1448,12 @@ WHERE p.id = doomed.id;
 ## A.2 Global Tables (Core)
 
 ### `cves`
-PK `cve_id text`. Key columns: `status`, `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`, `description_primary`, `severity`, CVSS v3/v4 scores/vectors, `cwe_ids text[]`, `exploit_available`, `in_cisa_kev`, `epss_score`, `material_hash`, `fts_document`.
-Indexes: `GIN(fts_document)`, BTREE on severity/kev/exploit, BTREE dates (including `date_modified_canonical`), `GIN(cwe_ids)`.
+PK `cve_id text`. Key columns: `status`, `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`, `description_primary`, `severity`, CVSS v3/v4 scores/vectors/sources, `cvss_score_diverges bool`, `cwe_ids text[]`, `exploit_available`, `in_cisa_kev`, `epss_score`, `date_epss_updated`, `material_hash`.
+Note: no `epss_score_baseline` column — EPSS is not part of `material_hash`; see section 5.3.
+Indexes: BTREE on severity/kev/exploit, BTREE dates (including `date_modified_canonical`, `date_epss_updated`), `GIN(cwe_ids)`. No `fts_document` column here.
+
+### `cve_search_index`
+PK `cve_id text REFERENCES cves(cve_id) ON DELETE CASCADE`. Columns: `fts_document tsvector NOT NULL`. Indexes: `GIN(fts_document)`. This 1:1 table isolates the GIN index from `cves` write churn (see section 5.2). Updated only when description or CWE-contributing fields change during merge.
 
 ### `cve_sources`
 PK `(cve_id, source_name)`. Columns: `normalized_json jsonb`, `source_date_modified`, `source_url`, `ingested_at`. Indexes: `source_name`, `source_date_modified`.
@@ -1167,11 +1493,11 @@ Append-only log of internal system jobs (retention cleanup, index rebuilds, etc.
 See section 18.1 for full schema.
 
 ## A.3 Org/Tenant Tables (Core)
-`organizations`, `users` (includes `password_hash_version int`), `user_identities`, `org_members` (includes `role`), `groups`, `group_members`, `watchlists` (includes `group_id` nullable), `watchlist_items`, `cve_annotations` (includes `assignee_user_id uuid` nullable), `alert_rules` (includes `watchlist_ids uuid[]`, `dsl_version int`), `alert_rule_runs`, `alert_events`, `notification_channels`, `notification_deliveries`, `scheduled_reports`, `report_runs`, `ai_usage_counters`, `saved_searches` (includes `query_json jsonb`, `is_shared boolean`).
+`organizations`, `users` (includes `password_hash_version int`, `token_version int not null default 1`), `user_identities`, `org_members` (includes `role`), `groups`, `group_members`, `watchlists` (includes `group_id` nullable), `watchlist_items`, `cve_annotations` (includes `assignee_user_id uuid` nullable), `alert_rules` (includes `watchlist_ids uuid[]`, `dsl_version int`), `alert_rule_runs`, `alert_events`, `notification_channels`, `notification_deliveries`, `scheduled_reports`, `report_runs`, `ai_usage_counters`, `saved_searches` (includes `query_json jsonb`, `is_shared boolean`).
 
 ## A.4 Migration Order
 1) Global CVE tables + CWE dictionary + feed state/log + job_queue
-2) Org/auth tables (including `user_identities`, `groups`, `group_members`, `password_hash_version`)
+2) Org/auth tables (including `user_identities`, `groups`, `group_members`, `password_hash_version`, `token_version`)
 3) Watchlists + annotations (including `assignee_user_id`)
 4) Saved searches
 5) Alerts (including `dsl_version`, `watchlist_ids`)
@@ -1223,6 +1549,8 @@ See section 18.1 for full schema.
 - `GET/POST /api/v1/orgs/{org_id}/channels`
 - `GET/PATCH/DELETE /api/v1/orgs/{org_id}/channels/{id}`
 - `POST /api/v1/orgs/{org_id}/channels/{id}/test` — send test notification
+- `GET /api/v1/orgs/{org_id}/channels/{id}/deliveries` — list delivery history (latest N, with status filter including `dead`)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/deliveries/{delivery_id}/replay` — re-enqueue a dead-letter delivery (admin/owner only)
 
 **Reports:**
 - `GET/POST /api/v1/orgs/{org_id}/reports`

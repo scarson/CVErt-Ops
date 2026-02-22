@@ -1,7 +1,7 @@
 # CVErt Ops — Implementation Pitfalls & Review Findings
 
 > **Date:** 2026-02-21
-> **Source:** 20 rounds of Gemini Pro architectural review of PLAN.md before implementation began
+> **Source:** 21 rounds of Gemini Pro architectural review of PLAN.md before implementation began
 > **Purpose:** Document implementation traps, design flaws, and corrected decisions as a learning artifact for future development and similar projects.
 
 ---
@@ -231,6 +231,29 @@ req.URL.RawQuery = q.Encode() // '+' → '%2B', space → '%20'
 Never use string concatenation for URL parameters that may contain `+`, `&`, `=`, `#`, or non-ASCII characters.
 
 **The Lesson:** In HTTP query strings, `+` means space, and `%2B` means `+`. This encoding trap bites any code that uses `time.RFC3339` formatting with timezone offsets in URL parameters. `url.Values` and `url.QueryEscape` exist precisely for this reason. Raw string concatenation into a URL query is always wrong for any value that might contain special characters.
+
+---
+
+### 1.10 OSV ZIP FileHeader Parsed Without Pre-filter — Entire Archive Re-processed Every Incremental Sync
+
+**The Flaw:** The ZIP iteration loop for OSV/MITRE bulk archives called `entry.Open()` unconditionally for every file in the archive, then checked timestamps inside the parsed JSON to decide whether the record was new.
+
+**Why It Matters:** OSV's `all.zip` and MITRE's `cvelistV5.zip` each contain 100,000+ individual JSON files. `archive/zip.FileHeader.Modified` is available without opening the entry — it is read from the ZIP central directory when `zip.NewReader` loads the archive. For an incremental sync (daily run after initial bulk load), only ~50 files in the archive have changed since yesterday's cursor. Calling `entry.Open()` on all 100,000+ entries and parsing JSON just to find those 50 wastes ~2,000× the necessary I/O and CPU. On a constrained self-hosted machine this can take minutes per sync cycle, holding a database transaction open and blocking other feed updates.
+
+**The Fix:** Check `entry.FileHeader.Modified.After(lastCursor)` **before** calling `entry.Open()`. The central directory contains this metadata at no additional I/O cost:
+```go
+for _, entry := range zr.File {
+    // Skip entries unmodified since last sync without opening them
+    if !lastCursor.IsZero() && !entry.FileHeader.Modified.After(lastCursor) {
+        continue
+    }
+    rc, err := entry.Open()
+    // ... parse and process
+}
+```
+For a full `import-bulk` run `lastCursor` is the zero `time.Time`, so `lastCursor.IsZero()` is true and the pre-filter is a no-op — all entries are processed.
+
+**The Lesson:** ZIP archives expose file metadata (name, size, modification time, compression method) in the central directory without requiring each entry to be opened. Always check available metadata before performing I/O. For incremental processing of large archives, a single timestamp comparison can eliminate 99.9% of redundant work. Never assume that "checking inside" is the only option when the file system or archive format provides a pre-filter.
 
 ---
 
@@ -616,6 +639,31 @@ server := &http.Server{
 
 ---
 
+### 3.9 Webhook HMAC Signatures Are Replayable Without Timestamp Binding
+
+**The Flaw:** The webhook signature was specified as `HMAC-SHA256(body, secret)` with a single `X-CVErtOps-Signature` header. No timestamp was included in the signed payload.
+
+**Why It Matters:** HMAC over just the body is replayable indefinitely. An attacker who intercepts a legitimate webhook delivery (e.g., via network tap, compromised CI/CD pipeline, or MITM on HTTP) captures the body and the `X-CVErtOps-Signature` header. They can re-POST this identical pair to the consumer endpoint at any time in the future, and the consumer's HMAC verification passes because the signature is still valid — nothing in the signed payload has changed. Attack consequences: duplicate alert processing, event flooding, triggering integrations (e.g., creating duplicate Jira tickets, sending repeated Slack notifications, re-triggering CI/CD pipelines) indefinitely. The attacker needs the intercepted message only once.
+
+**The Fix:** Include a timestamp in the signed payload to bind the signature to a specific point in time. Two headers are required:
+- `X-CVErt-Timestamp: <unix-seconds>` — current time at delivery
+- `X-CVErtOps-Signature: sha256=<hex>` — HMAC-SHA256 over `timestamp + "." + body`
+
+```go
+ts := strconv.FormatInt(time.Now().Unix(), 10)
+mac := hmac.New(sha256.New, []byte(secret))
+mac.Write([]byte(ts + "." + string(body)))
+sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+req.Header.Set("X-CVErt-Timestamp", ts)
+req.Header.Set("X-CVErtOps-Signature", sig)
+```
+
+Consumers must: (1) parse the timestamp, (2) reject if `abs(now − timestamp) > 300s`, (3) verify the HMAC. A captured message replayed after 5 minutes fails step 2.
+
+**The Lesson:** HMAC guarantees authenticity (the message came from someone who knows the secret) but not freshness. Without a timestamp, a valid HMAC is valid forever. This pattern — timestamp in signed payload + short acceptance window — is the standard replay prevention mechanism used by Stripe, GitHub webhooks, and AWS SNS. It is not optional for any webhook that triggers idempotency-sensitive actions.
+
+---
+
 ## 4. Operational / UX Footguns
 
 ### 4.1 New-Rule Activation Scan Sends Outbound Notifications for Historical Data
@@ -980,6 +1028,34 @@ The native ID is stored as `cve_sources.source_id` for provenance tracking.
 
 ---
 
+### 5.14 In-Memory Rate Limiter Grows Without Bound — No Eviction
+
+**The Issue:** The in-memory rate limiter was specified as a `sync.Map[string]*rate.Limiter` keyed by IP address. No eviction mechanism was specified.
+
+**Failure scenario:** Each unique client IP that ever touches the API produces one `*rate.Limiter` entry in the map (~200 bytes). The map holds a strong reference; the GC never reclaims these entries. A public API receiving traffic from 10,000 unique IPs per day accumulates 3.65 million entries per year (~730 MB of heap). On a homelab server with 1–2 GB RAM, this growth OOM-kills the process after months of operation. The OOM crash is attributed to "memory leak" with no obvious connection to the rate limiter because the growth is slow and the allocation is tiny per entry.
+
+**The Decision:** The in-memory rate limiter must use a TTL-based cache:
+- **Preferred:** `github.com/hashicorp/golang-lru/v2/expirable` — thread-safe LRU+TTL; no background goroutine required.
+- **Alternative:** Explicit background sweeper goroutine deleting `sync.Map` entries idle > 15 minutes (requires storing `lastSeen time.Time` alongside each limiter).
+
+Eviction TTL (default 15 min, `RATE_LIMIT_EVICT_TTL` env var) must be longer than the token refill window.
+
+**The Lesson:** Any in-memory cache without eviction is a memory leak with a very slow drip. The "obvious" `sync.Map` implementation has this property by default. For any map keyed by an unbounded external input (IP addresses, user agents, API key prefixes), eviction is not an optimization — it is a correctness requirement for long-running processes. Design caches with eviction from day one; retrofitting it requires careful analysis of what state is safe to lose.
+
+---
+
+### 5.15 Connection Pool Multiplication Across DB Replicas Exceeds Postgres `max_connections`
+
+**The Issue:** `DB_MAX_CONNS` was not specified as a configurable env var, and no guidance was given on how `pgxpool.MaxConns` interacts with multiple app instances or read replicas.
+
+**Failure scenario:** A deployment has 3 app instances, each with `pgxpool.MaxConns` set to the library's implicit default (or developer-chosen 50). Each instance can open 50 connections to each DB node. With a primary and 2 read replicas (3 DB nodes), total possible connections = 3 instances × 50 conns × 3 DB nodes = 450 connections. Postgres default `max_connections = 100`. The first `pgxpool.New()` calls succeed; as connections are acquired under load, Postgres returns `FATAL: sorry, too many clients already`. Affected queries fail with connection errors. The error appears as "database down" in monitoring, but the root cause is silent misconfiguration of pool sizes that seemed reasonable in isolation.
+
+**The Decision:** Expose `DB_MAX_CONNS` (default: `25`). Document the scaling formula: `DB_MAX_CONNS × number_of_app_instances < postgres_max_connections − 10`. Log a startup warning if the detected ratio is dangerously high. The buffer of 10 reserves headroom for `psql` admin sessions and migration runs.
+
+**The Lesson:** Connection pool sizes are not independent of deployment topology. A pool size that is fine for a single-instance deployment becomes dangerous in a scaled-out or multi-replica configuration. Document pool sizing in `.env.example` with the scaling formula, not just a "reasonable default." Operational misconfigurations that are valid in dev (1 instance) but dangerous in prod (N instances) need explicit documentation, not just a working default.
+
+---
+
 ## Summary Table
 
 | # | Category | Issue | Severity | Key Fix |
@@ -1038,6 +1114,10 @@ The native ID is stored as `cve_sources.source_id` for provenance tracking.
 | 1.9 | Go | `time.RFC3339` `+` in URL query parameter parsed as space — NVD returns 400 | High | `url.Values{}.Set(...)` + `q.Encode()`; never string-concatenate URL parameters |
 | 3.8 | Security | `http.Server` infinite default timeouts enable Slowloris DOS before any middleware runs | Critical | `ReadHeaderTimeout: 5s`, `ReadTimeout: 15s`, `IdleTimeout: 120s` on `http.Server` struct |
 | 5.13 | Architecture | OSV/GHSA native IDs as PK create split-brain records — merge pipeline never combines them | Critical | Adapter inspects `aliases` array; uses CVE ID as `cve_id` PK when present |
+| 1.10 | Go | ZIP archive re-parsed in full on every incremental sync — 100k entries opened for ~50 changed | High | `entry.FileHeader.Modified.After(lastCursor)` pre-filter before `entry.Open()`; no-op on zero cursor |
+| 3.9 | Security | Webhook HMAC over body alone is replayable indefinitely — captured payload valid forever | High | `X-CVErt-Timestamp` header + HMAC over `timestamp + "." + body`; consumer rejects if timestamp > 5 min old |
+| 5.14 | Architecture | In-memory rate limiter `sync.Map` grows without bound — unbounded heap leak over months | High | `hashicorp/golang-lru/v2/expirable` or background sweeper; 15-min TTL on idle IP entries |
+| 5.15 | Architecture | Connection pool multiplication across replicas silently exceeds Postgres `max_connections` | High | `DB_MAX_CONNS` env var (default 25); document `MaxConns × instances < postgres_max_connections − 10` |
 
 ---
 

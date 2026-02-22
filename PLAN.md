@@ -238,6 +238,15 @@ The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see sect
       zr, err := zip.NewReader(f, info.Size()) // os.File implements io.ReaderAt
       if err != nil { return err }
       for _, entry := range zr.File {
+          // FileHeader timestamp pre-filter (required for incremental syncs):
+          // entry.FileHeader.Modified is available without opening the file.
+          // For an incremental sync (lastCursor != zero), skip entries not modified
+          // since the last successful cursor. This avoids opening and parsing
+          // 100,000+ JSON files when only 50 changed — a 2000× I/O reduction.
+          // For a full import-bulk run, lastCursor is zero so this is a no-op.
+          if !lastCursor.IsZero() && !entry.FileHeader.Modified.After(lastCursor) {
+              continue
+          }
           rc, err := entry.Open()
           if err != nil { return err }
           var record AdvisoryRecord
@@ -1030,7 +1039,29 @@ Required delivery worker pattern:
 **DLQ replay rate limit and attempt_count reset (required):** The `notification_deliveries` table must include an `attempt_count INT NOT NULL DEFAULT 0` column. The `POST .../deliveries/{delivery_id}/replay` endpoint must: (a) reset `attempt_count` to 0 before re-enqueueing, (b) enforce a rate limit (max 10 replays per org per hour) to prevent users or automation scripts from flooding the worker pool with permanently-failing deliveries for a misconfigured webhook. Replay endpoint is owner/admin only (per §7.3 permission matrix).
 
 ### 11.3 Webhook Security (Required)
-- HMAC signature header: `X-CVErtOps-Signature: sha256=<hex>` (using `crypto/hmac` + `crypto/sha256`)
+- HMAC signature headers — **two headers required** (using `crypto/hmac` + `crypto/sha256`):
+  - `X-CVErt-Timestamp: <unix-seconds>` — current Unix time (seconds) at delivery time
+  - `X-CVErtOps-Signature: sha256=<hex>` — HMAC-SHA256 over the **concatenated payload** `timestamp + "." + body`
+
+  **Replay attack prevention (required):** HMAC over just the body allows an attacker who intercepts a legitimate delivery to replay it indefinitely — re-POSTing the same signature to trigger duplicate alert processing, flood the consumer's alert queue, or cause unintended side effects. Including a timestamp in the signed payload binds the signature to a specific point in time; any replay of a captured payload is rejected once the timestamp is stale.
+
+  **Required signing code (outbound):**
+  ```go
+  ts := strconv.FormatInt(time.Now().Unix(), 10)
+  mac := hmac.New(sha256.New, []byte(secret))
+  mac.Write([]byte(ts + "." + string(body)))
+  sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+  req.Header.Set("X-CVErt-Timestamp", ts)
+  req.Header.Set("X-CVErtOps-Signature", sig)
+  ```
+
+  **Required verification logic (consumers must implement):**
+  1. Parse `X-CVErt-Timestamp` as a Unix second integer. Reject with `400` if absent or non-numeric.
+  2. Verify `abs(now() - timestamp) ≤ 300 seconds` (5-minute window). Reject with `400` if outside the window.
+  3. Verify `HMAC-SHA256(timestamp + "." + body, secret) == X-CVErtOps-Signature`. Reject with `401` if mismatch.
+  4. Steps 2 and 3 must both pass; do not short-circuit on just the signature.
+
+  **Documentation requirement:** The 5-minute window, header names, and signature format must be documented in the API reference and the channel configuration UI so webhook consumers can implement verification.
 - Prevent SSRF using `doyensec/safeurl` as the HTTP client for all outbound webhook calls:
   - blocks private IPs (RFC 1918) and link-local ranges by default
   - mitigates DNS rebinding attacks
@@ -1243,6 +1274,16 @@ Rate limiting is enforced at the API middleware layer to protect against abuse a
 - Exceeded limits return `429 Too Many Requests` with `Retry-After` header.
 - API keys inherit the rate limits of their org's tier.
 - Internal/worker goroutine calls (e.g., feed ingestion, notification delivery) bypass API rate limits; they call service functions directly, not through the HTTP layer.
+
+**In-memory rate limiter: TTL-based eviction required (required):**
+
+A naive `sync.Map[string]*rate.Limiter` keyed by IP address accumulates one entry per unique client IP and never releases them. Each entry holds a `golang.org/x/time/rate.Limiter` struct (~200 bytes). A public API with 10,000 unique IPs per day accumulates 3.65 million entries per year — roughly 730 MB of permanently occupied heap. The garbage collector never reclaims these because the map holds a strong reference to each limiter. After weeks to months of operation, memory growth triggers OOM on constrained containers before any individual request rate is exceeded.
+
+**Required:** The in-memory rate limiter must use a TTL-based cache or explicit eviction:
+- **Option A (preferred):** `github.com/hashicorp/golang-lru/v2/expirable` — thread-safe LRU+TTL cache; entries are automatically evicted after a configurable TTL with no background goroutine required. Default TTL: 15 minutes (configurable via `RATE_LIMIT_EVICT_TTL`).
+- **Option B:** A background sweeper goroutine that iterates the `sync.Map` and deletes entries not accessed in the last 15 minutes. Requires storing `lastSeen time.Time` alongside each limiter.
+
+The eviction TTL must be longer than the rate limiter's refill window to avoid evicting an active client's rate state mid-window (i.e., `RATE_LIMIT_EVICT_TTL` > per-org token refill period).
 
 **Trusted proxy configuration for IP-based rate limiting (required):**
 
@@ -1619,6 +1660,15 @@ All configuration via environment variables (12-factor). Docker Compose `.env` f
 - Validation at startup via struct tags (`required`, `min`, `max`, `url`)
 - Secret redaction: config types implement custom `String()` method that masks sensitive fields
 - `.env.example` file in repo documents all available config vars with defaults and descriptions
+
+**Database connection pool sizing (required):**
+
+`pgxpool` defaults may allow up to 4×GOMAXPROCS connections per pool, which is far too high for most Postgres deployments. The critical failure mode is **connection pool multiplication**: in a deployment with read replicas or multiple app instances, the total connection count scales as `MaxConns × instance_count`. With `MaxConns: 50` and 3 app instances, the pool opens 150 connections — exceeding Postgres's default `max_connections = 100`, causing `FATAL: sorry, too many clients already` errors that take down the entire application.
+
+**Required:**
+- Expose `DB_MAX_CONNS` env var, default `25`. This maps directly to `pgxpool.Config.MaxConns`.
+- Document the scaling formula in `.env.example`: `DB_MAX_CONNS × number_of_app_instances < postgres_max_connections − 10`. The buffer of 10 reserves headroom for `psql` admin sessions and migration runs.
+- Log a warning at startup if the configured pool size appears dangerously high relative to the queried Postgres `max_connections` value (via `SHOW max_connections`). This is advisory, not fatal — the operator may have custom Postgres configuration.
 
 ## 19.3 Testing Strategy
 

@@ -775,6 +775,16 @@ Note: `read:user` scope alone is NOT sufficient. `user:email` is the specific sc
 
 **`user_identities` table:** Each row links a `user_id` to a federated identity provider (e.g., `provider=github, provider_user_id=12345, email=...`). A user may have multiple identities (e.g., email/password + GitHub). This table is the reason `user_identities` appears in org/tenant tables (see 4.2) and is required for MVP to support the native + GitHub auth paths.
 
+**Identity matching MUST use `provider_user_id` / OIDC `sub` — never email (required):**
+
+Email addresses are mutable. Corporate accounts are renamed during acquisitions, users change email providers, and enterprise domains are recycled when companies dissolve. If the login callback matches an identity by email (`SELECT * FROM user_identities WHERE provider = $1 AND email = $2`), two failure modes emerge: (a) a user who changed their corporate email is treated as a brand new user and loses all their watchlists, alert rules, and API keys; (b) if the old email address is released by the provider and claimed by a different person, that person inherits the original user's CVErt Ops account — including all org memberships and API keys. This is an account takeover via email recycling.
+
+**Required lookup pattern:**
+- **Google OIDC:** match on `provider = 'google'` AND `provider_user_id = $sub_claim`. The `sub` claim in a Google ID token is an immutable numeric string tied to the Google Account, never reused, never changes even if the user's email changes.
+- **GitHub OAuth:** match on `provider = 'github'` AND `provider_user_id = strconv.Itoa(githubUserID)`. The GitHub numeric user ID (`id` field in `/user` response) is immutable; the username (`login`) and email are mutable.
+- **Email is a display attribute only.** After a successful provider login, `UPDATE user_identities SET email = $new_email WHERE provider = $p AND provider_user_id = $id` to keep the displayed email current. Email is never used to find or link an identity row.
+- **Email uniqueness constraint across identities is a secondary policy concern** (two different Google accounts with the same email is normally impossible, but guard with a DB unique constraint on `(provider, provider_user_id)` as the primary key). Do not enforce `UNIQUE(email)` globally — a user linking both GitHub and Google may use the same email address for both.
+
 **OAuth2 CSRF `state` parameter (required for all OAuth flows):**
 
 Omitting or hardcoding the OAuth2 `state` parameter enables Login CSRF: an attacker initiates an OAuth flow, captures the callback URL, and tricks a victim into clicking it — silently logging the victim into the attacker's account. Any data the victim then enters (watchlists, API keys) becomes accessible to the attacker.
@@ -1241,6 +1251,44 @@ Feature flag precedence:
 - All timestamps UTC ISO8601.
 - OpenAPI 3.1 spec is generated automatically by huma from Go type definitions. Served at `/openapi` endpoint. Used for client type generation and API documentation.
 
+**PATCH payload structs must use pointer types for all optional fields (required):**
+
+Go's `encoding/json` package omits fields tagged `omitempty` when their value equals the Go zero-value for that type: `false` for `bool`, `0` for `int`/`float64`, `""` for `string`. A PATCH payload struct using `json:"active,omitempty"` on a `bool` field will silently discard `{"active": false}` during unmarshal — `false` is the zero-value and is treated as "field not present." The database update fires but `active` remains unchanged; the user cannot disable their alert rule no matter how many times they PATCH it. This is the dominant class of PATCH implementation bugs in Go APIs.
+
+**Required pattern:** All PATCH request structs MUST use pointer types for every field that the client may legitimately set to a zero value:
+```go
+// WRONG — cannot distinguish "not provided" from "explicitly set to false/0/empty"
+type PatchAlertRuleRequest struct {
+    Active   bool   `json:"active,omitempty"`
+    MaxScore int    `json:"max_score,omitempty"`
+    Name     string `json:"name,omitempty"`
+}
+
+// CORRECT — nil = not provided, &false = explicitly set to false
+type PatchAlertRuleRequest struct {
+    Active   *bool   `json:"active,omitempty"`
+    MaxScore *int    `json:"max_score,omitempty"`
+    Name     *string `json:"name,omitempty"`
+}
+```
+In the handler: only apply DB updates for fields where the pointer is non-nil. `huma` handles pointer types correctly in schema generation. This applies to every PATCH endpoint in the API (alert rules, watchlists, org settings, notification channels, scheduled reports, API keys, saved searches, cve annotations).
+
+**Keyset pagination tie-breaker required for all sort columns (required):**
+
+The default cursor ordering (`date_modified_canonical DESC, cve_id` tiebreak) is correctly specified. When additional sort orders are supported (e.g., `?sort=date_published`), an AI will likely implement `WHERE date_published < $last_date ORDER BY date_published DESC` — omitting the tiebreak. Vulnerability feeds routinely publish hundreds of CVEs with identical timestamps (batch ingestion, bulk NVD update windows). When a page boundary falls inside such a timestamp block, the strict `<` comparison skips all remaining CVEs sharing that timestamp. The user receives silently truncated results with no error.
+
+**Required:** Every keyset pagination query MUST use a composite cursor combining the sort column with `cve_id` (or the table's globally-unique PK) as the mandatory tiebreaker in BOTH `ORDER BY` and `WHERE`:
+```sql
+-- WRONG — skips CVEs sharing the last page's date_published value
+WHERE date_published < $last_date
+ORDER BY date_published DESC
+
+-- CORRECT — composite cursor; no rows dropped at page boundaries
+WHERE (date_published, cve_id) < ($last_date, $last_id)
+ORDER BY date_published DESC, cve_id DESC
+```
+The opaque cursor value encodes both components. This rule applies to any sort field that is not globally unique. `cve_id` itself is unique, so single-column cursor on `cve_id` alone is safe.
+
 ### Decision D5 — How org context is carried in the API (MVP)
 
 **Decision (MVP):** Carry org context in the **URL path**: `/api/v1/orgs/{org_id}/...`
@@ -1673,6 +1721,22 @@ All configuration via environment variables (12-factor). Docker Compose `.env` f
 - Validation at startup via struct tags (`required`, `min`, `max`, `url`)
 - Secret redaction: config types implement custom `String()` method that masks sensitive fields
 - `.env.example` file in repo documents all available config vars with defaults and descriptions
+
+**PgBouncer / connection pooler compatibility (required):**
+
+Enterprise and high-availability deployments routinely place PgBouncer (or similar connection poolers like Pgpool-II) in front of Postgres to multiplex thousands of application connections onto a small number of actual Postgres backend connections. PgBouncer is almost universally deployed in **transaction pooling mode**, where consecutive queries from the same application connection may be routed to different Postgres backend connections.
+
+`pgx` v5 (used by `pgxpool`) defaults to **extended query protocol with named prepared statements**. When a prepared statement is created on backend connection A, it exists only on that backend. When PgBouncer routes the next query to backend B, Postgres returns: `ERROR: prepared statement "pgx_N" does not exist`. This immediately crashes the query, and with a pooled connection, may crash the entire worker goroutine or trigger a cascade of errors across the pool.
+
+**Required:** Configure pgxpool to use the simple query protocol (no named prepared statements) when connecting through a pooler:
+```go
+config, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+if err != nil { log.Fatal(err) }
+// Use simple protocol — compatible with PgBouncer transaction pooling mode
+config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+pool, err := pgxpool.NewWithConfig(ctx, config)
+```
+Alternatively, append `?default_query_exec_mode=simple_protocol` to `DATABASE_URL`. Expose a `DB_QUERY_EXEC_MODE` env var (default `simple_protocol`) so operators who connect directly to Postgres can opt into extended protocol for performance. Self-hosted single-instance deployments without PgBouncer work correctly with either mode; the simple protocol has negligible performance impact at our scale.
 
 **Database connection pool sizing (required):**
 

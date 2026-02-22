@@ -1,7 +1,7 @@
 # CVErt Ops — Implementation Pitfalls & Review Findings
 
 > **Date:** 2026-02-21
-> **Source:** 22 rounds of Gemini Pro architectural review of PLAN.md before implementation began
+> **Source:** 23 rounds of Gemini Pro architectural review of PLAN.md before implementation began
 > **Purpose:** Document implementation traps, design flaws, and corrected decisions as a learning artifact for future development and similar projects.
 
 ---
@@ -254,6 +254,26 @@ for _, entry := range zr.File {
 For a full `import-bulk` run `lastCursor` is the zero `time.Time`, so `lastCursor.IsZero()` is true and the pre-filter is a no-op — all entries are processed.
 
 **The Lesson:** ZIP archives expose file metadata (name, size, modification time, compression method) in the central directory without requiring each entry to be opened. Always check available metadata before performing I/O. For incremental processing of large archives, a single timestamp comparison can eliminate 99.9% of redundant work. Never assume that "checking inside" is the only option when the file system or archive format provides a pre-filter.
+
+---
+
+### 1.11 `omitempty` on PATCH Payload Structs Silently Drops Zero-Value Fields
+
+**The Flaw:** PATCH request payload structs used concrete Go types with `omitempty` tags (e.g., `Active bool \`json:"active,omitempty"\``).
+
+**Why It Matters:** Go's `encoding/json` treats `omitempty` as "skip this field if its value equals the zero-value for its type." For `bool`, zero-value is `false`. For `int`, zero-value is `0`. For `string`, zero-value is `""`. When a client sends `{"active": false}` to disable an alert rule, the JSON unmarshaler reads `false`, sees that it equals the `bool` zero-value, applies `omitempty`, and silently ignores the field. The struct field retains its zero-initialized `false` value, but because the field is treated as "not provided," the handler skips the DB update for it. `active` in the database remains `true`. The user cannot disable their alert rule — any number of `PATCH {"active": false}` requests are silently no-ops. This applies equally to `status` integers set to `0`, empty strings, and other zero-valued fields a user might legitimately want to set.
+
+**The Fix:** All PATCH request structs MUST use pointer types for every field:
+```go
+type PatchAlertRuleRequest struct {
+    Active   *bool   `json:"active,omitempty"`   // nil = not provided; &false = explicitly false
+    MaxScore *int    `json:"max_score,omitempty"`
+    Name     *string `json:"name,omitempty"`
+}
+```
+In the handler, only generate SQL SET clauses for fields where the pointer is non-nil. `huma` handles pointer types correctly in its OpenAPI schema generation (marks them as non-required). This applies to every PATCH endpoint in the API.
+
+**The Lesson:** In Go APIs that use partial updates (PATCH), the distinction between "field not present in request" and "field explicitly set to its zero value" cannot be made with concrete types. Only pointer types (`*bool`, `*int`, `*string`) correctly encode three states: `nil` (absent), `&false` (present, false), `&true` (present, true). Using concrete types with `omitempty` for PATCH payloads is always wrong. When reviewing Go PATCH handlers, if you see `bool` or `int` without a `*`, it's a bug.
 
 ---
 
@@ -680,6 +700,22 @@ if subtle.ConstantTimeCompare(incomingHash[:], storedHash[:]) == 1 {
 `subtle.ConstantTimeCompare` processes all bytes of both slices every time, regardless of where the first mismatch occurs, emitting no timing signal. It is a one-line requirement that costs a negligible fixed amount of CPU.
 
 **The Lesson:** Constant-time comparison is required for any code path that compares a secret or secret-derived value. The list includes: API key hashes, HMAC signatures (prefer `hmac.Equal` which uses `subtle.ConstantTimeCompare` internally), password hashes (handled by argon2id library, but the same principle applies), and CSRF tokens. The "hard to exploit over a network" argument is not a reason to skip it — it is a reason to use the secure implementation and not think about it again.
+
+---
+
+### 3.11 OIDC/OAuth Identity Matched by Email — Account Takeover via Email Recycling
+
+**The Flaw:** The OAuth callback handler looked up existing identities in `user_identities` using the email address returned by the provider: `WHERE provider = $1 AND email = $2`.
+
+**Why It Matters:** Email addresses are mutable and recyclable. When a user changes their email address at the provider (name change, corporate rebrand, company acquisition), the next login presents the new email. The lookup finds no match → a new account is created → the user loses all their watchlists, alert rules, API keys, and org memberships — they appear as a stranger to their own org. This is the benign failure mode. The critical failure mode: the old email address is released by the identity provider (common when companies dissolve or employees leave) and claimed by a different person. That person logs in via Google or GitHub → the `email` lookup matches the original user's `user_identities` row → the new person inherits the original user's CVErt Ops account, org membership, and all API keys. This is a complete account takeover via email recycling, requiring no exploit — just a standard OAuth flow.
+
+**The Fix:** Identity matching MUST use the provider's immutable identifier:
+- **Google OIDC:** `WHERE provider = 'google' AND provider_user_id = $sub` — the `sub` claim is an immutable numeric string unique to the Google Account, never reused even if the email changes.
+- **GitHub OAuth:** `WHERE provider = 'github' AND provider_user_id = $github_numeric_id` — the numeric `id` from `GET /user` is immutable; username (`login`) and email are mutable.
+- **Email update only:** After matching, `UPDATE user_identities SET email = $new_email WHERE provider = $p AND provider_user_id = $id` to keep display email current. Email is never used to find or link an identity.
+- **`(provider, provider_user_id)` is the composite unique key** on `user_identities`, not `(provider, email)`.
+
+**The Lesson:** In federated identity, "the user's email" is a display attribute — not an identity. Every OIDC-compliant provider exposes an immutable `sub` claim specifically for this purpose. GitHub exposes an immutable numeric user ID. Always anchor identity to the provider's immutable identifier. Email is mutable, recyclable, and therefore useless as an identity key in any security-sensitive system.
 
 ---
 
@@ -1126,6 +1162,42 @@ Eviction TTL (default 15 min, `RATE_LIMIT_EVICT_TTL` env var) must be longer tha
 
 ---
 
+### 5.18 Keyset Pagination Without Composite Tie-Breaker Silently Drops CVEs at Page Boundaries
+
+**The Issue:** The default pagination was correctly specified with `cve_id` as a tiebreaker, but the "unless otherwise specified" clause left secondary sort orders (e.g., `?sort=date_published`) without a mandatory tiebreaker requirement.
+
+**Failure scenario:** The CVE search endpoint supports `?sort=date_published`. An AI implements: `WHERE date_published < $last_date ORDER BY date_published DESC`. NVD and MITRE frequently publish hundreds of CVEs in a single batch ingestion run, all with identical `date_published` timestamps (the timestamp is set by the feed, not the ingestion time). A page of 100 results ends at timestamp `T`. There are 47 more CVEs with the same timestamp `T`. The next page query uses `WHERE date_published < T`, which evaluates to strictly less than — skipping all 47 CVEs with `date_published = T`. The API user's pagination loop completes silently, having dropped 47 CVEs from their result set. No error, no warning, no indication of data loss.
+
+**The Decision:** Every keyset pagination query using a non-unique sort column MUST use a composite cursor with the table's unique PK as a mandatory tiebreaker:
+```sql
+-- Composite cursor: no rows dropped at page boundaries
+WHERE (date_published, cve_id) < ($last_date, $last_id)
+ORDER BY date_published DESC, cve_id DESC
+```
+The opaque cursor encodes both values. `cve_id` is globally unique, so this composite is unique and the ordering is fully deterministic.
+
+**The Lesson:** Any sort column that is not globally unique creates page-boundary ambiguity in keyset pagination. Timestamp columns are especially dangerous because feed data is batch-ingested with identical timestamps. The tiebreaker must be globally unique and immutable. Always specify the tiebreaker explicitly in the pagination spec — do not rely on "obvious" implementation choices.
+
+---
+
+### 5.19 pgx Named Prepared Statements Crash Under PgBouncer Transaction Pooling
+
+**The Issue:** pgx v5 (used by pgxpool) defaults to the extended query protocol with named prepared statements. No guidance was given for enterprise deployments with connection poolers.
+
+**Failure scenario:** An enterprise user places PgBouncer in front of Postgres in transaction pooling mode (the standard configuration for handling hundreds of application connections). pgx creates a named prepared statement (`pgx_0`, `pgx_1`, ...) on backend connection A. PgBouncer routes the next query to backend connection B. Postgres B has no record of the prepared statement and returns `ERROR: prepared statement "pgx_0" does not exist`. The error propagates through pgxpool; pgxpool may mark the connection as broken. Under load, this repeats continuously — the API and worker pools experience constant query failures, appearing as database errors or connection resets. The entire application is effectively down under enterprise deployment topology even though Postgres itself is healthy.
+
+**The Decision:** Configure pgxpool to use `QueryExecModeSimpleProtocol` by default:
+```go
+config, _ := pgxpool.ParseConfig(cfg.DatabaseURL)
+config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+pool, _ := pgxpool.NewWithConfig(ctx, config)
+```
+Simple protocol sends SQL as plain text strings without named prepared statements — fully compatible with all PgBouncer modes, all pooler configurations, and direct Postgres connections. The performance difference at our scale (hundreds of queries/sec, not millions) is negligible. Expose `DB_QUERY_EXEC_MODE` env var so advanced users can opt into extended protocol if connecting directly to Postgres without a pooler.
+
+**The Lesson:** pgx's default query execution mode is optimized for direct-to-Postgres performance with persistent connections. It is fundamentally incompatible with connection poolers operating in transaction pooling mode. This incompatibility is not surfaced in development (single direct connection) but manifests immediately in enterprise deployments. Any Go application using pgx that might be deployed with PgBouncer must configure the query execution mode at initialization time.
+
+---
+
 ## Summary Table
 
 | # | Category | Issue | Severity | Key Fix |
@@ -1192,6 +1264,10 @@ Eviction TTL (default 15 min, `RATE_LIMIT_EVICT_TTL` env var) must be longer tha
 | 5.17 | Architecture | Child table upserts in merge pipeline lack consistent sort order — deadlock risk under future refactoring | Medium | Sort child rows by natural key before batch upsert; advisory lock handles CVE-level concurrency |
 | 3.10 | Security | API key hash comparison uses short-circuiting `==` / `bytes.Equal` — timing oracle | Medium | `subtle.ConstantTimeCompare(incomingHash[:], storedHash[:])` mandatory for all secret comparisons |
 | 4.14 | Operational | Fan-out delivery loop `return err` on first channel failure — all subsequent channels silently skipped | High | Per-channel `continue` on delivery error; parent job fails only on DB transaction failure |
+| 1.11 | Go | `omitempty` on PATCH struct `bool`/`int` fields silently drops `false`/`0` — user cannot disable rules | High | Pointer types (`*bool`, `*int`, `*string`) for all PATCH payload fields; nil = absent, &false = explicit |
+| 3.11 | Security | OIDC/OAuth identity matched by email — account takeover when email is recycled by new user | Critical | Match identities on immutable `provider_user_id` (GitHub) / `sub` claim (Google); email is display attribute only |
+| 5.18 | Architecture | Keyset pagination without composite tie-breaker silently drops CVEs sharing a page-boundary timestamp | High | `(date_published, cve_id)` composite cursor; every non-unique sort column requires PK tiebreaker |
+| 5.19 | Architecture | pgx named prepared statements crash under PgBouncer transaction pooling mode | High | `QueryExecModeSimpleProtocol` in pgxpool config; `DB_QUERY_EXEC_MODE` env var |
 
 ---
 

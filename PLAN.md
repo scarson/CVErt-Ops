@@ -153,6 +153,37 @@ Feed data is dirty. Three classes of issues will cause hard failures at the DB l
 
 **NVD adapter: dynamic rate limiting (required):** NVD API 2.0 enforces 5 requests/30 seconds (unauthenticated) or 50 requests/30 seconds (with API key). The NVD adapter must check for the `NVD_API_KEY` environment variable at initialization and configure a 6-second inter-request delay if absent, or 0.6-second if present. Hardcoding the fast rate causes immediate IP bans for unauthenticated users; hardcoding the slow rate causes enterprise users with API keys to wait hours for backfills.
 
+**NVD adapter: URL-encode timestamp query parameters (required):** NVD API 2.0 requires ISO 8601 timestamps in query parameters (e.g., `lastModStartDate=2026-02-19T12:00:00.000+00:00`). `time.RFC3339` formatting produces the `+` character for the timezone offset. In HTTP query strings, `+` is interpreted by servers as a URL-encoded space — the NVD server reads `000 00:00` instead of `000+00:00` and returns `400 Bad Request`. The incremental sync permanently fails and stops receiving new CVEs.
+
+**Required pattern:** Always construct NVD query parameters via `url.Values`, which uses `url.QueryEscape` internally and correctly percent-encodes `+` as `%2B`:
+```go
+q := url.Values{}
+q.Set("lastModStartDate", startTime.UTC().Format("2006-01-02T15:04:05.000+00:00"))
+q.Set("lastModEndDate",   endTime.UTC().Format("2006-01-02T15:04:05.000+00:00"))
+req.URL.RawQuery = q.Encode() // '+' → '%2B'; space → '%20'
+```
+Never use string concatenation (`"?lastModStartDate=" + t.Format(time.RFC3339)`) for any URL parameter that may contain `+`, `&`, `=`, or space characters.
+
+**OSV/GHSA adapter: alias resolution (required, prevents split-brain records):** GHSA and OSV advisories use their own native identifiers (`GHSA-xxxx-xxxx-xxxx`, `GO-2024-1234`, `PYSEC-2024-12`, etc.). Each record's JSON payload includes an `aliases` array that lists equivalent identifiers from other namespaces. If a native GHSA/OSV ID contains a standard CVE identifier in its `aliases`, the adapter **MUST** use that CVE ID as the `cve_id` primary key for the DB upsert, and record the native ID as a `source_id` metadata field.
+
+**Why this is required:** The merge pipeline uses `cve_id` as the single canonical join key. If OSV ingests `GO-2024-1234` (aliases: `["CVE-2024-56789"]`) using `GO-2024-1234` as the primary key, and NVD ingests the same vulnerability as `CVE-2024-56789`, the database contains two completely separate rows — one from each feed — with different PKs. The merge pipeline never combines them. The canonical `cves` row from NVD misses the OSV-specific severity and package data; alert rules evaluating the CVE ID find only the NVD row and miss any OSV-sourced context.
+
+**Required alias resolution logic (per OSV/GHSA adapter):**
+```go
+// Extract canonical CVE ID from the aliases array, if present.
+// If found, use it as the primary cve_id; the native ID becomes source metadata.
+func resolveCanonicalID(nativeID string, aliases []string) string {
+    cvePattern := regexp.MustCompile(`^CVE-\d{4}-\d+$`)
+    for _, alias := range aliases {
+        if cvePattern.MatchString(alias) {
+            return alias // promote CVE ID to primary key
+        }
+    }
+    return nativeID // no CVE alias; use native ID as-is
+}
+```
+If multiple CVE IDs appear in the `aliases` array (rare but possible), use the first match. The native ID is stored in `cve_sources.source_id` for provenance. If no CVE alias is present (the vulnerability has no assigned CVE ID yet), use the native ID as-is — it remains a first-class record in the corpus under its own identifier.
+
 **Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
 
 ### 3.3 Ingestion Scheduling, Cursoring, and Idempotency
@@ -215,6 +246,8 @@ The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see sect
           // process record through merge pipeline
       }
       ```
+      **`defer` is FORBIDDEN inside the ZIP iteration loop (required):** `defer rc.Close()` is the natural Go idiom for resource cleanup, but `defer` statements are only executed when the **surrounding function returns** — not when the loop iteration ends. The OSV `all.zip` archive contains 100,000+ individual files. If the loop body uses `defer rc.Close()`, all 100,000 file descriptors remain open simultaneously. Within seconds the Go runtime hits the OS-level `ulimit -n` (typically 1024 or 65535 open files), crashing the worker process with `too many open files`. Use explicit `rc.Close()` calls at every exit path from the loop body (both error and success paths), as shown in the pattern above. Never use `defer` for resources that must be released per-iteration inside a long loop.
+
       For the `import-bulk` CLI path with a local file, skip the temp file step and pass the local `os.File` directly to `zip.NewReader`.
     - **CISA KEV** is a JSON object `{"vulnerabilities":[{...}]}` — same object-navigation pattern as NVD.
   - The correct streaming pattern for a **nested** array within a top-level JSON object (NVD, KEV):
@@ -1480,6 +1513,26 @@ for attempt := 1; attempt <= 10; attempt++ {
 if err != nil { log.Fatalf("database unavailable after retries: %v", err) }
 ```
 Additionally, `compose.yml` should use `depends_on` with `condition: service_healthy` pointing to a `pg_isready` healthcheck on the Postgres service.
+
+**`http.Server` timeout configuration (required, anti-Slowloris):**
+
+Go's `net/http.Server` has **infinite timeouts by default** — connections with no configured deadline stay open forever. A Slowloris attack opens thousands of TCP connections and sends exactly 1 byte every few seconds, intentionally never completing HTTP headers. Each connection holds an open file descriptor and a goroutine. At 10,000 connections the server exhausts file descriptors and goroutine memory, taking the entire API offline. Crucially, `chi/middleware.RequestSize` and rate-limiting middleware never execute — they run after headers are fully parsed, which never happens in a Slowloris scenario.
+
+The `http.Server` struct must be initialized with explicit timeouts:
+```go
+server := &http.Server{
+    Addr:              cfg.ListenAddr,
+    Handler:           r,
+    ReadHeaderTimeout: 5 * time.Second,   // abort if headers don't arrive within 5s
+    ReadTimeout:       15 * time.Second,  // abort if full request body not received in 15s
+    IdleTimeout:       120 * time.Second, // close keep-alive connections idle for >2 min
+    // WriteTimeout intentionally omitted or set high for SSE/streaming endpoints
+}
+```
+- `ReadHeaderTimeout` is the critical one for Slowloris: it kills connections that never complete their request headers. The Go server closes the connection and releases the goroutine after 5 seconds with no complete header.
+- `ReadTimeout` bounds the total time from connection accept to reading the complete request body.
+- `IdleTimeout` reclaims keep-alive connections sitting idle between requests.
+- Never use `http.ListenAndServe(addr, handler)` directly — it creates a server with zero timeouts.
 
 **HTTP request body size limit (required):**
 

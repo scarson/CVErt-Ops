@@ -1,7 +1,7 @@
 # CVErt Ops — Implementation Pitfalls & Review Findings
 
 > **Date:** 2026-02-21
-> **Source:** 18 rounds of Gemini Pro architectural review of PLAN.md before implementation began
+> **Source:** 19 rounds of Gemini Pro architectural review of PLAN.md before implementation began
 > **Purpose:** Document implementation traps, design flaws, and corrected decisions as a learning artifact for future development and similar projects.
 
 ---
@@ -530,6 +530,22 @@ Legitimate users rarely have more than 1–2 simultaneous login attempts. The 50
 
 ---
 
+### 3.7 Unbounded Request Body Causes OOM Before Any Validation Runs
+
+**The Flaw:** No HTTP request body size limit was specified for the API server.
+
+**Why It Matters:** Go's `net/http` will faithfully read whatever the client sends. `huma` and `json.Decoder` buffer the body before schema validation. An attacker (or misconfigured client) POST-ing a 5 GB body to `POST /api/v1/orgs/{org_id}/alert-rules` causes the server to allocate 5 GB of heap memory before any handler logic or validation fires. On a homelab server or resource-limited container, this OOM-kills the process. The attack requires no authentication if any public endpoint exists, and no special knowledge — just a large body.
+
+**The Fix:** Register `chi/middleware.RequestSize` globally before any routes:
+```go
+r.Use(middleware.RequestSize(1 << 20)) // 1 MB global limit
+```
+This rejects requests with a `Content-Length` header exceeding 1 MB with `413 Request Entity Too Large` before the body is read. The `import-bulk` subcommand is a CLI path that reads local files — not an HTTP endpoint — and is unaffected. Raise the limit only on specific subrouters where larger payloads are legitimately required.
+
+**The Lesson:** Request body size limits are a basic web API hardening requirement — not an optimization. Without them, any endpoint is an OOM vector regardless of authentication. Global middleware registered before all routes is the correct pattern: it applies universally without requiring per-handler awareness. Middleware that enforces size limits early in the stack prevents reading any body content at all.
+
+---
+
 ## 4. Operational / UX Footguns
 
 ### 4.1 New-Rule Activation Scan Sends Outbound Notifications for Historical Data
@@ -695,6 +711,24 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 ---
 
+### 4.13 Webhook Fan-Out Exhausts OS Ephemeral Ports
+
+**The Flaw:** No `MaxConnsPerHost` constraint was specified on the `http.Transport` underlying the webhook delivery client.
+
+**Why It Matters:** During a high-impact vulnerability event (e.g., Log4Shell), every org with matching alert rules fires notifications simultaneously. If 400 orgs each have 5 webhook channels pointing to `hooks.slack.com`, the notification worker attempts ~2,000 simultaneous TCP connections to the same host. Each consumes one OS ephemeral port (Linux range: ~32k–60k). Exhausting the range produces `connect: cannot assign requested address` errors — all webhook delivery silently fails for the duration of the event, with no obvious error in application-level logs. The failure looks like network problems, not a resource exhaustion issue.
+
+**The Fix:** Set `MaxConnsPerHost` on the transport backing the webhook HTTP client:
+```go
+transport := &http.Transport{
+    MaxConnsPerHost: 50, // cap connections to any single webhook host
+}
+```
+`MaxConnsPerHost: 50` means at most 50 simultaneous TCP connections to `hooks.slack.com` (or any other single host) regardless of how many orgs are targeting it. The Go default is `0` (unlimited). This is distinct from the per-org delivery concurrency cap (§11.2), which bounds in-flight deliveries per org; `MaxConnsPerHost` bounds connections at the OS TCP layer across all orgs and all deliveries.
+
+**The Lesson:** Ephemeral port exhaustion is invisible at the application layer — it looks like every outbound connection fails simultaneously. Any service that makes large fan-out HTTP calls (notifications, webhooks, aggregation) must bound the total outbound connection count at the transport layer. The per-org cap limits business-logic concurrency; `MaxConnsPerHost` prevents OS-level resource exhaustion. Both are required.
+
+---
+
 ## 5. Architectural Decisions Validated Early
 
 ### 5.1 RLS Must Be Implemented Alongside Initial Org Table Migrations (Not Deferred)
@@ -815,6 +849,43 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 ---
 
+### 5.11 Job Queue MVCC Bloat Degrades SKIP LOCKED Performance
+
+**The Issue:** The `job_queue` table was defined without storage parameter overrides.
+
+**Failure scenario:** Default Postgres autovacuum triggers vacuum when 20% of rows are dead. A queue processing 100 jobs/sec produces ~300 UPDATE/DELETE operations per second (pending → running → succeeded → DELETE). At this rate, dead tuples accumulate far faster than autovacuum's default schedule reclaims them. `SELECT ... FOR UPDATE SKIP LOCKED` must scan past dead tuples to find live rows, causing poll queries to perform heap scans on bloated pages. Queue throughput degrades non-linearly; worker idle time increases; job latency grows.
+
+**The Decision:** The `job_queue` table migration includes explicit storage parameters:
+```sql
+ALTER TABLE job_queue SET (
+    autovacuum_vacuum_scale_factor = 0.01,
+    autovacuum_vacuum_cost_delay   = 2,
+    fillfactor                     = 70
+);
+```
+Also: `succeeded`/`dead` rows are pruned after 24 hours by the retention cleanup job (§21) using the bounded-batch DELETE pattern.
+
+**The Lesson:** High-churn Postgres tables (queues, event logs, audit tables) require explicit autovacuum tuning. The default 20% dead-tuple threshold is designed for tables with infrequent updates, not queue tables that update every row multiple times before deleting it. Tune per-table autovacuum settings in the same migration that creates the table.
+
+---
+
+### 5.12 Semver Version Range Matching Cannot Use String Comparison
+
+**The Issue:** No version range field exists in the DSL (§10.1) or watchlist items (§9.2) at MVP. If one is added without explicit library guidance, the "obvious" implementation uses string comparison.
+
+**Why String Comparison Fails Silently:** Semver is not lexicographically ordered. `"2.10.0" < "2.9.0"` in string comparison (because `"1" < "9"`), but `v2.10.0 > v2.9.0` per semver spec. A range check `version <= "2.9.0"` would falsely include `2.10.0`, `2.11.0`, `2.100.0` — all of which should NOT match. Alternatively, it falsely excludes them depending on the comparison direction. The bugs are silent: no error, no panic, just wrong match results.
+
+**The Decision:** Any future implementation of version range matching — in watchlist items OR in an `affected.version` DSL field — must use `github.com/Masterminds/semver/v3` constraint checking:
+```go
+constraint, _ := semver.NewConstraint("<= 2.9.0")
+version, _ := semver.NewVersion("2.10.0")
+matches := constraint.Check(version) // correctly false
+```
+
+**The Lesson:** Semantic versioning is not string sorting. Strings and semver share a superficial resemblance (both are character sequences) but have fundamentally different ordering. Never use `strings.Compare`, `<`, or `>` on version strings. Always use a semver-aware library. This is a common mistake that produces wrong results across the entire version range without any runtime indication of failure.
+
+---
+
 ## Summary Table
 
 | # | Category | Issue | Severity | Key Fix |
@@ -865,6 +936,10 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 | 5.8 | Architecture | IP rate limiter global ban via reverse proxy `r.RemoteAddr` | High | `TRUSTED_PROXIES` CIDR env var; trust `X-Forwarded-For` only from trusted proxy IPs |
 | 5.9 | Architecture | Alert engine nil-dereference panics on sparse/incomplete CVE records | High | Nil-safe accessor functions for all optional fields; test with fully-nil CVE fixtures |
 | 5.10 | Architecture | Validated: `SET LOCAL` is transaction-scoped; connection pool poisoning not possible | — | Confirmed handled: `SET LOCAL` auto-resets on commit/rollback per Postgres spec |
+| 3.7 | Security | Unbounded request body OOM-kills server before validation runs | Critical | `chi/middleware.RequestSize(1<<20)` registered globally before all routes |
+| 4.13 | Operational | Webhook fan-out exhausts OS ephemeral ports — all delivery silently fails | High | `http.Transport{MaxConnsPerHost: 50}` on webhook delivery transport |
+| 5.11 | Architecture | Job queue MVCC dead-tuple bloat degrades SKIP LOCKED performance | High | `autovacuum_vacuum_scale_factor=0.01`, `fillfactor=70`, 24h retention on completed jobs |
+| 5.12 | Architecture | Semver version range matching via string comparison produces wrong results | High | `github.com/Masterminds/semver/v3` constraint checking required for any version range field |
 
 ---
 

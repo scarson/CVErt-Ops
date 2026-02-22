@@ -812,6 +812,8 @@ A watchlist is an org-defined set of things the org cares about:
 - For packages: match if CVE has affected package entry with same ecosystem + normalized package name.
 - For CPE: match exact or prefix-pattern match (define pattern rule: "startsWith on normalized CPE string").
 
+**Version range matching (future, required pattern):** The current watchlist item model (`ecosystem + name + optional namespace`) does not include a version constraint at MVP. If version range matching is added to watchlist items (e.g., "alert only for versions ≤ 2.3.4") or if an `affected.version` field is added to the alert DSL (§10.1), the matching logic MUST use a proper semver constraint library — `github.com/Masterminds/semver/v3` — rather than string comparison or lexicographic ordering. String comparison silently produces wrong results: `"2.10.0" < "2.9.0"` lexicographically, but `v2.10.0 > v2.9.0` per semver spec. This would cause silent false negatives (a watchlist match that should trigger simply doesn't), with no error surfaced. Do not implement any version range field without first integrating a proper semver library.
+
 ### 9.3 Watchlist–Alert Rule Binding
 
 Alert rules and watchlists are **independent but composable.** An alert rule optionally references one or more watchlists as a pre-filter:
@@ -1003,6 +1005,17 @@ Required delivery worker pattern:
   - enforce timeout + max response size (`http.Client` with `Timeout`; `io.LimitReader` on response body)
 - Validate webhook URLs at registration time (not just request time)
 - Allow per-channel headers but denylist dangerous ones (`Host`, `Content-Length`, etc.)
+
+**Outbound webhook connection concurrency limit (required, anti-port-starvation):** During high-volume alert events (e.g., a Log4Shell-level vulnerability where hundreds of orgs each have multiple webhook channels), the notification worker creates thousands of simultaneous outbound HTTP connections. Each open TCP connection consumes one OS ephemeral port (range ~32k–60k on Linux). Exhausting the port range causes `connect: cannot assign requested address` — all webhook delivery silently fails with no obvious error in application logs.
+
+The `http.Transport` underlying the `doyensec/safeurl` client must set `MaxConnsPerHost`:
+```go
+transport := &http.Transport{
+    MaxConnsPerHost: 50, // cap total simultaneous connections to any single webhook host
+    // ... other transport settings (DialContext, TLSHandshakeTimeout, etc.)
+}
+```
+`MaxConnsPerHost: 50` bounds connections to any single destination host (e.g., `hooks.slack.com`), which is the primary fan-out vector when many orgs use the same Slack webhook host. The default is `0` (unlimited). This is distinct from the per-org concurrency cap (§11.2), which bounds in-flight deliveries per org; `MaxConnsPerHost` bounds connections at the OS TCP layer across all orgs.
 
 **Notification channel deletion pre-flight check (required):** `DELETE /api/v1/orgs/{org_id}/channels/{id}` must first check whether any active alert rules (`status NOT IN ('draft', 'disabled')`) reference this channel. If any are found, return `409 Conflict` with a machine-readable error body listing the conflicting rule IDs and names. Deleting a channel without this guard causes active alert rules to fire, attempt delivery to a non-existent channel UUID, permanently fail in the dead-letter queue, and silently stop alerting — with no error surfaced to the user.
 
@@ -1340,6 +1353,21 @@ ON job_queue (lock_key)
 WHERE lock_key IS NOT NULL AND status = 'running';
 ```
 
+**Job queue MVCC storage tuning (required):** `job_queue` is a high-churn table: every job writes 3 UPDATEs (`pending → running → succeeded`) plus 1 DELETE. Postgres MVCC writes a new physical tuple on every UPDATE; `SELECT ... FOR UPDATE SKIP LOCKED` must scan past dead tuples to find live ones. With Postgres's default autovacuum threshold (vacuum when 20% of rows are dead), the table accumulates thousands of dead tuples between vacuum runs, causing queue poll queries to perform heap scans on bloated pages and significantly degrading throughput at sustained job rates.
+
+**Required storage parameters** (set in the migration file alongside the CREATE TABLE):
+```sql
+ALTER TABLE job_queue SET (
+    autovacuum_vacuum_scale_factor = 0.01,  -- vacuum when 1% dead (vs default 20%)
+    autovacuum_vacuum_cost_delay   = 2,     -- vacuum more aggressively (ms per I/O cost window)
+    fillfactor                     = 70     -- reserve 30% free space per page for HOT updates
+);
+```
+- `autovacuum_vacuum_scale_factor = 0.01`: triggers vacuum when 1% of rows are dead rather than 20%, keeping dead-tuple accumulation bounded relative to actual job throughput.
+- `fillfactor = 70`: reserves free space in each page so Postgres can update a row in-place (HOT — Heap Only Tuple update) without writing a new heap page entry, reducing bloat further.
+
+**Completed job retention (required):** Do not accumulate `status = 'succeeded'` rows indefinitely. The retention cleanup job (§21) must include `job_queue` with a 24-hour retention window for `succeeded` and `dead` rows, using the bounded-batch DELETE pattern (§21.3).
+
 ### Decision D2 — Job queue concurrency model (MVP)
 
 **Decision (MVP):** Use a **single Postgres job table** with `SELECT ... FOR UPDATE SKIP LOCKED`, plus an optional `lock_key` and partial unique index to enforce “max-1 running job per class” (e.g., one ingest job per feed).
@@ -1452,6 +1480,14 @@ for attempt := 1; attempt <= 10; attempt++ {
 if err != nil { log.Fatalf("database unavailable after retries: %v", err) }
 ```
 Additionally, `compose.yml` should use `depends_on` with `condition: service_healthy` pointing to a `pg_isready` healthcheck on the Postgres service.
+
+**HTTP request body size limit (required):**
+
+chi includes `middleware.RequestSize(n int64)` which rejects requests with a `Content-Length` header exceeding `n` bytes, returning `413 Request Entity Too Large`. Without this limit, an attacker (or misconfigured client) can POST a multi-GB body to any endpoint — Go's `net/http` will begin reading it, `huma` and `json.Decoder` will buffer it, and the server OOM-crashes before any validation or handler logic runs. Register this middleware globally before route definitions:
+```go
+r.Use(middleware.RequestSize(1 << 20)) // 1 MB global limit
+```
+The `import-bulk` subcommand is a cobra CLI path that reads files directly via the OS filesystem — it is not an HTTP endpoint and is unaffected. If any future HTTP endpoint legitimately requires larger payloads, override the limit on that specific subrouter only rather than raising the global default.
 
 ---
 

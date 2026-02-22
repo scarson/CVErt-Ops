@@ -1542,6 +1542,44 @@ r.Use(middleware.RequestSize(1 << 20)) // 1 MB global limit
 ```
 The `import-bulk` subcommand is a cobra CLI path that reads files directly via the OS filesystem — it is not an HTTP endpoint and is unaffected. If any future HTTP endpoint legitimately requires larger payloads, override the limit on that specific subrouter only rather than raising the global default.
 
+**`WriteTimeout` and streaming endpoints (required, non-obvious):**
+
+`WriteTimeout` bounds the total time from connection accept to writing the complete response. Setting it globally is dangerous for CVErt Ops because the digest preview and any future SSE-based endpoints emit a response body over a long duration — a 30-second `WriteTimeout` would abort mid-stream responses after 30 seconds regardless of whether the client is still receiving. For this reason, `WriteTimeout` is **intentionally omitted** from the global `http.Server` struct (leaving it infinite) and instead applied per-handler via `http.TimeoutHandler` where it is meaningful:
+
+```go
+// Global server — no WriteTimeout (would break streaming endpoints)
+server := &http.Server{
+    ReadHeaderTimeout: 5 * time.Second,
+    ReadTimeout:       15 * time.Second,
+    IdleTimeout:       120 * time.Second,
+}
+
+// Per-handler write timeout for non-streaming endpoints (e.g., API mutations)
+http.TimeoutHandler(myHandler, 30*time.Second, `{"status":503,"title":"Request Timeout"}`)
+```
+
+This is the one legitimate use of omitting a server timeout: when a subset of endpoints genuinely requires an unbounded write duration. Never omit `ReadHeaderTimeout`.
+
+**HTTP security response headers (required):**
+
+Standard security headers must be set on all API responses. Register a chi middleware early in the chain that sets:
+```go
+r.Use(func(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("X-Content-Type-Options", "nosniff")
+        w.Header().Set("X-Frame-Options", "DENY")
+        w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+        // HSTS — only set when the server itself terminates TLS (not behind a TLS-terminating proxy)
+        // w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+        // CSP — set per-response type when frontend is added (Phase 6+)
+        next.ServeHTTP(w, r)
+    })
+})
+```
+`X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY` are safe to set universally on an API server. `Strict-Transport-Security` (HSTS) should only be sent by the process that terminates TLS — since the MVP deployment model uses a reverse proxy for TLS termination, HSTS belongs in the proxy config, not in the Go server. A convenience alternative: `github.com/unrolled/secure` provides a configurable middleware covering these headers.
+
+**Reference — complete HTTP hardening checklist:** The items in this section (server timeouts, request body limit, `WriteTimeout` per-handler, security headers) cover the Go-specific and non-obvious hardening requirements for this codebase. They are not an exhaustive list. Before production deployment, validate against **OWASP Application Security Verification Standard (ASVS) Level 2** — particularly sections V14 (Configuration) and V12 (Files and Resources). The `golangci-lint` pipeline (Phase 0) catches several OWASP-relevant code patterns at the static analysis level.
+
 ---
 
 ## 19. Research Decision Backlog (ALL RESOLVED)

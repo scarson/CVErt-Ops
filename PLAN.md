@@ -324,7 +324,7 @@ Within the same DB transaction:
 1) `SELECT pg_advisory_xact_lock($1)` where `$1 = cveAdvisoryKey(cve_id)` (int64)
 2) Upsert/replace the per-source normalized row in `cve_sources` (and store raw payload separately).
 3) Recompute the canonical CVE row **from the current set of `cve_sources`** for that CVE (read-your-writes).
-4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`.
+4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`. **Child table rows MUST be sorted by their natural key before upsert** (e.g., `cve_references` by `url_canonical` ASC, `cve_affected_packages` by `(ecosystem, package_name, introduced)` ASC, `cve_affected_cpes` by `cpe_normalized` ASC). The advisory lock in step 1 guarantees that no two workers are inside the same CVE's merge transaction simultaneously, preventing deadlocks at the CVE level. Consistent child row ordering prevents deadlocks within the child table upserts themselves (e.g., if the merge pipeline is extended or if Postgres's internal row ordering differs across code paths). Sorting is cheap; debugging a deadlock in production is not.
 4a) Apply staged EPSS score (required): `SELECT epss_score, as_of_date FROM epss_staging WHERE cve_id = $1`. If a row is found, apply via `UPDATE cves SET epss_score = staged, date_epss_updated = now() WHERE cve_id = $1 AND epss_score IS DISTINCT FROM staged`.
 4b) Delete the staging row (required): `DELETE FROM epss_staging WHERE cve_id = $1`. This must execute regardless of whether 4a found a row — prevents stale rows from accumulating. Both 4a and 4b are inside the same transaction; if the merge rolls back, the staging row is preserved for retry.
 5) Commit.
@@ -639,23 +639,28 @@ Purely stateless refresh tokens cannot detect theft. If an attacker steals a use
 **Required: `refresh_tokens` table:**
 ```sql
 CREATE TABLE refresh_tokens (
-    jti         uuid PRIMARY KEY,          -- embedded in refresh JWT claims
-    user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_version int NOT NULL,            -- must match users.token_version at validation
-    expires_at  timestamptz NOT NULL,
-    used_at     timestamptz NULL,          -- non-null = already spent (theft if presented again)
-    created_at  timestamptz NOT NULL DEFAULT now()
+    jti              uuid PRIMARY KEY,         -- embedded in refresh JWT claims
+    user_id          uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_version    int  NOT NULL,            -- must match users.token_version at validation
+    expires_at       timestamptz NOT NULL,
+    used_at          timestamptz NULL,         -- non-null = already spent
+    replaced_by_jti  uuid NULL REFERENCES refresh_tokens(jti),  -- JTI issued when this token was consumed
+    created_at       timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX refresh_tokens_user_idx ON refresh_tokens (user_id, expires_at);
 ```
 
 **Required flow:**
-- **Issuance:** generate a UUIDv4 `jti`, embed in refresh JWT claims, insert row into `refresh_tokens` with `used_at = NULL`
+- **Issuance:** generate a UUIDv4 `jti`, embed in refresh JWT claims, insert row into `refresh_tokens` with `used_at = NULL`, `replaced_by_jti = NULL`
 - **Refresh:** look up `refresh_tokens` by `jti`. Three cases:
   1. Row not found or `token_version` mismatch → return 401 (revoked family)
-  2. Row found, `used_at IS NOT NULL` → **theft detected** → immediately `UPDATE users SET token_version = token_version + 1` (invalidates all active sessions for this user) → return 401
-  3. Row found, `used_at IS NULL`, `token_version` matches → mark `used_at = now()`, issue new access + refresh pair with new `jti`, insert new `refresh_tokens` row
-- **Cleanup:** retention job deletes rows where `expires_at < now()`
+  2. Row found, `used_at IS NOT NULL` → **multi-tab race / theft check (required):**
+     - If `now() - used_at ≤ 60 seconds` AND `replaced_by_jti IS NOT NULL` → **multi-tab concurrent refresh** (grace window). Issue a fresh access token (new JWT, same user/org claims). Return `replaced_by_jti` as the refresh token to use. Do NOT create another new refresh token row. This is idempotent: all tabs racing for the same consumed token within the grace window receive the same replacement refresh token, preventing Tab B from triggering a false theft alarm 5ms after Tab A.
+     - Otherwise (`now() - used_at > 60 seconds`, or `replaced_by_jti IS NULL`) → **theft detected** → `UPDATE users SET token_version = token_version + 1` → return 401. 60 seconds is well beyond any concurrent tab scenario; a reuse after this window is genuine theft or a severe replay.
+  3. Row found, `used_at IS NULL`, `token_version` matches → `UPDATE refresh_tokens SET used_at = now(), replaced_by_jti = <new_jti> WHERE jti = $1`. Insert new `refresh_tokens` row for `<new_jti>`. Issue new access + refresh pair and return.
+- **Cleanup:** retention job deletes rows where `expires_at < now() - interval '60 seconds'` (retain for the grace window beyond expiry)
+
+**Grace period rationale:** Without this, any user with two browser tabs silently triggers the theft protocol on every 15-minute access token expiry: both tabs detect expiration simultaneously and fire concurrent refresh requests. Tab A's request arrives first (wins), Tab B presents the now-consumed token, and the server increments `token_version`, globally logging out the user from all devices. This produces constant spurious logouts for a perfectly normal usage pattern. The 60-second grace window handles network jitter, tab scheduling variance, and concurrent SPA requests without weakening security meaningfully (the attacker's window narrows to 60 seconds, during which they can only get an access token that expires in ≤15 minutes).
 
 This makes refresh tokens stateful (one DB lookup per refresh) while keeping access tokens fully stateless. Granular per-device revocation (marking one `refresh_tokens` row as used without incrementing `token_version`) is now architecturally possible as a P1 UX feature.
 
@@ -714,7 +719,13 @@ Required pattern:
 - Generate: 32 cryptographically random bytes, base58/hex-encoded, prefixed: `cvo_` + random bytes
 - Store: only `sha256(raw_key)` in the `api_keys` table — never the raw key
 - Display: show the raw key to the user exactly once (in the create response), then discard
-- Authenticate: compute `sha256(presented_key)` and look up the hash in `api_keys`; if found and not expired, inject the associated `(org_id, role)` into the request context
+- Authenticate: compute `sha256(presented_key)`, look up candidate hash rows in `api_keys` (e.g., by key prefix/hint for index efficiency), then compare hashes using **`crypto/subtle.ConstantTimeCompare`** — never `==` or `bytes.Equal`. Standard equality operators short-circuit on the first mismatching byte, creating a timing oracle: an attacker who can measure API response latency to nanosecond precision can determine how many bytes of the stored hash matched, eventually forging a valid key. `subtle.ConstantTimeCompare` always processes all bytes in constant time regardless of where the mismatch occurs, eliminating the timing signal entirely. This is a one-line change that costs nothing and is mandatory for any system that stores and compares secrets.
+  ```go
+  incomingHash := sha256.Sum256([]byte(presentedKey))
+  if subtle.ConstantTimeCompare(incomingHash[:], storedHash[:]) == 1 {
+      // authenticated
+  }
+  ```
 - Scope: API keys have their own `expires_at` and `last_used_at` columns; they are not linked to any specific user session or `token_version`
 
 ### 7.2 Federation Strategy (RESOLVED)
@@ -1031,10 +1042,12 @@ These endpoints prevent users from discovering rule errors only at the next batc
 
 **Database connection isolation from outbound HTTP (required):** Workers must NEVER hold an open database transaction while executing an outbound webhook HTTP call. Holding a transaction open during external network I/O (up to 10s per call) consumes a Postgres connection for the full duration. With a small pool (typical Go default: 25–50 connections) and concurrent webhook deliveries, the pool exhausts and freezes the primary HTTP API entirely.
 
+**Fan-out delivery isolation (required):** When an alert event fires for a rule with multiple bound notification channels, the evaluation pipeline MUST create a separate `notification_deliveries` row for each channel before returning. Each row is then an independent delivery job. The delivery worker processes one row at a time and MUST `continue` the job loop — never `return err` — on individual outbound failures. Failure to deliver to Channel A (broken webhook, SMTP error, Slack rate limit) must mark only Channel A's delivery row as `failed` and proceed to Channel B. The parent job returns an error (and triggers a retry) only when a database transaction itself fails, never because an outbound HTTP request failed. An implementation that does `for _, ch := range channels { if err := send(ch); err != nil { return err } }` is a domino failure: one broken channel silently suppresses all subsequent alerts for that rule.
+
 Required delivery worker pattern:
 1. `BEGIN` → claim delivery job, mark `status = 'processing'` → `COMMIT` (release DB connection)
-2. Execute outbound HTTP webhook call (no DB connection held)
-3. `BEGIN` → update `status = 'succeeded'` | `'failed'`, increment `attempt_count`, set `last_error` → `COMMIT`
+2. Execute outbound HTTP webhook call (no DB connection held); on error: log, continue — do NOT propagate to parent job
+3. `BEGIN` → update `status = 'succeeded'` | `'failed'`, set `last_error` → `COMMIT`
 
 **DLQ replay rate limit and attempt_count reset (required):** The `notification_deliveries` table must include an `attempt_count INT NOT NULL DEFAULT 0` column. The `POST .../deliveries/{delivery_id}/replay` endpoint must: (a) reset `attempt_count` to 0 before re-enqueueing, (b) enforce a rate limit (max 10 replays per org per hour) to prevent users or automation scripts from flooding the worker pool with permanently-failing deliveries for a misconfigured webhook. Replay endpoint is owner/admin only (per §7.3 permission matrix).
 

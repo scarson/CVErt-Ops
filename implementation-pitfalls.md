@@ -1,7 +1,7 @@
 # CVErt Ops — Implementation Pitfalls & Review Findings
 
 > **Date:** 2026-02-21
-> **Source:** 21 rounds of Gemini Pro architectural review of PLAN.md before implementation began
+> **Source:** 22 rounds of Gemini Pro architectural review of PLAN.md before implementation began
 > **Purpose:** Document implementation traps, design flaws, and corrected decisions as a learning artifact for future development and similar projects.
 
 ---
@@ -664,6 +664,25 @@ Consumers must: (1) parse the timestamp, (2) reject if `abs(now − timestamp) >
 
 ---
 
+### 3.10 API Key Hash Comparison Uses Short-Circuiting Equality — Timing Oracle
+
+**The Flaw:** The API key authentication code computed `sha256(presented_key)` and compared it to the stored hash using `==` or `bytes.Equal`.
+
+**Why It Matters:** Go's `==` operator on arrays and `bytes.Equal` both short-circuit: they return `false` immediately upon finding the first mismatching byte. An attacker who can make many API requests and measure response latency to nanosecond precision can distinguish "mismatched at byte 1" from "mismatched at byte 31" by comparing how long each response took. By probing systematically, the attacker can determine the stored hash byte-by-byte and eventually construct a key that produces that hash — forging authentication without knowing the original API key. Timing attacks on network-based systems are admittedly difficult to execute reliably due to network jitter, but for a security product, the correct behavior is mandatory regardless of practical exploit difficulty.
+
+**The Fix:** Always use `crypto/subtle.ConstantTimeCompare` for any secret comparison:
+```go
+incomingHash := sha256.Sum256([]byte(presentedKey))
+if subtle.ConstantTimeCompare(incomingHash[:], storedHash[:]) == 1 {
+    // authenticated
+}
+```
+`subtle.ConstantTimeCompare` processes all bytes of both slices every time, regardless of where the first mismatch occurs, emitting no timing signal. It is a one-line requirement that costs a negligible fixed amount of CPU.
+
+**The Lesson:** Constant-time comparison is required for any code path that compares a secret or secret-derived value. The list includes: API key hashes, HMAC signatures (prefer `hmac.Equal` which uses `subtle.ConstantTimeCompare` internally), password hashes (handled by argon2id library, but the same principle applies), and CSRF tokens. The "hard to exploit over a network" argument is not a reason to skip it — it is a reason to use the secure implementation and not think about it again.
+
+---
+
 ## 4. Operational / UX Footguns
 
 ### 4.1 New-Rule Activation Scan Sends Outbound Notifications for Historical Data
@@ -844,6 +863,29 @@ transport := &http.Transport{
 `MaxConnsPerHost: 50` means at most 50 simultaneous TCP connections to `hooks.slack.com` (or any other single host) regardless of how many orgs are targeting it. The Go default is `0` (unlimited). This is distinct from the per-org delivery concurrency cap (§11.2), which bounds in-flight deliveries per org; `MaxConnsPerHost` bounds connections at the OS TCP layer across all orgs and all deliveries.
 
 **The Lesson:** Ephemeral port exhaustion is invisible at the application layer — it looks like every outbound connection fails simultaneously. Any service that makes large fan-out HTTP calls (notifications, webhooks, aggregation) must bound the total outbound connection count at the transport layer. The per-org cap limits business-logic concurrency; `MaxConnsPerHost` prevents OS-level resource exhaustion. Both are required.
+
+---
+
+### 4.14 Fan-Out Delivery Loop Returns on First Channel Failure — All Subsequent Alerts Suppressed
+
+**The Flaw:** The notification fan-out loop was not specified to use per-channel error isolation. An AI implementation naturally writes: `for _, ch := range channels { if err := sendNotification(ch); err != nil { return err } }`.
+
+**Why It Matters:** When an alert rule fires and matches a CVE, the system fans out to all bound notification channels (Slack, email, webhook). If Channel 2 (a webhook) is temporarily unreachable and `sendNotification` returns an error, the `return err` exits the loop. Channels 3, 4, and 5 never receive the alert. The user's Slack and email channels are silently skipped. The user configured these channels as redundant delivery paths for a critical security alert — they don't know any of them succeeded or failed until they check the delivery log. In a security product, "one broken webhook silently suppresses all other delivery paths" is a correctness failure, not a configuration issue.
+
+**The Fix:** Each `notification_deliveries` row is an independent job. The delivery worker MUST `continue` the loop on per-channel failures — never `return err` for outbound HTTP failures:
+```go
+for _, delivery := range pendingDeliveries {
+    if err := attemptDelivery(ctx, delivery); err != nil {
+        slog.Error("delivery failed", "delivery_id", delivery.ID, "channel_id", delivery.ChannelID, "error", err)
+        markDeliveryFailed(ctx, delivery.ID, err.Error()) // mark only this row
+        continue // proceed to next channel — never return here
+    }
+    markDeliverySucceeded(ctx, delivery.ID)
+}
+```
+The parent job returns an error (and retries) only when a database transaction itself fails — not because an outbound HTTP request failed.
+
+**The Lesson:** Fan-out reliability requires explicit per-element isolation. The `return err` on a loop body is the natural Go error-handling idiom for sequential pipelines where any failure should abort processing. For fan-out delivery to independent endpoints, this idiom is wrong. The correct model is: process all elements, accumulate per-element results, log failures, and never use one element's failure to short-circuit others. This distinction — "pipeline abort" vs "independent fan-out" — must be explicit in any spec that involves notification delivery.
 
 ---
 
@@ -1056,6 +1098,34 @@ Eviction TTL (default 15 min, `RATE_LIMIT_EVICT_TTL` env var) must be longer tha
 
 ---
 
+### 5.16 Multi-Tab Concurrent Refresh Triggers False Theft Detection — Legitimate User Logged Out
+
+**The Issue:** The refresh token theft detection protocol (reuse of a consumed token → increment `token_version` → global logout) was specified without a grace period for the multi-tab concurrent refresh race.
+
+**Failure scenario:** A user has two browser tabs open. The access token (15-minute TTL) expires. Both Tab A and Tab B detect the expiration simultaneously and fire `POST /auth/refresh` with the same valid refresh token. Tab A's request arrives at the server 5 milliseconds before Tab B's. Tab A succeeds, marks the token consumed, and gets a new pair. Tab B arrives, presents the now-consumed token, triggers the theft protocol, and the server increments `token_version` — globally logging the user out of all devices. This happens every 15 minutes for any user with two tabs open. The user experiences constant spurious logouts with no explanation.
+
+**The Decision:** Add `replaced_by_jti uuid NULL REFERENCES refresh_tokens(jti)` to the `refresh_tokens` table. When a token is consumed (case 3), store the new JTI in `replaced_by_jti`. Case 2 (used_at IS NOT NULL) branches on the grace window:
+- `now() - used_at ≤ 60 seconds` AND `replaced_by_jti IS NOT NULL` → issue fresh access token + return `replaced_by_jti` as the refresh token; no theft alarm.
+- `now() - used_at > 60 seconds` → theft detected; increment `token_version`, return 401.
+
+60 seconds is well beyond any concurrent tab scenario and narrow enough to limit the attack window to a 60-second replay of an access token (≤15-minute expiry).
+
+**The Lesson:** Theft detection schemes that treat all token reuse as malicious break normal multi-tab browser behavior. Any "reuse = theft" protocol must handle the legitimate concurrent-access-token-expiry-refresh race. The solution (grace period with the replacement JTI stored on the consumed token) is standard practice (Auth0 calls it "Reuse Detection with Reuse Interval"). Design token revocation protocols by starting with "what does normal multi-device, multi-tab usage look like?" before adding adversarial scenarios.
+
+---
+
+### 5.17 Child Table Upserts in Merge Pipeline Not Sorted — Potential Deadlock Under Future Refactoring
+
+**The Issue:** The merge pipeline upserted child table rows (`cve_references`, `cve_affected_packages`, `cve_affected_cpes`) without specifying a consistent sort order.
+
+**Why the Advisory Lock Doesn't Fully Protect:** The per-CVE advisory lock in Decision D4 guarantees that no two workers are inside the same CVE's merge transaction simultaneously, which prevents deadlocks at the CVE level. However, child table rows are vulnerable to deadlocks if: (a) the merge pipeline is ever extended to process multiple CVEs in a single transaction, (b) a future code path inserts child rows in a different order (e.g., alphabetical vs. insertion order), or (c) multiple rows for the same CVE are upserted from different code paths that don't share the advisory lock.
+
+**The Decision:** All child table batch upserts within a CVE merge transaction MUST sort rows by their natural key before upserting: `cve_references` by `url_canonical ASC`, `cve_affected_packages` by `(ecosystem, package_name, introduced) ASC`, `cve_affected_cpes` by `cpe_normalized ASC`. Postgres acquires row-level locks in upsert order; consistent ordering across all code paths prevents circular waits.
+
+**The Lesson:** Consistent lock ordering is cheap to enforce and expensive to debug. Sorting a slice of 20 structs before a batch upsert costs microseconds. Tracking down a sporadic merge deadlock in a production feed pipeline costs hours. Specify sort order for any multi-row batch operation involving tables that could be accessed from more than one code path.
+
+---
+
 ## Summary Table
 
 | # | Category | Issue | Severity | Key Fix |
@@ -1118,6 +1188,10 @@ Eviction TTL (default 15 min, `RATE_LIMIT_EVICT_TTL` env var) must be longer tha
 | 3.9 | Security | Webhook HMAC over body alone is replayable indefinitely — captured payload valid forever | High | `X-CVErt-Timestamp` header + HMAC over `timestamp + "." + body`; consumer rejects if timestamp > 5 min old |
 | 5.14 | Architecture | In-memory rate limiter `sync.Map` grows without bound — unbounded heap leak over months | High | `hashicorp/golang-lru/v2/expirable` or background sweeper; 15-min TTL on idle IP entries |
 | 5.15 | Architecture | Connection pool multiplication across replicas silently exceeds Postgres `max_connections` | High | `DB_MAX_CONNS` env var (default 25); document `MaxConns × instances < postgres_max_connections − 10` |
+| 5.16 | Architecture | Multi-tab concurrent refresh triggers false theft detection — legitimate user logged out every 15 min | High | `replaced_by_jti` column + 60-second grace window; Tab B gets replacement token, no theft alarm |
+| 5.17 | Architecture | Child table upserts in merge pipeline lack consistent sort order — deadlock risk under future refactoring | Medium | Sort child rows by natural key before batch upsert; advisory lock handles CVE-level concurrency |
+| 3.10 | Security | API key hash comparison uses short-circuiting `==` / `bytes.Equal` — timing oracle | Medium | `subtle.ConstantTimeCompare(incomingHash[:], storedHash[:])` mandatory for all secret comparisons |
+| 4.14 | Operational | Fan-out delivery loop `return err` on first channel failure — all subsequent channels silently skipped | High | Per-channel `continue` on delivery error; parent job fails only on DB transaction failure |
 
 ---
 

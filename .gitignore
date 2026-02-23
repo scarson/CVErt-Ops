@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Claude Code — personal local settings (credentials, personal permissions)
+.claude/settings.local.json
+
+# Chat exports / session logs
+chats/

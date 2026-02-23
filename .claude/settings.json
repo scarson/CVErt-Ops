@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build ./...)",
+      "Bash(go build ./cmd/...)",
+      "Bash(go vet ./...)",
+      "Bash(go test ./...)",
+      "Bash(go test -run *)",
+      "Bash(go test -v *)",
+      "Bash(go mod tidy)",
+      "Bash(go mod verify)",
+      "Bash(golangci-lint run*)",
+      "Bash(sqlc generate)",
+      "Bash(sqlc verify)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git stash list)",
+      "Bash(ls*)",
+      "Bash(docker compose ps)",
+      "Bash(docker compose logs*)",
+      "WebFetch(domain:pkg.go.dev)",
+      "WebFetch(domain:nvd.nist.gov)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:ossf.github.io)",
+      "WebFetch(domain:cwe.mitre.org)",
+      "WebFetch(domain:api.first.org)",
+      "WebFetch(domain:www.osv.dev)",
+      "WebFetch(domain:osv.dev)",
+      "WebFetch(domain:go.dev)",
+      "WebFetch(domain:www.postgresql.org)",
+      "WebFetch(domain:huma.rocks)",
+      "WebFetch(domain:docs.github.com)"
+    ]
+  }
+}

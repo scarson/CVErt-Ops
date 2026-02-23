@@ -497,6 +497,31 @@ overrides:
 
 **The Lesson:** `sqlc` defaults are not ergonomic for UUID-heavy schemas. Always configure type overrides before writing any schema; retrofitting after sqlc-generated code is used throughout the codebase requires touching every generated function signature and every call site.
 
+### 2.12 Dynamic `IN` Clause Overflows Postgres 65,535 Parameter Limit
+
+**The Flaw:** When evaluating large watchlists or SBOM dependency lists against the database, the natural pattern is a dynamically built `IN` clause: `SELECT * FROM cves WHERE package_name IN ($1, $2, ..., $N)`.
+
+**Why It Matters:** PostgreSQL's wire protocol uses a 16-bit integer for parameter binding, imposing a hard limit of **65,535 parameters per query**. At 65,536 dependencies — easily reached by an enterprise Java or Node.js monolith SBOM — the `pgx` driver panics and crashes the worker. This is an unrecoverable hard limit; there is no configuration knob to raise it. A user with a large dependency list is permanently unable to run watchlist matching.
+
+**The Fix:** Pass the entire list as a single Postgres array parameter using `ANY($1::text[])`:
+```go
+// WRONG — panics at 65,536 entries
+query := "SELECT * FROM cves WHERE package_name IN (" + placeholders + ")"
+args := []interface{}{dep1, dep2, dep3, ...}
+
+// CORRECT — single parameter, no limit
+rows, err := tx.Query(ctx,
+    `SELECT c.* FROM cves c
+     JOIN cve_affected_packages p ON c.cve_id = p.cve_id
+     WHERE p.package_name = ANY($1::text[]) AND p.ecosystem = $2`,
+    packages, // []string — pgx serializes entire slice as a Postgres array
+    ecosystem,
+)
+```
+`ANY($1::text[])` accepts a `[]string` slice as a single `$1` argument. Postgres expands it internally without consuming wire-protocol parameter slots. The fix applies to all dynamic list-membership checks: watchlist package matching, SBOM dependency scanning, CWE filter `IN` lists, and any other case where a user-provided list is matched against a DB column.
+
+**The Lesson:** Never use dynamic `IN ($1, $2, ..., $N)` construction for user-controlled lists. The limit is invisible during development (test watchlists are small) and catastrophic in production (one enterprise user brings down the worker). `ANY($1::type[])` is always the correct pattern.
+
 ---
 
 ## 3. Security Vulnerabilities
@@ -1343,6 +1368,7 @@ Several findings from this review process are worth preserving as patterns:
 | 11.3 | Schema | Soft-delete + `UNIQUE(org_id, name)` table constraint rejects name reuse for deleted rows | Medium | `CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL` partial index instead of table constraint |
 | 11.4 | Schema | `notification_channels` hard-delete orphans `notification_deliveries` FK rows — delivery history broken | Medium | Soft-delete `notification_channels`; exclude from active lookups with `WHERE deleted_at IS NULL` |
 | 11.5 | Schema | Array fields (references, CWEs, CPEs) not sorted before `material_hash` — cosmetic reorders fire alerts | High | Lexicographic sort of all array fields before JSON canonicalization for `material_hash` |
+| 12.1 | DB | Dynamic `IN ($1, $2, ..., $N)` clause panics `pgx` driver at 65,536 list items — hard Postgres wire-protocol limit | High | `WHERE col = ANY($1::text[])` — single array parameter; no limit |
 
 ---
 

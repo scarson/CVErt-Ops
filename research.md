@@ -16,6 +16,7 @@
 6. [Research Decision #4: LLM Vendor](#6-research-decision-4-llm-vendor)
 7. [Research Decision #5: Postgres RLS](#7-research-decision-5-postgres-rls)
 8. [Infrastructure Decisions](#8-infrastructure-decisions)
+9. [Rejected Proposal: CEL for Alert Rule Evaluation](#9-rejected-proposal-cel-for-alert-rule-evaluation)
 
 ---
 
@@ -487,6 +488,137 @@ Use `embed.FS` to bundle into the single binary:
 External files that are NOT embedded:
 - `.env` / configuration (user-provided)
 - Database data (obviously)
+
+---
+
+## 9. Rejected Proposal: CEL for Alert Rule Evaluation
+
+> **Date:** 2026-02-23
+> **Proposal source:** Gemini Pro architectural review, Round 31 ("complexity reduction" round)
+> **Decision:** **Rejected.** Retain the squirrel-based SQL-generating DSL as specified in PLAN.md §10.
+
+### The Proposal
+
+In Round 31, Gemini proposed replacing the custom DSL compiler with Google's **CEL (Common Expression Language)** via `github.com/google/cel-go`. The argument:
+
+> "To evaluate a rule like `cvss >= 7.0 AND ecosystem == 'npm'`, an AI will write a custom lexer, a custom parser, construct an Abstract Syntax Tree (AST) in Go, and write a custom evaluation engine. This is a multi-month, highly error-prone computer science project. Delete the custom DSL requirement entirely. CEL handles the parsing, compilation, and evaluation out of the box in nanoseconds. Your 'compiler' becomes three lines of library code."
+
+Topically, this sounds compelling: CEL is battle-tested (used in Google Cloud IAM conditions, Kubernetes admission webhooks, Envoy proxy), well-documented, and saves building a parser from scratch.
+
+### Why the Characterization of the Current DSL Is Wrong
+
+The framing of "custom lexer + custom parser + AST + evaluation engine" mischaracterizes what the squirrel-based approach actually is.
+
+Alert rules are stored in the DB as structured JSON — a list of `{field, op, value}` triples, not a raw expression string:
+
+```json
+{
+  "conditions": [
+    { "field": "cvss_v3_score", "op": "gte", "value": 7.0 },
+    { "field": "affected.ecosystem", "op": "eq", "value": "npm" }
+  ],
+  "logic": "AND"
+}
+```
+
+The "compiler" is deserializing that JSON into a Go struct, then running a switch statement that maps each `{field, op, value}` triple to a `squirrel.Sqlizer` expression. There is no lexer, no parser, no AST construction — just a query builder. This is approximately 300–500 lines of Go and roughly a week of work, not a multi-month project.
+
+The actual complexity question is: **where does rule evaluation happen** — in Go process, or in the database?
+
+### The Core Architectural Difference: Execution Location
+
+This is the dimension Gemini never addressed, and it drives most of the analysis.
+
+**CEL evaluates in Go process:**
+1. Fetch some set of candidate CVE rows from Postgres
+2. For each CVE, bind it into a CEL activation (`map[string]interface{}`)
+3. Run each rule's compiled `cel.Program` against it in Go
+4. Collect matches
+
+**Squirrel evaluates in Postgres:**
+1. Translate the rule struct into a parameterized SQL WHERE clause (using `squirrel`)
+2. Postgres executes it against indexed columns; only matching rows cross the wire
+3. Apply regex post-filter in Go against the small result set, if the rule uses regex
+
+At 250,000 CVEs, a rule `severity = 'critical'` in the squirrel approach hits a BTREE index and returns perhaps 3,000 rows. The other 247,000 never leave Postgres. With CEL, you must either:
+
+(a) Fetch all 250,000 rows to Go memory and evaluate each one in-process — 250,000 struct allocations and `cel.Program.Eval()` calls per rule per evaluation pass; or
+
+(b) Build a SQL pre-filter to bound candidates, then evaluate those candidates with CEL — in which case you have essentially rebuilt the squirrel approach with an extra CEL evaluation layer on top, adding complexity without gaining anything.
+
+The squirrel approach already *is* option (b), implemented as cleanly as possible: the SQL WHERE clause is the pre-filter, and the regex post-filter (the only in-process work) operates on the already-bounded candidate set under a hard cap (5,000 rows by default). CEL adds no benefit here and removes the index leverage.
+
+### The JOIN Problem CEL Cannot Solve
+
+The DSL includes `affected.ecosystem` and `affected.package`, which require a JOIN to the `cve_affected_packages` table. In the squirrel approach this is a clean, index-using EXISTS subquery, generated only when the rule actually references those fields:
+
+```sql
+AND EXISTS (
+    SELECT 1 FROM cve_affected_packages p
+    WHERE p.cve_id = c.cve_id
+      AND p.ecosystem = $1
+)
+```
+
+CEL cannot generate JOINs. To support `affected.ecosystem` in a CEL activation, you would need to pre-fetch all affected packages for every CVE being evaluated and embed them as a nested list in the activation. This means every batch evaluation pass pre-fetches joined data for all 250,000 CVEs — regardless of whether the specific rule references the `affected.*` fields at all. The squirrel approach only performs the JOIN when the WHERE clause includes an `affected.*` condition.
+
+### NULL Semantics: CEL Is Harder, Not Easier
+
+Gemini correctly identified (in its own Round 42) that sparse CVE data (over 40% of new CVEs have no CVSS score at publication) requires null-safe evaluation. But null handling is more complex with CEL than with SQL.
+
+**In CEL:** `null >= 7.0` throws a runtime type-coercion error (`no such overload`), not a graceful false. Handling this requires one of:
+- Custom CEL environment configuration to coerce null numerics to `-1.0`
+- AST rewriting at compile time to inject `has()` macros: auto-expanding `cvss_v3_score >= 7.0` to `has(cvss_v3_score) && cvss_v3_score >= 7.0`
+
+Both mechanisms require custom code, and Gemini itself identified a follow-on failure: if a JSONB field is stored as the string `"null"` rather than a true SQL NULL (a real occurrence in some feed payloads), `has()` returns true (the field exists), but then `"null" >= 7.0` panics anyway from type mismatch.
+
+**In SQL:** `NULL >= 7.0` evaluates to `NULL`, which Postgres treats as false in a WHERE clause. This is the correct behavior — a CVE without a score doesn't match a score-threshold rule — and it happens automatically, with no custom code.
+
+The nil-safe accessor pattern already in PLAN.md §10.2 exists for the Go-side regex post-filter path only. For the primary SQL evaluation path, the database handles NULL semantics correctly by default.
+
+### CEL's Own Problems Found in Subsequent Review Rounds
+
+After proposing CEL in Round 31, Gemini spent three subsequent rounds finding CEL-specific problems and proposing fixes for them:
+
+| Round | CEL Problem Found | Required Fix |
+|---|---|---|
+| 32 | Case sensitivity: `"PyPI" == "pypi"` is false in CEL | Custom normalization macros or `lower()` wrappers during AST compilation |
+| 42 | NULL panic: `null >= 7.0` throws `no such overload` | `has()` macro injection or null-coercion in CEL environment config |
+| 42 | AST recompilation: compiling inside the evaluation loop = 1.25B compilations/day at scale | `sync.Map[RuleID]cel.Program` compilation cache with invalidation on rule update |
+| 43 | JSONB string `"null"` satisfies `has()` but then panics on numeric comparison | Deeper null-type inspection in CEL bindings |
+
+Each fix requires custom code. The sum of all four fixes approaches the complexity of the squirrel approach — while still lacking the index leverage. This is a pattern worth noting: a proposed simplification that turns out to require just as many custom workarounds as the approach it replaced, but in a less familiar execution model.
+
+### The One Legitimate CEL Advantage: User-Facing Syntax
+
+CEL's expression language (`cvss_v3_score >= 7.0 AND in_cisa_kev == true`) is more natural for a human to read and write than the structured JSON `{field, op, value}` format exposed directly in the API. This is a real UX advantage.
+
+However, this benefit can be captured without adopting CEL for execution. The typical pattern:
+
+1. User writes a CEL-like textual expression in the UI or API
+2. A parser (or a CEL parser used purely for syntax validation and AST extraction) converts it to the internal `{field, op, value}` JSON format at save time, validating field names, operator compatibility, and value types
+3. The internal JSON is stored in `alert_rules.query_json`
+4. Evaluation uses squirrel-generated SQL as designed
+
+This gives the UX benefit of familiar expression syntax while keeping SQL-based evaluation with index leverage. Gemini's concern about "1.25 billion AST compilations/day" only arises if you compile CEL strings at evaluation time; a parse-on-save design compiles once and stores the structured result.
+
+This approach is not required for MVP — the API can accept the structured JSON format directly — but it is the path to add a textual rule syntax later without changing the execution model.
+
+### Decision Summary
+
+| Dimension | CEL | Squirrel DSL |
+|---|---|---|
+| Parser complexity | None (CEL parses) | None (JSON deserialize + switch) |
+| Evaluation location | Go process | Postgres (indexed) |
+| Index utilization | None — all candidates must be fetched | Full — only matches cross the wire |
+| JOIN support (`affected.*`) | Requires pre-fetching all join data | Native EXISTS subquery, generated on demand |
+| NULL semantics | Panics; requires `has()` macro injection | Correct by default (NULL is false in WHERE) |
+| Case sensitivity | Panics (strict equality); requires custom normalization | `LOWER()` in SQL, native and free |
+| User-facing syntax | Familiar expression language | Structured JSON (can add textual syntax as a parse-on-save step) |
+| DSL versioning | Hard — raw strings don't have machine-readable structure | Easy — structured JSON maps to typed Go structs |
+| Rule migration | Difficult to transform expression strings programmatically | Straightforward — operate on the struct fields |
+
+**Decision:** The squirrel DSL is retained. The execution model (SQL evaluation in Postgres with index leverage) is the decisive factor. CEL is the right tool when you need to evaluate expressions against a single in-memory object (Kubernetes admission webhooks, IAM policy checks); it is the wrong tool when the filtering should be pushed into a database with 250,000 rows and full index support.
 
 ---
 

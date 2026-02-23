@@ -33,6 +33,8 @@ go.work.sum
 
 # Claude Code — personal local settings (credentials, personal permissions)
 .claude/settings.local.json
+# MCP local overrides (personal servers, alternate credentials)
+.mcp.local.json
 
 # Chat exports / session logs
 chats/

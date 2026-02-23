@@ -1290,3 +1290,87 @@ Several findings from this review process are worth preserving as patterns:
 **External system fragility requires defensive integration.** NVD's 120-day limit, dual rate limits, and per-page cursor requirements are not in primary documentation. Feed adapters must be written defensively: chunk date ranges, detect API key presence, persist intermediate pagination state. Any upstream API that has undocumented constraints must be handled with defensive integration patterns.
 
 **Child table data model correctness:** When designing multi-tenant data models with RLS, the correct approach is always to denormalize `org_id` to every child and join table — never rely on parent-join RLS or foreign key constraints for tenant isolation. This applies universally; it is not context-specific or "an optimization." Any normalization that removes `org_id` from a child table in a multi-tenant schema is an incorrect data model.
+
+---
+
+## Rounds 24–52 Findings (2026-02-22)
+
+> **Source:** 29 additional rounds of Gemini Pro architectural review
+> **Key theme:** Operational correctness, outbound delivery robustness, and feed adapter edge cases dominated this batch. Security issues were fewer but more subtle (SSRF redirect bypass, login CSRF via state cookie SameSite, OAuth redirect_uri Header Injection).
+
+### New Findings Summary Table
+
+| ID | Category | Finding | Severity | Fix |
+|---|---|---|---|---|
+| 6.1 | Go | `time.After` in poll loops leaks timer objects — GC cannot collect until timer fires | Medium | `time.NewTicker` + `defer ticker.Stop()` |
+| 6.2 | Go | `strings.Clone` required for fields extracted from large JSON buffers — prevents GC-invisible RAM retention | Medium | `strings.Clone(field)` for all string fields from bulk JSON payloads |
+| 6.3 | Go | `defer` in loop body defers to function return — 100k file descriptors held simultaneously | High | Explicit `rc.Close()` at every exit path; or anonymous closure pattern |
+| 6.4 | Go | `errgroup.WithContext` fan-out: one failure cancels all siblings — duplicate deliveries + dropped channels | High | `sync.WaitGroup` with independent per-goroutine error tracking |
+| 7.1 | Feed | NVD API key header is `apiKey` (case-sensitive) — not `Authorization: Bearer` | High | `req.Header.Set("apiKey", key)` exactly |
+| 7.2 | Feed | NVD overlapping cursor gap: exact last-cursor causes missed CVEs from NVD eventual consistency | High | `lastModStartDate = last_success_cursor - 15 minutes` |
+| 7.3 | Feed | NVD cursor upper bound from `time.Now()` drifts vs. upstream server time | Medium | Extract `Date` response header from NVD API; use as cursor upper bound |
+| 7.4 | Feed | OSV/GHSA `withdrawn`/`withdrawn_at` field not checked — withdrawn vulns stay live in corpus | High | Adapter checks `withdrawn != nil` / `withdrawn_at != null`; merge sets status to `withdrawn`; scores NULLed out |
+| 7.5 | Feed | OSV/GHSA late-binding alias: GHSA-xxxx later gains a CVE alias after initial ingest — split PK forever | High | `store.MigrateCVEPK(ctx, nativeID, cveID)` atomic PK rename when alias appears for existing native-ID record |
+| 7.6 | Feed | GHSA rate limiting unhandled — no concurrency cap, no Retry-After respect | Medium | `concurrency=1`, `1s` inter-request sleep; honor `Retry-After` header on 429 |
+| 8.1 | Security | JWT_SECRET missing → server should fatal, not auto-generate ephemeral key | Critical | `log.Fatalf` on missing or too-short `JWT_SECRET`; never auto-generate |
+| 8.2 | Security | OAuth `redirect_uri` built from `Host` header — Header Injection attack | Critical | `EXTERNAL_URL` env var; never use `r.Host` / `r.Header.Get("Host")` for redirect URI construction |
+| 8.3 | Security | OAuth state cookie `SameSite=Strict` blocks cross-site callback — all OAuth logins fail | High | `SameSite=Lax` for `oauth_state` and OIDC nonce cookies; `Strict` breaks the redirect-back flow |
+| 8.4 | Security | OIDC nonce not verified — `coreos/go-oidc/v3` does not auto-verify nonce claim | High | Manually verify nonce claim from ID token against stored cookie before calling `oidcVerifier.Verify()` |
+| 8.5 | Security | Webhook HTTP client follows redirects — 302 to internal metadata endpoint bypasses safeurl | Critical | `CheckRedirect: func(...) error { return http.ErrUseLastResponse }` on all outbound webhook clients |
+| 8.6 | Security | Webhook signing secret has no rotation mechanism — ops can't rotate without delivery gap | High | `signing_secret_secondary` column; `POST .../rotate-secret` endpoint; 24h dual-secret grace |
+| 8.7 | Security | `Secure: true` hardcoded on auth cookies — breaks localhost dev (browser refuses to send cookie) | Medium | `COOKIE_SECURE` env var; false for dev, true for production |
+| 8.8 | Security | API key accepted in query string — logged by every proxy, CDN, browser history layer | High | 400 if any of `?api_key=`, `?token=`, `?key=`, `?access_token=` present; only `Authorization: Bearer` accepted |
+| 9.1 | Operational | Rejected/withdrawn CVE tombstone: merge doesn't NULL scores — stale critical scores spam alerts | High | Hard-override UPDATE NULLs all scores/CPEs when status transitions to `rejected` or `withdrawn` |
+| 9.2 | Operational | No resolution alert when CVE falls out of a rule — analysts track stale threats indefinitely | High | `last_match_state BOOLEAN` on `alert_events`; resolution notification when rule stops matching |
+| 9.3 | Operational | `alert_events` lacks UNIQUE constraint — concurrent evaluators produce duplicate alerts | Critical | `UNIQUE(org_id, rule_id, cve_id, material_hash)` + `ON CONFLICT DO NOTHING RETURNING id` |
+| 9.4 | Operational | Notification fan-out is not debounced — 200 CVEs → 200 Slack messages → Slack rate limit storm | High | 2-minute debounce window per `(rule_id, channel_id)`; batch appended; one grouped delivery |
+| 9.5 | Operational | Slack Block Kit message > 50 blocks — `400 invalid_blocks`, entire batch dropped silently | High | Chunk at 20 CVEs per Slack message; sequential delivery; no errgroup |
+| 9.6 | Operational | Webhook response body not read — HTTP/1.1 keep-alive broken, new TCP connection per delivery | Medium | `io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))` after every webhook call |
+| 9.7 | Operational | Notification channel hard-deleted — delivery history orphaned via FK | Medium | Soft-delete: `UPDATE notification_channels SET deleted_at = now()`; channel stays in history |
+| 9.8 | Operational | Thundering herd on retry: all failed retries wake simultaneously — re-crashes recovering service | High | Full jitter: `next_run_at = now() + delay * random(0.5, 1.5)` |
+| 10.1 | Architecture | Digest scheduling uses `24 * time.Hour` addition — drifts ±1 hour across DST boundaries | High | Compute next run in user's timezone: `time.Date(prev.Year(), prev.Month(), prev.Day()+1, ...)` |
+| 10.2 | Architecture | No digest truncation or severity sorting — multi-MB digest email rejected by SMTP relays | High | Sort by severity DESC, CVSS DESC; cap at 25 CVEs; "N more" footer |
+| 10.3 | Architecture | Missing digest heartbeat — zero-match digest sends nothing; users assume system is broken | Medium | Always send digest, including "No new vulnerabilities matching your filters" message |
+| 10.4 | Architecture | Missed-run catch-up sends one digest per missed interval — floods channels after downtime | High | At most 1 catch-up digest on recovery; covers full missed period; advance `next_run_at` to next future time |
+| 10.5 | Architecture | Nullable sort column in keyset pagination drops all NULL rows — silent result truncation | High | `COALESCE(sort_col, sentinel)` in both `WHERE` and `ORDER BY`; test null at page boundaries |
+| 10.6 | Architecture | `pg_trgm` extension not installed — DSL `contains`/`starts_with` are full seq scans on 250k+ rows | High | `CREATE EXTENSION IF NOT EXISTS pg_trgm` in Phase 1 migration; GIN trigram index on `description_primary` |
+| 10.7 | Architecture | `statement_timeout` not set — misbehaving query holds connection from finite pool indefinitely | High | `RuntimeParams["statement_timeout"] = "14000"` (14s); worker transactions set `SET LOCAL statement_timeout = 0` |
+| 10.8 | Architecture | No `MaxConnIdleTime` — idle connections hold Postgres backend RAM; NAT gateway drops silent after 5 min | Medium | `config.MaxConnIdleTime = 5 * time.Minute` |
+| 10.9 | Architecture | Go runtime unaware of container memory limit — GC too infrequent, OOM-kill before heap is reclaimed | High | `import _ "github.com/KimMachineGun/automemlimit"` in `main.go` |
+| 10.10 | Architecture | `X-Forwarded-For` read left-to-right — attacker-controlled entry bypasses IP rate limiter | High | Read XFF right-to-left; first non-trusted-CIDR entry is client IP |
+| 11.1 | Schema | JSONB upsert `ON CONFLICT DO UPDATE` writes TOAST tuple even when unchanged — daily TOAST bloat | Medium | `WHERE cve_sources.normalized_json IS DISTINCT FROM EXCLUDED.normalized_json` in DO UPDATE |
+| 11.2 | Schema | `CREATE INDEX` (not CONCURRENTLY) takes `AccessExclusiveLock` — API down for 5–30s per migration | High | `CREATE INDEX CONCURRENTLY` in all migrations; `-- migrate:no-transaction` for files with concurrent indexes |
+| 11.3 | Schema | Soft-delete + `UNIQUE(org_id, name)` table constraint rejects name reuse for deleted rows | Medium | `CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL` partial index instead of table constraint |
+| 11.4 | Schema | `notification_channels` hard-delete orphans `notification_deliveries` FK rows — delivery history broken | Medium | Soft-delete `notification_channels`; exclude from active lookups with `WHERE deleted_at IS NULL` |
+| 11.5 | Schema | Array fields (references, CWEs, CPEs) not sorted before `material_hash` — cosmetic reorders fire alerts | High | Lexicographic sort of all array fields before JSON canonicalization for `material_hash` |
+
+---
+
+### Detailed Notes on Selected Findings
+
+#### 8.5 Webhook redirect bypass (Critical SSRF)
+The `doyensec/safeurl` client validates the *initial* webhook URL but follows HTTP redirects automatically (Go's default `http.Client` follows up to 10 redirects). A 302 pointing to `http://169.254.169.254/latest/meta-data/` is not re-validated. Fix: `client.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }`.
+
+#### 7.5 Late-binding alias split-brain
+OSV/GHSA records initially have no CVE alias (using `GHSA-xxxx` as PK), then MITRE assigns a CVE ID and the advisory's `aliases` array gains `CVE-2026-9999`. The adapter must detect this case (existing record with native PK, incoming payload has a CVE alias for that native ID) and execute a PK migration atomically — rename the `cve_id` in `cves`, `cve_sources`, `cve_references`, `cve_affected_packages`, `cve_affected_cpes`, `alert_events`, `cve_annotations`, etc. This is a multi-table cascading rename; use a database function or careful ordered update to avoid FK violations.
+
+#### 10.4 Digest catch-up policy
+After worker downtime (crash, deployment), `next_run_at` may be 3 days in the past. Without a catch-up policy, the scheduler fires 3 daily digests back-to-back. With a simple "skip all missed runs" policy, analysts miss 3 days of CVE activity. The correct policy: deliver one catch-up digest covering `last_success_at → now()`, then compute the next future `next_run_at`. This ensures continuity without spam.
+
+#### 6.4 errgroup fan-out danger
+`errgroup`'s context cancellation propagates failure to all goroutines. In a 3-channel fan-out where Channel B fails: Channel A (already sent) and Channel C (not yet sent) both get their contexts cancelled. The parent job is retried — re-sending to Channel A (duplicate) and skipping Channel C again (since it errored last time). The correct pattern: `sync.WaitGroup` + independent per-channel error recording in `notification_deliveries` rows.
+
+#### 11.2 CREATE INDEX CONCURRENTLY transaction incompatibility
+`golang-migrate` wraps each migration file in `BEGIN`/`COMMIT` by default. `CREATE INDEX CONCURRENTLY` fails inside a transaction with `ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`. Solution: add `-- migrate:no-transaction` as the first comment in any migration file that contains a `CREATE INDEX CONCURRENTLY`. Without this, the migration errors on first deploy.
+
+---
+
+### Meta-Observations (Rounds 24–52)
+
+**Library defaults are unsafe by default.** Go's `http.Client` follows redirects. `time.After` leaks timers. `json:"field,omitempty"` drops zero values. `CREATE INDEX` takes an exclusive lock. `io.ReadAll()` buffers everything. None of these defaults are wrong in isolation, but each becomes a production failure when composed with the specific workload of CVErt Ops (high concurrency, large data, strict security requirements).
+
+**The redirect SSRF is a multi-layer validation gap.** `doyensec/safeurl` validates the target URL at configuration time and at request time — but not at redirect time. The SSRF fix (disable redirects) is the correct defense, but it highlights a general pattern: any library that validates inputs before executing an action may not re-validate on intermediate states (redirects, retries, reconnects). Audit all outbound HTTP interactions for re-validation gaps.
+
+**Notification delivery is where most bugs accumulate.** Of the 40 new findings, 10+ are in the notification/delivery path. This is the most complex stateful path in the system: DB writes, outbound HTTP, retry logic, fan-out, debouncing, Slack-specific quirks. The delivery path deserves a dedicated integration test harness that exercises partial failures, concurrent evaluation, and external service timeouts.
+
+**Timezone handling is deceptively hard.** The DST-drift bug (`24 * time.Hour` addition) is a classic example of a calculation that is correct 364 days per year and wrong once per year — exactly the kind of bug that escapes testing and surfaces as "the digest sent at the wrong time for one week." Always compute scheduled times using timezone-aware arithmetic; never add fixed durations to UTC timestamps for calendar-semantic scheduling.

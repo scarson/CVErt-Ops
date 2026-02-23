@@ -153,6 +153,13 @@ Feed data is dirty. Three classes of issues will cause hard failures at the DB l
 
 **NVD adapter: dynamic rate limiting (required):** NVD API 2.0 enforces 5 requests/30 seconds (unauthenticated) or 50 requests/30 seconds (with API key). The NVD adapter must check for the `NVD_API_KEY` environment variable at initialization and configure a 6-second inter-request delay if absent, or 0.6-second if present. Hardcoding the fast rate causes immediate IP bans for unauthenticated users; hardcoding the slow rate causes enterprise users with API keys to wait hours for backfills.
 
+**NVD adapter: exact API key header (required):** The NVD API 2.0 uses a non-standard, case-sensitive request header for authentication: `apiKey`. Standard patterns like `Authorization: Bearer <key>` or `X-API-Key: <key>` are silently ignored by NVD — the server treats the request as unauthenticated and applies the 5 req/30s rate limit, causing immediate IP bans when the adapter operates at the authenticated rate. The exact header formulation is:
+```go
+if key := os.Getenv("NVD_API_KEY"); key != "" {
+    req.Header.Set("apiKey", key) // case-sensitive; not "apikey" or "ApiKey"
+}
+```
+
 **NVD adapter: URL-encode timestamp query parameters (required):** NVD API 2.0 requires ISO 8601 timestamps in query parameters (e.g., `lastModStartDate=2026-02-19T12:00:00.000+00:00`). `time.RFC3339` formatting produces the `+` character for the timezone offset. In HTTP query strings, `+` is interpreted by servers as a URL-encoded space — the NVD server reads `000 00:00` instead of `000+00:00` and returns `400 Bad Request`. The incremental sync permanently fails and stops receiving new CVEs.
 
 **Required pattern:** Always construct NVD query parameters via `url.Values`, which uses `url.QueryEscape` internally and correctly percent-encodes `+` as `%2B`:
@@ -184,6 +191,19 @@ func resolveCanonicalID(nativeID string, aliases []string) string {
 ```
 If multiple CVE IDs appear in the `aliases` array (rare but possible), use the first match. The native ID is stored in `cve_sources.source_id` for provenance. If no CVE alias is present (the vulnerability has no assigned CVE ID yet), use the native ID as-is — it remains a first-class record in the corpus under its own identifier.
 
+**OSV/GHSA adapter: withdrawn vulnerability tombstoning (required):** OSV and GHSA use a different retraction mechanism than NVD. Instead of `vulnStatus == "Rejected"`, they mark invalidated advisories with a `withdrawn` (OSV) or `withdrawn_at` (GHSA) timestamp. If a feed adapter only checks NVD-style status flags, it will ingest retracted GHSA vulnerabilities as live threats. When an OSV or GHSA record has a non-null `withdrawn` / `withdrawn_at` field, the adapter MUST execute the same tombstone override that NVD rejected records receive: explicitly NULL out CVSS scores and CPE data, and set `status = 'withdrawn'`. The term `'withdrawn'` (not `'rejected'`) is used to distinguish the source. Both `'rejected'` and `'withdrawn'` statuses are excluded from all alert evaluation passes.
+
+**OSV/GHSA adapter: late-binding alias migration (required):** The alias resolution rule (use CVE ID as `cve_id` PK when present in `aliases`) handles the case where an alias is known at ingest time. However, GHSA/OSV frequently publish advisories (`GHSA-1234`) days or weeks before MITRE mints the official CVE ID. On Day 1, the adapter saves `GHSA-1234` as the PK. On Day 10, the advisory is updated to include `CVE-2026-9999` in its `aliases`. The adapter must detect this case and perform a **primary key migration** before the normal upsert:
+```go
+// If incoming record has a CVE alias but the DB has it under the native ID,
+// migrate the PK before upserting.
+existing, _ := store.FindCVEBySourceID(ctx, "GHSA-1234")
+if existing != nil && existing.CVEID == "GHSA-1234" && canonicalID == "CVE-2026-9999" {
+    store.MigrateCVEPK(ctx, "GHSA-1234", "CVE-2026-9999")
+}
+```
+Without this migration, the database ends up with two separate rows (`GHSA-1234` and `CVE-2026-9999`) that the merge pipeline never reconciles, fragmenting alert history and tracking.
+
 **Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
 
 ### 3.3 Ingestion Scheduling, Cursoring, and Idempotency
@@ -196,6 +216,10 @@ If multiple CVE IDs appear in the `aliases` array (rare but possible), use the f
 - Use "last modified" or equivalent incremental cursor when supported.
 - Persist cursor **only** after a fully successful page/window.
 - On failure: retry with exponential backoff; do not advance cursor.
+
+**NVD adapter: overlapping cursor to prevent eventual-consistency gaps (required):** The NVD backend (and most vendor feeds) suffers from eventual consistency: a vulnerability modified at `10:59:00` may not appear in API responses until several minutes after it was recorded. If the sync window runs from `10:00:00` to `11:00:00` and the `10:59:00` record hasn't finished indexing on NVD's side, it is absent from the response. The cursor advances to `11:00:00` and the next window starts there — the late-arriving record is permanently missed. To prevent this, the adapter's `lastModStartDate` for each new sync window MUST be set to `last_success_cursor - 15 minutes` (15-minute lookback overlap). The upsert pipeline handles duplicate records gracefully via `ON CONFLICT DO UPDATE`.
+
+**NVD adapter: use upstream `Date` response header as cursor upper bound (required):** Using `time.Now()` as the `lastModEndDate` upper bound of a sync window creates a clock-skew vulnerability in self-hosted Docker environments. Container clocks frequently drift relative to NVD's servers (especially on Docker Desktop for Windows/macOS where the VM clock can lag by minutes). If the local clock is 5 minutes behind NVD, the adapter queries up to `10:00` local time while NVD has already indexed records at `10:04`. The cursor saves `10:00` and permanently misses those 4 minutes of data. The adapter MUST extract the `Date` header from the NVD API HTTP response and use that timestamp as the cursor upper bound rather than local `time.Now()`.
 
 **NVD adapter: 120-day date-window hard limit (required):** The NVD API 2.0 rejects date-range queries spanning more than 120 days with `403 Forbidden`. If the gap between the stored cursor timestamp and `time.Now()` exceeds 120 days (e.g., after a long shutdown), the adapter MUST chunk the time range into sequential ≤120-day windows and iterate through them with separate API requests until reaching `time.Now()`.
 
@@ -283,6 +307,7 @@ The `cvert-ops import-bulk` CLI subcommand handles bulk file ingestion (see sect
   The target key name (`"vulnerabilities"`, `"CVE_Items"`, etc.) and navigation depth must match each feed's actual schema. Implementers MUST use feed-appropriate streaming; `Decode(&slice)` is forbidden for any response or file that could be large.
 - **Per-CVE transaction constraint:** The per-CVE advisory lock (Decision D4) is transaction-scoped. Each CVE merge must be its own DB transaction. There is no multi-CVE batch transaction path. The pattern is: stream records, for each CVE open transaction → acquire advisory lock → merge → commit.
 - Normal incremental polling runs in bounded page windows (already planned) for the same reasons — no huge transactions.
+- **String field extraction from large JSON payloads (required):** When the adapter extracts individual string fields (CVE ID, description, vendor names, URLs) from a large JSON byte slice (50MB+ NVD API pages or OSV bulk files), Go's `string` type holds a reference to the underlying byte slice backing array. If any extracted string persists in a struct that outlives the JSON buffer (e.g., in a job payload or alert event), the Go GC cannot free the original multi-megabyte buffer. During heavy syncs this causes invisible RAM retention accumulating hundreds of megabytes. **Required:** use `strings.Clone(field)` for all string fields extracted from bulk JSON payloads before the source buffer is no longer needed. `strings.Clone` allocates a fresh, minimal backing array and severs the reference to the large buffer.
 
 **Backfill ordering and serialization**
 - Feeds are backfilled sequentially in precedence order: MITRE → NVD → CISA KEV → OSV → GHSA → EPSS. This ensures higher-precedence sources establish the baseline before lower-precedence sources merge in.
@@ -449,6 +474,8 @@ Implementation: `material_hash = sha256(json_canonical(material_fields))`. If ha
 
 **CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: parse the vector into its structured metric components per the CVSS specification, then re-serialize in canonical CVSS spec metric order (the order defined in the spec, not alphabetical). This ensures the hash is stable regardless of which source provided the vector.
 
+**Array fields must be sorted before hashing (required):** JSON canonicalization libraries sort object keys deterministically but leave JSON arrays in their original order by specification. Feed sources routinely reorder reference URLs, CWE tags, and CPE strings between updates with no semantic change to the vulnerability. If these arrays are included in `material_hash` without sorting, a cosmetic reordering (e.g., NVD swaps `[Link B, Link A]` to `[Link A, Link B]`) changes the hash, bypasses the dedup engine, and fires a "Vulnerability Updated" alert for a CVE where nothing of substance changed. Before marshaling material fields for hashing, all string-typed arrays MUST be sorted lexicographically: reference URLs sorted by canonical URL, CWE IDs sorted alphabetically, CPE strings sorted by normalized CPE string. This applies to both array fields in `material_hash` and any array used in the `cve_search_index` FTS document to ensure stability.
+
 **EPSS is handled outside material_hash (required design decision):**
 
 Including `epss_score` in `material_hash` requires a dedup gate (±threshold comparison) to avoid daily hash churn from minor EPSS fluctuations. Any such gate creates a "blind zone": a rule `epss_score > 0.90` will not fire when a score drifts 0.85 → 0.94 (delta 0.09, below any reasonable gate) even though the user-defined threshold is breached. For a security alerting product this is unacceptable — a user's explicit threshold must be honored.
@@ -610,7 +637,7 @@ token, err := jwt.ParseWithClaims(tokenString, &Claims{}, keyFunc,
 ```
 
 - **Algorithm:** `HS256` (HMAC-SHA256, symmetric) for MVP. Single binary with a shared signing secret; no key distribution needed. Configurable via `JWT_ALGORITHM` env var for future flexibility.
-- **Secret:** `JWT_SECRET` env var; minimum 32 cryptographically random bytes; validated at startup (reject startup if too short or not set).
+- **Secret:** `JWT_SECRET` env var; minimum 32 cryptographically random bytes; validated at startup (reject startup if too short or not set). The server MUST `log.Fatalf` and exit immediately if `JWT_SECRET` is missing or too short — **never auto-generate an ephemeral key**. An auto-generated ephemeral secret invalidates all existing sessions on every restart, creating a confusing and undiscoverable bug: self-hosted operators find users constantly logged out with no error logged, no session, and no explanation. Missing `JWT_SECRET` is a misconfiguration that must be surfaced loudly at startup.
 - **`WithValidMethods` is mandatory** on every parse call — including refresh token validation. Add a linting check or code review gate to prevent unguarded `jwt.Parse`/`jwt.ParseWithClaims` calls.
 - **`WithExpirationRequired`** rejects tokens without an `exp` claim, preventing accidentally-issued non-expiring tokens from being permanently valid.
 
@@ -711,6 +738,8 @@ defer releaseArgon2Slot()
 **CSRF**
 - Use SameSite cookies + CSRF token for state-changing requests (double-submit token or header token).
 
+**Environment-aware `Secure` cookie flag (required):** Authentication cookies (`HttpOnly`, session, auth state) MUST set `Secure: true` only when TLS is in use. Setting `Secure: true` unconditionally breaks the local development workflow entirely with no browser error message — the browser silently refuses to send the cookie to `http://localhost:*`, making all auth flows fail. The server must derive the Secure flag from configuration: `COOKIE_SECURE=true` in production, `false` in local development (or derive it from `APP_ENV != "production"`). Never hardcode `Secure: true`. This applies to session cookies, OAuth state cookies, and OIDC nonce cookies.
+
 **API key implementation (required — opaque strings, NOT JWTs):**
 
 Implementing API keys as long-lived JWTs is a critical mistake: (a) they cannot be individually revoked without a stateful blocklist, and (b) rotating `JWT_SECRET` (due to compliance or suspected compromise) invalidates every API key across every org simultaneously, instantly breaking all user CI/CD pipelines. API keys must be independent of JWT infrastructure.
@@ -790,8 +819,16 @@ Email addresses are mutable. Corporate accounts are renamed during acquisitions,
 Omitting or hardcoding the OAuth2 `state` parameter enables Login CSRF: an attacker initiates an OAuth flow, captures the callback URL, and tricks a victim into clicking it — silently logging the victim into the attacker's account. Any data the victim then enters (watchlists, API keys) becomes accessible to the attacker.
 
 Required pattern (applies to both GitHub and Google OAuth):
-1. `GET /api/v1/auth/oauth/{provider}` — generate 32 cryptographically random bytes, set as `HttpOnly, Secure, SameSite=Lax` cookie named `oauth_state` with 5-minute expiration, pass to `oauth2.Config.AuthCodeURL(state)`
+1. `GET /api/v1/auth/oauth/{provider}` — generate 32 cryptographically random bytes, set as `HttpOnly, Secure, SameSite=Lax` cookie named `oauth_state` with 5-minute expiration, pass to `oauth2.Config.AuthCodeURL(state)`. **Note: `SameSite=Lax` is required — not `Strict`.** The OAuth callback is an external cross-site navigation (the provider redirects the user's browser back to your domain). `SameSite=Strict` blocks cookies on all cross-site navigations, so the `oauth_state` cookie is not sent to the callback handler, causing all OAuth logins to fail with a missing/mismatched state error. `SameSite=Lax` allows cookies on top-level navigations (the redirect) while still blocking cross-site POST requests.
 2. `GET /api/v1/auth/oauth/{provider}/callback` — read `oauth_state` cookie, compare to `state` query parameter; return `400 Bad Request` if missing, mismatched, or cookie expired; delete the cookie before proceeding with code exchange. Never reuse a state value.
+
+**`EXTERNAL_URL` env var for OAuth `redirect_uri` (required):** OAuth2 callback URLs (`RedirectURL` in `oauth2.Config`) MUST be constructed from a configurable `EXTERNAL_URL` env var, never from the HTTP request's `Host` header. The `Host` header is attacker-controlled: a request with `Host: evil.example.com` causes the auth flow to register `https://evil.example.com/api/v1/auth/oauth/github/callback` as the redirect URI. On strict OAuth providers (Google), this is rejected — but it exposes the provider's error responses and can assist in phishing flows. On more permissive providers, it enables Login CSRF. **Required pattern:**
+```go
+cfg.ExternalURL + "/api/v1/auth/oauth/" + provider + "/callback"
+```
+`EXTERNAL_URL` must be validated at startup to be a non-empty HTTPS URL (HTTP allowed only for localhost dev). Never use `r.Host`, `r.Header.Get("Host")`, or `r.URL.Host` to construct redirect URIs or any security-sensitive URLs.
+
+**OIDC nonce verification required (Google, required):** The OpenID Connect nonce is a random value embedded in the authorization request that the provider includes in the ID token's `nonce` claim. Without nonce verification, a replay attack succeeds: an attacker who captures a valid ID token (e.g., via a referrer header or a victim's browser history) can replay it to authenticate as the victim. The `coreos/go-oidc/v3` library does **not** automatically verify the nonce — the application must: (1) generate a random nonce and store it as a `HttpOnly, Secure, SameSite=Lax` cookie before redirecting; (2) pass the nonce to `oauth2.Config.AuthCodeURL(state, oauth2.SetAuthURLParam("nonce", nonce))`; (3) after receiving the ID token in the callback, extract the `nonce` claim and compare it to the cookie value before calling `oidcVerifier.Verify()`. Nonce verification applies to the Google OIDC flow only — the GitHub OAuth2 flow does not use ID tokens and has no nonce concept.
 
 ### 7.3 RBAC Model (MVP)
 
@@ -948,8 +985,10 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
 - **Security:** even linear-time regex can be abused if applied to millions of rows.  
 - **Operator UX:** fail-closed + explicit warning prevents false confidence.
 
+**`pg_trgm` extension required for text operator performance (required):** The DSL text operators `contains`, `starts_with`, and `ends_with` compile to `ILIKE` SQL expressions (e.g., `description_primary ILIKE '%apache%'`). PostgreSQL's `ILIKE` performs a full sequential scan on unindexed columns — at 250,000+ CVE descriptions this scan takes multiple seconds per query. The `pg_trgm` extension provides GIN/GIST indexes that accelerate `ILIKE` by pre-indexing character trigrams. Enable the extension in the Phase 1 migration: `CREATE EXTENSION IF NOT EXISTS pg_trgm;`. Then create a GIN trigram index: `CREATE INDEX CONCURRENTLY cves_description_trgm_idx ON cves USING gin (description_primary gin_trgm_ops);`. PostgreSQL's planner uses the trigram index automatically for `ILIKE` patterns ≥3 characters with the GIN operator class. Patterns shorter than 3 characters cannot use the trigram index and fall back to a sequential scan — the DSL validator should warn (not reject) when a `contains` pattern is fewer than 3 characters.
+
 **Alternatives (revisit later):**
-- Implement trigram/GIN prefilters on `description_primary` to increase selectivity before regex.
+- Implement additional trigram prefilters on other text fields (vendor names, package names) as corpus size grows.
 - Offer a “regex-disabled” mode for conservative deployments.
 
 **Text operator case-insensitivity (required):**
@@ -1008,11 +1047,17 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
 
 **Rejected CVE filtering in all evaluation passes (required):**
 
-The alert evaluation engine (realtime, batch, EPSS-specific, and activation scan) must add `AND cves.status != 'rejected'` to all evaluation queries. When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change that would fire alerts for every rule that previously matched. Paging security analysts for rejected CVEs causes immediate alert fatigue and product abandonment. Status `rejected` and `withdrawn` (where applicable per feed) must both be excluded.
+The alert evaluation engine (realtime, batch, EPSS-specific, and activation scan) must add `AND cves.status NOT IN ('rejected', 'withdrawn')` to all evaluation queries. When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change that would fire alerts for every rule that previously matched. Paging security analysts for rejected CVEs causes immediate alert fatigue and product abandonment.
+
+**Tombstone handling — explicitly clear scores on rejection (required):** When a feed adapter ingests a CVE with `vulnStatus == "Rejected"` (NVD) or a non-null `withdrawn`/`withdrawn_at` field (OSV/GHSA), the merge pipeline MUST execute a hard-override UPDATE that explicitly NULLs out historical scores and clears affected packages: `SET cvss_v3_score = NULL, cvss_v4_score = NULL, cvss_v3_vector = NULL, cvss_v4_vector = NULL, epss_score = NULL, status = 'rejected'` (or `'withdrawn'`). Standard partial upsert logic (which only updates fields present in the payload) will preserve the historical CVSS 9.8 score because it is absent from the rejected payload — the system then continues evaluating this CVE using stale critical scores, spamming analysts with alerts for threats that no longer exist.
+
+**Resolution alerts — notify when CVE falls out of a rule (required):** Users do not just need to know when a CVE starts matching their rule; they also need to know when it stops matching. When the batch evaluator processes a CVE update and the new data no longer matches a rule that previously fired (i.e., there is a prior `alert_events` row for this `(rule_id, cve_id)` pair and the current evaluation returns false), the engine MUST enqueue a special **resolution notification** to all channels bound to that rule. The resolution payload includes `event_type: "resolution"` and the reason (e.g., "CVSS score downgraded from 9.8 to 4.3 — no longer meets threshold"). Without this, users track CVEs as active threats long after they were downgraded, wasting remediation effort. The `alert_events` table must add a `last_match_state BOOLEAN NOT NULL DEFAULT true` column to track whether the last evaluation matched (true) or resolved (false), enabling this state-transition check.
 
 ### 10.4 Dedup Model
-Table `alert_events(org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, times_fired)`
+Table `alert_events(org_id, rule_id, cve_id, material_hash, last_match_state, first_fired_at, last_fired_at, times_fired)`
 - A rule fires again only if `material_hash` changes OR if `rule.fire_on_non_material_changes=true` (default false).
+
+**alert_events unique constraint + atomic insert (required):** Without a database-level unique constraint, two concurrent alert evaluation workers (e.g., a realtime trigger and a batch job) that race to evaluate the same rule+CVE within milliseconds of each other will both observe that no `alert_events` row exists, both insert a row, and both fan out notifications — producing duplicate alerts for the user. The table MUST have: `UNIQUE(org_id, rule_id, cve_id, material_hash)`. All alert event inserts MUST use `INSERT INTO alert_events ... ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING RETURNING id`. The notification fan-out MUST only proceed if the `RETURNING id` clause yields a row (i.e., the insert was not a no-op). This guarantees exactly-once alerting regardless of worker concurrency.
 
 ### 10.5 DSL Versioning
 
@@ -1045,7 +1090,7 @@ These endpoints prevent users from discovering rule errors only at the next batc
 ### 11.2 Delivery Guarantees
 - **At-least-once** delivery.
 - Each delivery has an **idempotency key**: `sha256(org_id + event_id + channel_id)`.
-- Retry policy: 3 retries with exponential backoff (e.g., 1m, 5m, 30m), then dead-letter.
+- Retry policy: 3 retries with exponential backoff with **full jitter** (required): `next_run_at = now() + calculated_delay * random(0.5, 1.5)`. Without jitter, if a downstream service (Jira, Splunk) goes offline during a mass alert event and thousands of delivery jobs fail simultaneously, all retries wake up at the exact same millisecond — the "Thundering Herd" instantly re-crashes the recovering service. Full jitter spreads retries across a wide window, allowing the service to recover progressively.
 - **Per-org delivery concurrency limit (noisy neighbor prevention):** Outbound notification delivery is subject to a per-org concurrency cap (default: 5 concurrent deliveries per org). A single org with a broken or slow webhook endpoint cannot monopolize the delivery worker goroutines at the expense of other orgs. Implemented as a per-org semaphore within the notification worker. The cap is configurable via `NOTIFY_MAX_CONCURRENT_PER_ORG`. Enterprise orgs may have higher configured limits.
 
 **Webhook outbound HTTP client timeout (required):** The HTTP client (a `doyensec/safeurl`-wrapped client) used for webhook delivery MUST be configured with `Timeout: 10 * time.Second`. Without a timeout, a "tarpit" server (accepts TCP connection, trickles response at 1 byte/minute) holds a Go goroutine blocked indefinitely. With a per-org concurrency cap of 5, just 5 tarpit webhooks permanently freeze all outbound delivery for that org and consume worker goroutines globally.
@@ -1060,6 +1105,10 @@ Required delivery worker pattern:
 3. `BEGIN` → update `status = 'succeeded'` | `'failed'`, set `last_error` → `COMMIT`
 
 **DLQ replay rate limit and attempt_count reset (required):** The `notification_deliveries` table must include an `attempt_count INT NOT NULL DEFAULT 0` column. The `POST .../deliveries/{delivery_id}/replay` endpoint must: (a) reset `attempt_count` to 0 before re-enqueueing, (b) enforce a rate limit (max 10 replays per org per hour) to prevent users or automation scripts from flooding the worker pool with permanently-failing deliveries for a misconfigured webhook. Replay endpoint is owner/admin only (per §7.3 permission matrix).
+
+**Alert delivery grouping / debounce window (required for burst scenarios):** When a single batch evaluation run matches 200 CVEs for the same rule and channel, the naïve implementation creates 200 separate `notification_deliveries` rows, fans out 200 separate Slack messages, and hits Slack's rate limit (1 message/second per webhook URL) — resulting in 197 rate-limited failures and a noisy retry storm. The notification system MUST support a configurable debounce window (default: 2 minutes, `NOTIFY_DEBOUNCE_SECONDS`) per `(rule_id, channel_id)` pair: within the window, new matching CVEs are appended to a pending delivery batch rather than spawning separate jobs. After the window closes, one delivery job sends a single grouped message containing all CVEs that matched during that window. Implementation: the evaluation pipeline checks for an existing `notification_deliveries` row with `status = 'pending'` AND `send_after > now()` for the same `(rule_id, channel_id)`. If found, it appends the CVE to the row's `payload` JSONB array and updates `send_after = now() + debounce_interval`. If not found, it creates a new row with `send_after = now() + debounce_interval`. The delivery worker only claims rows where `send_after <= now()`.
+
+**`errgroup.WithContext` forbidden for notification fan-out (required):** The standard Go pattern for concurrent fan-out uses `errgroup.WithContext` + `g.Go(func() error {...})`. With `errgroup`, if any goroutine returns a non-nil error, the group's shared context is immediately cancelled — aborting all sibling goroutines. In the notification fan-out scenario: Channel B (Slack) returns a 429 rate limit error → `errgroup` cancels the context → Channel A's webhook HTTP call is aborted mid-flight → Channel C's email transaction is rolled back. The alert event is marked failed and retried — re-sending to Channel A (which had already succeeded) and re-sending to Channel C (which never executed). This produces duplicate deliveries to successful channels and indefinitely skips channels that fail, since the error always cancels the group. **Required:** use `sync.WaitGroup` with independent per-goroutine error recording. Each goroutine records its own success/failure in its own `notification_deliveries` row; no failure propagates to siblings. The outer job returns an error only if the DB transaction itself fails — never because an outbound HTTP call failed.
 
 ### 11.3 Webhook Security (Required)
 - HMAC signature headers — **two headers required** (using `crypto/hmac` + `crypto/sha256`):
@@ -1104,7 +1153,21 @@ transport := &http.Transport{
 ```
 `MaxConnsPerHost: 50` bounds connections to any single destination host (e.g., `hooks.slack.com`), which is the primary fan-out vector when many orgs use the same Slack webhook host. The default is `0` (unlimited). This is distinct from the per-org concurrency cap (§11.2), which bounds in-flight deliveries per org; `MaxConnsPerHost` bounds connections at the OS TCP layer across all orgs.
 
-**Notification channel deletion pre-flight check (required):** `DELETE /api/v1/orgs/{org_id}/channels/{id}` must first check whether any active alert rules (`status NOT IN ('draft', 'disabled')`) reference this channel. If any are found, return `409 Conflict` with a machine-readable error body listing the conflicting rule IDs and names. Deleting a channel without this guard causes active alert rules to fire, attempt delivery to a non-existent channel UUID, permanently fail in the dead-letter queue, and silently stop alerting — with no error surfaced to the user.
+**HTTP redirect following MUST be disabled for webhook delivery (required):** The default Go HTTP client follows up to 10 redirects automatically. An attacker who controls a webhook endpoint can respond with `302 Found` pointing to `http://169.254.169.254/latest/meta-data/` (AWS IMDSv1) or `http://10.0.0.1/admin` — causing the HTTP client to silently redirect to an internal service, bypassing `doyensec/safeurl`'s initial URL validation (which only validated the original webhook URL). The `doyensec/safeurl` client or the underlying `http.Transport` must be configured to disable all redirect following:
+```go
+client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+    return http.ErrUseLastResponse // do not follow any redirect
+}
+```
+Webhook consumers that legitimately need a redirect response must handle it by updating their channel configuration to point to the final URL.
+
+**Webhook signing secret rotation with grace period (required):** An operator must be able to rotate the HMAC signing secret without a delivery gap. If the old secret is invalidated immediately, in-flight deliveries signed with the old secret fail consumer-side verification and are dead-lettered, potentially losing critical CVE alerts. The `notification_channels` table must support a `signing_secret_secondary TEXT NULL` column. During rotation: (1) the `POST .../channels/{id}/rotate-secret` endpoint atomically moves the current `signing_secret` to `signing_secret_secondary` and generates a new primary; (2) outbound deliveries are always signed with `signing_secret` (primary); (3) the documentation tells consumers to verify against primary then fall back to secondary within a configurable grace window (default: 24 hours via `WEBHOOK_SECRET_GRACE_HOURS`); (4) after the grace window, the operator calls `POST .../channels/{id}/clear-secondary` to null out the secondary. This dual-secret pattern is standard in Stripe, GitHub, and Slack webhook security. The `signing_secret` and `signing_secret_secondary` values are stored encrypted at rest (or via external secrets manager); they are never returned in GET responses.
+
+**Slack Block Kit message chunking (required):** Slack's Block Kit limits a single incoming webhook message to 50 blocks. At 5–6 blocks per CVE (title, severity badge, scores, description snippet, deep link, divider), a message containing more than ~8 CVEs exceeds this limit and the Slack API returns `400 invalid_blocks` — silently dropping the entire batch. For grouped/digest Slack deliveries, chunk at **20 CVEs per message** (conservative limit accounting for severity headers and footer blocks). The Slack renderer MUST check `len(cves) > 20` before building the Block Kit payload and send multiple sequential webhook calls if needed. Multi-chunk delivery MUST NOT use `errgroup` (see §11.2 prohibition); use sequential delivery and record per-chunk results individually.
+
+**Webhook response body must be read and discarded (required):** After posting to a webhook endpoint, the HTTP response body must be explicitly read and discarded regardless of HTTP status: `_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))`. Without this, Go's HTTP/1.1 keep-alive cannot reuse the underlying TCP connection — a new TCP connection is established for every webhook delivery. Under high alert load this creates hundreds of simultaneous half-closed connections, exhausts ephemeral ports, and degrades delivery throughput. The `io.LimitReader(resp.Body, 4096)` cap also prevents a "zip bomb" response: a malicious webhook server that returns a 2 GB response body would cause the delivery goroutine to read indefinitely, holding the goroutine and OOM-killing the worker process.
+
+**Notification channel deletion pre-flight check (required):** `DELETE /api/v1/orgs/{org_id}/channels/{id}` must first check whether any active alert rules (`status NOT IN ('draft', 'disabled')`) reference this channel. If any are found, return `409 Conflict` with a machine-readable error body listing the conflicting rule IDs and names. When deletion is permitted (no active rules), soft-delete the channel row (`UPDATE notification_channels SET deleted_at = now()`) rather than hard-deleting — hard deletion orphans `notification_deliveries` rows that reference this channel by foreign key, breaking delivery history queries. The soft-deleted channel remains visible in history queries but is excluded from new configuration lookups (`WHERE deleted_at IS NULL`).
 
 ### 11.4 Notification Content & Templates
 
@@ -1146,6 +1209,31 @@ Configurable:
 - scope by watchlist and severity threshold
 - delivery time with timezone support
 - optional AI executive summary (Pro+)
+
+### 12.1 Digest Scheduling Architecture
+
+**`scheduled_reports` table columns (required):**
+- `scheduled_time TIME NOT NULL` — wall-clock time of day for delivery (e.g., `09:00:00`)
+- `timezone TEXT NOT NULL DEFAULT 'UTC'` — IANA timezone name (e.g., `America/New_York`). Stored as text; loaded via `time.LoadLocation` (requires `_ "time/tzdata"` import — see §18.3). Validated at save time using `time.LoadLocation`.
+- `next_run_at TIMESTAMPTZ NOT NULL` — the precomputed absolute UTC timestamp of the next scheduled run. This is what the scheduler polls.
+
+**Next-run-at calculation (required — "Anchor to Now"):** When a user creates or updates a scheduled report, `next_run_at` is computed as follows: take the current time in the report's timezone, find the next occurrence of `scheduled_time` on the current or next calendar day, then convert to UTC. If the current time is `08:50` local and `scheduled_time` is `09:00`, the next run is 10 minutes from now. If it is `09:30` local, the next run is tomorrow at `09:00`. This approach anchors scheduling to real calendar time with correct DST handling (the timezone library handles the UTC offset shift automatically).
+
+**After each run — advancing `next_run_at` (required):** After a successful digest delivery, advance `next_run_at` by the report's recurrence interval (24h for daily, 7d for weekly), computed in the report's timezone to handle DST transitions correctly:
+```go
+loc, _ := time.LoadLocation(report.Timezone)
+prev := report.NextRunAt.In(loc)
+next := time.Date(prev.Year(), prev.Month(), prev.Day()+1,
+    prev.Hour(), prev.Minute(), prev.Second(), 0, loc)
+report.NextRunAt = next.UTC()
+```
+Do NOT simply add `24 * time.Hour` to the UTC timestamp — this drifts by ±1 hour across DST boundaries.
+
+**Missed-run windowed catch-up (required):** If a worker is down for 48+ hours (crash, deployment), the digest scheduler resumes after recovery. Executing every missed digest in sequence (potentially weeks of dailies) overwhelms channels and spams users. The catch-up policy: execute **at most 1 missed run per report** on recovery, regardless of how many were missed. The scheduler checks `next_run_at < now() - interval '2 hours'` (i.e., overdue by more than a 2-hour grace window). If the report is overdue by more than 2 hours, deliver a single catch-up digest covering the period from the last successful run to now, then advance `next_run_at` to the next future scheduled time. Log the catch-up event with the number of skipped runs. Do NOT deliver one digest per missed interval.
+
+**Digest content ordering and truncation (required):** The digest payload includes all CVEs with `date_modified_canonical > last_digest_run_at` that match the report's watchlist/severity filters. This set may be very large after a mass NVD enrichment batch (hundreds to thousands of CVEs). The email renderer must: (1) sort CVEs by `severity` descending (critical → high → medium → low → none), then by `cvss_v3_score` descending as tiebreaker; (2) cap at **25 CVEs** per digest email; (3) include a footer line: "25 of N CVEs shown — view all at [link]". This prevents multi-MB digest emails that are rejected by SMTP relays or marked as spam. The Slack digest renderer caps at 20 CVEs per message (see §11.3 Slack chunking).
+
+**Digest heartbeat — send even on 0 matches (required):** If the CVE corpus has no changes matching the report's filters in the last 24h, the report job MUST still deliver a digest with a "No new vulnerabilities matching your filters" message. Heartbeat delivery prevents users from assuming the system is silent because it is broken. The heartbeat also serves as a liveness indicator for the channel (a misconfigured webhook or expired Slack token is surfaced immediately rather than days later when a real alert fires). The heartbeat cadence matches the configured recurrence (daily, weekly). Heartbeat can be disabled per-report via `send_on_empty = false` (default true).
 
 ---
 
@@ -1289,6 +1377,17 @@ ORDER BY date_published DESC, cve_id DESC
 ```
 The opaque cursor value encodes both components. This rule applies to any sort field that is not globally unique. `cve_id` itself is unique, so single-column cursor on `cve_id` alone is safe.
 
+**NULL-safe keyset pagination for nullable sort columns (required):** When a sort column is nullable (e.g., `epss_score FLOAT NULL`, `date_published TIMESTAMPTZ NULL`), the composite cursor `WHERE (sort_col, cve_id) < ($last_val, $last_id)` silently drops all rows where `sort_col IS NULL` — Postgres evaluates `NULL < $last_val` as NULL (false in WHERE), excluding the row. If a user sorts by `epss_score DESC` and 50,000 CVEs have no EPSS score, only scored CVEs appear; null-scored CVEs vanish from every page with no error. Required pattern for nullable sort columns — use `COALESCE` with a sentinel value that sorts at the intended position, or use an explicit NULL-ordering clause:
+```sql
+-- Sort epss_score DESC, NULLs last (natural for "show highest risk first")
+ORDER BY epss_score DESC NULLS LAST, cve_id DESC
+-- Cursor: (COALESCE(epss_score, -1), cve_id) < (COALESCE($last_val, -1), $last_id)
+WHERE (COALESCE(epss_score, -1), cve_id) < (COALESCE($last_val, -1), $last_id)
+```
+Test every nullable sort column with fixtures containing both null and non-null values where a page boundary falls inside the null group.
+
+**API keys must not be accepted in query strings (required):** Tokens in query strings (`?api_key=cvo_abc123`) are logged by every layer — web server access logs, reverse proxy logs, load balancer logs, CDN edge logs, browser history, and `Referer` headers on subsequent navigations. An API key appearing in a URL is treated as compromised the moment the request is made. The API MUST: (1) accept API keys **only** via the `Authorization: Bearer <key>` HTTP header; (2) return `400 Bad Request` if a request includes an API key in any query parameter (`?api_key=`, `?token=`, `?key=`, `?access_token=`); (3) scan for common parameter names at the middleware layer before reaching any handler. The OpenAPI spec's security scheme must declare only `http bearer` authentication — no `apiKey` in `query` location.
+
 ### Decision D5 — How org context is carried in the API (MVP)
 
 **Decision (MVP):** Carry org context in the **URL path**: `/api/v1/orgs/{org_id}/...`
@@ -1352,8 +1451,22 @@ In Docker Compose and Kubernetes, `r.RemoteAddr` returns the internal IP of the 
 
 Required pattern:
 - `TRUSTED_PROXIES` env var accepts a comma-separated list of CIDR ranges (e.g., `10.0.0.0/8,172.16.0.0/12`; empty = no trusted proxies)
-- Rate limiter middleware: if `r.RemoteAddr` falls within a trusted CIDR, extract client IP from `X-Forwarded-For` (first non-trusted entry, right-to-left) or `X-Real-IP`; otherwise use `r.RemoteAddr` directly
+- Rate limiter middleware: if `r.RemoteAddr` falls within a trusted CIDR, extract client IP from `X-Forwarded-For` (first non-trusted entry, **right-to-left**) or `X-Real-IP`; otherwise use `r.RemoteAddr` directly
 - If `TRUSTED_PROXIES` is empty (self-hosted without a proxy), use `r.RemoteAddr` directly — do not blindly trust any forwarded headers
+
+**`X-Forwarded-For` MUST be read right-to-left (required):** `X-Forwarded-For` is a comma-separated list where each proxy appends the IP it received the connection from. Example: `X-Forwarded-For: 1.2.3.4, 10.0.0.2, 10.0.0.3` (client → CDN 10.0.0.2 → ALB 10.0.0.3 → app). Reading left-to-right (`strings.Split(xff, ",")[0]`) is trivially bypassed: a client sends `X-Forwarded-For: 127.0.0.1` and the rate limiter sees loopback and may exempt it. The rightmost non-trusted entry is the most reliable because an attacker cannot inject entries after the last trusted proxy hop. Required algorithm:
+```go
+// rightmost non-trusted entry from X-Forwarded-For
+parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+for i := len(parts) - 1; i >= 0; i-- {
+    ip := strings.TrimSpace(parts[i])
+    if !isTrustedIP(ip, trustedCIDRs) {
+        return ip // this is the real client IP
+    }
+}
+return r.RemoteAddr // all XFF entries were trusted proxies
+```
+Never use `[0]` (leftmost). Never trust `X-Real-IP` without also validating `r.RemoteAddr` is a trusted proxy.
 
 ---
 
@@ -1535,6 +1648,36 @@ ptz,
 - Throughput ceiling of Postgres `SKIP LOCKED` is well above MVP needs (thousands of jobs/sec).
 - If SaaS scaling demands exceed Postgres queue throughput, the `job_queue` table can be replaced with Redis/NATS without changing the worker goroutine structure — only the "claim next job" function changes.
 
+**`time.After` forbidden in long-running worker loops (required):** `time.After(d)` allocates a new `time.Timer` on every call. In a polling goroutine that uses `time.After` as a `select` case for its interval (e.g., `case <-time.After(30 * time.Second):`), the previous timer is not garbage-collected until it fires — the Go runtime holds an internal reference on the timer heap. A worker loop that polls every 30 seconds accumulates up to 1 timer object per cycle; in a long-running process (days) with many worker goroutines, this creates a background heap of timer objects that GC cannot collect. **Required:** use `time.NewTicker` instead:
+```go
+ticker := time.NewTicker(30 * time.Second)
+defer ticker.Stop() // must Stop() to release the ticker's goroutine
+for {
+    select {
+    case <-ctx.Done(): return
+    case <-ticker.C:
+        // poll
+    }
+}
+```
+`ticker.Stop()` releases the underlying timer goroutine. `time.After` is safe in non-looping `select` statements (one-shot wait); it is only a leak in loops.
+
+**`defer` inside loops must use explicit cleanup — not bare `defer` (required):** `defer` executes when the **enclosing function** returns, not when the loop iteration completes. In a loop that opens a resource per iteration (e.g., `for _, entry := range zr.File { rc, _ := entry.Open(); defer rc.Close() ... }`), all `rc.Close()` calls are deferred until the function returns — leaving all file descriptors open simultaneously for the full loop duration. The OSV `all.zip` archive contains 100,000+ files; this exhausts the OS file descriptor limit within seconds. Required pattern: call `rc.Close()` explicitly at every exit path within the loop body, or use an anonymous function:
+```go
+for _, entry := range zr.File {
+    if err := func() error {
+        rc, err := entry.Open()
+        if err != nil { return err }
+        defer rc.Close() // safe: defers to anonymous function return, not outer function
+        return json.NewDecoder(rc).Decode(&record)
+    }(); err != nil {
+        return err
+    }
+    // process record
+}
+```
+Auditing deferred resources in loops is a required code review gate for any new code that opens resources inside a `for` loop.
+
 ### 18.2 HTTP Framework + OpenAPI Strategy (RESOLVED)
 
 **Decision: huma + chi (code-first, OpenAPI 3.1)**
@@ -1598,6 +1741,14 @@ go func() {
 }()
 ```
 Never pass `r.Context()` directly to background work. Never use `context.Background()` (loses tracing). `context.WithoutCancel` is the correct bridge.
+
+**Container memory limit auto-configuration (required):**
+
+Go's runtime defaults to using the physical machine's total RAM as a GC target heuristic. In a Docker container or Kubernetes pod with a memory limit (e.g., `512Mi`), the Go runtime is unaware of the cgroup memory limit — it observes the host's full RAM (e.g., 16 GB) and schedules GC far too infrequently. The container's RSS grows until the OOM killer terminates the process, often with only a brief `Killed` log line and no useful diagnostic. The `github.com/KimMachineGun/automemlimit` package automatically reads the cgroup memory limit and calls `runtime/debug.SetMemoryLimit` to 90% of the container limit, triggering GC well before the OOM killer fires. Add to `cmd/cvert-ops/main.go`:
+```go
+import _ "github.com/KimMachineGun/automemlimit" // auto-set GOMEMLIMIT from cgroup
+```
+This is a blank import — no initialization code required; it activates via `init()` at program startup. On non-containerized hosts (no cgroup limit), it is a no-op. Also document `GOMEMLIMIT` and `GOGC` in `.env.example` for operators who want manual control.
 
 **Database connection retry on startup (required):**
 
@@ -1746,6 +1897,18 @@ Alternatively, append `?default_query_exec_mode=simple_protocol` to `DATABASE_UR
 - Expose `DB_MAX_CONNS` env var, default `25`. This maps directly to `pgxpool.Config.MaxConns`.
 - Document the scaling formula in `.env.example`: `DB_MAX_CONNS × number_of_app_instances < postgres_max_connections − 10`. The buffer of 10 reserves headroom for `psql` admin sessions and migration runs.
 - Log a warning at startup if the configured pool size appears dangerously high relative to the queried Postgres `max_connections` value (via `SHOW max_connections`). This is advisory, not fatal — the operator may have custom Postgres configuration.
+
+**Database query timeout via `statement_timeout` (required):** Without a query timeout, a misbehaving DSL rule, a slow CVE merge, or a retention cleanup batch that locks a hot table can hold a Postgres backend connection for minutes or indefinitely, consuming a connection from the finite pool and blocking queries waiting on locked rows. Set a global `statement_timeout` in pgxpool's `RuntimeParams`:
+```go
+config.ConnConfig.RuntimeParams["statement_timeout"] = "14000" // 14 seconds in ms
+```
+14 seconds is deliberately longer than the 10-second webhook timeout (§11.2) and the 5-second `ReadHeaderTimeout` — it covers worst-case legitimate queries (full-text search + regex post-filter at max candidates) without interfering with normal operations. Worker jobs that legitimately need longer (activation scan batches, bulk import, retention cleanup) must set `SET LOCAL statement_timeout = 0` at the transaction level via `tx.Exec(ctx, "SET LOCAL statement_timeout = 0")`. Expose `DB_STATEMENT_TIMEOUT_MS` env var (default `14000`) for operator tuning.
+
+**Connection idle timeout (required):** Postgres backend processes are not freed until their pgxpool connection is closed. Without an idle timeout, connections acquired during peak load remain open indefinitely — holding ~5–10 MB of Postgres backend memory per connection even when the application is idle. Additionally, cloud NAT gateways (AWS NAT Gateway, GCP Cloud NAT) silently drop TCP sessions idle for >300 seconds. A pgx connection idle for 5+ minutes receives a `broken pipe` or `connection reset` error on the next query — silently wasting the first query of a low-traffic period. Configure:
+```go
+config.MaxConnIdleTime = 5 * time.Minute
+```
+Connections idle for more than 5 minutes are proactively closed and returned to the OS before the NAT gateway drops them.
 
 ## 19.3 Testing Strategy
 
@@ -1985,6 +2148,24 @@ Stores EPSS scores for CVE IDs not yet present in the corpus (see EPSS note in s
 - Columns: `epss_score double precision not null`, `as_of_date date not null`, `ingested_at timestamptz not null default now()`
 - Indexes: `BTREE(ingested_at)`
 
+
+**IS DISTINCT FROM for JSONB column upserts (required):** When upserting `cve_sources.normalized_json` or `cve_raw_payloads.payload` (JSONB columns), a naive `ON CONFLICT DO UPDATE SET normalized_json = EXCLUDED.normalized_json` writes a new physical tuple even when the value is unchanged. For JSONB above ~2KB, Postgres stores the value in TOAST pages — each UPDATE allocates a new TOAST entry even if the content is identical. Daily feed re-ingestion for 250,000+ CVE sources writes 250,000 TOAST entries per day without this guard — equivalent to daily full-table rewrites, causing runaway TOAST table bloat. **Required pattern:**
+```sql
+ON CONFLICT (cve_id, source_name) DO UPDATE
+    SET normalized_json = EXCLUDED.normalized_json,
+        ingested_at = EXCLUDED.ingested_at
+    WHERE cve_sources.normalized_json IS DISTINCT FROM EXCLUDED.normalized_json
+```
+The `WHERE` clause makes the DO UPDATE a no-op when the JSONB is unchanged, preventing the TOAST allocation. Apply the same pattern to all JSONB columns that are upserted from feed data.
+
+**`CREATE INDEX CONCURRENTLY` required in all migrations (required):** Standard `CREATE INDEX` acquires an `AccessExclusiveLock` on the table for the duration of index build, blocking all reads and writes. On a 250,000-row `cves` table, index build takes 5–30 seconds — taking the entire API and all workers offline for that window. `CREATE INDEX CONCURRENTLY` builds the index without the exclusive lock, allowing concurrent reads and writes at the cost of a slightly longer build (2 passes). All `CREATE INDEX` statements in migration files MUST use `CREATE INDEX CONCURRENTLY`. **Caveat:** `CREATE INDEX CONCURRENTLY` cannot run inside an explicit transaction. Migration files containing concurrent index creation must opt out of `golang-migrate`'s automatic transaction wrapping by including the directive `-- migrate:no-transaction` as the first line of the migration file (or the golang-migrate equivalent for the Postgres driver used). Failing to do so causes `CREATE INDEX CONCURRENTLY` to fail with `ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block`.
+
+**Soft-delete entities require partial unique indexes (required):** Tables with `deleted_at TIMESTAMPTZ NULL` (soft-delete) that enforce a `UNIQUE(org_id, name)` constraint will reject name reuse for soft-deleted rows — the user cannot create `My Watchlist` again after deleting it. Use a **partial unique index** instead of a table constraint:
+```sql
+CREATE UNIQUE INDEX watchlists_name_uq ON watchlists (org_id, name)
+WHERE deleted_at IS NULL;
+```
+This enforces uniqueness only among live rows. Apply to all soft-deletable entities with user-facing names: `watchlists`, `notification_channels`, `saved_searches`, `alert_rules`, `groups`.
 
 ### `feed_sync_state` / `feed_fetch_log`
 See sections 3.3 and earlier schema notes.

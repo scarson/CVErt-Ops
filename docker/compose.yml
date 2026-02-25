@@ -89,7 +89,7 @@ services:
     command: ["migrate"]
     environment:
       DATABASE_URL: >-
-        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=disable
+        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=require
     networks:
       - cvert-data-net
     depends_on:
@@ -114,7 +114,7 @@ services:
     environment:
       # Database
       DATABASE_URL: >-
-        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=disable
+        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=require
       # PLAN.md §19.2: simple_protocol for PgBouncer compatibility (safe for direct connections too)
       DB_QUERY_EXEC_MODE: simple_protocol
 

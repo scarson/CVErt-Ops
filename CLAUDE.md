@@ -15,7 +15,7 @@ golangci-lint run                    # lint (NOT go vet alone)
 sqlc generate                        # regenerate type-safe query code after changing .sql files
 migrate -path migrations -database "$DATABASE_URL" up      # run migrations
 migrate -path migrations -database "$DATABASE_URL" down 1  # rollback one migration
-docker compose up -d                 # start dev Postgres + Mailpit
+docker compose -f docker/compose.yml --env-file .env up -d   # start dev Postgres + Mailpit
 go run ./cmd/cvert-ops serve         # run server (HTTP + worker)
 go run ./cmd/cvert-ops worker        # run standalone worker
 go run ./cmd/cvert-ops migrate       # run migrations programmatically

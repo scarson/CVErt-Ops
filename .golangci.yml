@@ -1,0 +1,70 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    # Core correctness
+    - errcheck       # Unhandled error returns
+    - govet          # Compiler-equivalent analysis (shadow, printf, etc.)
+    - staticcheck    # SA + S1 + QF rules (replaces deprecated megacheck)
+    # Security (OWASP patterns — critical for a security product)
+    - gosec          # G104 errcheck, G107 URL injection, G201-204 SQL, G401-501 crypto
+    # HTTP / network hygiene
+    - bodyclose      # HTTP response bodies must be closed (prevents conn-pool leaks)
+    - noctx          # http.NewRequest must use context-aware variant
+    # Struct completeness (targeted: only net/http.Server to catch missing timeouts)
+    - exhaustruct
+    # Style / quality
+    - misspell       # Spelling errors in comments and strings
+    - revive         # Idiomatic Go style (replaces golint)
+    - sloglint       # slog usage patterns (key-value pairs, context propagation)
+
+linters-settings:
+  exhaustruct:
+    # Only enforce completeness for http.Server — catches the Slowloris-critical
+    # missing ReadHeaderTimeout / ReadTimeout / IdleTimeout fields.
+    # Global exhaustruct would be extremely noisy for huma/chi/pgx structs.
+    include:
+      - "net/http\\.Server"
+
+  gosec:
+    excludes:
+      # G304: file path constructed from variable — false positive for embed.FS
+      # reads in the migrate subcommand (paths come from iofs, not user input).
+      - G304
+
+  revive:
+    rules:
+      - name: exported
+        disabled: false
+      - name: var-naming
+        disabled: false
+      - name: unused-parameter
+        disabled: false
+
+  staticcheck:
+    checks:
+      - "all"
+      - "-ST1000" # Package comment not required on every package in Phase 0
+      - "-ST1003" # Allow ALL_CAPS constants (uuid, etc.)
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Test files: relax exhaustruct (test structs rarely need all fields set),
+    # allow unhandled errors in test assertions, and skip gosec in tests.
+    - path: "_test\\.go"
+      linters:
+        - exhaustruct
+        - errcheck
+        - gosec
+
+    # Generated code produced by sqlc — do not lint.
+    - path: "internal/store/generated/"
+      linters:
+        - all

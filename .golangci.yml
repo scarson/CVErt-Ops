@@ -38,6 +38,10 @@ linters:
         # G117: struct field name matches secret pattern — false positive for config
         # struct fields that read secrets from environment variables (not hardcoded).
         - G117
+        # G704: SSRF via taint analysis — too aggressive; fires on test helpers and
+        # feed adapter URLs that are hardcoded constants. SSRF protection is enforced
+        # architecturally via doyensec/safeurl for all outbound webhook HTTP clients.
+        - G704
 
     revive:
       rules:

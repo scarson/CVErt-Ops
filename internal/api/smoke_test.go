@@ -13,6 +13,21 @@ import (
 	"github.com/scarson/cvert-ops/internal/api"
 )
 
+// get issues a GET request using NewRequestWithContext and returns the response.
+// Fails the test immediately on any error.
+func get(t *testing.T, ctx context.Context, url string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", url, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	return resp
+}
+
 // TestSmokeHealthz starts a real Postgres container, builds the HTTP handler,
 // and asserts that /healthz returns 200 {"status":"ok"} and /metrics returns 200.
 //
@@ -63,10 +78,7 @@ func TestSmokeHealthz(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// ── /healthz ─────────────────────────────────────────────────────────────
-	resp, err := http.Get(srv.URL + "/healthz") //nolint:noctx // httptest URL; context cancellation unnecessary
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
+	resp := get(t, ctx, srv.URL+"/healthz")
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
@@ -84,10 +96,7 @@ func TestSmokeHealthz(t *testing.T) {
 	}
 
 	// ── /metrics ─────────────────────────────────────────────────────────────
-	mResp, err := http.Get(srv.URL + "/metrics") //nolint:noctx // httptest URL; context cancellation unnecessary
-	if err != nil {
-		t.Fatalf("GET /metrics: %v", err)
-	}
+	mResp := get(t, ctx, srv.URL+"/metrics")
 	defer mResp.Body.Close() //nolint:errcheck
 
 	if mResp.StatusCode != http.StatusOK {
@@ -100,14 +109,12 @@ func TestSmokeHealthz(t *testing.T) {
 func TestSmokeHealthzDegraded(t *testing.T) {
 	t.Parallel()
 
+	ctx := context.Background()
 	handler := api.NewRouter(nil)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/healthz") //nolint:noctx // httptest URL; context cancellation unnecessary
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
+	resp := get(t, ctx, srv.URL+"/healthz")
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusServiceUnavailable {

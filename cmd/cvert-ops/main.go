@@ -96,15 +96,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	st := store.New(db)
+
 	// Start embedded worker pool. Runs until ctx is cancelled, at which point
 	// in-flight jobs complete and the goroutines exit. The goroutine is
 	// intentionally fire-and-forget here; the pool drains on ctx cancellation
 	// which happens before or alongside HTTP server shutdown.
-	workerPool := worker.New(store.New(db))
+	workerPool := worker.New(st)
 	workerPool.Register("feed_ingest", feedIngestHandler)
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
-	handler := api.NewRouter(db)
+	handler := api.NewRouter(st)
 
 	// PLAN.md §18.3: explicit timeouts required to prevent Slowloris attacks.
 	// WriteTimeout intentionally omitted — applied per-handler via http.TimeoutHandler

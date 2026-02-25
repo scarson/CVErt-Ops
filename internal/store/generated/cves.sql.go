@@ -140,6 +140,109 @@ func (q *Queries) GetCVE(ctx context.Context, cveID string) (Cfe, error) {
 	return i, err
 }
 
+const getCVEAffectedCPEs = `-- name: GetCVEAffectedCPEs :many
+SELECT id, cve_id, cpe, cpe_normalized FROM cve_affected_cpes WHERE cve_id = $1 ORDER BY cpe_normalized
+`
+
+func (q *Queries) GetCVEAffectedCPEs(ctx context.Context, cveID string) ([]CveAffectedCpe, error) {
+	rows, err := q.db.QueryContext(ctx, getCVEAffectedCPEs, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveAffectedCpe
+	for rows.Next() {
+		var i CveAffectedCpe
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Cpe,
+			&i.CpeNormalized,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCVEAffectedPackages = `-- name: GetCVEAffectedPackages :many
+SELECT id, cve_id, ecosystem, package_name, namespace, range_type, introduced, fixed, last_affected, events FROM cve_affected_packages WHERE cve_id = $1 ORDER BY ecosystem, package_name
+`
+
+func (q *Queries) GetCVEAffectedPackages(ctx context.Context, cveID string) ([]CveAffectedPackage, error) {
+	rows, err := q.db.QueryContext(ctx, getCVEAffectedPackages, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveAffectedPackage
+	for rows.Next() {
+		var i CveAffectedPackage
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Ecosystem,
+			&i.PackageName,
+			&i.Namespace,
+			&i.RangeType,
+			&i.Introduced,
+			&i.Fixed,
+			&i.LastAffected,
+			&i.Events,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCVEReferences = `-- name: GetCVEReferences :many
+SELECT id, cve_id, url, url_canonical, tags FROM cve_references WHERE cve_id = $1 ORDER BY url_canonical
+`
+
+func (q *Queries) GetCVEReferences(ctx context.Context, cveID string) ([]CveReference, error) {
+	rows, err := q.db.QueryContext(ctx, getCVEReferences, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveReference
+	for rows.Next() {
+		var i CveReference
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Url,
+			&i.UrlCanonical,
+			pq.Array(&i.Tags),
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getEPSSStaging = `-- name: GetEPSSStaging :one
 SELECT cve_id, epss_score, as_of_date, ingested_at FROM epss_staging WHERE cve_id = $1
 `

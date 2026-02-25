@@ -557,6 +557,59 @@ Endpoint: `GET https://api.github.com/advisories`. Auth: `Authorization: Bearer 
 
 ### Open items carried forward
 
-- [ ] Commit 9: CVE search + detail API (`internal/api/cves.go`)
+- [x] Commit 9: CVE search + detail API (`internal/api/cves.go`) — see below
+
+---
+
+## Phase 1 — Commit 9: CVE Search + Detail API
+
+> **Date:** 2026-02-25
+> **Branch:** `dev`
+> **Deliverables:** `internal/api/cves.go`, updated `internal/store/cve.go`, updated `internal/api/server.go`, updated `internal/api/smoke_test.go`, updated `cmd/cvert-ops/main.go`, 3 new sqlc queries
+
+### Files created / modified
+
+| File | Purpose |
+|---|---|
+| `internal/api/cves.go` | 3 CVE endpoints: `GET /cves` (paginated search), `GET /cves/{cve_id}` (detail + child tables), `GET /cves/{cve_id}/sources` (per-source payloads) |
+| `internal/store/cve.go` | Added `GetCVEDetail`, `SearchParams`, `SearchCVEs` (squirrel dynamic query) |
+| `internal/store/queries/cves.sql` | Added `GetCVEReferences`, `GetCVEAffectedPackages`, `GetCVEAffectedCPEs` queries |
+| `internal/api/server.go` | Changed `NewRouter(db *pgxpool.Pool)` → `NewRouter(s *store.Store)`; removed `_ = api` placeholder; wired `registerCVERoutes(api, s)` |
+| `internal/api/smoke_test.go` | Updated `api.NewRouter(pool)` → `api.NewRouter(store.New(pool))` |
+| `cmd/cvert-ops/main.go` | Created store once (`st := store.New(db)`), passed to both `worker.New(st)` and `api.NewRouter(st)` |
+
+### Implementation decisions / discoveries
+
+**`NewRouter` accepts `*store.Store` not `*pgxpool.Pool`** — The router now needs the full store to call `registerCVERoutes`. The `healthzHandler` still needs the pool for ping, so `s.Pool()` is called inside `NewRouter` (nil-safe: when `s == nil`, `db` stays nil and healthz returns degraded).
+
+**`squirrel` for dynamic search** — `sq.StatementBuilder.PlaceholderFormat(sq.Dollar)` produces `$1, $2, …` positional params. `sq.Eq{"c.severity": []string{…}}` generates `c.severity IN ($1,$2,…)` — safe for severity (5 bounded values). FTS uses `websearch_to_tsquery` (Postgres 11+, supports quoted phrases and negation).
+
+**COALESCE on nullable columns** — CVSS: `COALESCE(c.cvss_v4_score, c.cvss_v3_score)` — prefers v4, falls back to v3. EPSS min filter: `COALESCE(c.epss_score, -1)` (NULLs below any ≥0 threshold); EPSS max filter: `COALESCE(c.epss_score, 2)` (NULLs above any ≤1 threshold). Both prevent NULL rows vanishing from pagination results.
+
+**Keyset cursor as row comparison** — `(c.date_modified_canonical, c.cve_id) < (?, ?)` uses Postgres row comparison semantics: `A < C OR (A = C AND B < D)`. Both columns are DESC, both appear in ORDER BY and WHERE — correct composite keyset. `date_modified_canonical` is `NOT NULL DEFAULT now()` so no COALESCE needed on the cursor column itself.
+
+**EXISTS subquery for ecosystem/package filter** — A JOIN on `cve_affected_packages` causes duplicate rows when one CVE affects multiple packages in the same ecosystem. EXISTS subquery avoids duplicates without needing a DISTINCT (which would break cursor-based row counts).
+
+**`pq.Array` for `text[]` scanning in squirrel rows** — sqlc-generated `Scan` handles `pq.Array` internally. For squirrel-built queries, the scan must explicitly use `pq.Array(&c.CweIds)` for the `cwe_ids text[]` column.
+
+**`defer rows.Close()` at function scope** — Declared immediately after `QueryContext` returns, before the `for rows.Next()` loop. Fires at function return, not per-iteration. ✅
+
+**Cursor encoding** — `base64.RawURLEncoding` (no padding, URL-safe) wraps `{"d":"<RFC3339Nano>","id":"<cve_id>"}`. Opaque to clients; decoded and validated server-side.
+
+**`GetCVEDetail` returns nil on not-found** — Returns `(nil, nil, nil, nil, nil)` when the CVE doesn't exist. Handler converts to `huma.Error404NotFound`.
+
+**`GetCVESourcesHandler` — 404 vs empty list** — First calls `GetCVE` to check existence. If CVE not found → 404. If found but no sources (shouldn't happen in production) → 200 `{"sources":[]}`.
+
+### Quality check results
+
+**pitfall-check:** No issues found. Key verifications:
+- `defer rows.Close()` at function scope, not inside scan loop ✅
+- `sq.Eq{"c.severity": slice}` — severity is bounded to 5 values, no 65,535 param panic risk ✅
+- No `time.After` or background goroutines in handlers ✅
+- Keyset cursor uses both `date_modified_canonical` (NOT NULL) and `cve_id` tiebreaker ✅
+- COALESCE applied to nullable EPSS and CVSS columns in filter clauses ✅
+
+**golangci-lint:** 0 issues.
+**build:** `go build ./...` clean.
 
 ---

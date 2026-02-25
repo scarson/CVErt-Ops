@@ -11,6 +11,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/scarson/cvert-ops/internal/api"
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // TestSmokeHealthz starts a real Postgres container, builds the HTTP handler,
@@ -58,7 +59,7 @@ func TestSmokeHealthz(t *testing.T) {
 	}
 
 	// ── Build handler and test server ────────────────────────────────────────
-	handler := api.NewRouter(pool)
+	handler := api.NewRouter(store.New(pool))
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 

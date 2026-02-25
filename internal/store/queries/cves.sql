@@ -144,6 +144,15 @@ UPDATE cves
 SET epss_score = $2, date_epss_updated = now()
 WHERE cve_id = $1 AND epss_score IS DISTINCT FROM $2;
 
+-- name: GetCVEReferences :many
+SELECT * FROM cve_references WHERE cve_id = $1 ORDER BY url_canonical;
+
+-- name: GetCVEAffectedPackages :many
+SELECT * FROM cve_affected_packages WHERE cve_id = $1 ORDER BY ecosystem, package_name;
+
+-- name: GetCVEAffectedCPEs :many
+SELECT * FROM cve_affected_cpes WHERE cve_id = $1 ORDER BY cpe_normalized;
+
 -- name: ListCVEs :many
 -- Base list query — dynamic WHERE and ORDER BY built by squirrel in the
 -- store layer. This static query handles the no-filter paginated case.

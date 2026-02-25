@@ -13,13 +13,19 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // NewRouter builds the full chi router with middleware, /healthz, /metrics,
 // and the huma OpenAPI sub-router at /api/v1.
 //
-// db may be nil only in tests that don't need a DB (healthz will return degraded).
-func NewRouter(db *pgxpool.Pool) http.Handler {
+// s may be nil only in tests that don't need a DB (healthz will return degraded).
+func NewRouter(s *store.Store) http.Handler {
+	var db *pgxpool.Pool
+	if s != nil {
+		db = s.Pool()
+	}
 	r := chi.NewRouter()
 
 	// ── Security headers (PLAN.md §18.3) ─────────────────────────────────────
@@ -50,7 +56,7 @@ func NewRouter(db *pgxpool.Pool) http.Handler {
 	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
 	api := humachi.New(apiRouter, humaConfig)
-	_ = api // used in future phases when routes are registered
+	registerCVERoutes(api, s)
 
 	r.Mount("/api/v1", apiRouter)
 

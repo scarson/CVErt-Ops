@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 
@@ -250,6 +251,136 @@ func TestResolveOptionalFilters(t *testing.T) {
 			checkBoolPtr(t, "inCISAKEVBool", input.inCISAKEVBool, tc.wantKEV)
 			checkBoolPtr(t, "exploitAvailBool", input.exploitAvailBool, tc.wantExploit)
 		})
+	}
+}
+
+// ── cfeToItem ─────────────────────────────────────────────────────────────────
+
+func TestCfeToItemMinimal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	row := generated.Cfe{
+		CveID:                 "CVE-2024-12345",
+		DateModifiedCanonical: now,
+		DateFirstSeen:         now,
+		// All optional fields left as zero (invalid sql.Null*).
+	}
+	item := cfeToItem(row)
+
+	if item.CVEID != "CVE-2024-12345" {
+		t.Errorf("CVEID = %q, want %q", item.CVEID, "CVE-2024-12345")
+	}
+	if item.Status != nil {
+		t.Errorf("Status = %v, want nil (null NullString)", item.Status)
+	}
+	if item.DatePublished != nil {
+		t.Errorf("DatePublished = %v, want nil (null NullTime)", item.DatePublished)
+	}
+	if item.DescriptionPrimary != nil {
+		t.Errorf("DescriptionPrimary = %v, want nil (null NullString)", item.DescriptionPrimary)
+	}
+	if item.Severity != nil {
+		t.Errorf("Severity = %v, want nil (null NullString)", item.Severity)
+	}
+	if item.CVSSv3Score != nil {
+		t.Errorf("CVSSv3Score = %v, want nil (null NullFloat64)", item.CVSSv3Score)
+	}
+	if item.CVSSv4Score != nil {
+		t.Errorf("CVSSv4Score = %v, want nil (null NullFloat64)", item.CVSSv4Score)
+	}
+	if item.EPSSScore != nil {
+		t.Errorf("EPSSScore = %v, want nil (null NullFloat64)", item.EPSSScore)
+	}
+}
+
+func TestCfeToItemNilCWEIDsBecomesEmptySlice(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	row := generated.Cfe{
+		CveID:                 "CVE-2024-99999",
+		DateModifiedCanonical: now,
+		DateFirstSeen:         now,
+		CweIds:                nil, // database may return nil for empty array
+	}
+	item := cfeToItem(row)
+	if item.CWEIDs == nil {
+		t.Error("CWEIDs should be an empty slice, not nil (avoids JSON null)")
+	}
+}
+
+func TestCfeToItemOptionalFieldsSet(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	cvssScore := 9.8
+	epssScore := 0.97
+	row := generated.Cfe{
+		CveID:                 "CVE-2024-54321",
+		DateModifiedCanonical: now,
+		DateFirstSeen:         now,
+		Status:                sql.NullString{String: "Published", Valid: true},
+		DatePublished:         sql.NullTime{Time: now, Valid: true},
+		DescriptionPrimary:    sql.NullString{String: "A critical bug", Valid: true},
+		Severity:              sql.NullString{String: "CRITICAL", Valid: true},
+		CvssV3Score:           sql.NullFloat64{Float64: cvssScore, Valid: true},
+		CvssV4Score:           sql.NullFloat64{Float64: 9.5, Valid: true},
+		EpssScore:             sql.NullFloat64{Float64: epssScore, Valid: true},
+		InCisaKev:             true,
+		ExploitAvailable:      true,
+		CvssScoreDiverges:     true,
+		CweIds:                []string{"CWE-79"},
+	}
+	item := cfeToItem(row)
+
+	if item.Status == nil || *item.Status != "Published" {
+		t.Errorf("Status = %v, want %q", item.Status, "Published")
+	}
+	if item.DatePublished == nil {
+		t.Error("DatePublished should not be nil when valid")
+	}
+	if item.DescriptionPrimary == nil || *item.DescriptionPrimary != "A critical bug" {
+		t.Errorf("DescriptionPrimary = %v, want %q", item.DescriptionPrimary, "A critical bug")
+	}
+	if item.Severity == nil || *item.Severity != "CRITICAL" {
+		t.Errorf("Severity = %v, want %q", item.Severity, "CRITICAL")
+	}
+	if item.CVSSv3Score == nil || *item.CVSSv3Score != cvssScore {
+		t.Errorf("CVSSv3Score = %v, want %v", item.CVSSv3Score, cvssScore)
+	}
+	if item.EPSSScore == nil || *item.EPSSScore != epssScore {
+		t.Errorf("EPSSScore = %v, want %v", item.EPSSScore, epssScore)
+	}
+	if !item.InCISAKEV {
+		t.Error("InCISAKEV should be true")
+	}
+	if !item.ExploitAvailable {
+		t.Error("ExploitAvailable should be true")
+	}
+	if !item.CVSSScoreDiverges {
+		t.Error("CVSSScoreDiverges should be true")
+	}
+}
+
+func TestCfeToItemTimestampsRFC3339(t *testing.T) {
+	t.Parallel()
+
+	ts := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	row := generated.Cfe{
+		CveID:                 "CVE-2024-11111",
+		DateModifiedCanonical: ts,
+		DateFirstSeen:         ts,
+	}
+	item := cfeToItem(row)
+
+	// Should be RFC3339 formatted, not RFC3339Nano or custom.
+	want := "2026-02-25T12:00:00Z"
+	if item.DateModified != want {
+		t.Errorf("DateModified = %q, want %q", item.DateModified, want)
+	}
+	if item.DateFirstSeen != want {
+		t.Errorf("DateFirstSeen = %q, want %q", item.DateFirstSeen, want)
 	}
 }
 

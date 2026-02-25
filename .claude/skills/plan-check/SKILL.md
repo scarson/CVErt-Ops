@@ -2,7 +2,6 @@
 name: plan-check
 description: Verify a CVErt Ops implementation against PLAN.md requirements. Finds all "Required", "MUST", and "(required)" markers in the relevant section and checks whether the code satisfies them. Use before merging a feature.
 argument-hint: "<area or file to check (e.g., 'notification delivery', 'nvd adapter', 'internal/merge')>"
-allowed-tools: Read, Glob, Grep
 ---
 
 # Plan Compliance Check

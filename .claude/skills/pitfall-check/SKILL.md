@@ -2,7 +2,6 @@
 name: pitfall-check
 description: Check Go code against implementation-pitfalls.md to catch documented mistakes before they reach production. Use before committing significant business logic, especially feed adapters, merge pipeline, alert evaluation, or delivery workers.
 argument-hint: "[file-path or package path — omit to check files in conversation context]"
-allowed-tools: Read, Glob, Grep
 ---
 
 # Implementation Pitfall Check
@@ -13,7 +12,7 @@ Target: **$ARGUMENTS** (or the file/code already in conversation context)
 
 ## Steps
 
-**1. Load the reference:** Read `implementation-pitfalls.md` — the numbered list and summary tables.
+**1. Load the reference:** Read `dev/implementation-pitfalls.md` — the numbered list and summary tables.
 
 **2. Load the target code:** Read the specified file(s). If given a package path (e.g., `internal/feed/nvd`), glob all `*.go` files in it.
 

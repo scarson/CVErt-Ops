@@ -2,7 +2,6 @@
 name: security-review
 description: Run a security review of CVErt Ops code against OWASP Top 10 and project-specific security requirements from PLAN.md §7 and §15. Use before merging any auth, webhook, tenant-isolation, or public API code. This is a security product — apply strict standards.
 argument-hint: "[file-path or package — omit to review files in conversation context]"
-allowed-tools: Read, Glob, Grep
 ---
 
 # Security Review

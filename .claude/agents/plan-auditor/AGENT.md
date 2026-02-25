@@ -19,7 +19,7 @@ Read the prompt to understand what to audit. If no specific area is given, audit
 
 Read:
 - `PLAN.md` — the full PRD with all requirements
-- `implementation-pitfalls.md` — known pitfalls to check for
+- `dev/implementation-pitfalls.md` — known pitfalls to check for
 - `CLAUDE.md` — project conventions
 
 ### Step 3: Inventory existing code

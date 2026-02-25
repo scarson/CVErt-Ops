@@ -2,7 +2,6 @@
 name: migration
 description: Generate a golang-migrate SQL migration file pair for CVErt Ops following all PLAN.md Appendix A and implementation-pitfalls.md conventions. Use when creating tables, columns, indexes, constraints, or RLS policies.
 argument-hint: "<brief description of the schema change>"
-allowed-tools: Read, Glob, Write, Bash
 ---
 
 # Generate Migration

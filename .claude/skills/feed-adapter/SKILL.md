@@ -2,7 +2,6 @@
 name: feed-adapter
 description: Scaffold a new CVE feed adapter implementing the FeedAdapter interface with all required safety patterns from PLAN.md §3.2. Use when adding a new vulnerability data source.
 argument-hint: "<feed-name> (e.g., nvd, osv, ghsa, mitre, kev, epss)"
-allowed-tools: Read, Write, Glob, Grep
 ---
 
 # Feed Adapter Scaffold

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -190,22 +191,82 @@ func cfeToItem(c generated.Cfe) CVEItem {
 // ── GET /cves ─────────────────────────────────────────────────────────────────
 
 // ListCVEsInput defines query parameters for the paginated CVE list.
+//
+// huma v2 does not support pointer types in query/path/header/form parameters
+// (panics at route registration). Simple optional string params use empty string
+// as "not set". Numeric and boolean optionals that require pointer semantics
+// (0 and false are valid filter values) are parsed from raw query strings in
+// the Resolve method.
 type ListCVEsInput struct {
-	Q            string   `query:"q" doc:"Full-text search query (supports quoted phrases and negation)"`
-	Severity     []string `query:"severity" doc:"Filter by severity: critical, high, medium, low, unknown"`
-	CVSSMin      *float64 `query:"cvss_min" minimum:"0" maximum:"10" doc:"Minimum CVSS score (prefers v4, falls back to v3)"`
-	CVSSMax      *float64 `query:"cvss_max" minimum:"0" maximum:"10" doc:"Maximum CVSS score"`
-	DateFrom     *string  `query:"date_from" doc:"Filter CVEs modified on or after this date (ISO 8601)"`
-	DateTo       *string  `query:"date_to" doc:"Filter CVEs modified on or before this date (ISO 8601)"`
-	CWEID        *string  `query:"cwe_id" doc:"Filter by CWE ID (e.g. CWE-79)"`
-	Ecosystem    *string  `query:"ecosystem" doc:"Filter by affected package ecosystem"`
-	PackageName  *string  `query:"package_name" doc:"Filter by affected package name (requires ecosystem)"`
-	InCISAKEV    *bool    `query:"in_cisa_kev" doc:"Only return CVEs in the CISA Known Exploited Vulnerabilities catalog"`
-	ExploitAvail *bool    `query:"exploit_available" doc:"Filter by exploit availability"`
-	EPSSMin      *float64 `query:"epss_min" minimum:"0" maximum:"1" doc:"Minimum EPSS score"`
-	EPSSMax      *float64 `query:"epss_max" minimum:"0" maximum:"1" doc:"Maximum EPSS score"`
-	Cursor       string   `query:"cursor" doc:"Opaque pagination cursor returned in the previous response"`
-	Limit        int      `query:"limit" minimum:"1" maximum:"100" default:"25" doc:"Page size (max 100)"`
+	Q           string   `query:"q" doc:"Full-text search query (supports quoted phrases and negation)"`
+	Severity    []string `query:"severity" doc:"Filter by severity: critical, high, medium, low, unknown"`
+	DateFrom    string   `query:"date_from" doc:"Filter CVEs modified on or after this date (ISO 8601); empty = no filter"`
+	DateTo      string   `query:"date_to" doc:"Filter CVEs modified on or before this date (ISO 8601); empty = no filter"`
+	CWEID       string   `query:"cwe_id" doc:"Filter by CWE ID (e.g. CWE-79); empty = no filter"`
+	Ecosystem   string   `query:"ecosystem" doc:"Filter by affected package ecosystem; empty = no filter"`
+	PackageName string   `query:"package_name" doc:"Filter by affected package name (requires ecosystem); empty = no filter"`
+	// Boolean filters: "true", "false", or "" (no filter).
+	InCISAKEV   string `query:"in_cisa_kev" doc:"Filter by CISA KEV status: 'true', 'false', or empty for no filter"`
+	ExploitAvail string `query:"exploit_available" doc:"Filter by exploit availability: 'true', 'false', or empty for no filter"`
+	Cursor string `query:"cursor" doc:"Opaque pagination cursor returned in the previous response"`
+	Limit  int    `query:"limit" minimum:"1" maximum:"100" default:"25" doc:"Page size (max 100)"`
+
+	// Optional numeric filters resolved from raw query string by Resolve.
+	// Not tagged with query: because huma panics on pointer types in query params.
+	CVSSMin *float64
+	CVSSMax *float64
+	EPSSMin *float64
+	EPSSMax *float64
+
+	// Parsed from InCISAKEV / ExploitAvail by Resolve.
+	inCISAKEVBool    *bool
+	exploitAvailBool *bool
+}
+
+// Resolve implements huma.Resolver. It delegates to resolveOptionalFilters so
+// the parsing logic can be tested independently of the full huma.Context interface.
+func (i *ListCVEsInput) Resolve(ctx huma.Context, _ *huma.PathBuffer) []error {
+	return i.resolveOptionalFilters(ctx.Query)
+}
+
+// resolveOptionalFilters parses optional numeric/bool query params using the
+// provided query function. Separated from Resolve to allow unit testing without
+// a full huma.Context stub.
+func (i *ListCVEsInput) resolveOptionalFilters(queryFn func(string) string) []error {
+	var errs []error
+
+	parseFloat := func(name string, lo, hi float64, dst **float64) {
+		s := queryFn(name)
+		if s == "" {
+			return
+		}
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || v < lo || v > hi {
+			errs = append(errs, &huma.ErrorDetail{
+				Message:  fmt.Sprintf("%s must be a number between %g and %g", name, lo, hi),
+				Location: "query." + name,
+				Value:    s,
+			})
+			return
+		}
+		*dst = &v
+	}
+
+	parseFloat("cvss_min", 0, 10, &i.CVSSMin)
+	parseFloat("cvss_max", 0, 10, &i.CVSSMax)
+	parseFloat("epss_min", 0, 1, &i.EPSSMin)
+	parseFloat("epss_max", 0, 1, &i.EPSSMax)
+
+	if i.InCISAKEV != "" {
+		b := i.InCISAKEV == "true"
+		i.inCISAKEVBool = &b
+	}
+	if i.ExploitAvail != "" {
+		b := i.ExploitAvail == "true"
+		i.exploitAvailBool = &b
+	}
+
+	return errs
 }
 
 // ListCVEsOutput is the response body for GET /cves.
@@ -233,26 +294,26 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			Severity:     input.Severity,
 			CVSSMin:      input.CVSSMin,
 			CVSSMax:      input.CVSSMax,
-			CWEID:        input.CWEID,
-			Ecosystem:    input.Ecosystem,
-			PackageName:  input.PackageName,
-			InCISAKEV:    input.InCISAKEV,
-			ExploitAvail: input.ExploitAvail,
+			CWEID:        nilIfEmpty(input.CWEID),
+			Ecosystem:    nilIfEmpty(input.Ecosystem),
+			PackageName:  nilIfEmpty(input.PackageName),
+			InCISAKEV:    input.inCISAKEVBool,
+			ExploitAvail: input.exploitAvailBool,
 			EPSSMin:      input.EPSSMin,
 			EPSSMax:      input.EPSSMax,
 			Limit:        input.Limit + 1, // fetch one extra to detect next page
 		}
 
 		// Parse date range params.
-		if input.DateFrom != nil {
-			t := parseQueryDate(*input.DateFrom)
+		if input.DateFrom != "" {
+			t := parseQueryDate(input.DateFrom)
 			if t == nil {
 				return nil, huma.Error400BadRequest("invalid date_from; use ISO 8601 format", nil)
 			}
 			p.DateFrom = t
 		}
-		if input.DateTo != nil {
-			t := parseQueryDate(*input.DateTo)
+		if input.DateTo != "" {
+			t := parseQueryDate(input.DateTo)
 			if t == nil {
 				return nil, huma.Error400BadRequest("invalid date_to; use ISO 8601 format", nil)
 			}
@@ -436,6 +497,16 @@ func getCVESourcesHandler(s *store.Store) func(context.Context, *GetCVESourcesIn
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// nilIfEmpty converts a string to a *string, returning nil for empty strings.
+// Used to bridge huma's required-non-pointer query params to store.SearchParams
+// fields that use *string to distinguish "not set" from "set to empty".
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
 
 // parseQueryDate parses a user-supplied date string using common ISO 8601 layouts.
 // Returns nil on failure so the caller can return a 400 error.

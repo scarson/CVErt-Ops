@@ -47,7 +47,7 @@ The product ships as:
 | **Background jobs** | Goroutine worker pool + Postgres job queue | See section 18.1 |
 | **CLI** | `cobra` | Subcommands: `serve`, `worker`, `migrate`, `import-bulk` |
 | **Logging** | `slog` (stdlib) | Structured JSON logging; `NewMultiHandler` (Go 1.26) for multi-destination |
-| **Configuration** | `caarlos0/env/v10` + `go-playground/validator` | Env var parsing with startup validation |
+| **Configuration** | `caarlos0/env/v11` + `go-playground/validator` | Env var parsing with startup validation |
 | **Metrics** | `prometheus/client_golang` | `/metrics` endpoint from Phase 0 |
 | **SSRF prevention** | `doyensec/safeurl` | Drop-in safe HTTP client for outbound webhooks |
 | **JSON canonicalization** | `cyberphone/json-canonicalization` | JCS/RFC 8785 for deterministic `material_hash` |
@@ -1864,7 +1864,7 @@ Context propagation: HTTP middleware adds `request_id`, `org_id`, `user_id` to r
 
 ## 19.2 Configuration
 
-**Library:** `caarlos0/env/v10` for env var parsing + `go-playground/validator` for startup validation.
+**Library:** `caarlos0/env/v11` for env var parsing + `go-playground/validator` for startup validation.
 
 All configuration via environment variables (12-factor). Docker Compose `.env` files are the primary config surface for self-hosted deployments.
 

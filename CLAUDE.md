@@ -36,7 +36,7 @@ go run ./cmd/cvert-ops migrate       # run migrations programmatically
 | Auth | golang-jwt/jwt/v5 + coreos/go-oidc/v3 + argon2id |
 | AI | Google Gemini via `google.golang.org/genai` behind `LLMClient` interface |
 | Logging | slog (stdlib) |
-| Config | caarlos0/env/v10 |
+| Config | caarlos0/env/v11 |
 | CLI | cobra (subcommands: serve, worker, migrate) |
 | SSRF | doyensec/safeurl for all outbound webhooks |
 | Metrics | prometheus/client_golang at /metrics |

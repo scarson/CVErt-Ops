@@ -113,4 +113,7 @@ services:
     profiles: ["app"]
 
 volumes:
+  # Named volume — data persists across container restarts and `docker compose down`.
+  # Destroyed only by `docker compose down -v` or `docker volume rm`.
   postgres_data:
+    driver: local

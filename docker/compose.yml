@@ -1,0 +1,116 @@
+# CVErt Ops — development stack
+#
+# Default (no profile): starts postgres + mailpit only.
+# Run the application locally: go run ./cmd/cvert-ops serve
+#
+# Full container stack:
+#   docker compose --profile app up -d
+#
+# Required env vars (set in ../.env or export before running):
+#   POSTGRES_PASSWORD   — Postgres superuser password
+#   JWT_SECRET          — ≥32 random bytes (required by serve/worker)
+#
+# Optional env vars (have sensible dev defaults):
+#   POSTGRES_USER, POSTGRES_DB, POSTGRES_PORT
+#   APP_PORT, MAILPIT_SMTP_PORT, MAILPIT_UI_PORT
+#   APP_ENV, LOG_LEVEL, LOG_FORMAT, REGISTRATION_MODE
+#   EXTERNAL_URL, COOKIE_SECURE, SHUTDOWN_TIMEOUT_SECONDS
+
+services:
+
+  # ── Postgres ────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-cvert_ops}
+      POSTGRES_USER:     ${POSTGRES_USER:-cvert_ops}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      # pg_isready is included in the postgres:18-alpine image.
+      # PLAN.md §18.3 requires service_healthy before app starts.
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-cvert_ops} -d ${POSTGRES_DB:-cvert_ops}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Mailpit — local SMTP trap ────────────────────────────────────────────────
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"   # SMTP (app → mailpit)
+      - "${MAILPIT_UI_PORT:-8025}:8025"     # Web UI: http://localhost:8025
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY:      1
+      MP_SMTP_AUTH_ALLOW_INSECURE:  1
+    restart: unless-stopped
+
+  # ── Migrate — one-shot schema migration ─────────────────────────────────────
+  # PLAN.md §18.3: run migrations as a separate command before the server starts;
+  # the serve/worker subcommands must NOT call migrate.Up() automatically.
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No restart — this is a one-shot job. The app service waits for it to exit 0.
+    restart: "no"
+    profiles: ["app"]
+
+  # ── App — HTTP server + embedded worker pool ─────────────────────────────────
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["serve"]
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      # Database
+      DATABASE_URL: >-
+        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=disable
+      # PLAN.md §19.2: simple_protocol for PgBouncer compatibility (safe for direct connections too)
+      DB_QUERY_EXEC_MODE: simple_protocol
+
+      # Auth — JWT_SECRET is required; server exits at startup if missing or < 32 bytes
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (min 32 random bytes)}
+
+      # Server
+      APP_ENV:                   ${APP_ENV:-development}
+      EXTERNAL_URL:              ${EXTERNAL_URL:-http://localhost:8080}
+      # PLAN.md §7.1: COOKIE_SECURE=false in dev — hardcoding true breaks http://localhost
+      COOKIE_SECURE:             ${COOKIE_SECURE:-false}
+      REGISTRATION_MODE:         ${REGISTRATION_MODE:-open}
+      SHUTDOWN_TIMEOUT_SECONDS:  ${SHUTDOWN_TIMEOUT_SECONDS:-60}
+
+      # Logging
+      LOG_LEVEL:  ${LOG_LEVEL:-debug}
+      LOG_FORMAT: ${LOG_FORMAT:-text}
+
+      # Email — route to mailpit in dev
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    profiles: ["app"]
+
+volumes:
+  postgres_data:

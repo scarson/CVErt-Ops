@@ -32,6 +32,10 @@
 
 # Migrate ◄──► Postgres  (data only, one-shot)
 
+# Project name — sets the Docker Desktop stack label and container name prefix.
+# Containers will be named cvert-ops-postgres-1, cvert-ops-app-1, etc.
+name: cvert-ops
+
 services:
 
   # ── Postgres ────────────────────────────────────────────────────────────────
@@ -141,7 +145,11 @@ services:
     profiles: ["app"]
 
   # ── Caddy — TLS-terminating reverse proxy ────────────────────────────────────
-  # Dev:  CADDY_HOST=localhost → HTTP only on :80 (no TLS, no ACME challenge)
+  # Dev:  CADDY_HOST=localhost → HTTPS on :443 with Caddy's built-in local CA (self-signed).
+  #       One-time setup to trust the CA in your OS / browser (run after first `up`):
+  #         docker cp cvert-ops-caddy-1:/data/caddy/pki/authorities/local/root.crt caddy-root-ca.crt
+  #       Then import caddy-root-ca.crt into your certificate store. The CA cert is
+  #       stored in the caddy_data volume and reused across container restarts.
   # Prod: CADDY_HOST=cvert.example.com → Caddy auto-provisions TLS via Let's Encrypt.
   #       Also update EXTERNAL_URL=https://cvert.example.com and COOKIE_SECURE=true.
   caddy:

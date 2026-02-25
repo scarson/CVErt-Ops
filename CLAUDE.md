@@ -112,6 +112,28 @@ go run ./cmd/cvert-ops migrate       # run migrations programmatically
 - Keep code idiomatic Go with extra comments/docs for clarity
 - This is a security product — no shortcuts on input validation, auth checks, or tenant isolation
 
+## Linter Suppressions
+
+**Before adding any `//nolint` comment or `golangci.yml` exclusion, first try to fix the underlying code.** Suppressions are only justified when:
+1. The warning is a **confirmed false positive** (e.g., gosec G704 taint analysis on `httptest.Server.URL`, which is not user-controlled data)
+2. The risk is **architecturally controlled** at a higher level (e.g., G304 file-path warning in the embed/iofs context where paths are not user input)
+3. The fix would be **disproportionate** to the actual risk in context
+
+When suppression is necessary, prefer **inline `//nolint:linter // reason`** over global config exclusions. Inline suppressions are visible to reviewers, scoped to exactly the affected line, and force documentation of the reason.
+
+**Known golangci-lint v2 limitation:** `exclude-rules` with `path` patterns do not reliably suppress `gosec` or `noctx` rules. Use inline `//nolint` comments for these linters in test files.
+
+**Known confirmed false positives in this project:**
+- `gosec G704` on `httptest.Server.URL` in test files — test framework URLs are not user-controlled input
+- `gosec G117` on config struct fields — env-var backed config is not a hardcoded secret
+- `gosec G304` on `iofs`/`embed.FS` paths — paths come from the embedded filesystem, not user input
+
+## Development Workflow
+
+**Commit frequently** — aim for small, focused commits that are individually CI-passing. Each logical unit (a package, a migration, a handler) should be its own commit. Large commits (21+ files) make review harder and lose context if context is compacted.
+
+**Update `dev/implementation-log.md` after each commit** — record what was built, key implementation decisions, gotchas discovered, and quality check results. This is the primary mechanism for preserving context across compacted sessions.
+
 ## Project Layout
 
 ```

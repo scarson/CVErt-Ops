@@ -13,21 +13,6 @@ import (
 	"github.com/scarson/cvert-ops/internal/api"
 )
 
-// get issues a GET request using NewRequestWithContext and returns the response.
-// Fails the test immediately on any error.
-func get(t *testing.T, ctx context.Context, url string) *http.Response {
-	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatalf("new request %s: %v", url, err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	return resp
-}
-
 // TestSmokeHealthz starts a real Postgres container, builds the HTTP handler,
 // and asserts that /healthz returns 200 {"status":"ok"} and /metrics returns 200.
 //
@@ -78,7 +63,16 @@ func TestSmokeHealthz(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// ── /healthz ─────────────────────────────────────────────────────────────
-	resp := get(t, ctx, srv.URL+"/healthz")
+	// Using srv.Client().Do with a literal path so gosec taint analysis sees
+	// no user-controlled data flowing to the HTTP sink.
+	hReq, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new request /healthz: %v", err)
+	}
+	resp, err := srv.Client().Do(hReq) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
@@ -96,7 +90,14 @@ func TestSmokeHealthz(t *testing.T) {
 	}
 
 	// ── /metrics ─────────────────────────────────────────────────────────────
-	mResp := get(t, ctx, srv.URL+"/metrics")
+	mReq, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/metrics", nil)
+	if err != nil {
+		t.Fatalf("new request /metrics: %v", err)
+	}
+	mResp, err := srv.Client().Do(mReq) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
 	defer mResp.Body.Close() //nolint:errcheck
 
 	if mResp.StatusCode != http.StatusOK {
@@ -114,7 +115,14 @@ func TestSmokeHealthzDegraded(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	resp := get(t, ctx, srv.URL+"/healthz")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new request /healthz: %v", err)
+	}
+	resp, err := srv.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /healthz (nil db): %v", err)
+	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusServiceUnavailable {

@@ -38,10 +38,6 @@ linters:
         # G117: struct field name matches secret pattern — false positive for config
         # struct fields that read secrets from environment variables (not hardcoded).
         - G117
-        # G704: SSRF via taint analysis — too aggressive; fires on test helpers and
-        # feed adapter URLs that are hardcoded constants. SSRF protection is enforced
-        # architecturally via doyensec/safeurl for all outbound webhook HTTP clients.
-        - G704
 
     revive:
       rules:
@@ -65,14 +61,15 @@ issues:
 
   exclude-rules:
     # Test files: relax exhaustruct (test structs rarely need all fields set),
-    # allow unhandled errors in test assertions, skip gosec, and skip noctx
-    # (tests use httptest.Server URLs that do not need context cancellation).
+    # allow unhandled errors in test assertions.
+    # NOTE: gosec and noctx are NOT listed here — golangci-lint v2 path-based
+    # exclude-rules do not reliably suppress gosec/noctx rules. Use inline
+    # //nolint:gosec or //nolint:noctx comments at specific call sites instead,
+    # with a comment explaining why the suppression is a confirmed false positive.
     - path: "_test\\.go"
       linters:
         - exhaustruct
         - errcheck
-        - gosec
-        - noctx
 
     # Generated code produced by sqlc — do not lint.
     - path: "internal/store/generated/"

@@ -22,34 +22,38 @@ linters:
     - revive         # Idiomatic Go style (replaces golint)
     - sloglint       # slog usage patterns (key-value pairs, context propagation)
 
-linters-settings:
-  exhaustruct:
-    # Only enforce completeness for http.Server — catches the Slowloris-critical
-    # missing ReadHeaderTimeout / ReadTimeout / IdleTimeout fields.
-    # Global exhaustruct would be extremely noisy for huma/chi/pgx structs.
-    include:
-      - "net/http\\.Server"
+  settings:
+    exhaustruct:
+      # Only enforce completeness for http.Server — catches the Slowloris-critical
+      # missing ReadHeaderTimeout / ReadTimeout / IdleTimeout fields.
+      # Global exhaustruct would be extremely noisy for huma/chi/pgx structs.
+      include:
+        - "net/http\\.Server"
 
-  gosec:
-    excludes:
-      # G304: file path constructed from variable — false positive for embed.FS
-      # reads in the migrate subcommand (paths come from iofs, not user input).
-      - G304
+    gosec:
+      excludes:
+        # G304: file path constructed from variable — false positive for embed.FS
+        # reads in the migrate subcommand (paths come from iofs, not user input).
+        - G304
+        # G117: struct field name matches secret pattern — false positive for config
+        # struct fields that read secrets from environment variables (not hardcoded).
+        - G117
 
-  revive:
-    rules:
-      - name: exported
-        disabled: false
-      - name: var-naming
-        disabled: false
-      - name: unused-parameter
-        disabled: false
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: var-naming
+          # 'api' is a valid, descriptive package name for the HTTP handler layer.
+          disabled: true
+        - name: unused-parameter
+          disabled: false
 
-  staticcheck:
-    checks:
-      - "all"
-      - "-ST1000" # Package comment not required on every package in Phase 0
-      - "-ST1003" # Allow ALL_CAPS constants (uuid, etc.)
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST1000" # Package comment not required on every package in Phase 0
+        - "-ST1003" # Allow ALL_CAPS constants (uuid, etc.)
 
 issues:
   max-issues-per-linter: 0
@@ -57,12 +61,14 @@ issues:
 
   exclude-rules:
     # Test files: relax exhaustruct (test structs rarely need all fields set),
-    # allow unhandled errors in test assertions, and skip gosec in tests.
+    # allow unhandled errors in test assertions, skip gosec, and skip noctx
+    # (tests use httptest.Server URLs that do not need context cancellation).
     - path: "_test\\.go"
       linters:
         - exhaustruct
         - errcheck
         - gosec
+        - noctx
 
     # Generated code produced by sqlc — do not lint.
     - path: "internal/store/generated/"

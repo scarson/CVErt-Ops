@@ -5,4 +5,5 @@ package migrations
 import "embed"
 
 //go:embed *.sql
+// FS holds all migration SQL files embedded in the binary at compile time.
 var FS embed.FS

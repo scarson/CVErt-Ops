@@ -63,7 +63,7 @@ func TestSmokeHealthz(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	// ── /healthz ─────────────────────────────────────────────────────────────
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := http.Get(srv.URL + "/healthz") //nolint:noctx // httptest URL; context cancellation unnecessary
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSmokeHealthz(t *testing.T) {
 	}
 
 	// ── /metrics ─────────────────────────────────────────────────────────────
-	mResp, err := http.Get(srv.URL + "/metrics")
+	mResp, err := http.Get(srv.URL + "/metrics") //nolint:noctx // httptest URL; context cancellation unnecessary
 	if err != nil {
 		t.Fatalf("GET /metrics: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestSmokeHealthzDegraded(t *testing.T) {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/healthz")
+	resp, err := http.Get(srv.URL + "/healthz") //nolint:noctx // httptest URL; context cancellation unnecessary
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}

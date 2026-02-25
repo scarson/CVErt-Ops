@@ -142,11 +142,33 @@ func workerCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "worker",
 		Short: "Start the standalone worker pool (no HTTP server)",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			slog.Info("worker not yet implemented — coming in Phase 1")
-			return nil
-		},
+		RunE:  runWorker,
 	}
+}
+
+func runWorker(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	logger := newLogger(cfg)
+	slog.SetDefault(logger)
+
+	db, err := newPool(cmd.Context(), cfg)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer db.Close()
+
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	slog.Info("worker started — waiting for jobs")
+	// Worker pool wired in Commit 2.
+	<-ctx.Done()
+	slog.Info("worker stopped")
+	return nil
 }
 
 // ── migrate ───────────────────────────────────────────────────────────────────
@@ -207,9 +229,9 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 func importBulkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "import-bulk",
-		Short: "Import a bulk data file for a feed source (Phase 1)",
+		Short: "Import a local bulk data file for a feed source (Phase 2)",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			slog.Info("import-bulk not yet implemented — coming in Phase 1")
+			slog.Info("import-bulk not yet implemented — coming in Phase 2")
 			return nil
 		},
 	}
@@ -272,8 +294,43 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	if connErr != nil {
 		return nil, fmt.Errorf("database unavailable after retries: %w", connErr)
 	}
+
+	// PLAN.md §19.2: warn if DB_MAX_CONNS is dangerously close to Postgres's
+	// server-side max_connections limit. This prevents connection exhaustion
+	// when multiple instances share the same Postgres server.
+	var pgMaxConnsStr string
+	if err := db.QueryRow(ctx, "SHOW max_connections").Scan(&pgMaxConnsStr); err == nil {
+		if pgMaxConns, err := strconv.Atoi(pgMaxConnsStr); err == nil {
+			if int(cfg.DBMaxConns) > int(float64(pgMaxConns)*0.8) {
+				slog.Warn("DB_MAX_CONNS exceeds 80% of Postgres max_connections",
+					"db_max_conns", cfg.DBMaxConns,
+					"postgres_max_connections", pgMaxConns,
+				)
+			}
+		}
+	}
+
+	// Advisory schema version check: warn if the applied schema version does
+	// not match the version the binary was compiled for. This catches
+	// misconfigured deployments where migrations haven't been applied yet
+	// (PLAN.md §18 advisory item).
+	var schemaVersion int
+	err = db.QueryRow(ctx,
+		"SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
+	).Scan(&schemaVersion)
+	if err == nil && schemaVersion != expectedSchemaVersion {
+		slog.Warn("schema version mismatch — run `cvert-ops migrate`",
+			"applied_version", schemaVersion,
+			"expected_version", expectedSchemaVersion,
+		)
+	}
+
 	return db, nil
 }
+
+// expectedSchemaVersion is the database migration version this binary requires.
+// Update this constant when new migrations are added.
+const expectedSchemaVersion = 3
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

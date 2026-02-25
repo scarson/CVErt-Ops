@@ -130,7 +130,7 @@ When suppression is necessary, prefer **inline `//nolint:linter // reason`** ove
 
 ## Development Workflow
 
-**Commit frequently** — aim for small, focused commits that are individually CI-passing. Each logical unit (a package, a migration, a handler) should be its own commit. Large commits (21+ files) make review harder and lose context if context is compacted.
+**Commit frequently** — aim for small, focused commits that are individually CI-passing. Each logical unit (a package, a migration, a handler) should be its own commit. Large commits make review harder and lose context if context is compacted.
 
 **Update `dev/implementation-log.md` after each commit** — record what was built, key implementation decisions, gotchas discovered, and quality check results. This is the primary mechanism for preserving context across compacted sessions.
 

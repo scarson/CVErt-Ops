@@ -455,7 +455,7 @@ correctly applied; feed adapter / alert / auth categories are N/A for Phase 0.
 
 - [x] Commit 7: GHSA adapter — see below
 - [ ] Late-binding PK migration race: concurrent ingest of same native-ID advisory during migration window is self-correcting on next sync (low probability event in practice)
-- [ ] OSV all.zip URL verification pending re-research (previous research agent lacked web access; new agent launched with updated AGENT.md)
+- [x] OSV all.zip URL verified: `curl -I` confirms HTTP 200, 1.09 GB, `Last-Modified: Wed, 25 Feb 2026 21:57:24 GMT` — URL is correct and updated continuously. Note: research agents are blocked from web access in this environment; `curl` via Bash tool works fine as a substitute for URL verification.
 
 ---
 

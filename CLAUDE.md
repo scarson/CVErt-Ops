@@ -4,11 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.26, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later. See @PLAN.md for the full PRD and @dev/research.md for research findings.
+CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.26, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
+
+**PLAN.md** — full PRD. Key sections: §3 feed adapters · §4–5 data model + merge · §6 RLS/multi-tenancy · §7 auth · §9 watchlists · §10 alert DSL · §11 notifications · §12 reports · §16 API contract · §18 phases · §21 retention · Appendix A schema · Appendix B endpoints.
+
+**dev/research.md** — decision rationale (read when you need the *why* behind an architectural choice).
+**dev/implementation-pitfalls.md** — Go/Postgres mistakes to avoid; referenced by `/pitfall-check`.
 
 ## Build & Dev Commands
 
-# IMPORTANT: This is a Windows development environment. Use PowerShell and/or CMD, not bash.
+# NOTE: Claude Code's Bash tool runs bash (Unix syntax). Use bash/forward-slash paths in Bash commands.
+# PowerShell is available if explicitly needed for Windows-specific tasks.
 
 ```bash
 golangci-lint run                    # lint (NOT go vet alone)
@@ -40,7 +46,7 @@ go run ./cmd/cvert-ops migrate       # run migrations programmatically
 - **Single binary**: HTTP server + worker pool in one process via cobra subcommands; no external queue
 - **Global vs org-scoped data**: CVE corpus is global/shared; watchlists, alert rules, channels, reports are org-scoped. Every org-scoped method MUST take `orgID` as a parameter
 - **Feed adapters**: implement `FeedAdapter` interface; must be pure functions with injected HTTP client for testability; each adapter manages its own upstream rate limiter
-- **Merge**: per-CVE serialization via `pg_advisory_xact_lock(hashtext(cve_id))`; canonical record recomputed from all `cve_sources` rows on every write; field precedence is per-field not global (PLAN.md 5.1)
+- **Merge**: per-CVE serialization via `pg_advisory_xact_lock` with FNV-1a 64-bit key computed in Go (see PLAN.md §D4); canonical record recomputed from all `cve_sources` rows on every write; field precedence is per-field not global (PLAN.md §5.1)
 - **Alert DSL**: compiles to parameterized SQL via squirrel; regex uses Go `regexp` (RE2) as post-filter only, with mandatory SQL prefilter and candidate cap (5,000 default, fail-closed)
 - **Job queue**: single Postgres `job_queue` table with `SKIP LOCKED`; `lock_key` partial unique index for per-class concurrency control
 - **Notifications**: at-least-once delivery; HMAC-SHA256 webhook signatures; SSRF prevention via doyensec/safeurl
@@ -77,3 +83,24 @@ internal/metrics/  # Prometheus counters/histograms
 migrations/        # SQL files (embedded)
 templates/         # notification + watchlist templates (embedded)
 ```
+
+## Skills & Subagents
+
+Use these proactively — don't wait to be asked.
+
+**Skills** (invoke with `/skill-name`):
+
+| Skill | When to use |
+|-------|-------------|
+| `/migration` | Before writing any migration SQL |
+| `/feed-adapter` | Before scaffolding a new feed adapter |
+| `/pitfall-check` | Before committing significant business logic |
+| `/plan-check` | Before merging any feature — specify the PLAN.md section |
+| `/security-review` | Before merging auth, webhook, tenant-isolation, or public API code |
+
+**Subagents** (invoke via `Task` tool):
+
+| Agent | When to use |
+|-------|-------------|
+| `feed-researcher` | Research a CVE data source API before implementing its adapter |
+| `plan-auditor` | Full compliance audit across multiple PLAN.md sections |

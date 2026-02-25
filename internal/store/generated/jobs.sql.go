@@ -146,7 +146,7 @@ SET
     locked_by = NULL,
     locked_at = NULL
 WHERE status = 'running'
-  AND locked_at < now() - $1::interval
+  AND locked_at < now() - ($1 * INTERVAL '1 second')
 RETURNING id, queue, lock_key
 `
 
@@ -156,9 +156,12 @@ type RecoverStaleJobsRow struct {
 	LockKey sql.NullString
 }
 
-// Resets jobs stuck in 'running' state longer than the given interval.
+// Resets jobs stuck in 'running' state longer than the given number of seconds.
 // Called by the stale-lock recovery goroutine every minute.
-func (q *Queries) RecoverStaleJobs(ctx context.Context, dollar_1 int64) ([]RecoverStaleJobsRow, error) {
+// $1 is the stale threshold in whole seconds (e.g. 300 = 5 minutes).
+// Uses integer multiplication instead of ::interval cast — pgx sends int64
+// as binary int8 which PostgreSQL cannot cast directly to interval (pitfall).
+func (q *Queries) RecoverStaleJobs(ctx context.Context, dollar_1 interface{}) ([]RecoverStaleJobsRow, error) {
 	rows, err := q.db.QueryContext(ctx, recoverStaleJobs, dollar_1)
 	if err != nil {
 		return nil, err

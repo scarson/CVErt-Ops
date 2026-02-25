@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,6 +41,8 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/internal/worker"
 	"github.com/scarson/cvert-ops/migrations"
 )
 
@@ -90,6 +93,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// Start embedded worker pool. Runs until ctx is cancelled, at which point
+	// in-flight jobs complete and the goroutines exit. The goroutine is
+	// intentionally fire-and-forget here; the pool drains on ctx cancellation
+	// which happens before or alongside HTTP server shutdown.
+	workerPool := worker.New(store.New(db))
+	workerPool.Register("feed_ingest", feedIngestHandler)
+	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+
 	handler := api.NewRouter(db)
 
 	// PLAN.md §18.3: explicit timeouts required to prevent Slowloris attacks.
@@ -102,9 +116,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
-	defer stop()
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -164,10 +175,20 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	slog.Info("worker started — waiting for jobs")
-	// Worker pool wired in Commit 2.
-	<-ctx.Done()
-	slog.Info("worker stopped")
+	workerPool := worker.New(store.New(db))
+	workerPool.Register("feed_ingest", feedIngestHandler)
+
+	slog.Info("worker started")
+	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
+	return nil
+}
+
+// feedIngestHandler is a stub for the feed ingestion job handler.
+// Replaced with the real implementation in Phase 1 commits 4–8 when the
+// FeedAdapter interface and individual adapters are wired in.
+func feedIngestHandler(_ context.Context, payload json.RawMessage) error {
+	slog.Info("feed ingest job received — handler wired in commits 4–8",
+		"payload_len", len(payload))
 	return nil
 }
 

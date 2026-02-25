@@ -1,0 +1,45 @@
+# ── VCS ────────────────────────────────────────────────────────────────────────
+.git
+.gitignore
+.gitattributes
+
+# ── Docker files (no need to include in the build context) ────────────────────
+docker/compose.yml
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+*.md
+LICENSE
+
+# ── Local config and secrets ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+.mcp.json
+.mcp.local.json
+
+# ── Chat exports ──────────────────────────────────────────────────────────────
+chats/
+
+# ── Go build artifacts ────────────────────────────────────────────────────────
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# ── OS artifacts ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Temp files ────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+tmp/

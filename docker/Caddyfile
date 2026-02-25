@@ -1,0 +1,30 @@
+# CVErt Ops — Caddyfile
+#
+# CADDY_HOST controls the behaviour:
+#
+#   localhost (default dev)
+#     Caddy binds :443 (HTTPS) and :80 (HTTP → HTTPS redirect).
+#     Uses Caddy's built-in local CA to issue a self-signed certificate
+#     automatically — no manual cert generation required.
+#     Browsers will show a security warning until the CA is trusted.
+#     To trust it on the host (run once after first `docker compose ... up`):
+#       docker cp cvert-ops-caddy:/data/caddy/pki/authorities/local/root.crt caddy-root-ca.crt
+#     Then import caddy-root-ca.crt into your OS / browser certificate store.
+#     The CA cert lives in the caddy_data volume and persists across restarts.
+#
+#   cvert.example.com (production)
+#     Caddy binds :443 (HTTPS) and :80 (HTTP → HTTPS redirect).
+#     Auto-provisions a trusted certificate via Let's Encrypt (ACME).
+#     Set these in .env alongside it:
+#       EXTERNAL_URL=https://cvert.example.com
+#       COOKIE_SECURE=true
+#
+# The Go app handles X-Content-Type-Options, X-Frame-Options, and Referrer-Policy
+# (PLAN.md §18.3). Caddy adds HSTS automatically for all HTTPS sites.
+
+{$CADDY_HOST:localhost} {
+    reverse_proxy app:8080
+
+    # Compress responses — Caddy negotiates zstd or gzip with the client.
+    encode zstd gzip
+}

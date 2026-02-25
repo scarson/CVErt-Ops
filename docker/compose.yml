@@ -33,13 +33,14 @@
 # Migrate ◄──► Postgres  (data only, one-shot)
 
 # Project name — sets the Docker Desktop stack label and container name prefix.
-# Containers will be named cvert-ops-postgres-1, cvert-ops-app-1, etc.
+# container_name on each service removes the automatic -1 replica suffix.
 name: cvert-ops
 
 services:
 
   # ── Postgres ────────────────────────────────────────────────────────────────
   postgres:
+    container_name: cvert-ops-postgres
     image: postgres:18-alpine
     environment:
       POSTGRES_DB:       ${POSTGRES_DB:-cvert_ops}
@@ -65,6 +66,7 @@ services:
 
   # ── Mailpit — local SMTP trap ────────────────────────────────────────────────
   mailpit:
+    container_name: cvert-ops-mailpit
     image: axllent/mailpit:latest
     ports:
       - "${MAILPIT_SMTP_PORT:-1025}:1025"   # SMTP (app → mailpit)
@@ -80,6 +82,7 @@ services:
   # PLAN.md §18.3: run migrations as a separate command before the server starts;
   # the serve/worker subcommands must NOT call migrate.Up() automatically.
   migrate:
+    container_name: cvert-ops-migrate
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -98,6 +101,7 @@ services:
 
   # ── App — HTTP server + embedded worker pool ─────────────────────────────────
   app:
+    container_name: cvert-ops-app
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -147,12 +151,13 @@ services:
   # ── Caddy — TLS-terminating reverse proxy ────────────────────────────────────
   # Dev:  CADDY_HOST=localhost → HTTPS on :443 with Caddy's built-in local CA (self-signed).
   #       One-time setup to trust the CA in your OS / browser (run after first `up`):
-  #         docker cp cvert-ops-caddy-1:/data/caddy/pki/authorities/local/root.crt caddy-root-ca.crt
+  #         docker cp cvert-ops-caddy:/data/caddy/pki/authorities/local/root.crt caddy-root-ca.crt
   #       Then import caddy-root-ca.crt into your certificate store. The CA cert is
   #       stored in the caddy_data volume and reused across container restarts.
   # Prod: CADDY_HOST=cvert.example.com → Caddy auto-provisions TLS via Let's Encrypt.
   #       Also update EXTERNAL_URL=https://cvert.example.com and COOKIE_SECURE=true.
   caddy:
+    container_name: cvert-ops-caddy
     image: caddy:2-alpine
     ports:
       - "${CADDY_HTTP_PORT:-80}:80"

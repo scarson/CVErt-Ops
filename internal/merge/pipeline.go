@@ -65,6 +65,25 @@ func Ingest(
 	// Bind sqlc queries to this transaction.
 	q := generated.New(tx)
 
+	// Step 1.5: late-binding PK migration (OSV/GHSA only).
+	// When alias resolution promotes a native advisory ID (e.g., GHSA-xxxx) to a
+	// CVE ID canonical primary key, the existing cves row may still be stored under
+	// the native ID. Migrate all child-table rows to the CVE ID before upserting.
+	if patch.SourceID != "" && patch.CVEID != patch.SourceID {
+		oldCVEID, err := q.FindCVEBySourceID(ctx, generated.FindCVEBySourceIDParams{
+			SourceName: sourceName,
+			SourceID:   sql.NullString{String: patch.SourceID, Valid: true},
+		})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("merge: find CVE by source ID: %w", err)
+		}
+		if err == nil && oldCVEID != patch.CVEID {
+			if err := migrateCVEPK(ctx, tx, oldCVEID, patch.CVEID); err != nil {
+				return fmt.Errorf("merge: migrate CVE PK: %w", err)
+			}
+		}
+	}
+
 	// Step 2: upsert cve_sources. IS DISTINCT FROM guard in SQL prevents TOAST
 	// bloat for unchanged normalized_json.
 	if err := q.UpsertCVESource(ctx, generated.UpsertCVESourceParams{
@@ -320,4 +339,34 @@ func collectPackageNames(pkgs []feed.AffectedPackage) []string {
 		}
 	}
 	return names
+}
+
+// migrateCVEPK renames a CVE's primary key from oldID to newID across all
+// tables. Called within an advisory-locked transaction when alias resolution
+// promotes a native OSV/GHSA advisory ID (e.g., GHSA-xxxx) to a canonical
+// CVE ID (e.g., CVE-2024-1234).
+//
+// Order matters: cve_search_index must be deleted first because it has a FK
+// reference to cves(cve_id) without ON UPDATE CASCADE. After migrating the
+// cves PK, Ingest step 10 re-inserts the search index under the new ID.
+func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
+	steps := []struct {
+		desc string
+		q    string
+	}{
+		{"delete search index", "DELETE FROM cve_search_index WHERE cve_id = $1"},
+		{"update sources", "UPDATE cve_sources SET cve_id = $2 WHERE cve_id = $1"},
+		{"update references", "UPDATE cve_references SET cve_id = $2 WHERE cve_id = $1"},
+		{"update packages", "UPDATE cve_affected_packages SET cve_id = $2 WHERE cve_id = $1"},
+		{"update CPEs", "UPDATE cve_affected_cpes SET cve_id = $2 WHERE cve_id = $1"},
+		{"update raw payloads", "UPDATE cve_raw_payloads SET cve_id = $2 WHERE cve_id = $1"},
+		{"update EPSS staging", "UPDATE epss_staging SET cve_id = $2 WHERE cve_id = $1"},
+		{"update cves PK", "UPDATE cves SET cve_id = $2 WHERE cve_id = $1"},
+	}
+	for _, step := range steps {
+		if _, err := tx.ExecContext(ctx, step.q, oldID, newID); err != nil {
+			return fmt.Errorf("%s (%s→%s): %w", step.desc, oldID, newID, err)
+		}
+	}
+	return nil
 }

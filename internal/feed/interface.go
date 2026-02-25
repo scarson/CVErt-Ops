@@ -1,13 +1,44 @@
 // Package feed defines shared canonical types used by all CVE feed adapters
 // and the merge pipeline. Concrete adapter implementations live in
-// subdirectories (mitre, nvd, osv, ghsa, kev, epss). The FeedAdapter
-// interface and FetchResult type are added in Phase 1 Commit 4.
+// subdirectories (mitre, nvd, osv, ghsa, kev, epss).
 package feed
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
+
+// Adapter is the interface implemented by every CVE feed adapter.
+// Fetch returns one page of canonical patches and a cursor for the next page.
+// A nil NextCursor in FetchResult signals no more pages.
+//
+// The type name is Adapter (not FeedAdapter) to avoid the feed.FeedAdapter stutter.
+type Adapter interface {
+	Fetch(ctx context.Context, cursor json.RawMessage) (*FetchResult, error)
+}
+
+// FetchResult is the return value of Adapter.Fetch.
+type FetchResult struct {
+	// Patches is the canonical CVE data for this page.
+	Patches []CanonicalPatch
+	// RawPayload is the unmodified upstream response for audit/debugging.
+	// May be nil if the adapter does not retain raw payloads.
+	RawPayload json.RawMessage
+	// SourceMeta contains metadata about the fetch operation.
+	SourceMeta SourceMeta
+	// NextCursor is the opaque cursor for the next Fetch call.
+	// Nil means no additional pages; the caller should persist the cursor
+	// as the new sync state.
+	NextCursor json.RawMessage
+}
+
+// SourceMeta records metadata about a single fetch operation.
+type SourceMeta struct {
+	SourceName string
+	FetchedAt  time.Time
+	RequestID  string // correlation ID from upstream response headers, if any
+}
 
 // CanonicalPatch is the normalized representation of CVE data from a single
 // feed source. All adapters express their output as CanonicalPatch values

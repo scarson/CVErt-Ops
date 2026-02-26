@@ -1,5 +1,5 @@
-// Package api wires up the chi router, huma OpenAPI instance, middleware
-// chain, and HTTP handlers for CVErt Ops.
+// ABOUTME: HTTP server struct, constructor, and handler wiring for CVErt Ops.
+// ABOUTME: Holds auth dependencies (store, config, argon2 semaphore) used by handlers.
 package api
 
 import (
@@ -14,17 +14,29 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
-// NewRouter builds the full chi router with middleware, /healthz, /metrics,
-// and the huma OpenAPI sub-router at /api/v1.
-//
-// s may be nil only in tests that don't need a DB (healthz will return degraded).
-func NewRouter(s *store.Store) http.Handler {
+// Server holds the dependencies for the HTTP layer.
+type Server struct {
+	store     *store.Store
+	cfg       *config.Config
+	argon2Sem chan struct{}
+}
+
+// NewServer creates a Server. Returns an error if Google OIDC initialization fails.
+// If cfg.GoogleClientID is empty, Google OIDC is skipped.
+func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
+	sem := make(chan struct{}, cfg.Argon2MaxConcurrent)
+	return &Server{store: s, cfg: cfg, argon2Sem: sem}, nil
+}
+
+// Handler builds and returns the http.Handler.
+func (srv *Server) Handler() http.Handler {
 	var db *pgxpool.Pool
-	if s != nil {
-		db = s.Pool()
+	if srv.store != nil {
+		db = srv.store.Pool()
 	}
 	r := chi.NewRouter()
 
@@ -56,11 +68,34 @@ func NewRouter(s *store.Store) http.Handler {
 	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
 	api := humachi.New(apiRouter, humaConfig)
-	registerCVERoutes(api, s)
+	registerCVERoutes(api, srv.store)
 
 	r.Mount("/api/v1", apiRouter)
 
 	return r
+}
+
+// acquireArgon2 tries to acquire the argon2 semaphore. Returns false if all
+// slots are in use — the caller should return 503 immediately (do NOT block).
+func (srv *Server) acquireArgon2() bool {
+	select {
+	case srv.argon2Sem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
+
+// NewRouter builds the full chi router with middleware, /healthz, /metrics,
+// and the huma OpenAPI sub-router at /api/v1.
+//
+// s may be nil only in tests that don't need a DB (healthz will return degraded).
+func NewRouter(s *store.Store) http.Handler {
+	cfg := &config.Config{Argon2MaxConcurrent: 5} //nolint:exhaustruct // legacy wrapper; only argon2 sem size matters here
+	srv, _ := NewServer(s, cfg)
+	return srv.Handler()
 }
 
 // healthResponse is the JSON body for /healthz.

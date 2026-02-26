@@ -106,7 +106,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("feed_ingest", feedIngestHandler)
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
-	handler := api.NewRouter(st)
+	apiSrv, err := api.NewServer(st, cfg)
+	if err != nil {
+		return fmt.Errorf("api server init: %w", err)
+	}
+	handler := apiSrv.Handler()
 
 	// PLAN.md §18.3: explicit timeouts required to prevent Slowloris attacks.
 	// WriteTimeout intentionally omitted — applied per-handler via http.TimeoutHandler

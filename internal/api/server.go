@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
 
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -20,16 +22,23 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
-	store     *store.Store
-	cfg       *config.Config
-	argon2Sem chan struct{}
+	store       *store.Store
+	cfg         *config.Config
+	argon2Sem   chan struct{}
+	rateLimiter *ipRateLimiter
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
 // If cfg.GoogleClientID is empty, Google OIDC is skipped.
 func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	sem := make(chan struct{}, cfg.Argon2MaxConcurrent)
-	return &Server{store: s, cfg: cfg, argon2Sem: sem}, nil
+	evictTTL := cfg.RateLimitEvictTTL
+	if evictTTL == 0 {
+		evictTTL = 15 * time.Minute
+	}
+	// 10 requests per minute, burst of 10.
+	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
+	return &Server{store: s, cfg: cfg, argon2Sem: sem, rateLimiter: rl}, nil
 }
 
 // Handler builds and returns the http.Handler.

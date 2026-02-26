@@ -34,5 +34,8 @@
       "WebFetch(domain:huma.rocks)",
       "WebFetch(domain:docs.github.com)"
     ]
+  },
+  "enabledPlugins": {
+    "gopls-lsp@claude-plugins-official": true
   }
 }

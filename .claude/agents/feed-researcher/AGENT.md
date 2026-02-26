@@ -61,6 +61,20 @@ Reference `PLAN.md` §3.2 and §3.3. Flag which requirements are relevant:
 - Is this a ZIP archive format? (temp file + explicit loop close required)
 - Is this an enrichment feed (EPSS pattern) or a CVE source (standard FeedAdapter)?
 
+## Critical: web research is mandatory
+
+**You MUST use WebSearch and WebFetch before writing anything.** Do not rely on training data for API details — rate limits, header names, field names, and response structures change, and hallucinated details will cause bugs in production security software.
+
+Required first steps (do not skip):
+1. `WebSearch` for the official API documentation (e.g., `"GitHub Advisory Database GraphQL API documentation"`)
+2. `WebFetch` the top result — the official docs page, not a blog post or tutorial
+3. `WebFetch` at least one additional source (e.g., GitHub API changelog, schema spec, or official client library source)
+
+If WebSearch or WebFetch fail with a tool error (not a 404 — an actual tool unavailability error), **stop immediately** and return this message:
+> "RESEARCH FAILED: WebSearch/WebFetch tools are unavailable. Do not proceed — training data alone is insufficient for a reliable implementation brief."
+
+Do not fall back to training data. Do not produce a brief based solely on what you remember. A brief from training data only looks correct but may contain stale or hallucinated details that will silently break the adapter.
+
 ## Output format
 
 ```markdown
@@ -109,4 +123,4 @@ Reference `PLAN.md` §3.2 and §3.3. Flag which requirements are relevant:
 - [ ] EPSS two-statement pattern (enrichment feed only)
 ```
 
-Start with a WebSearch for official API documentation, then fetch the relevant docs pages.
+Start immediately with WebSearch and WebFetch as described in the "Critical: web research is mandatory" section above. Do not write any part of the brief until you have successfully fetched at least two authoritative sources. Record the URLs you fetched in a "Sources" section at the end of the brief.

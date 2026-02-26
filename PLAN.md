@@ -206,6 +206,8 @@ Without this migration, the database ends up with two separate rows (`GHSA-1234`
 
 **Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
 
+**NVD attribution requirement (required by NVD Terms of Use):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ This is a **frontend item** deferred to Phase 6 (UI). A `TODO(attribution): NVD notice required in UI per NVD ToU` comment must be present in `internal/feed/nvd/adapter.go` from Phase 1 onwards to ensure it is not forgotten.
+
 ### 3.3 Ingestion Scheduling, Cursoring, and Idempotency
 
 **State tables**

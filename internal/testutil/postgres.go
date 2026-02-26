@@ -19,9 +19,18 @@ import (
 	"github.com/scarson/cvert-ops/migrations"
 )
 
+// TestDB wraps a Store with helpers for RLS integration tests.
+// It embeds *store.Store so all store methods are directly callable,
+// keeping all existing tests working without modification.
+type TestDB struct {
+	*store.Store // superuser store — bypasses RLS (for data setup)
+	// AppStore connects as cvert_ops_app (NOBYPASSRLS) — use for RLS isolation tests.
+	AppStore *store.Store
+}
+
 // NewTestDB starts a Postgres testcontainer, runs all migrations, and returns
-// a Store backed by the test DB. The container and pool are cleaned up via t.Cleanup.
-func NewTestDB(t *testing.T) *store.Store {
+// a TestDB backed by the test DB. The container and pools are cleaned up via t.Cleanup.
+func NewTestDB(t *testing.T) *TestDB {
 	t.Helper()
 	ctx := context.Background()
 
@@ -65,10 +74,13 @@ func NewTestDB(t *testing.T) *store.Store {
 
 	// Migrations reference cvert_ops_app in GRANT statements — create the role
 	// before running migrations. In production this is done by docker/init.sql.
+	// A known password is set so RLS integration tests can connect as this role.
 	if _, err := db.ExecContext(ctx, `
 		DO $$ BEGIN
 			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'cvert_ops_app') THEN
-				CREATE ROLE cvert_ops_app LOGIN NOBYPASSRLS;
+				CREATE ROLE cvert_ops_app LOGIN NOBYPASSRLS PASSWORD 'apptestpw';
+			ELSE
+				ALTER ROLE cvert_ops_app WITH LOGIN NOBYPASSRLS PASSWORD 'apptestpw';
 			END IF;
 		END $$`); err != nil {
 		t.Fatalf("create cvert_ops_app role: %v", err)
@@ -88,11 +100,28 @@ func NewTestDB(t *testing.T) *store.Store {
 		t.Fatalf("migrate up: %v", err)
 	}
 
+	// Superuser pool for data setup (bypasses RLS).
 	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		t.Fatalf("pgxpool: %v", err)
 	}
 	t.Cleanup(pool.Close)
 
-	return store.New(pool)
+	// App-role pool connecting as cvert_ops_app (subject to RLS).
+	appPoolCfg, err := pgxpool.ParseConfig(connStr)
+	if err != nil {
+		t.Fatalf("parse app pool config: %v", err)
+	}
+	appPoolCfg.ConnConfig.User = "cvert_ops_app"
+	appPoolCfg.ConnConfig.Password = "apptestpw"
+	appPool, err := pgxpool.NewWithConfig(ctx, appPoolCfg)
+	if err != nil {
+		t.Fatalf("pgxpool (cvert_ops_app): %v", err)
+	}
+	t.Cleanup(appPool.Close)
+
+	return &TestDB{
+		Store:    store.New(pool),
+		AppStore: store.New(appPool),
+	}
 }

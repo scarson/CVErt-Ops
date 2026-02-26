@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
@@ -59,4 +61,45 @@ func (s *Store) withTx(ctx context.Context, fn func(*generated.Queries) error) e
 		return err
 	}
 	return tx.Commit()
+}
+
+// OrgTx opens a pgx native transaction and sets app.org_id = orgID for the
+// duration of the transaction (PLAN.md §6.2). RLS policies on org-scoped tables
+// use this setting to filter rows to the specified org. Safe for connection
+// pooling: SET LOCAL resets on commit or rollback.
+//
+// Use this for all org-scoped write operations from HTTP handlers.
+func (s *Store) OrgTx(ctx context.Context, orgID uuid.UUID, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback on panic or fn error
+	// SET LOCAL does not accept parameterized values in PostgreSQL; formatting
+	// is safe here because orgID is a typed uuid.UUID, not user-supplied text.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL app.org_id = '%s'", orgID)); err != nil {
+		return fmt.Errorf("set org_id: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// WorkerTx opens a pgx native transaction with RLS bypass enabled.
+// ONLY for background worker goroutines (batch evaluator, EPSS, retention).
+// NEVER call from HTTP handler code paths — see PLAN.md §6.2.
+func (s *Store) WorkerTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin worker tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		return fmt.Errorf("set bypass_rls: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

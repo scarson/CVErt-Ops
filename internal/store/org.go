@@ -48,18 +48,27 @@ func (s *Store) CreateOrgMember(ctx context.Context, orgID, userID uuid.UUID, ro
 }
 
 // GetOrgMemberRole returns the role of userID in orgID, or (nil, nil) if not a member.
+// Executes with RLS bypass — called from RequireOrgRole middleware before org context is set.
 func (s *Store) GetOrgMemberRole(ctx context.Context, orgID, userID uuid.UUID) (*string, error) {
-	role, err := s.q.GetOrgMemberRole(ctx, generated.GetOrgMemberRoleParams{
-		OrgID:  orgID,
-		UserID: userID,
+	var result *string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		role, err := q.GetOrgMemberRole(ctx, generated.GetOrgMemberRoleParams{
+			OrgID:  orgID,
+			UserID: userID,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &role
+		return nil
 	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, fmt.Errorf("get org member role: %w", err)
 	}
-	return &role, nil
+	return result, nil
 }
 
 // ListOrgMembers returns all members of an org ordered by join time.

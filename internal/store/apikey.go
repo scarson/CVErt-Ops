@@ -32,15 +32,24 @@ func (s *Store) CreateAPIKey(ctx context.Context, orgID, createdBy uuid.UUID, ke
 
 // LookupAPIKey returns the active (non-revoked, non-expired) key matching keyHash,
 // or (nil, nil) if not found. Caller is responsible for validating org membership.
+// Executes with RLS bypass because no org context exists during the auth hot-path.
 func (s *Store) LookupAPIKey(ctx context.Context, keyHash string) (*generated.ApiKey, error) {
-	row, err := s.q.LookupAPIKey(ctx, keyHash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	var result *generated.ApiKey
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.LookupAPIKey(ctx, keyHash)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("lookup api key: %w", err)
 	}
-	return &row, nil
+	return result, nil
 }
 
 // ListOrgAPIKeys returns all API keys for an org ordered by creation time descending.
@@ -65,9 +74,9 @@ func (s *Store) RevokeAPIKey(ctx context.Context, orgID, id uuid.UUID) error {
 }
 
 // UpdateAPIKeyLastUsed records the current time as last_used_at for the key.
+// Executes with RLS bypass — called from async goroutines without an org context.
 func (s *Store) UpdateAPIKeyLastUsed(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.UpdateAPIKeyLastUsed(ctx, id); err != nil {
-		return fmt.Errorf("update api key last used: %w", err)
-	}
-	return nil
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.UpdateAPIKeyLastUsed(ctx, id)
+	})
 }

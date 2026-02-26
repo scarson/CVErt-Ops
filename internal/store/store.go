@@ -63,6 +63,32 @@ func (s *Store) withTx(ctx context.Context, fn func(*generated.Queries) error) e
 	return tx.Commit()
 }
 
+// withBypassTx runs fn inside a database/sql transaction with RLS bypass enabled.
+// Use for auth-path queries (e.g., LookupAPIKey) that must execute without an
+// org context — the application enforces org membership separately.
+// NEVER call from org-scoped handler code paths.
+func (s *Store) withBypassTx(ctx context.Context, fn func(*generated.Queries) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin bypass tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("set bypass_rls: %w", err)
+	}
+	if err := fn(s.q.WithTx(tx)); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 // OrgTx opens a pgx native transaction and sets app.org_id = orgID for the
 // duration of the transaction (PLAN.md §6.2). RLS policies on org-scoped tables
 // use this setting to filter rows to the specified org. Safe for connection

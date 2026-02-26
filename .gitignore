@@ -38,3 +38,6 @@ go.work.sum
 
 # Chat exports / session logs
 chats/
+
+# Private journal (personal MCP server data, never shared)
+.private-journal/

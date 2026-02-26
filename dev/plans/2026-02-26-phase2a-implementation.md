@@ -1334,9 +1334,47 @@ DELETE FROM org_invitations WHERE id = $1 AND org_id = $2;
 SELECT COUNT(*) FROM org_members WHERE org_id = $1 AND role = 'owner';
 ```
 
-**Step 2:** Run `sqlc generate`. Write tests and implement `internal/store/org.go` following the same thin-wrapper pattern as `store/auth.go`. Key methods: `CreateOrg`, `GetOrgByID`, `CreateOrgMember`, `GetOrgMemberRole`, `ListOrgMembers`, `UpdateOrgMemberRole`, `RemoveOrgMember`, `ListUserOrgs`, `CreateOrgInvitation`, `GetInvitationByToken`, `AcceptInvitation`, `ListOrgInvitations`, `CancelInvitation`.
+**Step 2:** Run `sqlc generate`.
 
-**Step 3:** Run tests. Commit.
+**Step 3:** Write failing tests in `internal/store/org_test.go` BEFORE implementing:
+
+```go
+func TestCreateAndGetOrg(t *testing.T) { ... }
+
+func TestGetOrgMemberRole_NonMember(t *testing.T) {
+    // Create org + one member. Query role for a different user.
+    // Expect: (nil, nil) — user is not a member, not an error.
+}
+
+func TestGetOrgMemberRole_Member(t *testing.T) {
+    // Create org, add user as admin. Query role.
+    // Expect: "admin", nil.
+}
+
+func TestListOrgMembers_OnlyShowsOwnOrg(t *testing.T) {
+    // Create two orgs, one member each.
+    // ListOrgMembers(org1) should return only org1's member.
+}
+
+func TestListUserOrgs_MultipleOrgs(t *testing.T) {
+    // Add user to two orgs with different roles.
+    // ListUserOrgs should return both, ordered by name.
+}
+
+func TestCreateOrgInvitation_AcceptFlow(t *testing.T) {
+    // Create invitation, accept it, verify accepted_at is set.
+}
+
+func TestGetInvitationByToken_ExpiredNotReturned(t *testing.T) {
+    // Insert invitation with expires_at in the past.
+    // GetInvitationByToken should still return it (expiry checked at handler level).
+    // ListOrgInvitations should NOT return it (query filters expires_at > now()).
+}
+```
+
+**Step 4:** Implement `internal/store/org.go` following the thin-wrapper pattern as `store/auth.go`. Key methods: `CreateOrg`, `GetOrgByID`, `CreateOrgMember`, `GetOrgMemberRole`, `ListOrgMembers`, `UpdateOrgMemberRole`, `RemoveOrgMember`, `ListUserOrgs`, `CreateOrgInvitation`, `GetInvitationByToken`, `AcceptInvitation`, `ListOrgInvitations`, `CancelInvitation`.
+
+**Step 5:** Run tests. Commit.
 
 ```bash
 git commit -m "feat(store): org + org_member CRUD + invitation CRUD + tests"
@@ -1381,9 +1419,40 @@ WHERE id = $1 AND org_id = $2;
 UPDATE api_keys SET last_used_at = now() WHERE id = $1;
 ```
 
-**Step 2:** `sqlc generate`. Implement `internal/store/apikey.go`. Note: `LookupAPIKey` does NOT take `orgID` — the hash lookup finds the key, then the RBAC check validates org membership separately.
+**Step 2:** `sqlc generate`.
 
-**Step 3:** Tests + commit.
+**Step 3:** Write failing tests in `internal/store/apikey_test.go` BEFORE implementing:
+
+```go
+func TestLookupAPIKey_ValidKey(t *testing.T) {
+    // Insert a key. LookupAPIKey(hash) should return it.
+}
+
+func TestLookupAPIKey_RevokedKey(t *testing.T) {
+    // Insert a key, revoke it. LookupAPIKey should return nil (query filters revoked_at IS NULL).
+}
+
+func TestLookupAPIKey_ExpiredKey(t *testing.T) {
+    // Insert a key with expires_at in the past. LookupAPIKey should return nil.
+}
+
+func TestLookupAPIKey_NeverExpiresKey(t *testing.T) {
+    // Insert a key with expires_at = NULL. LookupAPIKey should return it.
+}
+
+func TestCreateAndListAPIKeys(t *testing.T) {
+    // Create two keys for an org. ListOrgAPIKeys should return both, newest first.
+    // Verify key_hash is NOT returned in ListOrgAPIKeys (select excludes it).
+}
+
+func TestRevokeAPIKey_WrongOrg(t *testing.T) {
+    // Create key for org1. RevokeAPIKey with org2 should be a no-op (0 rows affected is OK).
+}
+```
+
+**Step 4:** Implement `internal/store/apikey.go`. Note: `LookupAPIKey` does NOT take `orgID` — the hash lookup finds the key, then the RBAC check validates org membership separately.
+
+**Step 5:** Run tests. Commit.
 
 ```bash
 git commit -m "feat(store): API key CRUD + tests"
@@ -1433,7 +1502,35 @@ WHERE gm.group_id = $1 AND gm.org_id = $2
 ORDER BY u.display_name;
 ```
 
-**Step 2:** `sqlc generate`. Implement `internal/store/group.go`. Run tests. Commit.
+**Step 2:** `sqlc generate`.
+
+**Step 3:** Write failing tests in `internal/store/group_test.go` BEFORE implementing:
+
+```go
+func TestCreateAndGetGroup(t *testing.T) { ... }
+
+func TestSoftDeleteGroup_NameReuseAllowed(t *testing.T) {
+    // Create group with name "X", soft-delete it.
+    // Create another group with name "X" in the same org.
+    // Expect: second create succeeds (partial unique index allows reuse after delete).
+}
+
+func TestGetGroup_DeletedReturnsNil(t *testing.T) {
+    // Create a group, soft-delete it. GetGroup should return nil (deleted_at IS NULL filter).
+}
+
+func TestAddGroupMember_Idempotent(t *testing.T) {
+    // Add same user to group twice. Second add is a no-op (ON CONFLICT DO NOTHING).
+    // ListGroupMembers should show user once.
+}
+
+func TestListGroupMembers_OrgScoped(t *testing.T) {
+    // Create two groups in two orgs, add members.
+    // ListGroupMembers for group1 should not return group2's members.
+}
+```
+
+**Step 4:** Implement `internal/store/group.go`. Run tests. Commit.
 
 ```bash
 git commit -m "feat(store): group + group_member CRUD + tests"
@@ -1447,7 +1544,7 @@ git commit -m "feat(store): group + group_member CRUD + tests"
 - Modify: `internal/store/store.go`
 - Add test to: `internal/store/` (integration test verifying `SET LOCAL app.org_id`)
 
-**Step 1:** Write failing test in `internal/store/org_tx_test.go`:
+**Step 1:** Write failing tests in `internal/store/org_tx_test.go`:
 
 ```go
 // TestOrgTx_SetsOrgID verifies that OrgTx sets app.org_id for the duration of
@@ -1457,6 +1554,22 @@ func TestOrgTx_SetsOrgID(t *testing.T) {
 	// Open OrgTx for org1.
 	// Query org_members inside tx — should see only org1's member.
 	// Confirm org2's member is not visible.
+}
+
+// TestOrgTx_FailClosed verifies that a raw query with NO app.org_id set
+// returns 0 rows — not an error. This is the RLS fail-closed guarantee.
+// If this test fails, the dual-layer isolation is broken.
+func TestOrgTx_FailClosed(t *testing.T) {
+	// Create an org + member using WorkerTx (bypass RLS to insert).
+	// Then open a plain pool connection (no SET LOCAL app.org_id).
+	// Query org_members directly — must return 0 rows (fail-closed), not an error.
+}
+
+// TestWorkerTx_BypassRLS verifies that WorkerTx with bypass_rls = 'on'
+// can read rows from all orgs.
+func TestWorkerTx_BypassRLS(t *testing.T) {
+	// Create two orgs + members.
+	// Open WorkerTx, query org_members — should return rows for both orgs.
 }
 ```
 
@@ -2113,13 +2226,37 @@ git commit -m "feat(api): /auth/me + /user/orgs + tests"
 
 **Files:**
 - Modify: `internal/api/auth.go`
+- Add to: `internal/api/auth_test.go`
 
-Key points:
+**Step 1:** Write failing tests:
+
+```go
+func TestChangePassword_Success(t *testing.T) {
+    // Register + login. POST /auth/change-password with correct old + new password.
+    // Expect: 200. Verify new password works on subsequent login.
+}
+
+func TestChangePassword_WrongCurrentPassword(t *testing.T) {
+    // Attempt change-password with wrong current password.
+    // Expect: 401 (must verify old password first).
+}
+
+func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
+    // Register + login (obtaining refresh_token cookie).
+    // Change password.
+    // Attempt POST /auth/refresh with the old refresh token.
+    // Expect: 401 (token_version was incremented, old refresh token invalid).
+}
+```
+
+**Step 2:** Implement. Key points:
 - Verify current password first (argon2 semaphore)
 - Hash new password (argon2 semaphore)
 - `UpdatePasswordHash(userID, newHash, 2)` — also increments `token_version` (in the sqlc query)
 - The old access token becomes valid until expiry (≤15 min), but refresh tokens are now invalid
 - Return 200
+
+**Step 3:** Run tests. Commit.
 
 ```bash
 git commit -m "feat(api): change-password + token_version revocation + tests"

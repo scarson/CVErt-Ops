@@ -13,6 +13,19 @@ import (
 	"github.com/sqlc-dev/pqtype"
 )
 
+type ApiKey struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	CreatedByUserID uuid.UUID
+	KeyHash         string
+	Name            string
+	Role            string
+	ExpiresAt       sql.NullTime
+	LastUsedAt      sql.NullTime
+	CreatedAt       time.Time
+	RevokedAt       sql.NullTime
+}
+
 type Cfe struct {
 	CveID                 string
 	Status                sql.NullString
@@ -124,6 +137,23 @@ type FeedSyncState struct {
 	BackoffUntil        sql.NullTime
 }
 
+type Group struct {
+	ID          uuid.UUID
+	OrgID       uuid.UUID
+	Name        string
+	Description string
+	CreatedAt   time.Time
+	DeletedAt   sql.NullTime
+}
+
+type GroupMember struct {
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	GroupID   uuid.UUID
+	UserID    uuid.UUID
+	CreatedAt time.Time
+}
+
 type JobQueue struct {
 	ID          uuid.UUID
 	Queue       string
@@ -141,6 +171,43 @@ type JobQueue struct {
 	LastError   sql.NullString
 }
 
+type OrgInvitation struct {
+	ID         uuid.UUID
+	OrgID      uuid.UUID
+	Email      string
+	Role       string
+	Token      string
+	CreatedBy  uuid.UUID
+	ExpiresAt  time.Time
+	AcceptedAt sql.NullTime
+	CreatedAt  time.Time
+}
+
+type OrgMember struct {
+	OrgID     uuid.UUID
+	UserID    uuid.UUID
+	Role      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type Organization struct {
+	ID        uuid.UUID
+	Name      string
+	CreatedAt time.Time
+	DeletedAt sql.NullTime
+}
+
+type RefreshToken struct {
+	Jti           uuid.UUID
+	UserID        uuid.UUID
+	TokenVersion  int32
+	ExpiresAt     time.Time
+	UsedAt        sql.NullTime
+	ReplacedByJti uuid.NullUUID
+	CreatedAt     time.Time
+}
+
 type SystemJobsLog struct {
 	ID           uuid.UUID
 	JobType      string
@@ -149,4 +216,24 @@ type SystemJobsLog struct {
 	Status       string
 	Details      pqtype.NullRawMessage
 	ErrorSummary sql.NullString
+}
+
+type User struct {
+	ID                  uuid.UUID
+	Email               string
+	DisplayName         string
+	PasswordHash        sql.NullString
+	PasswordHashVersion int32
+	TokenVersion        int32
+	CreatedAt           time.Time
+	LastLoginAt         sql.NullTime
+}
+
+type UserIdentity struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Provider       string
+	ProviderUserID string
+	Email          string
+	CreatedAt      time.Time
 }

@@ -229,10 +229,13 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("parse db url: %w", err)
 	}
+	// Simple query protocol + MultiStatementEnabled: each statement in the migration
+	// file runs as its own ExecContext call in autocommit, allowing CREATE INDEX CONCURRENTLY.
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	db := stdlib.OpenDB(*connCfg)
 	defer db.Close() //nolint:errcheck
 
-	driver, err := migratepg.WithInstance(db, &migratepg.Config{})
+	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
 	if err != nil {
 		return fmt.Errorf("migration driver: %w", err)
 	}

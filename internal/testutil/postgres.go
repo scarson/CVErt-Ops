@@ -56,6 +56,10 @@ func NewTestDB(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("parse db url: %v", err)
 	}
+	// Simple query protocol lets postgres execute multi-statement migration files
+	// natively — each statement runs in its own autocommit. Extended protocol
+	// wraps the whole file in an implicit transaction, rejecting CREATE INDEX CONCURRENTLY.
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	db := stdlib.OpenDB(*connCfg)
 	defer db.Close() //nolint:errcheck
 
@@ -70,7 +74,7 @@ func NewTestDB(t *testing.T) *store.Store {
 		t.Fatalf("create cvert_ops_app role: %v", err)
 	}
 
-	driver, err := migratepg.WithInstance(db, &migratepg.Config{})
+	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
 	if err != nil {
 		t.Fatalf("migration driver: %v", err)
 	}

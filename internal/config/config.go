@@ -16,6 +16,9 @@ import (
 type Config struct {
 	// ── Database ─────────────────────────────────────────────────────────────────
 	DatabaseURL          string        `env:"DATABASE_URL,required"`
+	// DatabaseURLMigrate is the connection string used by `cvert-ops migrate`.
+	// Should use a superuser/DDL role. Falls back to DatabaseURL if unset.
+	DatabaseURLMigrate string `env:"DATABASE_URL_MIGRATE"`
 	DBMaxConns           int32         `env:"DB_MAX_CONNS"           envDefault:"25"`
 	DBMaxConnIdleTime    time.Duration `env:"DB_MAX_CONN_IDLE_TIME"  envDefault:"5m"`
 	DBStatementTimeoutMS int           `env:"DB_STATEMENT_TIMEOUT_MS" envDefault:"14000"`

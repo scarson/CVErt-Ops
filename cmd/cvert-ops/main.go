@@ -221,7 +221,11 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	// golang-migrate requires a *sql.DB. Use pgx's stdlib adapter so the same
 	// driver is used project-wide. No pooling needed here — this is a one-shot
 	// migration run.
-	connCfg, err := pgx.ParseConfig(cfg.DatabaseURL)
+	migrateURL := cfg.DatabaseURL
+	if cfg.DatabaseURLMigrate != "" {
+		migrateURL = cfg.DatabaseURLMigrate
+	}
+	connCfg, err := pgx.ParseConfig(migrateURL)
 	if err != nil {
 		return fmt.Errorf("parse db url: %w", err)
 	}

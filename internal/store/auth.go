@@ -54,6 +54,16 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*generated.Us
 	return &row, nil
 }
 
+// CountUsers returns the total number of user rows (including soft-deleted ones).
+// Used for first-user org bootstrap detection during registration.
+func (s *Store) CountUsers(ctx context.Context) (int64, error) {
+	n, err := s.q.CountUsers(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count users: %w", err)
+	}
+	return n, nil
+}
+
 // UpdateLastLogin sets last_login_at to now for the given user.
 func (s *Store) UpdateLastLogin(ctx context.Context, id uuid.UUID) error {
 	if err := s.q.UpdateLastLogin(ctx, id); err != nil {

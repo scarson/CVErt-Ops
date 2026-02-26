@@ -51,3 +51,6 @@ WHERE jti = $1;
 -- name: DeleteExpiredRefreshTokens :execrows
 DELETE FROM refresh_tokens
 WHERE expires_at < now() - interval '60 seconds';
+
+-- name: CountUsers :one
+SELECT COUNT(*) FROM users;

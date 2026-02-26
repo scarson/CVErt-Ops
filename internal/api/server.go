@@ -77,6 +77,7 @@ func (srv *Server) Handler() http.Handler {
 	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
 	api := humachi.New(apiRouter, humaConfig)
+	registerAuthRoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
 	r.Mount("/api/v1", apiRouter)

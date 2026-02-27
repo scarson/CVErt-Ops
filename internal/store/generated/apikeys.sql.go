@@ -56,6 +56,34 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 	return i, err
 }
 
+const getOrgAPIKey = `-- name: GetOrgAPIKey :one
+SELECT id, org_id, created_by_user_id, key_hash, name, role, expires_at, last_used_at, created_at, revoked_at
+FROM api_keys WHERE id = $1 AND org_id = $2 LIMIT 1
+`
+
+type GetOrgAPIKeyParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) GetOrgAPIKey(ctx context.Context, arg GetOrgAPIKeyParams) (ApiKey, error) {
+	row := q.db.QueryRowContext(ctx, getOrgAPIKey, arg.ID, arg.OrgID)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.CreatedByUserID,
+		&i.KeyHash,
+		&i.Name,
+		&i.Role,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const listOrgAPIKeys = `-- name: ListOrgAPIKeys :many
 SELECT id, name, role, expires_at, last_used_at, created_at, revoked_at
 FROM api_keys

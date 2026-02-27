@@ -30,6 +30,19 @@ func (s *Store) CreateAPIKey(ctx context.Context, orgID, createdBy uuid.UUID, ke
 	return &row, nil
 }
 
+// GetOrgAPIKey returns the API key with the given ID within orgID, or (nil, nil) if not found.
+// Includes created_by_user_id for ownership checks in the delete handler.
+func (s *Store) GetOrgAPIKey(ctx context.Context, orgID, id uuid.UUID) (*generated.ApiKey, error) {
+	row, err := s.q.GetOrgAPIKey(ctx, generated.GetOrgAPIKeyParams{ID: id, OrgID: orgID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get org api key: %w", err)
+	}
+	return &row, nil
+}
+
 // LookupAPIKey returns the active (non-revoked, non-expired) key matching keyHash,
 // or (nil, nil) if not found. Caller is responsible for validating org membership.
 // Executes with RLS bypass because no org context exists during the auth hot-path.

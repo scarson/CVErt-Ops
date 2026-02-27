@@ -103,6 +103,13 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.listInvitationsHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{id}", srv.cancelInvitationHandler)
 			})
+
+			// API key management
+			r.Route("/api-keys", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createAPIKeyHandler)
+				r.Get("/", srv.listAPIKeysHandler)
+				r.Delete("/{id}", srv.revokeAPIKeyHandler)
+			})
 		})
 	})
 

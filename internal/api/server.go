@@ -3,11 +3,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
@@ -28,8 +31,10 @@ type Server struct {
 	cfg          *config.Config
 	argon2Sem    chan struct{}
 	rateLimiter  *ipRateLimiter
-	ghOAuth      *oauth2.Config // nil when GitHub OAuth is not configured
-	ghAPIBaseURL string         // GitHub REST API base URL; overridable in tests
+	ghOAuth      *oauth2.Config  // nil when GitHub OAuth is not configured
+	ghAPIBaseURL string          // GitHub REST API base URL; overridable in tests
+	googleOIDC   *oidc.Provider  // nil when Google OIDC is not configured
+	googleOAuth  *oauth2.Config  // nil when Google OIDC is not configured
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -58,6 +63,34 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 			RedirectURL:  cfg.ExternalURL + "/api/v1/auth/oauth/github/callback",
 			Endpoint:     github.Endpoint,
 			Scopes:       []string{"user:email"}, // REQUIRED per PLAN.md §7.2
+		}
+	}
+
+	// ── Google OIDC (optional) ────────────────────────────────────────────────
+	if cfg.GoogleClientID != "" {
+		ctx := context.Background()
+		var (
+			googleProvider *oidc.Provider
+			googleErr      error
+		)
+		for attempt := 1; attempt <= 5; attempt++ {
+			googleProvider, googleErr = oidc.NewProvider(ctx, "https://accounts.google.com")
+			if googleErr == nil {
+				break
+			}
+			slog.Warn("google oidc: provider init failed, retrying", "attempt", attempt, "err", googleErr)
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		if googleErr != nil {
+			return nil, fmt.Errorf("google oidc provider: %w", googleErr)
+		}
+		srv.googleOIDC = googleProvider
+		srv.googleOAuth = &oauth2.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.ExternalURL + "/api/v1/auth/oauth/google/callback",
+			Endpoint:     googleProvider.Endpoint(),
+			Scopes:       []string{oidc.ScopeOpenID, "email", "profile"},
 		}
 	}
 
@@ -106,6 +139,8 @@ func (srv *Server) Handler() http.Handler {
 	// ── OAuth routes (chi, not huma — these are redirects, not JSON API calls) ─
 	apiRouter.Get("/auth/oauth/github", srv.githubInitHandler)
 	apiRouter.Get("/auth/oauth/github/callback", srv.githubCallbackHandler)
+	apiRouter.Get("/auth/oauth/google", srv.googleInitHandler)
+	apiRouter.Get("/auth/oauth/google/callback", srv.googleCallbackHandler)
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {

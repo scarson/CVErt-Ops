@@ -180,13 +180,18 @@ func (s *Store) GetOrgOwnerCount(ctx context.Context, orgID uuid.UUID) (int64, e
 
 // CreateOrgInvitation inserts an invitation record and returns it.
 func (s *Store) CreateOrgInvitation(ctx context.Context, orgID uuid.UUID, email, role, token string, createdBy uuid.UUID, expiresAt time.Time) (*generated.OrgInvitation, error) {
-	row, err := s.q.CreateOrgInvitation(ctx, generated.CreateOrgInvitationParams{
-		OrgID:     orgID,
-		Email:     email,
-		Role:      role,
-		Token:     token,
-		CreatedBy: createdBy,
-		ExpiresAt: expiresAt,
+	var row generated.OrgInvitation
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		row, err = q.CreateOrgInvitation(ctx, generated.CreateOrgInvitationParams{
+			OrgID:     orgID,
+			Email:     email,
+			Role:      role,
+			Token:     token,
+			CreatedBy: createdBy,
+			ExpiresAt: expiresAt,
+		})
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create org invitation: %w", err)
@@ -195,9 +200,15 @@ func (s *Store) CreateOrgInvitation(ctx context.Context, orgID uuid.UUID, email,
 }
 
 // GetInvitationByToken returns the invitation for the given token, or (nil, nil) if not found.
+// Uses RLS bypass — called from public and accept endpoints with no org context.
 // Callers are responsible for checking expiry and accepted_at.
 func (s *Store) GetInvitationByToken(ctx context.Context, token string) (*generated.OrgInvitation, error) {
-	row, err := s.q.GetInvitationByToken(ctx, token)
+	var row generated.OrgInvitation
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		row, err = q.GetInvitationByToken(ctx, token)
+		return err
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -232,7 +243,12 @@ func (s *Store) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
 
 // ListOrgInvitations returns all pending, unexpired invitations for an org.
 func (s *Store) ListOrgInvitations(ctx context.Context, orgID uuid.UUID) ([]generated.OrgInvitation, error) {
-	rows, err := s.q.ListOrgInvitations(ctx, orgID)
+	var rows []generated.OrgInvitation
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		rows, err = q.ListOrgInvitations(ctx, orgID)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list org invitations: %w", err)
 	}
@@ -241,11 +257,13 @@ func (s *Store) ListOrgInvitations(ctx context.Context, orgID uuid.UUID) ([]gene
 
 // CancelInvitation deletes an invitation by ID within an org.
 func (s *Store) CancelInvitation(ctx context.Context, orgID, id uuid.UUID) error {
-	if err := s.q.DeleteOrgInvitation(ctx, generated.DeleteOrgInvitationParams{
-		OrgID: orgID,
-		ID:    id,
-	}); err != nil {
-		return fmt.Errorf("cancel invitation: %w", err)
-	}
-	return nil
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.DeleteOrgInvitation(ctx, generated.DeleteOrgInvitationParams{
+			OrgID: orgID,
+			ID:    id,
+		}); err != nil {
+			return fmt.Errorf("cancel invitation: %w", err)
+		}
+		return nil
+	})
 }

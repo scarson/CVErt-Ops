@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -159,5 +160,131 @@ func TestCreateAPIKey_AppStoreRLS(t *testing.T) {
 	}
 	if key == nil {
 		t.Fatal("CreateAPIKey: returned nil key, want non-nil")
+	}
+}
+
+// ── org_invitations RLS tests ─────────────────────────────────────────────────
+
+// TestCancelInvitation_AppStoreRLS verifies that CancelInvitation succeeds when
+// called via AppStore. This requires GRANT DELETE on org_invitations (the migration
+// originally only granted SELECT, INSERT, UPDATE) and withOrgTx wrapping.
+func TestCancelInvitation_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "InvRLS1")
+	user, _ := s.CreateUser(ctx, "invrlsuser1@example.com", "InvRLSUser1", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+	inv, err := s.CreateOrgInvitation(ctx, org.ID, "cancel-target@example.com", "member", "invrlstoken1", user.ID, time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// CancelInvitation via AppStore must succeed — tests GRANT DELETE + withOrgTx.
+	if err := s.AppStore.CancelInvitation(ctx, org.ID, inv.ID); err != nil {
+		t.Fatalf("CancelInvitation via AppStore: %v — missing DELETE grant or withOrgTx", err)
+	}
+}
+
+// TestInvitation_RLSFailClosed verifies that a raw query on AppStore with no
+// app.org_id set returns 0 invitation rows — the RLS fail-closed guarantee.
+// CRITICAL: if this fails, cross-org invitation data is exposed.
+func TestInvitation_RLSFailClosed(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "InvRLS2")
+	user, _ := s.CreateUser(ctx, "invrlsuser2@example.com", "InvRLSUser2", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+	if _, err := s.CreateOrgInvitation(ctx, org.ID, "rls-target@example.com", "member", "invrlstoken2", user.ID, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// Raw query on AppStore connection — no SET LOCAL app.org_id, must return 0 rows.
+	conn, err := s.AppStore.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire app pool conn: %v", err)
+	}
+	defer conn.Release()
+
+	var count int
+	if err := conn.QueryRow(ctx, "SELECT COUNT(*) FROM org_invitations").Scan(&count); err != nil {
+		t.Fatalf("fail-closed query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("fail-closed: expected 0 invitation rows with no app.org_id, got %d — RLS missing", count)
+	}
+}
+
+// TestGetInvitationByToken_AppStoreBypass verifies that GetInvitationByToken
+// succeeds via AppStore even without an org context. The store method must use
+// withBypassTx so the public token-lookup path works after RLS is enabled.
+func TestGetInvitationByToken_AppStoreBypass(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "InvRLS3")
+	user, _ := s.CreateUser(ctx, "invrlsuser3@example.com", "InvRLSUser3", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+	const token = "publicinvtoken3"
+	if _, err := s.CreateOrgInvitation(ctx, org.ID, "public-lookup@example.com", "viewer", token, user.ID, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	// GetInvitationByToken via AppStore must find the invitation with no org context.
+	inv, err := s.AppStore.GetInvitationByToken(ctx, token)
+	if err != nil {
+		t.Fatalf("GetInvitationByToken: %v", err)
+	}
+	if inv == nil {
+		t.Fatal("GetInvitationByToken: returned nil — withBypassTx not set, RLS blocking public lookup")
+	}
+}
+
+// TestCreateInvitation_AppStoreRLS verifies that CreateOrgInvitation succeeds
+// via AppStore. With RLS enabled, the INSERT's WITH CHECK clause requires app.org_id
+// to be set — withOrgTx must wrap the call.
+func TestCreateInvitation_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "InvRLS4")
+	user, _ := s.CreateUser(ctx, "invrlsuser4@example.com", "InvRLSUser4", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+
+	inv, err := s.AppStore.CreateOrgInvitation(ctx, org.ID, "new-invite@example.com", "member", "invrlstoken4", user.ID, time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateOrgInvitation via AppStore: %v", err)
+	}
+	if inv == nil {
+		t.Fatal("CreateOrgInvitation via AppStore: returned nil")
+	}
+}
+
+// TestListInvitations_AppStoreRLS verifies that ListOrgInvitations returns the
+// correct rows via AppStore. With RLS enabled, the SELECT's USING clause requires
+// app.org_id to be set — withOrgTx must wrap the call.
+func TestListInvitations_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "InvRLS5")
+	user, _ := s.CreateUser(ctx, "invrlsuser5@example.com", "InvRLSUser5", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+	if _, err := s.CreateOrgInvitation(ctx, org.ID, "list-target@example.com", "member", "invrlstoken5", user.ID, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+
+	invs, err := s.AppStore.ListOrgInvitations(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListOrgInvitations via AppStore: %v", err)
+	}
+	if len(invs) != 1 {
+		t.Errorf("ListOrgInvitations: got %d invitations, want 1 — withOrgTx not set", len(invs))
 	}
 }

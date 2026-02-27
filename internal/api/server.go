@@ -110,6 +110,22 @@ func (srv *Server) Handler() http.Handler {
 				r.Get("/", srv.listAPIKeysHandler)
 				r.Delete("/{id}", srv.revokeAPIKeyHandler)
 			})
+
+			// Group management
+			r.Route("/groups", func(r chi.Router) {
+				r.Get("/", srv.listGroupsHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createGroupHandler)
+				r.Route("/{group_id}", func(r chi.Router) {
+					r.Get("/", srv.getGroupHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateGroupHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/", srv.deleteGroupHandler)
+					r.Route("/members", func(r chi.Router) {
+						r.Get("/", srv.listGroupMembersHandler)
+						r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.addGroupMemberHandler)
+						r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeGroupMemberHandler)
+					})
+				})
+			})
 		})
 	})
 

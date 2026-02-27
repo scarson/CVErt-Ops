@@ -473,6 +473,7 @@ func TestChangePassword_Success(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -513,6 +514,7 @@ func TestChangePassword_WrongCurrentPassword(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -541,6 +543,7 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {

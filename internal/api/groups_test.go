@@ -23,6 +23,7 @@ func doCreateGroup(t *testing.T, ctx context.Context, ts *httptest.Server, acces
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/groups", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("create group: %v", err)
@@ -61,6 +62,7 @@ func doUpdateGroup(t *testing.T, ctx context.Context, ts *httptest.Server, acces
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID+"/groups/"+groupID, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("update group: %v", err)
@@ -73,6 +75,7 @@ func doDeleteGroup(t *testing.T, ctx context.Context, ts *httptest.Server, acces
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/groups/"+groupID, nil)
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("delete group: %v", err)
@@ -87,6 +90,7 @@ func doAddGroupMember(t *testing.T, ctx context.Context, ts *httptest.Server, ac
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/groups/"+groupID+"/members", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("add group member: %v", err)
@@ -111,6 +115,7 @@ func doRemoveGroupMember(t *testing.T, ctx context.Context, ts *httptest.Server,
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/groups/"+groupID+"/members/"+userID, nil)
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("remove group member: %v", err)

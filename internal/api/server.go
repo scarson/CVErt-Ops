@@ -130,6 +130,9 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()
+	// CSRF protection: cookie-authenticated state-changing requests must include
+	// X-Requested-By: CVErt-Ops. Bearer-token requests and safe methods are exempt.
+	apiRouter.Use(csrfProtect)
 	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
 	api := humachi.New(apiRouter, humaConfig)

@@ -23,6 +23,7 @@ func doCreateAPIKey(t *testing.T, ctx context.Context, ts *httptest.Server, acce
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/api-keys", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("create api key: %v", err)
@@ -47,6 +48,7 @@ func doRevokeAPIKey(t *testing.T, ctx context.Context, ts *httptest.Server, acce
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/api-keys/"+keyID, nil)
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("revoke api key: %v", err)

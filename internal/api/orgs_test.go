@@ -24,6 +24,7 @@ func doCreateOrg(t *testing.T, ctx context.Context, ts *httptest.Server, accessT
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("create org request: %v", err)
@@ -52,6 +53,7 @@ func doUpdateOrg(t *testing.T, ctx context.Context, ts *httptest.Server, accessT
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("update org request: %v", err)
@@ -276,6 +278,7 @@ func doUpdateMemberRole(t *testing.T, ctx context.Context, ts *httptest.Server, 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID+"/members/"+userID, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("update member role request: %v", err)
@@ -288,6 +291,7 @@ func doRemoveMember(t *testing.T, ctx context.Context, ts *httptest.Server, acce
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/members/"+userID, nil)
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("remove member request: %v", err)
@@ -547,6 +551,7 @@ func doCreateInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/invitations", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("create invitation request: %v", err)
@@ -571,6 +576,7 @@ func doCancelInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, 
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/invitations/"+invID, nil)
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("cancel invitation request: %v", err)
@@ -594,6 +600,7 @@ func doAcceptInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, 
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/invitations/"+token+"/accept", nil)
 	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("accept invitation request: %v", err)

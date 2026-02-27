@@ -14,6 +14,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
 
 	"github.com/scarson/cvert-ops/internal/config"
@@ -22,10 +24,12 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
-	store       *store.Store
-	cfg         *config.Config
-	argon2Sem   chan struct{}
-	rateLimiter *ipRateLimiter
+	store        *store.Store
+	cfg          *config.Config
+	argon2Sem    chan struct{}
+	rateLimiter  *ipRateLimiter
+	ghOAuth      *oauth2.Config // nil when GitHub OAuth is not configured
+	ghAPIBaseURL string         // GitHub REST API base URL; overridable in tests
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -38,7 +42,26 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	}
 	// 10 requests per minute, burst of 10.
 	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
-	return &Server{store: s, cfg: cfg, argon2Sem: sem, rateLimiter: rl}, nil
+	srv := &Server{
+		store:        s,
+		cfg:          cfg,
+		argon2Sem:    sem,
+		rateLimiter:  rl,
+		ghAPIBaseURL: "https://api.github.com",
+	}
+
+	// ── GitHub OAuth (optional) ───────────────────────────────────────────────
+	if cfg.GitHubClientID != "" {
+		srv.ghOAuth = &oauth2.Config{
+			ClientID:     cfg.GitHubClientID,
+			ClientSecret: cfg.GitHubClientSecret,
+			RedirectURL:  cfg.ExternalURL + "/api/v1/auth/oauth/github/callback",
+			Endpoint:     github.Endpoint,
+			Scopes:       []string{"user:email"}, // REQUIRED per PLAN.md §7.2
+		}
+	}
+
+	return srv, nil
 }
 
 // Handler builds and returns the http.Handler.
@@ -79,6 +102,10 @@ func (srv *Server) Handler() http.Handler {
 	api := humachi.New(apiRouter, humaConfig)
 	registerAuthRoutes(api, srv)
 	registerCVERoutes(api, srv.store)
+
+	// ── OAuth routes (chi, not huma — these are redirects, not JSON API calls) ─
+	apiRouter.Get("/auth/oauth/github", srv.githubInitHandler)
+	apiRouter.Get("/auth/oauth/github/callback", srv.githubCallbackHandler)
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {

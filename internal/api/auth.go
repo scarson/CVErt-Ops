@@ -92,7 +92,7 @@ func clearAuthCookies(secure bool) []string {
 type registerInput struct {
 	Body struct {
 		Email       string `json:"email"        format:"email" maxLength:"254"  doc:"User email address"`
-		Password    string `json:"password"     minLength:"8"  maxLength:"1024" doc:"Password (min 8 characters)"`
+		Password    string `json:"password"     minLength:"16" maxLength:"1024" doc:"Password (min 16 characters)"`
 		DisplayName string `json:"display_name,omitempty"       doc:"Display name (optional)"`
 	}
 }
@@ -184,7 +184,7 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 type loginInput struct {
 	Body struct {
 		Email    string `json:"email"    format:"email" maxLength:"254"  doc:"User email"`
-		Password string `json:"password" minLength:"8"  maxLength:"1024" doc:"Password"`
+		Password string `json:"password" minLength:"16" maxLength:"1024" doc:"Password"`
 	}
 }
 
@@ -458,7 +458,7 @@ type changePasswordInput struct {
 	AccessToken string `cookie:"access_token" doc:"Access token cookie"`
 	Body        struct {
 		CurrentPassword string `json:"current_password" minLength:"1"  maxLength:"1024" doc:"Current password"`
-		NewPassword     string `json:"new_password"     minLength:"8"  maxLength:"1024" doc:"New password (min 8 characters)"`
+		NewPassword     string `json:"new_password"     minLength:"16" maxLength:"1024" doc:"New password (min 16 characters)"`
 	}
 }
 

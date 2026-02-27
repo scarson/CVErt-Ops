@@ -95,7 +95,7 @@ func TestRegisterFirstUser(t *testing.T) {
 
 	_, ts := newRegisterServer(t, db, "open")
 
-	body := `{"email":"first@example.com","password":"password123","display_name":"First User"}`
+	body := `{"email":"first@example.com","password":"test-password-1234","display_name":"First User"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
@@ -156,7 +156,7 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 
 	_, ts := newRegisterServer(t, db, "open")
 
-	body := `{"email":"dup@example.com","password":"password123"}`
+	body := `{"email":"dup@example.com","password":"test-password-1234"}`
 
 	// First registration — should succeed.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
@@ -191,9 +191,9 @@ func TestLoginSuccess(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "loginok@example.com", "password123")
+	doRegister(t, ctx, ts, "loginok@example.com", "test-password-1234")
 
-	resp := doLogin(t, ctx, ts, "loginok@example.com", "password123")
+	resp := doLogin(t, ctx, ts, "loginok@example.com", "test-password-1234")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 
 	if resp.StatusCode != http.StatusOK {
@@ -213,9 +213,9 @@ func TestLoginWrongPassword(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "wrongpw@example.com", "password123")
+	doRegister(t, ctx, ts, "wrongpw@example.com", "test-password-1234")
 
-	resp := doLogin(t, ctx, ts, "wrongpw@example.com", "wrongpassword")
+	resp := doLogin(t, ctx, ts, "wrongpw@example.com", "test-wrong-password")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("wrong password: got %d, want 401", resp.StatusCode)
@@ -228,7 +228,7 @@ func TestLoginNonexistentUser(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	resp := doLogin(t, ctx, ts, "nobody@example.com", "password123")
+	resp := doLogin(t, ctx, ts, "nobody@example.com", "test-password-1234")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("nonexistent user: got %d, want 401", resp.StatusCode)
@@ -243,8 +243,8 @@ func TestRefreshRotates(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "refresh@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "refresh@example.com", "password123")
+	doRegister(t, ctx, ts, "refresh@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "refresh@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	if loginResp.StatusCode != http.StatusOK {
 		t.Fatalf("login: got %d", loginResp.StatusCode)
@@ -294,8 +294,8 @@ func TestRefreshGraceWindow(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "grace@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "grace@example.com", "password123")
+	doRegister(t, ctx, ts, "grace@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "grace@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	firstRefreshToken := cookieValue(loginResp, "refresh_token")
 
@@ -330,8 +330,8 @@ func TestRefreshTheftDetection(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	regOut := doRegister(t, ctx, ts, "theft@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "theft@example.com", "password123")
+	regOut := doRegister(t, ctx, ts, "theft@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "theft@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	firstRefreshToken := cookieValue(loginResp, "refresh_token")
 
@@ -381,8 +381,8 @@ func TestLogoutClearsCookies(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "logout@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "logout@example.com", "password123")
+	doRegister(t, ctx, ts, "logout@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "logout@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	refreshToken := cookieValue(loginResp, "refresh_token")
 
@@ -413,8 +413,8 @@ func TestGetMe(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	regOut := doRegister(t, ctx, ts, "me@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "me@example.com", "password123")
+	regOut := doRegister(t, ctx, ts, "me@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "me@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -464,12 +464,12 @@ func TestChangePassword_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "changepw@example.com", "oldpassword")
-	loginResp := doLogin(t, ctx, ts, "changepw@example.com", "oldpassword")
+	doRegister(t, ctx, ts, "changepw@example.com", "test-old-password-1")
+	loginResp := doLogin(t, ctx, ts, "changepw@example.com", "test-old-password-1")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
-	body := `{"current_password":"oldpassword","new_password":"newpassword1"}`
+	body := `{"current_password":"test-old-password-1","new_password":"test-new-password-1"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -484,14 +484,14 @@ func TestChangePassword_Success(t *testing.T) {
 	}
 
 	// Old password login should now fail.
-	oldLoginResp := doLogin(t, ctx, ts, "changepw@example.com", "oldpassword")
+	oldLoginResp := doLogin(t, ctx, ts, "changepw@example.com", "test-old-password-1")
 	oldLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	if oldLoginResp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("old password login after change: got %d, want 401", oldLoginResp.StatusCode)
 	}
 
 	// New password login should succeed.
-	newLoginResp := doLogin(t, ctx, ts, "changepw@example.com", "newpassword1")
+	newLoginResp := doLogin(t, ctx, ts, "changepw@example.com", "test-new-password-1")
 	newLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	if newLoginResp.StatusCode != http.StatusOK {
 		t.Errorf("new password login after change: got %d, want 200", newLoginResp.StatusCode)
@@ -504,12 +504,12 @@ func TestChangePassword_WrongCurrentPassword(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "wrongcurrent@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "wrongcurrent@example.com", "password123")
+	doRegister(t, ctx, ts, "wrongcurrent@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "wrongcurrent@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
-	body := `{"current_password":"wrongcurrent","new_password":"newpassword1"}`
+	body := `{"current_password":"wrongcurrent","new_password":"test-new-password-1"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -530,14 +530,14 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	doRegister(t, ctx, ts, "revoke@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "revoke@example.com", "password123")
+	doRegister(t, ctx, ts, "revoke@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "revoke@example.com", "test-password-1234")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 	refreshToken := cookieValue(loginResp, "refresh_token")
 
 	// Change password — increments token_version.
-	body := `{"current_password":"password123","new_password":"newpassword1"}`
+	body := `{"current_password":"test-password-1234","new_password":"test-new-password-1"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")

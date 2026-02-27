@@ -67,13 +67,13 @@ func TestCreateOrg_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	aliceUserID, err := uuid.Parse(aliceReg.UserID)
 	if err != nil {
 		t.Fatalf("parse alice user ID: %v", err)
 	}
 
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	if loginResp.StatusCode != http.StatusOK {
 		t.Fatalf("login: got %d, want 200", loginResp.StatusCode)
@@ -143,8 +143,8 @@ func TestGetOrg_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -181,10 +181,10 @@ func TestGetOrg_NotMember(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 
-	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(loginResp, "access_token")
 
@@ -203,8 +203,8 @@ func TestUpdateOrg_AsOwner(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -234,8 +234,8 @@ func TestUpdateOrg_AsViewer(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 
 	// Insert bob as viewer in alice's org via the superuser store.
 	orgID, _ := uuid.Parse(aliceReg.OrgID)
@@ -244,7 +244,7 @@ func TestUpdateOrg_AsViewer(t *testing.T) {
 		t.Fatalf("add bob as viewer: %v", err)
 	}
 
-	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(loginResp, "access_token")
 
@@ -302,8 +302,8 @@ func TestListMembers_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -339,10 +339,10 @@ func TestListMembers_NotMember(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 
-	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(loginResp, "access_token")
 
@@ -361,15 +361,15 @@ func TestUpdateMemberRole_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 	orgID, _ := uuid.Parse(aliceReg.OrgID)
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
 		t.Fatalf("add bob: %v", err)
 	}
 
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -397,15 +397,15 @@ func TestUpdateMemberRole_CannotAssignOwner(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 	orgID, _ := uuid.Parse(aliceReg.OrgID)
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
 		t.Fatalf("add bob: %v", err)
 	}
 
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -425,9 +425,9 @@ func TestUpdateMemberRole_CannotChangeExistingOwner(t *testing.T) {
 	_, ts := newRegisterServer(t, db, "open")
 
 	// alice is auto-bootstrapped as owner; she tries to demote herself.
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -446,9 +446,9 @@ func TestUpdateMemberRole_CannotExceedCallerRole(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
-	carolReg := doRegister(t, ctx, ts, "carol@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	carolReg := doRegister(t, ctx, ts, "carol@example.com", "test-password-1234")
 	orgID, _ := uuid.Parse(aliceReg.OrgID)
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	carolUserID, _ := uuid.Parse(carolReg.UserID)
@@ -461,7 +461,7 @@ func TestUpdateMemberRole_CannotExceedCallerRole(t *testing.T) {
 	}
 
 	// Login as bob (admin); try to promote carol to "admin" (equal — OK), then "owner" (blocked)
-	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(loginResp, "access_token")
 
@@ -488,15 +488,15 @@ func TestRemoveMember_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 	orgID, _ := uuid.Parse(aliceReg.OrgID)
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
 		t.Fatalf("add bob: %v", err)
 	}
 
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -524,9 +524,9 @@ func TestRemoveMember_SoleOwner(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -608,8 +608,8 @@ func TestCreateInvitation_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -645,15 +645,15 @@ func TestCreateInvitation_AsViewer(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 	orgID, _ := uuid.Parse(aliceReg.OrgID)
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
 		t.Fatalf("add bob: %v", err)
 	}
 
-	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(loginResp, "access_token")
 
@@ -671,8 +671,8 @@ func TestListInvitations_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -712,8 +712,8 @@ func TestCancelInvitation_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -752,8 +752,8 @@ func TestGetInvitation_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(loginResp, "access_token")
 
@@ -817,11 +817,11 @@ func TestAcceptInvitation_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 
 	// Alice creates an invitation for bob.
-	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(aliceLoginResp, "access_token")
 
@@ -840,7 +840,7 @@ func TestAcceptInvitation_Success(t *testing.T) {
 	invToken := invitations[0].Token
 
 	// Bob accepts.
-	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(bobLoginResp, "access_token")
 
@@ -868,10 +868,10 @@ func TestAcceptInvitation_Idempotent(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
 
-	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(aliceLoginResp, "access_token")
 
@@ -885,7 +885,7 @@ func TestAcceptInvitation_Idempotent(t *testing.T) {
 	}
 	invToken := invitations[0].Token
 
-	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
 	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(bobLoginResp, "access_token")
 

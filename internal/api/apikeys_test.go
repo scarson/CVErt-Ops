@@ -62,8 +62,8 @@ func TestCreateAPIKey_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -109,17 +109,17 @@ func TestCreateAPIKey_RoleEscalation(t *testing.T) {
 	_, ts := newRegisterServer(t, db, "open")
 
 	// Alice is the org owner.
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
 
 	// Bob registers separately, then is added as a member to Alice's org.
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password456")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "member"); err != nil {
 		t.Fatalf("add Bob as member: %v", err)
 	}
 
-	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password456")
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
 	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(bobLoginResp, "access_token")
 
@@ -138,8 +138,8 @@ func TestListAPIKeys_Success(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -188,8 +188,8 @@ func TestRevokeAPIKey_OwnKey(t *testing.T) {
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
 
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
-	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	accessToken := cookieValue(loginResp, "access_token")
 
@@ -234,16 +234,16 @@ func TestRevokeAPIKey_AsAdmin(t *testing.T) {
 	_, ts := newRegisterServer(t, db, "open")
 
 	// Alice is the org owner.
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
 
 	// Bob is a member of Alice's org.
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password456")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "member"); err != nil {
 		t.Fatalf("add Bob: %v", err)
 	}
-	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password456")
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
 	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(bobLoginResp, "access_token")
 
@@ -261,7 +261,7 @@ func TestRevokeAPIKey_AsAdmin(t *testing.T) {
 	}
 
 	// Alice (owner) revokes Bob's key.
-	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(aliceLoginResp, "access_token")
 
@@ -280,19 +280,19 @@ func TestRevokeAPIKey_NotOwner(t *testing.T) {
 	_, ts := newRegisterServer(t, db, "open")
 
 	// Alice is the org owner.
-	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
-	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	aliceToken := cookieValue(aliceLoginResp, "access_token")
 
 	// Bob is a member of Alice's org.
-	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password456")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
 	bobUserID, _ := uuid.Parse(bobReg.UserID)
 	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "member"); err != nil {
 		t.Fatalf("add Bob: %v", err)
 	}
-	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password456")
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
 	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
 	bobToken := cookieValue(bobLoginResp, "access_token")
 

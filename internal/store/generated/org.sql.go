@@ -40,9 +40,10 @@ func (q *Queries) CreateOrg(ctx context.Context, name string) (Organization, err
 	return i, err
 }
 
-const createOrgInvitation = `-- name: CreateOrgInvitation :exec
+const createOrgInvitation = `-- name: CreateOrgInvitation :one
 INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, org_id, email, role, token, created_by, expires_at, accepted_at, created_at
 `
 
 type CreateOrgInvitationParams struct {
@@ -54,8 +55,8 @@ type CreateOrgInvitationParams struct {
 	ExpiresAt time.Time
 }
 
-func (q *Queries) CreateOrgInvitation(ctx context.Context, arg CreateOrgInvitationParams) error {
-	_, err := q.db.ExecContext(ctx, createOrgInvitation,
+func (q *Queries) CreateOrgInvitation(ctx context.Context, arg CreateOrgInvitationParams) (OrgInvitation, error) {
+	row := q.db.QueryRowContext(ctx, createOrgInvitation,
 		arg.OrgID,
 		arg.Email,
 		arg.Role,
@@ -63,7 +64,19 @@ func (q *Queries) CreateOrgInvitation(ctx context.Context, arg CreateOrgInvitati
 		arg.CreatedBy,
 		arg.ExpiresAt,
 	)
-	return err
+	var i OrgInvitation
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.Role,
+		&i.Token,
+		&i.CreatedBy,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const createOrgMember = `-- name: CreateOrgMember :exec

@@ -537,3 +537,379 @@ func TestRemoveMember_SoleOwner(t *testing.T) {
 		t.Errorf("got %d, want 403", resp.StatusCode)
 	}
 }
+
+// ── Invitation tests ──────────────────────────────────────────────────────────
+
+// doCreateInvitation calls POST /api/v1/orgs/{orgID}/invitations.
+func doCreateInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, email, role string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"email":%q,"role":%q}`, email, role)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/invitations", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("create invitation request: %v", err)
+	}
+	return resp
+}
+
+// doListInvitations calls GET /api/v1/orgs/{orgID}/invitations.
+func doListInvitations(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/orgs/"+orgID+"/invitations", nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("list invitations request: %v", err)
+	}
+	return resp
+}
+
+// doCancelInvitation calls DELETE /api/v1/orgs/{orgID}/invitations/{id}.
+func doCancelInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, invID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/invitations/"+invID, nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("cancel invitation request: %v", err)
+	}
+	return resp
+}
+
+// doGetInvitation calls GET /api/v1/auth/invitations/{token} (public).
+func doGetInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, token string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/invitations/"+token, nil)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("get invitation request: %v", err)
+	}
+	return resp
+}
+
+// doAcceptInvitation calls POST /api/v1/auth/invitations/{token}/accept.
+func doAcceptInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, token string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/invitations/"+token+"/accept", nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("accept invitation request: %v", err)
+	}
+	return resp
+}
+
+// TestCreateInvitation_Success verifies that POST /invitations returns 202.
+func TestCreateInvitation_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", resp.StatusCode)
+	}
+
+	var body struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Email != "bob@example.com" {
+		t.Errorf("email = %q, want bob@example.com", body.Email)
+	}
+	if body.Role != "member" {
+		t.Errorf("role = %q, want member", body.Role)
+	}
+	if body.ID == "" {
+		t.Error("id is empty")
+	}
+}
+
+// TestCreateInvitation_AsViewer verifies that a viewer cannot create invitations.
+func TestCreateInvitation_AsViewer(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateInvitation(t, ctx, ts, bobToken, aliceReg.OrgID, "carol@example.com", "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("got %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestListInvitations_Success verifies that GET /invitations returns pending invitations.
+func TestListInvitations_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Create an invitation.
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+
+	resp := doListInvitations(t, ctx, ts, aliceToken, aliceReg.OrgID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list invitations: got %d, want 200", resp.StatusCode)
+	}
+
+	var items []struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("len = %d, want 1", len(items))
+	}
+	if items[0].Email != "bob@example.com" {
+		t.Errorf("email = %q, want bob@example.com", items[0].Email)
+	}
+}
+
+// TestCancelInvitation_Success verifies that DELETE /invitations/{id} cancels and returns 204.
+func TestCancelInvitation_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Create an invitation.
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var inv struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&inv); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	resp := doCancelInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, inv.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("cancel invitation: got %d, want 204", resp.StatusCode)
+	}
+
+	// Verify invitation is gone from the list.
+	listResp := doListInvitations(t, ctx, ts, aliceToken, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	var items []struct{ ID string }
+	if err := json.NewDecoder(listResp.Body).Decode(&items); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("len = %d, want 0 after cancel", len(items))
+	}
+}
+
+// TestGetInvitation_Success verifies that GET /auth/invitations/{token} returns org name + role.
+func TestGetInvitation_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Create invitation and get the token from the DB.
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "viewer")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations from DB: err=%v, len=%d", err, len(invitations))
+	}
+	token := invitations[0].Token
+
+	resp := doGetInvitation(t, ctx, ts, token)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get invitation: got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		OrgName   string `json:"org_name"`
+		Role      string `json:"role"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Role != "viewer" {
+		t.Errorf("role = %q, want viewer", body.Role)
+	}
+	if body.OrgName == "" {
+		t.Error("org_name is empty")
+	}
+	if body.ExpiresAt == "" {
+		t.Error("expires_at is empty")
+	}
+}
+
+// TestGetInvitation_NotFound verifies GET /auth/invitations/{token} returns 404 for unknown tokens.
+func TestGetInvitation_NotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	resp := doGetInvitation(t, ctx, ts, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestAcceptInvitation_Success verifies POST /auth/invitations/{token}/accept joins the org.
+func TestAcceptInvitation_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+
+	// Alice creates an invitation for bob.
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+
+	// Get the token from DB.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations from DB: err=%v, len=%d", err, len(invitations))
+	}
+	invToken := invitations[0].Token
+
+	// Bob accepts.
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	resp := doAcceptInvitation(t, ctx, ts, bobToken, invToken)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("accept invitation: got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify bob is now in Alice's org.
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	role, err := db.GetOrgMemberRole(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if role == nil || *role != "member" {
+		t.Errorf("role = %v, want member", role)
+	}
+}
+
+// TestAcceptInvitation_Idempotent verifies that accepting an already-joined invitation is a no-op.
+func TestAcceptInvitation_Idempotent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations from DB: err=%v, len=%d", err, len(invitations))
+	}
+	invToken := invitations[0].Token
+
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	// First accept.
+	resp1 := doAcceptInvitation(t, ctx, ts, bobToken, invToken)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first accept: got %d, want 200", resp1.StatusCode)
+	}
+
+	// Second accept — bob is already a member, should still return 200.
+	resp2 := doAcceptInvitation(t, ctx, ts, bobToken, invToken)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("second accept: got %d, want 200 (idempotent)", resp2.StatusCode)
+	}
+
+	// Verify bob is still in Alice's org with the correct role.
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	role, err := db.GetOrgMemberRole(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if role == nil || *role != "member" {
+		t.Errorf("role = %v, want member", role)
+	}
+}

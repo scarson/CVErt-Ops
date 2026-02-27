@@ -178,7 +178,7 @@ func TestCreateOrgInvitation_AcceptFlow(t *testing.T) {
 
 	token := "abc123token"
 	expires := time.Now().Add(48 * time.Hour)
-	err := s.CreateOrgInvitation(ctx, org.ID, "newbie@example.com", "member", token, admin.ID, expires)
+	_, err := s.CreateOrgInvitation(ctx, org.ID, "newbie@example.com", "member", token, admin.ID, expires)
 	if err != nil {
 		t.Fatalf("CreateOrgInvitation: %v", err)
 	}
@@ -216,11 +216,11 @@ func TestListOrgInvitations_ExpiryFiltering(t *testing.T) {
 	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
 
 	// Active invitation.
-	_ = s.CreateOrgInvitation(ctx, org.ID, "active@example.com", "member",
+	_, _ = s.CreateOrgInvitation(ctx, org.ID, "active@example.com", "member",
 		"activetoken", admin.ID, time.Now().Add(48*time.Hour))
 
 	// Expired invitation (expires in the past).
-	_ = s.CreateOrgInvitation(ctx, org.ID, "expired@example.com", "member",
+	_, _ = s.CreateOrgInvitation(ctx, org.ID, "expired@example.com", "member",
 		"expiredtoken", admin.ID, time.Now().Add(-1*time.Hour))
 
 	list, err := s.ListOrgInvitations(ctx, org.ID)

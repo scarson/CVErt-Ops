@@ -156,19 +156,20 @@ func (s *Store) GetOrgOwnerCount(ctx context.Context, orgID uuid.UUID) (int64, e
 	return n, nil
 }
 
-// CreateOrgInvitation inserts an invitation record.
-func (s *Store) CreateOrgInvitation(ctx context.Context, orgID uuid.UUID, email, role, token string, createdBy uuid.UUID, expiresAt time.Time) error {
-	if err := s.q.CreateOrgInvitation(ctx, generated.CreateOrgInvitationParams{
+// CreateOrgInvitation inserts an invitation record and returns it.
+func (s *Store) CreateOrgInvitation(ctx context.Context, orgID uuid.UUID, email, role, token string, createdBy uuid.UUID, expiresAt time.Time) (*generated.OrgInvitation, error) {
+	row, err := s.q.CreateOrgInvitation(ctx, generated.CreateOrgInvitationParams{
 		OrgID:     orgID,
 		Email:     email,
 		Role:      role,
 		Token:     token,
 		CreatedBy: createdBy,
 		ExpiresAt: expiresAt,
-	}); err != nil {
-		return fmt.Errorf("create org invitation: %w", err)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create org invitation: %w", err)
 	}
-	return nil
+	return &row, nil
 }
 
 // GetInvitationByToken returns the invitation for the given token, or (nil, nil) if not found.
@@ -182,6 +183,21 @@ func (s *Store) GetInvitationByToken(ctx context.Context, token string) (*genera
 		return nil, fmt.Errorf("get invitation by token: %w", err)
 	}
 	return &row, nil
+}
+
+// AcceptOrgInvitation atomically creates an org_members row and marks the invitation accepted.
+// Uses RLS bypass since the caller has no org context yet (they are joining the org).
+func (s *Store) AcceptOrgInvitation(ctx context.Context, orgID, userID uuid.UUID, role string, invitationID uuid.UUID) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+			Role:   role,
+		}); err != nil {
+			return fmt.Errorf("create org member: %w", err)
+		}
+		return q.AcceptInvitation(ctx, invitationID)
+	})
 }
 
 // AcceptInvitation marks the invitation as accepted by setting accepted_at = now().

@@ -520,6 +520,106 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	return &changePasswordOutput{}, nil
 }
 
+// ── Invitations (public + authenticated) ──────────────────────────────────────
+
+// getInvitationInput reads the token path parameter.
+type getInvitationInput struct {
+	Token string `path:"token" doc:"Invitation token"`
+}
+
+// getInvitationOutput is the response for GET /auth/invitations/{token}.
+// Returns org name, role, and expiry. Does NOT expose org_id or email.
+type getInvitationOutput struct {
+	Body struct {
+		OrgName   string `json:"org_name"`
+		Role      string `json:"role"`
+		ExpiresAt string `json:"expires_at"`
+	}
+}
+
+// getInvitationHandler handles GET /api/v1/auth/invitations/{token}.
+// Public endpoint — no authentication required.
+func (srv *Server) getInvitationHandler(ctx context.Context, input *getInvitationInput) (*getInvitationOutput, error) {
+	inv, err := srv.store.GetInvitationByToken(ctx, input.Token)
+	if err != nil {
+		slog.ErrorContext(ctx, "get invitation", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if inv == nil {
+		return nil, huma.Error404NotFound("invitation not found")
+	}
+	if time.Now().After(inv.ExpiresAt) || inv.AcceptedAt.Valid {
+		return nil, huma.NewError(http.StatusGone, "invitation has expired or has already been used")
+	}
+
+	org, err := srv.store.GetOrgByID(ctx, inv.OrgID)
+	if err != nil || org == nil {
+		slog.ErrorContext(ctx, "get invitation org", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	out := &getInvitationOutput{}
+	out.Body.OrgName = org.Name
+	out.Body.Role = inv.Role
+	out.Body.ExpiresAt = inv.ExpiresAt.Format(time.RFC3339)
+	return out, nil
+}
+
+// acceptInvitationInput reads the token path parameter and access_token cookie.
+type acceptInvitationInput struct {
+	Token       string `path:"token"        doc:"Invitation token"`
+	AccessToken string `cookie:"access_token" doc:"Access token cookie"`
+}
+
+// acceptInvitationOutput has no body — 200 on success.
+type acceptInvitationOutput struct{}
+
+// acceptInvitationHandler handles POST /api/v1/auth/invitations/{token}/accept.
+// Requires authentication. Idempotent — if the caller is already a member, returns 200.
+func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInvitationInput) (*acceptInvitationOutput, error) {
+	if input.AccessToken == "" {
+		return nil, huma.Error401Unauthorized("authentication required")
+	}
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	if err != nil {
+		return nil, huma.Error401Unauthorized("invalid or expired access token")
+	}
+
+	inv, err := srv.store.GetInvitationByToken(ctx, input.Token)
+	if err != nil {
+		slog.ErrorContext(ctx, "accept invitation: get", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if inv == nil {
+		return nil, huma.Error404NotFound("invitation not found")
+	}
+	if time.Now().After(inv.ExpiresAt) {
+		return nil, huma.NewError(http.StatusGone, "invitation has expired")
+	}
+
+	// Idempotency: if the caller is already a member, return success immediately.
+	currentRole, err := srv.store.GetOrgMemberRole(ctx, inv.OrgID, claims.UserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "accept invitation: check membership", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if currentRole != nil {
+		return &acceptInvitationOutput{}, nil
+	}
+
+	// Invitation already accepted by someone else.
+	if inv.AcceptedAt.Valid {
+		return nil, huma.NewError(http.StatusGone, "invitation has already been used")
+	}
+
+	if err := srv.store.AcceptOrgInvitation(ctx, inv.OrgID, claims.UserID, inv.Role, inv.ID); err != nil {
+		slog.ErrorContext(ctx, "accept invitation: accept", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	return &acceptInvitationOutput{}, nil
+}
+
 // ── Route registration ────────────────────────────────────────────────────────
 
 // registerAuthRoutes registers all auth-related routes on the huma API.
@@ -576,4 +676,21 @@ func registerAuthRoutes(api huma.API, srv *Server) {
 		Summary:       "Change the authenticated user's password",
 		DefaultStatus: http.StatusOK,
 	}, srv.changePasswordHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-invitation",
+		Method:      http.MethodGet,
+		Path:        "/auth/invitations/{token}",
+		Tags:        []string{"auth"},
+		Summary:     "Get invitation details (public)",
+	}, srv.getInvitationHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "accept-invitation",
+		Method:        http.MethodPost,
+		Path:          "/auth/invitations/{token}/accept",
+		Tags:          []string{"auth"},
+		Summary:       "Accept an invitation and join the org",
+		DefaultStatus: http.StatusOK,
+	}, srv.acceptInvitationHandler)
 }

@@ -96,6 +96,13 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/{user_id}", srv.updateMemberRoleHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeMemberHandler)
 			})
+
+			// Invitation management
+			r.Route("/invitations", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createInvitationHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.listInvitationsHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{id}", srv.cancelInvitationHandler)
+			})
 		})
 	})
 

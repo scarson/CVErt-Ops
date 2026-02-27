@@ -39,9 +39,10 @@ ORDER BY o.name;
 -- name: GetOrgOwnerCount :one
 SELECT COUNT(*) FROM org_members WHERE org_id = $1 AND role = 'owner';
 
--- name: CreateOrgInvitation :exec
+-- name: CreateOrgInvitation :one
 INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6);
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;
 
 -- name: GetInvitationByToken :one
 SELECT * FROM org_invitations WHERE token = $1 LIMIT 1;

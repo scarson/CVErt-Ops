@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +83,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
+	}
+	if err := validateConfig(cfg); err != nil {
+		return err
 	}
 
 	logger := newLogger(cfg)
@@ -167,6 +171,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
+	}
+	if err := validateConfig(cfg); err != nil {
+		return err
 	}
 
 	logger := newLogger(cfg)
@@ -360,6 +367,18 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	return db, nil
+}
+
+// validateConfig enforces startup invariants that environment parsing cannot express:
+// JWT_SECRET minimum length and HTTPS requirement for EXTERNAL_URL outside development.
+func validateConfig(cfg *config.Config) error {
+	if len(cfg.JWTSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be at least 32 bytes (got %d)", len(cfg.JWTSecret))
+	}
+	if !cfg.IsDevelopment() && !strings.HasPrefix(cfg.ExternalURL, "https://") {
+		return fmt.Errorf("EXTERNAL_URL must use https:// in non-development environments (got %q)", cfg.ExternalURL)
+	}
+	return nil
 }
 
 // expectedSchemaVersion is the database migration version this binary requires.

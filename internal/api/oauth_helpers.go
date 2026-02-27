@@ -4,6 +4,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -49,7 +50,7 @@ func (srv *Server) validateStateCookie(r *http.Request, w http.ResponseWriter, s
 		MaxAge:   -1,
 		Path:     "/",
 	})
-	if cookie.Value != stateParam {
+	if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(stateParam)) != 1 {
 		return errors.New("oauth_state mismatch")
 	}
 	return nil

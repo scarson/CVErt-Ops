@@ -91,8 +91,8 @@ func clearAuthCookies(secure bool) []string {
 // registerInput is the request body for POST /auth/register.
 type registerInput struct {
 	Body struct {
-		Email       string `json:"email"        format:"email" doc:"User email address"`
-		Password    string `json:"password"     minLength:"8"  doc:"Password (min 8 characters)"`
+		Email       string `json:"email"        format:"email" maxLength:"254"  doc:"User email address"`
+		Password    string `json:"password"     minLength:"8"  maxLength:"1024" doc:"Password (min 8 characters)"`
 		DisplayName string `json:"display_name,omitempty"       doc:"Display name (optional)"`
 	}
 }
@@ -183,8 +183,8 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 // loginInput is the request body for POST /auth/login.
 type loginInput struct {
 	Body struct {
-		Email    string `json:"email"    format:"email" doc:"User email"`
-		Password string `json:"password" minLength:"8"  doc:"Password"`
+		Email    string `json:"email"    format:"email" maxLength:"254"  doc:"User email"`
+		Password string `json:"password" minLength:"8"  maxLength:"1024" doc:"Password"`
 	}
 }
 
@@ -457,8 +457,8 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 type changePasswordInput struct {
 	AccessToken string `cookie:"access_token" doc:"Access token cookie"`
 	Body        struct {
-		CurrentPassword string `json:"current_password" minLength:"1" doc:"Current password"`
-		NewPassword     string `json:"new_password"     minLength:"8" doc:"New password (min 8 characters)"`
+		CurrentPassword string `json:"current_password" minLength:"1"  maxLength:"1024" doc:"Current password"`
+		NewPassword     string `json:"new_password"     minLength:"8"  maxLength:"1024" doc:"New password (min 8 characters)"`
 	}
 }
 

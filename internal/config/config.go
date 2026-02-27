@@ -6,6 +6,7 @@
 package config
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -99,4 +100,32 @@ func Load() (*Config, error) {
 // IsDevelopment reports whether the application is running in development mode.
 func (c *Config) IsDevelopment() bool {
 	return c.AppEnv == "development"
+}
+
+// LogValue implements slog.LogValuer, masking credential fields so that
+// logging a *Config never leaks secrets into log output.
+func (c *Config) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("listen_addr", c.ListenAddr),
+		slog.String("app_env", c.AppEnv),
+		slog.String("external_url", c.ExternalURL),
+		slog.Bool("cookie_secure", c.CookieSecure),
+		slog.String("registration_mode", c.RegistrationMode),
+		slog.String("jwt_secret", masked(c.JWTSecret)),
+		slog.String("github_client_id", c.GitHubClientID),
+		slog.String("github_client_secret", masked(c.GitHubClientSecret)),
+		slog.String("google_client_id", c.GoogleClientID),
+		slog.String("google_client_secret", masked(c.GoogleClientSecret)),
+		slog.String("smtp_password", masked(c.SMTPPassword)),
+		slog.String("gemini_api_key", masked(c.GeminiAPIKey)),
+		slog.String("nvd_api_key", masked(c.NVDAPIKey)),
+	)
+}
+
+// masked returns "***" if s is non-empty, otherwise "".
+func masked(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "***"
 }

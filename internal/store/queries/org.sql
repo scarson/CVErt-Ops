@@ -4,6 +4,10 @@
 -- name: CreateOrg :one
 INSERT INTO organizations (name) VALUES ($1) RETURNING *;
 
+-- name: UpdateOrg :one
+UPDATE organizations SET name = $2 WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
 -- name: GetOrgByID :one
 SELECT * FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 

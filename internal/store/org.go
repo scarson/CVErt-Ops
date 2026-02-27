@@ -23,6 +23,40 @@ func (s *Store) CreateOrg(ctx context.Context, name string) (*generated.Organiza
 	return &row, nil
 }
 
+// UpdateOrg updates the org name. Returns (nil, nil) if the org is not found or soft-deleted.
+func (s *Store) UpdateOrg(ctx context.Context, id uuid.UUID, name string) (*generated.Organization, error) {
+	row, err := s.q.UpdateOrg(ctx, generated.UpdateOrgParams{ID: id, Name: name})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update org: %w", err)
+	}
+	return &row, nil
+}
+
+// CreateOrgWithOwner atomically creates a new org and adds ownerID as owner.
+// Uses RLS bypass since no org context exists at creation time.
+func (s *Store) CreateOrgWithOwner(ctx context.Context, name string, ownerID uuid.UUID) (*generated.Organization, error) {
+	var org generated.Organization
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		created, err := q.CreateOrg(ctx, name)
+		if err != nil {
+			return fmt.Errorf("create org: %w", err)
+		}
+		org = created
+		return q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
+			OrgID:  org.ID,
+			UserID: ownerID,
+			Role:   "owner",
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &org, nil
+}
+
 // GetOrgByID returns the org with the given ID, or (nil, nil) if not found or soft-deleted.
 func (s *Store) GetOrgByID(ctx context.Context, id uuid.UUID) (*generated.Organization, error) {
 	row, err := s.q.GetOrgByID(ctx, id)

@@ -167,13 +167,9 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	// Bootstrap a default org for the first user in open mode.
 	if priorCount == 0 {
 		orgName := displayName + "'s Organization"
-		org, err := srv.store.CreateOrg(ctx, orgName)
+		org, err := srv.store.CreateOrgWithOwner(ctx, orgName, user.ID)
 		if err != nil {
 			slog.ErrorContext(ctx, "register: create org", "error", err)
-			return nil, huma.Error500InternalServerError("internal error")
-		}
-		if err := srv.store.CreateOrgMember(ctx, org.ID, user.ID, "owner"); err != nil {
-			slog.ErrorContext(ctx, "register: create org member", "error", err)
 			return nil, huma.Error500InternalServerError("internal error")
 		}
 		out.Body.OrgID = org.ID.String()

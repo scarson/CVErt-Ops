@@ -80,6 +80,18 @@ func (srv *Server) Handler() http.Handler {
 	registerAuthRoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
+	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
+	apiRouter.Route("/orgs", func(r chi.Router) {
+		r.Use(srv.RequireAuthenticated())
+		r.Post("/", srv.createOrgHandler)
+
+		r.Route("/{org_id}", func(r chi.Router) {
+			r.Use(srv.RequireOrgRole(RoleViewer))
+			r.Get("/", srv.getOrgHandler)
+			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
+		})
+	})
+
 	r.Mount("/api/v1", apiRouter)
 
 	return r

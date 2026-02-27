@@ -296,6 +296,28 @@ func (q *Queries) ListUserOrgs(ctx context.Context, userID uuid.UUID) ([]ListUse
 	return items, nil
 }
 
+const updateOrg = `-- name: UpdateOrg :one
+UPDATE organizations SET name = $2 WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, created_at, deleted_at
+`
+
+type UpdateOrgParams struct {
+	ID   uuid.UUID
+	Name string
+}
+
+func (q *Queries) UpdateOrg(ctx context.Context, arg UpdateOrgParams) (Organization, error) {
+	row := q.db.QueryRowContext(ctx, updateOrg, arg.ID, arg.Name)
+	var i Organization
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const updateOrgMemberRole = `-- name: UpdateOrgMemberRole :exec
 UPDATE org_members SET role = $3, updated_at = now()
 WHERE org_id = $1 AND user_id = $2

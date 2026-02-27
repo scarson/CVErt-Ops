@@ -89,6 +89,13 @@ func (srv *Server) Handler() http.Handler {
 			r.Use(srv.RequireOrgRole(RoleViewer))
 			r.Get("/", srv.getOrgHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
+
+			// Member management
+			r.Route("/members", func(r chi.Router) {
+				r.Get("/", srv.listMembersHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/{user_id}", srv.updateMemberRoleHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeMemberHandler)
+			})
 		})
 	})
 

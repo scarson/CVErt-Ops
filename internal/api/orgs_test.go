@@ -1,4 +1,4 @@
-// ABOUTME: Integration tests for org management API: create, read, update.
+// ABOUTME: Integration tests for org management API: create, read, update, members, invitations.
 // ABOUTME: Uses real Postgres via testutil.NewTestDB and the full srv.Handler() stack.
 package api
 
@@ -249,6 +249,289 @@ func TestUpdateOrg_AsViewer(t *testing.T) {
 	bobToken := cookieValue(loginResp, "access_token")
 
 	resp := doUpdateOrg(t, ctx, ts, bobToken, aliceReg.OrgID, "Hacked")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("got %d, want 403", resp.StatusCode)
+	}
+}
+
+// ── Member management tests ───────────────────────────────────────────────────
+
+// doListMembers calls GET /api/v1/orgs/{orgID}/members.
+func doListMembers(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/orgs/"+orgID+"/members", nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("list members request: %v", err)
+	}
+	return resp
+}
+
+// doUpdateMemberRole calls PATCH /api/v1/orgs/{orgID}/members/{userID}.
+func doUpdateMemberRole(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, userID, role string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"role":%q}`, role)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID+"/members/"+userID, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("update member role request: %v", err)
+	}
+	return resp
+}
+
+// doRemoveMember calls DELETE /api/v1/orgs/{orgID}/members/{userID}.
+func doRemoveMember(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, userID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, ts.URL+"/api/v1/orgs/"+orgID+"/members/"+userID, nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("remove member request: %v", err)
+	}
+	return resp
+}
+
+// TestListMembers_Success verifies that GET /members returns 200 with a member list.
+func TestListMembers_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doListMembers(t, ctx, ts, accessToken, aliceReg.OrgID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list members: got %d, want 200", resp.StatusCode)
+	}
+
+	var members []struct {
+		UserID string `json:"user_id"`
+		Role   string `json:"role"`
+		Email  string `json:"email"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&members); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("len(members) = %d, want 1", len(members))
+	}
+	if members[0].UserID != aliceReg.UserID {
+		t.Errorf("user_id = %q, want %q", members[0].UserID, aliceReg.UserID)
+	}
+	if members[0].Role != "owner" {
+		t.Errorf("role = %q, want owner", members[0].Role)
+	}
+}
+
+// TestListMembers_NotMember verifies that GET /members returns 403 for non-members.
+func TestListMembers_NotMember(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	doRegister(t, ctx, ts, "bob@example.com", "password123")
+
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(loginResp, "access_token")
+
+	resp := doListMembers(t, ctx, ts, bobToken, aliceReg.OrgID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("got %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestUpdateMemberRole_Success verifies that PATCH /members/{user_id} updates
+// the role and returns 200.
+func TestUpdateMemberRole_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doUpdateMemberRole(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID, "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update role: got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify role was updated in DB.
+	role, err := db.GetOrgMemberRole(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if role == nil || *role != "member" {
+		t.Errorf("role = %v, want member", role)
+	}
+}
+
+// TestUpdateMemberRole_CannotAssignOwner verifies that PATCH cannot assign the
+// "owner" role (ownership transfer uses a separate endpoint).
+func TestUpdateMemberRole_CannotAssignOwner(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doUpdateMemberRole(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID, "owner")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestUpdateMemberRole_CannotChangeExistingOwner verifies that PATCH on a
+// member who is already an owner returns 403.
+func TestUpdateMemberRole_CannotChangeExistingOwner(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// alice is auto-bootstrapped as owner; she tries to demote herself.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doUpdateMemberRole(t, ctx, ts, aliceToken, aliceReg.OrgID, aliceReg.UserID, "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("got %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestUpdateMemberRole_CannotExceedCallerRole verifies that a caller cannot
+// assign a role higher than their own effective role.
+func TestUpdateMemberRole_CannotExceedCallerRole(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	carolReg := doRegister(t, ctx, ts, "carol@example.com", "password123")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	carolUserID, _ := uuid.Parse(carolReg.UserID)
+	// bob is admin, carol is viewer
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "admin"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, orgID, carolUserID, "viewer"); err != nil {
+		t.Fatalf("add carol: %v", err)
+	}
+
+	// Login as bob (admin); try to promote carol to "admin" (equal — OK), then "owner" (blocked)
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(loginResp, "access_token")
+
+	// Admin can promote to member (≤ admin).
+	resp := doUpdateMemberRole(t, ctx, ts, bobToken, aliceReg.OrgID, carolReg.UserID, "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("promote to member: got %d, want 200", resp.StatusCode)
+	}
+
+	// Admin cannot promote to owner (> admin) — "owner" is rejected at the bad-role check.
+	resp2 := doUpdateMemberRole(t, ctx, ts, bobToken, aliceReg.OrgID, carolReg.UserID, "owner")
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("promote to owner: got %d, want 400", resp2.StatusCode)
+	}
+}
+
+// TestRemoveMember_Success verifies that DELETE /members/{user_id} removes the
+// member and returns 204.
+func TestRemoveMember_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "password123")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doRemoveMember(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove member: got %d, want 204", resp.StatusCode)
+	}
+
+	// Verify bob is no longer a member.
+	role, err := db.GetOrgMemberRole(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if role != nil {
+		t.Errorf("bob still has role %q, want not a member", *role)
+	}
+}
+
+// TestRemoveMember_SoleOwner verifies that DELETE /members/{user_id} returns 403
+// when the target is the sole owner.
+func TestRemoveMember_SoleOwner(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "password123")
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "password123")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Alice tries to remove herself (sole owner).
+	resp := doRemoveMember(t, ctx, ts, aliceToken, aliceReg.OrgID, aliceReg.UserID)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("got %d, want 403", resp.StatusCode)

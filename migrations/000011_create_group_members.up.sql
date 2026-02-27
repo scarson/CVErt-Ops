@@ -2,7 +2,7 @@
 -- ABOUTME: Creates group_members join table with denormalized org_id for RLS.
 -- ABOUTME: org_id must be denormalized — RLS on groups does NOT protect group_members.
 
-CREATE TABLE group_members (
+CREATE TABLE IF NOT EXISTS group_members (
     id         uuid        NOT NULL DEFAULT gen_random_uuid(),
     org_id     uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     group_id   uuid        NOT NULL REFERENCES groups(id) ON DELETE CASCADE,

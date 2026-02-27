@@ -2,7 +2,7 @@
 -- ABOUTME: Creates org_members join table (user ↔ org role assignments).
 -- ABOUTME: First org-scoped table: includes full RLS policy (PLAN.md §6.2).
 
-CREATE TABLE org_members (
+CREATE TABLE IF NOT EXISTS org_members (
     org_id     uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     user_id    uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role       text        NOT NULL,  -- 'owner', 'admin', 'member', 'viewer'

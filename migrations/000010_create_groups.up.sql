@@ -2,7 +2,7 @@
 -- ABOUTME: Creates the groups table for org-scoped user collections.
 -- ABOUTME: Used for notification routing and watchlist ownership. Soft-deletable.
 
-CREATE TABLE groups (
+CREATE TABLE IF NOT EXISTS groups (
     id          uuid        NOT NULL DEFAULT gen_random_uuid(),
     org_id      uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name        text        NOT NULL,

@@ -2,7 +2,7 @@
 -- ABOUTME: Creates users and user_identities tables.
 -- ABOUTME: Global tables — no RLS (not org-scoped).
 
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id                    uuid        NOT NULL DEFAULT gen_random_uuid(),
     email                 text        NOT NULL,
     display_name          text        NOT NULL DEFAULT '',
@@ -19,7 +19,7 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS users_email_uq ON users (email);
 
 -- user_identities links users to OAuth providers (or native auth).
 -- Matched on (provider, provider_user_id) — NEVER by email alone.
-CREATE TABLE user_identities (
+CREATE TABLE IF NOT EXISTS user_identities (
     id               uuid        NOT NULL DEFAULT gen_random_uuid(),
     user_id          uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider         text        NOT NULL,  -- 'github', 'google', 'native'

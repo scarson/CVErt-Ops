@@ -2,7 +2,7 @@
 -- ABOUTME: Creates the organizations table (tenant containers).
 -- ABOUTME: Global table — no RLS (orgs are the tenants, not org-scoped rows).
 
-CREATE TABLE organizations (
+CREATE TABLE IF NOT EXISTS organizations (
     id          uuid        NOT NULL DEFAULT gen_random_uuid(),
     name        text        NOT NULL,
     created_at  timestamptz NOT NULL DEFAULT now(),

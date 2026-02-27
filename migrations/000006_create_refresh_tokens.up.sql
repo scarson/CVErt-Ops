@@ -2,7 +2,7 @@
 -- ABOUTME: Creates the refresh_tokens table for stateful JTI-based token tracking.
 -- ABOUTME: Enables theft detection via the reuse + grace-window pattern (PLAN.md §7.1).
 
-CREATE TABLE refresh_tokens (
+CREATE TABLE IF NOT EXISTS refresh_tokens (
     jti              uuid        NOT NULL,
     user_id          uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_version    int         NOT NULL,   -- must match users.token_version at validation

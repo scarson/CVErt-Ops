@@ -2,7 +2,7 @@
 -- ABOUTME: Creates org_invitations for email-based member invitation flow.
 -- ABOUTME: No RLS — accept endpoint is public, admin endpoints enforce RBAC at handler level.
 
-CREATE TABLE org_invitations (
+CREATE TABLE IF NOT EXISTS org_invitations (
     id          uuid        NOT NULL DEFAULT gen_random_uuid(),
     org_id      uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     email       text        NOT NULL,

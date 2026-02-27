@@ -2,7 +2,7 @@
 -- ABOUTME: Creates api_keys table for machine-to-machine authentication.
 -- ABOUTME: Stores only sha256(raw_key) — never the raw key. RLS on org_id.
 
-CREATE TABLE api_keys (
+CREATE TABLE IF NOT EXISTS api_keys (
     id                  uuid        NOT NULL DEFAULT gen_random_uuid(),
     org_id              uuid        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     created_by_user_id  uuid        NOT NULL REFERENCES users(id),

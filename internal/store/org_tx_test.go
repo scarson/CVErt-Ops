@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -97,5 +98,66 @@ func TestWorkerTx_BypassRLS(t *testing.T) {
 	}
 	if count != 2 {
 		t.Errorf("WorkerTx bypass: visible members = %d, want 2 (should see both orgs)", count)
+	}
+}
+
+// TestListOrgMembers_AppStoreRLS verifies that ListOrgMembers returns the correct
+// rows when called via AppStore (NOBYPASSRLS). Without withOrgTx, no app.org_id
+// is set, so RLS filters all rows and the result is empty.
+func TestListOrgMembers_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "RLSOrg4")
+	user, _ := s.CreateUser(ctx, "rlsuser4@example.com", "RLSUser4", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "member")
+
+	members, err := s.AppStore.ListOrgMembers(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListOrgMembers: %v", err)
+	}
+	if len(members) != 1 {
+		t.Errorf("ListOrgMembers: got %d members, want 1 — RLS not enforcing org context", len(members))
+	}
+}
+
+// TestCreateGroup_AppStoreRLS verifies that CreateGroup succeeds when called
+// via AppStore. Without withOrgTx, the INSERT's WITH CHECK clause fails because
+// app.org_id is not set, returning an RLS policy violation error.
+func TestCreateGroup_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "RLSOrg5")
+
+	group, err := s.AppStore.CreateGroup(ctx, org.ID, "alpha", "")
+	if err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	if group == nil {
+		t.Fatal("CreateGroup: returned nil group, want non-nil")
+	}
+}
+
+// TestCreateAPIKey_AppStoreRLS verifies that CreateAPIKey succeeds when called
+// via AppStore. Without withOrgTx, the INSERT's WITH CHECK clause fails because
+// app.org_id is not set.
+func TestCreateAPIKey_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "RLSOrg6")
+	user, _ := s.CreateUser(ctx, "rlsuser6@example.com", "RLSUser6", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "member")
+
+	key, err := s.AppStore.CreateAPIKey(ctx, org.ID, user.ID, "testhash6", "test-key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	if key == nil {
+		t.Fatal("CreateAPIKey: returned nil key, want non-nil")
 	}
 }

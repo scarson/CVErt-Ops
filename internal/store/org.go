@@ -71,14 +71,16 @@ func (s *Store) GetOrgByID(ctx context.Context, id uuid.UUID) (*generated.Organi
 
 // CreateOrgMember adds a user to an org with the given role.
 func (s *Store) CreateOrgMember(ctx context.Context, orgID, userID uuid.UUID, role string) error {
-	if err := s.q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   role,
-	}); err != nil {
-		return fmt.Errorf("create org member: %w", err)
-	}
-	return nil
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+			Role:   role,
+		}); err != nil {
+			return fmt.Errorf("create org member: %w", err)
+		}
+		return nil
+	})
 }
 
 // GetOrgMemberRole returns the role of userID in orgID, or (nil, nil) if not a member.
@@ -107,53 +109,73 @@ func (s *Store) GetOrgMemberRole(ctx context.Context, orgID, userID uuid.UUID) (
 
 // ListOrgMembers returns all members of an org ordered by join time.
 func (s *Store) ListOrgMembers(ctx context.Context, orgID uuid.UUID) ([]generated.ListOrgMembersRow, error) {
-	rows, err := s.q.ListOrgMembers(ctx, orgID)
-	if err != nil {
-		return nil, fmt.Errorf("list org members: %w", err)
-	}
-	return rows, nil
+	var rows []generated.ListOrgMembersRow
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		rows, err = q.ListOrgMembers(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("list org members: %w", err)
+		}
+		return nil
+	})
+	return rows, err
 }
 
 // UpdateOrgMemberRole changes the role of userID in orgID.
 func (s *Store) UpdateOrgMemberRole(ctx context.Context, orgID, userID uuid.UUID, role string) error {
-	if err := s.q.UpdateOrgMemberRole(ctx, generated.UpdateOrgMemberRoleParams{
-		OrgID:  orgID,
-		UserID: userID,
-		Role:   role,
-	}); err != nil {
-		return fmt.Errorf("update org member role: %w", err)
-	}
-	return nil
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.UpdateOrgMemberRole(ctx, generated.UpdateOrgMemberRoleParams{
+			OrgID:  orgID,
+			UserID: userID,
+			Role:   role,
+		}); err != nil {
+			return fmt.Errorf("update org member role: %w", err)
+		}
+		return nil
+	})
 }
 
 // RemoveOrgMember removes userID from orgID.
 func (s *Store) RemoveOrgMember(ctx context.Context, orgID, userID uuid.UUID) error {
-	if err := s.q.DeleteOrgMember(ctx, generated.DeleteOrgMemberParams{
-		OrgID:  orgID,
-		UserID: userID,
-	}); err != nil {
-		return fmt.Errorf("remove org member: %w", err)
-	}
-	return nil
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.DeleteOrgMember(ctx, generated.DeleteOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+		}); err != nil {
+			return fmt.Errorf("remove org member: %w", err)
+		}
+		return nil
+	})
 }
 
 // ListUserOrgs returns all orgs a user belongs to, ordered by org name.
+// Uses RLS bypass — this is a cross-org query; no single orgID context applies.
 func (s *Store) ListUserOrgs(ctx context.Context, userID uuid.UUID) ([]generated.ListUserOrgsRow, error) {
-	rows, err := s.q.ListUserOrgs(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list user orgs: %w", err)
-	}
-	return rows, nil
+	var rows []generated.ListUserOrgsRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		rows, err = q.ListUserOrgs(ctx, userID)
+		if err != nil {
+			return fmt.Errorf("list user orgs: %w", err)
+		}
+		return nil
+	})
+	return rows, err
 }
 
 // GetOrgOwnerCount returns the number of owners in the given org.
 // Used to prevent removing the last owner.
 func (s *Store) GetOrgOwnerCount(ctx context.Context, orgID uuid.UUID) (int64, error) {
-	n, err := s.q.GetOrgOwnerCount(ctx, orgID)
-	if err != nil {
-		return 0, fmt.Errorf("get org owner count: %w", err)
-	}
-	return n, nil
+	var n int64
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.GetOrgOwnerCount(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("get org owner count: %w", err)
+		}
+		return nil
+	})
+	return n, err
 }
 
 // CreateOrgInvitation inserts an invitation record and returns it.

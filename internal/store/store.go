@@ -43,26 +43,6 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 // DB returns the stdlib-wrapped *sql.DB for use with sqlc Queries.WithTx.
 func (s *Store) DB() *sql.DB { return s.db }
 
-// withTx runs fn inside a database/sql transaction. The transaction is
-// committed if fn returns nil, rolled back otherwise.
-func (s *Store) withTx(ctx context.Context, fn func(*generated.Queries) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = tx.Rollback()
-			panic(p)
-		}
-	}()
-	if err := fn(s.q.WithTx(tx)); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	return tx.Commit()
-}
-
 // withBypassTx runs fn inside a database/sql transaction with RLS bypass enabled.
 // Use for auth-path queries (e.g., LookupAPIKey) that must execute without an
 // org context — the application enforces org membership separately.
@@ -81,6 +61,33 @@ func (s *Store) withBypassTx(ctx context.Context, fn func(*generated.Queries) er
 	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("set bypass_rls: %w", err)
+	}
+	if err := fn(s.q.WithTx(tx)); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// withOrgTx runs fn inside a database/sql transaction with app.org_id set to
+// orgID. Implements Layer 2 tenant isolation (PLAN.md §6.2) for store-level
+// org-scoped methods. SET LOCAL resets on commit or rollback — safe for pooled
+// connections. NOTE: SET LOCAL does not accept parameterized values; formatting
+// is safe because orgID is a typed uuid.UUID, not user-supplied text.
+func (s *Store) withOrgTx(ctx context.Context, orgID uuid.UUID, fn func(*generated.Queries) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin org tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL app.org_id = '%s'", orgID)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("set org_id: %w", err)
 	}
 	if err := fn(s.q.WithTx(tx)); err != nil {
 		_ = tx.Rollback()

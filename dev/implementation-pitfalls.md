@@ -744,6 +744,37 @@ if subtle.ConstantTimeCompare(incomingHash[:], storedHash[:]) == 1 {
 
 ---
 
+### 3.12 `bypassTx` / `workerTx` Called from API Handler — RLS Bypass from User-Controlled Request
+
+**The Flaw:** The dry-run evaluation path reused `bypassTx` (the worker transaction helper) because the evaluator needed to read org-scoped tables. This appeared correct — it let the query see rows — without noticing that `bypassTx` sets `SET LOCAL app.bypass_rls = 'on'`.
+
+**Why It Matters:** `bypassTx` is architecturally designated as worker-only. Calling it from an HTTP handler makes the handler's database queries bypass Row Level Security, running as if they have cross-tenant read access. If the alert rule ID in the URL belongs to a different org, the query succeeds and returns that org's data. The RBAC middleware checks that the authenticated user belongs to the org in the URL — but if the evaluator runs a `bypassTx`, it ignores `app.org_id` and can read rules from any org. This is a tenant isolation violation disguised as a query correctness fix.
+
+The failure mode is subtle: `bypassTx` works correctly in worker paths (no org context, intentionally cross-tenant). In an API handler, it appears to work — the query returns data — but it silently bypasses the second layer of defense.
+
+**The Fix:** API handlers that need to evaluate rules must use a different transaction:
+- **Standard org-scoped queries:** `withOrgTx` — sets `app.org_id = $orgID`, RLS enforced
+- **Read-only evaluation (dry-run):** `readTx` — opens `sql.TxOptions{ReadOnly: true}`, always defers ROLLBACK, never sets `bypass_rls`
+- **`bypassTx` / `workerTx`:** ONLY in background worker goroutines, NEVER in HTTP handler call stacks
+
+```go
+// readTx — safe for API dry-run and read-only evaluation paths.
+func (e *Evaluator) readTx(ctx context.Context, fn func(*sql.Tx) error) error {
+    tx, err := e.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+    if err != nil {
+        return fmt.Errorf("begin read tx: %w", err)
+    }
+    defer tx.Rollback() //nolint:errcheck
+    return fn(tx)
+}
+```
+
+The `readTx` helper intentionally omits `SET LOCAL app.org_id` — the RLS policy on org-scoped tables requires `app.org_id` to be set, so org-scoped queries return 0 rows (fail-closed) unless the caller has gone through `withOrgTx`. For evaluator reads that access global CVE tables (which have no RLS), `readTx` is sufficient.
+
+**The Lesson:** Worker transaction helpers that bypass RLS are a high-blast-radius footgun when called from HTTP handlers. Name them to make the restriction obvious (`workerTx`, `bypassTx`), and add a grep-based linter rule or code comment that documents they must never appear in the `internal/api/` call stack. When an evaluation function requires database access, ask: "which transaction helper is safe here?" and default to the most restricted option.
+
+---
+
 ## 4. Operational / UX Footguns
 
 ### 4.1 New-Rule Activation Scan Sends Outbound Notifications for Historical Data

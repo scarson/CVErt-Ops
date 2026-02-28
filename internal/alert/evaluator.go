@@ -34,18 +34,28 @@ type cveSummary struct {
 	Description  string // pre-lowercased for PostFilter matching
 }
 
+// Dispatcher dispatches notification delivery for newly created alert events.
+// Implemented by internal/notify.Dispatcher; nil disables delivery (tests, startup).
+type Dispatcher interface {
+	Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error
+}
+
 // Evaluator runs alert DSL rules against the CVE corpus across three evaluation paths.
 type Evaluator struct {
-	db    *sql.DB            // stdlib-wrapped pool; squirrel/pq.Array compatible
-	rules store.AlertRuleStore
-	cache *RuleCache
-	log   *slog.Logger
+	db         *sql.DB // stdlib-wrapped pool; squirrel/pq.Array compatible
+	rules      store.AlertRuleStore
+	cache      *RuleCache
+	log        *slog.Logger
+	dispatcher Dispatcher // nil = delivery disabled
 }
 
 // New creates an Evaluator. db must be the stdlib-wrapped pool from the same store used by rules.
 func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Logger) *Evaluator {
 	return &Evaluator{db: db, rules: rules, cache: cache, log: log}
 }
+
+// SetDispatcher injects the notification dispatcher.
+func (e *Evaluator) SetDispatcher(d Dispatcher) { e.dispatcher = d }
 
 // DryRunResult holds the output of a dry-run evaluation. No alert_events are written.
 type DryRunResult struct {
@@ -373,8 +383,15 @@ func (e *Evaluator) evaluateRule(
 	matchedIDs := make(map[string]bool, len(matched))
 	for _, m := range matched {
 		matchedIDs[m.CVEID] = true
-		if _, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery); err != nil {
+		eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
+		if err != nil {
 			return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
+		}
+		if e.dispatcher != nil && !suppressDelivery && eventID != uuid.Nil {
+			if fErr := e.dispatcher.Fanout(ctx, orgID, compiled.RuleID, m.CVEID); fErr != nil {
+				e.log.Error("fanout notification", "rule_id", compiled.RuleID, "cve_id", m.CVEID, "err", fErr)
+				// Do not return: alert_event is committed; log and continue.
+			}
 		}
 	}
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -529,5 +530,109 @@ func TestEvaluatorBatch(t *testing.T) {
 	// Still just 1 event (dedup from ON CONFLICT DO NOTHING, and cursor filters most CVEs)
 	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
 		t.Fatalf("want 1 alert_event after second batch, got %d", n)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// mockDispatcher records Fanout calls for assertion in evaluator tests.
+// The evaluator tests use a real DB but mock the dispatcher because Fanout's
+// delivery behavior is covered by the notify package tests.
+// ──────────────────────────────────────────────────────────────────────────────
+
+type mockDispatcher struct {
+	calls []struct {
+		orgID  uuid.UUID
+		ruleID uuid.UUID
+		cveID  string
+	}
+	mu sync.Mutex
+}
+
+func (m *mockDispatcher) Fanout(_ context.Context, orgID, ruleID uuid.UUID, cveID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, struct {
+		orgID  uuid.UUID
+		ruleID uuid.UUID
+		cveID  string
+	}{orgID, ruleID, cveID})
+	return nil
+}
+
+func TestEvaluateRealtime_FanoutCalledForNewEvent(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	disp := &mockDispatcher{}
+	ev.SetDispatcher(disp)
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	cveID := "CVE-FANOUT-NEW-001"
+	score := 8.5
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "fanout test", &score, "hashfanout1")
+
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+		t.Fatalf("EvaluateRealtime: %v", err)
+	}
+
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if len(disp.calls) != 1 {
+		t.Fatalf("want 1 Fanout call, got %d", len(disp.calls))
+	}
+	if disp.calls[0].cveID != cveID {
+		t.Fatalf("want Fanout cveID=%q, got %q", cveID, disp.calls[0].cveID)
+	}
+}
+
+func TestEvaluateRealtime_FanoutNotCalledForSuppressedEvent(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+
+	// Create 2 CVEs that match so activation scan has something to write
+	for i := 1; i <= 2; i++ {
+		cveID := fmt.Sprintf("CVE-FANOUT-SUPP-%04d", i)
+		score := 9.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "suppressed fanout test", &score, fmt.Sprintf("hashsupp%d", i))
+	}
+
+	// Create rule in 'activating' state (activation scan uses suppressDelivery=true)
+	conds := json.RawMessage(cvssCondition)
+	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
+		Name:       "fanout-suppress-test-rule",
+		Logic:      "and",
+		Conditions: conds,
+		Status:     "activating",
+	})
+	if err != nil {
+		t.Fatalf("create alert rule: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
+	})
+
+	// Build a fresh evaluator with the mock dispatcher attached
+	cache := alert.NewRuleCache()
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	ev := alert.New(tdb.DB(), tdb.Store, cache, log)
+	disp := &mockDispatcher{}
+	ev.SetDispatcher(disp)
+
+	if err := ev.EvaluateActivation(ctx, row.ID, orgID); err != nil {
+		t.Fatalf("EvaluateActivation: %v", err)
+	}
+
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if len(disp.calls) != 0 {
+		t.Fatalf("want 0 Fanout calls for suppressed events, got %d", len(disp.calls))
 	}
 }

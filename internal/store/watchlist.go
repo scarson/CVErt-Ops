@@ -18,6 +18,9 @@ import (
 // WatchlistItemType re-exports the generated enum so callers only need to import this package.
 type WatchlistItemType = generated.WatchlistItemType
 
+// WatchlistItemRow is the watchlist item record returned by store methods.
+type WatchlistItemRow = generated.WatchlistItem
+
 // WatchlistRow extends a Watchlist with the count of active (non-deleted) items.
 type WatchlistRow struct {
 	generated.Watchlist

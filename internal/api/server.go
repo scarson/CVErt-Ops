@@ -21,20 +21,23 @@ import (
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
 
+	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
-	store        *store.Store
-	cfg          *config.Config
-	argon2Sem    chan struct{}
-	rateLimiter  *ipRateLimiter
-	ghOAuth      *oauth2.Config  // nil when GitHub OAuth is not configured
-	ghAPIBaseURL string          // GitHub REST API base URL; overridable in tests
-	googleOIDC   *oidc.Provider  // nil when Google OIDC is not configured
-	googleOAuth  *oauth2.Config  // nil when Google OIDC is not configured
+	store          *store.Store
+	cfg            *config.Config
+	argon2Sem      chan struct{}
+	rateLimiter    *ipRateLimiter
+	ghOAuth        *oauth2.Config   // nil when GitHub OAuth is not configured
+	ghAPIBaseURL   string           // GitHub REST API base URL; overridable in tests
+	googleOIDC     *oidc.Provider   // nil when Google OIDC is not configured
+	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
+	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
+	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -176,6 +179,37 @@ func (srv *Server) Handler() http.Handler {
 				r.Delete("/{id}", srv.revokeAPIKeyHandler)
 			})
 
+			// Watchlist management
+			r.Route("/watchlists", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listWatchlistsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createWatchlistHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getWatchlistHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.updateWatchlistHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteWatchlistHandler)
+					r.Route("/items", func(r chi.Router) {
+						r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listWatchlistItemsHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createWatchlistItemHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Delete("/{item_id}", srv.deleteWatchlistItemHandler)
+					})
+				})
+			})
+
+			// Alert event listing
+			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
+
+			// Alert rule management
+			r.Route("/alert-rules", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listAlertRulesHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createAlertRuleHandler)
+				r.With(srv.RequireOrgRole(RoleViewer)).Post("/validate", srv.validateAlertRuleHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getAlertRuleHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.updateAlertRuleHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteAlertRuleHandler)
+				})
+			})
+
 			// Group management
 			r.Route("/groups", func(r chi.Router) {
 				r.Get("/", srv.listGroupsHandler)
@@ -197,6 +231,13 @@ func (srv *Server) Handler() http.Handler {
 	r.Mount("/api/v1", apiRouter)
 
 	return r
+}
+
+// SetAlertDeps wires the alert rule cache and evaluator into the server.
+// Must be called before Handler() if alert rule endpoints are registered.
+func (srv *Server) SetAlertDeps(cache *alert.RuleCache, evaluator *alert.Evaluator) {
+	srv.alertCache = cache
+	srv.alertEvaluator = evaluator
 }
 
 // acquireArgon2 tries to acquire the argon2 semaphore. Returns false if all

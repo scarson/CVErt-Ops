@@ -13,6 +13,7 @@ import (
 // Logic defines how conditions within a rule are combined.
 type Logic string
 
+// LogicAnd and LogicOr define how conditions within a rule are combined.
 const (
 	LogicAnd Logic = "and"
 	LogicOr  Logic = "or"

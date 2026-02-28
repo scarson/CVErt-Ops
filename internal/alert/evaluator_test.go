@@ -386,7 +386,7 @@ func TestEvaluatorActivation(t *testing.T) {
 
 	// Create rule with status='activating'
 	conds := json.RawMessage(cvssCondition)
-	row, err := tdb.Store.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
+	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
 		Name:       "activation-test-rule",
 		Logic:      "and",
 		Conditions: conds,
@@ -396,7 +396,7 @@ func TestEvaluatorActivation(t *testing.T) {
 		t.Fatalf("create alert rule: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = tdb.Store.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
+		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
 	})
 
 	if err := ev.EvaluateActivation(ctx, row.ID, orgID); err != nil {
@@ -438,7 +438,7 @@ func TestEvaluatorSweepZombieActivations(t *testing.T) {
 
 	// Create a rule in 'activating' status
 	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.Store.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
+	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
 		Name:       "zombie-test-rule",
 		Logic:      "and",
 		Conditions: conds,
@@ -448,7 +448,7 @@ func TestEvaluatorSweepZombieActivations(t *testing.T) {
 		t.Fatalf("create alert rule: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = tdb.Store.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
+		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
 	})
 
 	// Directly insert a 'running' activation job with old locked_at to simulate zombie

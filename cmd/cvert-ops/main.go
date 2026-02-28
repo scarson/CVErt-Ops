@@ -40,6 +40,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 
+	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -114,6 +115,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
+
+	// Wire alert evaluation dependencies. The cache and evaluator are used by
+	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
+	alertCache := alert.NewRuleCache()
+	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
+	apiSrv.SetAlertDeps(alertCache, alertEval)
+
 	handler := apiSrv.Handler()
 
 	// PLAN.md §18.3: explicit timeouts required to prevent Slowloris attacks.
@@ -383,7 +391,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 12
+const expectedSchemaVersion = 16
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

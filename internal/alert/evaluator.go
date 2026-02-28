@@ -47,6 +47,14 @@ func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Log
 	return &Evaluator{db: db, rules: rules, cache: cache, log: log}
 }
 
+// DryRunResult holds the output of a dry-run evaluation. No alert_events are written.
+type DryRunResult struct {
+	MatchCount          int
+	CandidatesEvaluated int
+	Partial             bool
+	SampleCVEs          []string // up to 10 matching CVE IDs
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Public evaluation paths
 // ──────────────────────────────────────────────────────────────────────────────
@@ -272,6 +280,54 @@ func (e *Evaluator) SweepZombieActivations(ctx context.Context) error {
 	return nil
 }
 
+// DryRun evaluates a rule against the full CVE corpus without writing any
+// alert_events rows. Returns nil result (with no error) if the rule is not found.
+func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRunResult, error) {
+	rule, err := e.rules.GetAlertRule(ctx, orgID, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("get rule: %w", err)
+	}
+	if rule == nil {
+		return nil, nil
+	}
+
+	compiled, err := e.loadAndCompileRule(rule)
+	if err != nil {
+		return nil, fmt.Errorf("compile rule: %w", err)
+	}
+
+	var candidates []cveSummary
+	var partial bool
+	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		candidates, partial, err = e.queryCandidatesAll(ctx, tx, compiled)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("query candidates: %w", err)
+	}
+
+	if partial {
+		return &DryRunResult{Partial: true, CandidatesEvaluated: candidateCap + 1}, nil
+	}
+
+	matched := applyPostFilters(candidates, compiled.PostFilters)
+
+	sample := make([]string, 0, 10)
+	for i, m := range matched {
+		if i >= 10 {
+			break
+		}
+		sample = append(sample, m.CVEID)
+	}
+
+	return &DryRunResult{
+		MatchCount:          len(matched),
+		CandidatesEvaluated: len(candidates),
+		Partial:             false,
+		SampleCVEs:          sample,
+	}, nil
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Core evaluation logic
 // ──────────────────────────────────────────────────────────────────────────────
@@ -380,6 +436,51 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("iterate candidates: %w", err)
+	}
+	if len(candidates) > candidateCap {
+		return nil, true, nil
+	}
+	return candidates, false, nil
+}
+
+// queryCandidatesAll runs the compiled DSL query against ALL non-rejected CVEs without
+// an ID filter. Used by DryRun to evaluate against the full corpus read-only.
+func (e *Evaluator) queryCandidatesAll(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule) ([]cveSummary, bool, error) {
+	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
+	combined := sq.And{
+		compiled.SQL,
+		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
+	}
+	query, args, err := psql.
+		Select(
+			"cves.cve_id",
+			"COALESCE(cves.material_hash, '')",
+			"COALESCE(lower(cves.description_primary), '')",
+		).
+		From("cves").
+		Where(combined).
+		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
+		ToSql()
+	if err != nil {
+		return nil, false, fmt.Errorf("build dry-run query: %w", err)
+	}
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("execute dry-run query: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var candidates []cveSummary
+	for rows.Next() {
+		var s cveSummary
+		if err := rows.Scan(&s.CVEID, &s.MaterialHash, &s.Description); err != nil {
+			return nil, false, fmt.Errorf("scan dry-run candidate: %w", err)
+		}
+		candidates = append(candidates, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate dry-run candidates: %w", err)
 	}
 	if len(candidates) > candidateCap {
 		return nil, true, nil

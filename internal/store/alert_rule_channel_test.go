@@ -138,6 +138,58 @@ func TestListActiveChannelsForFanout_IncludesSecrets(t *testing.T) {
 	}
 }
 
+func TestListChannelsForRule_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "ARCOrg6a")
+	org2, _ := s.CreateOrg(ctx, "ARCOrg6b")
+	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "CrossOrgRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "CrossOrgChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org1.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// org2 must not see org1's bindings.
+	channels, err := s.ListChannelsForRule(ctx, rule.ID, org2.ID)
+	if err != nil {
+		t.Fatalf("ListChannelsForRule(wrong org): %v", err)
+	}
+	if len(channels) != 0 {
+		t.Errorf("expected 0 channels for wrong org, got %d", len(channels))
+	}
+}
+
+func TestListActiveChannelsForFanout_ExcludesSoftDeletedChannels(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "ARCOrg7")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutSoftDeleteRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutSoftDeleteChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// Soft-delete the channel.
+	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("SoftDeleteNotificationChannel: %v", err)
+	}
+
+	// Fanout must exclude the soft-deleted channel.
+	rows, err := s.ListActiveChannelsForFanout(ctx, rule.ID, org.ID)
+	if err != nil {
+		t.Fatalf("ListActiveChannelsForFanout (after soft-delete): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 fanout rows after channel soft-delete, got %d", len(rows))
+	}
+}
+
 func TestChannelRuleBindingExists(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

@@ -346,7 +346,8 @@ Use these proactively — don't wait to be asked.
 
 | Skill | When to use |
 |-------|-------------|
-| `migration` | Before writing any migration SQL |
+| `schema-review` | Before writing any migration SQL — audit the design first |
+| `migration` | After schema-review passes — generates the actual SQL migration files |
 | `feed-adapter` | Before scaffolding a new feed adapter |
 | `pitfall-check` | Before committing significant business logic |
 | `plan-check` | Before merging any feature — specify the PLAN.md section |

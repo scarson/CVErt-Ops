@@ -6,12 +6,112 @@ package store
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 )
+
+type WatchlistItemType string
+
+const (
+	WatchlistItemTypePackage WatchlistItemType = "package"
+	WatchlistItemTypeCpe     WatchlistItemType = "cpe"
+)
+
+func (e *WatchlistItemType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = WatchlistItemType(s)
+	case string:
+		*e = WatchlistItemType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for WatchlistItemType: %T", src)
+	}
+	return nil
+}
+
+type NullWatchlistItemType struct {
+	WatchlistItemType WatchlistItemType
+	Valid             bool // Valid is true if WatchlistItemType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullWatchlistItemType) Scan(value interface{}) error {
+	if value == nil {
+		ns.WatchlistItemType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.WatchlistItemType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullWatchlistItemType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.WatchlistItemType), nil
+}
+
+type AlertEvent struct {
+	ID               uuid.UUID
+	RuleID           uuid.UUID
+	OrgID            uuid.UUID
+	CveID            string
+	MaterialHash     string
+	LastMatchState   bool
+	SuppressDelivery bool
+	FirstFiredAt     time.Time
+	LastFiredAt      time.Time
+	TimesFired       int32
+}
+
+type AlertRule struct {
+	ID                       uuid.UUID
+	OrgID                    uuid.UUID
+	Name                     string
+	Logic                    string
+	Conditions               json.RawMessage
+	WatchlistIds             []uuid.UUID
+	DslVersion               int32
+	HasEpssCondition         bool
+	IsEpssOnly               bool
+	Status                   string
+	FireOnNonMaterialChanges bool
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	DeletedAt                sql.NullTime
+}
+
+type AlertRuleRun struct {
+	ID                  uuid.UUID
+	RuleID              uuid.UUID
+	OrgID               uuid.UUID
+	Path                string
+	Status              string
+	StartedAt           time.Time
+	FinishedAt          sql.NullTime
+	CandidatesEvaluated int32
+	MatchesFound        int32
+	ErrorMessage        sql.NullString
+}
+
+type ApiKey struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	CreatedByUserID uuid.UUID
+	KeyHash         string
+	Name            string
+	Role            string
+	ExpiresAt       sql.NullTime
+	LastUsedAt      sql.NullTime
+	CreatedAt       time.Time
+	RevokedAt       sql.NullTime
+}
 
 type Cfe struct {
 	CveID                 string
@@ -124,6 +224,23 @@ type FeedSyncState struct {
 	BackoffUntil        sql.NullTime
 }
 
+type Group struct {
+	ID          uuid.UUID
+	OrgID       uuid.UUID
+	Name        string
+	Description string
+	CreatedAt   time.Time
+	DeletedAt   sql.NullTime
+}
+
+type GroupMember struct {
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	GroupID   uuid.UUID
+	UserID    uuid.UUID
+	CreatedAt time.Time
+}
+
 type JobQueue struct {
 	ID          uuid.UUID
 	Queue       string
@@ -141,6 +258,43 @@ type JobQueue struct {
 	LastError   sql.NullString
 }
 
+type OrgInvitation struct {
+	ID         uuid.UUID
+	OrgID      uuid.UUID
+	Email      string
+	Role       string
+	Token      string
+	CreatedBy  uuid.UUID
+	ExpiresAt  time.Time
+	AcceptedAt sql.NullTime
+	CreatedAt  time.Time
+}
+
+type OrgMember struct {
+	OrgID     uuid.UUID
+	UserID    uuid.UUID
+	Role      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type Organization struct {
+	ID        uuid.UUID
+	Name      string
+	CreatedAt time.Time
+	DeletedAt sql.NullTime
+}
+
+type RefreshToken struct {
+	Jti           uuid.UUID
+	UserID        uuid.UUID
+	TokenVersion  int32
+	ExpiresAt     time.Time
+	UsedAt        sql.NullTime
+	ReplacedByJti uuid.NullUUID
+	CreatedAt     time.Time
+}
+
 type SystemJobsLog struct {
 	ID           uuid.UUID
 	JobType      string
@@ -149,4 +303,48 @@ type SystemJobsLog struct {
 	Status       string
 	Details      pqtype.NullRawMessage
 	ErrorSummary sql.NullString
+}
+
+type User struct {
+	ID                  uuid.UUID
+	Email               string
+	DisplayName         string
+	PasswordHash        sql.NullString
+	PasswordHashVersion int32
+	TokenVersion        int32
+	CreatedAt           time.Time
+	LastLoginAt         sql.NullTime
+}
+
+type UserIdentity struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	Provider       string
+	ProviderUserID string
+	Email          string
+	CreatedAt      time.Time
+}
+
+type Watchlist struct {
+	ID          uuid.UUID
+	OrgID       uuid.UUID
+	GroupID     uuid.NullUUID
+	Name        string
+	Description sql.NullString
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   sql.NullTime
+}
+
+type WatchlistItem struct {
+	ID            uuid.UUID
+	WatchlistID   uuid.UUID
+	OrgID         uuid.UUID
+	ItemType      WatchlistItemType
+	Ecosystem     sql.NullString
+	PackageName   sql.NullString
+	Namespace     sql.NullString
+	CpeNormalized sql.NullString
+	CreatedAt     time.Time
+	DeletedAt     sql.NullTime
 }

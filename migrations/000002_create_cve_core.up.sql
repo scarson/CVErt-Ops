@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS cves (
     in_cisa_kev              bool        NOT NULL DEFAULT false,
     epss_score               float8,                            -- excluded from material_hash (§5.3)
     date_epss_updated        timestamptz,
-    material_hash            text                               -- sha256(jcs(material_fields)); NULL until first merge
+    material_hash            text                               -- sha256(jcs(material_fields)), populated on first merge
 );
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS cves_severity_idx
@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS cve_affected_packages (
     introduced    text,
     fixed         text,
     last_affected text,
-    events        jsonb   -- raw OSV events array; no IS DISTINCT FROM needed (child table always delete+re-insert)
+    events        jsonb   -- raw OSV events array, no IS DISTINCT FROM needed (child table always delete+re-insert)
 );
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS cve_affected_packages_eco_pkg_idx

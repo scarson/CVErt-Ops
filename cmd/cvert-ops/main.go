@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +40,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 
+	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -83,6 +85,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
+	if err := validateConfig(cfg); err != nil {
+		return err
+	}
 
 	logger := newLogger(cfg)
 	slog.SetDefault(logger)
@@ -106,7 +111,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("feed_ingest", feedIngestHandler)
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
-	handler := api.NewRouter(st)
+	apiSrv, err := api.NewServer(st, cfg)
+	if err != nil {
+		return fmt.Errorf("api server init: %w", err)
+	}
+
+	// Wire alert evaluation dependencies. The cache and evaluator are used by
+	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
+	alertCache := alert.NewRuleCache()
+	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
+	apiSrv.SetAlertDeps(alertCache, alertEval)
+
+	handler := apiSrv.Handler()
 
 	// PLAN.md §18.3: explicit timeouts required to prevent Slowloris attacks.
 	// WriteTimeout intentionally omitted — applied per-handler via http.TimeoutHandler
@@ -163,6 +179,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
+	}
+	if err := validateConfig(cfg); err != nil {
+		return err
 	}
 
 	logger := newLogger(cfg)
@@ -221,14 +240,21 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 	// golang-migrate requires a *sql.DB. Use pgx's stdlib adapter so the same
 	// driver is used project-wide. No pooling needed here — this is a one-shot
 	// migration run.
-	connCfg, err := pgx.ParseConfig(cfg.DatabaseURL)
+	migrateURL := cfg.DatabaseURL
+	if cfg.DatabaseURLMigrate != "" {
+		migrateURL = cfg.DatabaseURLMigrate
+	}
+	connCfg, err := pgx.ParseConfig(migrateURL)
 	if err != nil {
 		return fmt.Errorf("parse db url: %w", err)
 	}
+	// Simple query protocol + MultiStatementEnabled: each statement in the migration
+	// file runs as its own ExecContext call in autocommit, allowing CREATE INDEX CONCURRENTLY.
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	db := stdlib.OpenDB(*connCfg)
 	defer db.Close() //nolint:errcheck
 
-	driver, err := migratepg.WithInstance(db, &migratepg.Config{})
+	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
 	if err != nil {
 		return fmt.Errorf("migration driver: %w", err)
 	}
@@ -351,9 +377,21 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	return db, nil
 }
 
+// validateConfig enforces startup invariants that environment parsing cannot express:
+// JWT_SECRET minimum length and HTTPS requirement for EXTERNAL_URL outside development.
+func validateConfig(cfg *config.Config) error {
+	if len(cfg.JWTSecret) < 32 {
+		return fmt.Errorf("JWT_SECRET must be at least 32 bytes (got %d)", len(cfg.JWTSecret))
+	}
+	if !cfg.IsDevelopment() && !strings.HasPrefix(cfg.ExternalURL, "https://") {
+		return fmt.Errorf("EXTERNAL_URL must use https:// in non-development environments (got %q)", cfg.ExternalURL)
+	}
+	return nil
+}
+
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 3
+const expectedSchemaVersion = 16
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

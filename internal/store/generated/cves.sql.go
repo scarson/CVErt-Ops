@@ -246,7 +246,7 @@ func (q *Queries) GetCVEReferences(ctx context.Context, cveID string) ([]CveRefe
 const getCVESnapshot = `-- name: GetCVESnapshot :one
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
        description_primary, exploit_available, in_cisa_kev
-FROM cves WHERE cve_id = $1 LIMIT 1
+FROM cves WHERE cve_id = $1
 `
 
 type GetCVESnapshotRow struct {

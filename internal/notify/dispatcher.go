@@ -40,9 +40,9 @@ func NewDispatcher(st *store.Store, debounceSeconds int) *Dispatcher {
 
 // Fanout creates or appends to pending delivery rows for all channels bound to ruleID.
 // It fetches a CVE snapshot and calls UpsertDelivery for each active channel.
-// Per-channel errors are logged but do not abort processing of remaining channels.
-// Returns nil if any channels were processed; returns an error only if
-// ListActiveChannelsForFanout fails or JSON marshaling fails.
+// Per-channel upsert errors are logged and do not abort remaining channels — Fanout
+// returns nil even when all upserts fail; the caller's job is to fire and forget.
+// Returns an error only if ListActiveChannelsForFanout fails or JSON marshaling fails.
 func (d *Dispatcher) Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error {
 	channels, err := d.st.ListActiveChannelsForFanout(ctx, ruleID, orgID)
 	if err != nil {

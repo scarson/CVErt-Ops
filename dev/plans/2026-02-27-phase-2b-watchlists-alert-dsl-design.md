@@ -839,3 +839,55 @@ not just the cases listed here.
 | `POST /watchlists/{id}/items` duplicate | 409 |
 | Viewer role on write endpoint | 403 |
 | Wrong org_id in path | 403 or 404 (depending on membership check) |
+
+---
+
+## Implementation Notes (added during schema review)
+
+### Go pointer types for PATCH structs
+
+All PATCH request structs MUST use pointer types for every optional field. Non-pointer
+`omitempty` silently discards zero-value updates (e.g., `false`, `""`, `0`).
+
+**Watchlist PATCH struct:**
+```go
+type PatchWatchlistRequest struct {
+    Name        *string    `json:"name"`
+    Description *string    `json:"description"`
+    GroupID     *uuid.UUID `json:"group_id"`  // null JSON → sets group_id to NULL in DB
+}
+```
+
+**Alert rule PATCH struct:**
+```go
+type PatchAlertRuleRequest struct {
+    Name                      *string       `json:"name"`
+    Logic                     *string       `json:"logic"`
+    Conditions                *[]Condition  `json:"conditions"`
+    WatchlistIDs              *[]uuid.UUID  `json:"watchlist_ids"` // [] clears bindings; null = no change
+    Enabled                   *bool         `json:"enabled"`
+    FireOnNonMaterialChanges  *bool         `json:"fire_on_non_material_changes"`
+}
+```
+
+Handler logic: only apply DB UPDATE for fields where the pointer is non-nil.
+
+### Migration numbering (actual)
+
+| Number | Contents |
+|---|---|
+| 000013 | `job_queue_lock_key_active` partial unique index (pre-flight fix) |
+| 000014 | `watchlists`, `watchlist_items` |
+| 000015 | `alert_rules` |
+| 000016 | `alert_rule_runs`, `alert_events` |
+
+### alert_events ON DELETE CASCADE note
+
+`alert_events.rule_id` references `alert_rules(id) ON DELETE CASCADE`. In practice,
+`alert_rules` is soft-deleted (sets `deleted_at`) — the physical row is never removed —
+so this CASCADE will not fire in normal operation. Event rows are retained for audit.
+
+### alert_events GRANT includes DELETE
+
+Retention job (§21, 1-year policy) issues `DELETE FROM alert_events WHERE first_fired_at < $cutoff`.
+Same for `alert_rule_runs`. Both tables grant `SELECT, INSERT, UPDATE, DELETE`.

@@ -210,6 +210,15 @@ func (srv *Server) Handler() http.Handler {
 			// Alert event listing
 			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
 
+			// Delivery history
+			r.Route("/deliveries", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listDeliveriesHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getDeliveryHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/replay", srv.replayDeliveryHandler)
+				})
+			})
+
 			// Alert rule management
 			r.Route("/alert-rules", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listAlertRulesHandler)

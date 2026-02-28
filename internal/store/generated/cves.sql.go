@@ -243,6 +243,40 @@ func (q *Queries) GetCVEReferences(ctx context.Context, cveID string) ([]CveRefe
 	return items, nil
 }
 
+const getCVESnapshot = `-- name: GetCVESnapshot :one
+SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
+       description_primary, exploit_available, in_cisa_kev
+FROM cves WHERE cve_id = $1 LIMIT 1
+`
+
+type GetCVESnapshotRow struct {
+	CveID              string
+	Severity           sql.NullString
+	CvssV3Score        sql.NullFloat64
+	CvssV4Score        sql.NullFloat64
+	EpssScore          sql.NullFloat64
+	DescriptionPrimary sql.NullString
+	ExploitAvailable   bool
+	InCisaKev          bool
+}
+
+// Returns the fields needed for alert delivery payloads.
+func (q *Queries) GetCVESnapshot(ctx context.Context, cveID string) (GetCVESnapshotRow, error) {
+	row := q.db.QueryRowContext(ctx, getCVESnapshot, cveID)
+	var i GetCVESnapshotRow
+	err := row.Scan(
+		&i.CveID,
+		&i.Severity,
+		&i.CvssV3Score,
+		&i.CvssV4Score,
+		&i.EpssScore,
+		&i.DescriptionPrimary,
+		&i.ExploitAvailable,
+		&i.InCisaKev,
+	)
+	return i, err
+}
+
 const getEPSSStaging = `-- name: GetEPSSStaging :one
 SELECT cve_id, epss_score, as_of_date, ingested_at FROM epss_staging WHERE cve_id = $1
 `

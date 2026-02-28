@@ -1,3 +1,5 @@
+// ABOUTME: Store methods for CVE reads, search, and EPSS. Write path is in the merge pipeline.
+// ABOUTME: ListCVEs and SearchCVEs handle pagination; GetCVEDetail fetches child tables in parallel.
 package store
 
 import (
@@ -230,4 +232,17 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 	}
 
 	return results, nil
+}
+
+// GetCVESnapshot returns the subset of CVE fields needed for alert delivery payloads,
+// or (nil, nil) if the CVE does not exist.
+func (s *Store) GetCVESnapshot(ctx context.Context, cveID string) (*generated.GetCVESnapshotRow, error) {
+	row, err := s.q.GetCVESnapshot(ctx, cveID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get cve snapshot: %w", err)
+	}
+	return &row, nil
 }

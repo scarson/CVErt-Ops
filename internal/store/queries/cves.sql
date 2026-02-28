@@ -153,6 +153,12 @@ SELECT * FROM cve_affected_packages WHERE cve_id = $1 ORDER BY ecosystem, packag
 -- name: GetCVEAffectedCPEs :many
 SELECT * FROM cve_affected_cpes WHERE cve_id = $1 ORDER BY cpe_normalized;
 
+-- name: GetCVESnapshot :one
+-- Returns the fields needed for alert delivery payloads.
+SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
+       description_primary, exploit_available, in_cisa_kev
+FROM cves WHERE cve_id = $1 LIMIT 1;
+
 -- name: ListCVEs :many
 -- Base list query — dynamic WHERE and ORDER BY built by squirrel in the
 -- store layer. This static query handles the no-filter paginated case.

@@ -195,6 +195,18 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 
+			// Notification channel management
+			r.Route("/channels", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listChannelsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createChannelHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Post("/rotate-secret", srv.rotateSecretHandler)
+				})
+			})
+
 			// Alert event listing
 			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
 

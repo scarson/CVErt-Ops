@@ -298,7 +298,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 
 	var candidates []cveSummary
 	var partial bool
-	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
+	if err := e.readTx(ctx, func(tx *sql.Tx) error {
 		var err error
 		candidates, partial, err = e.queryCandidatesAll(ctx, tx, compiled)
 		return err
@@ -540,6 +540,18 @@ func (e *Evaluator) loadAndCompileRule(rule *store.AlertRuleRow) (*dsl.CompiledR
 // ──────────────────────────────────────────────────────────────────────────────
 // Database helpers
 // ──────────────────────────────────────────────────────────────────────────────
+
+// readTx opens a read-only database/sql transaction and calls fn. The transaction
+// is always rolled back at the end — writes (if any) are discarded. Use for
+// dry-run and other read-only evaluation paths that must not touch alert_events.
+func (e *Evaluator) readTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := e.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("begin read tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	return fn(tx)
+}
 
 // bypassTx opens a database/sql transaction with RLS bypass enabled and calls fn.
 // Use for queries that reference org-scoped tables from worker paths.

@@ -352,6 +352,7 @@ SET name                       = $3,
     has_epss_condition         = $7,
     is_epss_only               = $8,
     fire_on_non_material_changes = $9,
+    status                     = $10,
     updated_at                 = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at
@@ -367,10 +368,12 @@ type UpdateAlertRuleParams struct {
 	HasEpssCondition         bool
 	IsEpssOnly               bool
 	FireOnNonMaterialChanges bool
+	Status                   string
 }
 
 // Updates mutable rule fields. has_epss_condition and is_epss_only are
 // recomputed by the compiler on each DSL change and passed here.
+// status is included so the caller can transition atomically (e.g. "activating").
 func (q *Queries) UpdateAlertRule(ctx context.Context, arg UpdateAlertRuleParams) (AlertRule, error) {
 	row := q.db.QueryRowContext(ctx, updateAlertRule,
 		arg.ID,
@@ -382,6 +385,7 @@ func (q *Queries) UpdateAlertRule(ctx context.Context, arg UpdateAlertRuleParams
 		arg.HasEpssCondition,
 		arg.IsEpssOnly,
 		arg.FireOnNonMaterialChanges,
+		arg.Status,
 	)
 	var i AlertRule
 	err := row.Scan(

@@ -207,6 +207,7 @@ func (srv *Server) Handler() http.Handler {
 					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getAlertRuleHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.updateAlertRuleHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteAlertRuleHandler)
+					r.With(srv.RequireOrgRole(RoleViewer)).Post("/dry-run", srv.dryRunHandler)
 				})
 			})
 

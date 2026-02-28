@@ -99,6 +99,7 @@ func TestUpdateAlertRule(t *testing.T) {
 		Conditions:       json.RawMessage(`[{"field":"in_cisa_kev","operator":"eq","value":true}]`),
 		HasEpssCondition: false,
 		IsEpssOnly:       false,
+		Status:           "activating",
 	})
 	if err != nil {
 		t.Fatalf("UpdateAlertRule: %v", err)

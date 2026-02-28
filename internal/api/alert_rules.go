@@ -400,6 +400,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		HasEpssCondition:         meta.hasEPSS,
 		IsEpssOnly:               meta.isEPSSOnly,
 		FireOnNonMaterialChanges: fireOnNonMaterial,
+		Status:                   "activating",
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update alert rule", "error", err)
@@ -410,14 +411,6 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-
-	// After a successful update, transition to activating so a re-scan runs.
-	if err := srv.store.SetAlertRuleStatus(r.Context(), orgID, id, "activating"); err != nil {
-		slog.ErrorContext(r.Context(), "set alert rule status", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	row.Status = "activating"
 
 	writeJSON(w, http.StatusAccepted, alertRuleToEntry(*row))
 }
@@ -471,6 +464,55 @@ func (srv *Server) validateAlertRuleHandler(w http.ResponseWriter, r *http.Reque
 		Errors: valErrsToEntries(valErrs),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// dryRunResponse holds the result of a dry-run evaluation.
+type dryRunResponse struct {
+	MatchCount          int      `json:"match_count"`
+	CandidatesEvaluated int      `json:"candidates_evaluated"`
+	Partial             bool     `json:"partial"`
+	SampleCVEs          []string `json:"sample_cves"`
+}
+
+// dryRunHandler handles POST /api/v1/orgs/{org_id}/alert-rules/{id}/dry-run.
+// Evaluates the saved rule against the current CVE corpus without creating
+// alert_events rows. Returns match count, sample CVEs, and evaluation metadata.
+// Requires viewer+.
+func (srv *Server) dryRunHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if srv.alertEvaluator == nil {
+		http.Error(w, "dry-run not available", http.StatusServiceUnavailable)
+		return
+	}
+	result, err := srv.alertEvaluator.DryRun(r.Context(), id, orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "dry-run evaluation", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if result == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	sample := result.SampleCVEs
+	if sample == nil {
+		sample = []string{}
+	}
+	writeJSON(w, http.StatusOK, dryRunResponse{
+		MatchCount:          result.MatchCount,
+		CandidatesEvaluated: result.CandidatesEvaluated,
+		Partial:             result.Partial,
+		SampleCVEs:          sample,
+	})
 }
 
 // valErrsToEntries converts DSL ValidationErrors to API-level entries.

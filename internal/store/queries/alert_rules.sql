@@ -17,6 +17,7 @@ LIMIT 1;
 -- name: UpdateAlertRule :one
 -- Updates mutable rule fields. has_epss_condition and is_epss_only are
 -- recomputed by the compiler on each DSL change and passed here.
+-- status is included so the caller can transition atomically (e.g. "activating").
 UPDATE alert_rules
 SET name                       = $3,
     logic                      = $4,
@@ -25,6 +26,7 @@ SET name                       = $3,
     has_epss_condition         = $7,
     is_epss_only               = $8,
     fire_on_non_material_changes = $9,
+    status                     = $10,
     updated_at                 = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 RETURNING *;

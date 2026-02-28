@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -114,8 +113,117 @@ func TestAlertEvents_List(t *testing.T) {
 		t.Errorf("rule1 event cve_id = %v, want CVE-2024-00001", rule1Events.Items[0]["cve_id"])
 	}
 
-	_ = ruleID2 // used in event insertion above
-	_ = store.ListAlertEventsParams{} // ensure store import is used
+}
+
+// TestAlertEvents_CveIDFilter verifies filtering alert events by ?cve_id=.
+func TestAlertEvents_CveIDFilter(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	ruleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer ruleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if ruleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create rule: got %d, want 202", ruleResp.StatusCode)
+	}
+	var rule struct{ ID string `json:"id"` }
+	if err := json.NewDecoder(ruleResp.Body).Decode(&rule); err != nil {
+		t.Fatalf("decode rule: %v", err)
+	}
+
+	orgID, err := uuid.Parse(aliceReg.OrgID)
+	if err != nil {
+		t.Fatalf("parse orgID: %v", err)
+	}
+	ruleID, err := uuid.Parse(rule.ID)
+	if err != nil {
+		t.Fatalf("parse ruleID: %v", err)
+	}
+
+	_, err = srv.store.InsertAlertEvent(ctx, orgID, ruleID, "CVE-2024-00010", "hashA", false)
+	if err != nil {
+		t.Fatalf("insert event A: %v", err)
+	}
+	_, err = srv.store.InsertAlertEvent(ctx, orgID, ruleID, "CVE-2024-00020", "hashB", false)
+	if err != nil {
+		t.Fatalf("insert event B: %v", err)
+	}
+
+	filterResp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?cve_id=CVE-2024-00010")
+	defer filterResp.Body.Close() //nolint:errcheck,gosec // G104
+	if filterResp.StatusCode != http.StatusOK {
+		t.Fatalf("filter by cve_id: got %d, want 200", filterResp.StatusCode)
+	}
+	var filtered struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(filterResp.Body).Decode(&filtered); err != nil {
+		t.Fatalf("decode filtered: %v", err)
+	}
+	if len(filtered.Items) != 1 {
+		t.Fatalf("filtered count = %d, want 1", len(filtered.Items))
+	}
+	if filtered.Items[0]["cve_id"] != "CVE-2024-00010" {
+		t.Errorf("filtered cve_id = %v, want CVE-2024-00010", filtered.Items[0]["cve_id"])
+	}
+}
+
+// TestAlertEvents_CrossOrgIsolation verifies that alert events are not visible across org boundaries.
+// Registration in "open" mode only auto-creates an org for the first user; Bob (second user) has no org
+// and therefore cannot be a member of Alice's org.
+func TestAlertEvents_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newRegisterServer(t, db, "open")
+
+	// Alice is the first user — she gets an auto-org.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	ruleResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
+	defer ruleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if ruleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create rule: got %d, want 202", ruleResp.StatusCode)
+	}
+	var rule struct{ ID string `json:"id"` }
+	if err := json.NewDecoder(ruleResp.Body).Decode(&rule); err != nil {
+		t.Fatalf("decode rule: %v", err)
+	}
+
+	orgID, err := uuid.Parse(aliceReg.OrgID)
+	if err != nil {
+		t.Fatalf("parse orgID: %v", err)
+	}
+	ruleID, err := uuid.Parse(rule.ID)
+	if err != nil {
+		t.Fatalf("parse ruleID: %v", err)
+	}
+	_, err = srv.store.InsertAlertEvent(ctx, orgID, ruleID, "CVE-2024-99999", "hashX", false)
+	if err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	// Bob is the second user — he has no org and is not a member of Alice's org.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	// Bob cannot access Alice's org events (not a member → 403).
+	crossResp := doListAlertEvents(t, ctx, ts, bobToken, aliceReg.OrgID, "")
+	defer crossResp.Body.Close() //nolint:errcheck,gosec // G104
+	if crossResp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-org list: got %d, want 403", crossResp.StatusCode)
+	}
 }
 
 // doListAlertEvents performs a GET /api/v1/orgs/{org_id}/alert-events request.

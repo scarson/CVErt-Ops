@@ -33,6 +33,7 @@ type CreateAlertRuleParams struct {
 }
 
 // UpdateAlertRuleParams holds the mutable fields for updating an alert rule.
+// Status is included so the content update and status transition are atomic.
 type UpdateAlertRuleParams struct {
 	Name                     string
 	Logic                    string
@@ -41,6 +42,7 @@ type UpdateAlertRuleParams struct {
 	HasEpssCondition         bool
 	IsEpssOnly               bool
 	FireOnNonMaterialChanges bool
+	Status                   string
 }
 
 // ListAlertEventsParams holds optional filters for listing alert events.
@@ -134,6 +136,7 @@ func (s *Store) UpdateAlertRule(ctx context.Context, orgID, id uuid.UUID, p Upda
 			HasEpssCondition:         p.HasEpssCondition,
 			IsEpssOnly:               p.IsEpssOnly,
 			FireOnNonMaterialChanges: p.FireOnNonMaterialChanges,
+			Status:                   p.Status,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil

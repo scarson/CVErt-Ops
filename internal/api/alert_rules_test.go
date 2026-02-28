@@ -312,6 +312,87 @@ func TestAlertRule_InvalidDSL(t *testing.T) {
 	}
 }
 
+// TestAlertRule_PatchInvalidDSL verifies that PATCH with invalid DSL conditions returns 422.
+func TestAlertRule_PatchInvalidDSL(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create a valid rule.
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// PATCH with an unknown DSL field — should return 422.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"conditions":[{"field":"unknown_field","operator":"eq","value":"x"}]}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("patch invalid DSL: got %d, want 422", patchResp.StatusCode)
+	}
+}
+
+// TestAlertRule_CrossOrgIsolation verifies that a user cannot read or modify alert rules across org boundaries.
+// Registration in "open" mode only auto-creates an org for the first user; Bob (second user) has no org
+// and therefore cannot be a member of Alice's org.
+func TestAlertRule_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice is the first user — she gets an auto-org.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// Bob is the second user — he has no org and is not a member of Alice's org.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	// Bob cannot access Alice's org (not a member → 403).
+	getResp := doGetAlertRule(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	if getResp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-org get: got %d, want 403", getResp.StatusCode)
+	}
+
+	listResp := doListAlertRules(t, ctx, ts, bobToken, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-org list: got %d, want 403", listResp.StatusCode)
+	}
+}
+
 // TestAlertRule_ViewerCannotWrite verifies that viewer role cannot create or delete alert rules.
 func TestAlertRule_ViewerCannotWrite(t *testing.T) {
 	t.Parallel()

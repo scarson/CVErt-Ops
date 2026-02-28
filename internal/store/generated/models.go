@@ -6,12 +6,99 @@ package store
 
 import (
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 )
+
+type WatchlistItemType string
+
+const (
+	WatchlistItemTypePackage WatchlistItemType = "package"
+	WatchlistItemTypeCpe     WatchlistItemType = "cpe"
+)
+
+func (e *WatchlistItemType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = WatchlistItemType(s)
+	case string:
+		*e = WatchlistItemType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for WatchlistItemType: %T", src)
+	}
+	return nil
+}
+
+type NullWatchlistItemType struct {
+	WatchlistItemType WatchlistItemType
+	Valid             bool // Valid is true if WatchlistItemType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullWatchlistItemType) Scan(value interface{}) error {
+	if value == nil {
+		ns.WatchlistItemType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.WatchlistItemType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullWatchlistItemType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.WatchlistItemType), nil
+}
+
+type AlertEvent struct {
+	ID               uuid.UUID
+	RuleID           uuid.UUID
+	OrgID            uuid.UUID
+	CveID            string
+	MaterialHash     string
+	LastMatchState   bool
+	SuppressDelivery bool
+	FirstFiredAt     time.Time
+	LastFiredAt      time.Time
+	TimesFired       int32
+}
+
+type AlertRule struct {
+	ID                       uuid.UUID
+	OrgID                    uuid.UUID
+	Name                     string
+	Logic                    string
+	Conditions               json.RawMessage
+	WatchlistIds             []uuid.UUID
+	DslVersion               int32
+	HasEpssCondition         bool
+	IsEpssOnly               bool
+	Status                   string
+	FireOnNonMaterialChanges bool
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	DeletedAt                sql.NullTime
+}
+
+type AlertRuleRun struct {
+	ID                  uuid.UUID
+	RuleID              uuid.UUID
+	OrgID               uuid.UUID
+	Path                string
+	Status              string
+	StartedAt           time.Time
+	FinishedAt          sql.NullTime
+	CandidatesEvaluated int32
+	MatchesFound        int32
+	ErrorMessage        sql.NullString
+}
 
 type ApiKey struct {
 	ID              uuid.UUID
@@ -236,4 +323,28 @@ type UserIdentity struct {
 	ProviderUserID string
 	Email          string
 	CreatedAt      time.Time
+}
+
+type Watchlist struct {
+	ID          uuid.UUID
+	OrgID       uuid.UUID
+	GroupID     uuid.NullUUID
+	Name        string
+	Description sql.NullString
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   sql.NullTime
+}
+
+type WatchlistItem struct {
+	ID            uuid.UUID
+	WatchlistID   uuid.UUID
+	OrgID         uuid.UUID
+	ItemType      WatchlistItemType
+	Ecosystem     sql.NullString
+	PackageName   sql.NullString
+	Namespace     sql.NullString
+	CpeNormalized sql.NullString
+	CreatedAt     time.Time
+	DeletedAt     sql.NullTime
 }

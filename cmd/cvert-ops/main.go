@@ -43,6 +43,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 	"github.com/scarson/cvert-ops/migrations"
@@ -122,6 +123,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
 	apiSrv.SetAlertDeps(alertCache, alertEval)
 
+	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
+	// worker polls delivery rows and executes outbound webhook calls.
+	deliveryClient, err := notify.BuildSafeClient()
+	if err != nil {
+		return fmt.Errorf("build delivery HTTP client: %w", err)
+	}
+	dispatcher := notify.NewDispatcher(st, cfg.NotifyDebounceSeconds)
+	alertEval.SetDispatcher(dispatcher)
+	deliveryWorker := notify.NewWorker(st, deliveryClient, notify.WorkerConfig{
+		ClaimBatchSize:      cfg.NotifyClaimBatchSize,
+		MaxAttempts:         cfg.NotifyMaxAttempts,
+		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
+		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
+	})
+	deliveryWorker.SetDispatcher(dispatcher)
+	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+
 	handler := apiSrv.Handler()
 
 	// PLAN.md §18.3: explicit timeouts required to prevent Slowloris attacks.
@@ -196,8 +214,24 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	workerPool := worker.New(store.New(db))
+	st := store.New(db)
+	workerPool := worker.New(st)
 	workerPool.Register("feed_ingest", feedIngestHandler)
+
+	// Start notification delivery worker alongside the job queue worker pool.
+	deliveryClient, err := notify.BuildSafeClient()
+	if err != nil {
+		return fmt.Errorf("build delivery HTTP client: %w", err)
+	}
+	dispatcher := notify.NewDispatcher(st, cfg.NotifyDebounceSeconds)
+	deliveryWorker := notify.NewWorker(st, deliveryClient, notify.WorkerConfig{
+		ClaimBatchSize:      cfg.NotifyClaimBatchSize,
+		MaxAttempts:         cfg.NotifyMaxAttempts,
+		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
+		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
+	})
+	deliveryWorker.SetDispatcher(dispatcher)
+	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
@@ -391,7 +425,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 16
+const expectedSchemaVersion = 17
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

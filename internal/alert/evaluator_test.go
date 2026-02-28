@@ -636,3 +636,36 @@ func TestEvaluateRealtime_FanoutNotCalledForSuppressedEvent(t *testing.T) {
 		t.Fatalf("want 0 Fanout calls for suppressed events, got %d", len(disp.calls))
 	}
 }
+
+func TestEvaluateRealtime_FanoutNotCalledForDuplicateEvent(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	disp := &mockDispatcher{}
+	ev.SetDispatcher(disp)
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	cveID := "CVE-FANOUT-DEDUP-001"
+	score := 8.5
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "fanout dedup test", &score, "hashfanoutdedup")
+
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	// First call: new alert_event inserted → Fanout fires.
+	if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+		t.Fatalf("EvaluateRealtime (first): %v", err)
+	}
+	// Second call: same material_hash → ON CONFLICT DO NOTHING → uuid.Nil → Fanout must not fire.
+	if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+		t.Fatalf("EvaluateRealtime (second): %v", err)
+	}
+
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if len(disp.calls) != 1 {
+		t.Fatalf("want exactly 1 Fanout call (dedup suppresses second), got %d", len(disp.calls))
+	}
+}

@@ -34,8 +34,8 @@ type cveSummary struct {
 	Description  string // pre-lowercased for PostFilter matching
 }
 
-// Dispatcher dispatches notification delivery for newly created alert events.
-// Implemented by internal/notify.Dispatcher; nil disables delivery (tests, startup).
+// Dispatcher triggers notification delivery for a newly created alert event.
+// A nil dispatcher disables delivery (tests, startup).
 type Dispatcher interface {
 	Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error
 }
@@ -55,7 +55,9 @@ func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Log
 }
 
 // SetDispatcher injects the notification dispatcher.
-func (e *Evaluator) SetDispatcher(d Dispatcher) { e.dispatcher = d }
+func (e *Evaluator) SetDispatcher(d Dispatcher) {
+	e.dispatcher = d
+}
 
 // DryRunResult holds the output of a dry-run evaluation. No alert_events are written.
 type DryRunResult struct {

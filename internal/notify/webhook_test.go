@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,20 +75,32 @@ func TestSend_Non2xxReturnsError(t *testing.T) {
 }
 
 func TestSend_DeniedHeaderStripped(t *testing.T) {
-	var gotHost string
+	var gotContentType, gotTS, gotSig string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHost = r.Header.Get("Host")
+		gotContentType = r.Header.Get("Content-Type")
+		gotTS = r.Header.Get("X-CVErt-Timestamp")
+		gotSig = r.Header.Get("X-CVErtOps-Signature")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
+	secret := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	payload := []byte(`[]`)
 	_ = notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
 		URL:           srv.URL,
-		SigningSecret: "x",
-		CustomHeaders: map[string]string{"Host": "evil.internal", "X-Custom": "ok"},
-	}, []byte(`[]`))
-	// The Host header must match the server URL, not the injected value.
-	assert.NotEqual(t, "evil.internal", gotHost)
+		SigningSecret: secret,
+		CustomHeaders: map[string]string{
+			"Content-Type":       "text/plain",         // denylist: must stay application/json
+			"X-CVErt-Timestamp":  "0",                  // denylist: must be real timestamp
+			"X-CVErtOps-Signature": "sha256=forged",    // denylist: must be real HMAC
+		},
+	}, payload)
+
+	// Denied headers must not override Send's computed values.
+	assert.Equal(t, "application/json", gotContentType)
+	assert.NotEqual(t, "0", gotTS, "timestamp must not be overridden by custom header")
+	assert.NotEqual(t, "sha256=forged", gotSig, "signature must not be overridden by custom header")
+	assert.True(t, strings.HasPrefix(gotSig, "sha256="), "signature must have sha256= prefix")
 }
 
 func TestSend_RedirectRejected(t *testing.T) {

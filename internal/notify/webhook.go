@@ -31,7 +31,7 @@ var deniedHeaders = map[string]bool{
 	"transfer-encoding":   true,
 	"connection":          true,
 	"x-cvert-timestamp":   true,
-	"x-cvertos-signature": true,
+	"x-cvertops-signature": true,
 }
 
 // Send posts payload to the webhook URL, signs with HMAC-SHA256, and discards the response body.
@@ -57,7 +57,7 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	req.Header.Set("X-CVErt-Timestamp", ts)
 	req.Header.Set("X-CVErtOps-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 
-	resp, err := client.Do(req) //nolint:gosec // G704: SSRF is enforced architecturally by the safeurl-wrapped client injected at startup
+	resp, err := client.Do(req) //nolint:gosec // G107: SSRF is enforced architecturally by the safeurl-wrapped client injected at startup
 	if err != nil {
 		return fmt.Errorf("webhook POST: %w", err)
 	}

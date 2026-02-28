@@ -515,6 +515,118 @@ func (srv *Server) dryRunHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// listRuleChannelsHandler handles GET /api/v1/orgs/{org_id}/alert-rules/{id}/channels.
+// Returns all non-deleted notification channels bound to the rule.
+func (srv *Server) listRuleChannelsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ruleID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	rows, err := srv.store.ListChannelsForRule(r.Context(), ruleID, orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "list channels for rule", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	items := make([]channelEntry, len(rows))
+	for i, row := range rows {
+		items[i] = channelEntry{
+			ID:        row.ID.String(),
+			OrgID:     row.OrgID.String(),
+			Name:      row.Name,
+			Type:      row.Type,
+			Config:    row.Config,
+			CreatedAt: row.CreatedAt.Format(time.RFC3339),
+			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
+		}
+	}
+	writeJSON(w, http.StatusOK, channelListResponse{Items: items})
+}
+
+// bindRuleChannelHandler handles PUT /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}.
+// Idempotent: binding an already-bound channel is a no-op and returns 204.
+func (srv *Server) bindRuleChannelHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ruleID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	channelID, err := uuid.Parse(chi.URLParam(r, "channel_id"))
+	if err != nil {
+		http.Error(w, "invalid channel_id", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the channel exists in this org (cross-org bind prevention).
+	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, channelID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get notification channel for bind", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if ch == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	if err := srv.store.BindChannelToRule(r.Context(), ruleID, channelID, orgID); err != nil {
+		slog.ErrorContext(r.Context(), "bind channel to rule", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// unbindRuleChannelHandler handles DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}.
+// Returns 404 if the binding does not exist; 204 on success.
+func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ruleID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	channelID, err := uuid.Parse(chi.URLParam(r, "channel_id"))
+	if err != nil {
+		http.Error(w, "invalid channel_id", http.StatusBadRequest)
+		return
+	}
+
+	// Check binding exists before attempting delete (DELETE is a no-op on missing rows).
+	exists, err := srv.store.ChannelRuleBindingExists(r.Context(), ruleID, channelID, orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "check channel rule binding", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	if err := srv.store.UnbindChannelFromRule(r.Context(), ruleID, channelID, orgID); err != nil {
+		slog.ErrorContext(r.Context(), "unbind channel from rule", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // valErrsToEntries converts DSL ValidationErrors to API-level entries.
 func valErrsToEntries(errs []dsl.ValidationError) []dslErrorEntry {
 	if len(errs) == 0 {

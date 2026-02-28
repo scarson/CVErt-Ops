@@ -393,6 +393,359 @@ func TestAlertRule_CrossOrgIsolation(t *testing.T) {
 	}
 }
 
+// ── Rule-channel binding helpers ──────────────────────────────────────────────
+
+func doBindChannel(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, ruleID, channelID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPut,
+		ts.URL+"/api/v1/orgs/"+orgID+"/alert-rules/"+ruleID+"/channels/"+channelID, nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("bind channel: %v", err)
+	}
+	return resp
+}
+
+func doUnbindChannel(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, ruleID, channelID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete,
+		ts.URL+"/api/v1/orgs/"+orgID+"/alert-rules/"+ruleID+"/channels/"+channelID, nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("unbind channel: %v", err)
+	}
+	return resp
+}
+
+func doListRuleChannels(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, ruleID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		ts.URL+"/api/v1/orgs/"+orgID+"/alert-rules/"+ruleID+"/channels", nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("list rule channels: %v", err)
+	}
+	return resp
+}
+
+// ── Rule-channel binding tests ────────────────────────────────────────────────
+
+// TestBindChannelToRule_Idempotent verifies that binding a channel to a rule is idempotent:
+// the second PUT returns 204 just like the first.
+func TestBindChannelToRule_Idempotent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createChanResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createChanResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createChanResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel: got %d, want 201", createChanResp.StatusCode)
+	}
+	var createdChan struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createChanResp.Body).Decode(&createdChan); err != nil {
+		t.Fatalf("decode create channel: %v", err)
+	}
+
+	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	}
+	var createdRule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRuleResp.Body).Decode(&createdRule); err != nil {
+		t.Fatalf("decode create rule: %v", err)
+	}
+
+	// First bind → 204.
+	bindResp1 := doBindChannel(t, ctx, ts, token, aliceReg.OrgID, createdRule.ID, createdChan.ID)
+	defer bindResp1.Body.Close() //nolint:errcheck,gosec // G104
+	if bindResp1.StatusCode != http.StatusNoContent {
+		t.Fatalf("first bind: got %d, want 204", bindResp1.StatusCode)
+	}
+
+	// Second bind (idempotent) → 204.
+	bindResp2 := doBindChannel(t, ctx, ts, token, aliceReg.OrgID, createdRule.ID, createdChan.ID)
+	defer bindResp2.Body.Close() //nolint:errcheck,gosec // G104
+	if bindResp2.StatusCode != http.StatusNoContent {
+		t.Fatalf("second bind (idempotent): got %d, want 204", bindResp2.StatusCode)
+	}
+}
+
+// TestBindChannelToRule_CrossOrgChannelRejected verifies that binding a channel from a different
+// org returns 404 — the channel does not exist in the rule's org.
+func TestBindChannelToRule_CrossOrgChannelRejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice is first user — auto-org assigned.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	// Bob is second user — no auto-org, so he creates one explicitly.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	createOrgReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs", bytes.NewBufferString(`{"name":"Bob Org"}`))
+	createOrgReq.Header.Set("Content-Type", "application/json")
+	createOrgReq.Header.Set("Cookie", "access_token="+bobToken)
+	createOrgReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	createOrgResp, err := ts.Client().Do(createOrgReq) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create bob org: %v", err)
+	}
+	defer createOrgResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createOrgResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create bob org: got %d, want 201", createOrgResp.StatusCode)
+	}
+	var bobOrg struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(createOrgResp.Body).Decode(&bobOrg); err != nil {
+		t.Fatalf("decode bob org: %v", err)
+	}
+
+	// Alice creates a rule in her org.
+	createRuleResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
+	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("alice create rule: got %d, want 202", createRuleResp.StatusCode)
+	}
+	var aliceRule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRuleResp.Body).Decode(&aliceRule); err != nil {
+		t.Fatalf("decode alice rule: %v", err)
+	}
+
+	// Bob creates a channel in his org.
+	createChanResp := doCreateChannel(t, ctx, ts, bobToken, bobOrg.OrgID, validChannelBody)
+	defer createChanResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createChanResp.StatusCode != http.StatusCreated {
+		t.Fatalf("bob create channel: got %d, want 201", createChanResp.StatusCode)
+	}
+	var bobChan struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createChanResp.Body).Decode(&bobChan); err != nil {
+		t.Fatalf("decode bob channel: %v", err)
+	}
+
+	// Alice tries to bind Bob's channel to her rule → 404.
+	bindResp := doBindChannel(t, ctx, ts, aliceToken, aliceReg.OrgID, aliceRule.ID, bobChan.ID)
+	defer bindResp.Body.Close() //nolint:errcheck,gosec // G104
+	if bindResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-org bind: got %d, want 404", bindResp.StatusCode)
+	}
+}
+
+// TestUnbindChannelFromRule_204 verifies that unbinding an existing binding returns 204.
+func TestUnbindChannelFromRule_204(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createChanResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createChanResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createChanResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel: got %d, want 201", createChanResp.StatusCode)
+	}
+	var createdChan struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createChanResp.Body).Decode(&createdChan); err != nil {
+		t.Fatalf("decode create channel: %v", err)
+	}
+
+	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	}
+	var createdRule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRuleResp.Body).Decode(&createdRule); err != nil {
+		t.Fatalf("decode create rule: %v", err)
+	}
+
+	// Bind via store directly.
+	if err := db.BindChannelToRule(ctx,
+		mustParseUUID(t, createdRule.ID),
+		mustParseUUID(t, createdChan.ID),
+		mustParseUUID(t, aliceReg.OrgID),
+	); err != nil {
+		t.Fatalf("bind channel to rule: %v", err)
+	}
+
+	// DELETE → 204.
+	unbindResp := doUnbindChannel(t, ctx, ts, token, aliceReg.OrgID, createdRule.ID, createdChan.ID)
+	defer unbindResp.Body.Close() //nolint:errcheck,gosec // G104
+	if unbindResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unbind: got %d, want 204", unbindResp.StatusCode)
+	}
+}
+
+// TestUnbindChannelFromRule_404 verifies that unbinding a non-existent binding returns 404.
+func TestUnbindChannelFromRule_404(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	}
+	var createdRule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRuleResp.Body).Decode(&createdRule); err != nil {
+		t.Fatalf("decode create rule: %v", err)
+	}
+
+	// Use a random UUID as channel_id — binding doesn't exist.
+	fakeChannelID := "00000000-0000-0000-0000-000000000001"
+	unbindResp := doUnbindChannel(t, ctx, ts, token, aliceReg.OrgID, createdRule.ID, fakeChannelID)
+	defer unbindResp.Body.Close() //nolint:errcheck,gosec // G104
+	if unbindResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unbind non-existent binding: got %d, want 404", unbindResp.StatusCode)
+	}
+}
+
+// TestListChannelsForRule verifies listing channels for a rule, and that soft-deleted channels
+// are excluded from results.
+func TestListChannelsForRule(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create 2 channels.
+	createChan1Resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, `{"name":"Channel 1","type":"webhook","config":{"url":"https://example.com/hook1"}}`)
+	defer createChan1Resp.Body.Close() //nolint:errcheck,gosec // G104
+	if createChan1Resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel 1: got %d, want 201", createChan1Resp.StatusCode)
+	}
+	var chan1 struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createChan1Resp.Body).Decode(&chan1); err != nil {
+		t.Fatalf("decode channel 1: %v", err)
+	}
+
+	createChan2Resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, `{"name":"Channel 2","type":"webhook","config":{"url":"https://example.com/hook2"}}`)
+	defer createChan2Resp.Body.Close() //nolint:errcheck,gosec // G104
+	if createChan2Resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel 2: got %d, want 201", createChan2Resp.StatusCode)
+	}
+	var chan2 struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createChan2Resp.Body).Decode(&chan2); err != nil {
+		t.Fatalf("decode channel 2: %v", err)
+	}
+
+	// Create a rule.
+	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	}
+	var createdRule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createRuleResp.Body).Decode(&createdRule); err != nil {
+		t.Fatalf("decode create rule: %v", err)
+	}
+
+	// Bind both channels via store.
+	orgUUID := mustParseUUID(t, aliceReg.OrgID)
+	ruleUUID := mustParseUUID(t, createdRule.ID)
+	if err := db.BindChannelToRule(ctx, ruleUUID, mustParseUUID(t, chan1.ID), orgUUID); err != nil {
+		t.Fatalf("bind channel 1: %v", err)
+	}
+	if err := db.BindChannelToRule(ctx, ruleUUID, mustParseUUID(t, chan2.ID), orgUUID); err != nil {
+		t.Fatalf("bind channel 2: %v", err)
+	}
+
+	// GET → 2 items.
+	listResp := doListRuleChannels(t, ctx, ts, token, aliceReg.OrgID, createdRule.ID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list rule channels: got %d, want 200", listResp.StatusCode)
+	}
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Items) != 2 {
+		t.Fatalf("list items count = %d, want 2", len(listed.Items))
+	}
+
+	// Soft-delete channel 1 via store.
+	if err := db.SoftDeleteNotificationChannel(ctx, orgUUID, mustParseUUID(t, chan1.ID)); err != nil {
+		t.Fatalf("soft delete channel 1: %v", err)
+	}
+
+	// GET again → 1 item (deleted channel excluded).
+	listResp2 := doListRuleChannels(t, ctx, ts, token, aliceReg.OrgID, createdRule.ID)
+	defer listResp2.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp2.StatusCode != http.StatusOK {
+		t.Fatalf("list rule channels after delete: got %d, want 200", listResp2.StatusCode)
+	}
+	var listed2 struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp2.Body).Decode(&listed2); err != nil {
+		t.Fatalf("decode list 2: %v", err)
+	}
+	if len(listed2.Items) != 1 {
+		t.Fatalf("list items count after soft-delete = %d, want 1", len(listed2.Items))
+	}
+}
+
 // TestAlertRule_ViewerCannotWrite verifies that viewer role cannot create or delete alert rules.
 func TestAlertRule_ViewerCannotWrite(t *testing.T) {
 	t.Parallel()

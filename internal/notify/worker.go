@@ -110,7 +110,7 @@ func (w *Worker) runClaim(ctx context.Context) {
 	for _, row := range rows {
 		row := row
 		sem := w.semaphore(row.OrgID)
-		sem <- struct{}{} // acquire per-org slot
+		sem <- struct{}{} // blocking: intentional — bounded by webhook timeout (10s) and stuck-reset recovery
 		w.wg.Add(1)
 		go func() {
 			defer func() { <-sem }()
@@ -136,7 +136,7 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		URL           string            `json:"url"`
 		CustomHeaders map[string]string `json:"custom_headers"`
 	}
-	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck
+	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail → retry/exhaust handles it
 
 	sendErr := Send(ctx, w.client, WebhookConfig{
 		URL:           config.URL,

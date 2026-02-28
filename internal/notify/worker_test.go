@@ -193,3 +193,43 @@ func TestWorker_ExhaustsAfterMaxAttempts(t *testing.T) {
 		t.Errorf("delivery status = %q, want %q", status, "failed")
 	}
 }
+
+func TestWorker_ExhaustsIfChannelDeleted(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WorkerDeletedChanOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerDeletedChanRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "WorkerDeletedChanCh")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-9004"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+	// Soft-delete the channel so GetNotificationChannelForDelivery returns nil.
+	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("SoftDeleteNotificationChannel: %v", err)
+	}
+
+	w := notify.NewWorker(s.Store, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         4,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 5,
+	})
+	w.RunOnce(ctx)
+
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&status); err != nil {
+		t.Fatalf("scan delivery row: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("deleted-channel delivery status = %q, want %q", status, "failed")
+	}
+}

@@ -87,6 +87,13 @@ type AlertRule struct {
 	DeletedAt                sql.NullTime
 }
 
+type AlertRuleChannel struct {
+	RuleID    uuid.UUID
+	ChannelID uuid.UUID
+	OrgID     uuid.UUID
+	CreatedAt time.Time
+}
+
 type AlertRuleRun struct {
 	ID                  uuid.UUID
 	RuleID              uuid.UUID
@@ -256,6 +263,35 @@ type JobQueue struct {
 	CreatedAt   time.Time
 	FinishedAt  sql.NullTime
 	LastError   sql.NullString
+}
+
+type NotificationChannel struct {
+	ID                     uuid.UUID
+	OrgID                  uuid.UUID
+	Name                   string
+	Type                   string
+	Config                 json.RawMessage
+	SigningSecret          string
+	SigningSecretSecondary sql.NullString
+	DeletedAt              sql.NullTime
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type NotificationDelivery struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	RuleID          uuid.UUID
+	ChannelID       uuid.UUID
+	Status          string
+	AttemptCount    int32
+	Payload         json.RawMessage
+	SendAfter       time.Time
+	LastAttemptedAt sql.NullTime
+	DeliveredAt     sql.NullTime
+	LastError       sql.NullString
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type OrgInvitation struct {

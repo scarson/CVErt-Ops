@@ -67,9 +67,9 @@ SELECT id, org_id, rule_id, channel_id, status, attempt_count,
        send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
 FROM notification_deliveries
 WHERE org_id = $1
-  AND ($2::uuid IS NULL OR rule_id   = $2)
-  AND ($3::uuid IS NULL OR channel_id = $3)
-  AND ($4::text IS NULL OR status    = $4)
+  AND ($2 = '00000000-0000-0000-0000-000000000000'::uuid OR rule_id    = $2)
+  AND ($3 = '00000000-0000-0000-0000-000000000000'::uuid OR channel_id = $3)
+  AND ($4 = ''                                           OR status      = $4)
   AND (created_at < $5 OR (created_at = $5 AND id < $6))
 ORDER BY created_at DESC, id DESC
 LIMIT $7;

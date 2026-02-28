@@ -32,22 +32,21 @@ DO UPDATE SET
 // UpsertDelivery creates a pending delivery row or, if a pending row already exists for
 // the same (rule_id, channel_id), appends the CVE snapshot to its payload array.
 // debounceSeconds controls when send_after is set (debounce window or retry backoff).
-// Uses withBypassTx because the delivery worker is cross-tenant.
+// Uses an explicit transaction so the raw SQL executes on the same connection as the
+// RLS bypass SET LOCAL — s.db.ExecContext would acquire a different pool connection.
 func (s *Store) UpsertDelivery(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
-	err := s.withBypassTx(ctx, func(_ *generated.Queries) error {
-		_, err := s.db.ExecContext(ctx, upsertDeliverySQL,
-			orgID,
-			ruleID,
-			channelID,
-			payload,
-			debounceSeconds,
-		)
-		return err
-	})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("upsert delivery: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		return fmt.Errorf("upsert delivery: set bypass_rls: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds); err != nil {
 		return fmt.Errorf("upsert delivery: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ClaimPendingDeliveries claims up to limit pending delivery rows that are ready to send
@@ -147,27 +146,16 @@ func (s *Store) OrphanedAlertEvents(ctx context.Context, limit int) ([]generated
 
 // ListDeliveries returns delivery rows for an org, optionally filtered by rule, channel,
 // and status. Uses keyset pagination on (created_at DESC, id DESC).
-func (s *Store) ListDeliveries(ctx context.Context, orgID uuid.UUID, ruleID, channelID uuid.NullUUID, status *string, cursorTime time.Time, cursorID uuid.UUID, limit int) ([]generated.ListDeliveriesRow, error) {
+// Pass uuid.Nil for ruleID or channelID to skip that filter; pass "" for status to return all.
+func (s *Store) ListDeliveries(ctx context.Context, orgID uuid.UUID, ruleID, channelID uuid.UUID, status string, cursorTime time.Time, cursorID uuid.UUID, limit int) ([]generated.ListDeliveriesRow, error) {
 	var result []generated.ListDeliveriesRow
-	// Translate nullable UUIDs: uuid.NullUUID → uuid.UUID (zero value when not set).
-	var ruleIDVal, channelIDVal uuid.UUID
-	if ruleID.Valid {
-		ruleIDVal = ruleID.UUID
-	}
-	if channelID.Valid {
-		channelIDVal = channelID.UUID
-	}
-	var statusVal string
-	if status != nil {
-		statusVal = *status
-	}
 	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		var err error
 		result, err = q.ListDeliveries(ctx, generated.ListDeliveriesParams{
 			OrgID:     orgID,
-			Column2:   ruleIDVal,
-			Column3:   channelIDVal,
-			Column4:   statusVal,
+			Column2:   ruleID,
+			Column3:   channelID,
+			Column4:   status,
 			CreatedAt: cursorTime,
 			ID:        cursorID,
 			Limit:     int32(limit), //nolint:gosec // G115: limit validated by caller

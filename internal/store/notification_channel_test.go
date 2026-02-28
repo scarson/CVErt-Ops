@@ -225,6 +225,89 @@ func TestChannelHasActiveBoundRules_NoRules(t *testing.T) {
 	}
 }
 
+func TestClearSecondarySecret(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrg8")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ClearSecondaryChannel")
+
+	// Rotate to populate the secondary secret.
+	_, err := s.RotateSigningSecret(ctx, org.ID, chanID)
+	if err != nil {
+		t.Fatalf("RotateSigningSecret: %v", err)
+	}
+
+	// Verify secondary is non-null after rotation.
+	got, err := s.GetNotificationChannelForDelivery(ctx, chanID)
+	if err != nil {
+		t.Fatalf("GetNotificationChannelForDelivery after rotate: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetNotificationChannelForDelivery returned nil after rotate")
+	}
+	if !got.SigningSecretSecondary.Valid {
+		t.Fatal("secondary should be set after rotation")
+	}
+
+	// Clear the secondary secret.
+	if err := s.ClearSecondarySecret(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("ClearSecondarySecret: %v", err)
+	}
+
+	// Verify secondary is NULL after clearing.
+	got, err = s.GetNotificationChannelForDelivery(ctx, chanID)
+	if err != nil {
+		t.Fatalf("GetNotificationChannelForDelivery after clear: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetNotificationChannelForDelivery returned nil after clear")
+	}
+	if got.SigningSecretSecondary.Valid {
+		t.Error("secondary should be NULL after ClearSecondarySecret")
+	}
+}
+
+func TestChannelHasActiveBoundRules_WithActiveRule(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrg9")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "BoundChannel")
+
+	// Create an alert rule and set it to active.
+	rule, err := s.CreateAlertRule(ctx, org.ID, store.CreateAlertRuleParams{
+		Name:       "ActiveBoundRule",
+		Logic:      "and",
+		Conditions: json.RawMessage(`[{"field":"severity","operator":"eq","value":"critical"}]`),
+		Status:     "draft",
+	})
+	if err != nil {
+		t.Fatalf("CreateAlertRule: %v", err)
+	}
+	if err := s.SetAlertRuleStatus(ctx, org.ID, rule.ID, "active"); err != nil {
+		t.Fatalf("SetAlertRuleStatus: %v", err)
+	}
+
+	// Bind the channel to the rule via raw SQL (no store method yet for this binding).
+	_, err = s.DB().ExecContext(ctx,
+		`INSERT INTO alert_rule_channels (rule_id, channel_id, org_id) VALUES ($1, $2, $3)`,
+		rule.ID, chanID, org.ID)
+	if err != nil {
+		t.Fatalf("INSERT alert_rule_channels: %v", err)
+	}
+
+	has, err := s.ChannelHasActiveBoundRules(ctx, org.ID, chanID)
+	if err != nil {
+		t.Fatalf("ChannelHasActiveBoundRules: %v", err)
+	}
+	if !has {
+		t.Error("expected true for channel bound to an active rule")
+	}
+}
+
 func TestGetNotificationChannel_WrongOrgReturnsNil(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

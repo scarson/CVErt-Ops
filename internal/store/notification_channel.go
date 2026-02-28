@@ -178,7 +178,7 @@ func (s *Store) RotateSigningSecret(ctx context.Context, orgID, id uuid.UUID) (s
 	}
 	var result string
 	err = s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
-		s, err := q.RotateSigningSecret(ctx, generated.RotateSigningSecretParams{
+		returned, err := q.RotateSigningSecret(ctx, generated.RotateSigningSecretParams{
 			ID:            id,
 			OrgID:         orgID,
 			SigningSecret: newSecret,
@@ -189,7 +189,7 @@ func (s *Store) RotateSigningSecret(ctx context.Context, orgID, id uuid.UUID) (s
 		if err != nil {
 			return fmt.Errorf("rotate signing secret: %w", err)
 		}
-		result = s
+		result = returned
 		return nil
 	})
 	return result, err

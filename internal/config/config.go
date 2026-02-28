@@ -72,6 +72,9 @@ type Config struct {
 	NotifyMaxConcurrentPerOrg int `env:"NOTIFY_MAX_CONCURRENT_PER_ORG" envDefault:"5"`
 	NotifyDebounceSeconds     int `env:"NOTIFY_DEBOUNCE_SECONDS"       envDefault:"120"`
 	WebhookSecretGraceHours   int `env:"WEBHOOK_SECRET_GRACE_HOURS"    envDefault:"24"`
+	NotifyClaimBatchSize      int `env:"NOTIFY_CLAIM_BATCH_SIZE"       envDefault:"50"`
+	NotifyMaxAttempts         int `env:"NOTIFY_MAX_ATTEMPTS"           envDefault:"4"`
+	NotifyBackoffBaseSeconds  int `env:"NOTIFY_BACKOFF_BASE_SECONDS"   envDefault:"30"`
 
 	// ── Rate limiting ────────────────────────────────────────────────────────────
 	// Comma-separated CIDRs of trusted reverse proxies; empty = no proxy.

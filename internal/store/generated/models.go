@@ -344,7 +344,7 @@ type ScheduledReport struct {
 	ID                uuid.UUID
 	OrgID             uuid.UUID
 	Name              string
-	ScheduledTime     time.Time
+	ScheduledTime     string
 	Timezone          string
 	NextRunAt         time.Time
 	LastRunAt         sql.NullTime

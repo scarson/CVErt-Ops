@@ -103,6 +103,59 @@ func TestSend_DeniedHeaderStripped(t *testing.T) {
 	assert.True(t, strings.HasPrefix(gotSig, "sha256="), "signature must have sha256= prefix")
 }
 
+func TestSend_SecondarySignatureEmittedWhenSet(t *testing.T) {
+	var gotPrimary, gotSecondary, gotTS string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPrimary = r.Header.Get("X-CVErtOps-Signature")
+		gotSecondary = r.Header.Get("X-CVErtOps-Signature-Secondary")
+		gotTS = r.Header.Get("X-CVErt-Timestamp")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	primary := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	secondary := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	payload := []byte(`{"cve_id":"CVE-2024-9999"}`)
+
+	err := notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL:                    srv.URL,
+		SigningSecret:          primary,
+		SigningSecretSecondary: secondary,
+	}, payload)
+	require.NoError(t, err)
+
+	// Primary signature must be valid.
+	mac1 := hmac.New(sha256.New, []byte(primary))
+	mac1.Write([]byte(gotTS + "." + string(gotBody)))
+	assert.Equal(t, "sha256="+hex.EncodeToString(mac1.Sum(nil)), gotPrimary)
+
+	// Secondary signature must be valid with the secondary secret.
+	mac2 := hmac.New(sha256.New, []byte(secondary))
+	mac2.Write([]byte(gotTS + "." + string(gotBody)))
+	assert.Equal(t, "sha256="+hex.EncodeToString(mac2.Sum(nil)), gotSecondary)
+
+	// Different secrets → different signatures.
+	assert.NotEqual(t, gotPrimary, gotSecondary)
+}
+
+func TestSend_SecondarySignatureAbsentWhenNotSet(t *testing.T) {
+	var gotSecondary string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSecondary = r.Header.Get("X-CVErtOps-Signature-Secondary")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	_ = notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL:           srv.URL,
+		SigningSecret: "x",
+	}, []byte(`[]`))
+
+	assert.Empty(t, gotSecondary, "secondary signature header must be absent when SigningSecretSecondary is empty")
+}
+
 func TestSend_RedirectRejected(t *testing.T) {
 	inner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

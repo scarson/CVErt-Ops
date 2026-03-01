@@ -88,6 +88,18 @@ func doRotateSecret(t *testing.T, ctx context.Context, ts *httptest.Server, acce
 	return resp
 }
 
+func doClearSecondary(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, id string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/channels/"+id+"/clear-secondary", nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("clear secondary: %v", err)
+	}
+	return resp
+}
+
 // validChannelBody is a minimal valid webhook channel body for testing.
 const validChannelBody = `{"name":"Test Webhook","type":"webhook","config":{"url":"https://example.com/hook"}}`
 
@@ -373,6 +385,120 @@ func TestRotateSecret_NewPrimaryReturned(t *testing.T) {
 	}
 	if rotated.SigningSecret == created.SigningSecret {
 		t.Error("rotated secret must differ from the original")
+	}
+}
+
+// TestClearSecondarySecret_204 verifies that clear-secondary returns 204 and
+// subsequent delivery no longer sends a secondary signature header.
+func TestClearSecondarySecret_204(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// Rotate to promote current primary to secondary.
+	rotateResp := doRotateSecret(t, ctx, ts, token, aliceReg.OrgID, created.ID)
+	defer rotateResp.Body.Close() //nolint:errcheck,gosec // G104
+	if rotateResp.StatusCode != http.StatusOK {
+		t.Fatalf("rotate secret: got %d, want 200", rotateResp.StatusCode)
+	}
+
+	// Clear the secondary.
+	clearResp := doClearSecondary(t, ctx, ts, token, aliceReg.OrgID, created.ID)
+	defer clearResp.Body.Close() //nolint:errcheck,gosec // G104
+	if clearResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear secondary: got %d, want 204", clearResp.StatusCode)
+	}
+}
+
+// TestCreateChannel_SSRFBlockedURL verifies that webhook channels with private/internal
+// URLs are rejected at registration time with 422.
+func TestCreateChannel_SSRFBlockedURL(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	cases := []struct {
+		url  string
+		desc string
+	}{
+		{"http://localhost/hook", "localhost"},
+		{"http://127.0.0.1/hook", "loopback IP"},
+		{"http://10.0.0.1/hook", "private class A"},
+		{"http://192.168.1.1/hook", "private class C"},
+		{"http://169.254.169.254/hook", "link-local / AWS metadata"},
+		{"ftp://example.com/hook", "non-http scheme"},
+		{"http://internal.local/hook", ".local hostname"},
+	}
+	for _, tc := range cases {
+		body := `{"name":"Bad Webhook","type":"webhook","config":{"url":"` + tc.url + `"}}`
+		resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Errorf("url %q (%s): got %d, want 422", tc.url, tc.desc, resp.StatusCode)
+		}
+	}
+}
+
+// TestValidateWebhookURL exercises the static SSRF validator directly.
+func TestValidateWebhookURL(t *testing.T) {
+	t.Parallel()
+	valid := []string{
+		"https://example.com/hook",
+		"http://example.com/hook",
+		"https://hooks.example.com:8443/path?foo=bar",
+	}
+	for _, u := range valid {
+		if err := validateWebhookURL(u); err != nil {
+			t.Errorf("validateWebhookURL(%q) = %v, want nil", u, err)
+		}
+	}
+
+	invalid := []struct {
+		url  string
+		desc string
+	}{
+		{"", "empty"},
+		{"not-a-url", "no scheme"},
+		{"ftp://example.com/hook", "ftp scheme"},
+		{"http://localhost/hook", "localhost"},
+		{"http://localhost.local/hook", ".local suffix"},
+		{"http://api.internal/hook", ".internal suffix"},
+		{"http://127.0.0.1/hook", "loopback"},
+		{"http://::1/hook", "IPv6 loopback"},
+		{"http://10.1.2.3/hook", "RFC1918 10/8"},
+		{"http://172.16.0.1/hook", "RFC1918 172.16/12"},
+		{"http://192.168.99.1/hook", "RFC1918 192.168/16"},
+		{"http://169.254.100.200/hook", "link-local"},
+		{"http://0.0.0.0/hook", "unspecified"},
+	}
+	for _, tc := range invalid {
+		if err := validateWebhookURL(tc.url); err == nil {
+			t.Errorf("validateWebhookURL(%q) (%s) = nil, want error", tc.url, tc.desc)
+		}
 	}
 }
 

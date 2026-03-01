@@ -189,6 +189,18 @@ func (q *Queries) GetScheduledReport(ctx context.Context, arg GetScheduledReport
 	return i, err
 }
 
+const getScheduledReportName = `-- name: GetScheduledReportName :one
+SELECT name FROM scheduled_reports WHERE id = $1 LIMIT 1
+`
+
+// Lightweight lookup for template rendering.
+func (q *Queries) GetScheduledReportName(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRowContext(ctx, getScheduledReportName, id)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
 const listScheduledReports = `-- name: ListScheduledReports :many
 SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at FROM scheduled_reports
 WHERE org_id = $1 AND deleted_at IS NULL

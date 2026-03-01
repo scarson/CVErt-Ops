@@ -2,7 +2,7 @@
 -- ABOUTME: Claim uses FOR UPDATE SKIP LOCKED; debounce uses ON CONFLICT partial index.
 
 -- name: ClaimPendingDeliveries :many
-SELECT id, org_id, rule_id, channel_id, attempt_count, payload
+SELECT id, org_id, rule_id, channel_id, kind, report_id, attempt_count, payload
 FROM notification_deliveries
 WHERE status = 'pending' AND send_after <= now()
 ORDER BY send_after
@@ -63,7 +63,7 @@ WHERE ae.suppress_delivery = false
 LIMIT $1;
 
 -- name: ListDeliveries :many
-SELECT id, org_id, rule_id, channel_id, status, attempt_count,
+SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count,
        send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
 FROM notification_deliveries
 WHERE org_id = $1
@@ -75,7 +75,7 @@ ORDER BY created_at DESC, id DESC
 LIMIT $7;
 
 -- name: GetDelivery :one
-SELECT id, org_id, rule_id, channel_id, status, attempt_count, payload,
+SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count, payload,
        send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
 FROM notification_deliveries
 WHERE id = $1 AND org_id = $2

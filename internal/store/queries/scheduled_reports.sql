@@ -60,3 +60,7 @@ WHERE id = $1;
 -- name: GetAlertRuleName :one
 -- Lightweight lookup for template rendering.
 SELECT name FROM alert_rules WHERE id = $1 LIMIT 1;
+
+-- name: GetScheduledReportName :one
+-- Lightweight lookup for template rendering.
+SELECT name FROM scheduled_reports WHERE id = $1 LIMIT 1;

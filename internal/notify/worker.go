@@ -1,4 +1,4 @@
-// ABOUTME: Delivery worker: polls notification_deliveries, claims rows, executes webhooks.
+// ABOUTME: Delivery worker: polls notification_deliveries, dispatches to webhook or email.
 // ABOUTME: Per-org semaphore caps concurrent deliveries. sync.WaitGroup for graceful shutdown.
 package notify
 
@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,29 +28,33 @@ type WorkerConfig struct {
 	StuckThreshold      time.Duration // default 2 minutes if zero
 }
 
-// Worker polls notification_deliveries and executes outbound HTTP webhook deliveries.
+// Worker polls notification_deliveries and executes outbound deliveries (webhook or email).
 type Worker struct {
-	store      *store.Store
-	client     *http.Client
-	cfg        WorkerConfig
-	log        *slog.Logger
-	sems       map[uuid.UUID]chan struct{} // per-org semaphores, lazy-init
-	semsMu     sync.Mutex
-	wg         sync.WaitGroup
-	dispatcher *Dispatcher
+	store       *store.Store
+	client      *http.Client
+	cfg         WorkerConfig
+	smtpCfg     SmtpConfig
+	externalURL string
+	log         *slog.Logger
+	sems        map[uuid.UUID]chan struct{} // per-org semaphores, lazy-init
+	semsMu      sync.Mutex
+	wg          sync.WaitGroup
+	dispatcher  *Dispatcher
 }
 
 // NewWorker creates a Worker. client should be the production safeurl-wrapped client.
-func NewWorker(st *store.Store, client *http.Client, cfg WorkerConfig) *Worker {
+func NewWorker(st *store.Store, client *http.Client, cfg WorkerConfig, smtpCfg SmtpConfig, externalURL string) *Worker {
 	if cfg.StuckThreshold == 0 {
 		cfg.StuckThreshold = 2 * time.Minute
 	}
 	return &Worker{
-		store:  st,
-		client: client,
-		cfg:    cfg,
-		log:    slog.Default(),
-		sems:   make(map[uuid.UUID]chan struct{}),
+		store:       st,
+		client:      client,
+		cfg:         cfg,
+		smtpCfg:     smtpCfg,
+		externalURL: externalURL,
+		log:         slog.Default(),
+		sems:        make(map[uuid.UUID]chan struct{}),
 	}
 }
 
@@ -110,7 +115,7 @@ func (w *Worker) runClaim(ctx context.Context) {
 	for _, row := range rows {
 		row := row
 		sem := w.semaphore(row.OrgID)
-		sem <- struct{}{} // blocking: intentional — bounded by webhook timeout (10s) and stuck-reset recovery
+		sem <- struct{}{} // blocking: intentional — bounded by delivery timeout and stuck-reset recovery
 		w.wg.Add(1)
 		go func() {
 			defer func() { <-sem }()
@@ -132,18 +137,16 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
-	var config struct {
-		URL           string            `json:"url"`
-		CustomHeaders map[string]string `json:"custom_headers"`
+	var sendErr error
+	switch ch.Type {
+	case "webhook":
+		sendErr = w.deliverWebhook(ctx, row, ch)
+	case "email":
+		sendErr = w.deliverEmail(ctx, row, ch)
+	default:
+		w.exhaust(ctx, row.ID, fmt.Sprintf("unsupported channel type: %s", ch.Type))
+		return
 	}
-	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail → retry/exhaust handles it
-
-	sendErr := Send(ctx, w.client, WebhookConfig{
-		URL:                    config.URL,
-		SigningSecret:          ch.SigningSecret.String,
-		SigningSecretSecondary: ch.SigningSecretSecondary.String,
-		CustomHeaders:          config.CustomHeaders,
-	}, row.Payload)
 
 	if sendErr == nil {
 		if err := w.store.CompleteDelivery(ctx, row.ID); err != nil {
@@ -152,8 +155,15 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
+	// For email, permanent SMTP errors (5xx) should exhaust immediately.
+	if ch.Type == "email" && isPermanentSMTPError(sendErr) {
+		w.log.Warn("permanent SMTP failure", "id", row.ID, "err", sendErr)
+		w.exhaust(ctx, row.ID, sendErr.Error())
+		return
+	}
+
 	nextAttempt := int(row.AttemptCount) + 1
-	w.log.Warn("delivery failed", "id", row.ID, "err", sendErr, "attempt", nextAttempt)
+	w.log.Warn("delivery failed", "id", row.ID, "type", ch.Type, "err", sendErr, "attempt", nextAttempt)
 	if nextAttempt >= w.cfg.MaxAttempts {
 		w.exhaust(ctx, row.ID, sendErr.Error())
 		return
@@ -163,6 +173,105 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	if err := w.store.RetryDelivery(ctx, row.ID, backoff, sendErr.Error()); err != nil {
 		w.log.Error("retry delivery", "id", row.ID, "err", err)
 	}
+}
+
+func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
+	var config struct {
+		URL           string            `json:"url"`
+		CustomHeaders map[string]string `json:"custom_headers"`
+	}
+	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail → retry/exhaust handles it
+
+	return Send(ctx, w.client, WebhookConfig{
+		URL:                    config.URL,
+		SigningSecret:          ch.SigningSecret.String,
+		SigningSecretSecondary: ch.SigningSecretSecondary.String,
+		CustomHeaders:          config.CustomHeaders,
+	}, row.Payload)
+}
+
+func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
+	// Parse channel config for recipients.
+	var emailCfg struct {
+		Recipients []string `json:"recipients"`
+	}
+	if err := json.Unmarshal(ch.Config, &emailCfg); err != nil {
+		return fmt.Errorf("parse email config: %w", err)
+	}
+	if len(emailCfg.Recipients) == 0 {
+		return fmt.Errorf("email channel has no recipients")
+	}
+
+	// Deserialize payload into CVE snapshots.
+	var snaps []cveSnapshot
+	if err := json.Unmarshal(row.Payload, &snaps); err != nil {
+		return fmt.Errorf("unmarshal delivery payload: %w", err)
+	}
+
+	summaries := snapshotsToCVESummaries(snaps, w.externalURL)
+
+	var subject, htmlBody, textBody string
+	var renderErr error
+
+	switch row.Kind {
+	case "alert":
+		ruleName := "Alert Rule"
+		if row.RuleID.Valid {
+			if name, err := w.store.GetAlertRuleName(ctx, row.RuleID.UUID); err == nil && name != "" {
+				ruleName = name
+			}
+		}
+		subject, htmlBody, textBody, renderErr = RenderAlert(AlertTemplateData{
+			RuleName:    ruleName,
+			RuleID:      row.RuleID.UUID.String(),
+			CVEs:        summaries,
+			CVErtOpsURL: w.externalURL,
+		})
+	case "digest":
+		reportName := "Digest Report"
+		if row.ReportID.Valid {
+			if name, err := w.store.GetScheduledReportName(ctx, row.ReportID.UUID); err == nil && name != "" {
+				reportName = name
+			}
+		}
+		orgName := "Organization"
+		if org, err := w.store.GetOrgByID(ctx, row.OrgID); err == nil && org != nil {
+			orgName = org.Name
+		}
+		subject, htmlBody, textBody, renderErr = RenderDigest(DigestTemplateData{
+			OrgName:     orgName,
+			ReportName:  reportName,
+			Date:        time.Now().UTC().Format("2006-01-02"),
+			CVEs:        summaries,
+			TotalCount:  len(summaries),
+			Truncated:   false,
+			ViewAllURL:  w.externalURL,
+			CVErtOpsURL: w.externalURL,
+		})
+	default:
+		return fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)
+	}
+	if renderErr != nil {
+		return fmt.Errorf("render email template: %w", renderErr)
+	}
+
+	return EmailSend(ctx, w.smtpCfg, emailCfg.Recipients, subject, htmlBody, textBody)
+}
+
+// isPermanentSMTPError checks if the error message indicates a permanent SMTP failure (5xx).
+// Permanent failures should not be retried.
+func isPermanentSMTPError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// SMTP 5xx codes indicate permanent failures (mailbox doesn't exist, relay denied, etc.).
+	for _, code := range []string{"550 ", "551 ", "552 ", "553 ", "554 ", "555 "} {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Worker) exhaust(ctx context.Context, id uuid.UUID, lastError string) {

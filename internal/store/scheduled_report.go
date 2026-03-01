@@ -168,3 +168,21 @@ func (s *Store) GetAlertRuleName(ctx context.Context, ruleID uuid.UUID) (string,
 	return result, err
 }
 
+// GetScheduledReportName returns the name of a scheduled report by ID.
+// Returns "" if the report does not exist. Uses bypass-RLS (worker context).
+func (s *Store) GetScheduledReportName(ctx context.Context, reportID uuid.UUID) (string, error) {
+	var result string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		name, err := q.GetScheduledReportName(ctx, reportID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get scheduled report name: %w", err)
+		}
+		result = name
+		return nil
+	})
+	return result, err
+}
+

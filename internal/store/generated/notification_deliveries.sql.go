@@ -17,7 +17,7 @@ import (
 
 const claimPendingDeliveries = `-- name: ClaimPendingDeliveries :many
 
-SELECT id, org_id, rule_id, channel_id, attempt_count, payload
+SELECT id, org_id, rule_id, channel_id, kind, report_id, attempt_count, payload
 FROM notification_deliveries
 WHERE status = 'pending' AND send_after <= now()
 ORDER BY send_after
@@ -30,6 +30,8 @@ type ClaimPendingDeliveriesRow struct {
 	OrgID        uuid.UUID
 	RuleID       uuid.NullUUID
 	ChannelID    uuid.UUID
+	Kind         string
+	ReportID     uuid.NullUUID
 	AttemptCount int32
 	Payload      json.RawMessage
 }
@@ -50,6 +52,8 @@ func (q *Queries) ClaimPendingDeliveries(ctx context.Context, limit int32) ([]Cl
 			&i.OrgID,
 			&i.RuleID,
 			&i.ChannelID,
+			&i.Kind,
+			&i.ReportID,
 			&i.AttemptCount,
 			&i.Payload,
 		); err != nil {
@@ -98,7 +102,7 @@ func (q *Queries) ExhaustDelivery(ctx context.Context, arg ExhaustDeliveryParams
 }
 
 const getDelivery = `-- name: GetDelivery :one
-SELECT id, org_id, rule_id, channel_id, status, attempt_count, payload,
+SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count, payload,
        send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
 FROM notification_deliveries
 WHERE id = $1 AND org_id = $2
@@ -115,6 +119,8 @@ type GetDeliveryRow struct {
 	OrgID           uuid.UUID
 	RuleID          uuid.NullUUID
 	ChannelID       uuid.UUID
+	Kind            string
+	ReportID        uuid.NullUUID
 	Status          string
 	AttemptCount    int32
 	Payload         json.RawMessage
@@ -134,6 +140,8 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 		&i.OrgID,
 		&i.RuleID,
 		&i.ChannelID,
+		&i.Kind,
+		&i.ReportID,
 		&i.Status,
 		&i.AttemptCount,
 		&i.Payload,
@@ -148,7 +156,7 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 }
 
 const listDeliveries = `-- name: ListDeliveries :many
-SELECT id, org_id, rule_id, channel_id, status, attempt_count,
+SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count,
        send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
 FROM notification_deliveries
 WHERE org_id = $1
@@ -175,6 +183,8 @@ type ListDeliveriesRow struct {
 	OrgID           uuid.UUID
 	RuleID          uuid.NullUUID
 	ChannelID       uuid.UUID
+	Kind            string
+	ReportID        uuid.NullUUID
 	Status          string
 	AttemptCount    int32
 	SendAfter       time.Time
@@ -207,6 +217,8 @@ func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) 
 			&i.OrgID,
 			&i.RuleID,
 			&i.ChannelID,
+			&i.Kind,
+			&i.ReportID,
 			&i.Status,
 			&i.AttemptCount,
 			&i.SendAfter,

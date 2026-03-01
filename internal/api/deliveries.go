@@ -56,18 +56,20 @@ func checkReplayLimit(orgID uuid.UUID) bool {
 
 // deliveryEntry is the list item shape (no payload to keep list responses small).
 type deliveryEntry struct {
-	ID              string   `json:"id"`
-	OrgID           string   `json:"org_id"`
-	RuleID          string   `json:"rule_id"`
-	ChannelID       string   `json:"channel_id"`
-	Status          string   `json:"status"`
-	AttemptCount    int32    `json:"attempt_count"`
-	SendAfter       string   `json:"send_after"`
-	LastAttemptedAt *string  `json:"last_attempted_at,omitempty"`
-	DeliveredAt     *string  `json:"delivered_at,omitempty"`
-	LastError       *string  `json:"last_error,omitempty"`
-	CreatedAt       string   `json:"created_at"`
-	UpdatedAt       string   `json:"updated_at"`
+	ID              string  `json:"id"`
+	OrgID           string  `json:"org_id"`
+	RuleID          string  `json:"rule_id"`
+	ChannelID       string  `json:"channel_id"`
+	Kind            string  `json:"kind"`
+	ReportID        *string `json:"report_id,omitempty"`
+	Status          string  `json:"status"`
+	AttemptCount    int32   `json:"attempt_count"`
+	SendAfter       string  `json:"send_after"`
+	LastAttemptedAt *string `json:"last_attempted_at,omitempty"`
+	DeliveredAt     *string `json:"delivered_at,omitempty"`
+	LastError       *string `json:"last_error,omitempty"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
 }
 
 // deliveryDetail extends deliveryEntry with the full payload.
@@ -171,11 +173,16 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 			OrgID:        row.OrgID.String(),
 			RuleID:       row.RuleID.UUID.String(),
 			ChannelID:    row.ChannelID.String(),
+			Kind:         row.Kind,
 			Status:       row.Status,
 			AttemptCount: row.AttemptCount,
 			SendAfter:    row.SendAfter.Format(time.RFC3339),
 			CreatedAt:    row.CreatedAt.Format(time.RFC3339),
 			UpdatedAt:    row.UpdatedAt.Format(time.RFC3339),
+		}
+		if row.ReportID.Valid {
+			s := row.ReportID.UUID.String()
+			entry.ReportID = &s
 		}
 		if row.LastAttemptedAt.Valid {
 			s := row.LastAttemptedAt.Time.Format(time.RFC3339)
@@ -233,11 +240,16 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		OrgID:        row.OrgID.String(),
 		RuleID:       row.RuleID.UUID.String(),
 		ChannelID:    row.ChannelID.String(),
+		Kind:         row.Kind,
 		Status:       row.Status,
 		AttemptCount: row.AttemptCount,
 		SendAfter:    row.SendAfter.Format(time.RFC3339),
 		CreatedAt:    row.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:    row.UpdatedAt.Format(time.RFC3339),
+	}
+	if row.ReportID.Valid {
+		s := row.ReportID.UUID.String()
+		entry.ReportID = &s
 	}
 	if row.LastAttemptedAt.Valid {
 		s := row.LastAttemptedAt.Time.Format(time.RFC3339)

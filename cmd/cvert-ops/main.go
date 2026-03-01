@@ -131,12 +131,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	dispatcher := notify.NewDispatcher(st, cfg.NotifyDebounceSeconds)
 	alertEval.SetDispatcher(dispatcher)
+	smtpCfg := notify.SmtpConfig{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		From:     cfg.SMTPFrom,
+		Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword,
+		TLS:      cfg.SMTPTLS,
+	}
 	deliveryWorker := notify.NewWorker(st, deliveryClient, notify.WorkerConfig{
 		ClaimBatchSize:      cfg.NotifyClaimBatchSize,
 		MaxAttempts:         cfg.NotifyMaxAttempts,
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
-	})
+	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
@@ -224,12 +232,20 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}
 	dispatcher := notify.NewDispatcher(st, cfg.NotifyDebounceSeconds)
+	smtpCfg := notify.SmtpConfig{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		From:     cfg.SMTPFrom,
+		Username: cfg.SMTPUsername,
+		Password: cfg.SMTPPassword,
+		TLS:      cfg.SMTPTLS,
+	}
 	deliveryWorker := notify.NewWorker(st, deliveryClient, notify.WorkerConfig{
 		ClaimBatchSize:      cfg.NotifyClaimBatchSize,
 		MaxAttempts:         cfg.NotifyMaxAttempts,
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
-	})
+	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 

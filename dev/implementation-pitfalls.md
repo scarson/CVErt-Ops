@@ -1385,6 +1385,8 @@ Simple protocol sends SQL as plain text strings without named prepared statement
 | 3.11 | Security | OIDC/OAuth identity matched by email — account takeover when email is recycled by new user | Critical | Match identities on immutable `provider_user_id` (GitHub) / `sub` claim (Google); email is display attribute only |
 | 5.18 | Architecture | Keyset pagination without composite tie-breaker silently drops CVEs sharing a page-boundary timestamp | High | `(date_published, cve_id)` composite cursor; every non-unique sort column requires PK tiebreaker |
 | 5.19 | Architecture | pgx named prepared statements crash under PgBouncer transaction pooling mode | High | `QueryExecModeSimpleProtocol` in pgxpool config; `DB_QUERY_EXEC_MODE` env var |
+| 9.1 | Operational | Partial unique index violation returns 500 instead of 409 — user sees "server error" for duplicate name | Medium | Catch `pgconn.PgError` code `23505` in create/rename handlers; return 409 Conflict |
+| 9.2 | Operational | PATCH endpoint skips validation present in POST — SSRF/timezone bypass on update | High | Extract validation into shared functions; call from both POST and PATCH handlers |
 
 ---
 
@@ -1570,3 +1572,44 @@ After worker downtime (crash, deployment), `next_run_at` may be 3 days in the pa
 **The Fix:** Added `strings.EqualFold(user.Email, inv.Email)` check after retrieving the invitation and before accepting it.
 
 **The Lesson:** Invitation/token-based flows should always verify identity, not just possession of the token. "Has the token" is authentication of the token; "is the intended recipient" is authorization of the action.
+
+---
+
+## 9. Phase 3b Test Coverage Audit (2026-03-01)
+
+> **Source:** Post-implementation test coverage audit of Phase 3b (Email channels, digest reports, templates, delivery worker)
+> **Purpose:** Patterns discovered while closing 24 test coverage gaps across store, handler, business logic, and integration layers.
+
+### 9.1 Partial Unique Index Violations Surface as 500, Not 409
+
+**The Flaw:** `CreateScheduledReport` handler inserts a row into `scheduled_reports`, which has a partial unique index `scheduled_reports_name_uq ON (org_id, name) WHERE deleted_at IS NULL`. When a user creates a report with a duplicate name, Postgres rejects the insert with error code `23505` (`unique_violation`). The handler does not catch this and returns 500.
+
+**Why It Matters:** 500 is a server error that implies a bug; 409 is a client error that tells the user "this name is already taken." Every soft-delete entity with a partial unique name index (notification channels, alert rules, watchlists, scheduled reports) has this same gap. Users see "Internal Server Error" for a perfectly recoverable situation.
+
+**The Fix:** In every handler that creates or renames a soft-delete entity, catch the Postgres `unique_violation` error and return 409 Conflict:
+```go
+var pgErr *pgconn.PgError
+if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+    return nil, huma.Error409Conflict("a resource with this name already exists")
+}
+```
+This applies to: `CreateNotificationChannel`, `CreateAlertRule`, `CreateWatchlist`, `CreateScheduledReport`, and the corresponding PATCH/rename handlers.
+
+**The Lesson:** When a schema uses partial unique indexes for soft-delete name deduplication (pitfall 11.3), the application layer must translate the DB constraint violation into an appropriate HTTP status. The constraint protects data integrity; the handler must translate that protection into a user-friendly response. Audit all `INSERT` and `UPDATE` paths that touch columns covered by partial unique indexes.
+
+---
+
+### 9.2 PATCH Endpoints Must Re-Validate the Same Constraints as POST
+
+**The Flaw:** During the test audit, PATCH handlers for channels and reports were tested for SSRF validation (webhook URLs), email config validation (recipient addresses), and timezone validation. These checks were present, but the pattern is easy to miss: a developer implements validation on `POST` (create) and forgets to apply the same checks on `PATCH` (update).
+
+**Why It Matters:** If a webhook channel is created with SSRF validation but can be PATCHed to `http://169.254.169.254/`, the SSRF protection is bypassed. If a report is created with timezone validation but can be PATCHed to `Invalid/Zone`, the digest runner panics on `time.LoadLocation`. Every mutable field that has a validation constraint at creation must have the same constraint on update.
+
+**The Fix:** Extract validation logic into shared functions callable from both create and update handlers:
+```go
+func validateWebhookURL(url string) error { ... }  // called from POST and PATCH
+func validateEmailConfig(cfg EmailConfig) error { ... }  // called from POST and PATCH
+```
+When adding a new validation to a create handler, immediately grep for the corresponding PATCH handler and apply the same check.
+
+**The Lesson:** POST and PATCH handlers for the same resource must enforce identical validation constraints. When implementing or reviewing a create handler, always check the update handler for parity. A quick audit: for every `validate*` call in a POST handler, verify the same call exists in the corresponding PATCH handler.

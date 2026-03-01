@@ -27,6 +27,7 @@ type WorkerConfig struct {
 	MaxConcurrentPerOrg int
 	StuckThreshold      time.Duration // default 2 minutes if zero
 	AILogRetentionDays  int           // default 90 if zero
+	RetentionEnabled    bool          // gate for all retention cleanup tickers
 }
 
 // Worker polls notification_deliveries and executes outbound deliveries (webhook or email).
@@ -336,6 +337,10 @@ func (w *Worker) runRecovery(ctx context.Context) {
 }
 
 func (w *Worker) runAICleanup(ctx context.Context) {
+	if !w.cfg.RetentionEnabled {
+		return
+	}
+
 	n, err := w.store.CleanupExpiredAICache(ctx)
 	if err != nil {
 		w.log.Error("cleanup expired AI cache", "err", err)

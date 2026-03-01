@@ -90,6 +90,13 @@ func (g *GeminiClient) Summarize(ctx context.Context, input CVESummaryInput) (Su
 			Parts: []*genai.Part{{Text: summarizeSystemPrompt}},
 		},
 		Temperature: genai.Ptr[float32](0.2),
+		// PLAN.md §13.4: zero tool access for summarization to prevent prompt
+		// injection via attacker-controlled CVE descriptions.
+		ToolConfig: &genai.ToolConfig{
+			FunctionCallingConfig: &genai.FunctionCallingConfig{
+				Mode: genai.FunctionCallingConfigModeNone,
+			},
+		},
 	}
 
 	result, err := g.client.Models.GenerateContent(ctx, g.model, genai.Text(string(inputJSON)), config)

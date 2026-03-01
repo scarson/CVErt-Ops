@@ -57,6 +57,8 @@ INSERT INTO ai_cache (org_id, feature, prompt_version, input_hash, response, exp
 VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
 ON CONFLICT (org_id, feature, prompt_version, input_hash)
 DO UPDATE SET response = EXCLUDED.response, expires_at = EXCLUDED.expires_at
+WHERE ai_cache.response IS DISTINCT FROM EXCLUDED.response
+   OR ai_cache.expires_at IS DISTINCT FROM EXCLUDED.expires_at
 `
 
 type PutAICacheParams struct {

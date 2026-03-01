@@ -97,6 +97,14 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
 	}
+	if len(req.Name) > 255 {
+		http.Error(w, "name must not exceed 255 characters", http.StatusUnprocessableEntity)
+		return
+	}
+	if req.NlQuery != nil && len(*req.NlQuery) > 1000 {
+		http.Error(w, "nl_query must not exceed 1000 characters", http.StatusUnprocessableEntity)
+		return
+	}
 
 	if len(req.QueryJSON) == 0 {
 		http.Error(w, "query_json is required", http.StatusBadRequest)
@@ -245,7 +253,19 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	if req.Name != nil {
+		if *req.Name == "" {
+			http.Error(w, "name must not be empty", http.StatusBadRequest)
+			return
+		}
+		if len(*req.Name) > 255 {
+			http.Error(w, "name must not exceed 255 characters", http.StatusUnprocessableEntity)
+			return
+		}
 		params.Name = *req.Name
+	}
+	if req.NlQuery != nil && len(*req.NlQuery) > 1000 {
+		http.Error(w, "nl_query must not exceed 1000 characters", http.StatusUnprocessableEntity)
+		return
 	}
 	if req.QueryJSON != nil {
 		// Validate the provided DSL.

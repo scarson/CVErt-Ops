@@ -166,6 +166,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
 		AILogRetentionDays:  cfg.AILogRetentionDays,
+		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
@@ -268,6 +269,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
 		AILogRetentionDays:  cfg.AILogRetentionDays,
+		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
@@ -464,7 +466,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 23
+const expectedSchemaVersion = 24
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

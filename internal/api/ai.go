@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -114,6 +115,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Cache check.
 	var queryJSON json.RawMessage
+	var inputTokens, outputTokens int
 	cached := false
 
 	cachedResp, hit, err := srv.store.GetAICache(r.Context(), orgID, feature, promptVersion, inputHash)
@@ -143,13 +145,15 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		queryJSON = result.QueryJSON
+		inputTokens = result.InputTokens
+		outputTokens = result.OutputTokens
 
 		// Update token counts.
-		if err := srv.store.UpdateAIUsageTokens(r.Context(), orgID, feature, result.InputTokens, result.OutputTokens); err != nil {
+		if err := srv.store.UpdateAIUsageTokens(r.Context(), orgID, feature, inputTokens, outputTokens); err != nil {
 			slog.ErrorContext(r.Context(), "ai: update tokens", "error", err)
 		}
-		metrics.AITokensTotal.WithLabelValues(feature, "input").Add(float64(result.InputTokens))
-		metrics.AITokensTotal.WithLabelValues(feature, "output").Add(float64(result.OutputTokens))
+		metrics.AITokensTotal.WithLabelValues(feature, "input").Add(float64(inputTokens))
+		metrics.AITokensTotal.WithLabelValues(feature, "output").Add(float64(outputTokens))
 
 		// Write to cache.
 		if err := srv.store.PutAICache(r.Context(), orgID, feature, promptVersion, inputHash, queryJSON, srv.cfg.AICacheNLSearchTTL); err != nil {
@@ -160,7 +164,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse, validate, and compile the DSL.
 	rule, parseErr := dsl.Parse(queryJSON)
 	if parseErr != nil {
-		slog.ErrorContext(r.Context(), "ai: dsl parse", "error", parseErr, "query_json", string(queryJSON))
+		slog.ErrorContext(r.Context(), "ai: dsl parse", "error", parseErr, "query_json", truncateForLog(string(queryJSON), 500))
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "dsl_parse")
 		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
 		http.Error(w, "AI returned invalid query structure", http.StatusBadGateway)
@@ -169,7 +173,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	valErrs, _, _ := dsl.Validate(rule, false)
 	if hasBlockingErrors(valErrs) {
-		slog.ErrorContext(r.Context(), "ai: dsl validation failed", "errors", valErrs, "query_json", string(queryJSON))
+		slog.ErrorContext(r.Context(), "ai: dsl validation failed", "errors", valErrs, "query_json", truncateForLog(string(queryJSON), 500))
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "dsl_validate")
 		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
 		http.Error(w, "AI returned invalid query", http.StatusBadGateway)
@@ -202,7 +206,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log and respond.
-	srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "success", "")
+	srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, inputTokens, outputTokens, start, "success", "")
 	metrics.AIRequestsTotal.WithLabelValues(feature, "ok").Inc()
 	metrics.AIRequestDuration.WithLabelValues(feature).Observe(time.Since(start).Seconds())
 
@@ -236,6 +240,10 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 	cveID := chi.URLParam(r, "cve_id")
 	if cveID == "" {
 		http.Error(w, "cve_id is required", http.StatusBadRequest)
+		return
+	}
+	if !isValidCVEID(cveID) {
+		http.Error(w, "invalid cve_id format", http.StatusBadRequest)
 		return
 	}
 
@@ -284,6 +292,7 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Cache check.
 	var summary string
+	var inputTokens, outputTokens int
 	cached := false
 
 	cachedResp, hit, err := srv.store.GetAICache(r.Context(), orgID, feature, promptVersion, inputHash)
@@ -323,13 +332,15 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		summary = result.Summary
+		inputTokens = result.InputTokens
+		outputTokens = result.OutputTokens
 
 		// Update token counts.
-		if err := srv.store.UpdateAIUsageTokens(r.Context(), orgID, feature, result.InputTokens, result.OutputTokens); err != nil {
+		if err := srv.store.UpdateAIUsageTokens(r.Context(), orgID, feature, inputTokens, outputTokens); err != nil {
 			slog.ErrorContext(r.Context(), "ai: update tokens", "error", err)
 		}
-		metrics.AITokensTotal.WithLabelValues(feature, "input").Add(float64(result.InputTokens))
-		metrics.AITokensTotal.WithLabelValues(feature, "output").Add(float64(result.OutputTokens))
+		metrics.AITokensTotal.WithLabelValues(feature, "input").Add(float64(inputTokens))
+		metrics.AITokensTotal.WithLabelValues(feature, "output").Add(float64(outputTokens))
 
 		// Write to cache (store summary as JSON string).
 		summaryJSON, _ := json.Marshal(summary)
@@ -339,7 +350,7 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log and respond.
-	srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "success", "")
+	srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, inputTokens, outputTokens, start, "success", "")
 	metrics.AIRequestsTotal.WithLabelValues(feature, "ok").Inc()
 	metrics.AIRequestDuration.WithLabelValues(feature).Observe(time.Since(start).Seconds())
 
@@ -412,6 +423,22 @@ func buildSummaryInput(cve *generated.Cfe) ai.CVESummaryInput {
 		input.CWEIDs = cve.CweIds
 	}
 	return input
+}
+
+// cveIDPattern matches standard CVE identifiers (CVE-YYYY-NNNNN+).
+var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d{4,}$`)
+
+// isValidCVEID checks whether s is a well-formed CVE identifier.
+func isValidCVEID(s string) bool {
+	return cveIDPattern.MatchString(s)
+}
+
+// truncateForLog returns s truncated to maxLen characters for safe logging.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
 }
 
 // parseIntParam parses an integer query parameter with bounds clamping.

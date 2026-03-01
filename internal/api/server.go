@@ -262,13 +262,13 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 
-			// AI-powered search and summarization
+			// AI-powered search and summarization (viewer+ per PLAN.md §7.3)
 			r.Route("/ai", func(r chi.Router) {
-				r.With(srv.RequireOrgRole(RoleMember)).Post("/nl-search", srv.nlSearchHandler)
-				r.With(srv.RequireOrgRole(RoleMember)).Post("/summarize/{cve_id}", srv.summarizeHandler)
+				r.With(srv.RequireOrgRole(RoleViewer)).Post("/nl-search", srv.nlSearchHandler)
+				r.With(srv.RequireOrgRole(RoleViewer)).Post("/summarize/{cve_id}", srv.summarizeHandler)
 			})
 
-			// Saved searches
+			// Saved searches (viewer can list/get/execute; member+ to create/patch/delete)
 			r.Route("/saved-searches", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listSavedSearchesHandler)
 				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createSavedSearchHandler)
@@ -276,7 +276,7 @@ func (srv *Server) Handler() http.Handler {
 					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getSavedSearchHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchSavedSearchHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteSavedSearchHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Post("/execute", srv.executeSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleViewer)).Post("/execute", srv.executeSavedSearchHandler)
 				})
 			})
 

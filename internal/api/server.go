@@ -268,6 +268,18 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleMember)).Post("/summarize/{cve_id}", srv.summarizeHandler)
 			})
 
+			// Saved searches
+			r.Route("/saved-searches", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listSavedSearchesHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createSavedSearchHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Post("/execute", srv.executeSavedSearchHandler)
+				})
+			})
+
 			// Group management
 			r.Route("/groups", func(r chi.Router) {
 				r.Get("/", srv.listGroupsHandler)

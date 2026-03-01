@@ -555,6 +555,34 @@ Pattern: create data in two orgs via superuser, then assert via `AppStore` that 
 
 **The Lesson:** For any org-scoped store method, always add a test that queries through `AppStore` (NOBYPASSRLS) and verifies tenant isolation. Superuser-only tests give a false green for RLS compliance. This should be a code review checklist item for every new store method.
 
+### 2.15 ON CONFLICT Must Match the Exact Partial Unique Index
+
+**The Flaw:** When changing a partial unique index's `WHERE` clause (e.g., adding `AND kind = 'alert'` to a debounce index), the migration correctly created the new index but the hand-written `ON CONFLICT ... WHERE status = 'pending'` clause in application Go code was not updated to match.
+
+**Why It Matters:** PostgreSQL requires the `ON CONFLICT` predicate to exactly match a unique index's `WHERE` clause. If the index is `(rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert'` but the query says `ON CONFLICT (rule_id, channel_id) WHERE status = 'pending'`, Postgres raises `42P10: there is no unique or exclusion constraint matching the ON CONFLICT specification`. Every upsert fails at runtime.
+
+**The Fix:** When altering a partial unique index, grep the codebase for all `ON CONFLICT` clauses referencing the same columns and update their `WHERE` predicates:
+```bash
+grep -rn 'ON CONFLICT.*rule_id.*channel_id' internal/
+```
+Also update the column list in the `INSERT INTO` clause if the new index references additional columns (e.g., adding `kind` to the inserted columns).
+
+**The Lesson:** Partial unique indexes have two consumers: the index DDL in migrations and the `ON CONFLICT` clauses in application code. Schema review catches DDL issues but not application SQL that references the index. When changing a partial unique index, always search for `ON CONFLICT` clauses that target it. This is especially easy to miss when the index and the `ON CONFLICT` are in different files (migration SQL vs. Go constants). Consider adding a comment on both sides cross-referencing each other.
+
+### 2.16 Semicolons in SQL Comments Break golang-migrate Statement Splitting
+
+**The Flaw:** A SQL comment in a migration file contained a semicolon: `-- app-layer validation; FK impossible on arrays`. golang-migrate splits migration files into individual statements by semicolons before executing them.
+
+**Why It Matters:** The semicolon inside the comment causes golang-migrate to split the `CREATE TABLE` statement mid-comment, producing two fragments — the first is a truncated `CREATE TABLE` (syntax error), the second is the orphaned comment tail plus remaining columns. Every test that runs migrations fails with `ERROR: syntax error at end of input (SQLSTATE 42601)`.
+
+**The Fix:** Never use semicolons inside SQL comments in migration files. Rephrase to avoid them:
+```sql
+-- BAD:  -- app-layer validation; FK impossible on arrays
+-- GOOD: -- App-layer validation only (FK impossible on arrays).
+```
+
+**The Lesson:** golang-migrate's statement splitter is naive — it splits on `;` without fully parsing SQL comment boundaries. This is a known limitation. Avoid semicolons in `--` line comments and `/* */` block comments in migration files. This is especially subtle because the SQL itself is syntactically valid — it only breaks at the migration runner level.
+
 ---
 
 ## 3. Security Vulnerabilities

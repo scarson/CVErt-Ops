@@ -242,13 +242,18 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 		if org, err := w.store.GetOrgByID(ctx, row.OrgID); err == nil && org != nil {
 			orgName = org.Name
 		}
+		totalCount := len(summaries)
+		truncated := totalCount > 25
+		if truncated {
+			summaries = summaries[:25]
+		}
 		subject, htmlBody, textBody, renderErr = RenderDigest(DigestTemplateData{
 			OrgName:     orgName,
 			ReportName:  reportName,
 			Date:        time.Now().UTC().Format("2006-01-02"),
 			CVEs:        summaries,
-			TotalCount:  len(summaries),
-			Truncated:   false,
+			TotalCount:  totalCount,
+			Truncated:   truncated,
 			ViewAllURL:  w.externalURL,
 			CVErtOpsURL: w.externalURL,
 		})

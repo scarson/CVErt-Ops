@@ -241,13 +241,18 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		// Re-validate config when updated.
 		if current.Type == "webhook" {
 			var cfg map[string]any
-			if err := json.Unmarshal(*req.Config, &cfg); err == nil {
-				if urlVal, ok := cfg["url"].(string); ok && urlVal != "" {
-					if err := validateWebhookURL(urlVal); err != nil {
-						http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-						return
-					}
-				}
+			if err := json.Unmarshal(*req.Config, &cfg); err != nil {
+				http.Error(w, "webhook config must be valid JSON with a url field", http.StatusUnprocessableEntity)
+				return
+			}
+			urlVal, ok := cfg["url"].(string)
+			if !ok || strings.TrimSpace(urlVal) == "" {
+				http.Error(w, "webhook config must include a non-empty url", http.StatusUnprocessableEntity)
+				return
+			}
+			if err := validateWebhookURL(urlVal); err != nil {
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				return
 			}
 		}
 		if current.Type == "email" {

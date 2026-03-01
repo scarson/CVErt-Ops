@@ -158,7 +158,7 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 		Timezone:      req.Timezone,
 		NextRunAt:     nextRun,
 		WatchlistIds:  watchlistIDs,
-		SendOnEmpty:   req.SendOnEmpty != nil && *req.SendOnEmpty,
+		SendOnEmpty:   req.SendOnEmpty == nil || *req.SendOnEmpty,
 		AiSummary:     req.AISummary != nil && *req.AISummary,
 		Status:        "active",
 	}

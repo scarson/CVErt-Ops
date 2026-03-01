@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
+
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -462,6 +464,230 @@ func TestNLSearchHandler_TokenCountsPersisted(t *testing.T) {
 	}
 	if outputTokens != 20 {
 		t.Errorf("output_tokens = %d, want 20", outputTokens)
+	}
+}
+
+// newAITestServerWithLLM creates a Server with a custom LLM client (e.g. error-injecting mock).
+func newAITestServerWithLLM(t *testing.T, db *testutil.TestDB, llm ai.LLMClient) (*Server, *httptest.Server) {
+	t.Helper()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:                  "aitestsecret",
+		RegistrationMode:           "open",
+		Argon2MaxConcurrent:        5,
+		AIQuotaEnabled:             true,
+		AINLSearchLimitFree:        10,
+		AINLSearchLimitPro:         100,
+		AINLSearchLimitEnterprise:  1000,
+		AISummarizeLimitFree:       5,
+		AISummarizeLimitPro:        50,
+		AISummarizeLimitEnterprise: 500,
+		AICacheNLSearchTTL:         1 * time.Hour,
+		AICacheSummarizeTTL:        24 * time.Hour,
+		GeminiModel:                "gemini-2.0-flash",
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetAIDeps(llm)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return srv, ts
+}
+
+// ── LLM failure path tests ──────────────────────────────────────────────────
+
+func TestNLSearchHandler_LLMFailure(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	errMock := ai.NewMockClient()
+	errMock.Err = fmt.Errorf("simulated LLM outage")
+
+	_, ts := newAITestServerWithLLM(t, db, errMock)
+	reg := doRegister(t, ctx, ts, "nlllmfail@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlllmfail@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{"query":"critical CVEs"}`
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nl-search LLM failure: got %d, want 503", resp.StatusCode)
+	}
+
+	// Verify the error was logged in ai_request_log with status='error'.
+	var status, errorType string
+	err := db.DB().QueryRowContext(ctx,
+		`SELECT status, error_type FROM ai_request_log
+		 WHERE feature = 'nl_search'
+		 ORDER BY created_at DESC LIMIT 1`,
+	).Scan(&status, &errorType)
+	if err != nil {
+		t.Fatalf("query ai_request_log: %v", err)
+	}
+	if status != "error" {
+		t.Errorf("ai_request_log status = %q, want 'error'", status)
+	}
+	if errorType != "llm_failure" {
+		t.Errorf("ai_request_log error_type = %q, want 'llm_failure'", errorType)
+	}
+}
+
+func TestSummarizeHandler_LLMFailure(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-6001", "critical", nil)
+
+	errMock := ai.NewMockClient()
+	errMock.Err = fmt.Errorf("simulated LLM outage")
+
+	_, ts := newAITestServerWithLLM(t, db, errMock)
+	reg := doRegister(t, ctx, ts, "summllmfail@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "summllmfail@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-6001")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("summarize LLM failure: got %d, want 503", resp.StatusCode)
+	}
+
+	// Verify the error was logged in ai_request_log with status='error'.
+	var status, errorType string
+	err := db.DB().QueryRowContext(ctx,
+		`SELECT status, error_type FROM ai_request_log
+		 WHERE feature = 'summarize'
+		 ORDER BY created_at DESC LIMIT 1`,
+	).Scan(&status, &errorType)
+	if err != nil {
+		t.Fatalf("query ai_request_log: %v", err)
+	}
+	if status != "error" {
+		t.Errorf("ai_request_log status = %q, want 'error'", status)
+	}
+	if errorType != "llm_failure" {
+		t.Errorf("ai_request_log error_type = %q, want 'llm_failure'", errorType)
+	}
+}
+
+// ── Unauthenticated access tests ─────────────────────────────────────────────
+
+func TestNLSearchHandler_Unauthenticated(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+
+	// Register to get a valid org ID, but don't send the auth cookie.
+	reg := doRegister(t, ctx, ts, "nlnoauth@example.com", "test-password-1234")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs/"+reg.OrgID+"/ai/nl-search",
+		bytes.NewBufferString(`{"query":"test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	// No Cookie header — unauthenticated.
+
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("nl-search unauthenticated: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("nl-search unauthenticated: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestSummarizeHandler_Unauthenticated(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "summnoauth@example.com", "test-password-1234")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs/"+reg.OrgID+"/ai/summarize/CVE-2024-0001", nil)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	// No Cookie header — unauthenticated.
+
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("summarize unauthenticated: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("summarize unauthenticated: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// ── Boundary: exactly 1000-char query is accepted ────────────────────────────
+
+func TestNLSearchHandler_1000CharQueryAccepted(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-7001", "critical", nil)
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nl1000@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nl1000@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Exactly 1000 characters — should be accepted.
+	query1000 := strings.Repeat("a", 1000)
+	body := `{"query":"` + query1000 + `"}`
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("nl-search 1000-char query: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// ── parseIntParam unit tests ─────────────────────────────────────────────────
+
+func TestParseIntParam(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		input      string
+		defaultVal int
+		min        int
+		max        int
+		want       int
+	}{
+		{"empty returns default", "", 25, 1, 100, 25},
+		{"valid in range", "50", 25, 1, 100, 50},
+		{"at min boundary", "1", 25, 1, 100, 1},
+		{"at max boundary", "100", 25, 1, 100, 100},
+		{"below min clamped", "0", 25, 1, 100, 1},
+		{"above max clamped", "101", 25, 1, 100, 100},
+		{"negative clamped to min", "-5", 25, 1, 100, 1},
+		{"non-numeric returns default", "abc", 25, 1, 100, 25},
+		{"float returns default", "3.14", 25, 1, 100, 25},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseIntParam(tc.input, tc.defaultVal, tc.min, tc.max)
+			if got != tc.want {
+				t.Errorf("parseIntParam(%q, %d, %d, %d) = %d, want %d",
+					tc.input, tc.defaultVal, tc.min, tc.max, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -268,8 +268,8 @@ CREATE POLICY org_isolation ON saved_searches
         OR org_id = current_setting('app.org_id', TRUE)::uuid
     );
 
--- Soft-delete entity: no DELETE grant.
-GRANT SELECT, INSERT, UPDATE ON saved_searches TO cvert_ops_app;
+-- Soft-delete for normal operations; hard-delete for orphan cleanup on user deletion.
+GRANT SELECT, INSERT, UPDATE, DELETE ON saved_searches TO cvert_ops_app;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS saved_searches_org_id_idx
     ON saved_searches (org_id);
@@ -2091,8 +2091,17 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		limit = 25
 	}
 
+	// Column list must match SearchCVEs in cve.go — extract a shared
+	// scanCVERow helper during implementation so these can't drift apart.
+	cveColumns := `c.cve_id, c.status, c.date_published, c.date_modified_source_max,
+		c.date_modified_canonical, c.date_first_seen, c.description_primary,
+		c.severity, c.cvss_v3_score, c.cvss_v3_vector, c.cvss_v3_source,
+		c.cvss_v4_score, c.cvss_v4_vector, c.cvss_v4_source,
+		c.cvss_score_diverges, c.cwe_ids, c.exploit_available, c.in_cisa_kev,
+		c.epss_score, c.date_epss_updated, c.material_hash`
+
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	sb := psql.Select("c.*").From("cves c")
+	sb := psql.Select(cveColumns).From("cves c")
 
 	// Apply FTS or other JOINs from the compiled rule.
 	for _, j := range compiled.Joins {
@@ -2138,18 +2147,17 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 	for rows.Next() {
 		var c generated.Cfe
 		if err := rows.Scan(
-			// Scan all columns in the same order as SearchCVEs.
-			// Reference: internal/store/cve.go SearchCVEs scan order.
-			&c.CveID, &c.Status, &c.Severity,
+			// Order matches cveColumns above and SearchCVEs in cve.go.
+			&c.CveID, &c.Status,
+			&c.DatePublished, &c.DateModifiedSourceMax,
+			&c.DateModifiedCanonical, &c.DateFirstSeen,
+			&c.DescriptionPrimary, &c.Severity,
 			&c.CvssV3Score, &c.CvssV3Vector, &c.CvssV3Source,
 			&c.CvssV4Score, &c.CvssV4Vector, &c.CvssV4Source,
 			&c.CvssScoreDiverges,
-			&c.EpssScore, &c.EpssPercentile,
-			&c.DescriptionPrimary,
-			&c.InCisaKev, &c.ExploitAvailable,
 			pq.Array(&c.CweIds),
-			&c.DatePublished, &c.DateModifiedSourceMax,
-			&c.DateModifiedCanonical, &c.DateEpssUpdated,
+			&c.ExploitAvailable, &c.InCisaKev,
+			&c.EpssScore, &c.DateEpssUpdated,
 			&c.MaterialHash,
 		); err != nil {
 			return nil, "", fmt.Errorf("scanning row: %w", err)
@@ -2177,7 +2185,7 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 }
 ```
 
-**Important:** Verify the column scan order matches `SearchCVEs` in `internal/store/cve.go`. The scan order must exactly match the `cves` table column order returned by `SELECT c.*`. If the project uses explicit column lists in `SearchCVEs`, copy that exact order.
+**Important:** The column list and scan order above were verified against `SearchCVEs` in `internal/store/cve.go` and `generated.Cfe` in `internal/store/generated/models.go`. During implementation, extract a shared `scanCVERow(rows) (generated.Cfe, error)` helper so `SearchCVEs` and `ExecuteDSLQuery` use the same scan logic and can't drift apart.
 
 **Step 4: Run tests**
 
@@ -2350,8 +2358,12 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate and compile the DSL.
-	rule, err := dsl.Parse(queryJSON)
-	if err != nil {
+	var rule dsl.Rule
+	if err := json.Unmarshal(queryJSON, &rule); err != nil {
+		http.Error(w, "couldn't interpret your query, try rephrasing", http.StatusUnprocessableEntity)
+		return
+	}
+	if errs, _, _ := dsl.Validate(rule, false); len(errs) > 0 {
 		http.Error(w, "couldn't interpret your query, try rephrasing", http.StatusUnprocessableEntity)
 		return
 	}
@@ -2732,19 +2744,90 @@ git commit -m "feat(api): saved search CRUD + execute handlers with RBAC"
 package main
 
 import (
+	"bytes"
+	"context"
 	"testing"
+
+	"github.com/google/uuid"
+	"github.com/your-org/cvert-ops/internal/store"
+	"github.com/your-org/cvert-ops/internal/testutil"
 )
 
-func TestQuotaCmd_SetAndList(t *testing.T) {
-	// Integration test: uses test DB, runs the cobra command programmatically.
-	// Create a test org, set a quota override, list overrides, verify output.
+func TestQuotaCmd_SetAndGet(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	org, _ := s.CreateOrg(ctx, "Quota CLI Test Org")
+
+	// Set a quota override via store (simulating what the CLI does).
+	err := s.SetAIQuotaOverride(ctx, org.ID, "nl_search", 500)
+	if err != nil {
+		t.Fatalf("SetAIQuotaOverride: %v", err)
+	}
+
+	// Verify it was persisted.
+	limit, ok, err := s.GetAIQuotaOverride(ctx, org.ID, "nl_search")
+	if err != nil {
+		t.Fatalf("GetAIQuotaOverride: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected override to exist")
+	}
+	if limit != 500 {
+		t.Errorf("limit = %d, want 500", limit)
+	}
+
+	// Verify list returns it.
+	overrides, err := s.ListAIQuotaOverridesForOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListAIQuotaOverridesForOrg: %v", err)
+	}
+	if len(overrides) != 1 {
+		t.Fatalf("got %d overrides, want 1", len(overrides))
+	}
+	if overrides[0].Feature != "nl_search" || overrides[0].DailyLimit != 500 {
+		t.Errorf("override = %+v, want nl_search/500", overrides[0])
+	}
+}
+
+func TestQuotaCmd_Delete(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	org, _ := s.CreateOrg(ctx, "Quota Delete Test Org")
+
+	s.SetAIQuotaOverride(ctx, org.ID, "summarize", 100)
+	err := s.DeleteAIQuotaOverride(ctx, org.ID, "summarize")
+	if err != nil {
+		t.Fatalf("DeleteAIQuotaOverride: %v", err)
+	}
+
+	_, ok, _ := s.GetAIQuotaOverride(ctx, org.ID, "summarize")
+	if ok {
+		t.Error("expected override to be deleted")
+	}
+}
+
+func TestQuotaCmd_SetInvalidFeature(t *testing.T) {
+	t.Parallel()
+	// Test the cobra command validation — "invalid_feature" should be rejected.
+	cmd := quotaSetCmd()
+	cmd.SetArgs([]string{
+		"--org", uuid.New().String(),
+		"--feature", "invalid_feature",
+		"--limit", "100",
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid feature name")
+	}
 }
 ```
 
 **Step 2: Run tests to verify they fail**
 
 Run: `cd /c/Users/Sam/Code/CVErt-Ops && go test ./cmd/cvert-ops/ -run "TestQuotaCmd" -v`
-Expected: FAIL.
+Expected: FAIL — `quotaSetCmd` function doesn't exist yet.
 
 **Step 3: Implement quota command**
 

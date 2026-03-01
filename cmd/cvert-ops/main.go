@@ -63,6 +63,7 @@ func main() {
 		workerCmd(),
 		migrateCmd(),
 		importBulkCmd(),
+		quotaCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

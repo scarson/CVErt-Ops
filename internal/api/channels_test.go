@@ -655,6 +655,156 @@ func TestClearSecondary_EmailChannel_Rejected(t *testing.T) {
 	}
 }
 
+// TestPatchChannel_WebhookSSRFBlocked verifies that PATCHing a webhook channel config
+// with a private/internal URL is rejected with 422.
+func TestPatchChannel_WebhookSSRFBlocked(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	cases := []struct {
+		desc string
+		url  string
+	}{
+		{"localhost", "http://localhost/hook"},
+		{"loopback IP", "http://127.0.0.1/hook"},
+		{"private class A", "http://10.0.0.1/hook"},
+		{"link-local", "http://169.254.169.254/hook"},
+		{"missing url key", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			var body string
+			if tc.url == "" {
+				body = `{"config":{}}`
+			} else {
+				body = `{"config":{"url":"` + tc.url + `"}}`
+			}
+			resp := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("PATCH webhook SSRF %s: got %d, want 422", tc.desc, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestPatchChannel_EmailConfigValidation verifies that PATCHing an email channel config
+// with invalid recipients is rejected with 422.
+func TestPatchChannel_EmailConfigValidation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create an email channel.
+	body := `{"name":"Email Alerts","type":"email","config":{"recipients":["ops@example.com"]}}`
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create email channel: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	cases := []struct {
+		desc string
+		body string
+	}{
+		{"empty recipients", `{"config":{"recipients":[]}}`},
+		{"invalid address", `{"config":{"recipients":["not-an-email"]}}`},
+		{"duplicate", `{"config":{"recipients":["a@example.com","a@example.com"]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			resp := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, tc.body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("PATCH email config (%s): got %d, want 422", tc.desc, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestDeleteChannel_409IfReportBound verifies that deleting a channel bound to
+// an active report returns 409.
+func TestDeleteChannel_409IfReportBound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create a channel.
+	createChanResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createChanResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createChanResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel: got %d, want 201", createChanResp.StatusCode)
+	}
+	var createdChan struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createChanResp.Body).Decode(&createdChan); err != nil {
+		t.Fatalf("decode create channel: %v", err)
+	}
+
+	// Create a report and bind the channel.
+	createReportResp := doCreateReport(t, ctx, ts, token, aliceReg.OrgID, validReportBody)
+	defer createReportResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createReportResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create report: got %d, want 201", createReportResp.StatusCode)
+	}
+	var createdReport struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createReportResp.Body).Decode(&createdReport); err != nil {
+		t.Fatalf("decode create report: %v", err)
+	}
+	bindResp := doBindReportChannel(t, ctx, ts, token, aliceReg.OrgID, createdReport.ID, createdChan.ID)
+	defer bindResp.Body.Close() //nolint:errcheck,gosec // G104
+	if bindResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("bind channel to report: got %d, want 204", bindResp.StatusCode)
+	}
+
+	// DELETE must return 409 because the channel is bound to an active report.
+	delResp := doDeleteChannel(t, ctx, ts, token, aliceReg.OrgID, createdChan.ID)
+	defer delResp.Body.Close() //nolint:errcheck,gosec // G104
+	if delResp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete with bound report: got %d, want 409", delResp.StatusCode)
+	}
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // mustParseUUID parses a UUID string and fails the test if invalid.

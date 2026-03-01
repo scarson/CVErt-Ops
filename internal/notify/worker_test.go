@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -354,6 +355,78 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 	}
 	if status != "pending" {
 		t.Errorf("email delivery status = %q, want %q (retry on SMTP failure)", status, "pending")
+	}
+	if attemptCount != 1 {
+		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	}
+}
+
+func TestWorker_EmailDigestBranch(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WorkerDigestOrg")
+
+	// Create an email channel.
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"digest@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "WorkerDigestChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	chanID := chanRow.ID
+
+	// Create a scheduled report.
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "WorkerDigestReport",
+		ScheduledTime: "08:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(24 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+
+	// Insert a digest delivery (simulates what executeDigestReport does).
+	payload, _ := json.Marshal([]map[string]any{{
+		"cve_id":              "CVE-2025-9020",
+		"severity":            "CRITICAL",
+		"cvss_v3_score":       9.8,
+		"description_primary": "Test digest vulnerability",
+		"exploit_available":   true,
+		"in_cisa_kev":         false,
+	}})
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery: %v", err)
+	}
+
+	// Use unreachable SMTP — delivery should retry (not crash on digest template).
+	w := notify.NewWorker(s.Store, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}, notify.SmtpConfig{
+		Host: "192.0.2.1",
+		Port: 25,
+		From: "test@example.com",
+	}, "https://cvert.example.com")
+	w.RunOnce(ctx)
+
+	// Digest delivery should retry on SMTP failure (pending with attempt_count=1).
+	var status string
+	var attemptCount int32
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status, attempt_count FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2",
+		chanID, report.ID).Scan(&status, &attemptCount); err != nil {
+		t.Fatalf("scan digest delivery row: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("digest delivery status = %q, want %q (retry on SMTP failure)", status, "pending")
 	}
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1", attemptCount)

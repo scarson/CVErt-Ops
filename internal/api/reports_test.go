@@ -446,6 +446,291 @@ func TestBindChannelToReport(t *testing.T) {
 	}
 }
 
+// TestPatchReport_IndividualFields verifies that patching individual fields works
+// independently: name, severity_threshold, send_on_empty, ai_summary.
+func TestPatchReport_IndividualFields(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// Patch name only.
+	resp1 := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID, `{"name":"Renamed Report"}`)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("patch name: got %d, want 200", resp1.StatusCode)
+	}
+	var p1 reportEntry
+	if err := json.NewDecoder(resp1.Body).Decode(&p1); err != nil {
+		t.Fatalf("decode patch name: %v", err)
+	}
+	if p1.Name != "Renamed Report" {
+		t.Errorf("name = %q, want %q", p1.Name, "Renamed Report")
+	}
+
+	// Patch severity_threshold.
+	resp2 := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID, `{"severity_threshold":"high"}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("patch severity: got %d, want 200", resp2.StatusCode)
+	}
+	var p2 reportEntry
+	if err := json.NewDecoder(resp2.Body).Decode(&p2); err != nil {
+		t.Fatalf("decode patch severity: %v", err)
+	}
+	if p2.SeverityThreshold == nil || *p2.SeverityThreshold != "high" {
+		t.Errorf("severity_threshold = %v, want high", p2.SeverityThreshold)
+	}
+
+	// Patch send_on_empty to false.
+	resp3 := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID, `{"send_on_empty":false}`)
+	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("patch send_on_empty: got %d, want 200", resp3.StatusCode)
+	}
+	var p3 reportEntry
+	if err := json.NewDecoder(resp3.Body).Decode(&p3); err != nil {
+		t.Fatalf("decode patch send_on_empty: %v", err)
+	}
+	if p3.SendOnEmpty {
+		t.Error("send_on_empty should be false after PATCH")
+	}
+
+	// Patch ai_summary to true.
+	resp4 := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID, `{"ai_summary":true}`)
+	defer resp4.Body.Close() //nolint:errcheck,gosec // G104
+	if resp4.StatusCode != http.StatusOK {
+		t.Fatalf("patch ai_summary: got %d, want 200", resp4.StatusCode)
+	}
+	var p4 reportEntry
+	if err := json.NewDecoder(resp4.Body).Decode(&p4); err != nil {
+		t.Fatalf("decode patch ai_summary: %v", err)
+	}
+	if !p4.AISummary {
+		t.Error("ai_summary should be true after PATCH")
+	}
+}
+
+// TestPatchReport_InvalidStatus verifies that invalid status values are rejected.
+func TestPatchReport_InvalidStatus(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	resp := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID, `{"status":"deleted"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("invalid status: got %d, want 422", resp.StatusCode)
+	}
+}
+
+// TestPatchReport_InvalidTimezone verifies that an invalid timezone via PATCH returns 422.
+func TestPatchReport_InvalidTimezone(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	resp := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID, `{"timezone":"Invalid/Zone"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("invalid timezone via PATCH: got %d, want 422", resp.StatusCode)
+	}
+}
+
+// TestCreateReport_SendOnEmptyDefault verifies that omitting send_on_empty
+// defaults to true (matching DB DEFAULT TRUE).
+func TestCreateReport_SendOnEmptyDefault(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create without send_on_empty.
+	resp := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+	var created reportEntry
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !created.SendOnEmpty {
+		t.Error("send_on_empty should default to true when omitted")
+	}
+
+	// Create with explicit false.
+	resp2 := doCreateReport(t, ctx, ts, token, reg.OrgID,
+		`{"name":"No Empty","scheduled_time":"10:00","timezone":"UTC","send_on_empty":false}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("create with false: got %d, want 201", resp2.StatusCode)
+	}
+	var created2 reportEntry
+	if err := json.NewDecoder(resp2.Body).Decode(&created2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created2.SendOnEmpty {
+		t.Error("send_on_empty should be false when explicitly set")
+	}
+}
+
+// TestReports_CrossOrgIsolation verifies that org B cannot see or modify org A's reports.
+// In "open" registration mode, only the first user gets an auto-created org;
+// Bob must create his org explicitly.
+func TestReports_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice is the first user — she gets an auto-org.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	// Bob is the second user — no auto-org, so create one explicitly.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	createOrgReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs", bytes.NewBufferString(`{"name":"Bob Org"}`))
+	createOrgReq.Header.Set("Content-Type", "application/json")
+	createOrgReq.Header.Set("Cookie", "access_token="+bobToken)
+	createOrgReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	createOrgResp, err := ts.Client().Do(createOrgReq) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create bob org: %v", err)
+	}
+	defer createOrgResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createOrgResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create bob org: got %d, want 201", createOrgResp.StatusCode)
+	}
+	var bobOrg struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(createOrgResp.Body).Decode(&bobOrg); err != nil {
+		t.Fatalf("decode bob org: %v", err)
+	}
+
+	// Alice creates a report in her org.
+	createResp := doCreateReport(t, ctx, ts, aliceToken, aliceReg.OrgID, validReportBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("alice create: got %d", createResp.StatusCode)
+	}
+	var created reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Bob cannot see Alice's report via GET on his own org.
+	getResp := doGetReport(t, ctx, ts, bobToken, bobOrg.OrgID, created.ID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Errorf("bob get alice's report in bob's org: got %d, want 404", getResp.StatusCode)
+	}
+
+	// Bob's list should be empty.
+	listResp := doListReports(t, ctx, ts, bobToken, bobOrg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	var list reportListResponse
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("bob's list should be empty, got %d items", len(list.Items))
+	}
+
+	// Bob cannot access Alice's org at all — should get 403.
+	crossOrgResp := doGetReport(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+	defer crossOrgResp.Body.Close() //nolint:errcheck,gosec // G104
+	if crossOrgResp.StatusCode != http.StatusForbidden {
+		t.Errorf("bob accessing alice's org: got %d, want 403", crossOrgResp.StatusCode)
+	}
+
+	// Alice's report should still exist.
+	aliceGet := doGetReport(t, ctx, ts, aliceToken, aliceReg.OrgID, created.ID)
+	defer aliceGet.Body.Close() //nolint:errcheck,gosec // G104
+	if aliceGet.StatusCode != http.StatusOK {
+		t.Errorf("alice's report should still exist: got %d, want 200", aliceGet.StatusCode)
+	}
+}
+
+// TestCreateReport_DuplicateName verifies that creating two reports with the same
+// name in the same org is rejected by the unique constraint.
+func TestCreateReport_DuplicateName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp1 := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("create 1: got %d, want 201", resp1.StatusCode)
+	}
+
+	resp2 := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	// DB partial unique index `scheduled_reports_name_uq` prevents duplicate names
+	// within the same org. Handler returns 500 (unique violation not caught as 409).
+	if resp2.StatusCode == http.StatusCreated {
+		t.Error("create duplicate name: should be rejected (unique constraint)")
+	}
+}
+
 func TestUnbindChannelFromReport(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

@@ -3,6 +3,7 @@
 package notify
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -101,6 +102,66 @@ func TestAdvanceNextRunAt(t *testing.T) {
 	expectedRegular := time.Date(2025, 6, 16, 14, 0, 0, 0, time.UTC)
 	if !regularNext.Equal(expectedRegular) {
 		t.Errorf("advanceNextRunAt regular = %v, want %v", regularNext, expectedRegular)
+	}
+}
+
+func TestAdvanceNextRunAt_SkipForward(t *testing.T) {
+	t.Parallel()
+	// Simulate missed runs: start 3 days in the past at 10:00 UTC.
+	// Advancing should go +1 day each call. The advanceReport loop
+	// calls advanceNextRunAt repeatedly until result is in the future.
+	start := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
+	now := time.Date(2025, 1, 4, 12, 0, 0, 0, time.UTC) // 3.x days later
+
+	next := start
+	iterations := 0
+	for !next.After(now) {
+		var err error
+		next, err = advanceNextRunAt(next, "UTC")
+		if err != nil {
+			t.Fatalf("advanceNextRunAt iteration %d: %v", iterations, err)
+		}
+		iterations++
+		if iterations > 100 {
+			t.Fatal("skip-forward loop did not converge")
+		}
+	}
+	// Should have advanced 4 times: Jan 2, 3, 4, 5. Jan 5 10:00 > Jan 4 12:00.
+	if iterations != 4 {
+		t.Errorf("skip-forward iterations = %d, want 4", iterations)
+	}
+	expected := time.Date(2025, 1, 5, 10, 0, 0, 0, time.UTC)
+	if !next.Equal(expected) {
+		t.Errorf("skip-forward result = %v, want %v", next, expected)
+	}
+}
+
+func TestIsPermanentSMTPError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"transient 421", fmt.Errorf("421 service not available"), false},
+		{"transient timeout", fmt.Errorf("connection timed out"), false},
+		{"550 no such user", fmt.Errorf("550 No such user"), true},
+		{"551 user not local", fmt.Errorf("551 User not local"), true},
+		{"552 exceeded storage", fmt.Errorf("552 Exceeded storage allocation"), true},
+		{"553 mailbox name", fmt.Errorf("553 Mailbox name not allowed"), true},
+		{"554 transaction failed", fmt.Errorf("554 Transaction failed"), true},
+		{"555 syntax error", fmt.Errorf("555 MAIL FROM/RCPT TO parameters not recognized"), true},
+		{"550 embedded in message", fmt.Errorf("email send: 550 mailbox unavailable"), true},
+		{"random error", fmt.Errorf("something went wrong"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isPermanentSMTPError(tc.err)
+			if got != tc.want {
+				t.Errorf("isPermanentSMTPError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

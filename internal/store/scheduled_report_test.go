@@ -257,6 +257,122 @@ func TestAdvanceReport(t *testing.T) {
 	}
 }
 
+func TestUpdateScheduledReport(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "ReportUpdateOrg")
+	created := mustCreateScheduledReport(t, s, ctx, org.ID, "BeforeUpdate")
+
+	// Update name, timezone, severity_threshold, send_on_empty, ai_summary, status.
+	nextRun := time.Now().Add(48 * time.Hour).Truncate(time.Microsecond)
+	updated, err := s.UpdateScheduledReport(ctx, org.ID, created.ID, store.UpdateScheduledReportParams{
+		Name:              "AfterUpdate",
+		ScheduledTime:     "14:30:00",
+		Timezone:          "Europe/London",
+		NextRunAt:         nextRun,
+		SeverityThreshold: sql.NullString{String: "medium", Valid: true},
+		SendOnEmpty:       false,
+		AiSummary:         true,
+		Status:            "paused",
+	})
+	if err != nil {
+		t.Fatalf("UpdateScheduledReport: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("UpdateScheduledReport returned nil")
+	}
+	if updated.Name != "AfterUpdate" {
+		t.Errorf("Name = %q, want AfterUpdate", updated.Name)
+	}
+	if updated.Timezone != "Europe/London" {
+		t.Errorf("Timezone = %q, want Europe/London", updated.Timezone)
+	}
+	if !updated.SeverityThreshold.Valid || updated.SeverityThreshold.String != "medium" {
+		t.Errorf("SeverityThreshold = %v, want medium", updated.SeverityThreshold)
+	}
+	if updated.SendOnEmpty {
+		t.Error("SendOnEmpty should be false after update")
+	}
+	if !updated.AiSummary {
+		t.Error("AiSummary should be true after update")
+	}
+	if updated.Status != "paused" {
+		t.Errorf("Status = %q, want paused", updated.Status)
+	}
+}
+
+func TestUpdateScheduledReport_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "ReportUpdateNFOrg")
+
+	result, err := s.UpdateScheduledReport(ctx, org.ID, uuid.New(), store.UpdateScheduledReportParams{
+		Name:          "Ghost",
+		ScheduledTime: "08:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(24 * time.Hour),
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("UpdateScheduledReport: %v", err)
+	}
+	if result != nil {
+		t.Error("expected nil for nonexistent report update")
+	}
+}
+
+func TestGetScheduledReportName(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "ReportNameOrg")
+	created := mustCreateScheduledReport(t, s, ctx, org.ID, "NamedReport")
+
+	name, err := s.GetScheduledReportName(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetScheduledReportName: %v", err)
+	}
+	if name != "NamedReport" {
+		t.Errorf("GetScheduledReportName = %q, want NamedReport", name)
+	}
+}
+
+func TestGetScheduledReportName_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	name, err := s.GetScheduledReportName(ctx, uuid.New())
+	if err != nil {
+		t.Fatalf("GetScheduledReportName: %v", err)
+	}
+	if name != "" {
+		t.Errorf("expected empty string for nonexistent report, got %q", name)
+	}
+}
+
+func TestGetAlertRuleName_Found(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "RuleNameOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "NamedRule")
+
+	name, err := s.GetAlertRuleName(ctx, rule.ID)
+	if err != nil {
+		t.Fatalf("GetAlertRuleName: %v", err)
+	}
+	if name != "NamedRule" {
+		t.Errorf("GetAlertRuleName = %q, want NamedRule", name)
+	}
+}
+
 func TestGetAlertRuleName_NotFound(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

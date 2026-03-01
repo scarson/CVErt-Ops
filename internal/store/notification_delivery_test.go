@@ -491,3 +491,147 @@ func TestGetDelivery(t *testing.T) {
 		t.Error("GetDelivery with unknown ID should return nil")
 	}
 }
+
+func TestInsertDigestDelivery(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "DigestDelivOrg")
+	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DigestReport")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestChan")
+
+	payload := json.RawMessage(`[{"cve_id":"CVE-2025-0001","severity":"HIGH"}]`)
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery: %v", err)
+	}
+
+	// Verify a delivery row was created with kind='digest'.
+	var kind, status string
+	var reportID *uuid.UUID
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT kind, status, report_id FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2`,
+		chanID, report.ID)
+	if err := row.Scan(&kind, &status, &reportID); err != nil {
+		t.Fatalf("scan digest delivery row: %v", err)
+	}
+	if kind != "digest" {
+		t.Errorf("kind = %q, want digest", kind)
+	}
+	if status != "pending" {
+		t.Errorf("status = %q, want pending", status)
+	}
+	if reportID == nil || *reportID != report.ID {
+		t.Errorf("report_id = %v, want %v", reportID, report.ID)
+	}
+
+	// Idempotent: second insert for same report+channel should not error (ON CONFLICT DO NOTHING).
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery (idempotent): %v", err)
+	}
+
+	// Should still be exactly one row.
+	var count int
+	countRow := s.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2`,
+		chanID, report.ID)
+	if err := countRow.Scan(&count); err != nil {
+		t.Fatalf("count digest deliveries: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 digest delivery row (idempotent), got %d", count)
+	}
+}
+
+func TestDigestCVEs(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db := s.DB()
+
+	// Insert CVEs with different severities and timestamps.
+	since := time.Now().Add(-1 * time.Hour)
+
+	// CVE-2025-D001: critical, modified recently — should match.
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'critical', 'Critical vuln', 9.8, $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET
+			severity = EXCLUDED.severity,
+			date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-D001", uuid.New().String(), time.Now())
+	if err != nil {
+		t.Fatalf("insert CVE-2025-D001: %v", err)
+	}
+
+	// CVE-2025-D002: low, modified recently — should match only without severity filter.
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'low', 'Low vuln', 2.0, $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET
+			severity = EXCLUDED.severity,
+			date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-D002", uuid.New().String(), time.Now())
+	if err != nil {
+		t.Fatalf("insert CVE-2025-D002: %v", err)
+	}
+
+	// CVE-2025-D003: critical but old — should NOT match (before since).
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'critical', 'Old critical vuln', 9.5, $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET
+			severity = EXCLUDED.severity,
+			date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-D003", uuid.New().String(), time.Now().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatalf("insert CVE-2025-D003: %v", err)
+	}
+
+	// Test 1: No severity filter — should return D001 and D002 (not D003, too old).
+	all, err := s.DigestCVEs(ctx, since, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs(all): %v", err)
+	}
+	foundD001, foundD002, foundD003 := false, false, false
+	for _, row := range all {
+		switch row.CveID {
+		case "CVE-2025-D001":
+			foundD001 = true
+		case "CVE-2025-D002":
+			foundD002 = true
+		case "CVE-2025-D003":
+			foundD003 = true
+		}
+	}
+	if !foundD001 {
+		t.Error("DigestCVEs(all): expected CVE-2025-D001")
+	}
+	if !foundD002 {
+		t.Error("DigestCVEs(all): expected CVE-2025-D002")
+	}
+	if foundD003 {
+		t.Error("DigestCVEs(all): should not include CVE-2025-D003 (too old)")
+	}
+
+	// Test 2: Severity filter [critical, high] — only D001 should match.
+	filtered, err := s.DigestCVEs(ctx, since, []string{"critical", "high"})
+	if err != nil {
+		t.Fatalf("DigestCVEs(critical,high): %v", err)
+	}
+	for _, row := range filtered {
+		if row.CveID == "CVE-2025-D002" {
+			t.Error("DigestCVEs(critical,high): should not include low-severity CVE-2025-D002")
+		}
+	}
+	foundD001 = false
+	for _, row := range filtered {
+		if row.CveID == "CVE-2025-D001" {
+			foundD001 = true
+		}
+	}
+	if !foundD001 {
+		t.Error("DigestCVEs(critical,high): expected CVE-2025-D001")
+	}
+}

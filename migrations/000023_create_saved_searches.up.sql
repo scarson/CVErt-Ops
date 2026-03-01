@@ -26,7 +26,7 @@ CREATE POLICY org_isolation ON saved_searches
         OR org_id = current_setting('app.org_id', TRUE)::uuid
     );
 
--- Soft-delete for normal operations; hard-delete for orphan cleanup on user deletion.
+-- Soft-delete for normal operations, hard-delete for orphan cleanup on user deletion.
 GRANT SELECT, INSERT, UPDATE, DELETE ON saved_searches TO cvert_ops_app;
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS saved_searches_org_id_idx

@@ -454,12 +454,14 @@ func TestCreateChannel_SSRFBlockedURL(t *testing.T) {
 		{"http://internal.local/hook", ".local hostname"},
 	}
 	for _, tc := range cases {
-		body := `{"name":"Bad Webhook","type":"webhook","config":{"url":"` + tc.url + `"}}`
-		resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
-		defer resp.Body.Close() //nolint:errcheck,gosec // G104
-		if resp.StatusCode != http.StatusUnprocessableEntity {
-			t.Errorf("url %q (%s): got %d, want 422", tc.url, tc.desc, resp.StatusCode)
-		}
+		t.Run(tc.desc, func(t *testing.T) {
+			body := `{"name":"Bad Webhook","type":"webhook","config":{"url":"` + tc.url + `"}}`
+			resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("url %q (%s): got %d, want 422", tc.url, tc.desc, resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -488,7 +490,8 @@ func TestValidateWebhookURL(t *testing.T) {
 		{"http://localhost.local/hook", ".local suffix"},
 		{"http://api.internal/hook", ".internal suffix"},
 		{"http://127.0.0.1/hook", "loopback"},
-		{"http://::1/hook", "IPv6 loopback"},
+		{"http://[::1]/hook", "IPv6 loopback (bracketed)"},
+		{"http://::1/hook", "IPv6 loopback (unbracketed, rejected by url parser)"},
 		{"http://10.1.2.3/hook", "RFC1918 10/8"},
 		{"http://172.16.0.1/hook", "RFC1918 172.16/12"},
 		{"http://192.168.99.1/hook", "RFC1918 192.168/16"},

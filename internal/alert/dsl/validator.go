@@ -18,6 +18,7 @@ var selectiveFields = map[string]bool{
 	"date_modified_source_max": true,
 	"affected.ecosystem":       true,
 	"affected.package":         true,
+	"fts_query":                true,
 }
 
 // Validate performs semantic validation of a Rule. All errors are collected and returned together
@@ -180,6 +181,16 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			if err := json.Unmarshal(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 			}
+		}
+
+	case kindFTS:
+		var s string
+		if err := json.Unmarshal(c.Value, &s); err != nil {
+			errs = append(errs, ValidationError{Index: idx, Field: c.Field, Message: "value must be a string", Severity: "error"})
+			return errs
+		}
+		if s == "" {
+			errs = append(errs, ValidationError{Index: idx, Field: c.Field, Message: "FTS query must not be empty", Severity: "error"})
 		}
 
 	case kindAffected:

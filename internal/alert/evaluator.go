@@ -425,13 +425,17 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
 		sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)),
 	}
-	query, args, err := psql.
+	sb := psql.
 		Select(
 			"cves.cve_id",
 			"COALESCE(cves.material_hash, '')",
 			"COALESCE(lower(cves.description_primary), '')",
 		).
-		From("cves").
+		From("cves")
+	for _, j := range compiled.Joins {
+		sb = sb.Join(j)
+	}
+	query, args, err := sb.
 		Where(combined).
 		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
 		ToSql()
@@ -470,13 +474,17 @@ func (e *Evaluator) queryCandidatesAll(ctx context.Context, tx *sql.Tx, compiled
 		compiled.SQL,
 		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
 	}
-	query, args, err := psql.
+	sb := psql.
 		Select(
 			"cves.cve_id",
 			"COALESCE(cves.material_hash, '')",
 			"COALESCE(lower(cves.description_primary), '')",
 		).
-		From("cves").
+		From("cves")
+	for _, j := range compiled.Joins {
+		sb = sb.Join(j)
+	}
+	query, args, err := sb.
 		Where(combined).
 		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
 		ToSql()

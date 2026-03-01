@@ -89,11 +89,20 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		}
 	}
 
+	var joins []string
+	for _, c := range r.Conditions {
+		if c.Field == "fts_query" {
+			joins = append(joins, "cve_search_index si ON cves.cve_id = si.cve_id")
+			break // only one FTS join needed
+		}
+	}
+
 	isEPSSOnly := hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	return &CompiledRule{
 		RuleID:      ruleID,
 		DSLVersion:  dslVersion,
 		SQL:         combined,
+		Joins:       joins,
 		PostFilters: postFilters,
 		IsEPSSOnly:  isEPSSOnly,
 		HasEPSS:     hasEPSSCond,
@@ -167,6 +176,12 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 		return textSQL(spec.sqlExpr, c.Op, c.Value)
 	case kindAffected:
 		return affectedSQL(c)
+	case kindFTS:
+		var s string
+		if err := json.Unmarshal(c.Value, &s); err != nil {
+			return nil, fmt.Errorf("condition %q: value must be a string", c.Field)
+		}
+		return sq.Expr("si.fts_document @@ websearch_to_tsquery('english', ?)", s), nil
 	default:
 		return nil, fmt.Errorf("unsupported field kind %d", spec.kind)
 	}

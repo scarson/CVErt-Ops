@@ -277,8 +277,8 @@ func TestDeleteChannel_409IfActiveRuleBound(t *testing.T) {
 	// Create an alert rule via HTTP.
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`

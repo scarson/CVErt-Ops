@@ -125,25 +125,28 @@ func (s *Store) ListWatchlists(ctx context.Context, orgID uuid.UUID, afterTime *
 		return nil, fmt.Errorf("list watchlists: build query: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list watchlists: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
 	var result []WatchlistRow
-	for rows.Next() {
-		var r WatchlistRow
-		if err := rows.Scan(
-			&r.ID, &r.OrgID, &r.GroupID, &r.Name, &r.Description,
-			&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
-			&r.ItemCount,
-		); err != nil {
-			return nil, fmt.Errorf("list watchlists: scan: %w", err)
+	err = s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("list watchlists: %w", err)
 		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
+		defer rows.Close() //nolint:errcheck
+
+		for rows.Next() {
+			var r WatchlistRow
+			if err := rows.Scan(
+				&r.ID, &r.OrgID, &r.GroupID, &r.Name, &r.Description,
+				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
+				&r.ItemCount,
+			); err != nil {
+				return fmt.Errorf("list watchlists: scan: %w", err)
+			}
+			result = append(result, r)
+		}
+		return rows.Err()
+	})
+	return result, err
 }
 
 // UpdateWatchlist updates the mutable fields of a watchlist. Returns (nil, nil) if the
@@ -241,25 +244,28 @@ func (s *Store) ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.
 		return nil, fmt.Errorf("list watchlist items: build query: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list watchlist items: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
 	var result []generated.WatchlistItem
-	for rows.Next() {
-		var item generated.WatchlistItem
-		if err := rows.Scan(
-			&item.ID, &item.WatchlistID, &item.OrgID, &item.ItemType,
-			&item.Ecosystem, &item.PackageName, &item.Namespace, &item.CpeNormalized,
-			&item.CreatedAt, &item.DeletedAt,
-		); err != nil {
-			return nil, fmt.Errorf("list watchlist items: scan: %w", err)
+	err = s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("list watchlist items: %w", err)
 		}
-		result = append(result, item)
-	}
-	return result, rows.Err()
+		defer rows.Close() //nolint:errcheck
+
+		for rows.Next() {
+			var item generated.WatchlistItem
+			if err := rows.Scan(
+				&item.ID, &item.WatchlistID, &item.OrgID, &item.ItemType,
+				&item.Ecosystem, &item.PackageName, &item.Namespace, &item.CpeNormalized,
+				&item.CreatedAt, &item.DeletedAt,
+			); err != nil {
+				return fmt.Errorf("list watchlist items: scan: %w", err)
+			}
+			result = append(result, item)
+		}
+		return rows.Err()
+	})
+	return result, err
 }
 
 // DeleteWatchlistItem soft-deletes an item from a watchlist.

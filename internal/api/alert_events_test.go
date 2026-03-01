@@ -31,8 +31,8 @@ func TestAlertEvents_List(t *testing.T) {
 	// Create two alert rules.
 	rule1Resp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer rule1Resp.Body.Close() //nolint:errcheck,gosec // G104
-	if rule1Resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create rule1: got %d, want 202", rule1Resp.StatusCode)
+	if rule1Resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create rule1: got %d, want 201", rule1Resp.StatusCode)
 	}
 	var rule1 struct{ ID string `json:"id"` }
 	if err := json.NewDecoder(rule1Resp.Body).Decode(&rule1); err != nil {
@@ -43,11 +43,12 @@ func TestAlertEvents_List(t *testing.T) {
   "name": "CISA KEV Rule",
   "logic": "and",
   "conditions": [{"field": "in_cisa_kev", "operator": "eq", "value": true}],
-  "watchlist_ids": []
+  "watchlist_ids": [],
+  "enabled": true
 }`)
 	defer rule2Resp.Body.Close() //nolint:errcheck,gosec // G104
-	if rule2Resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create rule2: got %d, want 202", rule2Resp.StatusCode)
+	if rule2Resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create rule2: got %d, want 201", rule2Resp.StatusCode)
 	}
 	var rule2 struct{ ID string `json:"id"` }
 	if err := json.NewDecoder(rule2Resp.Body).Decode(&rule2); err != nil {
@@ -129,8 +130,8 @@ func TestAlertEvents_CveIDFilter(t *testing.T) {
 
 	ruleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer ruleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if ruleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create rule: got %d, want 202", ruleResp.StatusCode)
+	if ruleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create rule: got %d, want 201", ruleResp.StatusCode)
 	}
 	var rule struct{ ID string `json:"id"` }
 	if err := json.NewDecoder(ruleResp.Body).Decode(&rule); err != nil {
@@ -191,8 +192,8 @@ func TestAlertEvents_CrossOrgIsolation(t *testing.T) {
 
 	ruleResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer ruleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if ruleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create rule: got %d, want 202", ruleResp.StatusCode)
+	if ruleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create rule: got %d, want 201", ruleResp.StatusCode)
 	}
 	var rule struct{ ID string `json:"id"` }
 	if err := json.NewDecoder(ruleResp.Body).Decode(&rule); err != nil {

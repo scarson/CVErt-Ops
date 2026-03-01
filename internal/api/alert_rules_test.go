@@ -88,12 +88,13 @@ func doValidateAlertRule(t *testing.T, ctx context.Context, ts *httptest.Server,
 	return resp
 }
 
-// validRuleDSL is a simple valid rule DSL for testing.
+// validRuleDSL is a simple valid enabled rule DSL for testing. Creates in "activating" status.
 const validRuleDSL = `{
   "name": "High CVSS Rule",
   "logic": "and",
   "conditions": [{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}],
   "watchlist_ids": [],
+  "enabled": true,
   "fire_on_non_material_changes": false
 }`
 
@@ -114,8 +115,8 @@ func TestAlertRuleCRUD(t *testing.T) {
 	// Create returns 202 (activating scan queued).
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create alert rule: got %d, want 202", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create alert rule: got %d, want 201", createResp.StatusCode)
 	}
 	var created struct {
 		ID     string `json:"id"`
@@ -168,11 +169,11 @@ func TestAlertRuleCRUD(t *testing.T) {
 		t.Fatalf("list items count = %d, want 1", len(listed.Items))
 	}
 
-	// PATCH: update the name. Status transitions back to activating.
+	// PATCH: update the name only while activating → 200, status stays activating.
 	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":"Renamed Rule"}`)
 	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
-	if patchResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("patch alert rule: got %d, want 202", patchResp.StatusCode)
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch alert rule: got %d, want 200", patchResp.StatusCode)
 	}
 	var patched struct {
 		Name   string `json:"name"`
@@ -200,7 +201,7 @@ func TestAlertRuleCRUD(t *testing.T) {
 	}
 }
 
-// TestAlertRule_Draft verifies creating a rule with status=draft returns 201 and stays in draft.
+// TestAlertRule_Draft verifies creating a rule with enabled=false returns 201 with status=draft.
 func TestAlertRule_Draft(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -217,7 +218,7 @@ func TestAlertRule_Draft(t *testing.T) {
   "logic": "and",
   "conditions": [{"field": "in_cisa_kev", "operator": "eq", "value": true}],
   "watchlist_ids": [],
-  "status": "draft"
+  "enabled": false
 }`
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, draftBody)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
@@ -313,6 +314,7 @@ func TestAlertRule_InvalidDSL(t *testing.T) {
 }
 
 // TestAlertRule_PatchInvalidDSL verifies that PATCH with invalid DSL conditions returns 422.
+// Rule must be in "active" status; DSL changes on "activating" rules return 409.
 func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -327,14 +329,21 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	// Create a valid rule.
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create: %v", err)
+	}
+
+	// Transition to active so DSL changes are allowed (activating → 409).
+	orgUUID := mustParseUUID(t, aliceReg.OrgID)
+	ruleUUID := mustParseUUID(t, created.ID)
+	if err := db.SetAlertRuleStatus(ctx, orgUUID, ruleUUID, "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
 	}
 
 	// PATCH with an unknown DSL field — should return 422.
@@ -363,8 +372,8 @@ func TestAlertRule_CrossOrgIsolation(t *testing.T) {
 
 	createResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -462,8 +471,8 @@ func TestBindChannelToRule_Idempotent(t *testing.T) {
 
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -530,8 +539,8 @@ func TestBindChannelToRule_CrossOrgChannelRejected(t *testing.T) {
 	// Alice creates a rule in her org.
 	createRuleResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("alice create rule: got %d, want 202", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("alice create rule: got %d, want 201", createRuleResp.StatusCode)
 	}
 	var aliceRule struct {
 		ID string `json:"id"`
@@ -587,8 +596,8 @@ func TestUnbindChannelFromRule_204(t *testing.T) {
 
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -628,8 +637,8 @@ func TestUnbindChannelFromRule_404(t *testing.T) {
 
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -688,8 +697,8 @@ func TestListChannelsForRule(t *testing.T) {
 	// Create a rule.
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusAccepted {
-		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -743,6 +752,302 @@ func TestListChannelsForRule(t *testing.T) {
 	}
 	if len(listed2.Items) != 1 {
 		t.Fatalf("list items count after soft-delete = %d, want 1", len(listed2.Items))
+	}
+}
+
+// ── PATCH state machine tests ─────────────────────────────────────────────────
+
+// TestPatchStateMachine_ActivatingDSLChange verifies that PATCH with DSL change
+// on an activating rule returns 409 Conflict.
+func TestPatchStateMachine_ActivatingDSLChange(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create rule — starts in "activating".
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+
+	// PATCH with DSL change (conditions) while activating → 409.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusConflict {
+		t.Fatalf("activating + DSL change: got %d, want 409", patchResp.StatusCode)
+	}
+}
+
+// TestPatchStateMachine_ActivatingNameOnly verifies that PATCH with name-only
+// change on an activating rule returns 200 and keeps status=activating.
+func TestPatchStateMachine_ActivatingNameOnly(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+
+	// PATCH with name only while activating → 200, status stays activating.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"name":"Renamed While Activating"}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("activating + name only: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched.Name != "Renamed While Activating" {
+		t.Errorf("name = %q, want %q", patched.Name, "Renamed While Activating")
+	}
+	if patched.Status != "activating" {
+		t.Errorf("status = %q, want %q", patched.Status, "activating")
+	}
+}
+
+// TestPatchStateMachine_ActiveDSLChange verifies that PATCH with DSL change on
+// an active rule returns 200 and transitions status to activating.
+func TestPatchStateMachine_ActiveDSLChange(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+
+	// Transition to active via store.
+	orgUUID := mustParseUUID(t, aliceReg.OrgID)
+	ruleUUID := mustParseUUID(t, created.ID)
+	if err := db.SetAlertRuleStatus(ctx, orgUUID, ruleUUID, "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
+	}
+
+	// PATCH with DSL change on active rule → 200, status=activating.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("active + DSL change: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched.Status != "activating" {
+		t.Errorf("status = %q, want %q", patched.Status, "activating")
+	}
+}
+
+// TestPatchStateMachine_ActiveNameOnly verifies that PATCH with name-only change
+// on an active rule returns 200 with status staying active.
+func TestPatchStateMachine_ActiveNameOnly(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+
+	// Transition to active via store.
+	orgUUID := mustParseUUID(t, aliceReg.OrgID)
+	ruleUUID := mustParseUUID(t, created.ID)
+	if err := db.SetAlertRuleStatus(ctx, orgUUID, ruleUUID, "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
+	}
+
+	// PATCH with name only on active rule → 200, status=active.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"name":"Active Renamed"}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("active + name only: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched.Name != "Active Renamed" {
+		t.Errorf("name = %q, want %q", patched.Name, "Active Renamed")
+	}
+	if patched.Status != "active" {
+		t.Errorf("status = %q, want %q", patched.Status, "active")
+	}
+}
+
+// TestPatchStateMachine_DraftEnableTrue verifies that PATCH with enabled=true
+// on a draft rule transitions to activating.
+func TestPatchStateMachine_DraftEnableTrue(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create a draft rule (enabled=false).
+	const draftBody = `{
+  "name": "Draft Rule",
+  "logic": "and",
+  "conditions": [{"field": "in_cisa_kev", "operator": "eq", "value": true}],
+  "watchlist_ids": [],
+  "enabled": false
+}`
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, draftBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+	if created.Status != "draft" {
+		t.Fatalf("created status = %q, want draft", created.Status)
+	}
+
+	// PATCH with enabled=true on draft → 200, status=activating.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"enabled":true}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("draft + enabled=true: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched.Status != "activating" {
+		t.Errorf("status = %q, want %q", patched.Status, "activating")
+	}
+}
+
+// TestPatchStateMachine_ActiveDisable verifies that PATCH with enabled=false
+// on an active rule transitions to disabled.
+func TestPatchStateMachine_ActiveDisable(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+
+	// Transition to active via store.
+	orgUUID := mustParseUUID(t, aliceReg.OrgID)
+	ruleUUID := mustParseUUID(t, created.ID)
+	if err := db.SetAlertRuleStatus(ctx, orgUUID, ruleUUID, "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
+	}
+
+	// PATCH with enabled=false on active → 200, status=disabled.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"enabled":false}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("active + enabled=false: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched.Status != "disabled" {
+		t.Errorf("status = %q, want %q", patched.Status, "disabled")
+	}
+}
+
+// TestPatchStateMachine_ErrorEnableTrue verifies that PATCH with enabled=true
+// on an error-state rule transitions to activating.
+func TestPatchStateMachine_ErrorEnableTrue(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(createResp.Body).Decode(&created)
+
+	// Transition to error via store.
+	orgUUID := mustParseUUID(t, aliceReg.OrgID)
+	ruleUUID := mustParseUUID(t, created.ID)
+	if err := db.SetAlertRuleStatus(ctx, orgUUID, ruleUUID, "error"); err != nil {
+		t.Fatalf("set status to error: %v", err)
+	}
+
+	// PATCH with enabled=true on error → 200, status=activating.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID,
+		`{"enabled":true}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("error + enabled=true: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if patched.Status != "activating" {
+		t.Errorf("status = %q, want %q", patched.Status, "activating")
 	}
 }
 

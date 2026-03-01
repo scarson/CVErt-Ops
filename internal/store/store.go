@@ -69,12 +69,13 @@ func (s *Store) withBypassTx(ctx context.Context, fn func(*generated.Queries) er
 	return tx.Commit()
 }
 
-// withOrgTx runs fn inside a database/sql transaction with app.org_id set to
-// orgID. Implements Layer 2 tenant isolation (PLAN.md §6.2) for store-level
-// org-scoped methods. SET LOCAL resets on commit or rollback — safe for pooled
-// connections. NOTE: SET LOCAL does not accept parameterized values; formatting
-// is safe because orgID is a typed uuid.UUID, not user-supplied text.
-func (s *Store) withOrgTx(ctx context.Context, orgID uuid.UUID, fn func(*generated.Queries) error) error {
+// withOrgRawTx runs fn inside a database/sql transaction with app.org_id set
+// to orgID. Use this for squirrel/dynamic-SQL queries that need a raw *sql.Tx
+// rather than sqlc-generated Queries. SET LOCAL resets on commit or rollback —
+// safe for pooled connections. NOTE: SET LOCAL does not accept parameterized
+// values; formatting is safe because orgID is a typed uuid.UUID, not
+// user-supplied text.
+func (s *Store) withOrgRawTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin org tx: %w", err)
@@ -89,11 +90,20 @@ func (s *Store) withOrgTx(ctx context.Context, orgID uuid.UUID, fn func(*generat
 		_ = tx.Rollback()
 		return fmt.Errorf("set org_id: %w", err)
 	}
-	if err := fn(s.q.WithTx(tx)); err != nil {
+	if err := fn(tx); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	return tx.Commit()
+}
+
+// withOrgTx runs fn inside a database/sql transaction with app.org_id set to
+// orgID. Implements Layer 2 tenant isolation (PLAN.md §6.2) for store-level
+// org-scoped methods that use sqlc-generated Queries.
+func (s *Store) withOrgTx(ctx context.Context, orgID uuid.UUID, fn func(*generated.Queries) error) error {
+	return s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		return fn(s.q.WithTx(tx))
+	})
 }
 
 // OrgTx opens a pgx native transaction and sets app.org_id = orgID for the

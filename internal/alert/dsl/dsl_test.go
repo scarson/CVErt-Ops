@@ -536,6 +536,35 @@ func TestCompile_RuleIDAndDSLVersion(t *testing.T) {
 	}
 }
 
+// ─── ILIKE Wildcard Escaping ─────────────────────────────────────────────────
+
+func TestCompile_TextContainsEscapesWildcards(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"100%"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%100\%%` {
+		t.Errorf("expected escaped ILIKE pattern %%100\\%%%%,  got %v", args)
+	}
+}
+
+func TestCompile_TextContainsEscapesUnderscore(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"a_b"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%a\_b%` {
+		t.Errorf("expected escaped underscore pattern, got %v", args)
+	}
+}
+
+func TestCompile_AffectedPackageEscapesWildcards(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"contains","value":"my%pkg"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%my\%pkg%` {
+		t.Errorf("expected escaped package pattern, got %v", args)
+	}
+}
+
 // ─── Accessors ───────────────────────────────────────────────────────────────
 
 func TestAccessor_NilPointer(t *testing.T) {

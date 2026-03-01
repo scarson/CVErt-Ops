@@ -23,17 +23,19 @@ type createAlertRuleBody struct {
 	Logic                    string          `json:"logic"`
 	Conditions               json.RawMessage `json:"conditions"`
 	WatchlistIDs             []string        `json:"watchlist_ids"`
+	Enabled                  bool            `json:"enabled"`
 	FireOnNonMaterialChanges bool            `json:"fire_on_non_material_changes"`
-	Status                   string          `json:"status"` // "draft" → 201; anything else → activating + 202
 }
 
 // patchAlertRuleBody uses nil-check semantics for all fields.
 // json.RawMessage is nil if the key was absent from the PATCH payload.
+// Enabled maps to the status state machine: true → activating, false → disabled.
 type patchAlertRuleBody struct {
 	Name                     *string         `json:"name"`
 	Logic                    *string         `json:"logic"`
 	Conditions               json.RawMessage `json:"conditions"` // nil = not provided
 	WatchlistIDs             *[]string       `json:"watchlist_ids"`
+	Enabled                  *bool           `json:"enabled"`
 	FireOnNonMaterialChanges *bool           `json:"fire_on_non_material_changes"`
 }
 
@@ -57,13 +59,17 @@ type alertRuleListResponse struct {
 }
 
 type validateRuleBody struct {
-	Logic      string          `json:"logic"`
-	Conditions json.RawMessage `json:"conditions"`
+	Logic        string          `json:"logic"`
+	Conditions   json.RawMessage `json:"conditions"`
+	WatchlistIDs []string        `json:"watchlist_ids"`
 }
 
 type validateRuleResponse struct {
-	Valid  bool               `json:"valid"`
-	Errors []dslErrorEntry    `json:"errors"`
+	Valid            bool            `json:"valid"`
+	Errors           []dslErrorEntry `json:"errors"`
+	Warnings         []dslErrorEntry `json:"warnings"`
+	IsEPSSOnly       bool            `json:"is_epss_only"`
+	HasEPSSCondition bool            `json:"has_epss_condition"`
 }
 
 type dslErrorEntry struct {
@@ -201,9 +207,8 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	isDraft := req.Status == "draft"
 	status := "activating"
-	if isDraft {
+	if !req.Enabled {
 		status = "draft"
 	}
 
@@ -223,11 +228,7 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	statusCode := http.StatusAccepted
-	if isDraft {
-		statusCode = http.StatusCreated
-	}
-	writeJSON(w, statusCode, alertRuleToEntry(*row))
+	writeJSON(w, http.StatusCreated, alertRuleToEntry(*row))
 }
 
 // getAlertRuleHandler handles GET /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -303,7 +304,13 @@ func (srv *Server) listAlertRulesHandler(w http.ResponseWriter, r *http.Request)
 }
 
 // updateAlertRuleHandler handles PATCH /api/v1/orgs/{org_id}/alert-rules/{id}.
-// Any change re-validates the DSL and transitions the rule to activating (202).
+// Applies a state machine based on current status and the type of change:
+//   - activating + DSL change → 409 Conflict
+//   - activating + metadata only → 200, update fields, keep activating
+//   - active + DSL change → 200, re-activate (status=activating, evict cache)
+//   - active + metadata only → 200, keep active
+//   - error|draft|disabled + enabled=true → 200, re-activate (status=activating)
+//   - enabled=false → disabled
 func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
@@ -333,12 +340,23 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Determine if DSL/watchlist fields are being changed.
+	hasDSLChange := req.Logic != nil || len(req.Conditions) > 0 || req.WatchlistIDs != nil
+
+	// State machine: reject DSL changes while activating.
+	if current.Status == "activating" && hasDSLChange {
+		http.Error(w, "rule is currently activating; wait for scan to complete before changing DSL", http.StatusConflict)
+		return
+	}
+
 	// Build effective update values from current, overriding with patch fields.
 	name := current.Name
 	logic := current.Logic
 	conditions := current.Conditions
 	wlIDs := current.WatchlistIds
 	fireOnNonMaterial := current.FireOnNonMaterialChanges
+	hasEPSS := current.HasEpssCondition
+	isEPSSOnly := current.IsEpssOnly
 
 	if req.Name != nil {
 		if strings.TrimSpace(*req.Name) == "" {
@@ -365,21 +383,26 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		fireOnNonMaterial = *req.FireOnNonMaterialChanges
 	}
 
-	// Re-validate and compile the effective DSL.
-	_, meta, valErrs, err := parseDSL(logic, conditions, len(wlIDs))
-	if err != nil {
-		http.Error(w, "invalid DSL", http.StatusUnprocessableEntity)
-		return
-	}
-	if hasBlockingErrors(valErrs) {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"message": "alert rule DSL validation failed",
-			"errors":  valErrsToEntries(valErrs),
-		})
-		return
+	// Re-validate DSL only if DSL fields changed.
+	if hasDSLChange {
+		_, meta, valErrs, err := parseDSL(logic, conditions, len(wlIDs))
+		if err != nil {
+			http.Error(w, "invalid DSL", http.StatusUnprocessableEntity)
+			return
+		}
+		if hasBlockingErrors(valErrs) {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"message": "alert rule DSL validation failed",
+				"errors":  valErrsToEntries(valErrs),
+			})
+			return
+		}
+		hasEPSS = meta.hasEPSS
+		isEPSSOnly = meta.isEPSSOnly
 	}
 
-	if len(wlIDs) > 0 {
+	// Validate watchlist ownership if watchlist IDs changed.
+	if req.WatchlistIDs != nil && len(wlIDs) > 0 {
 		owned, err := srv.store.ValidateWatchlistsOwnership(r.Context(), orgID, wlIDs)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "validate watchlists ownership", "error", err)
@@ -392,15 +415,39 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Determine new status via state machine.
+	newStatus := current.Status
+	needsCacheEvict := false
+
+	switch current.Status {
+	case "activating":
+		// No DSL change allowed (already rejected above). Metadata-only updates keep activating.
+		if req.Enabled != nil && !*req.Enabled {
+			newStatus = "disabled"
+		}
+	case "active":
+		if hasDSLChange {
+			newStatus = "activating"
+			needsCacheEvict = true
+		} else if req.Enabled != nil && !*req.Enabled {
+			newStatus = "disabled"
+			needsCacheEvict = true
+		}
+	case "error", "draft", "disabled":
+		if req.Enabled != nil && *req.Enabled {
+			newStatus = "activating"
+		}
+	}
+
 	row, err := srv.store.UpdateAlertRule(r.Context(), orgID, id, store.UpdateAlertRuleParams{
 		Name:                     name,
 		Logic:                    logic,
 		Conditions:               conditions,
 		WatchlistIds:             wlIDs,
-		HasEpssCondition:         meta.hasEPSS,
-		IsEpssOnly:               meta.isEPSSOnly,
+		HasEpssCondition:         hasEPSS,
+		IsEpssOnly:               isEPSSOnly,
 		FireOnNonMaterialChanges: fireOnNonMaterial,
-		Status:                   "activating",
+		Status:                   newStatus,
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update alert rule", "error", err)
@@ -412,7 +459,11 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, alertRuleToEntry(*row))
+	if needsCacheEvict && srv.alertCache != nil {
+		srv.alertCache.Evict(id)
+	}
+
+	writeJSON(w, http.StatusOK, alertRuleToEntry(*row))
 }
 
 // deleteAlertRuleHandler handles DELETE /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -432,6 +483,9 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if srv.alertCache != nil {
+		srv.alertCache.Evict(id)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -450,18 +504,33 @@ func (srv *Server) validateAlertRuleHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	_, _, valErrs, err := parseDSL(req.Logic, req.Conditions, 0)
+	_, meta, valErrs, err := parseDSL(req.Logic, req.Conditions, len(req.WatchlistIDs))
 	if err != nil {
 		writeJSON(w, http.StatusOK, validateRuleResponse{
-			Valid:  false,
-			Errors: []dslErrorEntry{{Index: -1, Field: "", Message: "invalid request", Severity: "error"}},
+			Valid:    false,
+			Errors:   []dslErrorEntry{{Index: -1, Field: "", Message: "invalid request", Severity: "error"}},
+			Warnings: []dslErrorEntry{},
 		})
 		return
 	}
 
+	errs := make([]dslErrorEntry, 0)
+	warnings := make([]dslErrorEntry, 0)
+	for _, e := range valErrs {
+		entry := dslErrorEntry{Index: e.Index, Field: e.Field, Message: e.Message, Severity: e.Severity}
+		if e.Severity == "warning" {
+			warnings = append(warnings, entry)
+		} else {
+			errs = append(errs, entry)
+		}
+	}
+
 	resp := validateRuleResponse{
-		Valid:  !hasBlockingErrors(valErrs),
-		Errors: valErrsToEntries(valErrs),
+		Valid:            !hasBlockingErrors(valErrs),
+		Errors:           errs,
+		Warnings:         warnings,
+		IsEPSSOnly:       meta.isEPSSOnly,
+		HasEPSSCondition: meta.hasEPSS,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

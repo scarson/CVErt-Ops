@@ -10,7 +10,6 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/lib/pq"
 
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -199,31 +198,9 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 
 	var results []generated.Cfe
 	for rows.Next() {
-		var c generated.Cfe
-		if err := rows.Scan(
-			&c.CveID,
-			&c.Status,
-			&c.DatePublished,
-			&c.DateModifiedSourceMax,
-			&c.DateModifiedCanonical,
-			&c.DateFirstSeen,
-			&c.DescriptionPrimary,
-			&c.Severity,
-			&c.CvssV3Score,
-			&c.CvssV3Vector,
-			&c.CvssV3Source,
-			&c.CvssV4Score,
-			&c.CvssV4Vector,
-			&c.CvssV4Source,
-			&c.CvssScoreDiverges,
-			pq.Array(&c.CweIds),
-			&c.ExploitAvailable,
-			&c.InCisaKev,
-			&c.EpssScore,
-			&c.DateEpssUpdated,
-			&c.MaterialHash,
-		); err != nil {
-			return nil, fmt.Errorf("store: scan cve row: %w", err)
+		c, scanErr := scanCVERow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan cve row: %w", scanErr)
 		}
 		results = append(results, c)
 	}

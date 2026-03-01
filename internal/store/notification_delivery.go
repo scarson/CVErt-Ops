@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -201,4 +202,38 @@ func (s *Store) ReplayDelivery(ctx context.Context, id, orgID uuid.UUID) error {
 		return fmt.Errorf("replay delivery: %w", err)
 	}
 	return nil
+}
+
+// InsertDigestDelivery inserts a digest delivery for a report+channel.
+// Uses bypass-RLS (worker context). ON CONFLICT DO NOTHING prevents double-dispatch.
+func (s *Store) InsertDigestDelivery(ctx context.Context, orgID uuid.UUID, reportID, channelID uuid.UUID, payload json.RawMessage) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.InsertDigestDelivery(ctx, generated.InsertDigestDeliveryParams{
+			OrgID:     orgID,
+			ReportID:  uuid.NullUUID{UUID: reportID, Valid: true},
+			ChannelID: channelID,
+			Payload:   payload,
+		})
+	})
+}
+
+// DigestCVEsRow is the row returned by DigestCVEs.
+type DigestCVEsRow = generated.DigestCVEsRow
+
+// DigestCVEs returns CVEs modified since the given time, optionally filtered by severity.
+// Uses bypass-RLS (worker context). Returns up to 500 rows sorted by severity desc.
+func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string) ([]DigestCVEsRow, error) {
+	var result []DigestCVEsRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		result, err = q.DigestCVEs(ctx, generated.DigestCVEsParams{
+			DateModifiedCanonical: since,
+			Column2:               severities,
+		})
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("digest cves: %w", err)
+	}
+	return result, nil
 }

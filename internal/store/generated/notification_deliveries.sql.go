@@ -155,6 +155,32 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 	return i, err
 }
 
+const insertDigestDelivery = `-- name: InsertDigestDelivery :exec
+INSERT INTO notification_deliveries (org_id, report_id, channel_id, kind, payload, send_after)
+VALUES ($1, $2, $3, 'digest', $4, now())
+ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest'
+DO NOTHING
+`
+
+type InsertDigestDeliveryParams struct {
+	OrgID     uuid.UUID
+	ReportID  uuid.NullUUID
+	ChannelID uuid.UUID
+	Payload   json.RawMessage
+}
+
+// Digest runner: insert a digest delivery for a report+channel.
+// ON CONFLICT targets uq_deliveries_pending_digest partial index.
+func (q *Queries) InsertDigestDelivery(ctx context.Context, arg InsertDigestDeliveryParams) error {
+	_, err := q.db.ExecContext(ctx, insertDigestDelivery,
+		arg.OrgID,
+		arg.ReportID,
+		arg.ChannelID,
+		arg.Payload,
+	)
+	return err
+}
+
 const listDeliveries = `-- name: ListDeliveries :many
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count,
        send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at

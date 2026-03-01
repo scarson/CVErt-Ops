@@ -54,6 +54,75 @@ func (q *Queries) DeleteEPSSStaging(ctx context.Context, cveID string) error {
 	return err
 }
 
+const digestCVEs = `-- name: DigestCVEs :many
+SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
+       description_primary, exploit_available, in_cisa_kev
+FROM cves
+WHERE date_modified_canonical > $1
+  AND status NOT IN ('rejected', 'withdrawn')
+  AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+ORDER BY
+    CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high'     THEN 2
+        WHEN 'medium'   THEN 3
+        WHEN 'low'      THEN 4
+        ELSE 5
+    END,
+    cvss_v3_score DESC NULLS LAST
+LIMIT 500
+`
+
+type DigestCVEsParams struct {
+	DateModifiedCanonical time.Time
+	Column2               []string
+}
+
+type DigestCVEsRow struct {
+	CveID              string
+	Severity           sql.NullString
+	CvssV3Score        sql.NullFloat64
+	CvssV4Score        sql.NullFloat64
+	EpssScore          sql.NullFloat64
+	DescriptionPrimary sql.NullString
+	ExploitAvailable   bool
+	InCisaKev          bool
+}
+
+// Fetch CVEs modified since $1, optionally filtered by severity.
+// Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
+func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]DigestCVEsRow, error) {
+	rows, err := q.db.QueryContext(ctx, digestCVEs, arg.DateModifiedCanonical, pq.Array(arg.Column2))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DigestCVEsRow
+	for rows.Next() {
+		var i DigestCVEsRow
+		if err := rows.Scan(
+			&i.CveID,
+			&i.Severity,
+			&i.CvssV3Score,
+			&i.CvssV4Score,
+			&i.EpssScore,
+			&i.DescriptionPrimary,
+			&i.ExploitAvailable,
+			&i.InCisaKev,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const findCVEBySourceID = `-- name: FindCVEBySourceID :one
 SELECT cve_id FROM cve_sources WHERE source_name = $1 AND source_id = $2 LIMIT 1
 `

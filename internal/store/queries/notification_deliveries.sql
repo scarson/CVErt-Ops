@@ -81,6 +81,14 @@ FROM notification_deliveries
 WHERE id = $1 AND org_id = $2
 LIMIT 1;
 
+-- name: InsertDigestDelivery :exec
+-- Digest runner: insert a digest delivery for a report+channel.
+-- ON CONFLICT targets uq_deliveries_pending_digest partial index.
+INSERT INTO notification_deliveries (org_id, report_id, channel_id, kind, payload, send_after)
+VALUES ($1, $2, $3, 'digest', $4, now())
+ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest'
+DO NOTHING;
+
 -- name: ReplayDelivery :exec
 UPDATE notification_deliveries
 SET status        = 'pending',

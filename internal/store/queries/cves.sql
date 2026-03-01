@@ -159,6 +159,26 @@ SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
        description_primary, exploit_available, in_cisa_kev
 FROM cves WHERE cve_id = $1;
 
+-- name: DigestCVEs :many
+-- Fetch CVEs modified since $1, optionally filtered by severity.
+-- Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
+SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
+       description_primary, exploit_available, in_cisa_kev
+FROM cves
+WHERE date_modified_canonical > $1
+  AND status NOT IN ('rejected', 'withdrawn')
+  AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+ORDER BY
+    CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high'     THEN 2
+        WHEN 'medium'   THEN 3
+        WHEN 'low'      THEN 4
+        ELSE 5
+    END,
+    cvss_v3_score DESC NULLS LAST
+LIMIT 500;
+
 -- name: ListCVEs :many
 -- Base list query — dynamic WHERE and ORDER BY built by squirrel in the
 -- store layer. This static query handles the no-filter paginated case.

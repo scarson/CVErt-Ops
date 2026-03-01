@@ -106,6 +106,11 @@ func (w *Worker) RunOnce(ctx context.Context) {
 	w.wg.Wait()
 }
 
+// RunAICleanupOnce executes a single AI cleanup tick. Used in tests only.
+func (w *Worker) RunAICleanupOnce(ctx context.Context) {
+	w.runAICleanup(ctx)
+}
+
 func (w *Worker) runClaim(ctx context.Context) {
 	rows, err := w.store.ClaimPendingDeliveries(ctx, w.cfg.ClaimBatchSize)
 	if err != nil {

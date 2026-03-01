@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -237,6 +238,119 @@ func TestSavedSearch_CreateValidation(t *testing.T) {
 	defer resp2.Body.Close() //nolint:errcheck,gosec
 	if resp2.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("invalid DSL: got %d, want 422", resp2.StatusCode)
+	}
+}
+
+// TestSavedSearch_CreateValidation_NameLength tests that names exceeding 255 characters
+// are rejected with 422.
+func TestSavedSearch_CreateValidation_NameLength(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-namelen@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-namelen@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Exactly 255 characters should succeed.
+	name255 := strings.Repeat("a", 255)
+	body := fmt.Sprintf(`{"name":"%s","query_json":%s}`, name255, validDSLJSON)
+	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("name 255 chars: got %d, want 201", resp.StatusCode)
+	}
+
+	// 256 characters should be rejected.
+	name256 := strings.Repeat("a", 256)
+	body2 := fmt.Sprintf(`{"name":"%s","query_json":%s}`, name256, validDSLJSON)
+	resp2 := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body2)
+	defer resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("name 256 chars: got %d, want 422", resp2.StatusCode)
+	}
+}
+
+// TestSavedSearch_CreateValidation_NlQueryLength tests that nl_query exceeding 1000
+// characters is rejected with 422.
+func TestSavedSearch_CreateValidation_NlQueryLength(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-nllen@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-nllen@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Exactly 1000 characters should succeed.
+	nlQuery1000 := strings.Repeat("x", 1000)
+	body := fmt.Sprintf(`{"name":"NL Len OK","query_json":%s,"nl_query":"%s"}`, validDSLJSON, nlQuery1000)
+	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("nl_query 1000 chars: got %d, want 201", resp.StatusCode)
+	}
+
+	// 1001 characters should be rejected.
+	nlQuery1001 := strings.Repeat("x", 1001)
+	body2 := fmt.Sprintf(`{"name":"NL Len Bad","query_json":%s,"nl_query":"%s"}`, validDSLJSON, nlQuery1001)
+	resp2 := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body2)
+	defer resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("nl_query 1001 chars: got %d, want 422", resp2.StatusCode)
+	}
+}
+
+// TestSavedSearch_PatchValidation tests patch-specific validation: empty name,
+// name length, and nl_query length constraints.
+func TestSavedSearch_PatchValidation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-patchval@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-patchval@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Create a search to patch.
+	body := fmt.Sprintf(`{"name":"Patch Target","query_json":%s}`, validDSLJSON)
+	createResp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created savedSearchEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// Patch with empty name → 400.
+	resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID, `{"name":""}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+	}
+
+	// Patch with name > 255 → 422.
+	resp2 := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID,
+		fmt.Sprintf(`{"name":"%s"}`, strings.Repeat("b", 256)))
+	defer resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("name 256 chars: got %d, want 422", resp2.StatusCode)
+	}
+
+	// Patch with nl_query > 1000 → 422.
+	resp3 := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID,
+		fmt.Sprintf(`{"nl_query":"%s"}`, strings.Repeat("z", 1001)))
+	defer resp3.Body.Close() //nolint:errcheck,gosec
+	if resp3.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("nl_query 1001 chars: got %d, want 422", resp3.StatusCode)
 	}
 }
 

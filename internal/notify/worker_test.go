@@ -361,6 +361,95 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 	}
 }
 
+// TestWorker_AICleanup_RetentionGate verifies that runAICleanup is a no-op when
+// RetentionEnabled is false, and runs cleanup when RetentionEnabled is true.
+func TestWorker_AICleanup_RetentionGate(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AICleanupGateOrg")
+
+	// Insert an expired AI cache entry directly.
+	if _, err := s.DB().ExecContext(ctx, `
+		INSERT INTO ai_cache (org_id, feature, prompt_version, input_hash, response, expires_at)
+		VALUES ($1, 'nl_search', 'v1', 'deadbeef', '"cached"', NOW() - INTERVAL '1 hour')
+	`, org.ID); err != nil {
+		t.Fatalf("seed expired cache: %v", err)
+	}
+
+	// Insert an old request log entry (200 days old, beyond 90-day default retention).
+	if _, err := s.DB().ExecContext(ctx, `
+		INSERT INTO ai_request_log (org_id, user_id, feature, input_hash, prompt_version, model, cache_hit, latency_ms, status, created_at)
+		VALUES ($1, $1, 'nl_search', 'oldlog', 'v1', 'mock', false, 100, 'success', NOW() - INTERVAL '200 days')
+	`, org.ID); err != nil {
+		t.Fatalf("seed old request log: %v", err)
+	}
+
+	// With RetentionEnabled=false, cleanup should be a no-op.
+	wDisabled := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+		RetentionEnabled:    false,
+	})
+	wDisabled.RunAICleanupOnce(ctx)
+
+	// Verify expired cache entry still exists.
+	var cacheCount int
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM ai_cache WHERE org_id=$1 AND input_hash='deadbeef'", org.ID,
+	).Scan(&cacheCount); err != nil {
+		t.Fatalf("count cache: %v", err)
+	}
+	if cacheCount != 1 {
+		t.Errorf("RetentionEnabled=false: expired cache rows = %d, want 1 (should be untouched)", cacheCount)
+	}
+
+	// Verify old request log still exists.
+	var logCount int
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM ai_request_log WHERE org_id=$1 AND input_hash='oldlog'", org.ID,
+	).Scan(&logCount); err != nil {
+		t.Fatalf("count logs: %v", err)
+	}
+	if logCount != 1 {
+		t.Errorf("RetentionEnabled=false: old log rows = %d, want 1 (should be untouched)", logCount)
+	}
+
+	// With RetentionEnabled=true, cleanup should remove expired entries.
+	wEnabled := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+		RetentionEnabled:    true,
+		AILogRetentionDays:  90,
+	})
+	wEnabled.RunAICleanupOnce(ctx)
+
+	// Expired cache should be cleaned up.
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM ai_cache WHERE org_id=$1 AND input_hash='deadbeef'", org.ID,
+	).Scan(&cacheCount); err != nil {
+		t.Fatalf("count cache after cleanup: %v", err)
+	}
+	if cacheCount != 0 {
+		t.Errorf("RetentionEnabled=true: expired cache rows = %d, want 0 (should be cleaned)", cacheCount)
+	}
+
+	// Old request log should be cleaned up.
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM ai_request_log WHERE org_id=$1 AND input_hash='oldlog'", org.ID,
+	).Scan(&logCount); err != nil {
+		t.Fatalf("count logs after cleanup: %v", err)
+	}
+	if logCount != 0 {
+		t.Errorf("RetentionEnabled=true: old log rows = %d, want 0 (should be cleaned)", logCount)
+	}
+}
+
 func TestWorker_EmailDigestBranch(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

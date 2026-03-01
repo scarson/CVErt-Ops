@@ -347,6 +347,124 @@ func TestSummarizeHandler_QuotaDenied(t *testing.T) {
 	}
 }
 
+// ── Unit tests for helper functions ──────────────────────────────────────────
+
+func TestIsValidCVEID(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"CVE-2024-0001", true},
+		{"CVE-2024-12345", true},
+		{"CVE-1999-9999", true},
+		{"CVE-2024-123456789", true}, // long serial
+		{"CVE-2024-123", false},      // too short (3 digits)
+		{"cve-2024-0001", false},     // lowercase
+		{"CVE-20240001", false},      // missing dash
+		{"CVE-2024-ABCD", false},     // non-numeric serial
+		{"CVE-24-0001", false},       // two-digit year
+		{"GHSA-xxxx-yyyy", false},    // not a CVE
+		{"", false},
+		{"CVE-", false},
+		{"CVE-2024-", false},
+	}
+	for _, tc := range cases {
+		if got := isValidCVEID(tc.input); got != tc.want {
+			t.Errorf("isValidCVEID(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestTruncateForLog(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short", 10, "short"},                                    // under limit
+		{"exactly10!", 10, "exactly10!"},                          // at limit
+		{"this is too long", 10, "this is to...(truncated)"},      // over limit
+		{"", 5, ""},                                               // empty string
+		{"abcdef", 3, "abc...(truncated)"},                        // small limit
+	}
+	for _, tc := range cases {
+		if got := truncateForLog(tc.input, tc.maxLen); got != tc.want {
+			t.Errorf("truncateForLog(%q, %d) = %q, want %q", tc.input, tc.maxLen, got, tc.want)
+		}
+	}
+}
+
+// ── Summarize: invalid CVE ID format ─────────────────────────────────────────
+
+func TestSummarizeHandler_InvalidCVEID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "summbadid@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "summbadid@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	badIDs := []string{
+		"not-a-cve",
+		"GHSA-1234-5678",
+		"CVE-2024-123", // too short serial
+		"cve-2024-0001", // lowercase
+	}
+	for _, badID := range badIDs {
+		resp := doSummarize(t, ctx, ts, token, reg.OrgID, badID)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("summarize(%q): got %d, want 400", badID, resp.StatusCode)
+		}
+		resp.Body.Close() //nolint:errcheck,gosec
+	}
+}
+
+// ── Token counts persisted in ai_request_log on success ──────────────────────
+
+func TestNLSearchHandler_TokenCountsPersisted(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-5001", "critical", nil)
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nltokens@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nltokens@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{"query":"critical CVEs"}`
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("nl-search: got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify token counts were persisted in ai_request_log.
+	var inputTokens, outputTokens int
+	err := db.DB().QueryRowContext(ctx,
+		`SELECT input_tokens, output_tokens FROM ai_request_log
+		 WHERE feature = 'nl_search' AND status = 'success'
+		 ORDER BY created_at DESC LIMIT 1`,
+	).Scan(&inputTokens, &outputTokens)
+	if err != nil {
+		t.Fatalf("query ai_request_log: %v", err)
+	}
+	// MockClient.GenerateStructured returns InputTokens=10, OutputTokens=20.
+	if inputTokens != 10 {
+		t.Errorf("input_tokens = %d, want 10", inputTokens)
+	}
+	if outputTokens != 20 {
+		t.Errorf("output_tokens = %d, want 20", outputTokens)
+	}
+}
+
 func TestSummarizeHandler_CacheHit(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

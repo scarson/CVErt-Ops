@@ -19,6 +19,7 @@ type googleClaims struct {
 	Sub           string `json:"sub"`
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
 	Nonce         string `json:"nonce"`
 }
 
@@ -121,11 +122,21 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 
 	if user == nil {
 		// New user — create account (no password; Google-only auth).
-		user, err = srv.store.CreateUser(ctx, claims.Email, "", "", 0)
+		displayName := claims.Name
+		if displayName == "" {
+			displayName = claims.Email
+		}
+		user, err = srv.store.CreateUser(ctx, claims.Email, displayName, "", 0)
 		if err != nil {
 			slog.ErrorContext(ctx, "google oidc: create user", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
+		}
+
+		// Bootstrap a default org for the first user (mirrors native register flow).
+		if _, err := srv.store.BootstrapFirstUserOrg(ctx, user.ID, displayName+"'s Organization"); err != nil {
+			slog.ErrorContext(ctx, "google oidc: bootstrap org", "error", err)
+			// Non-fatal: user was created, proceed with login.
 		}
 	}
 

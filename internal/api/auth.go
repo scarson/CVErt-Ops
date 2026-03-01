@@ -109,6 +109,9 @@ type registerOutput struct {
 // registerHandler handles POST /api/v1/auth/register.
 // In "open" mode the first registered user gets a default org (owner role).
 func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*registerOutput, error) {
+	if err := srv.checkAuthRateLimit(ctx); err != nil {
+		return nil, err
+	}
 	if srv.cfg.RegistrationMode != "open" {
 		return nil, huma.Error403Forbidden("registration is not open on this server")
 	}
@@ -121,13 +124,6 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	}
 	if existing != nil {
 		return nil, huma.Error409Conflict("email already registered")
-	}
-
-	// Snapshot user count before creation to detect first-user scenario.
-	priorCount, err := srv.store.CountUsers(ctx)
-	if err != nil {
-		slog.ErrorContext(ctx, "register: count users", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
 	}
 
 	if !srv.acquireArgon2() {
@@ -164,14 +160,14 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	out.Status = http.StatusCreated
 	out.Body.UserID = user.ID.String()
 
-	// Bootstrap a default org for the first user in open mode.
-	if priorCount == 0 {
-		orgName := displayName + "'s Organization"
-		org, err := srv.store.CreateOrgWithOwner(ctx, orgName, user.ID)
-		if err != nil {
-			slog.ErrorContext(ctx, "register: create org", "error", err)
-			return nil, huma.Error500InternalServerError("internal error")
-		}
+	// Atomically bootstrap a default org for the first user in open mode.
+	orgName := displayName + "'s Organization"
+	org, err := srv.store.BootstrapFirstUserOrg(ctx, user.ID, orgName)
+	if err != nil {
+		slog.ErrorContext(ctx, "register: bootstrap org", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if org != nil {
 		out.Body.OrgID = org.ID.String()
 	}
 
@@ -196,6 +192,9 @@ type loginOutput struct {
 // loginHandler handles POST /api/v1/auth/login.
 // Nonexistent users still run argon2 to normalize response timing (prevents email enumeration).
 func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginOutput, error) {
+	if err := srv.checkAuthRateLimit(ctx); err != nil {
+		return nil, err
+	}
 	secret := []byte(srv.cfg.JWTSecret)
 
 	user, err := srv.store.GetUserByEmail(ctx, input.Body.Email)
@@ -267,6 +266,9 @@ type refreshOutput struct {
 // refreshHandler handles POST /api/v1/auth/refresh.
 // Implements JTI rotation with 60-second grace window and theft detection per PLAN.md §7.1.
 func (srv *Server) refreshHandler(ctx context.Context, input *refreshInput) (*refreshOutput, error) {
+	if err := srv.checkAuthRateLimit(ctx); err != nil {
+		return nil, err
+	}
 	if input.RefreshToken == "" {
 		return nil, huma.Error401Unauthorized("refresh token required")
 	}
@@ -595,6 +597,16 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 	}
 	if time.Now().After(inv.ExpiresAt) {
 		return nil, huma.NewError(http.StatusGone, "invitation has expired")
+	}
+
+	// Verify the accepting user's email matches the invitation's target email.
+	user, err := srv.store.GetUserByID(ctx, claims.UserID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, "accept invitation: get user", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !strings.EqualFold(user.Email, inv.Email) {
+		return nil, huma.Error403Forbidden("invitation was sent to a different email address")
 	}
 
 	// Idempotency: if the caller is already a member, return success immediately.

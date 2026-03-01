@@ -100,6 +100,13 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	return srv, nil
 }
 
+// Close releases resources held by the server (e.g., the rate limiter cleanup goroutine).
+func (srv *Server) Close() {
+	if srv.rateLimiter != nil {
+		srv.rateLimiter.Stop()
+	}
+}
+
 // Handler builds and returns the http.Handler.
 func (srv *Server) Handler() http.Handler {
 	var db *pgxpool.Pool
@@ -122,6 +129,7 @@ func (srv *Server) Handler() http.Handler {
 	// ── Standard chi middleware ───────────────────────────────────────────────
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(clientIPMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies
 	// (PLAN.md §18.3 "HTTP request body size limit").
 	r.Use(middleware.RequestSize(1 << 20))
@@ -278,16 +286,6 @@ func (srv *Server) acquireArgon2() bool {
 }
 
 func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
-
-// NewRouter builds the full chi router with middleware, /healthz, /metrics,
-// and the huma OpenAPI sub-router at /api/v1.
-//
-// s may be nil only in tests that don't need a DB (healthz will return degraded).
-func NewRouter(s *store.Store) http.Handler {
-	cfg := &config.Config{Argon2MaxConcurrent: 5} //nolint:exhaustruct // legacy wrapper; only argon2 sem size matters here
-	srv, _ := NewServer(s, cfg)
-	return srv.Handler()
-}
 
 // healthResponse is the JSON body for /healthz.
 type healthResponse struct {

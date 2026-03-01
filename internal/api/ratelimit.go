@@ -3,11 +3,13 @@
 package api
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"golang.org/x/time/rate"
 )
 
@@ -18,6 +20,7 @@ type ipRateLimiter struct {
 	burst    int
 	evictTTL time.Duration
 	lastSeen map[string]time.Time
+	done     chan struct{}
 }
 
 func newIPRateLimiter(r rate.Limit, burst int, evictTTL time.Duration) *ipRateLimiter {
@@ -27,9 +30,15 @@ func newIPRateLimiter(r rate.Limit, burst int, evictTTL time.Duration) *ipRateLi
 		r:        r,
 		burst:    burst,
 		evictTTL: evictTTL,
+		done:     make(chan struct{}),
 	}
 	go rl.cleanupLoop()
 	return rl
+}
+
+// Stop terminates the background cleanup goroutine.
+func (rl *ipRateLimiter) Stop() {
+	close(rl.done)
 }
 
 // Allow reports whether the given IP is within its rate limit.
@@ -48,16 +57,21 @@ func (rl *ipRateLimiter) Allow(ip string) bool {
 func (rl *ipRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(rl.evictTTL / 2)
 	defer ticker.Stop()
-	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-rl.evictTTL)
-		for ip, last := range rl.lastSeen {
-			if last.Before(cutoff) {
-				delete(rl.limiters, ip)
-				delete(rl.lastSeen, ip)
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			cutoff := time.Now().Add(-rl.evictTTL)
+			for ip, last := range rl.lastSeen {
+				if last.Before(cutoff) {
+					delete(rl.limiters, ip)
+					delete(rl.lastSeen, ip)
+				}
 			}
+			rl.mu.Unlock()
+		case <-rl.done:
+			return
 		}
-		rl.mu.Unlock()
 	}
 }
 
@@ -79,4 +93,31 @@ func (srv *Server) authRateLimit() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// clientIPMiddleware extracts the client IP from r.RemoteAddr and injects it
+// into the context. Must run after chi's RealIP middleware. Huma handlers read
+// the IP via ctxClientIP to perform rate limiting at the handler level.
+func clientIPMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if host, _, err := net.SplitHostPort(ip); err == nil {
+			ip = host
+		}
+		ctx := context.WithValue(r.Context(), ctxClientIP, ip)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// checkAuthRateLimit checks the per-IP rate limiter using the client IP from
+// context. Returns a huma error if the rate limit is exceeded, nil otherwise.
+func (srv *Server) checkAuthRateLimit(ctx context.Context) error {
+	ip, _ := ctx.Value(ctxClientIP).(string)
+	if ip == "" {
+		ip = "unknown"
+	}
+	if !srv.rateLimiter.Allow(ip) {
+		return huma.Error429TooManyRequests("rate limit exceeded; retry after 60 seconds")
+	}
+	return nil
 }

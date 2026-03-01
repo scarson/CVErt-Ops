@@ -13,7 +13,10 @@ import (
 // AccessClaims holds the claims embedded in an access token.
 type AccessClaims struct {
 	jwt.RegisteredClaims
-	// UserID is the authenticated user's UUID. Serializes as the standard "sub" claim.
+	// UserID is the authenticated user's UUID. The json:"sub" tag intentionally
+	// shadows RegisteredClaims.Subject so that "sub" serializes as a UUID string
+	// rather than a plain string. Go's encoding/json picks the outermost field
+	// when embedded struct tags collide.
 	UserID uuid.UUID `json:"sub"`
 	// TokenVersion must match users.token_version for the refresh flow to succeed.
 	TokenVersion int `json:"tv"`
@@ -59,7 +62,8 @@ func ParseAccessToken(tokenStr string, secret []byte) (*AccessClaims, error) {
 // RefreshClaims holds the claims embedded in a refresh token.
 type RefreshClaims struct {
 	jwt.RegisteredClaims
-	// UserID is the authenticated user's UUID. Serializes as the standard "sub" claim.
+	// UserID shadows RegisteredClaims.Subject (same json:"sub" tag) so that
+	// "sub" serializes as a UUID. See AccessClaims.UserID for details.
 	UserID uuid.UUID `json:"sub"`
 	// TokenVersion must match users.token_version; mismatch means logout-all was called.
 	TokenVersion int `json:"tv"`

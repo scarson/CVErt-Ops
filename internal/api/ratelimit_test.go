@@ -39,6 +39,22 @@ func TestIPRateLimiter_SeparateBucketsPerIP(t *testing.T) {
 	}
 }
 
+func TestIPRateLimiter_Stop(t *testing.T) {
+	t.Parallel()
+	rl := newIPRateLimiter(rate.Limit(1), 1, 100*time.Millisecond)
+
+	// Use the limiter to create an entry.
+	rl.Allow("1.2.3.4")
+
+	// Stop should not panic or hang.
+	rl.Stop()
+
+	// After stop, Allow still works (stateless check, no cleanup goroutine needed).
+	if !rl.Allow("5.6.7.8") {
+		t.Error("Allow should still work after Stop")
+	}
+}
+
 func TestAuthRateLimit_Returns429AfterBurst(t *testing.T) {
 	t.Parallel()
 	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed

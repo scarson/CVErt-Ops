@@ -522,6 +522,39 @@ rows, err := tx.Query(ctx,
 
 **The Lesson:** Never use dynamic `IN ($1, $2, ..., $N)` construction for user-controlled lists. The limit is invisible during development (test watchlists are small) and catastrophic in production (one enterprise user brings down the worker). `ANY($1::type[])` is always the correct pattern.
 
+### 2.13 Squirrel Dynamic Queries Bypass RLS Without `withOrgRawTx`
+
+**The Flaw:** List methods built with squirrel (dynamic SQL builder) used `s.db.QueryContext(ctx, query, args...)` directly instead of running inside a transaction that sets `app.org_id`. The `withOrgTx` helper passes `*generated.Queries` (for sqlc), so squirrel queries that need a raw `*sql.Tx` had no wrapper — developers grabbed a bare connection from the pool.
+
+**Why It Matters:** RLS policies check `current_setting('app.org_id')` per-transaction. Without `SET LOCAL app.org_id`, the setting is NULL, and `NULL::uuid = org_id` evaluates to NULL (false in WHERE), returning **zero rows** to every tenant. While this fails closed (no data leaks), it means all four list endpoints returned empty results for the `cvert_ops_app` role — a total loss of functionality for the non-superuser app path. Tests masked the bug because they used the superuser connection (BYPASSRLS), which ignores RLS entirely.
+
+**The Fix:** Add `withOrgRawTx` — a sibling of `withOrgTx` that passes `*sql.Tx` instead of `*generated.Queries`:
+```go
+func (s *Store) withOrgRawTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
+    // BEGIN → SET LOCAL app.org_id → fn(tx) → COMMIT
+}
+```
+Every squirrel list method must use `withOrgRawTx` instead of querying `s.db` directly. Refactor `withOrgTx` to delegate to `withOrgRawTx` to eliminate duplication.
+
+**The Lesson:** When adding a new store method that uses squirrel (or any dynamic SQL), always wrap execution in `withOrgRawTx`. The type system enforces this for sqlc (requires `*generated.Queries` from `withOrgTx`), but squirrel queries bypass that guard. Any `s.db.QueryContext` or `s.db.ExecContext` call in an org-scoped method is a bug — search for these patterns during code review.
+
+### 2.14 Store Tests Must Use AppStore for RLS Verification
+
+**The Flaw:** Integration tests for list methods used `testutil.NewTestDB(t)` which embeds the superuser `*store.Store` (BYPASSRLS). All assertions ran against the superuser connection, which ignores RLS policies. The `AppStore` field (connecting as `cvert_ops_app` with NOBYPASSRLS) existed but was never used for list method tests.
+
+**Why It Matters:** Tests that bypass RLS cannot detect RLS bugs. The four broken list methods (§2.13) passed all tests because the superuser connection returns all rows regardless of `app.org_id`. This created a false green signal that persisted through code review.
+
+**The Fix:** Every store integration test for an org-scoped list method must include an RLS isolation assertion using `s.AppStore`:
+```go
+// Data setup uses superuser store (s.Store) — this is fine.
+// RLS assertion uses AppStore — this catches RLS bugs.
+got, err := s.AppStore.ListWatchlists(ctx, org1.ID, nil, nil, 10)
+if len(got) != 1 { t.Fatalf("expected 1 watchlist for org1, got %d", len(got)) }
+```
+Pattern: create data in two orgs via superuser, then assert via `AppStore` that each org sees only its own data.
+
+**The Lesson:** For any org-scoped store method, always add a test that queries through `AppStore` (NOBYPASSRLS) and verifies tenant isolation. Superuser-only tests give a false green for RLS compliance. This should be a code review checklist item for every new store method.
+
 ---
 
 ## 3. Security Vulnerabilities
@@ -1431,3 +1464,81 @@ After worker downtime (crash, deployment), `next_run_at` may be 3 days in the pa
 **Notification delivery is where most bugs accumulate.** Of the 40 new findings, 10+ are in the notification/delivery path. This is the most complex stateful path in the system: DB writes, outbound HTTP, retry logic, fan-out, debouncing, Slack-specific quirks. The delivery path deserves a dedicated integration test harness that exercises partial failures, concurrent evaluation, and external service timeouts.
 
 **Timezone handling is deceptively hard.** The DST-drift bug (`24 * time.Hour` addition) is a classic example of a calculation that is correct 364 days per year and wrong once per year — exactly the kind of bug that escapes testing and surfaces as "the digest sent at the wrong time for one week." Always compute scheduled times using timezone-aware arithmetic; never add fixed durations to UTC timestamps for calendar-semantic scheduling.
+
+---
+
+## 8. Process Guardrails (Phase 2a Code Review)
+
+> **Date:** 2026-02-28
+> **Source:** Post-implementation code review of Phase 2a (Auth, RBAC, Multi-tenancy, OAuth)
+> **Purpose:** Capture patterns that slipped through implementation despite being straightforward — the kind of things that should be caught by checklist, not by review.
+
+### 8.1 Middleware Wiring Verification
+
+**The Flaw:** A rate limiter was built (`ipRateLimiter` with per-IP token buckets), but never wired into auth handler routes. The middleware infrastructure existed in `ratelimit.go` but no handler called it.
+
+**Why It Matters:** Building security infrastructure without connecting it is worse than not building it — it creates a false sense of protection. Rate limiting is defense against credential stuffing; without it, attackers can try passwords at line speed.
+
+**The Fix:** After implementing any middleware or security check, verify it's wired by writing a test that exercises the enforcement path (e.g., a test that sends N+1 requests and expects 429 on the last one).
+
+**The Lesson:** Every security feature needs at least one "enforcement test" — a test that proves the check actually fires. Building the mechanism is not enough; it must be connected. Add enforcement tests to the implementation checklist for any security feature.
+
+---
+
+### 8.2 Role Cap on Any Role-Assignment Operation
+
+**The Flaw:** `updateMemberRoleHandler` correctly checked that the caller couldn't assign a role higher than their own, but `createInvitationHandler` did not. An admin could invite someone as an owner via the invitation path.
+
+**Why It Matters:** Role assignment bypasses are privilege escalation vulnerabilities. Any endpoint that assigns or modifies roles must enforce the cap.
+
+**The Fix:** Added `parseRole(req.Role) > callerRole` check to `createInvitationHandler`, matching the pattern already used in `updateMemberRoleHandler`.
+
+**The Lesson:** When implementing a security check in one handler, grep for all other handlers that perform the same kind of operation and apply the same check. Role assignment isn't just `updateMemberRole` — it's also invitations, OAuth account linking, and any future admin override endpoint.
+
+---
+
+### 8.3 Atomic First-User Bootstrap
+
+**The Flaw:** The first-user org bootstrap did `CountUsers()` → `CreateUser()` → `if priorCount == 0 { CreateOrgWithOwner() }`. Two concurrent registrations on a fresh instance could both see `priorCount == 0`, creating two default orgs.
+
+**Why It Matters:** TOCTOU races in bootstrap paths are hard to reproduce in testing (they require exact concurrency timing) but trivial to trigger in production when multiple users register simultaneously during initial setup.
+
+**The Fix:** Replaced with `BootstrapFirstUserOrg()` — a single store method that uses `pg_advisory_xact_lock` + `SELECT COUNT(*)` + conditional org creation inside one transaction.
+
+**The Lesson:** Any "check then act" pattern on shared mutable state needs atomicity. If the check and action are in separate transactions (or separate store calls from a handler), the race window exists. The store layer should expose atomic operations for check-and-act patterns, not leave it to the handler to compose separate calls.
+
+---
+
+### 8.4 OAuth Flow Parity with Native Auth
+
+**The Flaw:** GitHub OAuth and Google OIDC callback handlers created new users but did not call `BootstrapFirstUserOrg`. If the first user on a fresh instance registered via OAuth, they got no default org.
+
+**Why It Matters:** Feature parity across auth flows is easy to miss because each flow is implemented in a separate file. Users don't care which auth method they used — they expect the same result.
+
+**The Fix:** Added `BootstrapFirstUserOrg` calls to both `githubCallbackHandler` and `googleCallbackHandler` in the new-user creation path.
+
+**The Lesson:** When implementing a behavior in one auth flow, check all auth flows. Native register, GitHub OAuth, Google OIDC, and future providers must produce the same post-registration state. Maintain a checklist of "things that happen on first registration" and verify each flow against it.
+
+---
+
+### 8.5 Background Goroutine Shutdown Hooks
+
+**The Flaw:** `ipRateLimiter.cleanupLoop()` ran a goroutine with `time.NewTicker` but had no shutdown mechanism. The goroutine leaked on server close, detectable only by the race detector in tests with short-lived servers.
+
+**Why It Matters:** Goroutine leaks accumulate in long-running processes and in test suites that create many server instances. They waste memory and can cause data races during shutdown.
+
+**The Fix:** Added a `done` channel and `Stop()` method to `ipRateLimiter`. The cleanup loop uses `select` on both `ticker.C` and `done`. `Server.Close()` calls `rateLimiter.Stop()`.
+
+**The Lesson:** Every goroutine started with `go` must have a corresponding shutdown path. When writing `go func() { for { ... } }()`, immediately write the `Stop()` method and the `done` channel. Add `t.Cleanup(srv.Close)` in every test that creates a server.
+
+---
+
+### 8.6 Invitation Email Match Enforcement
+
+**The Flaw:** `acceptInvitationHandler` did not verify that the authenticated user's email matched the invitation's target email. Any authenticated user with a valid invitation token could accept an invitation meant for someone else.
+
+**Why It Matters:** Invitation tokens are secret, but they may be sent via email which could be forwarded or intercepted. The email match is a defense-in-depth check that ensures the invitation is accepted by the intended recipient.
+
+**The Fix:** Added `strings.EqualFold(user.Email, inv.Email)` check after retrieving the invitation and before accepting it.
+
+**The Lesson:** Invitation/token-based flows should always verify identity, not just possession of the token. "Has the token" is authentication of the token; "is the intended recipient" is authorization of the action.

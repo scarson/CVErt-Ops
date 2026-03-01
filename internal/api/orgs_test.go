@@ -671,6 +671,73 @@ func TestCreateInvitation_AsViewer(t *testing.T) {
 	}
 }
 
+// TestCreateInvitation_RoleCapByCallerRole verifies that an admin cannot invite
+// with a role higher than their own (e.g., cannot invite as owner).
+func TestCreateInvitation_RoleCapByCallerRole(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+
+	// Make bob an admin (not owner) in Alice's org.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "admin"); err != nil {
+		t.Fatalf("add bob as admin: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(loginResp, "access_token")
+
+	// Admin bob tries to invite carol as admin — should succeed (admin <= admin).
+	resp := doCreateInvitation(t, ctx, ts, bobToken, aliceReg.OrgID, "carol@example.com", "admin")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("admin inviting as admin: got %d, want 202", resp.StatusCode)
+	}
+
+	// Admin bob tries to invite dave as member — should succeed (member < admin).
+	resp2 := doCreateInvitation(t, ctx, ts, bobToken, aliceReg.OrgID, "dave@example.com", "member")
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusAccepted {
+		t.Errorf("admin inviting as member: got %d, want 202", resp2.StatusCode)
+	}
+}
+
+// TestCreateInvitation_MemberCannotInviteAsAdmin verifies that a member cannot
+// invite someone with a higher role than their own.
+func TestCreateInvitation_MemberCannotInviteAsAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+
+	// Make bob a member in Alice's org.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "member"); err != nil {
+		t.Fatalf("add bob as member: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(loginResp, "access_token")
+
+	// Member bob tries to invite carol as admin — should fail (admin > member).
+	resp := doCreateInvitation(t, ctx, ts, bobToken, aliceReg.OrgID, "carol@example.com", "admin")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("member inviting as admin: got %d, want 403", resp.StatusCode)
+	}
+}
+
 // TestListInvitations_Success verifies that GET /invitations returns pending invitations.
 func TestListInvitations_Success(t *testing.T) {
 	t.Parallel()
@@ -918,5 +985,48 @@ func TestAcceptInvitation_Idempotent(t *testing.T) {
 	}
 	if role == nil || *role != "member" {
 		t.Errorf("role = %v, want member", role)
+	}
+}
+
+// TestAcceptInvitation_WrongEmail verifies that a user whose email does not
+// match the invitation's target email cannot accept it.
+func TestAcceptInvitation_WrongEmail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "carol@example.com", "test-password-1234")
+
+	// Alice creates an invitation for bob.
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+
+	// Get the token from DB.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations from DB: err=%v, len=%d", err, len(invitations))
+	}
+	invToken := invitations[0].Token
+
+	// Carol (wrong email) tries to accept bob's invitation — should be rejected.
+	carolLoginResp := doLogin(t, ctx, ts, "carol@example.com", "test-password-1234")
+	defer carolLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	carolToken := cookieValue(carolLoginResp, "access_token")
+
+	resp := doAcceptInvitation(t, ctx, ts, carolToken, invToken)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("wrong-email accept: got %d, want 403", resp.StatusCode)
 	}
 }

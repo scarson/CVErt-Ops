@@ -9,4 +9,5 @@ const (
 	ctxOrgID                        // uuid.UUID — org from URL path param
 	ctxRole                         // Role — effective RBAC role for this request
 	ctxAPIKeyRole                   // string — role from the API key (may cap org role)
+	ctxClientIP                     // string — client IP address for rate limiting
 )

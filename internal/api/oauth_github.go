@@ -144,6 +144,12 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+
+		// Bootstrap a default org for the first user (mirrors native register flow).
+		if _, err := srv.store.BootstrapFirstUserOrg(ctx, user.ID, displayName+"'s Organization"); err != nil {
+			slog.ErrorContext(ctx, "github oauth: bootstrap org", "error", err)
+			// Non-fatal: user was created, proceed with login.
+		}
 	}
 
 	// 6. Upsert identity to keep email current (GitHub email may change).

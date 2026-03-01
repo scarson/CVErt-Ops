@@ -1,0 +1,77 @@
+{{define "subject"}}[CVErt Ops] Daily Digest — {{.Date}} — {{.TotalCount}} CVE(s){{end}}
+{{define "body"}}<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="margin:0;padding:0;background:#f4f4f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f7;padding:24px 0">
+<tr><td align="center">
+<table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:8px;overflow:hidden">
+  <tr><td style="background:#1a1a2e;padding:20px 24px">
+    <span style="color:#fff;font-size:18px;font-weight:600">CVErt Ops Daily Digest</span>
+    <br><span style="color:#aaa;font-size:13px">{{.Date}} &middot; {{.OrgName}}</span>
+  </td></tr>
+  <tr><td style="padding:24px">
+    <p style="margin:0 0 4px;color:#555;font-size:13px">Report: <strong>{{.ReportName}}</strong></p>
+    <p style="margin:0 0 16px;color:#555;font-size:13px">Total CVEs: <strong>{{.TotalCount}}</strong></p>
+
+    {{if .AISummary}}
+    <div style="background:#f0f7ff;border-left:4px solid #0066cc;padding:12px 16px;margin:0 0 16px;border-radius:0 4px 4px 0">
+      <p style="margin:0 0 4px;font-size:12px;color:#0066cc;font-weight:600">AI Summary</p>
+      <p style="margin:0;font-size:13px;color:#333">{{.AISummary}}</p>
+    </div>
+    {{end}}
+
+    {{if eq (len .CVEs) 0}}
+    <div style="text-align:center;padding:32px 0">
+      <p style="font-size:14px;color:#888">No new CVEs matched your criteria today.</p>
+      <p style="font-size:13px;color:#aaa">Your watchlists are being monitored.</p>
+    </div>
+    {{else}}
+    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse">
+      <tr style="background:#f8f9fa">
+        <th style="text-align:left;padding:8px 12px;font-size:12px;color:#666;border-bottom:2px solid #dee2e6">CVE</th>
+        <th style="text-align:left;padding:8px 12px;font-size:12px;color:#666;border-bottom:2px solid #dee2e6">Severity</th>
+        <th style="text-align:left;padding:8px 12px;font-size:12px;color:#666;border-bottom:2px solid #dee2e6">Scores</th>
+        <th style="text-align:left;padding:8px 12px;font-size:12px;color:#666;border-bottom:2px solid #dee2e6">Flags</th>
+      </tr>
+      {{range .CVEs}}
+      <tr>
+        <td style="padding:10px 12px;border-bottom:1px solid #eee;font-size:13px">
+          {{- if .DetailURL}}<a href="{{.DetailURL}}" style="color:#0066cc;text-decoration:none">{{.CVEID}}</a>
+          {{- else}}{{.CVEID}}{{end}}
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #eee;font-size:13px">
+          <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#fff;background:{{sevColor .Severity}}">{{.Severity}}</span>
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #eee;font-size:12px;color:#555">
+          {{- if .CVSSV3Score}}v3:&nbsp;{{printf "%.1f" (deref .CVSSV3Score)}}{{end}}
+          {{- if .CVSSV4Score}} v4:&nbsp;{{printf "%.1f" (deref .CVSSV4Score)}}{{end}}
+          {{- if .EPSSScore}} EPSS:&nbsp;{{printf "%.2f%%" (pct (deref .EPSSScore))}}{{end}}
+        </td>
+        <td style="padding:10px 12px;border-bottom:1px solid #eee;font-size:12px">
+          {{- if .ExploitAvail}}<span style="color:#dc3545" title="Exploit available">&#9888;</span> {{end}}
+          {{- if .InCISAKEV}}<span style="color:#fd7e14" title="CISA KEV">KEV</span>{{end}}
+        </td>
+      </tr>
+      <tr><td colspan="4" style="padding:4px 12px 10px;font-size:12px;color:#666;border-bottom:1px solid #eee">{{.Description}}</td></tr>
+      {{end}}
+    </table>
+
+    {{if .Truncated}}
+    <p style="margin:16px 0 0;font-size:13px;color:#888;text-align:center">
+      Showing {{len .CVEs}} of {{.TotalCount}} CVEs.
+      {{if .ViewAllURL}}<a href="{{.ViewAllURL}}" style="color:#0066cc">View all</a>{{end}}
+    </p>
+    {{end}}
+    {{end}}
+  </td></tr>
+  {{if .CVErtOpsURL}}
+  <tr><td style="padding:16px 24px;background:#f8f9fa;text-align:center">
+    <a href="{{.CVErtOpsURL}}" style="color:#0066cc;font-size:13px">View in CVErt Ops</a>
+  </td></tr>
+  {{end}}
+</table>
+</td></tr>
+</table>
+</body>
+</html>{{end}}

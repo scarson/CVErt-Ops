@@ -4,8 +4,11 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -77,7 +80,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		req.Type = "webhook"
 	}
 
-	// For webhook channels, validate that config contains a non-empty url.
+	// For webhook channels, validate that config contains a non-empty, SSRF-safe url.
 	if req.Type == "webhook" {
 		var cfg map[string]any
 		if err := json.Unmarshal(req.Config, &cfg); err != nil {
@@ -87,6 +90,10 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		urlVal, ok := cfg["url"].(string)
 		if !ok || strings.TrimSpace(urlVal) == "" {
 			http.Error(w, "webhook config must include a non-empty url", http.StatusUnprocessableEntity)
+			return
+		}
+		if err := validateWebhookURL(urlVal); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 	}
@@ -213,6 +220,18 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		params.Name = *req.Name
 	}
 	if req.Config != nil {
+		// Re-validate webhook URL when config is updated.
+		if current.Type == "webhook" {
+			var cfg map[string]any
+			if err := json.Unmarshal(*req.Config, &cfg); err == nil {
+				if urlVal, ok := cfg["url"].(string); ok && urlVal != "" {
+					if err := validateWebhookURL(urlVal); err != nil {
+						http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+						return
+					}
+				}
+			}
+		}
 		params.Config = *req.Config
 	}
 
@@ -291,4 +310,54 @@ func (srv *Server) rotateSecretHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rotateSecretResponse{SigningSecret: secret})
+}
+
+// clearSecondarySecretHandler handles POST /api/v1/orgs/{org_id}/channels/{id}/clear-secondary.
+// Clears the secondary signing secret once all consumers have migrated to the new primary.
+func (srv *Server) clearSecondarySecretHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := srv.store.ClearSecondarySecret(r.Context(), orgID, id); err != nil {
+		slog.ErrorContext(r.Context(), "clear secondary secret", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// validateWebhookURL performs SSRF-safe static validation of a webhook URL at registration time.
+// Dynamic validation occurs again at delivery time via the safeurl-wrapped client.
+func validateWebhookURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("webhook url is not a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return errors.New("webhook url must use http or https scheme")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("webhook url must have a host")
+	}
+	// Reject known-internal hostnames.
+	lh := strings.ToLower(host)
+	if lh == "localhost" || strings.HasSuffix(lh, ".local") || strings.HasSuffix(lh, ".internal") {
+		return errors.New("webhook url must not target private or internal addresses")
+	}
+	// Reject private/loopback/link-local IP addresses.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return errors.New("webhook url must not target private or internal addresses")
+		}
+	}
+	return nil
 }

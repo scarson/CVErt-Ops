@@ -139,9 +139,10 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail → retry/exhaust handles it
 
 	sendErr := Send(ctx, w.client, WebhookConfig{
-		URL:           config.URL,
-		SigningSecret: ch.SigningSecret,
-		CustomHeaders: config.CustomHeaders,
+		URL:                    config.URL,
+		SigningSecret:          ch.SigningSecret,
+		SigningSecretSecondary: ch.SigningSecretSecondary.String,
+		CustomHeaders:          config.CustomHeaders,
 	}, row.Payload)
 
 	if sendErr == nil {

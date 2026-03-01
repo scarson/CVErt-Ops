@@ -11,6 +11,7 @@ import (
 
 // BuildSafeClient returns an SSRF-safe *http.Client for production webhook delivery.
 // Redirect following is disabled per PLAN.md §11.3; timeout is 10 seconds.
+// MaxConnsPerHost is capped at 50 to prevent ephemeral port exhaustion under alert load.
 func BuildSafeClient() (*http.Client, error) {
 	cfg := safeurl.GetConfigBuilder().
 		SetTimeout(10 * time.Second).
@@ -18,5 +19,9 @@ func BuildSafeClient() (*http.Client, error) {
 			return http.ErrUseLastResponse
 		}).
 		Build()
-	return safeurl.Client(cfg).Client, nil
+	client := safeurl.Client(cfg).Client
+	if t, ok := client.Transport.(*http.Transport); ok {
+		t.MaxConnsPerHost = 50
+	}
+	return client, nil
 }

@@ -18,20 +18,22 @@ import (
 
 // WebhookConfig holds the delivery-time view of a notification_channels row for a webhook channel.
 type WebhookConfig struct {
-	URL           string
-	SigningSecret string
-	CustomHeaders map[string]string // applied after denylist filtering
+	URL                    string
+	SigningSecret          string
+	SigningSecretSecondary string            // non-empty during rotation grace period
+	CustomHeaders          map[string]string // applied after denylist filtering
 }
 
 // deniedHeaders are custom header keys that callers must not override.
 var deniedHeaders = map[string]bool{
-	"host":                true,
-	"content-type":        true,
-	"content-length":      true,
-	"transfer-encoding":   true,
-	"connection":          true,
-	"x-cvert-timestamp":   true,
-	"x-cvertops-signature": true,
+	"host":                          true,
+	"content-type":                  true,
+	"content-length":                true,
+	"transfer-encoding":             true,
+	"connection":                    true,
+	"x-cvert-timestamp":             true,
+	"x-cvertops-signature":          true,
+	"x-cvertops-signature-secondary": true,
 }
 
 // Send posts payload to the webhook URL, signs with HMAC-SHA256, and discards the response body.
@@ -56,6 +58,13 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	mac.Write([]byte(ts + "." + string(payload)))
 	req.Header.Set("X-CVErt-Timestamp", ts)
 	req.Header.Set("X-CVErtOps-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	// If a secondary secret is set (rotation grace period), emit an additional signature.
+	// Recipients can verify against either secret during the transition window.
+	if cfg.SigningSecretSecondary != "" {
+		mac2 := hmac.New(sha256.New, []byte(cfg.SigningSecretSecondary))
+		mac2.Write([]byte(ts + "." + string(payload)))
+		req.Header.Set("X-CVErtOps-Signature-Secondary", "sha256="+hex.EncodeToString(mac2.Sum(nil)))
+	}
 
 	resp, err := client.Do(req) //nolint:gosec // G107: SSRF is enforced architecturally by the safeurl-wrapped client injected at startup
 	if err != nil {

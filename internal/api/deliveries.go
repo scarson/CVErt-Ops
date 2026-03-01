@@ -142,9 +142,9 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 	cursorID := uuid.Max
 	if afterCreatedAt := q.Get("after_created_at"); afterCreatedAt != "" {
 		if afterID := q.Get("after_id"); afterID != "" {
-			t, err := time.Parse(time.RFC3339, afterCreatedAt)
+			t, err := time.Parse(time.RFC3339Nano, afterCreatedAt)
 			if err != nil {
-				http.Error(w, "invalid after_created_at: must be RFC3339", http.StatusBadRequest)
+				http.Error(w, "invalid after_created_at: must be RFC3339Nano", http.StatusBadRequest)
 				return
 			}
 			id, err := uuid.Parse(afterID)

@@ -57,6 +57,49 @@ func (ns NullWatchlistItemType) Value() (driver.Value, error) {
 	return string(ns.WatchlistItemType), nil
 }
 
+type AiCache struct {
+	ID            uuid.UUID
+	OrgID         uuid.UUID
+	Feature       string
+	PromptVersion string
+	InputHash     string
+	Response      json.RawMessage
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+type AiQuotaOverride struct {
+	OrgID      uuid.UUID
+	Feature    string
+	DailyLimit int32
+}
+
+type AiRequestLog struct {
+	ID            uuid.UUID
+	OrgID         uuid.UUID
+	UserID        uuid.UUID
+	Feature       string
+	InputHash     string
+	PromptVersion string
+	Model         string
+	CacheHit      bool
+	InputTokens   sql.NullInt32
+	OutputTokens  sql.NullInt32
+	LatencyMs     int32
+	Status        string
+	ErrorType     sql.NullString
+	CreatedAt     time.Time
+}
+
+type AiUsageCounter struct {
+	OrgID        uuid.UUID
+	Feature      string
+	Date         time.Time
+	Count        int32
+	InputTokens  int32
+	OutputTokens int32
+}
+
 type AlertEvent struct {
 	ID               uuid.UUID
 	RuleID           uuid.UUID
@@ -338,6 +381,19 @@ type ReportChannel struct {
 	ChannelID uuid.UUID
 	OrgID     uuid.UUID
 	CreatedAt time.Time
+}
+
+type SavedSearch struct {
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	UserID    uuid.NullUUID
+	Name      string
+	QueryJson json.RawMessage
+	NlQuery   sql.NullString
+	IsShared  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt sql.NullTime
 }
 
 type ScheduledReport struct {

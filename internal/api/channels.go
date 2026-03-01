@@ -270,14 +270,14 @@ func (srv *Server) deleteChannelHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	hasRules, err := srv.store.ChannelHasActiveBoundRules(r.Context(), orgID, id)
+	hasBindings, err := srv.store.ChannelHasActiveBindings(r.Context(), orgID, id)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "check channel active bound rules", "error", err)
+		slog.ErrorContext(r.Context(), "check channel active bindings", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if hasRules {
-		http.Error(w, "channel has active bound rules", http.StatusConflict)
+	if hasBindings {
+		http.Error(w, "channel has active bound rules or reports", http.StatusConflict)
 		return
 	}
 

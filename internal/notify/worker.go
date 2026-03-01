@@ -26,6 +26,7 @@ type WorkerConfig struct {
 	BackoffBaseSeconds  int
 	MaxConcurrentPerOrg int
 	StuckThreshold      time.Duration // default 2 minutes if zero
+	AILogRetentionDays  int           // default 90 if zero
 }
 
 // Worker polls notification_deliveries and executes outbound deliveries (webhook or email).
@@ -46,6 +47,9 @@ type Worker struct {
 func NewWorker(st *store.Store, client *http.Client, cfg WorkerConfig, smtpCfg SmtpConfig, externalURL string) *Worker {
 	if cfg.StuckThreshold == 0 {
 		cfg.StuckThreshold = 2 * time.Minute
+	}
+	if cfg.AILogRetentionDays == 0 {
+		cfg.AILogRetentionDays = 90
 	}
 	return &Worker{
 		store:       st,
@@ -69,10 +73,12 @@ func (w *Worker) Start(ctx context.Context) {
 	stuckTicker := time.NewTicker(60 * time.Second)
 	recoveryTicker := time.NewTicker(5 * time.Minute)
 	digestTicker := time.NewTicker(60 * time.Second)
+	aiCleanupTicker := time.NewTicker(1 * time.Hour)
 	defer claimTicker.Stop()
 	defer stuckTicker.Stop()
 	defer recoveryTicker.Stop()
 	defer digestTicker.Stop()
+	defer aiCleanupTicker.Stop()
 
 	for {
 		select {
@@ -87,6 +93,8 @@ func (w *Worker) Start(ctx context.Context) {
 			w.runRecovery(ctx)
 		case <-digestTicker.C:
 			w.runDigest(ctx)
+		case <-aiCleanupTicker.C:
+			w.runAICleanup(ctx)
 		}
 	}
 }
@@ -324,5 +332,21 @@ func (w *Worker) runRecovery(ctx context.Context) {
 		if err := w.dispatcher.Fanout(ctx, row.OrgID, row.RuleID, row.CveID); err != nil {
 			w.log.Error("recovery fanout", "rule_id", row.RuleID, "cve_id", row.CveID, "err", err)
 		}
+	}
+}
+
+func (w *Worker) runAICleanup(ctx context.Context) {
+	n, err := w.store.CleanupExpiredAICache(ctx)
+	if err != nil {
+		w.log.Error("cleanup expired AI cache", "err", err)
+	} else if n > 0 {
+		w.log.Info("cleaned up expired AI cache entries", "count", n)
+	}
+
+	m, err := w.store.CleanupOldAIRequestLogs(ctx, w.cfg.AILogRetentionDays)
+	if err != nil {
+		w.log.Error("cleanup old AI request logs", "err", err)
+	} else if m > 0 {
+		w.log.Info("cleaned up old AI request logs", "count", m)
 	}
 }

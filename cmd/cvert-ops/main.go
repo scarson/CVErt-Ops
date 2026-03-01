@@ -40,6 +40,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/spf13/cobra"
 
+	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
@@ -113,6 +114,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("feed_ingest", feedIngestHandler)
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
+	// Construct AI/LLM client based on configuration. MockClient is used for
+	// development and testing; GeminiClient for production.
+	var llm ai.LLMClient
+	if cfg.GeminiMock {
+		llm = ai.NewMockClient()
+		slog.Info("using mock LLM client")
+	} else if cfg.GeminiAPIKey != "" {
+		llm, err = ai.NewGeminiClient(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.GeminiTimeout)
+		if err != nil {
+			return fmt.Errorf("creating Gemini client: %w", err)
+		}
+		slog.Info("using Gemini LLM client", "model", cfg.GeminiModel)
+	}
+
 	apiSrv, err := api.NewServer(st, cfg)
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
@@ -123,6 +138,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	alertCache := alert.NewRuleCache()
 	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
 	apiSrv.SetAlertDeps(alertCache, alertEval)
+
+	// Wire AI/LLM dependencies for NL search and summarization handlers.
+	if llm != nil {
+		apiSrv.SetAIDeps(llm)
+	}
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
 	// worker polls delivery rows and executes outbound webhook calls.
@@ -145,6 +165,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		MaxAttempts:         cfg.NotifyMaxAttempts,
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
+		AILogRetentionDays:  cfg.AILogRetentionDays,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
@@ -246,6 +267,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		MaxAttempts:         cfg.NotifyMaxAttempts,
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
+		AILogRetentionDays:  cfg.AILogRetentionDays,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
@@ -442,7 +464,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 19
+const expectedSchemaVersion = 23
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

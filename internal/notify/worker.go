@@ -68,9 +68,11 @@ func (w *Worker) Start(ctx context.Context) {
 	claimTicker := time.NewTicker(5 * time.Second)
 	stuckTicker := time.NewTicker(60 * time.Second)
 	recoveryTicker := time.NewTicker(5 * time.Minute)
+	digestTicker := time.NewTicker(60 * time.Second)
 	defer claimTicker.Stop()
 	defer stuckTicker.Stop()
 	defer recoveryTicker.Stop()
+	defer digestTicker.Stop()
 
 	for {
 		select {
@@ -83,6 +85,8 @@ func (w *Worker) Start(ctx context.Context) {
 			w.runStuckReset(ctx)
 		case <-recoveryTicker.C:
 			w.runRecovery(ctx)
+		case <-digestTicker.C:
+			w.runDigest(ctx)
 		}
 	}
 }

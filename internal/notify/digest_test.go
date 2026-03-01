@@ -18,7 +18,7 @@ func TestExpandSeverityThreshold(t *testing.T) {
 		{"high", []string{"critical", "high"}},
 		{"medium", []string{"critical", "high", "medium"}},
 		{"low", []string{"critical", "high", "low", "medium"}},
-		{"unknown", nil}, // unknown threshold returns nothing (rank 0, nothing >= 0 except all)
+		{"unknown", nil}, // unknown threshold returns nil (not in severityRank map)
 	}
 	for _, tc := range cases {
 		t.Run(tc.threshold, func(t *testing.T) {
@@ -106,26 +106,26 @@ func TestAdvanceNextRunAt(t *testing.T) {
 
 func TestComputeNextRunAt(t *testing.T) {
 	t.Parallel()
-	// computeNextRunAt depends on time.Now() so we can only test basic properties:
+	// Depends on time.Now() so we can only test basic properties:
 	// - Result is in the future
 	// - Invalid timezone returns error
 	// - Invalid time format returns error
 
-	next, err := computeNextRunAt("09:00:00", "America/New_York")
+	next, err := ComputeNextRunAt("09:00:00", "America/New_York")
 	if err != nil {
-		t.Fatalf("computeNextRunAt: %v", err)
+		t.Fatalf("ComputeNextRunAt: %v", err)
 	}
 	if !next.After(time.Now().Add(-1 * time.Second)) {
-		t.Errorf("computeNextRunAt result %v should be in the future", next)
+		t.Errorf("ComputeNextRunAt result %v should be in the future", next)
 	}
 
-	_, err = computeNextRunAt("09:00:00", "Invalid/Timezone")
+	_, err = ComputeNextRunAt("09:00:00", "Invalid/Timezone")
 	if err == nil {
-		t.Error("computeNextRunAt with invalid timezone should return error")
+		t.Error("ComputeNextRunAt with invalid timezone should return error")
 	}
 
-	_, err = computeNextRunAt("bad-time", "UTC")
+	_, err = ComputeNextRunAt("bad-time", "UTC")
 	if err == nil {
-		t.Error("computeNextRunAt with invalid time should return error")
+		t.Error("ComputeNextRunAt with invalid time should return error")
 	}
 }

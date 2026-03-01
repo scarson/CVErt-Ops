@@ -40,9 +40,9 @@ func expandSeverityThreshold(threshold string) []string {
 	return result
 }
 
-// computeNextRunAt calculates the next occurrence of scheduledTime (format "HH:MM:SS")
+// ComputeNextRunAt calculates the next occurrence of scheduledTime (format "HH:MM:SS")
 // in the given timezone that is strictly after now. Returns UTC.
-func computeNextRunAt(scheduledTime string, timezone string) (time.Time, error) {
+func ComputeNextRunAt(scheduledTime string, timezone string) (time.Time, error) {
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid timezone %q: %w", timezone, err)

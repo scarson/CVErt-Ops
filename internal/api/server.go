@@ -244,6 +244,22 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 
+			// Scheduled digest reports
+			r.Route("/reports", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listReportsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createReportHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getReportHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchReportHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteReportHandler)
+					r.Route("/channels", func(r chi.Router) {
+						r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listReportChannelsHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Put("/{channel_id}", srv.bindChannelToReportHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Delete("/{channel_id}", srv.unbindChannelFromReportHandler)
+					})
+				})
+			})
+
 			// Group management
 			r.Route("/groups", func(r chi.Router) {
 				r.Get("/", srv.listGroupsHandler)

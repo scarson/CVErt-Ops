@@ -5,9 +5,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -79,6 +81,10 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	if req.Type == "" {
 		req.Type = "webhook"
 	}
+	if req.Type != "webhook" && req.Type != "email" {
+		http.Error(w, "type must be 'webhook' or 'email'", http.StatusUnprocessableEntity)
+		return
+	}
 
 	// For webhook channels, validate that config contains a non-empty, SSRF-safe url.
 	if req.Type == "webhook" {
@@ -98,6 +104,13 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	if req.Type == "email" {
+		if _, err := validateEmailConfig(req.Config); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+	}
+
 	row, secret, err := srv.store.CreateNotificationChannel(r.Context(), orgID, req.Name, req.Type, req.Config)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create notification channel", "error", err)
@@ -105,18 +118,23 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, channelCreateEntry{
-		channelEntry: channelEntry{
-			ID:        row.ID.String(),
-			OrgID:     row.OrgID.String(),
-			Name:      row.Name,
-			Type:      row.Type,
-			Config:    row.Config,
-			CreatedAt: row.CreatedAt.Format(time.RFC3339),
-			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
-		},
-		SigningSecret: secret,
-	})
+	entry := channelEntry{
+		ID:        row.ID.String(),
+		OrgID:     row.OrgID.String(),
+		Name:      row.Name,
+		Type:      row.Type,
+		Config:    row.Config,
+		CreatedAt: row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
+	}
+	if req.Type == "webhook" {
+		writeJSON(w, http.StatusCreated, channelCreateEntry{
+			channelEntry: entry,
+			SigningSecret: secret,
+		})
+	} else {
+		writeJSON(w, http.StatusCreated, entry)
+	}
 }
 
 // getChannelHandler handles GET /api/v1/orgs/{org_id}/channels/{id}.
@@ -220,7 +238,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		params.Name = *req.Name
 	}
 	if req.Config != nil {
-		// Re-validate webhook URL when config is updated.
+		// Re-validate config when updated.
 		if current.Type == "webhook" {
 			var cfg map[string]any
 			if err := json.Unmarshal(*req.Config, &cfg); err == nil {
@@ -230,6 +248,12 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 				}
+			}
+		}
+		if current.Type == "email" {
+			if _, err := validateEmailConfig(*req.Config); err != nil {
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				return
 			}
 		}
 		params.Config = *req.Config
@@ -303,6 +327,21 @@ func (srv *Server) rotateSecretHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get channel for rotate", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if ch == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if ch.Type != "webhook" {
+		http.Error(w, "signing secret operations are only available for webhook channels", http.StatusUnprocessableEntity)
+		return
+	}
+
 	secret, err := srv.store.RotateSigningSecret(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "rotate signing secret", "error", err)
@@ -326,12 +365,57 @@ func (srv *Server) clearSecondarySecretHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get channel for clear-secondary", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if ch == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if ch.Type != "webhook" {
+		http.Error(w, "signing secret operations are only available for webhook channels", http.StatusUnprocessableEntity)
+		return
+	}
+
 	if err := srv.store.ClearSecondarySecret(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "clear secondary secret", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// validateEmailConfig validates email channel config:
+// - recipients must be non-empty, max 50, valid RFC 5322 addresses, no duplicates.
+func validateEmailConfig(config json.RawMessage) ([]string, error) {
+	var cfg struct {
+		Recipients []string `json:"recipients"`
+	}
+	if err := json.Unmarshal(config, &cfg); err != nil {
+		return nil, errors.New("email config must include a recipients array")
+	}
+	if len(cfg.Recipients) == 0 {
+		return nil, errors.New("email config must include at least one recipient")
+	}
+	if len(cfg.Recipients) > 50 {
+		return nil, errors.New("email config must not exceed 50 recipients")
+	}
+	seen := make(map[string]bool, len(cfg.Recipients))
+	for _, r := range cfg.Recipients {
+		addr, err := mail.ParseAddress(r)
+		if err != nil {
+			return nil, fmt.Errorf("invalid email recipient %q: %w", r, err)
+		}
+		normalized := strings.ToLower(addr.Address)
+		if seen[normalized] {
+			return nil, fmt.Errorf("duplicate email recipient: %s", normalized)
+		}
+		seen[normalized] = true
+	}
+	return cfg.Recipients, nil
 }
 
 // validateWebhookURL performs SSRF-safe static validation of a webhook URL at registration time.

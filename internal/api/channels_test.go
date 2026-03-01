@@ -505,6 +505,156 @@ func TestValidateWebhookURL(t *testing.T) {
 	}
 }
 
+// TestCreateChannel_EmailType verifies that creating an email channel succeeds with
+// valid config and returns no signing_secret.
+func TestCreateChannel_EmailType(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{"name":"Email Alerts","type":"email","config":{"recipients":["ops@example.com","dev@example.com"]}}`
+	resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create email channel: got %d, want 201", resp.StatusCode)
+	}
+
+	var created map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if created["type"] != "email" {
+		t.Errorf("type = %v, want email", created["type"])
+	}
+	if _, ok := created["signing_secret"]; ok {
+		t.Error("email channel response must not include signing_secret")
+	}
+}
+
+// TestCreateChannel_EmailInvalidRecipients verifies various invalid email configs return 422.
+func TestCreateChannel_EmailInvalidRecipients(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	cases := []struct {
+		desc string
+		body string
+	}{
+		{"empty recipients", `{"name":"Bad Email","type":"email","config":{"recipients":[]}}`},
+		{"no recipients key", `{"name":"Bad Email","type":"email","config":{}}`},
+		{"invalid address", `{"name":"Bad Email","type":"email","config":{"recipients":["not-an-email"]}}`},
+		{"duplicate", `{"name":"Bad Email","type":"email","config":{"recipients":["a@example.com","a@example.com"]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, tc.body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("create email (%s): got %d, want 422", tc.desc, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestCreateChannel_InvalidType verifies that unsupported channel types return 422.
+func TestCreateChannel_InvalidType(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{"name":"Slack Channel","type":"slack","config":{"webhook_url":"https://hooks.slack.com/xxx"}}`
+	resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("create with type=slack: got %d, want 422", resp.StatusCode)
+	}
+}
+
+// TestRotateSecret_EmailChannel_Rejected verifies that rotate-secret returns 422 for email channels.
+func TestRotateSecret_EmailChannel_Rejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create an email channel.
+	body := `{"name":"Email Chan","type":"email","config":{"recipients":["test@example.com"]}}`
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create email channel: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	rotateResp := doRotateSecret(t, ctx, ts, token, aliceReg.OrgID, created.ID)
+	defer rotateResp.Body.Close() //nolint:errcheck,gosec // G104
+	if rotateResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("rotate-secret on email channel: got %d, want 422", rotateResp.StatusCode)
+	}
+}
+
+// TestClearSecondary_EmailChannel_Rejected verifies that clear-secondary returns 422 for email channels.
+func TestClearSecondary_EmailChannel_Rejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create an email channel.
+	body := `{"name":"Email Chan","type":"email","config":{"recipients":["test@example.com"]}}`
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create email channel: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	clearResp := doClearSecondary(t, ctx, ts, token, aliceReg.OrgID, created.ID)
+	defer clearResp.Body.Close() //nolint:errcheck,gosec // G104
+	if clearResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("clear-secondary on email channel: got %d, want 422", clearResp.StatusCode)
+	}
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // mustParseUUID parses a UUID string and fails the test if invalid.

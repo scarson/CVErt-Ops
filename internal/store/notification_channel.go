@@ -52,22 +52,29 @@ func generateSigningSecret() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// CreateNotificationChannel inserts a new notification channel with a server-generated
-// signing secret. Returns the created row and the raw secret (shown to the caller once).
+// CreateNotificationChannel inserts a new notification channel. Webhook channels
+// get a server-generated signing secret; email channels do not.
+// Returns the created row and the raw secret (empty string for email channels).
 func (s *Store) CreateNotificationChannel(ctx context.Context, orgID uuid.UUID, name, chanType string, config json.RawMessage) (*generated.CreateNotificationChannelRow, string, error) {
-	secret, err := generateSigningSecret()
-	if err != nil {
-		return nil, "", err
+	var secret string
+	var signingSecretParam sql.NullString
+	if chanType == "webhook" {
+		var err error
+		secret, err = generateSigningSecret()
+		if err != nil {
+			return nil, "", err
+		}
+		signingSecretParam = sql.NullString{String: secret, Valid: true}
 	}
 	var row generated.CreateNotificationChannelRow
-	err = s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		var err error
 		row, err = q.CreateNotificationChannel(ctx, generated.CreateNotificationChannelParams{
 			OrgID:         orgID,
 			Name:          name,
 			Type:          chanType,
 			Config:        config,
-			SigningSecret: sql.NullString{String: secret, Valid: true},
+			SigningSecret: signingSecretParam,
 		})
 		return err
 	})

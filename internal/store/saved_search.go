@@ -106,14 +106,15 @@ func (s *Store) GetSavedSearch(ctx context.Context, orgID, id uuid.UUID) (*Saved
 }
 
 // ListSavedSearches returns saved searches visible to the given user.
-// visibility must be "private", "shared", or "all".
-func (s *Store) ListSavedSearches(ctx context.Context, orgID, userID uuid.UUID, visibility string) ([]SavedSearchRow, error) {
+// visibility must be "private", "shared", or "all". limit caps the result count.
+func (s *Store) ListSavedSearches(ctx context.Context, orgID, userID uuid.UUID, visibility string, limit int) ([]SavedSearchRow, error) {
 	var result []SavedSearchRow
 	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		rows, err := q.ListSavedSearches(ctx, generated.ListSavedSearchesParams{
-			OrgID:      orgID,
-			UserID:     userID,
-			Visibility: visibility,
+			OrgID:       orgID,
+			UserID:      userID,
+			Visibility:  visibility,
+			ResultLimit: int32(limit), //nolint:gosec // G115: limit is validated as 1-200 by handler
 		})
 		if err != nil {
 			return fmt.Errorf("list saved searches: %w", err)

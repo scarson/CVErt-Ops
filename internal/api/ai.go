@@ -92,28 +92,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	const feature = "nl_search"
 	promptVersion := ai.PromptVersion()
 
-	// Quota check.
-	if srv.cfg.AIQuotaEnabled {
-		count, err := srv.store.IncrementAIUsage(r.Context(), orgID, feature)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "ai: increment usage", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		dailyLimit := srv.resolveAIQuotaLimit(r.Context(), orgID, feature, ai.TierLimits{
-			Free:       srv.cfg.AINLSearchLimitFree,
-			Pro:        srv.cfg.AINLSearchLimitPro,
-			Enterprise: srv.cfg.AINLSearchLimitEnterprise,
-		})
-		if count > dailyLimit {
-			metrics.AIQuotaDenialsTotal.WithLabelValues(feature).Inc()
-			w.Header().Set("Retry-After", retryAfterMidnight())
-			http.Error(w, "daily AI quota exceeded", http.StatusTooManyRequests)
-			return
-		}
-	}
-
-	// Cache check.
+	// Cache check (before quota — cache hits don't cost LLM API calls).
 	var queryJSON json.RawMessage
 	var inputTokens, outputTokens int
 	cached := false
@@ -129,6 +108,27 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 		cached = true
 	} else {
 		metrics.AICacheMissesTotal.WithLabelValues(feature).Inc()
+
+		// Quota check (only on cache miss — cache hits are free).
+		if srv.cfg.AIQuotaEnabled {
+			count, qErr := srv.store.IncrementAIUsage(r.Context(), orgID, feature)
+			if qErr != nil {
+				slog.ErrorContext(r.Context(), "ai: increment usage", "error", qErr)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			dailyLimit := srv.resolveAIQuotaLimit(r.Context(), orgID, feature, ai.TierLimits{
+				Free:       srv.cfg.AINLSearchLimitFree,
+				Pro:        srv.cfg.AINLSearchLimitPro,
+				Enterprise: srv.cfg.AINLSearchLimitEnterprise,
+			})
+			if count > dailyLimit {
+				metrics.AIQuotaDenialsTotal.WithLabelValues(feature).Inc()
+				w.Header().Set("Retry-After", retryAfterMidnight())
+				http.Error(w, "daily AI quota exceeded", http.StatusTooManyRequests)
+				return
+			}
+		}
 
 		// Call LLM.
 		result, llmErr := srv.llm.GenerateStructuredQuery(r.Context(), query)
@@ -250,27 +250,6 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 	const feature = "summarize"
 	promptVersion := ai.PromptVersion()
 
-	// Quota check.
-	if srv.cfg.AIQuotaEnabled {
-		count, err := srv.store.IncrementAIUsage(r.Context(), orgID, feature)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "ai: increment usage", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-		dailyLimit := srv.resolveAIQuotaLimit(r.Context(), orgID, feature, ai.TierLimits{
-			Free:       srv.cfg.AISummarizeLimitFree,
-			Pro:        srv.cfg.AISummarizeLimitPro,
-			Enterprise: srv.cfg.AISummarizeLimitEnterprise,
-		})
-		if count > dailyLimit {
-			metrics.AIQuotaDenialsTotal.WithLabelValues(feature).Inc()
-			w.Header().Set("Retry-After", retryAfterMidnight())
-			http.Error(w, "daily AI quota exceeded", http.StatusTooManyRequests)
-			return
-		}
-	}
-
 	// Fetch CVE.
 	cve, err := srv.store.GetCVE(r.Context(), cveID)
 	if err != nil {
@@ -290,7 +269,7 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	inputHash := fmt.Sprintf("%x", sha256.Sum256([]byte(cveID+materialHash)))
 
-	// Cache check.
+	// Cache check (before quota — cache hits don't cost LLM API calls).
 	var summary string
 	var inputTokens, outputTokens int
 	cached := false
@@ -314,6 +293,27 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !cached {
 		metrics.AICacheMissesTotal.WithLabelValues(feature).Inc()
+
+		// Quota check (only on cache miss — cache hits are free).
+		if srv.cfg.AIQuotaEnabled {
+			count, qErr := srv.store.IncrementAIUsage(r.Context(), orgID, feature)
+			if qErr != nil {
+				slog.ErrorContext(r.Context(), "ai: increment usage", "error", qErr)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			dailyLimit := srv.resolveAIQuotaLimit(r.Context(), orgID, feature, ai.TierLimits{
+				Free:       srv.cfg.AISummarizeLimitFree,
+				Pro:        srv.cfg.AISummarizeLimitPro,
+				Enterprise: srv.cfg.AISummarizeLimitEnterprise,
+			})
+			if count > dailyLimit {
+				metrics.AIQuotaDenialsTotal.WithLabelValues(feature).Inc()
+				w.Header().Set("Retry-After", retryAfterMidnight())
+				http.Error(w, "daily AI quota exceeded", http.StatusTooManyRequests)
+				return
+			}
+		}
 
 		// Build CVESummaryInput.
 		input := buildSummaryInput(cve)

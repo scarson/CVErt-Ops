@@ -219,7 +219,7 @@ func TestSavedSearch_List_Private(t *testing.T) {
 	}
 
 	// User1 lists with visibility=private — should only see their own.
-	rows, err := s.ListSavedSearches(ctx, org.ID, user1.ID, "private")
+	rows, err := s.ListSavedSearches(ctx, org.ID, user1.ID, "private", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches(private, user1): %v", err)
 	}
@@ -263,7 +263,7 @@ func TestSavedSearch_List_Shared(t *testing.T) {
 	}
 
 	// User2 lists shared — should see only the shared search.
-	rows, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "shared")
+	rows, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "shared", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches(shared, user2): %v", err)
 	}
@@ -307,7 +307,7 @@ func TestSavedSearch_List_Visibility_Filter(t *testing.T) {
 	})
 
 	// "all" for user1: should see U1 Private + U1 Shared (own private + all shared).
-	all, err := s.ListSavedSearches(ctx, org.ID, user1.ID, "all")
+	all, err := s.ListSavedSearches(ctx, org.ID, user1.ID, "all", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches(all, user1): %v", err)
 	}
@@ -316,7 +316,7 @@ func TestSavedSearch_List_Visibility_Filter(t *testing.T) {
 	}
 
 	// "all" for user2: should see U2 Private + U1 Shared.
-	all2, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "all")
+	all2, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "all", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches(all, user2): %v", err)
 	}
@@ -325,7 +325,7 @@ func TestSavedSearch_List_Visibility_Filter(t *testing.T) {
 	}
 
 	// "private" for user2: only U2 Private.
-	priv, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "private")
+	priv, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "private", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches(private, user2): %v", err)
 	}
@@ -334,7 +334,7 @@ func TestSavedSearch_List_Visibility_Filter(t *testing.T) {
 	}
 
 	// "shared" for user2: only U1 Shared.
-	shared, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "shared")
+	shared, err := s.ListSavedSearches(ctx, org.ID, user2.ID, "shared", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches(shared, user2): %v", err)
 	}
@@ -394,7 +394,7 @@ func TestSavedSearch_CleanupOrphanedPrivate(t *testing.T) {
 	}
 
 	// User's shared search should still exist.
-	remaining, err := s.ListSavedSearches(ctx, org.ID, user.ID, "all")
+	remaining, err := s.ListSavedSearches(ctx, org.ID, user.ID, "all", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches after cleanup: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestSavedSearch_CleanupOrphanedPrivate(t *testing.T) {
 	}
 
 	// Other user's private search should still exist.
-	otherRemaining, err := s.ListSavedSearches(ctx, org.ID, otherUser.ID, "private")
+	otherRemaining, err := s.ListSavedSearches(ctx, org.ID, otherUser.ID, "private", 200)
 	if err != nil {
 		t.Fatalf("ListSavedSearches (other user private): %v", err)
 	}

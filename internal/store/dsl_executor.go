@@ -17,9 +17,10 @@ import (
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
-// cveColumns is the explicit column list for the cves table, matching the
-// physical column order in migration 000002. Both SearchCVEs and
-// ExecuteDSLQuery use scanCVERow which scans in this exact order.
+// cveColumns is the canonical column list for the cves table, matching the
+// physical column order in migration 000002. All dynamic CVE queries
+// (SearchCVEs, ExecuteDSLQuery) MUST use this slice to stay synchronized
+// with scanCVERow.
 var cveColumns = []string{
 	"cves.cve_id",
 	"cves.status",
@@ -45,7 +46,7 @@ var cveColumns = []string{
 }
 
 // scanCVERow scans a single row into a generated.Cfe. The column order must
-// match cveColumns (and the SearchCVEs scan in cve.go).
+// match cveColumns exactly.
 func scanCVERow(rows *sql.Rows) (generated.Cfe, error) {
 	var c generated.Cfe
 	if err := rows.Scan(

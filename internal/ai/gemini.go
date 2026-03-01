@@ -6,38 +6,64 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"google.golang.org/genai"
 )
 
 // GeminiClient implements LLMClient using the Google Gemini API.
+// The underlying genai.Client is created lazily on first use, so startup
+// does not depend on Gemini reachability. If init fails, subsequent
+// requests retry automatically.
 type GeminiClient struct {
-	client  *genai.Client
+	apiKey  string
 	model   string
 	timeout time.Duration
+
+	mu     sync.Mutex
+	client *genai.Client
 }
 
-// NewGeminiClient creates a Gemini adapter.
+// NewGeminiClient creates a Gemini adapter. The underlying API client is
+// initialized lazily on first request, not during construction.
 func NewGeminiClient(apiKey, model string, timeout time.Duration) (*GeminiClient, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("GEMINI_API_KEY is required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	return &GeminiClient{apiKey: apiKey, model: model, timeout: timeout}, nil
+}
+
+// getClient returns the underlying genai.Client, creating it on first call.
+// Subsequent calls reuse the same client. If creation fails, the next call
+// retries — transient network issues at startup are automatically recovered.
+func (g *GeminiClient) getClient(ctx context.Context) (*genai.Client, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.client != nil {
+		return g.client, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
+		APIKey:  g.apiKey,
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating Gemini client: %w", err)
 	}
-	return &GeminiClient{client: client, model: model, timeout: timeout}, nil
+	g.client = client
+	return client, nil
 }
 
 // GenerateStructuredQuery sends a NL query to Gemini with structured output
 // constraints matching the DSL Rule format.
 func (g *GeminiClient) GenerateStructuredQuery(ctx context.Context, prompt string) (GenerateResult, error) {
+	client, err := g.getClient(ctx)
+	if err != nil {
+		return GenerateResult{}, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
 
@@ -51,7 +77,7 @@ func (g *GeminiClient) GenerateStructuredQuery(ctx context.Context, prompt strin
 		Temperature: genai.Ptr[float32](0),
 	}
 
-	result, err := g.client.Models.GenerateContent(ctx, g.model, genai.Text(prompt), config)
+	result, err := client.Models.GenerateContent(ctx, g.model, genai.Text(prompt), config)
 	if err != nil {
 		return GenerateResult{}, fmt.Errorf("gemini GenerateContent: %w", err)
 	}
@@ -77,6 +103,11 @@ func (g *GeminiClient) GenerateStructuredQuery(ctx context.Context, prompt strin
 
 // Summarize generates a CVE summary with zero tool access.
 func (g *GeminiClient) Summarize(ctx context.Context, input CVESummaryInput) (SummarizeResult, error) {
+	client, err := g.getClient(ctx)
+	if err != nil {
+		return SummarizeResult{}, err
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()
 
@@ -99,7 +130,7 @@ func (g *GeminiClient) Summarize(ctx context.Context, input CVESummaryInput) (Su
 		},
 	}
 
-	result, err := g.client.Models.GenerateContent(ctx, g.model, genai.Text(string(inputJSON)), config)
+	result, err := client.Models.GenerateContent(ctx, g.model, genai.Text(string(inputJSON)), config)
 	if err != nil {
 		return SummarizeResult{}, fmt.Errorf("gemini summarize: %w", err)
 	}

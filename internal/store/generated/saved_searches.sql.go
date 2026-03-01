@@ -106,16 +106,23 @@ WHERE org_id = $1 AND deleted_at IS NULL
     END
   )
 ORDER BY updated_at DESC
+LIMIT $4::int
 `
 
 type ListSavedSearchesParams struct {
-	OrgID      uuid.UUID
-	Visibility string
-	UserID     uuid.UUID
+	OrgID       uuid.UUID
+	Visibility  string
+	UserID      uuid.UUID
+	ResultLimit int32
 }
 
 func (q *Queries) ListSavedSearches(ctx context.Context, arg ListSavedSearchesParams) ([]SavedSearch, error) {
-	rows, err := q.db.QueryContext(ctx, listSavedSearches, arg.OrgID, arg.Visibility, arg.UserID)
+	rows, err := q.db.QueryContext(ctx, listSavedSearches,
+		arg.OrgID,
+		arg.Visibility,
+		arg.UserID,
+		arg.ResultLimit,
+	)
 	if err != nil {
 		return nil, err
 	}

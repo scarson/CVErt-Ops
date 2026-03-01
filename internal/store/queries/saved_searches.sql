@@ -21,7 +21,8 @@ WHERE org_id = $1 AND deleted_at IS NULL
       ELSE (is_shared = true OR user_id = @user_id::uuid)
     END
   )
-ORDER BY updated_at DESC;
+ORDER BY updated_at DESC
+LIMIT @result_limit::int;
 
 -- name: UpdateSavedSearch :one
 UPDATE saved_searches

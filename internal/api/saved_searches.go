@@ -150,7 +150,9 @@ func (srv *Server) listSavedSearchesHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	rows, err := srv.store.ListSavedSearches(r.Context(), orgID, userID, visibility)
+	limit := parseIntParam(r.URL.Query().Get("limit"), 200, 1, 200)
+
+	rows, err := srv.store.ListSavedSearches(r.Context(), orgID, userID, visibility, limit)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list saved searches", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

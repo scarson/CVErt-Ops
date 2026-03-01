@@ -106,7 +106,7 @@ type SearchParams struct {
 // is applied to prevent NULL rows from disappearing (pitfall §pagination).
 func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	sb := psql.Select("c.*").From("cves c")
+	sb := psql.Select(cveColumns...).From("cves c")
 
 	// FTS search via cve_search_index.
 	if p.Q != "" {

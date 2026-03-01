@@ -182,14 +182,15 @@ func TestNLSearchHandler_QuotaDenied(t *testing.T) {
 	db.SeedTestCVE(t, "CVE-2024-0010", "critical", nil)
 
 	// Exhaust the quota (limit is 10 for free tier).
+	// Each query must be unique to avoid cache hits (cache hits are free).
 	for i := 0; i < 10; i++ {
-		body := `{"query":"critical CVEs"}`
+		body := fmt.Sprintf(`{"query":"quota test query %d"}`, i)
 		resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
 		resp.Body.Close() //nolint:errcheck,gosec
 	}
 
 	// The 11th request should be denied.
-	body := `{"query":"critical CVEs"}`
+	body := `{"query":"quota test query overflow"}`
 	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
@@ -322,7 +323,10 @@ func TestSummarizeHandler_QuotaDenied(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	db.SeedTestCVE(t, "CVE-2024-2001", "high", nil)
+	// Seed 6 unique CVEs to avoid cache hits (cache hits are free, don't consume quota).
+	for i := 0; i < 6; i++ {
+		db.SeedTestCVE(t, fmt.Sprintf("CVE-2024-%04d", 2001+i), "high", nil)
+	}
 
 	_, ts := newAITestServer(t, db)
 	reg := doRegister(t, ctx, ts, "summquota@example.com", "test-password-1234")
@@ -331,13 +335,14 @@ func TestSummarizeHandler_QuotaDenied(t *testing.T) {
 	token := cookieValue(loginResp, "access_token")
 
 	// Exhaust the quota (limit is 5 for free tier summarize).
+	// Each request uses a unique CVE to ensure cache miss.
 	for i := 0; i < 5; i++ {
-		resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-2001")
+		resp := doSummarize(t, ctx, ts, token, reg.OrgID, fmt.Sprintf("CVE-2024-%04d", 2001+i))
 		resp.Body.Close() //nolint:errcheck,gosec
 	}
 
-	// The 6th request should be denied.
-	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-2001")
+	// The 6th request (unique CVE, cache miss) should be denied.
+	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-2006")
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusTooManyRequests {

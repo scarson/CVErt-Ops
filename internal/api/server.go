@@ -21,6 +21,7 @@ import (
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
 
+	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -38,6 +39,7 @@ type Server struct {
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
 	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
 	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
+	llm            ai.LLMClient    // nil until SetAIDeps is called
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -260,6 +262,12 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 
+			// AI-powered search and summarization
+			r.Route("/ai", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/nl-search", srv.nlSearchHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/summarize/{cve_id}", srv.summarizeHandler)
+			})
+
 			// Group management
 			r.Route("/groups", func(r chi.Router) {
 				r.Get("/", srv.listGroupsHandler)
@@ -288,6 +296,12 @@ func (srv *Server) Handler() http.Handler {
 func (srv *Server) SetAlertDeps(cache *alert.RuleCache, evaluator *alert.Evaluator) {
 	srv.alertCache = cache
 	srv.alertEvaluator = evaluator
+}
+
+// SetAIDeps wires the LLM client into the server.
+// Must be called before Handler() if AI endpoints are registered.
+func (srv *Server) SetAIDeps(llm ai.LLMClient) {
+	srv.llm = llm
 }
 
 // acquireArgon2 tries to acquire the argon2 semaphore. Returns false if all

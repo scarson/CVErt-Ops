@@ -163,7 +163,7 @@ func TestFanout_Debounce_AppendsToExistingRow(t *testing.T) {
 	// Filter to this rule's delivery.
 	claimedForRule := 0
 	for _, c := range claimed {
-		if c.RuleID == rule.ID {
+		if c.RuleID.UUID == rule.ID {
 			claimedForRule++
 		}
 	}

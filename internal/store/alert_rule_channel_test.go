@@ -127,11 +127,11 @@ func TestListActiveChannelsForFanout_IncludesSecrets(t *testing.T) {
 	if got.ID != chanID {
 		t.Errorf("ID = %v, want %v", got.ID, chanID)
 	}
-	if got.SigningSecret == "" {
+	if !got.SigningSecret.Valid || got.SigningSecret.String == "" {
 		t.Error("SigningSecret is empty in fanout row")
 	}
-	if got.SigningSecret != createdSecret {
-		t.Errorf("SigningSecret = %q, want %q", got.SigningSecret, createdSecret)
+	if got.SigningSecret.String != createdSecret {
+		t.Errorf("SigningSecret = %q, want %q", got.SigningSecret.String, createdSecret)
 	}
 	if got.SigningSecretSecondary.Valid {
 		t.Error("SigningSecretSecondary should be NULL on a new channel")

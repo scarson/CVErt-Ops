@@ -28,7 +28,7 @@ FOR UPDATE SKIP LOCKED
 type ClaimPendingDeliveriesRow struct {
 	ID           uuid.UUID
 	OrgID        uuid.UUID
-	RuleID       uuid.UUID
+	RuleID       uuid.NullUUID
 	ChannelID    uuid.UUID
 	AttemptCount int32
 	Payload      json.RawMessage
@@ -110,9 +110,25 @@ type GetDeliveryParams struct {
 	OrgID uuid.UUID
 }
 
-func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (NotificationDelivery, error) {
+type GetDeliveryRow struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	RuleID          uuid.NullUUID
+	ChannelID       uuid.UUID
+	Status          string
+	AttemptCount    int32
+	Payload         json.RawMessage
+	SendAfter       time.Time
+	LastAttemptedAt sql.NullTime
+	DeliveredAt     sql.NullTime
+	LastError       sql.NullString
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDeliveryRow, error) {
 	row := q.db.QueryRowContext(ctx, getDelivery, arg.ID, arg.OrgID)
-	var i NotificationDelivery
+	var i GetDeliveryRow
 	err := row.Scan(
 		&i.ID,
 		&i.OrgID,
@@ -157,7 +173,7 @@ type ListDeliveriesParams struct {
 type ListDeliveriesRow struct {
 	ID              uuid.UUID
 	OrgID           uuid.UUID
-	RuleID          uuid.UUID
+	RuleID          uuid.NullUUID
 	ChannelID       uuid.UUID
 	Status          string
 	AttemptCount    int32

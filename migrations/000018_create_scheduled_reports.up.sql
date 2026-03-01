@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS scheduled_reports (
     next_run_at         TIMESTAMPTZ NOT NULL,
     last_run_at         TIMESTAMPTZ NULL,
     severity_threshold  TEXT        NULL CHECK (severity_threshold IN ('critical','high','medium','low')),
-    -- Deleted watchlist IDs silently match nothing (app-layer validation; FK impossible on arrays).
+    -- Deleted watchlist IDs silently match nothing. App-layer validation only (FK impossible on arrays).
     watchlist_ids       UUID[]      NULL,
     send_on_empty       BOOLEAN     NOT NULL DEFAULT TRUE,
     ai_summary          BOOLEAN     NOT NULL DEFAULT FALSE,

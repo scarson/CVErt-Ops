@@ -71,7 +71,7 @@ type ListActiveChannelsForFanoutRow struct {
 	ID                     uuid.UUID
 	Type                   string
 	Config                 json.RawMessage
-	SigningSecret          string
+	SigningSecret          sql.NullString
 	SigningSecretSecondary sql.NullString
 }
 

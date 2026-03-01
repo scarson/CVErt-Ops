@@ -95,11 +95,11 @@ func TestGetNotificationChannelForDelivery_IncludesSecrets(t *testing.T) {
 	if got == nil {
 		t.Fatal("GetNotificationChannelForDelivery returned nil for existing channel")
 	}
-	if got.SigningSecret == "" {
+	if !got.SigningSecret.Valid || got.SigningSecret.String == "" {
 		t.Error("SigningSecret is empty in delivery row")
 	}
-	if got.SigningSecret != createdSecret {
-		t.Errorf("SigningSecret = %q, want %q", got.SigningSecret, createdSecret)
+	if got.SigningSecret.String != createdSecret {
+		t.Errorf("SigningSecret = %q, want %q", got.SigningSecret.String, createdSecret)
 	}
 	if got.SigningSecretSecondary.Valid {
 		t.Error("SigningSecretSecondary should be NULL on a new channel")
@@ -174,8 +174,8 @@ func TestRotateSigningSecret_MovesSecrets(t *testing.T) {
 	if got == nil {
 		t.Fatal("GetNotificationChannelForDelivery returned nil after rotate")
 	}
-	if got.SigningSecret != newPrimary {
-		t.Errorf("primary after rotate = %q, want %q", got.SigningSecret, newPrimary)
+	if got.SigningSecret.String != newPrimary {
+		t.Errorf("primary after rotate = %q, want %q", got.SigningSecret.String, newPrimary)
 	}
 	if !got.SigningSecretSecondary.Valid {
 		t.Fatal("secondary should be set after rotation")

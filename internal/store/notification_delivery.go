@@ -19,11 +19,11 @@ type ClaimedDelivery = generated.ClaimPendingDeliveriesRow
 
 // upsertDeliverySQL is the debounce INSERT: creates a pending delivery or appends the
 // CVE snapshot to an existing pending row for the same (rule_id, channel_id) pair.
-// The ON CONFLICT targets the partial unique index (rule_id, channel_id) WHERE status='pending'.
+// The ON CONFLICT targets the partial unique index uq_deliveries_pending_alert.
 const upsertDeliverySQL = `
-INSERT INTO notification_deliveries (org_id, rule_id, channel_id, payload, send_after)
-VALUES ($1, $2, $3, jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'))
-ON CONFLICT (rule_id, channel_id) WHERE status = 'pending'
+INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after)
+VALUES ($1, $2, $3, 'alert', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'))
+ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert'
 DO UPDATE SET
     payload    = notification_deliveries.payload || jsonb_build_array($4::jsonb),
     send_after = now() + ($5 * interval '1 second'),
@@ -169,8 +169,8 @@ func (s *Store) ListDeliveries(ctx context.Context, orgID uuid.UUID, ruleID, cha
 }
 
 // GetDelivery returns the delivery row with the given id within orgID, or nil if not found.
-func (s *Store) GetDelivery(ctx context.Context, id, orgID uuid.UUID) (*generated.NotificationDelivery, error) {
-	var result *generated.NotificationDelivery
+func (s *Store) GetDelivery(ctx context.Context, id, orgID uuid.UUID) (*generated.GetDeliveryRow, error) {
+	var result *generated.GetDeliveryRow
 	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		row, err := q.GetDelivery(ctx, generated.GetDeliveryParams{
 			ID:    id,

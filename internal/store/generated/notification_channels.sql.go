@@ -67,7 +67,7 @@ type CreateNotificationChannelParams struct {
 	Name          string
 	Type          string
 	Config        json.RawMessage
-	SigningSecret string
+	SigningSecret sql.NullString
 }
 
 type CreateNotificationChannelRow struct {
@@ -156,7 +156,7 @@ type GetNotificationChannelForDeliveryRow struct {
 	OrgID                  uuid.UUID
 	Type                   string
 	Config                 json.RawMessage
-	SigningSecret          string
+	SigningSecret          sql.NullString
 	SigningSecretSecondary sql.NullString
 }
 
@@ -237,13 +237,13 @@ RETURNING signing_secret
 type RotateSigningSecretParams struct {
 	ID            uuid.UUID
 	OrgID         uuid.UUID
-	SigningSecret string
+	SigningSecret sql.NullString
 }
 
 // Atomically moves primary → secondary, sets new primary.
-func (q *Queries) RotateSigningSecret(ctx context.Context, arg RotateSigningSecretParams) (string, error) {
+func (q *Queries) RotateSigningSecret(ctx context.Context, arg RotateSigningSecretParams) (sql.NullString, error) {
 	row := q.db.QueryRowContext(ctx, rotateSigningSecret, arg.ID, arg.OrgID, arg.SigningSecret)
-	var signing_secret string
+	var signing_secret sql.NullString
 	err := row.Scan(&signing_secret)
 	return signing_secret, err
 }

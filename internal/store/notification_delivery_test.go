@@ -165,8 +165,8 @@ func TestClaimPendingDeliveries_SkipsNotReady(t *testing.T) {
 	if len(ready) != 1 {
 		t.Errorf("expected 1 claimed delivery, got %d", len(ready))
 	}
-	if ready[0].RuleID != ruleID2 {
-		t.Errorf("claimed wrong delivery: ruleID=%v, want %v", ready[0].RuleID, ruleID2)
+	if ready[0].RuleID.UUID != ruleID2 {
+		t.Errorf("claimed wrong delivery: ruleID=%v, want %v", ready[0].RuleID.UUID, ruleID2)
 	}
 	// Verify payload is present.
 	if len(ready[0].Payload) == 0 {
@@ -411,7 +411,7 @@ func TestListDeliveries_FilterByStatus(t *testing.T) {
 	// Find the one for ruleID2.
 	var id2 uuid.UUID
 	for _, c := range claimed {
-		if c.RuleID == ruleID2 {
+		if c.RuleID.UUID == ruleID2 {
 			id2 = c.ID
 		}
 	}
@@ -478,8 +478,8 @@ func TestGetDelivery(t *testing.T) {
 	if delivery.ID != id {
 		t.Errorf("GetDelivery ID = %v, want %v", delivery.ID, id)
 	}
-	if delivery.RuleID != ruleID {
-		t.Errorf("GetDelivery RuleID = %v, want %v", delivery.RuleID, ruleID)
+	if delivery.RuleID.UUID != ruleID {
+		t.Errorf("GetDelivery RuleID = %v, want %v", delivery.RuleID.UUID, ruleID)
 	}
 
 	// GetDelivery with a random UUID must return nil (not found).

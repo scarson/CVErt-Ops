@@ -140,7 +140,7 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 
 	sendErr := Send(ctx, w.client, WebhookConfig{
 		URL:                    config.URL,
-		SigningSecret:          ch.SigningSecret,
+		SigningSecret:          ch.SigningSecret.String,
 		SigningSecretSecondary: ch.SigningSecretSecondary.String,
 		CustomHeaders:          config.CustomHeaders,
 	}, row.Payload)

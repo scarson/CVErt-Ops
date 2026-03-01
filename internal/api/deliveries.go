@@ -169,7 +169,7 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		entry := deliveryEntry{
 			ID:           row.ID.String(),
 			OrgID:        row.OrgID.String(),
-			RuleID:       row.RuleID.String(),
+			RuleID:       row.RuleID.UUID.String(),
 			ChannelID:    row.ChannelID.String(),
 			Status:       row.Status,
 			AttemptCount: row.AttemptCount,
@@ -231,7 +231,7 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 	entry := deliveryEntry{
 		ID:           row.ID.String(),
 		OrgID:        row.OrgID.String(),
-		RuleID:       row.RuleID.String(),
+		RuleID:       row.RuleID.UUID.String(),
 		ChannelID:    row.ChannelID.String(),
 		Status:       row.Status,
 		AttemptCount: row.AttemptCount,

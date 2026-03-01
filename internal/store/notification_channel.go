@@ -67,7 +67,7 @@ func (s *Store) CreateNotificationChannel(ctx context.Context, orgID uuid.UUID, 
 			Name:          name,
 			Type:          chanType,
 			Config:        config,
-			SigningSecret: secret,
+			SigningSecret: sql.NullString{String: secret, Valid: true},
 		})
 		return err
 	})
@@ -181,7 +181,7 @@ func (s *Store) RotateSigningSecret(ctx context.Context, orgID, id uuid.UUID) (s
 		returned, err := q.RotateSigningSecret(ctx, generated.RotateSigningSecretParams{
 			ID:            id,
 			OrgID:         orgID,
-			SigningSecret: newSecret,
+			SigningSecret: sql.NullString{String: newSecret, Valid: true},
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -189,7 +189,7 @@ func (s *Store) RotateSigningSecret(ctx context.Context, orgID, id uuid.UUID) (s
 		if err != nil {
 			return fmt.Errorf("rotate signing secret: %w", err)
 		}
-		result = returned
+		result = returned.String
 		return nil
 	})
 	return result, err

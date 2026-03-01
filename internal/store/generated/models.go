@@ -271,7 +271,7 @@ type NotificationChannel struct {
 	Name                   string
 	Type                   string
 	Config                 json.RawMessage
-	SigningSecret          string
+	SigningSecret          sql.NullString
 	SigningSecretSecondary sql.NullString
 	DeletedAt              sql.NullTime
 	CreatedAt              time.Time
@@ -281,7 +281,7 @@ type NotificationChannel struct {
 type NotificationDelivery struct {
 	ID              uuid.UUID
 	OrgID           uuid.UUID
-	RuleID          uuid.UUID
+	RuleID          uuid.NullUUID
 	ChannelID       uuid.UUID
 	Status          string
 	AttemptCount    int32
@@ -292,6 +292,8 @@ type NotificationDelivery struct {
 	LastError       sql.NullString
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	Kind            string
+	ReportID        uuid.NullUUID
 }
 
 type OrgInvitation struct {
@@ -329,6 +331,31 @@ type RefreshToken struct {
 	UsedAt        sql.NullTime
 	ReplacedByJti uuid.NullUUID
 	CreatedAt     time.Time
+}
+
+type ReportChannel struct {
+	ReportID  uuid.UUID
+	ChannelID uuid.UUID
+	OrgID     uuid.UUID
+	CreatedAt time.Time
+}
+
+type ScheduledReport struct {
+	ID                uuid.UUID
+	OrgID             uuid.UUID
+	Name              string
+	ScheduledTime     time.Time
+	Timezone          string
+	NextRunAt         time.Time
+	LastRunAt         sql.NullTime
+	SeverityThreshold sql.NullString
+	WatchlistIds      []uuid.UUID
+	SendOnEmpty       bool
+	AiSummary         bool
+	Status            string
+	DeletedAt         sql.NullTime
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type SystemJobsLog struct {

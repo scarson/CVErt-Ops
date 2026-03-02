@@ -1597,50 +1597,84 @@ git commit -m "chore(scim): Phase 7 final review, cleanup, and verification"
 
 ---
 
-## Dependency Graph
+## Execution Waves (Subagent-Driven)
+
+Each wave completes fully (tests green, lint clean, committed) before the next wave starts. Within a wave, parallel lanes run as independent subagents in worktrees. **Review checkpoint** after each wave — merge results, verify integration, course-correct before proceeding.
+
+### Wave 1: Foundation (sequential — main agent)
+**Tasks:** 1, 2, 3, 4, 5
+**Why sequential:** Migrations depend on each other. `go get` must happen first. These are small, mechanical tasks — not worth subagent overhead.
+**Deliverable:** All 4 migrations applied, sqlc regenerated, `go build ./...` passes.
+
+### Wave 2: Data Layer (3 parallel subagents)
+| Lane A | Lane B | Lane C |
+|--------|--------|--------|
+| Task 6: sqlc — SCIM config queries | Task 7: sqlc — SCIM group queries | Task 8: sqlc — org deactivation queries |
+| Task 9: Store — SCIM config methods + tests | Task 10: Store — SCIM group methods + tests | Task 11: Store — deactivation methods + tests |
+
+**Why parallel:** Each lane touches independent query files and store files. No cross-dependencies within a lane.
+**Deliverable:** Complete store layer with passing RLS isolation tests for all three domains.
+**Review checkpoint:** Verify sqlc generation is clean (all three query files merged), store tests pass with AppStore.
+
+### Wave 3: Cross-Cutting Utilities (3 parallel subagents)
+| Lane A | Lane B | Lane C |
+|--------|--------|--------|
+| Task 12: SCIM token generation helper | Task 13: RequireOrgRole deactivation check | Task 17: Role recomputation function |
+| Task 15: SCIM auth middleware | Task 14: Member PATCH deactivation + scim_exempt | Task 18: Notification group sync function |
+| Task 16: SCIM rate limiter | | |
+
+**Lane A** is the SCIM auth stack (token → middleware → rate limiter), sequential within the lane.
+**Lane B** is the general deactivation feature (middleware change → API change), sequential within the lane.
+**Lane C** is the shared SCIM business logic (role recompute, notif sync), sequential within the lane.
+**Why parallel:** The three lanes are independent — auth, deactivation, and business logic don't interact.
+**Deliverable:** SCIM auth middleware tested, deactivation works end-to-end, role recompute + notif sync tested.
+**Review checkpoint:** Verify SCIM error format (not RFC 9457). Verify deactivation blocks org access. Verify role hierarchy (admin > member > viewer).
+
+### Wave 4: SCIM Plugin + Admin (3 parallel subagents)
+| Lane A | Lane B | Lane C |
+|--------|--------|--------|
+| Task 19: Plugin — User operations | Task 20: Plugin — Group operations | Task 22: Admin endpoints — SCIM config CRUD |
+| | | Task 23: Admin — group mapping with immediate effect |
+
+**Lane A:** Implements the scimgateway `plugin.Plugin` user methods (CreateUser, GetUser, GetUsers, ModifyUser, DeleteUser). This is the largest single task.
+**Lane B:** Implements group methods. Depends on role recompute + notif sync from Wave 3.
+**Lane C:** Admin endpoints (standard chi handlers). Can start immediately — depends only on Wave 2 store methods.
+**Deliverable:** User and group SCIM operations working. Admin config CRUD working. Group mapping triggers immediate recomputation.
+**Review checkpoint:** Verify identity matching flow (externalId → email → create). Verify Entra ID quirk handling (op casing, string booleans, member removal format). Verify admin endpoint RBAC (owner for mutations, admin for reads).
+
+### Wave 5: Integration (sequential — main agent)
+**Tasks:** 21, 24
+**Why sequential:** Mounting the gateway (Task 21) requires verifying the scimgateway plugin name → URL path mapping. Discovery endpoints (Task 24) depend on the mounted gateway. This is the riskiest integration point — main agent handles it for tight feedback loops.
+**Deliverable:** Full SCIM endpoint stack accessible at `/api/v1/orgs/{org_id}/scim/v2/*`.
+
+### Wave 6: Verification (3 parallel subagents)
+| Lane A | Lane B | Lane C |
+|--------|--------|--------|
+| Task 25: E2E integration tests | Task 26: Audit logging | Task 27: Structured logging |
+
+**Deliverable:** All SCIM flows tested end-to-end. Audit entries verified. slog events at correct levels.
+**Review checkpoint:** Run full test suite (`go test ./... -count=1 -race`).
+
+### Wave 7: Final Review (sequential — main agent)
+**Task:** 28
+Runs /pitfall-check, /security-review, /plan-check. Fixes any findings. Final commit.
+
+---
+
+## Dependency Graph (reference)
 
 ```
-Task 1: go get scimgateway
-  ↓
-Tasks 2-5: Migrations (can run in sequence, each depends on prior)
-  ↓
-Tasks 6-8: sqlc queries (depend on migrations, can run in parallel)
-  ↓
-Tasks 9-11: Store layer (depend on sqlc, can run in parallel)
-  ↓
-Task 12: SCIM token helper (independent, can run in parallel with store tasks)
-  ↓
-Task 13: RequireOrgRole deactivation check (depends on Task 11 store methods)
-Task 14: Member PATCH extensions (depends on Task 11 + 13)
-  ↓
-Task 15: SCIM auth middleware (depends on Task 9 store + Task 12 token)
-Task 16: SCIM rate limiter (depends on Task 15)
-  ↓
-Task 17: Role recomputation (depends on Tasks 10-11 store)
-Task 18: Notification group sync (depends on Tasks 10-11 store)
-  ↓
-Task 19: Plugin — User operations (depends on Tasks 15, 17, 18)
-Task 20: Plugin — Group operations (depends on Tasks 15, 17, 18)
-  ↓
-Task 21: Mount gateway (depends on Tasks 19-20)
-  ↓
-Task 22: Admin endpoints (depends on Tasks 9, 12, can start after Task 15)
-Task 23: Group mapping admin (depends on Tasks 17, 18, 22)
-  ↓
-Task 24: Discovery endpoints (depends on Task 21)
-  ↓
-Task 25: E2E tests (depends on all above)
-Task 26: Audit logging (can start after Tasks 19-20)
-Task 27: Structured logging (can start after Tasks 19-20)
-  ↓
-Task 28: Final review (depends on all above)
+Wave 1:  [1] → [2] → [3] → [4] → [5]
+              ↓
+Wave 2:  [6→9]  ||  [7→10]  ||  [8→11]
+              ↓
+Wave 3:  [12→15→16]  ||  [13→14]  ||  [17→18]
+              ↓
+Wave 4:  [19]  ||  [20]  ||  [22→23]
+              ↓
+Wave 5:  [21] → [24]
+              ↓
+Wave 6:  [25]  ||  [26]  ||  [27]
+              ↓
+Wave 7:  [28]
 ```
-
-**Parallelization opportunities for subagents:**
-- Tasks 6, 7, 8 can run in parallel (independent sqlc query files)
-- Tasks 9, 10, 11 can run in parallel (independent store files)
-- Tasks 13, 14 are sequential but independent of Tasks 15-16
-- Tasks 17, 18 can run in parallel
-- Tasks 19, 20 can run in parallel
-- Tasks 22, 23 can start as soon as their store dependencies are ready
-- Tasks 26, 27 can run in parallel after the plugin tasks

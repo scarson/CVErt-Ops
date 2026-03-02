@@ -1657,7 +1657,7 @@ Each wave completes fully (tests green, lint clean, committed) before the next w
 
 ### Wave 7: Final Review (sequential — main agent)
 **Task:** 28
-Runs /pitfall-check, /security-review, /plan-check. Fixes any findings. Final commit.
+Runs /requesting-code-review, /pitfall-check, /security-review, /plan-check. Fixes any findings. Final commit.
 
 ---
 

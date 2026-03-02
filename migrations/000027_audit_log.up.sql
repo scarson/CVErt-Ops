@@ -2,17 +2,17 @@
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id      UUID NOT NULL,          -- NOT a FK; audit records survive org deletion
-    actor_id    UUID,                   -- NULL for system actions; NOT a FK
-    actor_email TEXT,                   -- NULL for system actions; denormalized
+    org_id      UUID NOT NULL,          -- NOT a FK, audit records survive org deletion
+    actor_id    UUID,                   -- NULL for system actions, NOT a FK
+    actor_email TEXT,                   -- NULL for system actions, denormalized
     action      TEXT NOT NULL CHECK (action IN ('create', 'update', 'delete')),
-    entity_type TEXT NOT NULL,          -- 'alert_rule', 'channel', 'watchlist', etc.
-    entity_id   TEXT NOT NULL,          -- UUID as text (supports different PK types)
+    entity_type TEXT NOT NULL,
+    entity_id   TEXT NOT NULL,
     entity_name TEXT,                   -- denormalized display name at write time
-    success     BOOLEAN NOT NULL DEFAULT true,  -- false for denied mutation attempts
-    old_state   JSONB,                  -- NULL for create / denied attempts
-    new_state   JSONB,                  -- NULL for delete / denied attempts
-    metadata    JSONB,                  -- IP, user agent, API key prefix, request ID
+    success     BOOLEAN NOT NULL DEFAULT true,
+    old_state   JSONB,
+    new_state   JSONB,
+    metadata    JSONB,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

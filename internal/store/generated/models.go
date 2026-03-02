@@ -163,6 +163,22 @@ type ApiKey struct {
 	RevokedAt       sql.NullTime
 }
 
+type AuditLog struct {
+	ID         uuid.UUID
+	OrgID      uuid.UUID
+	ActorID    uuid.NullUUID
+	ActorEmail sql.NullString
+	Action     string
+	EntityType string
+	EntityID   string
+	EntityName sql.NullString
+	Success    bool
+	OldState   pqtype.NullRawMessage
+	NewState   pqtype.NullRawMessage
+	Metadata   pqtype.NullRawMessage
+	CreatedAt  time.Time
+}
+
 type Cfe struct {
 	CveID                 string
 	Status                sql.NullString

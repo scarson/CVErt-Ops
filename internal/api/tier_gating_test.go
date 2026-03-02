@@ -331,6 +331,71 @@ func TestTierGating_Members_FreeLimit(t *testing.T) {
 	}
 }
 
+func TestTierGating_Members_PendingInvitationsConsumeSlots(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tiergate9@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tiergate9@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Org starts with 1 member (the owner). Add 3 more via DB to get to 4 members.
+	for i := 0; i < 3; i++ {
+		userID := uuid.New()
+		_, err := db.Pool().Exec(ctx,
+			`INSERT INTO users (id, email, display_name, password_hash) VALUES ($1, $2, $3, $4)`,
+			userID, fmt.Sprintf("slotfill%d@example.com", i), fmt.Sprintf("SlotFill %d", i), "not-a-real-hash")
+		if err != nil {
+			t.Fatalf("create filler user %d: %v", i, err)
+		}
+		_, err = db.Pool().Exec(ctx,
+			`INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`,
+			orgID, userID)
+		if err != nil {
+			t.Fatalf("create filler member %d: %v", i, err)
+		}
+	}
+
+	// Create 1 invitation via API (4 members + 1 pending = 5 slots consumed).
+	body := `{"email":"pending1@example.com","role":"member"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/invitations", ts.URL, orgID),
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create invitation 1: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("invitation 1: got %d, want 202", resp.StatusCode)
+	}
+
+	// 2nd invitation should fail — pending invitation consumed the 5th slot.
+	body = `{"email":"pending2@example.com","role":"member"}`
+	req, _ = http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/invitations", ts.URL, orgID),
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err = ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create invitation 2: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("invitation 2 at limit: got %d, want 403", resp.StatusCode)
+	}
+}
+
 func TestTierGating_OrgRateLimit(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

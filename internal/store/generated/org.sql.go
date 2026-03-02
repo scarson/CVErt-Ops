@@ -33,6 +33,20 @@ func (q *Queries) CountAlertRulesByOrg(ctx context.Context, orgID uuid.UUID) (in
 	return count, err
 }
 
+const countMemberSlotsUsedByOrg = `-- name: CountMemberSlotsUsedByOrg :one
+SELECT CAST(
+    (SELECT COUNT(*) FROM org_members m WHERE m.org_id = $1)
+  + (SELECT COUNT(*) FROM org_invitations i WHERE i.org_id = $1 AND i.accepted_at IS NULL AND i.expires_at > now())
+AS bigint)
+`
+
+func (q *Queries) CountMemberSlotsUsedByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countMemberSlotsUsedByOrg, orgID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countMembersByOrg = `-- name: CountMembersByOrg :one
 SELECT COUNT(*) FROM org_members WHERE org_id = $1
 `

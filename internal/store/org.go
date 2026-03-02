@@ -439,3 +439,18 @@ func (s *Store) CountMembersByOrg(ctx context.Context, orgID uuid.UUID) (int64, 
 	})
 	return n, err
 }
+
+// CountMemberSlotsUsedByOrg returns members + pending (unexpired, unaccepted) invitations.
+// Uses org-scoped transaction (RLS active).
+func (s *Store) CountMemberSlotsUsedByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountMemberSlotsUsedByOrg(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count member slots: %w", err)
+		}
+		return nil
+	})
+	return n, err
+}

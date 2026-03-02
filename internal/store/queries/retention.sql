@@ -74,3 +74,11 @@ WITH doomed AS (
 DELETE FROM ai_usage_counters auc
 USING doomed
 WHERE auc.org_id = doomed.org_id AND auc.feature = doomed.feature AND auc.date = doomed.date;
+
+-- name: CleanupAuditLog :execrows
+WITH doomed AS (
+    SELECT id FROM audit_log
+    WHERE org_id = ANY(@org_ids::uuid[]) AND created_at < @cutoff::timestamptz
+    ORDER BY created_at LIMIT @batch_size::int
+)
+DELETE FROM audit_log al USING doomed WHERE al.id = doomed.id;

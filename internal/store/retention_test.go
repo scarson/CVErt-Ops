@@ -226,6 +226,77 @@ func TestCleanupNotificationDeliveries_OrgFilter(t *testing.T) {
 	}
 }
 
+func TestCleanupAuditLog_OrgFilter(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	oldTime := now.Add(-400 * 24 * time.Hour)
+	recentTime := now.Add(-10 * 24 * time.Hour)
+
+	org1, _ := db.CreateOrg(ctx, "AuditRetOrg1")
+	org2, _ := db.CreateOrg(ctx, "AuditRetOrg2")
+
+	// Insert old entries for both orgs + one recent entry for org1.
+	for _, p := range []struct {
+		orgID uuid.UUID
+		ts    time.Time
+	}{
+		{org1.ID, oldTime},
+		{org1.ID, recentTime},
+		{org2.ID, oldTime},
+	} {
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO audit_log (org_id, actor_email, action, entity_type, entity_id, success)
+			 VALUES ($1, 'test@example.com', 'create', 'alert_rule', 'ent-1', true)`,
+			p.orgID,
+		); err != nil {
+			t.Fatalf("seed audit_log: %v", err)
+		}
+		// Update created_at to the desired timestamp (DEFAULT is now()).
+		if _, err := db.Pool().Exec(ctx,
+			`UPDATE audit_log SET created_at = $1 WHERE org_id = $2 AND created_at = (
+				SELECT MAX(created_at) FROM audit_log WHERE org_id = $2
+			)`, p.ts, p.orgID,
+		); err != nil {
+			t.Fatalf("update audit_log created_at: %v", err)
+		}
+	}
+
+	// Cleanup only org1.
+	cutoff := now.Add(-365 * 24 * time.Hour)
+	n, err := db.CleanupAuditLog(ctx, []uuid.UUID{org1.ID}, cutoff, 100)
+	if err != nil {
+		t.Fatalf("CleanupAuditLog: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted = %d, want 1 (only org1 old entry)", n)
+	}
+
+	// org1 recent entry should survive.
+	var org1Remaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM audit_log WHERE org_id = $1", org1.ID,
+	).Scan(&org1Remaining); err != nil {
+		t.Fatalf("count org1: %v", err)
+	}
+	if org1Remaining != 1 {
+		t.Errorf("org1 remaining = %d, want 1 (recent entry)", org1Remaining)
+	}
+
+	// org2's entry should survive (not in cleanup org list).
+	var org2Remaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM audit_log WHERE org_id = $1", org2.ID,
+	).Scan(&org2Remaining); err != nil {
+		t.Fatalf("count org2: %v", err)
+	}
+	if org2Remaining != 1 {
+		t.Errorf("org2 remaining = %d, want 1", org2Remaining)
+	}
+}
+
 func TestCleanupJobQueue_StatusFilter(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

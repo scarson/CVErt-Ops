@@ -104,6 +104,29 @@ func (q *Queries) CleanupAlertEvents(ctx context.Context, arg CleanupAlertEvents
 	return result.RowsAffected()
 }
 
+const cleanupAuditLog = `-- name: CleanupAuditLog :execrows
+WITH doomed AS (
+    SELECT id FROM audit_log
+    WHERE org_id = ANY($1::uuid[]) AND created_at < $2::timestamptz
+    ORDER BY created_at LIMIT $3::int
+)
+DELETE FROM audit_log al USING doomed WHERE al.id = doomed.id
+`
+
+type CleanupAuditLogParams struct {
+	OrgIds    []uuid.UUID
+	Cutoff    time.Time
+	BatchSize int32
+}
+
+func (q *Queries) CleanupAuditLog(ctx context.Context, arg CleanupAuditLogParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cleanupAuditLog, pq.Array(arg.OrgIds), arg.Cutoff, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const cleanupCveRawPayloads = `-- name: CleanupCveRawPayloads :execrows
 
 WITH doomed AS (

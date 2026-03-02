@@ -81,6 +81,24 @@ func (s *Store) CleanupNotificationDeliveries(ctx context.Context, orgIDs []uuid
 	return n, nil
 }
 
+// CleanupAuditLog deletes up to batchSize rows for the given orgs older than cutoff.
+func (s *Store) CleanupAuditLog(ctx context.Context, orgIDs []uuid.UUID, cutoff time.Time, batchSize int) (int64, error) {
+	var n int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CleanupAuditLog(ctx, generated.CleanupAuditLogParams{
+			OrgIds:    orgIDs,
+			Cutoff:    cutoff,
+			BatchSize: int32(batchSize), //nolint:gosec // G115: batch sizes are always small
+		})
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("cleanup audit_log: %w", err)
+	}
+	return n, nil
+}
+
 // CleanupJobQueue deletes up to batchSize succeeded/dead rows older than cutoff.
 func (s *Store) CleanupJobQueue(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	var n int64

@@ -136,8 +136,17 @@ func TestRunner_AllTables(t *testing.T) {
 		t.Fatalf("seed delivery: %v", err)
 	}
 
+	// Seed audit_log (old).
+	if _, err := db.Pool().Exec(ctx,
+		`INSERT INTO audit_log (org_id, actor_email, action, entity_type, entity_id, success, created_at)
+		 VALUES ($1, 'test@example.com', 'create', 'alert_rule', 'ent-1', true, $2)`, org.ID, old,
+	); err != nil {
+		t.Fatalf("seed audit log: %v", err)
+	}
+
 	cfg := defaultConfig()
 	cfg.AlertEventsDays = 90 // match other tables so 100-day-old data gets cleaned
+	cfg.AuditLogDays = 90    // match other tables so 100-day-old data gets cleaned
 	runner := retention.NewRunner(db.Store, cfg, slog.Default())
 	if err := runner.Run(ctx); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -153,6 +162,7 @@ func TestRunner_AllTables(t *testing.T) {
 		"ai_usage_counters":       0,
 		"alert_events":            0,
 		"notification_deliveries": 0,
+		"audit_log":               0,
 	}
 	for table := range counts {
 		var n int
@@ -192,6 +202,9 @@ func TestRunner_AllTables(t *testing.T) {
 	}
 	if counts["notification_deliveries"] != 0 {
 		t.Errorf("notification_deliveries remaining = %d, want 0", counts["notification_deliveries"])
+	}
+	if counts["audit_log"] != 0 {
+		t.Errorf("audit_log remaining = %d, want 0", counts["audit_log"])
 	}
 
 	// Job queue: succeeded old → 0 for test queue
@@ -361,6 +374,78 @@ func TestRunner_PerOrgGroup(t *testing.T) {
 	var entRemaining int
 	if err := db.DB().QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM alert_events WHERE org_id = $1", orgEnt.ID,
+	).Scan(&entRemaining); err != nil {
+		t.Fatalf("count ent: %v", err)
+	}
+	if entRemaining != 1 {
+		t.Errorf("enterprise org remaining = %d, want 1 (200d old, 365d retention)", entRemaining)
+	}
+}
+
+func TestRunner_AuditLogRetention(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	// 200 days old: within enterprise 365d window, outside free 90d window.
+	boundary := now.Add(-200 * 24 * time.Hour)
+
+	orgFree, _ := db.CreateOrg(ctx, "AuditFreeOrg")
+	orgEnt, _ := db.CreateOrg(ctx, "AuditEntOrg")
+
+	// Set enterprise tier + retention override on orgEnt.
+	if err := db.UpdateOrgTier(ctx, orgEnt.ID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	if _, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = '{"retention_audit_log_days": 365}' WHERE id = $1`, orgEnt.ID,
+	); err != nil {
+		t.Fatalf("set tier overrides: %v", err)
+	}
+
+	// Seed audit_log entries at boundary timestamp for both orgs.
+	for _, p := range []struct {
+		orgID uuid.UUID
+		email string
+	}{
+		{orgFree.ID, "free@example.com"},
+		{orgEnt.ID, "ent@example.com"},
+	} {
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO audit_log (org_id, actor_email, action, entity_type, entity_id, success, created_at)
+			 VALUES ($1, $2, 'create', 'alert_rule', 'ent-1', true, $3)`,
+			p.orgID, p.email, boundary,
+		); err != nil {
+			t.Fatalf("seed audit_log %s: %v", p.email, err)
+		}
+	}
+
+	cfg := defaultConfig()
+	// Free: 90 days → boundary (200d old) should be deleted.
+	// Enterprise: 365 days override → boundary (200d old) should be retained.
+	cfg.AuditLogDays = 90
+
+	runner := retention.NewRunner(db.Store, cfg, slog.Default())
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Free org's entry should be deleted (200d > 90d retention).
+	var freeRemaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM audit_log WHERE org_id = $1", orgFree.ID,
+	).Scan(&freeRemaining); err != nil {
+		t.Fatalf("count free: %v", err)
+	}
+	if freeRemaining != 0 {
+		t.Errorf("free org remaining = %d, want 0 (200d old, 90d retention)", freeRemaining)
+	}
+
+	// Enterprise org's entry should survive (200d < 365d retention).
+	var entRemaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM audit_log WHERE org_id = $1", orgEnt.ID,
 	).Scan(&entRemaining); err != nil {
 		t.Fatalf("count ent: %v", err)
 	}

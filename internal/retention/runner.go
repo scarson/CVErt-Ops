@@ -122,7 +122,14 @@ func (r *Runner) cleanupTierGated(ctx context.Context, deadline, start time.Time
 		}, cutoff)
 	}
 
-	// audit_log cleanup will be added when the table is created (Phase 5C).
+	// Group orgs by audit_log retention window.
+	auditGroups := groupByRetentionDays(orgs, "retention_audit_log_days", r.cfg.AuditLogDays)
+	for days, orgIDs := range auditGroups {
+		cutoff := start.AddDate(0, 0, -days)
+		r.cleanupTable(ctx, "audit_log", deadline, func(ctx context.Context, _ time.Time, batch int) (int64, error) {
+			return r.store.CleanupAuditLog(ctx, orgIDs, cutoff, batch)
+		}, cutoff)
+	}
 
 	return nil
 }

@@ -279,3 +279,21 @@ Not the actual values. Fields requiring redaction: any field named or tagged as 
 #### F-12: `IN` Clause Overflow (covered in implementation-pitfalls.md §2.12)
 
 This finding applies to MVP as well (large watchlists), not just SBOM features. See [implementation-pitfalls.md §2.12](implementation-pitfalls.md) for the full write-up. Summary: use `WHERE col = ANY($1::text[])` for all user-provided list membership checks; never build dynamic `IN ($1, $2, ..., $N)` clauses.
+
+---
+
+## 4. Future Hardening
+
+### 4.1 memguard for In-Memory Secret Protection
+
+All config secrets (`JWT_SECRET`, `SMTP_PASSWORD`, `GEMINI_API_KEY`, `SSO_ENCRYPTION_KEY`, OAuth client secrets) are currently held as plain `string` fields in Go process memory. This is the industry standard approach (used by Vault itself for its seal key), but it means secrets are visible in core dumps, swap files, and to processes with memory read access.
+
+**Hardening option:** Use `github.com/awnuber/memguard` to store sensitive config fields in mlock'd, guard-page-protected memory with automatic zeroing on GC. This protects against:
+- Core dump forensics
+- Swap file analysis (if swap is not disabled)
+- Cold boot attacks
+- Non-privileged memory scanning
+
+**Limitations:** Go's garbage collector copies objects during compaction, so secrets must be briefly decrypted into standard buffers for use (e.g., during HMAC computation). Root-level attackers can still read mlock'd memory. Protection is defense-in-depth, not absolute.
+
+**Scope:** Requires refactoring the config loading system to use `memguard.Enclave` for all sensitive fields. This is a cross-cutting change affecting every package that reads config secrets. Not justified as a targeted change for one secret — should be done holistically or not at all.

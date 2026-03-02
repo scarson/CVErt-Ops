@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -627,6 +628,20 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 	if err := srv.store.AcceptOrgInvitation(ctx, inv.OrgID, claims.UserID, inv.Role, inv.ID); err != nil {
 		slog.ErrorContext(ctx, "accept invitation: accept", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	if srv.auditWriter != nil {
+		srv.auditWriter.Log(ctx, audit.Entry{
+			OrgID:      inv.OrgID,
+			ActorID:    &claims.UserID,
+			ActorEmail: user.Email,
+			Action:     "create",
+			EntityType: "member",
+			EntityID:   claims.UserID.String(),
+			EntityName: user.DisplayName,
+			Success:    true,
+			NewState:   map[string]any{"role": inv.Role},
+		})
 	}
 
 	return &acceptInvitationOutput{}, nil

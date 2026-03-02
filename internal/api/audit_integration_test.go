@@ -19,16 +19,14 @@ import (
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
-// waitAudit pauses to allow the async audit goroutine to complete.
-func waitAudit() { time.Sleep(500 * time.Millisecond) }
-
 // newAuditServer creates a Server+httptest.Server with audit writing enabled.
-func newAuditServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server) {
+// Returns the writer so tests can call Flush() instead of sleeping.
+func newAuditServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server, *audit.Writer) {
 	t.Helper()
 	srv, ts := newRegisterServer(t, db, "open")
 	w := audit.NewWriter(db.Store, slog.Default())
 	srv.SetAuditDeps(w)
-	return srv, ts
+	return srv, ts, w
 }
 
 // findAuditEntry searches audit entries for one matching entity_type and action.
@@ -79,7 +77,7 @@ func TestAuditIntegration_AlertRules(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAuditServer(t, db)
+	_, ts, aw := newAuditServer(t, db)
 	reg := doRegister(t, ctx, ts, "audit-ar@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "audit-ar@example.com", "test-password-1234")
 	token := cookieValue(loginResp, "access_token")
@@ -99,7 +97,7 @@ func TestAuditIntegration_AlertRules(t *testing.T) {
 		json.NewDecoder(resp.Body).Decode(&rule) //nolint:errcheck,gosec // G104: test
 		ruleID = rule.ID
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "alert_rule", "create")
 		if entry == nil {
@@ -127,7 +125,7 @@ func TestAuditIntegration_AlertRules(t *testing.T) {
 			t.Fatalf("update: got %d, want 200", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "alert_rule", "update")
 		if entry == nil {
@@ -151,7 +149,7 @@ func TestAuditIntegration_AlertRules(t *testing.T) {
 			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "alert_rule", "delete")
 		if entry == nil {
@@ -181,7 +179,7 @@ func TestAuditIntegration_AlertRules(t *testing.T) {
 			t.Fatalf("tier deny: got %d, want 403", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findFailedAuditEntry(t, db, orgID, "alert_rule")
 		if entry == nil {
@@ -200,7 +198,7 @@ func TestAuditIntegration_Channels(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAuditServer(t, db)
+	_, ts, aw := newAuditServer(t, db)
 	reg := doRegister(t, ctx, ts, "audit-ch@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "audit-ch@example.com", "test-password-1234")
 	token := cookieValue(loginResp, "access_token")
@@ -220,7 +218,7 @@ func TestAuditIntegration_Channels(t *testing.T) {
 		json.NewDecoder(resp.Body).Decode(&ch) //nolint:errcheck,gosec // G104: test
 		channelID = ch.ID
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "channel", "create")
 		if entry == nil {
@@ -266,7 +264,7 @@ func TestAuditIntegration_Channels(t *testing.T) {
 			t.Fatalf("patch: got %d, want 200", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "channel", "update")
 		if entry == nil {
@@ -290,7 +288,7 @@ func TestAuditIntegration_Channels(t *testing.T) {
 			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "channel", "delete")
 		if entry == nil {
@@ -311,7 +309,7 @@ func TestAuditIntegration_Channels(t *testing.T) {
 			t.Skipf("email channels not tier-gated on this tier (got %d)", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findFailedAuditEntry(t, db, orgID, "channel")
 		if entry == nil {
@@ -327,7 +325,7 @@ func TestAuditIntegration_Watchlists(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAuditServer(t, db)
+	_, ts, aw := newAuditServer(t, db)
 	reg := doRegister(t, ctx, ts, "audit-wl@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "audit-wl@example.com", "test-password-1234")
 	token := cookieValue(loginResp, "access_token")
@@ -347,7 +345,7 @@ func TestAuditIntegration_Watchlists(t *testing.T) {
 		json.NewDecoder(resp.Body).Decode(&wl) //nolint:errcheck,gosec // G104: test
 		watchlistID = wl.ID
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "watchlist", "create")
 		if entry == nil {
@@ -372,7 +370,7 @@ func TestAuditIntegration_Watchlists(t *testing.T) {
 			t.Fatalf("update: got %d, want 200", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "watchlist", "update")
 		if entry == nil {
@@ -396,7 +394,7 @@ func TestAuditIntegration_Watchlists(t *testing.T) {
 			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "watchlist", "delete")
 		if entry == nil {
@@ -425,7 +423,7 @@ func TestAuditIntegration_Watchlists(t *testing.T) {
 			t.Fatalf("tier deny: got %d, want 403", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findFailedAuditEntry(t, db, orgID, "watchlist")
 		if entry == nil {
@@ -441,7 +439,7 @@ func TestAuditIntegration_Members(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAuditServer(t, db)
+	_, ts, aw := newAuditServer(t, db)
 	aliceReg := doRegister(t, ctx, ts, "audit-alice@example.com", "test-password-1234")
 	bobReg := doRegister(t, ctx, ts, "audit-bob@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "audit-alice@example.com", "test-password-1234")
@@ -463,7 +461,7 @@ func TestAuditIntegration_Members(t *testing.T) {
 			t.Fatalf("update role: got %d, want 200", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "member", "update")
 		if entry == nil {
@@ -487,7 +485,7 @@ func TestAuditIntegration_Members(t *testing.T) {
 			t.Fatalf("remove: got %d, want 204", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "member", "delete")
 		if entry == nil {
@@ -495,6 +493,49 @@ func TestAuditIntegration_Members(t *testing.T) {
 		}
 		if entry.OldState == nil {
 			t.Error("expected old_state to be populated for remove")
+		}
+	})
+
+	t.Run("InviteAccept", func(t *testing.T) {
+		// Register carol, invite her to alice's org, have her accept.
+		carolReg := doRegister(t, ctx, ts, "audit-carol@example.com", "test-password-1234")
+
+		createResp := doCreateInvitation(t, ctx, ts, token, aliceReg.OrgID, "audit-carol@example.com", "viewer")
+		defer createResp.Body.Close() //nolint:errcheck,gosec
+		if createResp.StatusCode != http.StatusAccepted {
+			t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+		}
+
+		invitations, err := db.ListOrgInvitations(ctx, orgID)
+		if err != nil || len(invitations) == 0 {
+			t.Fatalf("list invitations: err=%v, len=%d", err, len(invitations))
+		}
+		invToken := invitations[len(invitations)-1].Token
+
+		carolLogin := doLogin(t, ctx, ts, "audit-carol@example.com", "test-password-1234")
+		defer carolLogin.Body.Close() //nolint:errcheck,gosec
+		carolToken := cookieValue(carolLogin, "access_token")
+
+		resp := doAcceptInvitation(t, ctx, ts, carolToken, invToken)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("accept invitation: got %d, want 200", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "member", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for member create via invite accept")
+		}
+		if entry.EntityID != carolReg.UserID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, carolReg.UserID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
 		}
 	})
 }
@@ -506,7 +547,7 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAuditServer(t, db)
+	_, ts, aw := newAuditServer(t, db)
 	reg := doRegister(t, ctx, ts, "audit-ss@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "audit-ss@example.com", "test-password-1234")
 	token := cookieValue(loginResp, "access_token")
@@ -526,7 +567,7 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 		json.NewDecoder(resp.Body).Decode(&ss) //nolint:errcheck,gosec // G104: test
 		searchID = ss.ID
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "saved_search", "create")
 		if entry == nil {
@@ -551,7 +592,7 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 			t.Fatalf("patch: got %d, want 200", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "saved_search", "update")
 		if entry == nil {
@@ -575,7 +616,7 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
 		}
 
-		waitAudit()
+		aw.Flush()
 
 		entry := findAuditEntry(t, db, orgID, "saved_search", "delete")
 		if entry == nil {

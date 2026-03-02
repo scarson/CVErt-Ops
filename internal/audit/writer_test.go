@@ -16,6 +16,42 @@ import (
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
+func TestWriter_ResolvesActorEmail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID := seedOrg(t, db, "audit-email-resolve")
+
+	// Create a real user so the writer can look up their email.
+	user, err := db.CreateUser(ctx, "resolved@example.com", "Resolved User", "hash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	w := audit.NewWriter(db.Store, slog.Default())
+	w.Log(ctx, audit.Entry{
+		OrgID:      orgID,
+		ActorID:    &user.ID,
+		ActorEmail: "", // intentionally empty — writer should resolve
+		Action:     "create",
+		EntityType: "alert_rule",
+		EntityID:   uuid.New().String(),
+		EntityName: "Email Resolve Test",
+		Success:    true,
+	})
+
+	w.Flush()
+
+	rows := listAuditRows(t, db, orgID)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 audit row, got %d", len(rows))
+	}
+	if rows[0].ActorEmail != "resolved@example.com" {
+		t.Errorf("actor_email: got %q, want %q", rows[0].ActorEmail, "resolved@example.com")
+	}
+}
+
 func TestWriter_CreateAction(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -37,8 +73,7 @@ func TestWriter_CreateAction(t *testing.T) {
 		NewState:   map[string]any{"name": "My Rule", "enabled": true},
 	})
 
-	// Wait briefly for the async goroutine.
-	time.Sleep(500 * time.Millisecond)
+	w.Flush()
 
 	rows := listAuditRows(t, db, orgID)
 	if len(rows) != 1 {
@@ -84,7 +119,7 @@ func TestWriter_UpdateAction(t *testing.T) {
 		NewState:   map[string]any{"signing_secret": "new-secret", "url": "https://hooks.slack.com/new/path"},
 	})
 
-	time.Sleep(500 * time.Millisecond)
+	w.Flush()
 
 	rows := listAuditRows(t, db, orgID)
 	if len(rows) != 1 {
@@ -134,7 +169,7 @@ func TestWriter_DeleteAction(t *testing.T) {
 		OldState:   map[string]any{"name": "Old Watchlist"},
 	})
 
-	time.Sleep(500 * time.Millisecond)
+	w.Flush()
 
 	rows := listAuditRows(t, db, orgID)
 	if len(rows) != 1 {
@@ -172,7 +207,7 @@ func TestWriter_DeniedAction(t *testing.T) {
 		Metadata:   map[string]any{"reason": "tier_limit"},
 	})
 
-	time.Sleep(500 * time.Millisecond)
+	w.Flush()
 
 	rows := listAuditRows(t, db, orgID)
 	if len(rows) != 1 {
@@ -204,7 +239,7 @@ func TestWriter_SystemAction(t *testing.T) {
 		Success:    true,
 	})
 
-	time.Sleep(500 * time.Millisecond)
+	w.Flush()
 
 	rows := listAuditRows(t, db, orgID)
 	if len(rows) != 1 {
@@ -241,7 +276,7 @@ func TestWriter_NonBlocking(t *testing.T) {
 	})
 
 	// Wait for async goroutine to complete (and fail gracefully).
-	time.Sleep(500 * time.Millisecond)
+	w.Flush()
 }
 
 // --- test helpers ---

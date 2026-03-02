@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -30,6 +31,7 @@ type Entry struct {
 type Writer struct {
 	store *store.Store
 	log   *slog.Logger
+	wg    sync.WaitGroup
 }
 
 // NewWriter creates a Writer backed by the given store.
@@ -42,12 +44,22 @@ func (w *Writer) Log(ctx context.Context, entry Entry) {
 	// Detach from request context so the goroutine survives handler return.
 	ctx = context.WithoutCancel(ctx)
 
+	w.wg.Add(1)
 	go func() {
+		defer w.wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
 				w.log.Error("audit log panic", "recover", r)
 			}
 		}()
+
+		// Resolve actor email from store if not provided by the caller.
+		if entry.ActorEmail == "" && entry.ActorID != nil {
+			user, err := w.store.GetUserByID(ctx, *entry.ActorID)
+			if err == nil && user != nil {
+				entry.ActorEmail = user.Email
+			}
+		}
 
 		storeEntry, err := w.buildStoreEntry(entry)
 		if err != nil {
@@ -60,6 +72,9 @@ func (w *Writer) Log(ctx context.Context, entry Entry) {
 		}
 	}()
 }
+
+// Flush blocks until all pending Log goroutines have completed. Intended for tests.
+func (w *Writer) Flush() { w.wg.Wait() }
 
 // buildStoreEntry converts an Entry to a store.AuditEntry, applying redaction and marshaling.
 func (w *Writer) buildStoreEntry(entry Entry) (store.AuditEntry, error) {

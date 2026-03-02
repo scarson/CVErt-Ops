@@ -573,6 +573,34 @@ git commit -m "feat(api): GET org tier endpoint with resolved limits"
 
 ---
 
+### Task 7a: Pending invitations consume member limit slots (code review remediation)
+
+**Files:**
+- Modify: `internal/store/queries/org.sql` — add `CountMemberSlotsUsedByOrg` query
+- Modify: `internal/store/org.go` — add store wrapper method
+- Modify: `internal/api/orgs.go` — use `CountMemberSlotsUsedByOrg` in member limit check
+- Modify: `internal/api/tier_gating_test.go` — add `TestTierGating_Members_PendingInvitationsConsumeSlots`
+
+**Context:** Code review identified a TOCTOU gap: multiple invitations could be created at the member limit, then all accepted, exceeding the cap. Fix: count `org_members + pending org_invitations` (unexpired, unaccepted) as consumed member slots in the invitation handler's tier gating check. The GET /tier endpoint still uses `CountMembersByOrg` for the "used" display (shows actual members, not reserved capacity).
+
+**Status:** DONE — committed as `e1280c6`.
+
+---
+
+### Task 7b: Tier cache in middleware (code review remediation)
+
+**Files:**
+- Create: `internal/api/tier_cache.go` — in-memory cache for org tier + overrides
+- Create: `internal/api/tier_cache_test.go` — unit tests (TTL, invalidation, copy safety)
+- Modify: `internal/api/middleware_tier.go` — check cache before DB
+- Modify: `internal/api/server.go` — init cache in NewServer, stop in Close
+
+**Context:** Code review noted per-request DB round-trip for tier resolution. Added a 30s TTL in-memory cache with background eviction (5min). Overrides map is deep-copied on get/set. Cache invalidation will be wired to admin tier-change endpoints when implemented. Security analysis confirmed stale cache only affects feature limits (not auth, RBAC, or tenant isolation), and fails restrictive on rate limiting and AI quota.
+
+**Status:** DONE — committed as `ebcf3c2`.
+
+---
+
 ## Phase 5B: Data Retention Automation
 
 ### Task 8: Migration — Retention indexes

@@ -181,6 +181,7 @@ YOU MUST follow this debugging framework for ANY technical issue:
 
 # NOTE: Claude Code's Bash tool runs bash (Unix syntax). Use bash/forward-slash paths in Bash commands.
 # PowerShell is available if explicitly needed for Windows-specific tasks.
+# Do NOT prefix bash commands with "cd /c/Users/Sam/Code/CVErt-Ops" unless you're outside the project base directory. Prefixing with that will cause Claude to unnecessarily prompt the user for permission to use already approved commands. 
 
 ```bash
 golangci-lint run                    # lint (NOT go vet alone)

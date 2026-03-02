@@ -305,6 +305,137 @@ func TestSSOConnection_UniquePerOrg(t *testing.T) {
 	}
 }
 
+// ── Discover endpoint tests ──────────────────────────────────────────────────
+
+// setupSSOWithDomains creates an enterprise org with an enabled SSO connection and domains.
+// Returns the org owner's access token and org ID.
+func setupSSOWithDomains(t *testing.T, db *testutil.TestDB, srv *Server, ts *httptest.Server, email string, domains []string, enabled bool) (token, orgID string) {
+	t.Helper()
+	ctx := context.Background()
+	reg := doRegister(t, ctx, ts, email, "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, email, "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token = cookieValue(loginResp, "access_token")
+	orgID = reg.OrgID
+
+	oid := mustParseUUID(t, orgID)
+	if err := db.UpdateOrgTier(ctx, oid, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(oid)
+
+	enabledStr := "false"
+	if enabled {
+		enabledStr = "true"
+	}
+	createBody := `{"display_name":"Test IdP","issuer_url":"https://idp.test.com","client_id":"c","client_secret":"s","enabled":` + enabledStr + `}`
+	resp := doCreateSSO(t, ctx, ts, token, orgID, createBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create SSO: got %d. Body: %s", resp.StatusCode, body)
+	}
+
+	if len(domains) > 0 {
+		domainsJSON, _ := json.Marshal(domains)
+		domainBody := `{"domains":` + string(domainsJSON) + `}`
+		resp2 := doPutSSODomains(t, ctx, ts, token, orgID, domainBody)
+		defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+		if resp2.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp2.Body)
+			t.Fatalf("put domains: got %d. Body: %s", resp2.StatusCode, body)
+		}
+	}
+	return token, orgID
+}
+
+func doDiscover(t *testing.T, ctx context.Context, ts *httptest.Server, email string) *http.Response {
+	t.Helper()
+	body := `{"email":"` + email + `"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/discover", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	return resp
+}
+
+func TestDiscover_MatchingDomain(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	setupSSOWithDomains(t, db, srv, ts, "disc-owner@example.com", []string{"acme.com"}, true)
+
+	resp := doDiscover(t, ctx, ts, "user@acme.com")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("discover: got %d. Body: %s", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["display_name"] != "Test IdP" {
+		t.Errorf("display_name = %v, want Test IdP", got["display_name"])
+	}
+	if got["connection_id"] == nil || got["connection_id"] == "" {
+		t.Errorf("connection_id missing")
+	}
+}
+
+func TestDiscover_UnknownDomain(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSSOServer(t, db)
+
+	resp := doDiscover(t, ctx, ts, "user@nonexistent.com")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("discover: got %d. Body: %s", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// No SSO configured — response should not have connection_id.
+	if got["connection_id"] != nil && got["connection_id"] != "" {
+		t.Errorf("expected empty result for unknown domain, got connection_id=%v", got["connection_id"])
+	}
+}
+
+func TestDiscover_DisabledConnection(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	// Set up SSO but leave it disabled.
+	setupSSOWithDomains(t, db, srv, ts, "disc-disabled@example.com", []string{"disabled.com"}, false)
+
+	resp := doDiscover(t, ctx, ts, "user@disabled.com")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("discover: got %d. Body: %s", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Disabled connection — should not be returned.
+	if got["connection_id"] != nil && got["connection_id"] != "" {
+		t.Errorf("expected no result for disabled connection, got connection_id=%v", got["connection_id"])
+	}
+}
+
+// ── Email domain tests ──────────────────────────────────────────────────────
+
 func TestSSOEmailDomain_PutAndCascade(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

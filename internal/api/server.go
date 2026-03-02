@@ -167,6 +167,9 @@ func (srv *Server) Handler() http.Handler {
 	registerAuthRoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
+	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
+	apiRouter.Post("/auth/discover", srv.discoverHandler)
+
 	// ── OAuth routes (chi, not huma — these are redirects, not JSON API calls) ─
 	apiRouter.Get("/auth/oauth/github", srv.githubInitHandler)
 	apiRouter.Get("/auth/oauth/github/callback", srv.githubCallbackHandler)

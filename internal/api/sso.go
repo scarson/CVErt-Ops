@@ -54,6 +54,15 @@ type putSSODomainsBody struct {
 	Domains []string `json:"domains"`
 }
 
+type discoverBody struct {
+	Email string `json:"email"`
+}
+
+type discoverResponse struct {
+	DisplayName  string `json:"display_name,omitempty"`
+	ConnectionID string `json:"connection_id,omitempty"`
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 // ssoEncryptionKey parses the hex-encoded 32-byte SSO encryption key from config.
@@ -391,4 +400,44 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"domains": req.Domains})
+}
+
+// discoverHandler handles POST /api/v1/auth/discover.
+// Public endpoint (no auth). Extracts domain from email and looks up SSO connection.
+func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
+	var req discoverBody
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		http.Error(w, "email is required", http.StatusUnprocessableEntity)
+		return
+	}
+
+	// Extract domain from email.
+	parts := strings.SplitN(email, "@", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		http.Error(w, "invalid email format", http.StatusUnprocessableEntity)
+		return
+	}
+	domain := strings.ToLower(parts[1])
+
+	row, err := srv.store.LookupSSOByDomain(r.Context(), domain)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "discover: lookup", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if row == nil {
+		writeJSON(w, http.StatusOK, discoverResponse{})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, discoverResponse{
+		DisplayName:  row.DisplayName,
+		ConnectionID: row.ID.String(),
+	})
 }

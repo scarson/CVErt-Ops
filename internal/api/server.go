@@ -38,6 +38,7 @@ type Server struct {
 	googleOIDC     *oidc.Provider   // nil when Google OIDC is not configured
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
 	orgRL          *orgRateLimiter  // per-org API rate limiter
+	tierCache      *tierCache       // short-lived cache for org tier + overrides
 	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
 	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
 	llm            ai.LLMClient    // nil until SetAIDeps is called
@@ -54,12 +55,14 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	// 10 requests per minute, burst of 10.
 	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
 	orgRL := newOrgRateLimiter(time.Now, evictTTL)
+	tc := newTierCache(time.Now, 30*time.Second, 5*time.Minute)
 	srv := &Server{
 		store:        s,
 		cfg:          cfg,
 		argon2Sem:    sem,
 		rateLimiter:  rl,
 		orgRL:        orgRL,
+		tierCache:    tc,
 		ghAPIBaseURL: "https://api.github.com",
 	}
 
@@ -112,6 +115,9 @@ func (srv *Server) Close() {
 	}
 	if srv.orgRL != nil {
 		srv.orgRL.Stop()
+	}
+	if srv.tierCache != nil {
+		srv.tierCache.Stop()
 	}
 }
 

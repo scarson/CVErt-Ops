@@ -25,12 +25,18 @@ func (srv *Server) tierMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		tierName, overrides, err := srv.store.GetOrgTier(r.Context(), orgID)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "tier middleware: failed to load org tier",
-				"org_id", orgID, "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
+		// Check the tier cache first; fall back to DB on miss.
+		tierName, overrides, cached := srv.tierCache.Get(orgID)
+		if !cached {
+			var err error
+			tierName, overrides, err = srv.store.GetOrgTier(r.Context(), orgID)
+			if err != nil {
+				slog.ErrorContext(r.Context(), "tier middleware: failed to load org tier",
+					"org_id", orgID, "error", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			srv.tierCache.Set(orgID, tierName, overrides)
 		}
 
 		resolver := &tier.Resolver{Tier: tierName, Overrides: overrides}

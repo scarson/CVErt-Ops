@@ -32,9 +32,9 @@
 
 **Step 1: Write the up migration**
 
-```sql
--- migrate:no-transaction
+Note: No `-- migrate:no-transaction` needed — this migration has no `CREATE INDEX CONCURRENTLY`.
 
+```sql
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'free';
 ALTER TABLE organizations ADD CONSTRAINT organizations_tier_check CHECK (tier IN ('free', 'pro', 'enterprise'));
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tier_overrides JSONB NOT NULL DEFAULT '{}';
@@ -43,8 +43,6 @@ ALTER TABLE organizations ADD COLUMN IF NOT EXISTS tier_overrides JSONB NOT NULL
 **Step 2: Write the down migration**
 
 ```sql
--- migrate:no-transaction
-
 ALTER TABLE organizations DROP COLUMN IF EXISTS tier_overrides;
 ALTER TABLE organizations DROP CONSTRAINT IF EXISTS organizations_tier_check;
 ALTER TABLE organizations DROP COLUMN IF EXISTS tier;
@@ -327,32 +325,50 @@ git commit -m "feat(api): per-org rate limiter with tier-aware rates — TDD"
 
 ---
 
-### Task 5: Tier context middleware + handler gating — TDD
+### Task 5a: Tier context middleware — TDD
 
 **Files:**
 - Modify: `internal/api/context.go` — add `ctxTierResolver` context key
-- Modify: `internal/api/server.go` — add `orgRateLimiter` field, wire middleware
 - Create or modify: `internal/api/middleware.go` — tier resolution middleware
-- Modify: handler files for gating: `internal/api/alert_rules.go`, `internal/api/watchlists.go`, `internal/api/channels.go`, `internal/api/members.go` (or wherever these handlers live)
+- Create: test for tier middleware
 
-**Step 1: Write integration tests for tier gating**
+**Step 1: Write failing test**
 
-In the appropriate test files (e.g., `internal/api/alert_rules_test.go`), add tests:
+Test that org-scoped requests have `tier.Resolver` in context with correct tier and overrides.
+- Set org tier=pro in DB → make request → verify resolver in context has Tier="pro"
+- Set org tier_overrides=`{"max_alert_rules": 10}` → verify resolver has override
+
+**Step 2: Run test, verify failure**
+
+**Step 3: Implement**
+
+Add `ctxTierResolver` to `context.go`. In the org-scoped middleware (where `ctxOrgID` is set), also load org tier via `store.GetOrgTier()` and construct `tier.Resolver`, injecting it into context.
+
+**Step 4: Run tests, verify pass. Commit.**
+
+```bash
+git add internal/api/context.go internal/api/middleware.go
+git commit -m "feat(api): tier resolution middleware — injects Resolver into context — TDD"
+```
+
+---
+
+### Task 5b: Resource limit gating in handlers — TDD
+
+**Files:**
+- Modify: handler files: `internal/api/alert_rules.go`, `internal/api/watchlists.go`, `internal/api/members.go` (or wherever these handlers live)
+
+**Step 1: Write failing tests**
+
+In the appropriate test files, add tests:
 - Create org with tier=free → create 5 alert rules (succeed) → create 6th (fail 403)
 - Create org with tier=pro → create 50 alert rules (succeed)
 - Create org with tier_overrides `{"max_alert_rules": 10}` → limit is 10, not 5
+- Same pattern for watchlists (3/20) and members (5/25)
 
-Same pattern for watchlists (3/20), members (5/25), channel types (free can't create email/Slack).
+**Step 2: Run tests, verify failure**
 
-**Step 2: Run tests to verify they fail**
-
-Expected: FAIL — no tier resolution in context, no limit checks in handlers.
-
-**Step 3: Implement tier resolution middleware**
-
-Add `ctxTierResolver` to context.go. In the org-scoped middleware (where `ctxOrgID` is set), also load org tier via `store.GetOrgTier()` and construct `tier.Resolver`, injecting it into context.
-
-**Step 4: Implement handler tier checks**
+**Step 3: Implement handler tier checks**
 
 In each handler's create path, before the mutation:
 ```go
@@ -366,26 +382,74 @@ if limit >= 0 {
 }
 ```
 
-**Step 5: Wire org rate limiter middleware in `Handler()`**
+**Step 4: Run tests, verify pass. Commit.**
 
-After auth middleware, before routes. Read tier resolver from context, call `orgRateLimiter.Allow(orgID, resolvedRate, burst)`.
+```bash
+git commit -m "feat(api): resource count tier gating — alert rules, watchlists, members — TDD"
+```
 
-**Step 6: Run tests to verify they pass**
+---
 
-Run: `go test ./internal/api/... -v`
-Expected: All PASS (existing + new tier tests).
+### Task 5c: Channel type gating — TDD
 
-**Step 7: Run full test suite + linter**
+**Files:**
+- Modify: `internal/api/channels.go` (or wherever channel create handler lives)
+
+**Step 1: Write failing tests**
+
+- Free tier org → create webhook channel (succeed) → create email channel (fail 403)
+- Pro tier org → create email channel (succeed)
+- Free tier org with override `{"channels_email": true}` → create email channel (succeed)
+
+**Step 2: Run tests, verify failure**
+
+**Step 3: Implement**
+
+In channel create handler, after parsing channel type:
+```go
+resolver, _ := r.Context().Value(ctxTierResolver).(*tier.Resolver)
+if !resolver.BoolFlag("channels_"+channelType, false, true, true) {
+    return nil, huma.Error403Forbidden("tier limit: channel type not available")
+}
+```
+
+**Step 4: Run tests, verify pass. Commit.**
+
+```bash
+git commit -m "feat(api): channel type tier gating — free restricted to webhook — TDD"
+```
+
+---
+
+### Task 5d: Per-org API rate limiter middleware wiring — TDD
+
+**Files:**
+- Modify: `internal/api/server.go` — add `orgRateLimiter` field, wire middleware
+
+**Step 1: Write failing test**
+
+Test that rapid requests from one org get 429 while another org is unaffected.
+
+**Step 2: Run test, verify failure**
+
+**Step 3: Wire org rate limiter middleware in `Handler()`**
+
+After auth middleware, before routes. Read tier resolver from context, resolve rate via `resolver.IntLimit("api_rate_limit", 60, 300, 1000)`, call `orgRateLimiter.Allow(orgID, resolvedRate, burst)`.
+
+**Step 4: Run full test suite + linter**
 
 Run: `go test ./... && golangci-lint run`
 Expected: All pass, 0 lint issues.
 
-**Step 8: Commit**
+**Step 5: Commit**
 
 ```bash
-git add internal/api/
-git commit -m "feat(api): tier enforcement — context middleware + handler gating — TDD"
+git commit -m "feat(api): per-org rate limiter middleware wired — TDD"
 ```
+
+---
+
+> **REVIEW CHECKPOINT 1** — Pause here for review. Verify tier middleware is correctly placed in the middleware chain, all resource limits use the resolver (not hardcoded), rate limiter handles tier changes, and all existing tests still pass.
 
 ---
 
@@ -463,7 +527,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS feed_fetch_log_started_at_idx
     ON feed_fetch_log (started_at);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS job_queue_cleanup_idx
-    ON job_queue (updated_at) WHERE status IN ('succeeded', 'dead');
+    ON job_queue (finished_at) WHERE status IN ('succeeded', 'dead');
 ```
 
 **Step 2: Write down migration**
@@ -516,16 +580,11 @@ git commit -m "config: add retention window env vars for all tables"
 
 ---
 
-### Task 10: Store — Retention cleanup queries + runner — TDD
+### Task 10a: Store — Retention cleanup sqlc queries + store wrappers
 
 **Files:**
 - Create: `internal/store/queries/retention.sql` — sqlc queries for bounded-batch DELETE
 - Create: `internal/store/retention.go` — wrapper methods
-- Create: `internal/store/retention_test.go` — integration tests
-- Create: `internal/retention/runner.go` — the retention job runner
-- Create: `internal/retention/runner_test.go` — runner tests
-
-This is the largest task. Break it into sub-steps:
 
 **Step 1: Write sqlc queries for bounded-batch delete**
 
@@ -567,24 +626,72 @@ DELETE FROM notification_deliveries nd USING doomed WHERE nd.id = doomed.id;
 -- name: CleanupJobQueue :execrows
 WITH doomed AS (
     SELECT id FROM job_queue
-    WHERE status IN ('succeeded', 'dead') AND updated_at < @cutoff::timestamptz
-    ORDER BY updated_at LIMIT @batch_size::int
+    WHERE status IN ('succeeded', 'dead') AND finished_at < @cutoff::timestamptz
+    ORDER BY finished_at LIMIT @batch_size::int
 )
 DELETE FROM job_queue jq USING doomed WHERE jq.id = doomed.id;
 
 -- name: CleanupRefreshTokens :execrows
-DELETE FROM refresh_tokens WHERE expires_at < @cutoff::timestamptz;
+WITH doomed AS (
+    SELECT id FROM refresh_tokens
+    WHERE expires_at < @cutoff::timestamptz
+    ORDER BY expires_at LIMIT @batch_size::int
+)
+DELETE FROM refresh_tokens rt USING doomed WHERE rt.id = doomed.id;
+
+-- name: CleanupAIRequestLog :execrows
+WITH doomed AS (
+    SELECT id FROM ai_request_log
+    WHERE created_at < @cutoff::timestamptz
+    ORDER BY created_at LIMIT @batch_size::int
+)
+DELETE FROM ai_request_log arl USING doomed WHERE arl.id = doomed.id;
+
+-- name: CleanupAICache :execrows
+WITH doomed AS (
+    SELECT id FROM ai_cache
+    WHERE expires_at < @cutoff::timestamptz
+    ORDER BY expires_at LIMIT @batch_size::int
+)
+DELETE FROM ai_cache ac USING doomed WHERE ac.id = doomed.id;
+
+-- name: CleanupAIUsageCounters :execrows
+WITH doomed AS (
+    SELECT id FROM ai_usage_counters
+    WHERE window = 'daily' AND counter_date < @cutoff::date
+    ORDER BY counter_date LIMIT @batch_size::int
+)
+DELETE FROM ai_usage_counters auc USING doomed WHERE auc.id = doomed.id;
 ```
 
-Note: `CleanupRefreshTokens` doesn't need bounded-batch — token table is small. The 60-second grace is computed by the caller: `cutoff = now() - 60s`.
+Notes:
+- `CleanupRefreshTokens`: 60-second grace computed by caller (`cutoff = now() - 60s`). Bounded-batch for consistency and first-run backlog safety.
+- `CleanupAICache`: Uses `expires_at` (TTL-based expiry, not age-based).
+- `CleanupAIUsageCounters`: Only deletes `window='daily'` rows; monthly rows are kept indefinitely per design doc.
 
 **Step 2: Run `sqlc generate`, verify compilation**
+
+Run: `sqlc generate && go build ./...`
 
 **Step 3: Write store wrapper methods in `internal/store/retention.go`**
 
 Each wraps the generated query with `withBypassTx` (retention operates across all orgs).
 
-**Step 4: Write integration tests in `internal/store/retention_test.go`**
+**Step 4: Verify compilation, commit**
+
+```bash
+git add internal/store/queries/retention.sql internal/store/generated/ internal/store/retention.go
+git commit -m "feat(store): retention cleanup sqlc queries + wrappers"
+```
+
+---
+
+### Task 10b: Store — Retention cleanup integration tests
+
+**Files:**
+- Create: `internal/store/retention_test.go`
+
+**Step 1: Write integration tests**
 
 Use `testutil.NewTestDB(t)`. For each table:
 - Insert rows with explicit timestamps (some old, some recent)
@@ -593,13 +700,40 @@ Use `testutil.NewTestDB(t)`. For each table:
 - Test batch size limiting (insert more than batch_size old rows, verify only batch_size deleted per call)
 
 Key tests:
+- `TestCleanupCveRawPayloads` — basic old/recent split
+- `TestCleanupFeedFetchLog` — basic old/recent split
+- `TestCleanupAlertEvents_OrgFilter` — only specified org_ids cleaned
+- `TestCleanupNotificationDeliveries_OrgFilter` — same pattern
 - `TestCleanupJobQueue_StatusFilter` — insert pending + running + succeeded + dead rows, verify only succeeded/dead deleted
 - `TestCleanupRefreshTokens_GraceWindow` — insert token expired 30s ago (retained) and 90s ago (deleted)
-- `TestCleanupAlertEvents_OrgFilter` — only specified org_ids cleaned
+- `TestCleanupAIRequestLog` — basic old/recent split
+- `TestCleanupAICache_TTL` — expired entries cleaned, non-expired retained
+- `TestCleanupAIUsageCounters_DailyOnly` — daily rows cleaned, monthly rows preserved
+- `TestCleanup_BatchSizeLimit` — insert 20 old rows, batch_size=5, verify only 5 deleted per call
 
-**Step 5: Write retention runner in `internal/retention/runner.go`**
+**Step 2: Run tests**
+
+Run: `go test ./internal/store/ -run TestCleanup -v`
+Expected: All PASS.
+
+**Step 3: Commit**
+
+```bash
+git add internal/store/retention_test.go
+git commit -m "test(store): retention cleanup integration tests"
+```
+
+---
+
+### Task 10c: Retention runner implementation
+
+**Files:**
+- Create: `internal/retention/runner.go`
+
+**Step 1: Write retention runner**
 
 ```go
+// internal/retention/runner.go
 // ABOUTME: Scheduled retention cleanup job that deletes old data per §21.
 // ABOUTME: Runs as a job_queue entry with bounded-batch deletes per table.
 package retention
@@ -608,14 +742,16 @@ type RunnerConfig struct {
     Enabled           bool
     BatchSize         int
     MaxRuntimeSeconds int
-    // Per-table defaults
-    RawPayloadDays    int
-    FeedFetchLogDays  int
-    AlertEventsDays   int
-    NotifDelivDays    int
-    AuditLogDays      int
-    JobQueueHours     int
+    // Per-table defaults (global tables)
+    RawPayloadDays     int
+    FeedFetchLogDays   int
+    JobQueueHours      int
     AILogRetentionDays int
+    AICacheTTL         time.Duration // for ai_cache; caller computes cutoff from TTL
+    // Per-table defaults (tier-gated tables — these are fallback defaults)
+    AlertEventsDays  int
+    NotifDelivDays   int
+    AuditLogDays     int
 }
 
 type Runner struct {
@@ -625,31 +761,60 @@ type Runner struct {
     now    func() time.Time // injectable for tests
 }
 
+func NewRunner(s *store.Store, cfg RunnerConfig, log *slog.Logger) *Runner
+
 func (r *Runner) Run(ctx context.Context) error
 ```
 
-`Run()` iterates tables, calling bounded-batch delete in a loop per table until 0 rows or max runtime hit. Logs per-table results. Errors per table are logged but don't stop the run.
+`Run()` iterates tables, calling bounded-batch delete in a loop per table until 0 rows or max runtime hit. Logs per-table results (rows deleted, duration). Errors per table are logged but don't stop the run.
 
-For tier-gated tables (alert_events, notification_deliveries, audit_log): loads all orgs, groups by retention window via `tier.Resolver`, runs per-group cleanup.
+For tier-gated tables (alert_events, notification_deliveries, audit_log): loads all orgs via store, groups by retention window using `tier.Resolver`, runs per-group cleanup with the group's resolved retention window.
 
-**Step 6: Write runner tests in `internal/retention/runner_test.go`**
+**Step 2: Verify compilation**
+
+Run: `go build ./...`
+
+**Step 3: Commit**
+
+```bash
+git add internal/retention/
+git commit -m "feat(retention): runner with bounded-batch deletes and tier-aware windows"
+```
+
+---
+
+### Task 10d: Retention runner tests
+
+**Files:**
+- Create: `internal/retention/runner_test.go`
+
+**Step 1: Write runner tests**
+
+Uses `testutil.NewTestDB(t)` and injectable `now` clock.
 
 - `TestRunner_AllTables` — seeds data across all tables, runs once, verifies cleanup
-- `TestRunner_MaxRuntime` — uses a very short max runtime, verifies it stops
-- `TestRunner_Disabled` — `Enabled=false` → no deletions
+- `TestRunner_MaxRuntime` — uses a very short max runtime (e.g., 1ms), verifies it stops before completing all tables
+- `TestRunner_Disabled` — `Enabled=false` → no deletions, no errors
 - `TestRunner_ErrorIsolation` — use context cancellation mid-table, verify other tables still cleaned
-- `TestRunner_PerOrgGroup` — two orgs with different tiers, verify per-org retention windows
+- `TestRunner_PerOrgGroup` — two orgs with different tiers (free=365d, enterprise=90d), seed data at boundary timestamps, verify per-org retention windows honored
+- `TestRunner_AICleanup` — verify ai_request_log, ai_cache, ai_usage_counters all cleaned
+- `TestRunner_BatchLoop` — insert 25 old rows, batch_size=10, verify all 25 eventually deleted (runner loops)
 
-**Step 7: Run all tests**
+**Step 2: Run all retention tests**
 
 Run: `go test ./internal/store/... ./internal/retention/... -v`
 Expected: All PASS.
 
-**Step 8: Commit**
+**Step 3: Commit**
 
 ```bash
-git commit -m "feat(retention): bounded-batch cleanup runner for all tables — TDD"
+git add internal/retention/runner_test.go
+git commit -m "test(retention): runner unit + integration tests — TDD"
 ```
+
+---
+
+> **REVIEW CHECKPOINT 2** — Pause here for review. Verify retention queries cover all design doc targets, runner handles tier-gated vs global tables correctly, batch loop terminates properly, and AI cleanup migration is ready.
 
 ---
 
@@ -788,13 +953,28 @@ LIMIT @page_size::int;
 
 **Step 2: Run `sqlc generate`**
 
-**Step 3: Write audit Writer**
+**Step 3: Write audit Entry type and Writer**
 
 ```go
 // internal/audit/writer.go
 // ABOUTME: Appends audit log entries with write-time secret redaction.
 // ABOUTME: Non-blocking — errors are logged, never propagated to callers.
 package audit
+
+// Entry represents a single audit log event. Callers construct this and pass to Writer.Log().
+type Entry struct {
+    OrgID      uuid.UUID
+    ActorID    *uuid.UUID     // nil for system actions (retention, feed sync)
+    ActorEmail string         // empty for system actions
+    Action     string         // "create", "update", "delete"
+    EntityType string         // "alert_rule", "channel", "watchlist", "member", "saved_search", "sso_connection"
+    EntityID   string         // UUID or other identifier
+    EntityName string         // denormalized for readability after entity deletion
+    Success    bool           // false for 403 denied mutations
+    OldState   any            // pre-mutation snapshot (nil for create)
+    NewState   any            // post-mutation snapshot (nil for delete)
+    Metadata   map[string]any // optional extra context
+}
 
 type Writer struct {
     store *store.Store
@@ -862,6 +1042,8 @@ git commit -m "feat(api): audit log integration in all mutation handlers"
 
 ---
 
+> **REVIEW CHECKPOINT 3** — Pause here for review. Verify audit entries are created for all mutation types (create/update/delete), secret redaction works for channel secrets, failed auth produces success=false entries, and non-blocking behavior is confirmed.
+
 ### Task 16: Audit log API endpoint — TDD
 
 **Files:**
@@ -895,17 +1077,55 @@ git commit -m "feat(api): audit log list endpoint with RBAC + tier gating — TD
 
 ---
 
-### Task 17: Add audit_log to retention runner
+### Task 17: Add audit_log to retention runner — TDD
 
 **Files:**
 - Modify: `internal/store/queries/retention.sql` — add CleanupAuditLog query
-- Modify: `internal/retention/runner.go` — add audit_log table
+- Modify: `internal/store/retention.go` — add store wrapper
+- Modify: `internal/retention/runner.go` — add audit_log table to tier-gated cleanup
 - Modify: `internal/retention/runner_test.go` — test audit retention
 
-**Step 1: Add query, update runner, test. Commit.**
+**Step 1: Add sqlc query**
+
+Append to `internal/store/queries/retention.sql`:
+
+```sql
+-- name: CleanupAuditLog :execrows
+WITH doomed AS (
+    SELECT id FROM audit_log
+    WHERE org_id = ANY(@org_ids::uuid[]) AND created_at < @cutoff::timestamptz
+    ORDER BY created_at LIMIT @batch_size::int
+)
+DELETE FROM audit_log al USING doomed WHERE al.id = doomed.id;
+```
+
+Note: audit_log is tier-gated (same pattern as `CleanupAlertEvents` and `CleanupNotificationDeliveries`). The runner groups orgs by their resolved `AuditLogDays` retention window.
+
+**Step 2: Run `sqlc generate`, add store wrapper**
+
+Add `CleanupAuditLog` wrapper to `internal/store/retention.go` using `withBypassTx`.
+
+**Step 3: Write failing tests**
+
+Add to `internal/retention/runner_test.go`:
+- `TestRunner_AuditLogRetention` — insert audit entries for two orgs with different tiers, verify per-org windows honored
+- `TestRunner_AuditLogBatchSize` — verify bounded-batch works for audit_log
+
+Add to `internal/store/retention_test.go`:
+- `TestCleanupAuditLog_OrgFilter` — only specified org_ids cleaned, entries from other orgs untouched
+
+**Step 4: Update runner to include audit_log in tier-gated table loop**
+
+**Step 5: Run tests, verify pass**
+
+Run: `go test ./internal/store/... ./internal/retention/... -run "Audit" -v`
+Expected: All PASS.
+
+**Step 6: Commit**
 
 ```bash
-git commit -m "feat(retention): include audit_log in retention cleanup"
+git add internal/store/queries/retention.sql internal/store/generated/ internal/store/retention.go internal/store/retention_test.go internal/retention/runner.go internal/retention/runner_test.go
+git commit -m "feat(retention): include audit_log in tier-gated retention cleanup — TDD"
 ```
 
 ---
@@ -1179,6 +1399,8 @@ git commit -m "feat(api): OIDC login + callback flow with mock IdP — TDD"
 
 ---
 
+> **REVIEW CHECKPOINT 4** — Pause here for review. This is the most complex task. Verify: mock IdP test helper issues valid JWTs with configurable claims, CSRF state encodes connection_id correctly, provider cache works, identity matching uses `sub` claim (never email), provider key is `'oidc:{connection_id}'`, disabled connections are rejected, and cross-org isolation is tested.
+
 ### Task 25: Identity linking — TDD
 
 **Files:**
@@ -1258,35 +1480,66 @@ git commit -m "docs: Phase 5 implementation log"
 ## Task Dependency Graph
 
 ```
-Task 1 (migration: tier columns)
-  └→ Task 2 (tier resolver)
-  └→ Task 3 (store: tier queries)
-       └→ Task 4 (org rate limiter)
-       └→ Task 5 (tier middleware + handler gating)
+Phase 5A: Tier Enforcement
+  Task 1 (migration: tier columns)
+    └→ Task 2 (tier resolver)            ─┐
+    └→ Task 3 (store: tier queries)       ├─ can run in parallel
+       └→ Task 4 (org rate limiter)      ─┘
+       └→ Task 5a (tier context middleware)
+            └→ Task 5b (resource limit gating)
+            └→ Task 5c (channel type gating)
+            └→ Task 5d (org rate limiter wiring)
             └→ Task 6 (AI quota wiring)
             └→ Task 7 (tier read API)
+  ── REVIEW CHECKPOINT 1 ──
 
-Task 8 (migration: retention indexes)
-  └→ Task 9 (config: retention vars)
-       └→ Task 10 (store + runner)
-            └→ Task 11 (job scheduling + AI cleanup migration)
+Phase 5B: Data Retention (independent of 5A until 10c)
+  Task 8 (migration: retention indexes)  ─┐
+  Task 9 (config: retention vars)         ├─ can run in parallel
+       └→ Task 10a (sqlc queries + wrappers)
+            └→ Task 10b (store integration tests)
+            └→ Task 10c (retention runner — needs tier.Resolver from Task 2)
+                 └→ Task 10d (runner tests)
+                      └→ Task 11 (job scheduling + AI cleanup migration)
+  ── REVIEW CHECKPOINT 2 ──
 
-Task 12 (migration: audit_log)
-  └→ Task 13 (secret redaction)
-       └→ Task 14 (audit writer + sqlc)
-            └→ Task 15 (handler integration)
-            └→ Task 16 (audit API)
-            └→ Task 17 (retention integration)
+Phase 5C: Audit Log (depends on Task 2 for tier gating)
+  Task 12 (migration: audit_log)
+    └→ Task 13 (secret redaction)
+         └→ Task 14 (audit writer + sqlc)
+              └→ Task 15 (handler integration)
+              └→ Task 16 (audit API — needs tier resolver)
+              └→ Task 17 (retention integration — needs runner from 10c)
+  ── REVIEW CHECKPOINT 3 (after Task 15) ──
 
-Task 18 (AES-256-GCM)
-  └→ Task 19 (migration: SSO tables)
-       └→ Task 20 (config: SSO key)
-            └→ Task 21 (store: SSO queries)
-                 └→ Task 22 (SSO CRUD handlers)
-                 └→ Task 23 (email domain discovery)
-                 └→ Task 24 (OIDC flow)
-                      └→ Task 25 (identity linking)
-                      └→ Task 26 (audit for SSO)
+Phase 5D: Generic OIDC (depends on Task 5a for tier gating, Task 14 for audit)
+  Task 18 (AES-256-GCM — independent, can start early)
+    └→ Task 19 (migration: SSO tables)
+         └→ Task 20 (config: SSO key)
+              └→ Task 21 (store: SSO queries)
+                   └→ Task 22 (SSO CRUD handlers)
+                   └→ Task 23 (email domain discovery)
+                   └→ Task 24 (OIDC flow)
+  ── REVIEW CHECKPOINT 4 (after Task 24) ──
+                        └→ Task 25 (identity linking)
+                        └→ Task 26 (audit for SSO)
 
-Task 27 (final verification) — depends on all above
+  Task 27 (final verification) — depends on all above
 ```
+
+### Parallelism Opportunities for Subagent Execution
+
+Within each phase, tasks are mostly sequential. However, across phases:
+- **Tasks 2, 3, 4** can run in parallel (tier resolver, store queries, org rate limiter are independent)
+- **Tasks 8 + 9** can run in parallel with late Phase 5A tasks (6, 7)
+- **Task 18** (AES crypto) is completely independent — can start any time
+- **Task 13** (secret redaction) is independent of store/migration work — can start once Task 12 is done
+
+### Review Checkpoint Summary
+
+| Checkpoint | After Task | What to verify |
+|------------|-----------|----------------|
+| 1 | 5d | Middleware chain, resolver usage, rate limiter, existing tests green |
+| 2 | 10d | All retention targets covered, tier-gated grouping, batch loop, AI migration |
+| 3 | 15 | Audit entries for all mutations, redaction, success=false, non-blocking |
+| 4 | 24 | Mock IdP, CSRF+connection_id encoding, provider cache, sub-based matching, cross-org |

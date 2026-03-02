@@ -232,7 +232,11 @@ go run ./cmd/cvert-ops migrate       # run migrations programmatically
 - Fail-closed: unset `app.org_id` → `NULL::uuid = org_id` evaluates to NULL (false in WHERE) → 0 rows returned
 - `FORCE ROW LEVEL SECURITY` + app DB role `NOBYPASSRLS` on all org-scoped tables
 - `org_id` denormalized on every child/join table — RLS on a parent does NOT protect its children
-- Workers use `workerTx()` helper (`SET LOCAL app.bypass_rls = 'on'`); this helper must never be called from API handlers
+- Transaction helper selection (see `implementation-pitfalls.md` §2.17 for full rationale):
+  - `withOrgTx` / `withOrgRawTx` — API handler org-scoped queries (sqlc / squirrel)
+  - `withBypassTx` — pre-context operations (auth middleware, org creation) — use even if target table has no RLS
+  - `WorkerTx` — background workers only (`SET LOCAL app.bypass_rls = 'on'`); **never** from API handlers
+  - Never query `s.db` directly in store methods — always use a transaction helper
 
 **Alert evaluation (three paths)**
 - Realtime: fires on CVE upsert when `material_hash` changes

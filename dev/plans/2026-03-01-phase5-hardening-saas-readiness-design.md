@@ -367,9 +367,9 @@ Key loaded from `SSO_ENCRYPTION_KEY` env var at startup. Required only if SSO co
 
 1. User enters email on login page
 2. `POST /api/v1/auth/discover` — extracts domain, looks up `sso_email_domains`
-   - Match: returns `{display_name, login_url}`
+   - Match: returns `{display_name, connection_id}`
    - No match: returns empty (show normal login)
-3. User clicks SSO → `GET /api/v1/auth/oidc/{connection_id}/login`
+3. Client constructs login URL → `GET /api/v1/auth/oidc/{connection_id}/login`
    - Sets CSRF state cookie (encodes `connection_id` + CSRF token)
    - Sets nonce cookie
    - Redirects to IdP authorization endpoint

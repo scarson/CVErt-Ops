@@ -583,6 +583,28 @@ Also update the column list in the `INSERT INTO` clause if the new index referen
 
 **The Lesson:** golang-migrate's statement splitter is naive — it splits on `;` without fully parsing SQL comment boundaries. This is a known limitation. Avoid semicolons in `--` line comments and `/* */` block comments in migration files. This is especially subtle because the SQL itself is syntactically valid — it only breaks at the migration runner level.
 
+### 2.17 Transaction Helper Selection — When to Use Which
+
+**The Flaw:** Store methods that query the database pool directly (without a transaction helper) silently bypass RLS. With `FORCE ROW LEVEL SECURITY` and `NOBYPASSRLS` on the app role, queries outside a transaction that sets `app.org_id` return 0 rows — fail-closed, but also fail-silently. The code appears to work in tests using the superuser store.
+
+**The Fix:** Every store method must use exactly one of these transaction helpers:
+
+| Helper | Sets | Use when | Example |
+|--------|------|----------|---------|
+| `withOrgTx` | `app.org_id = $orgID` | API handlers — org-scoped sqlc queries | `ListWatchlists`, `CreateAlertRule` |
+| `withOrgRawTx` | `app.org_id = $orgID` | API handlers — org-scoped squirrel queries | `ListAlertRules` (dynamic DSL) |
+| `withBypassTx` | *(nothing)* | Pre-context operations (auth middleware, org creation) | `GetOrgTier`, `LookupAPIKey`, `GetOrgMemberRole` |
+| `WorkerTx` | `app.bypass_rls = 'on'` | Background workers — cross-org operations | Feed sync, alert evaluation, retention cleanup |
+| `readTx` | *(nothing, read-only)* | Read-only evaluation against global tables | Alert rule dry-run |
+
+**Critical rules:**
+- **Never** use `s.db.QueryContext()` or `s.Pool().Query()` directly in store methods — always go through a helper
+- **Never** call `WorkerTx` or `withBypassTx` from an HTTP handler's org-scoped code path
+- `withBypassTx` is for operations that run **before** org context exists (middleware, auth) — even if the target table has no RLS today, use it for consistency and future-proofing
+- Any `s.db.` call in an org-scoped store method is a bug — grep for these during code review
+
+**The Lesson:** The transaction helper is not just about "does this table have RLS?" — it encodes the **calling context** (API handler vs middleware vs worker). Using the right helper by convention prevents silent security regressions when RLS is added to tables later, and makes the code self-documenting about where it's called from.
+
 ---
 
 ## 3. Security Vulnerabilities

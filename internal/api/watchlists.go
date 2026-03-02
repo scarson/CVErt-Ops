@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // validEcosystems is the whitelist of supported package ecosystems.
@@ -167,6 +168,23 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 	if !ok {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+
+	// Tier gating: check watchlist count limit.
+	if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
+		limit := resolver.IntLimit("max_watchlists", 3, 20, -1)
+		if limit >= 0 {
+			count, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
+			if err != nil {
+				slog.ErrorContext(r.Context(), "count watchlists for tier check", "error", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if count >= int64(limit) {
+				http.Error(w, "tier limit: max watchlists reached", http.StatusForbidden)
+				return
+			}
+		}
 	}
 
 	var req createWatchlistBody

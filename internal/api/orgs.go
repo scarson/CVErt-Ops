@@ -12,6 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // createOrgBody is the JSON request body for POST /api/v1/orgs.
@@ -364,6 +366,23 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	if req.Role != "admin" && req.Role != "member" && req.Role != "viewer" {
 		http.Error(w, "invalid role: must be admin, member, or viewer", http.StatusBadRequest)
 		return
+	}
+
+	// Tier gating: check member count limit.
+	if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
+		limit := resolver.IntLimit("max_members", 5, 25, -1)
+		if limit >= 0 {
+			count, err := srv.store.CountMembersByOrg(r.Context(), orgID)
+			if err != nil {
+				slog.ErrorContext(r.Context(), "count members for tier check", "error", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if count >= int64(limit) {
+				http.Error(w, "tier limit: max members reached", http.StatusForbidden)
+				return
+			}
+		}
 	}
 
 	// Caller cannot invite with a role higher than their own effective role.

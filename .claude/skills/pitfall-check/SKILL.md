@@ -36,6 +36,10 @@ For each category below, state ✅ (no issues), ❌ (issue found), or N/A (not a
 
 - **`CREATE INDEX` without `CONCURRENTLY`:** Any bare `CREATE INDEX` in `.sql` files? Takes an exclusive table lock. Must be `CREATE INDEX CONCURRENTLY`.
 
+- **`ON CONFLICT` predicate out of sync with partial unique index:** When a partial unique index's `WHERE` clause is changed (e.g., adding `AND kind = 'alert'`), are all hand-written `ON CONFLICT ... WHERE ...` clauses in Go code updated to match? PostgreSQL requires exact predicate match — a stale `ON CONFLICT` raises `42P10` at runtime.
+
+- **Semicolons inside SQL comments in migration files:** Any `--` comment containing a `;` in a `.sql` migration file? golang-migrate splits statements on semicolons without parsing comment boundaries, producing truncated SQL fragments that fail with syntax errors.
+
 ---
 
 ### Feed Adapters

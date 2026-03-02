@@ -57,6 +57,49 @@ func (ns NullWatchlistItemType) Value() (driver.Value, error) {
 	return string(ns.WatchlistItemType), nil
 }
 
+type AiCache struct {
+	ID            uuid.UUID
+	OrgID         uuid.UUID
+	Feature       string
+	PromptVersion string
+	InputHash     string
+	Response      json.RawMessage
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+}
+
+type AiQuotaOverride struct {
+	OrgID      uuid.UUID
+	Feature    string
+	DailyLimit int32
+}
+
+type AiRequestLog struct {
+	ID            uuid.UUID
+	OrgID         uuid.UUID
+	UserID        uuid.UUID
+	Feature       string
+	InputHash     string
+	PromptVersion string
+	Model         string
+	CacheHit      bool
+	InputTokens   sql.NullInt32
+	OutputTokens  sql.NullInt32
+	LatencyMs     int32
+	Status        string
+	ErrorType     sql.NullString
+	CreatedAt     time.Time
+}
+
+type AiUsageCounter struct {
+	OrgID        uuid.UUID
+	Feature      string
+	Date         time.Time
+	Count        int32
+	InputTokens  int32
+	OutputTokens int32
+}
+
 type AlertEvent struct {
 	ID               uuid.UUID
 	RuleID           uuid.UUID
@@ -85,6 +128,13 @@ type AlertRule struct {
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	DeletedAt                sql.NullTime
+}
+
+type AlertRuleChannel struct {
+	RuleID    uuid.UUID
+	ChannelID uuid.UUID
+	OrgID     uuid.UUID
+	CreatedAt time.Time
 }
 
 type AlertRuleRun struct {
@@ -258,6 +308,37 @@ type JobQueue struct {
 	LastError   sql.NullString
 }
 
+type NotificationChannel struct {
+	ID                     uuid.UUID
+	OrgID                  uuid.UUID
+	Name                   string
+	Type                   string
+	Config                 json.RawMessage
+	SigningSecret          sql.NullString
+	SigningSecretSecondary sql.NullString
+	DeletedAt              sql.NullTime
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+type NotificationDelivery struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	RuleID          uuid.NullUUID
+	ChannelID       uuid.UUID
+	Status          string
+	AttemptCount    int32
+	Payload         json.RawMessage
+	SendAfter       time.Time
+	LastAttemptedAt sql.NullTime
+	DeliveredAt     sql.NullTime
+	LastError       sql.NullString
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	Kind            string
+	ReportID        uuid.NullUUID
+}
+
 type OrgInvitation struct {
 	ID         uuid.UUID
 	OrgID      uuid.UUID
@@ -293,6 +374,44 @@ type RefreshToken struct {
 	UsedAt        sql.NullTime
 	ReplacedByJti uuid.NullUUID
 	CreatedAt     time.Time
+}
+
+type ReportChannel struct {
+	ReportID  uuid.UUID
+	ChannelID uuid.UUID
+	OrgID     uuid.UUID
+	CreatedAt time.Time
+}
+
+type SavedSearch struct {
+	ID        uuid.UUID
+	OrgID     uuid.UUID
+	UserID    uuid.NullUUID
+	Name      string
+	QueryJson json.RawMessage
+	NlQuery   sql.NullString
+	IsShared  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt sql.NullTime
+}
+
+type ScheduledReport struct {
+	ID                uuid.UUID
+	OrgID             uuid.UUID
+	Name              string
+	ScheduledTime     string
+	Timezone          string
+	NextRunAt         time.Time
+	LastRunAt         sql.NullTime
+	SeverityThreshold sql.NullString
+	WatchlistIds      []uuid.UUID
+	SendOnEmpty       bool
+	AiSummary         bool
+	Status            string
+	DeletedAt         sql.NullTime
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 type SystemJobsLog struct {

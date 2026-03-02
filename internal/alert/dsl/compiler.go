@@ -89,11 +89,20 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		}
 	}
 
+	var joins []string
+	for _, c := range r.Conditions {
+		if c.Field == "fts_query" {
+			joins = append(joins, "cve_search_index si ON cves.cve_id = si.cve_id")
+			break // only one FTS join needed
+		}
+	}
+
 	isEPSSOnly := hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	return &CompiledRule{
 		RuleID:      ruleID,
 		DSLVersion:  dslVersion,
 		SQL:         combined,
+		Joins:       joins,
 		PostFilters: postFilters,
 		IsEPSSOnly:  isEPSSOnly,
 		HasEPSS:     hasEPSSCond,
@@ -167,6 +176,12 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 		return textSQL(spec.sqlExpr, c.Op, c.Value)
 	case kindAffected:
 		return affectedSQL(c)
+	case kindFTS:
+		var s string
+		if err := json.Unmarshal(c.Value, &s); err != nil {
+			return nil, fmt.Errorf("condition %q: value must be a string", c.Field)
+		}
+		return sq.Expr("si.fts_document @@ websearch_to_tsquery('english', ?)", s), nil
 	default:
 		return nil, fmt.Errorf("unsupported field kind %d", spec.kind)
 	}
@@ -216,19 +231,28 @@ func setSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 	return sq.NotEq{sqlExpr: v}, nil
 }
 
+// escapeLike escapes ILIKE metacharacters (%, _, \) so they are treated as
+// literal characters in PostgreSQL ILIKE patterns.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 func textSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 	var v string
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, fmt.Errorf("text value: %w", err)
 	}
-	vLower := strings.ToLower(v)
+	escaped := escapeLike(strings.ToLower(v))
 	switch op {
 	case "contains":
-		return sq.ILike{sqlExpr: "%" + vLower + "%"}, nil
+		return sq.ILike{sqlExpr: "%" + escaped + "%"}, nil
 	case "starts_with":
-		return sq.ILike{sqlExpr: vLower + "%"}, nil
+		return sq.ILike{sqlExpr: escaped + "%"}, nil
 	case "ends_with":
-		return sq.ILike{sqlExpr: "%" + vLower}, nil
+		return sq.ILike{sqlExpr: "%" + escaped}, nil
 	default:
 		return nil, fmt.Errorf("unsupported text op %q", op)
 	}
@@ -291,15 +315,15 @@ func affectedPackageSQL(c Condition) (sq.Sqlizer, error) {
 	if err := json.Unmarshal(c.Value, &v); err != nil {
 		return nil, fmt.Errorf("package value: %w", err)
 	}
-	vLower := strings.ToLower(v)
+	escaped := escapeLike(strings.ToLower(v))
 	var pattern string
 	switch c.Op {
 	case "contains":
-		pattern = "%" + vLower + "%"
+		pattern = "%" + escaped + "%"
 	case "starts_with":
-		pattern = vLower + "%"
+		pattern = escaped + "%"
 	case "ends_with":
-		pattern = "%" + vLower
+		pattern = "%" + escaped
 	default:
 		return nil, fmt.Errorf("unsupported package op %q", c.Op)
 	}

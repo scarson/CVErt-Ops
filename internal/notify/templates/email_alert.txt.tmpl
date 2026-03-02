@@ -1,0 +1,16 @@
+{{define "subject"}}[CVErt Ops] Alert: {{.RuleName}} — {{len .CVEs}} CVE(s){{end}}
+{{define "body"}}CVErt Ops Alert: {{.RuleName}}
+Rule ID: {{.RuleID}}
+Matched CVEs: {{len .CVEs}}
+========================================
+{{range .CVEs}}
+CVE: {{.CVEID}}
+Severity: {{.Severity}}{{if .CVSSV3Score}} | CVSS v3: {{printf "%.1f" (deref .CVSSV3Score)}}{{end}}{{if .CVSSV4Score}} | CVSS v4: {{printf "%.1f" (deref .CVSSV4Score)}}{{end}}{{if .EPSSScore}} | EPSS: {{printf "%.2f%%" (pct (deref .EPSSScore))}}{{end}}
+{{- if .ExploitAvail}} | EXPLOIT AVAILABLE{{end}}{{if .InCISAKEV}} | CISA KEV{{end}}
+Description: {{.Description}}
+{{- if .DetailURL}}
+Details: {{.DetailURL}}{{end}}
+----------------------------------------
+{{end}}
+{{- if .CVErtOpsURL}}View in CVErt Ops: {{.CVErtOpsURL}}{{end}}
+{{end}}

@@ -1,3 +1,5 @@
+// ABOUTME: Store methods for CVE reads, search, and EPSS. Write path is in the merge pipeline.
+// ABOUTME: ListCVEs and SearchCVEs handle pagination; GetCVEDetail fetches child tables in parallel.
 package store
 
 import (
@@ -8,7 +10,6 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/lib/pq"
 
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -105,7 +106,7 @@ type SearchParams struct {
 // is applied to prevent NULL rows from disappearing (pitfall §pagination).
 func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	sb := psql.Select("c.*").From("cves c")
+	sb := psql.Select(cveColumns...).From("cves c")
 
 	// FTS search via cve_search_index.
 	if p.Q != "" {
@@ -197,31 +198,9 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 
 	var results []generated.Cfe
 	for rows.Next() {
-		var c generated.Cfe
-		if err := rows.Scan(
-			&c.CveID,
-			&c.Status,
-			&c.DatePublished,
-			&c.DateModifiedSourceMax,
-			&c.DateModifiedCanonical,
-			&c.DateFirstSeen,
-			&c.DescriptionPrimary,
-			&c.Severity,
-			&c.CvssV3Score,
-			&c.CvssV3Vector,
-			&c.CvssV3Source,
-			&c.CvssV4Score,
-			&c.CvssV4Vector,
-			&c.CvssV4Source,
-			&c.CvssScoreDiverges,
-			pq.Array(&c.CweIds),
-			&c.ExploitAvailable,
-			&c.InCisaKev,
-			&c.EpssScore,
-			&c.DateEpssUpdated,
-			&c.MaterialHash,
-		); err != nil {
-			return nil, fmt.Errorf("store: scan cve row: %w", err)
+		c, scanErr := scanCVERow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan cve row: %w", scanErr)
 		}
 		results = append(results, c)
 	}
@@ -230,4 +209,17 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 	}
 
 	return results, nil
+}
+
+// GetCVESnapshot returns the subset of CVE fields needed for alert delivery payloads,
+// or (nil, nil) if the CVE does not exist.
+func (s *Store) GetCVESnapshot(ctx context.Context, cveID string) (*generated.GetCVESnapshotRow, error) {
+	row, err := s.q.GetCVESnapshot(ctx, cveID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get cve snapshot: %w", err)
+	}
+	return &row, nil
 }

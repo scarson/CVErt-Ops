@@ -57,6 +57,70 @@ func (s *Store) CreateOrgWithOwner(ctx context.Context, name string, ownerID uui
 	return &org, nil
 }
 
+// BootstrapFirstUserOrg atomically checks whether ownerID is the only user in
+// the system. If so, it creates a default org and adds ownerID as owner.
+// Returns (nil, nil) if there is more than one user — no org is created.
+// Uses an advisory lock to prevent TOCTOU races when two users register
+// concurrently on a fresh instance.
+func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, orgName string) (*generated.Organization, error) {
+	var org *generated.Organization
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin bootstrap tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("set bypass_rls: %w", err)
+	}
+
+	// Advisory lock serializes concurrent first-user bootstrap attempts.
+	// Key 0x435654_626F6F74 = "CVTboot" — unique domain to avoid collisions.
+	const bootstrapLockKey = 0x435654626F6F74
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("bootstrap advisory lock: %w", err)
+	}
+
+	var count int64
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("count users: %w", err)
+	}
+
+	if count != 1 {
+		_ = tx.Rollback()
+		return nil, nil
+	}
+
+	q := s.q.WithTx(tx)
+	created, err := q.CreateOrg(ctx, orgName)
+	if err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("create bootstrap org: %w", err)
+	}
+	if err := q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
+		OrgID:  created.ID,
+		UserID: ownerID,
+		Role:   "owner",
+	}); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("create bootstrap owner: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit bootstrap tx: %w", err)
+	}
+	org = &created
+	return org, nil
+}
+
 // GetOrgByID returns the org with the given ID, or (nil, nil) if not found or soft-deleted.
 func (s *Store) GetOrgByID(ctx context.Context, id uuid.UUID) (*generated.Organization, error) {
 	row, err := s.q.GetOrgByID(ctx, id)

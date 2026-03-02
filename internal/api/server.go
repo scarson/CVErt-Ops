@@ -21,6 +21,7 @@ import (
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
 
+	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -38,6 +39,7 @@ type Server struct {
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
 	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
 	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
+	llm            ai.LLMClient    // nil until SetAIDeps is called
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -100,6 +102,13 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	return srv, nil
 }
 
+// Close releases resources held by the server (e.g., the rate limiter cleanup goroutine).
+func (srv *Server) Close() {
+	if srv.rateLimiter != nil {
+		srv.rateLimiter.Stop()
+	}
+}
+
 // Handler builds and returns the http.Handler.
 func (srv *Server) Handler() http.Handler {
 	var db *pgxpool.Pool
@@ -122,6 +131,7 @@ func (srv *Server) Handler() http.Handler {
 	// ── Standard chi middleware ───────────────────────────────────────────────
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	r.Use(clientIPMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies
 	// (PLAN.md §18.3 "HTTP request body size limit").
 	r.Use(middleware.RequestSize(1 << 20))
@@ -195,8 +205,30 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 
+			// Notification channel management
+			r.Route("/channels", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listChannelsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createChannelHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Post("/rotate-secret", srv.rotateSecretHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Post("/clear-secondary", srv.clearSecondarySecretHandler)
+				})
+			})
+
 			// Alert event listing
 			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
+
+			// Delivery history
+			r.Route("/deliveries", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listDeliveriesHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getDeliveryHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/replay", srv.replayDeliveryHandler)
+				})
+			})
 
 			// Alert rule management
 			r.Route("/alert-rules", func(r chi.Router) {
@@ -208,6 +240,43 @@ func (srv *Server) Handler() http.Handler {
 					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.updateAlertRuleHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteAlertRuleHandler)
 					r.With(srv.RequireOrgRole(RoleViewer)).Post("/dry-run", srv.dryRunHandler)
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/channels", srv.listRuleChannelsHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Put("/channels/{channel_id}", srv.bindRuleChannelHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/channels/{channel_id}", srv.unbindRuleChannelHandler)
+				})
+			})
+
+			// Scheduled digest reports
+			r.Route("/reports", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listReportsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createReportHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getReportHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchReportHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteReportHandler)
+					r.Route("/channels", func(r chi.Router) {
+						r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listReportChannelsHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Put("/{channel_id}", srv.bindChannelToReportHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Delete("/{channel_id}", srv.unbindChannelFromReportHandler)
+					})
+				})
+			})
+
+			// AI-powered search and summarization (viewer+ per PLAN.md §7.3)
+			r.Route("/ai", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Post("/nl-search", srv.nlSearchHandler)
+				r.With(srv.RequireOrgRole(RoleViewer)).Post("/summarize/{cve_id}", srv.summarizeHandler)
+			})
+
+			// Saved searches (viewer can list/get/execute; member+ to create/patch/delete)
+			r.Route("/saved-searches", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listSavedSearchesHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createSavedSearchHandler)
+				r.Route("/{id}", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteSavedSearchHandler)
+					r.With(srv.RequireOrgRole(RoleViewer)).Post("/execute", srv.executeSavedSearchHandler)
 				})
 			})
 
@@ -241,6 +310,12 @@ func (srv *Server) SetAlertDeps(cache *alert.RuleCache, evaluator *alert.Evaluat
 	srv.alertEvaluator = evaluator
 }
 
+// SetAIDeps wires the LLM client into the server.
+// Must be called before Handler() if AI endpoints are registered.
+func (srv *Server) SetAIDeps(llm ai.LLMClient) {
+	srv.llm = llm
+}
+
 // acquireArgon2 tries to acquire the argon2 semaphore. Returns false if all
 // slots are in use — the caller should return 503 immediately (do NOT block).
 func (srv *Server) acquireArgon2() bool {
@@ -253,16 +328,6 @@ func (srv *Server) acquireArgon2() bool {
 }
 
 func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
-
-// NewRouter builds the full chi router with middleware, /healthz, /metrics,
-// and the huma OpenAPI sub-router at /api/v1.
-//
-// s may be nil only in tests that don't need a DB (healthz will return degraded).
-func NewRouter(s *store.Store) http.Handler {
-	cfg := &config.Config{Argon2MaxConcurrent: 5} //nolint:exhaustruct // legacy wrapper; only argon2 sem size matters here
-	srv, _ := NewServer(s, cfg)
-	return srv.Handler()
-}
 
 // healthResponse is the JSON body for /healthz.
 type healthResponse struct {

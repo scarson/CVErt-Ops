@@ -536,6 +536,136 @@ func TestCompile_RuleIDAndDSLVersion(t *testing.T) {
 	}
 }
 
+// ─── FTS (full-text search) ──────────────────────────────────────────────────
+
+func TestValidate_FTSQuery(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
+		},
+	}
+	errs, hasEPSS, isEPSSOnly := dsl.Validate(r, false)
+	if len(errs) != 0 {
+		t.Errorf("expected no errors, got %v", errs)
+	}
+	if hasEPSS {
+		t.Error("expected hasEPSS=false")
+	}
+	if isEPSSOnly {
+		t.Error("expected isEPSSOnly=false")
+	}
+}
+
+func TestValidate_FTSQuery_InvalidOp(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "eq", Value: json.RawMessage(`"test"`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+	if errs[0].Field != "fts_query" {
+		t.Errorf("error field = %q, want fts_query", errs[0].Field)
+	}
+}
+
+func TestValidate_FTSQuery_EmptyValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`""`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error for empty FTS value, got %d", len(errs))
+	}
+}
+
+func TestCompile_FTSQuery(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"remote code execution"`)},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Joins) != 1 {
+		t.Fatalf("expected 1 join, got %d", len(compiled.Joins))
+	}
+	if compiled.Joins[0] != "cve_search_index si ON cves.cve_id = si.cve_id" {
+		t.Errorf("join = %q, want FTS join", compiled.Joins[0])
+	}
+	query, args, err := compiled.SQL.ToSql()
+	if err != nil {
+		t.Fatalf("ToSql: %v", err)
+	}
+	if !strings.Contains(query, "fts_document") {
+		t.Errorf("SQL %q missing fts_document reference", query)
+	}
+	if len(args) < 1 || args[0] != "remote code execution" {
+		t.Errorf("args = %v, want [remote code execution]", args)
+	}
+}
+
+func TestCompile_FTSQuery_WithOtherConditions(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"openssl"`)},
+			{Field: "severity", Op: "in", Value: json.RawMessage(`["critical","high"]`)},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Joins) != 1 {
+		t.Errorf("expected 1 join, got %d", len(compiled.Joins))
+	}
+}
+
+// ─── ILIKE Wildcard Escaping ─────────────────────────────────────────────────
+
+func TestCompile_TextContainsEscapesWildcards(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"100%"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%100\%%` {
+		t.Errorf("expected escaped ILIKE pattern %%100\\%%%%,  got %v", args)
+	}
+}
+
+func TestCompile_TextContainsEscapesUnderscore(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"a_b"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%a\_b%` {
+		t.Errorf("expected escaped underscore pattern, got %v", args)
+	}
+}
+
+func TestCompile_AffectedPackageEscapesWildcards(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"contains","value":"my%pkg"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%my\%pkg%` {
+		t.Errorf("expected escaped package pattern, got %v", args)
+	}
+}
+
 // ─── Accessors ───────────────────────────────────────────────────────────────
 
 func TestAccessor_NilPointer(t *testing.T) {

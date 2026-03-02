@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/config"
@@ -180,6 +181,75 @@ func TestRegisterDuplicateEmail(t *testing.T) {
 	defer resp2.Body.Close() //nolint:errcheck,gosec // G104: body close in test
 	if resp2.StatusCode != http.StatusConflict {
 		t.Errorf("duplicate email: got %d, want 409", resp2.StatusCode)
+	}
+}
+
+// ── Rate limiting on auth endpoints ──────────────────────────────────────────
+
+func TestLoginRateLimited(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	srv, ts := newRegisterServer(t, db, "open")
+	doRegister(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
+
+	// Replace the rate limiter with a tight burst of 2 AFTER registration.
+	srv.rateLimiter.Stop()
+	srv.rateLimiter = newIPRateLimiter(rate.Limit(1), 2, time.Minute)
+
+	// First 2 logins: allowed (burst=2).
+	for i := 1; i <= 2; i++ {
+		resp := doLogin(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
+		resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("login %d: got 429 too early (burst should allow 2)", i)
+		}
+	}
+
+	// 3rd login: rate limited.
+	resp := doLogin(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("login 3: got %d, want 429", resp.StatusCode)
+	}
+}
+
+func TestRegisterRateLimited(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	srv, ts := newRegisterServer(t, db, "open")
+
+	// Replace the rate limiter with a tight burst of 1.
+	srv.rateLimiter.Stop()
+	srv.rateLimiter = newIPRateLimiter(rate.Limit(1), 1, time.Minute)
+
+	// First registration: allowed.
+	body := `{"email":"rl1@example.com","password":"test-password-1234"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode == http.StatusTooManyRequests {
+		t.Fatal("first register should not be rate limited")
+	}
+
+	// Second registration: rate limited.
+	body2 := `{"email":"rl2@example.com","password":"test-password-1234"}`
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("second register: got %d, want 429", resp2.StatusCode)
 	}
 }
 

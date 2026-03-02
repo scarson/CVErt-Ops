@@ -307,6 +307,61 @@ func TestListAlertRules_StatusFilter(t *testing.T) {
 	_ = r1
 }
 
+func TestListAlertRules_RLSIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "ARRLSOrg1")
+	org2, _ := s.CreateOrg(ctx, "ARRLSOrg2")
+	mustCreateAlertRule(t, s, ctx, org1.ID, "Org1-Rule")
+	mustCreateAlertRule(t, s, ctx, org2.ID, "Org2-Rule")
+
+	got, err := s.AppStore.ListAlertRules(ctx, org1.ID, nil, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("AppStore.ListAlertRules(org1): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 rule for org1, got %d", len(got))
+	}
+	if got[0].Name != "Org1-Rule" {
+		t.Errorf("Name = %q, want Org1-Rule", got[0].Name)
+	}
+
+	got2, err := s.AppStore.ListAlertRules(ctx, org2.ID, nil, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("AppStore.ListAlertRules(org2): %v", err)
+	}
+	if len(got2) != 1 {
+		t.Fatalf("expected 1 rule for org2, got %d", len(got2))
+	}
+}
+
+func TestListAlertEvents_RLSIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "AERLSOrg1")
+	org2, _ := s.CreateOrg(ctx, "AERLSOrg2")
+	r1 := mustCreateAlertRule(t, s, ctx, org1.ID, "RLSEventRule1")
+	r2 := mustCreateAlertRule(t, s, ctx, org2.ID, "RLSEventRule2")
+
+	_, _ = s.InsertAlertEvent(ctx, org1.ID, r1.ID, "CVE-2024-0100", "rls1", false)
+	_, _ = s.InsertAlertEvent(ctx, org2.ID, r2.ID, "CVE-2024-0101", "rls2", false)
+
+	events, err := s.AppStore.ListAlertEvents(ctx, org1.ID, store.ListAlertEventsParams{Limit: 10})
+	if err != nil {
+		t.Fatalf("AppStore.ListAlertEvents(org1): %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event for org1, got %d", len(events))
+	}
+	if events[0].CveID != "CVE-2024-0100" {
+		t.Errorf("CveID = %q, want CVE-2024-0100", events[0].CveID)
+	}
+}
+
 func TestListAlertEvents_Filters(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

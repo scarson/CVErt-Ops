@@ -341,6 +341,67 @@ func TestValidateWatchlistsOwnership(t *testing.T) {
 	}
 }
 
+func TestListWatchlists_RLSIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "WLRLSOrg1")
+	org2, _ := s.CreateOrg(ctx, "WLRLSOrg2")
+	mustCreateWatchlist(t, s, ctx, org1.ID, "Org1-List")
+	mustCreateWatchlist(t, s, ctx, org2.ID, "Org2-List")
+
+	// AppStore connects as cvert_ops_app (NOBYPASSRLS).
+	// Layer 2 (RLS) enforces tenant isolation via SET LOCAL app.org_id.
+	got, err := s.AppStore.ListWatchlists(ctx, org1.ID, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("AppStore.ListWatchlists: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 watchlist for org1, got %d", len(got))
+	}
+	if got[0].Name != "Org1-List" {
+		t.Errorf("Name = %q, want Org1-List", got[0].Name)
+	}
+
+	got2, err := s.AppStore.ListWatchlists(ctx, org2.ID, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("AppStore.ListWatchlists(org2): %v", err)
+	}
+	if len(got2) != 1 {
+		t.Fatalf("expected 1 watchlist for org2, got %d", len(got2))
+	}
+	if got2[0].Name != "Org2-List" {
+		t.Errorf("Name = %q, want Org2-List", got2[0].Name)
+	}
+}
+
+func TestListWatchlistItems_RLSIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "WLItemRLS1")
+	org2, _ := s.CreateOrg(ctx, "WLItemRLS2")
+	w1 := mustCreateWatchlist(t, s, ctx, org1.ID, "Org1-Items")
+	w2 := mustCreateWatchlist(t, s, ctx, org2.ID, "Org2-Items")
+
+	_, _ = s.CreateWatchlistItem(ctx, org1.ID, w1.ID, store.CreateWatchlistItemParams{
+		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("express"),
+	})
+	_, _ = s.CreateWatchlistItem(ctx, org2.ID, w2.ID, store.CreateWatchlistItemParams{
+		ItemType: "package", Ecosystem: strPtr("pypi"), PackageName: strPtr("django"),
+	})
+
+	items, err := s.AppStore.ListWatchlistItems(ctx, org1.ID, w1.ID, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("AppStore.ListWatchlistItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item for org1, got %d", len(items))
+	}
+}
+
 // strPtr returns a pointer to s.
 func strPtr(s string) *string { return &s }
 

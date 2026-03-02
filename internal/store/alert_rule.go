@@ -47,9 +47,13 @@ type UpdateAlertRuleParams struct {
 
 // ListAlertEventsParams holds optional filters for listing alert events.
 type ListAlertEventsParams struct {
-	RuleID *uuid.UUID
-	CveID  *string
-	Limit  int
+	RuleID         *uuid.UUID
+	CveID          *string
+	LastMatchState *bool
+	Since          *time.Time
+	AfterTime      *time.Time
+	AfterID        *uuid.UUID
+	Limit          int
 }
 
 // AlertRuleStore defines the DB operations for alert rule, run, and event management.
@@ -189,27 +193,30 @@ func (s *Store) ListAlertRules(ctx context.Context, orgID uuid.UUID, status *str
 		return nil, fmt.Errorf("list alert rules: build query: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list alert rules: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
 	var result []generated.AlertRule
-	for rows.Next() {
-		var r generated.AlertRule
-		if err := rows.Scan(
-			&r.ID, &r.OrgID, &r.Name, &r.Logic, &r.Conditions,
-			pq.Array(&r.WatchlistIds),
-			&r.DslVersion, &r.HasEpssCondition, &r.IsEpssOnly,
-			&r.Status, &r.FireOnNonMaterialChanges,
-			&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
-		); err != nil {
-			return nil, fmt.Errorf("list alert rules: scan: %w", err)
+	err = s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("list alert rules: %w", err)
 		}
-		result = append(result, r)
-	}
-	return result, rows.Err()
+		defer rows.Close() //nolint:errcheck
+
+		for rows.Next() {
+			var r generated.AlertRule
+			if err := rows.Scan(
+				&r.ID, &r.OrgID, &r.Name, &r.Logic, &r.Conditions,
+				pq.Array(&r.WatchlistIds),
+				&r.DslVersion, &r.HasEpssCondition, &r.IsEpssOnly,
+				&r.Status, &r.FireOnNonMaterialChanges,
+				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
+			); err != nil {
+				return fmt.Errorf("list alert rules: scan: %w", err)
+			}
+			result = append(result, r)
+		}
+		return rows.Err()
+	})
+	return result, err
 }
 
 // InsertAlertRuleRun records the start of an evaluation run. Worker path: uses bypass_rls.
@@ -316,31 +323,43 @@ func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAler
 	if p.CveID != nil {
 		sb = sb.Where(sq.Eq{"cve_id": *p.CveID})
 	}
+	if p.LastMatchState != nil {
+		sb = sb.Where(sq.Eq{"last_match_state": *p.LastMatchState})
+	}
+	if p.Since != nil {
+		sb = sb.Where(sq.GtOrEq{"first_fired_at": *p.Since})
+	}
+	if p.AfterTime != nil && p.AfterID != nil {
+		sb = sb.Where("(first_fired_at, id) < (?, ?)", *p.AfterTime, *p.AfterID)
+	}
 
 	query, args, err := sb.ToSql()
 	if err != nil {
 		return nil, fmt.Errorf("list alert events: build query: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list alert events: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
 	var result []generated.AlertEvent
-	for rows.Next() {
-		var e generated.AlertEvent
-		if err := rows.Scan(
-			&e.ID, &e.RuleID, &e.OrgID, &e.CveID, &e.MaterialHash,
-			&e.LastMatchState, &e.SuppressDelivery,
-			&e.FirstFiredAt, &e.LastFiredAt, &e.TimesFired,
-		); err != nil {
-			return nil, fmt.Errorf("list alert events: scan: %w", err)
+	err = s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("list alert events: %w", err)
 		}
-		result = append(result, e)
-	}
-	return result, rows.Err()
+		defer rows.Close() //nolint:errcheck
+
+		for rows.Next() {
+			var e generated.AlertEvent
+			if err := rows.Scan(
+				&e.ID, &e.RuleID, &e.OrgID, &e.CveID, &e.MaterialHash,
+				&e.LastMatchState, &e.SuppressDelivery,
+				&e.FirstFiredAt, &e.LastFiredAt, &e.TimesFired,
+			); err != nil {
+				return fmt.Errorf("list alert events: scan: %w", err)
+			}
+			result = append(result, e)
+		}
+		return rows.Err()
+	})
+	return result, err
 }
 
 // ListActiveRulesForEvaluation returns all active non-EPSS-only rules across all orgs.

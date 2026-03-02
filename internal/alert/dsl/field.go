@@ -13,6 +13,7 @@ const (
 	kindStrArray                  // contains_any/contains_all; []string value
 	kindText                      // contains/starts_with/ends_with/regex; string value
 	kindAffected                  // EXISTS subquery on cve_affected_packages
+	kindFTS                       // matches; websearch_to_tsquery
 )
 
 type fieldSpec struct {
@@ -34,6 +35,7 @@ var setOps         = []string{"eq", "neq", "in", "not_in"}
 var arrayOps       = []string{"contains_any", "contains_all"}
 var textOps        = []string{"contains", "starts_with", "ends_with", "regex"}
 var textOpsNoRegex = []string{"contains", "starts_with", "ends_with"}
+var ftsOps         = []string{"matches"}
 
 // fields is the authoritative registry of all supported DSL fields.
 var fields = map[string]fieldSpec{
@@ -50,4 +52,50 @@ var fields = map[string]fieldSpec{
 	"affected.ecosystem":       {kindAffected, "",                              setOps,         false, ecosystemEnum},
 	"affected.package":         {kindAffected, "",                              textOpsNoRegex, false, nil},
 	"description_primary":      {kindText,     "cves.description_primary",      textOps,        false, nil},
+	"fts_query":               {kindFTS,      "",                              ftsOps,         false, nil},
+}
+
+// FieldDescription describes a queryable field for external consumers.
+type FieldDescription struct {
+	Name       string
+	TypeDesc   string
+	ValidOps   []string
+	EnumValues []string
+	Nullable   bool
+}
+
+// ExportFieldDescriptions returns a description of every registered field.
+func ExportFieldDescriptions() []FieldDescription {
+	result := make([]FieldDescription, 0, len(fields))
+	for name, spec := range fields {
+		fd := FieldDescription{
+			Name:     name,
+			ValidOps: spec.validOps,
+			Nullable: spec.nullable,
+		}
+		switch spec.kind {
+		case kindFloat:
+			fd.TypeDesc = "number"
+		case kindTime:
+			fd.TypeDesc = "datetime (RFC 3339)"
+		case kindBool:
+			fd.TypeDesc = "boolean"
+		case kindString:
+			fd.TypeDesc = "string"
+		case kindEnum:
+			fd.TypeDesc = "enum"
+			fd.EnumValues = spec.enumValues
+		case kindStrArray:
+			fd.TypeDesc = "string array"
+		case kindText:
+			fd.TypeDesc = "text"
+		case kindAffected:
+			fd.TypeDesc = "affected product"
+			fd.EnumValues = spec.enumValues
+		case kindFTS:
+			fd.TypeDesc = "full-text search"
+		}
+		result = append(result, fd)
+	}
+	return result
 }

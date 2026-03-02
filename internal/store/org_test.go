@@ -244,3 +244,61 @@ func TestListOrgInvitations_ExpiryFiltering(t *testing.T) {
 		t.Error("GetInvitationByToken should return expired invitation (handler checks expiry)")
 	}
 }
+
+func TestBootstrapFirstUserOrg_OnlyUser(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create a single user.
+	user, err := s.CreateUser(ctx, "sole@example.com", "Sole User", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Bootstrap should create an org since this is the only user.
+	org, err := s.BootstrapFirstUserOrg(ctx, user.ID, "Sole User's Organization")
+	if err != nil {
+		t.Fatalf("BootstrapFirstUserOrg: %v", err)
+	}
+	if org == nil {
+		t.Fatal("BootstrapFirstUserOrg returned nil for sole user")
+	}
+	if org.Name != "Sole User's Organization" {
+		t.Errorf("org.Name = %q, want %q", org.Name, "Sole User's Organization")
+	}
+
+	// Verify user is owner.
+	role, err := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMemberRole: %v", err)
+	}
+	if role == nil || *role != "owner" {
+		t.Errorf("role = %v, want owner", role)
+	}
+}
+
+func TestBootstrapFirstUserOrg_MultipleUsers(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create two users.
+	_, err := s.CreateUser(ctx, "first@example.com", "First", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser(first): %v", err)
+	}
+	second, err := s.CreateUser(ctx, "second@example.com", "Second", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser(second): %v", err)
+	}
+
+	// Bootstrap should NOT create an org since there are multiple users.
+	org, err := s.BootstrapFirstUserOrg(ctx, second.ID, "Should Not Exist")
+	if err != nil {
+		t.Fatalf("BootstrapFirstUserOrg: %v", err)
+	}
+	if org != nil {
+		t.Errorf("BootstrapFirstUserOrg should return nil for non-first user, got org %v", org.ID)
+	}
+}

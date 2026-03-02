@@ -366,6 +366,17 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Caller cannot invite with a role higher than their own effective role.
+	callerRole, ok := r.Context().Value(ctxRole).(Role)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if parseRole(req.Role) > callerRole {
+		http.Error(w, "cannot invite with role higher than your own", http.StatusForbidden)
+		return
+	}
+
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		slog.ErrorContext(r.Context(), "create invitation: generate token", "error", err)

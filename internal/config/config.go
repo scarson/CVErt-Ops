@@ -65,6 +65,20 @@ type Config struct {
 	GeminiAPIKey string `env:"GEMINI_API_KEY"`
 	GeminiModel  string `env:"GEMINI_MODEL" envDefault:"gemini-2.0-flash"`
 
+	// ── AI — Quotas & Behavior ───────────────────────────────────────────────────
+	GeminiTimeout               time.Duration `env:"GEMINI_TIMEOUT"                  envDefault:"30s"`
+	AIQuotaEnabled              bool          `env:"AI_QUOTA_ENABLED"                envDefault:"true"`
+	AINLSearchLimitFree         int           `env:"AI_NL_SEARCH_LIMIT_FREE"         envDefault:"10"`
+	AINLSearchLimitPro          int           `env:"AI_NL_SEARCH_LIMIT_PRO"          envDefault:"100"`
+	AINLSearchLimitEnterprise   int           `env:"AI_NL_SEARCH_LIMIT_ENTERPRISE"   envDefault:"1000"`
+	AISummarizeLimitFree        int           `env:"AI_SUMMARIZE_LIMIT_FREE"         envDefault:"5"`
+	AISummarizeLimitPro         int           `env:"AI_SUMMARIZE_LIMIT_PRO"          envDefault:"50"`
+	AISummarizeLimitEnterprise  int           `env:"AI_SUMMARIZE_LIMIT_ENTERPRISE"   envDefault:"500"`
+	AICacheNLSearchTTL          time.Duration `env:"AI_CACHE_NL_SEARCH_TTL"          envDefault:"1h"`
+	AICacheSummarizeTTL         time.Duration `env:"AI_CACHE_SUMMARIZE_TTL"          envDefault:"24h"`
+	AILogRetentionDays          int           `env:"AI_LOG_RETENTION_DAYS"            envDefault:"90"`
+	GeminiMock                  bool          `env:"GEMINI_MOCK"                     envDefault:"false"`
+
 	// ── Feed adapters ────────────────────────────────────────────────────────────
 	NVDAPIKey string `env:"NVD_API_KEY"`
 
@@ -72,6 +86,9 @@ type Config struct {
 	NotifyMaxConcurrentPerOrg int `env:"NOTIFY_MAX_CONCURRENT_PER_ORG" envDefault:"5"`
 	NotifyDebounceSeconds     int `env:"NOTIFY_DEBOUNCE_SECONDS"       envDefault:"120"`
 	WebhookSecretGraceHours   int `env:"WEBHOOK_SECRET_GRACE_HOURS"    envDefault:"24"`
+	NotifyClaimBatchSize      int `env:"NOTIFY_CLAIM_BATCH_SIZE"       envDefault:"50"`
+	NotifyMaxAttempts         int `env:"NOTIFY_MAX_ATTEMPTS"           envDefault:"4"`
+	NotifyBackoffBaseSeconds  int `env:"NOTIFY_BACKOFF_BASE_SECONDS"   envDefault:"30"`
 
 	// ── Rate limiting ────────────────────────────────────────────────────────────
 	// Comma-separated CIDRs of trusted reverse proxies; empty = no proxy.
@@ -118,6 +135,9 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("google_client_secret", masked(c.GoogleClientSecret)),
 		slog.String("smtp_password", masked(c.SMTPPassword)),
 		slog.String("gemini_api_key", masked(c.GeminiAPIKey)),
+		slog.Bool("ai_quota_enabled", c.AIQuotaEnabled),
+		slog.Duration("gemini_timeout", c.GeminiTimeout),
+		slog.Bool("gemini_mock", c.GeminiMock),
 		slog.String("nvd_api_key", masked(c.NVDAPIKey)),
 	)
 }

@@ -11,6 +11,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/scarson/cvert-ops/internal/api"
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -59,8 +60,13 @@ func TestSmokeHealthz(t *testing.T) {
 	}
 
 	// ── Build handler and test server ────────────────────────────────────────
-	handler := api.NewRouter(store.New(pool))
-	srv := httptest.NewServer(handler)
+	cfg := &config.Config{Argon2MaxConcurrent: 5}
+	apiSrv, err := api.NewServer(store.New(pool), cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(apiSrv.Close)
+	srv := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(srv.Close)
 
 	// ── /healthz ─────────────────────────────────────────────────────────────
@@ -112,8 +118,13 @@ func TestSmokeHealthzDegraded(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	handler := api.NewRouter(nil)
-	srv := httptest.NewServer(handler)
+	cfg := &config.Config{Argon2MaxConcurrent: 5}
+	apiSrv, err := api.NewServer(nil, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(apiSrv.Close)
+	srv := httptest.NewServer(apiSrv.Handler())
 	t.Cleanup(srv.Close)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/healthz", nil)

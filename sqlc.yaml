@@ -15,3 +15,7 @@ sql:
           - db_type: "uuid"
             nullable: true
             go_type: "github.com/google/uuid.NullUUID"
+          # Postgres TIME (time without time zone) doesn't scan into time.Time
+          # via database/sql — store as string "HH:MM:SS".
+          - db_type: "pg_catalog.time"
+            go_type: "string"

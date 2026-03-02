@@ -432,6 +432,25 @@ type ScheduledReport struct {
 	UpdatedAt         time.Time
 }
 
+type SsoConnection struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	DisplayName     string
+	IssuerUrl       string
+	ClientID        string
+	ClientSecretEnc []byte
+	Scopes          []string
+	Enabled         bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type SsoEmailDomain struct {
+	Domain          string
+	SsoConnectionID uuid.UUID
+	OrgID           uuid.UUID
+}
+
 type SystemJobsLog struct {
 	ID           uuid.UUID
 	JobType      string

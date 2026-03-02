@@ -492,3 +492,55 @@ func TestSSOEmailDomain_PutAndCascade(t *testing.T) {
 		t.Fatalf("delete: got %d", resp4.StatusCode)
 	}
 }
+
+func TestDiscover_RateLimited(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	_, ts := newSSOServer(t, db)
+	ctx := context.Background()
+
+	// Rate limiter: 10/min burst=10. Send 11 rapid requests to trip the limiter.
+	for i := 1; i <= 11; i++ {
+		resp := doDiscover(t, ctx, ts, "probe@unknown.com")
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if i <= 10 {
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("request %d: got %d, want 200", i, resp.StatusCode)
+			}
+		} else {
+			if resp.StatusCode != http.StatusTooManyRequests {
+				t.Errorf("request %d: got %d, want 429", i, resp.StatusCode)
+			}
+		}
+	}
+}
+
+func TestSSODomains_ValidatesFormat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	token, orgID := setupSSOWithDomains(t, db, srv, ts, "sso-valdomain@example.com", nil, true)
+
+	// Empty domain string after trim should be rejected.
+	resp := doPutSSODomains(t, ctx, ts, token, orgID, `{"domains":["  "]}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty domain: got %d, want 422", resp.StatusCode)
+	}
+
+	// Domain without a dot should be rejected.
+	resp2 := doPutSSODomains(t, ctx, ts, token, orgID, `{"domains":["nodot"]}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("no-dot domain: got %d, want 422", resp2.StatusCode)
+	}
+
+	// Domain with space should be rejected.
+	resp3 := doPutSSODomains(t, ctx, ts, token, orgID, `{"domains":["a b.com"]}`)
+	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if resp3.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("space domain: got %d, want 422", resp3.StatusCode)
+	}
+}

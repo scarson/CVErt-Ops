@@ -388,9 +388,14 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Normalize domains.
+	// Normalize and validate domains.
 	for i := range req.Domains {
 		req.Domains[i] = strings.ToLower(strings.TrimSpace(req.Domains[i]))
+		d := req.Domains[i]
+		if d == "" || !strings.Contains(d, ".") || strings.ContainsAny(d, " \t") || len(d) > 253 {
+			http.Error(w, "invalid domain: "+d, http.StatusUnprocessableEntity)
+			return
+		}
 	}
 
 	if err := srv.store.SetSSOEmailDomains(r.Context(), conn.ID, orgID, req.Domains); err != nil {

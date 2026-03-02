@@ -47,6 +47,24 @@ func setupOIDCConnection(t *testing.T, db *testutil.TestDB, srv *Server, ts *htt
 	token := cookieValue(loginResp, "access_token")
 	orgID = reg.OrgID
 
+	// BootstrapFirstUserOrg only creates an org for the first user on the server.
+	// Subsequent users need an org created explicitly.
+	if orgID == "" {
+		userID := mustParseUUID(t, reg.UserID)
+		org, err := db.CreateOrg(ctx, email+"'s Org")
+		if err != nil {
+			t.Fatalf("create org: %v", err)
+		}
+		if err := db.CreateOrgMember(ctx, org.ID, userID, "owner"); err != nil {
+			t.Fatalf("create org member: %v", err)
+		}
+		orgID = org.ID.String()
+		// Re-login to get token with org membership.
+		loginResp2 := doLogin(t, ctx, ts, email, "test-password-1234")
+		defer loginResp2.Body.Close() //nolint:errcheck,gosec // G104
+		token = cookieValue(loginResp2, "access_token")
+	}
+
 	oid := mustParseUUID(t, orgID)
 	if err := db.UpdateOrgTier(ctx, oid, "enterprise"); err != nil {
 		t.Fatalf("update tier: %v", err)
@@ -300,5 +318,78 @@ func TestOIDCFlow_DisabledConnection(t *testing.T) {
 	defer initResp.Body.Close() //nolint:errcheck,gosec // G104
 	if initResp.StatusCode != http.StatusForbidden {
 		t.Errorf("init disabled: got %d, want 403", initResp.StatusCode)
+	}
+}
+
+func TestOIDCFlow_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	mock := testutil.NewMockOIDC(t)
+	srv, ts := newOIDCTestServer(t, db)
+
+	// Create two orgs with SSO connections pointing at the same mock IdP.
+	_, connID1 := setupOIDCConnection(t, db, srv, ts, mock, "cross-org1@example.com", nil, true)
+	_, connID2 := setupOIDCConnection(t, db, srv, ts, mock, "cross-org2@example.com", nil, true)
+
+	// Link identity to connection 1 only (same sub, same IdP).
+	user, err := db.CreateUser(ctx, "cross-user@corp.com", "CrossUser", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	providerKey := "oidc:" + connID1
+	if err := db.UpsertUserIdentity(ctx, user.ID, providerKey, mock.Sub, "cross-user@corp.com"); err != nil {
+		t.Fatalf("UpsertUserIdentity: %v", err)
+	}
+
+	// Attempt login via connection 2 (identity not linked there) → should 403.
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/oidc/"+connID2+"/login", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck,gosec // G104
+	if initResp.StatusCode != http.StatusFound {
+		t.Fatalf("init: got %d, want 302", initResp.StatusCode)
+	}
+
+	var stateCookie, nonceCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		switch c.Name {
+		case "oauth_state":
+			stateCookie = c
+		case "oidc_nonce":
+			nonceCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("missing oauth_state cookie")
+	}
+	if nonceCookie == nil {
+		t.Fatal("missing oidc_nonce cookie")
+	}
+	mock.SetNonce(nonceCookie.Value)
+
+	callbackURL := ts.URL + "/api/v1/auth/oidc/callback?code=mock-code&state=" + stateCookie.Value
+	cbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	cbReq.AddCookie(stateCookie)
+	cbReq.AddCookie(nonceCookie)
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer cbResp.Body.Close() //nolint:errcheck,gosec // G104
+
+	// Same sub, different connection → must get 403 (no linked identity for conn2).
+	if cbResp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-org callback: got %d, want 403 (identity linked to conn1, not conn2)", cbResp.StatusCode)
 	}
 }

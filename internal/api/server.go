@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -41,6 +42,7 @@ type Server struct {
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
 	orgRL          *orgRateLimiter  // per-org API rate limiter
 	tierCache      *tierCache       // short-lived cache for org tier + overrides
+	oidcProviders  sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
 	alertCache     *alert.RuleCache  // nil until SetAlertDeps is called
 	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
 	llm            ai.LLMClient     // nil until SetAIDeps is called
@@ -168,7 +170,7 @@ func (srv *Server) Handler() http.Handler {
 	registerCVERoutes(api, srv.store)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
-	apiRouter.Post("/auth/discover", srv.discoverHandler)
+	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)
 
 	// ── OAuth routes (chi, not huma — these are redirects, not JSON API calls) ─
 	apiRouter.Get("/auth/oauth/github", srv.githubInitHandler)

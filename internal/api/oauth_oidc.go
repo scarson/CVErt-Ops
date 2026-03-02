@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -22,6 +23,20 @@ type oidcClaims struct {
 	Sub   string `json:"sub"`
 	Email string `json:"email"`
 	Nonce string `json:"nonce"`
+}
+
+// getOIDCProvider returns a cached OIDC provider for the given issuer URL,
+// creating one via discovery if not yet cached.
+func (srv *Server) getOIDCProvider(ctx context.Context, issuerURL string) (*oidc.Provider, error) {
+	if cached, ok := srv.oidcProviders.Load(issuerURL); ok {
+		return cached.(*oidc.Provider), nil
+	}
+	provider, err := oidc.NewProvider(ctx, issuerURL)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := srv.oidcProviders.LoadOrStore(issuerURL, provider)
+	return actual.(*oidc.Provider), nil
 }
 
 // oidcLoginHandler handles GET /api/v1/auth/oidc/{connection_id}/login.
@@ -50,8 +65,8 @@ func (srv *Server) oidcLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build OIDC provider from issuer URL.
-	provider, err := oidc.NewProvider(ctx, conn.IssuerUrl)
+	// Build OIDC provider (cached per issuer URL to avoid repeated discovery).
+	provider, err := srv.getOIDCProvider(ctx, conn.IssuerUrl)
 	if err != nil {
 		slog.ErrorContext(ctx, "oidc login: new provider", "error", err, "issuer", conn.IssuerUrl)
 		http.Error(w, "SSO configuration error", http.StatusBadGateway)
@@ -87,7 +102,7 @@ func (srv *Server) oidcLoginHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	state := randomState + "_" + connID.String()
+	state := randomState + "_" + connID.String() // Format: {hex}_{uuid} — hex has no underscores
 
 	nonce, err := generateOAuthState()
 	if err != nil {
@@ -141,8 +156,8 @@ func (srv *Server) oidcCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Build OIDC provider + oauth2 config.
-	provider, err := oidc.NewProvider(ctx, conn.IssuerUrl)
+	// 3. Build OIDC provider (cached) + oauth2 config.
+	provider, err := srv.getOIDCProvider(ctx, conn.IssuerUrl)
 	if err != nil {
 		slog.ErrorContext(ctx, "oidc callback: new provider", "error", err)
 		http.Error(w, "SSO configuration error", http.StatusBadGateway)

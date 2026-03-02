@@ -1128,11 +1128,12 @@ Test cases (from design §7):
 - `TestNotifSync_Remove_MultiMapping` — keeps if other SCIM group maps same
 - `TestNotifSync_GroupDelete_NoRemoval` — SCIM group delete does not remove notification members
 - `TestNotifSync_ExemptUser_Skipped` — exempt user not synced
+- `TestNotifSync_Add_SoftDeletedGroup` — mapped_group_id points to soft-deleted group → no-op (skip sync)
 
 **Step 2: Implement**
 
 Two functions:
-- `syncNotifGroupAdd(ctx, orgID, userID, mappedGroupID, scimGroupID)` — adds user to notification group with `scim_managed=true` if not already present
+- `syncNotifGroupAdd(ctx, orgID, userID, mappedGroupID, scimGroupID)` — adds user to notification group with `scim_managed=true` if not already present. Must verify the target group exists and `deleted_at IS NULL` before inserting — `groups` uses soft-delete, and `ON DELETE SET NULL` on `scim_groups.mapped_group_id` only fires on hard-delete.
 - `syncNotifGroupRemove(ctx, orgID, userID, mappedGroupID, scimGroupID)` — removes only if `scim_managed=true` AND no other SCIM group with same mapping
 
 These require new sqlc queries for `group_members` that check `scim_managed`. Add them to `internal/store/queries/groups.sql`:
@@ -1433,13 +1434,14 @@ When a group's `mapped_role` or `mapped_group_id` changes, recompute roles / syn
 - `TestGroupMapping_SetNotificationGroup` — mapped_group_id triggers immediate sync
 - `TestGroupMapping_ClearMapping` — null mapped_role → roles recomputed to default
 - `TestGroupMapping_CrossOrgGroupId` — mapped_group_id from different org → 400
+- `TestGroupMapping_SoftDeletedGroupId` — mapped_group_id to soft-deleted group → 400
 - `TestGroupMapping_MappingChanged_OldGroupCleanedUp` — old notification group members cleaned up
 
 **Step 2: Implement**
 
 The `patchSCIMGroupMappingHandler` should:
 1. Update `scim_groups.mapped_role` and/or `mapped_group_id`
-2. If `mapped_group_id` is set, validate it belongs to the same org (app-layer — FK bypasses RLS)
+2. If `mapped_group_id` is set, validate it belongs to the same org AND `deleted_at IS NULL` (app-layer — FK bypasses RLS, and `ON DELETE SET NULL` doesn't fire on soft-delete)
 3. List all current members of the SCIM group
 4. For each non-exempt member: `recomputeRole()` if mapped_role changed, `syncNotifGroup()` if mapped_group_id changed
 5. If mapped_group_id changed from a previous value: clean up scim_managed memberships in the old notification group

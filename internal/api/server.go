@@ -239,6 +239,9 @@ func (srv *Server) Handler() http.Handler {
 			// Alert event listing
 			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
 
+			// Audit log (enterprise only, admin+)
+			r.With(srv.RequireOrgRole(RoleAdmin)).Get("/audit-log", srv.listAuditLogHandler)
+
 			// Delivery history
 			r.Route("/deliveries", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listDeliveriesHandler)

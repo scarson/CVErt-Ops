@@ -548,6 +548,52 @@ func TestSSODomains_ValidatesFormat(t *testing.T) {
 	}
 }
 
+func TestSSODomains_RFC1035Labels(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	token, orgID := setupSSOWithDomains(t, db, srv, ts, "sso-rfc@example.com", nil, true)
+
+	badDomains := []struct {
+		name   string
+		domain string
+	}{
+		{"leading dot", ".example.com"},
+		{"trailing dot (bare)", "example.com."},
+		{"double dot", "a..b.com"},
+		{"empty label", "a. .com"},
+		{"label too long", strings.Repeat("a", 64) + ".com"},
+		{"leading hyphen in label", "-bad.com"},
+		{"trailing hyphen in label", "bad-.com"},
+		{"underscore in label", "bad_label.com"},
+		{"non-ascii character", "b\xc3\xa4d.com"},
+	}
+
+	for _, tt := range badDomains {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"domains":["` + tt.domain + `"]}`
+			resp := doPutSSODomains(t, ctx, ts, token, orgID, body)
+			resp.Body.Close() //nolint:errcheck,gosec
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("%s (%q): got %d, want 422", tt.name, tt.domain, resp.StatusCode)
+			}
+		})
+	}
+
+	// Valid domains should still be accepted.
+	goodDomains := []string{"example.com", "sub.example.com", "a-b.example.com", "x.io"}
+	for _, d := range goodDomains {
+		body := `{"domains":["` + d + `"]}`
+		resp := doPutSSODomains(t, ctx, ts, token, orgID, body)
+		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("valid domain %q: got %d, want 200", d, resp.StatusCode)
+		}
+	}
+}
+
 // ── Input validation ─────────────────────────────────────────────────────────
 
 func TestDiscover_InputValidation(t *testing.T) {
@@ -705,6 +751,89 @@ func TestSSODomains_AdditionalValidation(t *testing.T) {
 	}
 }
 
+// ── OIDC provider cache eviction ─────────────────────────────────────────────
+
+func TestPatchSSO_EvictsOIDCProviderCache(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-evict@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-evict@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// Create SSO connection with issuer A.
+	body := `{"display_name":"Evict IdP","issuer_url":"https://idp-a.example.com","client_id":"test","client_secret":"secret","enabled":false}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, body)
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+
+	// Simulate a cached OIDC provider for issuer A.
+	srv.oidcProviders.Store("https://idp-a.example.com", "cached-provider-a")
+
+	// PATCH to change issuer URL to B.
+	patchBody := `{"issuer_url":"https://idp-b.example.com"}`
+	patchResp := doPatchSSO(t, ctx, ts, token, reg.OrgID, patchBody)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch: got %d, want 200", patchResp.StatusCode)
+	}
+
+	// Old issuer should be evicted from cache.
+	if _, loaded := srv.oidcProviders.Load("https://idp-a.example.com"); loaded {
+		t.Error("old issuer URL still in OIDC provider cache after PATCH — should be evicted")
+	}
+}
+
+func TestDeleteSSO_EvictsOIDCProviderCache(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-devict@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-devict@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// Create SSO connection.
+	body := `{"display_name":"Del IdP","issuer_url":"https://idp-del.example.com","client_id":"test","client_secret":"secret","enabled":false}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, body)
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+
+	// Simulate a cached OIDC provider.
+	srv.oidcProviders.Store("https://idp-del.example.com", "cached-provider")
+
+	// Delete the connection.
+	delResp := doDeleteSSO(t, ctx, ts, token, reg.OrgID)
+	defer delResp.Body.Close() //nolint:errcheck,gosec
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: got %d, want 204", delResp.StatusCode)
+	}
+
+	// Issuer should be evicted from cache.
+	if _, loaded := srv.oidcProviders.Load("https://idp-del.example.com"); loaded {
+		t.Error("issuer URL still in OIDC provider cache after DELETE — should be evicted")
+	}
+}
+
 // ── Audit integration ───────────────────────────────────────────────────────
 
 func newAuditSSOServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server, *audit.Writer) {
@@ -749,6 +878,19 @@ func TestAudit_SSOOperations(t *testing.T) {
 		}
 		if !entry.Success {
 			t.Error("expected success=true")
+		}
+
+		// Verify client_secret is pre-redacted in new_state (defense-in-depth).
+		if entry.NewState != nil {
+			var state map[string]any
+			if err := json.Unmarshal(entry.NewState, &state); err != nil {
+				t.Fatalf("unmarshal new_state: %v", err)
+			}
+			if v, ok := state["client_secret"]; ok {
+				if v != "[REDACTED]" {
+					t.Errorf("client_secret in audit new_state: got %v, want [REDACTED]", v)
+				}
+			}
 		}
 	})
 

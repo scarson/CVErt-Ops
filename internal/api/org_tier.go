@@ -38,12 +38,12 @@ func (srv *Server) getOrgTierHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve limits.
-	maxAlertRules := resolver.IntLimit("max_alert_rules", 5, 50, -1)
-	maxWatchlists := resolver.IntLimit("max_watchlists", 3, 20, -1)
-	maxMembers := resolver.IntLimit("max_members", 5, 25, -1)
-	apiRateLimit := resolver.IntLimit("api_rate_limit", 60, 300, 1000)
-	channelsEmail := resolver.BoolFlag("channels_email", false, true, true)
-	channelsWebhook := resolver.BoolFlag("channels_webhook", true, true, true)
+	maxAlertRules := resolver.ResolveInt(tier.LimitAlertRules)
+	maxWatchlists := resolver.ResolveInt(tier.LimitWatchlists)
+	maxMembers := resolver.ResolveInt(tier.LimitMembers)
+	apiRateLimit := resolver.ResolveInt(tier.LimitAPIRate)
+	channelsEmail := resolver.ResolveBool(tier.FlagChannelsEmail)
+	channelsWebhook := resolver.ResolveBool(tier.FlagChannelsWebhook)
 
 	// Fetch usage counts.
 	alertCount, err := srv.store.CountAlertRulesByOrg(r.Context(), orgID)

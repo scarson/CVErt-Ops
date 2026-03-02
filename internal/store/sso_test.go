@@ -149,7 +149,7 @@ func TestSSOEmailDomain_CRUD(t *testing.T) {
 	}
 
 	// List domains.
-	domains, err := db.ListSSOEmailDomains(ctx, conn.ID)
+	domains, err := db.ListSSOEmailDomains(ctx, org.ID, conn.ID)
 	if err != nil {
 		t.Fatalf("ListSSOEmailDomains: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestSSOEmailDomain_CRUD(t *testing.T) {
 	if err := db.SetSSOEmailDomains(ctx, conn.ID, org.ID, []string{"newacme.com"}); err != nil {
 		t.Fatalf("SetSSOEmailDomains (replace): %v", err)
 	}
-	domains, err = db.ListSSOEmailDomains(ctx, conn.ID)
+	domains, err = db.ListSSOEmailDomains(ctx, org.ID, conn.ID)
 	if err != nil {
 		t.Fatalf("ListSSOEmailDomains after replace: %v", err)
 	}

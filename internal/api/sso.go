@@ -190,7 +190,7 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 			"display_name":  row.DisplayName,
 			"issuer_url":    row.IssuerUrl,
 			"client_id":     row.ClientID,
-			"client_secret": req.ClientSecret,
+			"client_secret": "[REDACTED]",
 			"enabled":       row.Enabled,
 		},
 	})
@@ -221,7 +221,7 @@ func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch associated domains.
-	domains, err := srv.store.ListSSOEmailDomains(r.Context(), row.ID)
+	domains, err := srv.store.ListSSOEmailDomains(r.Context(), orgID, row.ID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso get: list domains", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -321,6 +321,11 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Evict stale OIDC provider if issuer URL changed.
+	if req.IssuerURL != nil && issuerURL != current.IssuerUrl {
+		srv.oidcProviders.Delete(current.IssuerUrl)
+	}
+
 	// Re-read to get updated timestamps.
 	updated, err := srv.store.GetSSOConnection(r.Context(), orgID)
 	if err != nil || updated == nil {
@@ -329,7 +334,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	domains, err := srv.store.ListSSOEmailDomains(r.Context(), updated.ID)
+	domains, err := srv.store.ListSSOEmailDomains(r.Context(), orgID, updated.ID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso patch: list domains", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -403,6 +408,7 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if current != nil {
+		srv.oidcProviders.Delete(current.IssuerUrl)
 		srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
 			OrgID:      orgID,
 			Action:     "delete",
@@ -445,12 +451,12 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Normalize and validate domains.
+	// Normalize and validate domains (RFC 1035 labels).
 	for i := range req.Domains {
 		req.Domains[i] = strings.ToLower(strings.TrimSpace(req.Domains[i]))
 		d := req.Domains[i]
-		if d == "" || !strings.Contains(d, ".") || strings.ContainsAny(d, " \t") || len(d) > 253 {
-			http.Error(w, "invalid domain: "+d, http.StatusUnprocessableEntity)
+		if err := validateDomain(d); err != nil {
+			http.Error(w, "invalid domain: "+err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 	}
@@ -462,6 +468,39 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"domains": req.Domains})
+}
+
+// validateDomain checks that a domain name conforms to RFC 1035 label rules:
+// each label 1–63 chars, alphanumeric + hyphens only, no leading/trailing hyphens,
+// total length ≤ 253, at least two labels, ASCII only.
+func validateDomain(d string) error {
+	if d == "" {
+		return fmt.Errorf("empty")
+	}
+	if len(d) > 253 {
+		return fmt.Errorf("%s exceeds 253 characters", d)
+	}
+	labels := strings.Split(d, ".")
+	if len(labels) < 2 {
+		return fmt.Errorf("%s has no dot", d)
+	}
+	for _, label := range labels {
+		if len(label) == 0 {
+			return fmt.Errorf("%s has empty label", d)
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("%s has label exceeding 63 characters", d)
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("%s has label with leading/trailing hyphen", d)
+		}
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return fmt.Errorf("%s contains invalid character %q", d, c)
+			}
+		}
+	}
+	return nil
 }
 
 // discoverHandler handles POST /api/v1/auth/discover.

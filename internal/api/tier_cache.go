@@ -52,7 +52,6 @@ func (c *tierCache) Get(orgID uuid.UUID) (string, map[string]any, bool) {
 		return "", nil, false
 	}
 	if c.now().Sub(e.fetchedAt) > c.ttl {
-		delete(c.entries, orgID)
 		return "", nil, false
 	}
 	return e.tier, maps.Clone(e.overrides), true

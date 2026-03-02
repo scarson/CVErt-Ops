@@ -393,7 +393,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	limit := resolver.IntLimit("max_members", 5, 25, -1)
+	limit := resolver.ResolveInt(tier.LimitMembers)
 	if limit >= 0 {
 		count, err := srv.store.CountMemberSlotsUsedByOrg(r.Context(), orgID)
 		if err != nil {

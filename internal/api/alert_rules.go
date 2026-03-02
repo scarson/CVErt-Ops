@@ -173,7 +173,7 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	limit := resolver.IntLimit("max_alert_rules", 5, 50, -1)
+	limit := resolver.ResolveInt(tier.LimitAlertRules)
 	if limit >= 0 {
 		count, err := srv.store.CountAlertRulesByOrg(r.Context(), orgID)
 		if err != nil {

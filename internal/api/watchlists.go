@@ -178,7 +178,7 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	limit := resolver.IntLimit("max_watchlists", 3, 20, -1)
+	limit := resolver.ResolveInt(tier.LimitWatchlists)
 	if limit >= 0 {
 		count, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
 		if err != nil {

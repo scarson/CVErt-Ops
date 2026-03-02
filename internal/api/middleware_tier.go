@@ -58,11 +58,15 @@ func (srv *Server) orgRateLimitMiddleware(next http.Handler) http.Handler {
 		// Resolve rate from tier; default free=60, pro=300, enterprise=1000 req/min.
 		ratePerMin := 60
 		if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
-			ratePerMin = resolver.IntLimit("api_rate_limit", 60, 300, 1000)
+			ratePerMin = resolver.ResolveInt(tier.LimitAPIRate)
 		}
 
 		ratePerSec := rate.Limit(float64(ratePerMin) / 60.0)
-		if !srv.orgRL.Allow(orgID, ratePerSec, ratePerMin) {
+		burst := ratePerMin / 6 // ~10-second burst window
+		if burst < 1 {
+			burst = 1
+		}
+		if !srv.orgRL.Allow(orgID, ratePerSec, burst) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}

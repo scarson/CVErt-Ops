@@ -107,9 +107,9 @@ func (s *Store) SetSSOEmailDomains(ctx context.Context, connectionID, orgID uuid
 }
 
 // ListSSOEmailDomains returns all domains for a connection, sorted alphabetically.
-func (s *Store) ListSSOEmailDomains(ctx context.Context, connectionID uuid.UUID) ([]string, error) {
+func (s *Store) ListSSOEmailDomains(ctx context.Context, orgID, connectionID uuid.UUID) ([]string, error) {
 	var result []string
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		var err error
 		result, err = q.ListSSOEmailDomains(ctx, connectionID)
 		return err

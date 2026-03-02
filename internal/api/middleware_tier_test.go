@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -113,5 +115,45 @@ func TestTierMiddleware_ResolverHasCorrectTier(t *testing.T) {
 	r := tier.Resolver{Tier: tierStr, Overrides: overrides}
 	if got := r.IntLimit("max_alert_rules", 5, 50, -1); got != 999 {
 		t.Errorf("resolver.IntLimit(max_alert_rules) = %d, want 999 (override)", got)
+	}
+}
+
+func TestOrgRateLimitMiddleware_BurstCapped(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	rl := newOrgRateLimiter(func() time.Time { return now }, 5*time.Minute)
+	tc := newTierCache(func() time.Time { return now }, 30*time.Second, 5*time.Minute)
+	defer tc.Stop()
+
+	srv := &Server{orgRL: rl, tierCache: tc} //nolint:exhaustruct // unit test
+
+	orgID := uuid.New()
+	resolver := &tier.Resolver{Tier: "free"}
+
+	// Build a handler chain: middleware → 200 OK.
+	handler := srv.orgRateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	makeReq := func() int {
+		ctx := context.WithValue(context.Background(), ctxOrgID, orgID)
+		ctx = context.WithValue(ctx, ctxTierResolver, resolver)
+		req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Free tier = 60 req/min. Burst should be 10 (10-second window), NOT 60.
+	// Send 10 requests — all should succeed.
+	for i := 0; i < 10; i++ {
+		if code := makeReq(); code != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200 (within burst)", i, code)
+		}
+	}
+
+	// 11th request should be rate-limited (burst exhausted at frozen time).
+	if code := makeReq(); code != http.StatusTooManyRequests {
+		t.Errorf("request 11: got %d, want 429 (burst should be 10, not 60)", code)
 	}
 }

@@ -755,9 +755,181 @@ git commit -m "feat(api): CORS middleware with configurable allowed origins — 
 
 ---
 
-## Phase 6B: Missing API Features
+## Phase 6B: Missing Features & Broken Workflows
 
-### Task 5: Channel test notification
+### Task 5: Fix invite-only first-user bootstrap
+
+**Files:**
+- Modify: `internal/api/auth.go` — allow first registration regardless of mode
+- Modify: `internal/api/auth_test.go` — add test for invite-only bootstrap
+
+**Context (CRITICAL):** When `REGISTRATION_MODE=invite-only`, the `registerHandler` returns 403 for ALL users unconditionally. But `BootstrapFirstUserOrg` (which creates the first org and grants owner role) runs inside the register handler. Result: an invite-only deployment has **no way to create its first user through the API.** The invite-only deployment model is completely non-functional.
+
+**Design decision:** Allow the FIRST registration regardless of mode. The logic should be:
+1. If `RegistrationMode == "open"` → allow registration
+2. If `RegistrationMode == "invite-only"` AND no users exist yet → allow registration (bootstrap)
+3. If `RegistrationMode == "invite-only"` AND users exist → return 403
+
+This is the smallest fix and doesn't require a new CLI command.
+
+**Step 1: Write failing test**
+
+Add to `internal/api/auth_test.go`:
+
+```go
+func TestRegister_InviteOnlyBootstrap(t *testing.T)
+    // Start server with REGISTRATION_MODE=invite-only
+    // First registration attempt → expect 201 (bootstrap allowed)
+    // Verify: user created, org created, user is owner
+
+func TestRegister_InviteOnlyAfterBootstrap(t *testing.T)
+    // Start server with REGISTRATION_MODE=invite-only
+    // First registration → 201 (bootstrap)
+    // Second registration → 403 (blocked — invite-only enforced after bootstrap)
+```
+
+Run: `go test ./internal/api/ -run "TestRegister_InviteOnly" -v`
+Expected: FAIL (first test fails because current code returns 403).
+
+**Step 2: Fix register handler**
+
+In `internal/api/auth.go`, the registration check currently looks like:
+```go
+if srv.cfg.RegistrationMode != "open" {
+    return nil, huma.Error403Forbidden("registration is disabled")
+}
+```
+
+Change to:
+```go
+if srv.cfg.RegistrationMode != "open" {
+    // Allow first user to bootstrap even in invite-only mode.
+    userCount, err := srv.store.CountUsers(ctx)
+    if err != nil || userCount > 0 {
+        return nil, huma.Error403Forbidden("registration is disabled — use an invitation link")
+    }
+}
+```
+
+Add sqlc query: `-- name: CountUsers :one SELECT COUNT(*) FROM users;`
+Add store wrapper: `func (s *Store) CountUsers(ctx context.Context) (int64, error)` using `withBypassTx`.
+
+**Step 3: Run tests, verify pass. Lint. Commit.**
+
+```bash
+git commit -m "fix(auth): allow first-user bootstrap in invite-only mode"
+```
+
+---
+
+### Task 6: Invitation email delivery
+
+**Files:**
+- Create: `internal/notify/templates/email_invitation.html.tmpl`
+- Create: `internal/notify/templates/email_invitation.txt.tmpl`
+- Modify: `internal/notify/render.go` — add `RenderInvitation` function
+- Modify: `internal/api/orgs.go` — send email in `createInvitationHandler`
+- Modify: `internal/api/orgs_test.go` or create `internal/api/invitation_email_test.go`
+
+**Context (HIGH):** The invitation system creates DB records with tokens but NEVER sends an email. The Phase 2A design explicitly deferred email delivery to "Phase 3 — notifications" but it was never implemented in any phase. Admins must manually copy the invitation URL from the API response and share it out-of-band. The SMTP infrastructure (`notify.EmailSend`) already exists and works for alerts/digests.
+
+**Design decisions:**
+- Reuse existing `notify.EmailSend` and template infrastructure
+- Invitation email includes: org name, inviter name, role, and invitation link
+- Link format: `{EXTERNAL_URL}/invitations/{token}` (frontend route — the token is the same one stored in the DB)
+- Send synchronously after creating the invitation record (transactional email — admin is waiting)
+- On SMTP failure: log error, return 201 anyway (invitation record created — admin can resend or share link manually). Include a warning in the response if email failed.
+
+**Step 1: Write email templates**
+
+Create `internal/notify/templates/email_invitation.html.tmpl`:
+
+```html
+{{define "subject"}}You've been invited to join {{.OrgName}} on CVErt Ops{{end}}
+{{define "body"}}
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <h2 style="color: #1a1a2e;">You're Invited</h2>
+  <p>{{.InviterName}} has invited you to join <strong>{{.OrgName}}</strong> on CVErt Ops as a <strong>{{.Role}}</strong>.</p>
+  <p><a href="{{.InviteURL}}" style="display: inline-block; padding: 12px 24px; background-color: #1a1a2e; color: #ffffff; text-decoration: none; border-radius: 4px;">Accept Invitation</a></p>
+  <p style="color: #666; font-size: 14px;">This invitation expires on {{.ExpiresAt}}. If you don't have a CVErt Ops account, you'll need to create one first.</p>
+  <p style="color: #999; font-size: 12px;">If the button doesn't work, copy this URL: {{.InviteURL}}</p>
+</body>
+</html>
+{{end}}
+```
+
+Create matching `.txt.tmpl`.
+
+**Step 2: Add rendering function**
+
+Add to `internal/notify/render.go`:
+
+```go
+type InvitationData struct {
+    OrgName     string
+    InviterName string
+    Role        string
+    InviteURL   string
+    ExpiresAt   string
+}
+
+func RenderInvitation(data InvitationData) (string, string, string, error) {
+    return renderPair(inviteHTML, inviteText, data)
+}
+```
+
+Add parsed template variables and init lines (same pattern as existing templates).
+
+**Step 3: Write failing test**
+
+```go
+func TestCreateInvitation_SendsEmail(t *testing.T)
+    // Create org, POST /invitations with email
+    // Verify: invitation created in DB
+    // Verify: response includes invitation data
+    // Note: email sending verification depends on test SMTP availability.
+    // At minimum, verify no panic/error from the email sending path.
+```
+
+**Step 4: Wire email sending into invitation handler**
+
+In `internal/api/orgs.go` `createInvitationHandler`, after the invitation is successfully created in the DB:
+
+```go
+// Send invitation email (best-effort — don't fail the request if SMTP is down).
+inviteURL := srv.cfg.ExternalURL + "/invitations/" + token
+subject, htmlBody, textBody, err := notify.RenderInvitation(notify.InvitationData{
+    OrgName:     org.Name,
+    InviterName: inviter.DisplayName,
+    Role:        inv.Role,
+    InviteURL:   inviteURL,
+    ExpiresAt:   inv.ExpiresAt.Format("January 2, 2006"),
+})
+if err == nil {
+    smtpCfg := notify.SmtpConfig{
+        Host: srv.cfg.SMTPHost, Port: srv.cfg.SMTPPort,
+        From: srv.cfg.SMTPFrom, Username: srv.cfg.SMTPUsername,
+        Password: srv.cfg.SMTPPassword, TLS: srv.cfg.SMTPTLS,
+    }
+    if emailErr := notify.EmailSend(r.Context(), smtpCfg, []string{inv.Email}, subject, htmlBody, textBody); emailErr != nil {
+        slog.Warn("invitation email failed", "email", inv.Email, "error", emailErr)
+    }
+}
+```
+
+The handler will need access to the org name and inviter display name. Load these if not already in context.
+
+**Step 5: Run tests, verify pass. Lint. Commit.**
+
+```bash
+git commit -m "feat(api): send invitation emails via SMTP — TDD"
+```
+
+---
+
+### Task 7: Channel test notification
 
 **Files:**
 - Create: `internal/api/channel_test_notification_test.go`
@@ -766,7 +938,7 @@ git commit -m "feat(api): CORS middleware with configurable allowed origins — 
 
 **Design decisions:**
 - Endpoint: `POST /api/v1/orgs/{org_id}/channels/{id}/test`
-- Auth: `RoleAdmin` (matches channel CRUD — see Task 7)
+- Auth: `RoleAdmin` (matches channel CRUD — see Task 9)
 - Sends a test payload through the channel synchronously
 - Returns the delivery result (success/failure with error message)
 - Does NOT create a `notification_deliveries` record (test, not real)
@@ -841,7 +1013,7 @@ git commit -m "feat(api): channel test notification endpoint — TDD"
 
 ---
 
-### Task 6: Admin feed management endpoints
+### Task 8: Admin feed management endpoints
 
 **Files:**
 - Create: `internal/api/admin_feeds.go`
@@ -975,7 +1147,7 @@ git commit -m "feat(api): admin feed management endpoints with system-admin auth
 
 ---
 
-### Task 7: Fix channel RBAC
+### Task 9: Fix channel RBAC
 
 **Files:**
 - Modify: `internal/api/server.go` — change channel route auth from `RoleMember` to `RoleAdmin`
@@ -1025,7 +1197,7 @@ git commit -m "fix(api): restrict channel CRUD to admin/owner role per PLAN.md �
 
 ## Phase 6C: PLAN.md Reconciliation
 
-### Task 8: Update Appendix B
+### Task 10: Update Appendix B
 
 **Files:**
 - Modify: `PLAN.md` — Appendix B section
@@ -1127,7 +1299,7 @@ git commit -m "docs: reconcile Appendix B with implemented API — 21 endpoints 
 
 ---
 
-### Task 9: Fix PLAN.md internal inconsistencies
+### Task 11: Fix PLAN.md internal inconsistencies
 
 **Files:**
 - Modify: `PLAN.md`
@@ -1218,7 +1390,7 @@ The gap analysis identified the following items that are NOT addressed in Phase 
 | Graceful shutdown notification draining | GAP-044 | MEDIUM | Edge case: shutdown during webhook HTTP call leaves delivery in `processing` state. Stale lock detector handles recovery. Not urgent. |
 | Migration rollback testing | GAP-045 | MEDIUM | Down migrations exist but aren't systematically tested. Important for production confidence but not a feature. |
 | Search index rebuild admin endpoint | GAP-018 | LOW | Admin action to rebuild `cve_search_index`. Useful for recovery but rarely needed. |
-| Admin feed re-run behavior details | GAP-017 | LOW | Partially addressed by Task 6. Full spec (cursor reset, full re-sync) needs design based on operator needs. |
+| Admin feed re-run behavior details | GAP-017 | LOW | Partially addressed by Task 8. Full spec (cursor reset, full re-sync) needs design based on operator needs. |
 
 ### Billing & SaaS
 
@@ -1233,6 +1405,14 @@ The gap analysis identified the following items that are NOT addressed in Phase 
 |------|---------|----------|--------------|
 | Org deletion | GAP-037 | MEDIUM | Complex cascade implications (all org-scoped tables), data retention requirements, confirmation flow. Needs its own design. |
 | Ownership transfer | GAP-038 | MEDIUM | Requires confirmation mechanism (email? two-step?), handling of declined transfers. Needs design. |
+
+### API Design (from user journey trace)
+
+| Item | Source | Severity | Why Deferred |
+|------|--------|----------|--------------|
+| "Which watchlists matched this CVE?" query | Journey 4 | MEDIUM | Alert events contain `rule_id` but not `watchlist_ids`. Getting from "CVE triggered alert" to "which watchlists are affected" requires N+1 API calls. Could be a computed field on alert event response or a dedicated endpoint. Needs design. |
+| Unauthenticated CVE endpoint rate limiting | Journey 5 | MEDIUM | CVE endpoints are intentionally public per PLAN.md. But no per-IP rate limit on unauthenticated requests — an unauthenticated client can query the entire CVE corpus without throttling. Could add simple IP-based rate limiting to public routes. |
+| On-demand report generation | Journey 3 | LOW | Only scheduled digest reports exist. No "generate a report right now" endpoint. By design per §12, but users want ad-hoc summaries during incident response. |
 
 ---
 
@@ -1249,3 +1429,5 @@ The gap analysis identified the following items that are NOT addressed in Phase 
 | System admin = admin/owner in any org | Pragmatic for self-hosted. Instance operator is typically an org admin. SaaS would need a dedicated super-admin role. |
 | Channel RBAC: admin not member | Channels affect all org members. PLAN.md §7.3 explicitly restricts channel management to admin/owner. The member-level access was a bug. |
 | Admin feed re-run via job queue (async, 202) | Feed syncs can take minutes (NVD full sync). Synchronous response would time out. Job queue's lock_key prevents duplicate concurrent runs. |
+| Invite-only bootstrap: allow first registration regardless of mode | The alternative (CLI `create-admin` command) requires shell access, which is more complex for containerized deployments. Allowing the first registration is the smallest fix, works in all deployment models, and is self-documenting (first user = admin). |
+| Invitation email: best-effort, don't fail request on SMTP error | Invitation record is the source of truth. If SMTP fails, admin can share the link manually or resend. Failing the entire invitation because of a transient SMTP issue is worse UX. |

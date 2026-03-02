@@ -437,3 +437,126 @@ func TestTierGating_OrgRateLimit(t *testing.T) {
 		t.Error("expected at least one 429 response with rate limit of 2/min, but none received")
 	}
 }
+
+func TestTierGating_AlertRules_EnterpriseUnlimited(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tierent1@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tierent1@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("set enterprise tier: %v", err)
+	}
+
+	// Create 10 alert rules (well above the free limit of 5).
+	for i := 0; i < 10; i++ {
+		body := fmt.Sprintf(`{"name":"EntRule %d","logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}],"enabled":false}`, i)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			fmt.Sprintf("%s/api/v1/orgs/%s/alert-rules", ts.URL, orgID),
+			bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "access_token="+token)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("create rule %d: %v", i, err)
+		}
+		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("enterprise rule %d: got %d, want 201", i, resp.StatusCode)
+		}
+	}
+}
+
+func TestTierGating_Watchlists_EnterpriseUnlimited(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tierent2@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tierent2@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("set enterprise tier: %v", err)
+	}
+
+	// Create 10 watchlists (well above the free limit of 3).
+	for i := 0; i < 10; i++ {
+		body := fmt.Sprintf(`{"name":"EntWL %d"}`, i)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			fmt.Sprintf("%s/api/v1/orgs/%s/watchlists", ts.URL, orgID),
+			bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "access_token="+token)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("create watchlist %d: %v", i, err)
+		}
+		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Errorf("enterprise watchlist %d: got %d, want 201", i, resp.StatusCode)
+		}
+	}
+}
+
+func TestTierGating_Members_EnterpriseUnlimited(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tierent3@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tierent3@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("set enterprise tier: %v", err)
+	}
+
+	// Add 9 members via DB to reach 10 total (well above free limit of 5).
+	for i := 0; i < 9; i++ {
+		userID := uuid.New()
+		_, err := db.Pool().Exec(ctx,
+			`INSERT INTO users (id, email, display_name, password_hash) VALUES ($1, $2, $3, $4)`,
+			userID, fmt.Sprintf("entfill%d@example.com", i), fmt.Sprintf("EntFill %d", i), "not-a-real-hash")
+		if err != nil {
+			t.Fatalf("create filler user %d: %v", i, err)
+		}
+		_, err = db.Pool().Exec(ctx,
+			`INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`,
+			orgID, userID)
+		if err != nil {
+			t.Fatalf("create filler member %d: %v", i, err)
+		}
+	}
+
+	// Creating an invitation should succeed on enterprise (unlimited members).
+	body := `{"email":"ent-new@example.com","role":"member"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/invitations", ts.URL, orgID),
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("enterprise invitation at 10 members: got %d, want 202", resp.StatusCode)
+	}
+}

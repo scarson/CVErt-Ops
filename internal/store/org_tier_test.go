@@ -168,6 +168,108 @@ func TestCountMembersByOrg(t *testing.T) {
 	}
 }
 
+func TestCountMemberSlotsUsedByOrg(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := db.CreateOrg(ctx, "SlotsOrg")
+	user, _ := db.CreateUser(ctx, "slots@example.com", "Slots", "", 0)
+	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "owner")
+
+	// 1 member, 0 pending invitations → 1 slot used.
+	count, err := db.AppStore.CountMemberSlotsUsedByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("CountMemberSlotsUsedByOrg: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (just the owner)", count)
+	}
+
+	// Add a pending invitation (unexpired, unaccepted).
+	_, err = db.Pool().Exec(ctx,
+		`INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at)
+		 VALUES ($1, 'pending@example.com', 'member', 'tok-pending', $2, now() + interval '7 day')`,
+		org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("insert pending invitation: %v", err)
+	}
+
+	// 1 member + 1 pending → 2 slots.
+	count, err = db.AppStore.CountMemberSlotsUsedByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("CountMemberSlotsUsedByOrg with pending: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2 (1 member + 1 pending)", count)
+	}
+
+	// Add an expired invitation — should NOT count.
+	_, err = db.Pool().Exec(ctx,
+		`INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at)
+		 VALUES ($1, 'expired@example.com', 'member', 'tok-expired', $2, now() - interval '1 day')`,
+		org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("insert expired invitation: %v", err)
+	}
+
+	count, err = db.AppStore.CountMemberSlotsUsedByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("CountMemberSlotsUsedByOrg with expired: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2 (expired invitation should not count)", count)
+	}
+
+	// Add an accepted invitation — should NOT count.
+	_, err = db.Pool().Exec(ctx,
+		`INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at, accepted_at)
+		 VALUES ($1, 'accepted@example.com', 'member', 'tok-accepted', $2, now() + interval '7 day', now())`,
+		org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("insert accepted invitation: %v", err)
+	}
+
+	count, err = db.AppStore.CountMemberSlotsUsedByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("CountMemberSlotsUsedByOrg with accepted: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2 (accepted invitation should not count)", count)
+	}
+}
+
+func TestGetOrgTier_WithOverrides(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := db.CreateOrg(ctx, "OverridesOrg")
+	_, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = '{"max_alert_rules": 99, "channels_email": true}' WHERE id = $1`, org.ID)
+	if err != nil {
+		t.Fatalf("set overrides: %v", err)
+	}
+
+	tier, overrides, err := db.GetOrgTier(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetOrgTier: %v", err)
+	}
+	if tier != "free" {
+		t.Errorf("tier = %q, want free", tier)
+	}
+	if v, ok := overrides["max_alert_rules"]; !ok {
+		t.Error("missing max_alert_rules override")
+	} else if v != float64(99) {
+		t.Errorf("max_alert_rules = %v, want 99", v)
+	}
+	if v, ok := overrides["channels_email"]; !ok {
+		t.Error("missing channels_email override")
+	} else if v != true {
+		t.Errorf("channels_email = %v, want true", v)
+	}
+}
+
 func TestListAllOrgs(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

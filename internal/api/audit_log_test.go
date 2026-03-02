@@ -426,3 +426,37 @@ func TestAuditAPI_CrossOrgIsolation(t *testing.T) {
 		t.Errorf("cross-org: got %d, want 403", respCross.StatusCode)
 	}
 }
+
+func TestAuditAPI_InvalidParams(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, _, token, orgID := setupAuditAPIOrg(t, db)
+	oid := orgID.String()
+
+	tests := []struct {
+		name   string
+		query  string
+		want   int
+	}{
+		{"limit non-integer", "limit=abc", http.StatusBadRequest},
+		{"limit zero", "limit=0", http.StatusBadRequest},
+		{"limit negative", "limit=-1", http.StatusBadRequest},
+		{"limit above max clamped", "limit=500", http.StatusOK},
+		{"invalid actor_id", "actor_id=not-a-uuid", http.StatusBadRequest},
+		{"invalid after date", "after=not-a-date", http.StatusBadRequest},
+		{"invalid before date", "before=2024-13-01", http.StatusBadRequest},
+		{"invalid cursor ignored", "cursor=not-valid-base64-cursor", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := doGetAuditLog(t, ctx, ts, token, oid, tt.query)
+			resp.Body.Close() //nolint:errcheck,gosec
+			if resp.StatusCode != tt.want {
+				t.Errorf("%s: got %d, want %d", tt.query, resp.StatusCode, tt.want)
+			}
+		})
+	}
+}

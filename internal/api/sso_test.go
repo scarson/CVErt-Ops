@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/audit"
@@ -544,6 +545,163 @@ func TestSSODomains_ValidatesFormat(t *testing.T) {
 	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
 	if resp3.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("space domain: got %d, want 422", resp3.StatusCode)
+	}
+}
+
+// ── Input validation ─────────────────────────────────────────────────────────
+
+func TestDiscover_InputValidation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSSOServer(t, db)
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"invalid JSON", "{bad", http.StatusBadRequest},
+		{"empty email", `{"email":""}`, http.StatusUnprocessableEntity},
+		{"whitespace email", `{"email":"  "}`, http.StatusUnprocessableEntity},
+		{"no at sign", `{"email":"nope"}`, http.StatusUnprocessableEntity},
+		{"nothing after at", `{"email":"user@"}`, http.StatusUnprocessableEntity},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/discover",
+				bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+			if err != nil {
+				t.Fatalf("discover: %v", err)
+			}
+			resp.Body.Close() //nolint:errcheck,gosec
+			if resp.StatusCode != tt.want {
+				t.Errorf("%s: got %d, want %d", tt.name, resp.StatusCode, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreateSSO_FieldValidation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-val@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-val@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"invalid JSON", "{bad", http.StatusBadRequest},
+		{"empty display_name", `{"display_name":"","issuer_url":"https://x","client_id":"c","client_secret":"s"}`, http.StatusUnprocessableEntity},
+		{"empty issuer_url", `{"display_name":"N","issuer_url":"","client_id":"c","client_secret":"s"}`, http.StatusUnprocessableEntity},
+		{"empty client_id", `{"display_name":"N","issuer_url":"https://x","client_id":"","client_secret":"s"}`, http.StatusUnprocessableEntity},
+		{"empty client_secret", `{"display_name":"N","issuer_url":"https://x","client_id":"c","client_secret":""}`, http.StatusUnprocessableEntity},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, tt.body)
+			resp.Body.Close() //nolint:errcheck,gosec
+			if resp.StatusCode != tt.want {
+				t.Errorf("%s: got %d, want %d", tt.name, resp.StatusCode, tt.want)
+			}
+		})
+	}
+}
+
+func TestPatchSSO_NoConnection(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-pnc@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-pnc@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// PATCH without creating a connection first → 404.
+	resp := doPatchSSO(t, ctx, ts, token, reg.OrgID, `{"display_name":"X"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("patch no connection: got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestPutSSODomains_NoConnection(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-dnc@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-dnc@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// PUT domains without creating a connection first → 404.
+	resp := doPutSSODomains(t, ctx, ts, token, reg.OrgID, `{"domains":["example.com"]}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("put domains no connection: got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestSSODomains_AdditionalValidation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	token, orgID := setupSSOWithDomains(t, db, srv, ts, "sso-dav@example.com", nil, false)
+
+	// Domain > 253 characters.
+	longDomain := strings.Repeat("a", 250) + ".com"
+	resp := doPutSSODomains(t, ctx, ts, token, orgID, `{"domains":["`+longDomain+`"]}`)
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("long domain: got %d, want 422", resp.StatusCode)
+	}
+
+	// Uppercase domain should be normalized (accepted, stored as lowercase).
+	resp2 := doPutSSODomains(t, ctx, ts, token, orgID, `{"domains":["UPPER.COM"]}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("uppercase domain: got %d, want 200", resp2.StatusCode)
+	}
+	// GET should return lowercase.
+	getResp := doGetSSO(t, ctx, ts, token, orgID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec
+	var ssoData map[string]any
+	json.NewDecoder(getResp.Body).Decode(&ssoData) //nolint:errcheck,gosec
+	domains, _ := ssoData["domains"].([]any)
+	if len(domains) != 1 || domains[0] != "upper.com" {
+		t.Errorf("domain not normalized to lowercase: got %v", domains)
 	}
 }
 

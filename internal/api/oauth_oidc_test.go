@@ -893,3 +893,46 @@ func TestAudit_IdentityLinking(t *testing.T) {
 		t.Error("expected success=true")
 	}
 }
+
+// ── OIDC login edge cases ───────────────────────────────────────────────────
+
+func TestOIDCLogin_InvalidConnectionID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newOIDCTestServer(t, db)
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/oidc/not-a-uuid/login", nil)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid connection_id: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestOIDCLogin_NonexistentConnectionID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newOIDCTestServer(t, db)
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	fakeID := "00000000-0000-0000-0000-000000000000"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/oidc/"+fakeID+"/login", nil)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("nonexistent connection_id: got %d, want 404", resp.StatusCode)
+	}
+}

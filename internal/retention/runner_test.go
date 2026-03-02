@@ -495,6 +495,60 @@ func TestRunner_AuditLogBatchSize(t *testing.T) {
 	}
 }
 
+func TestRunner_UnlimitedRetentionSkipsOrg(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := now.Add(-500 * 24 * time.Hour) // 500 days old
+
+	org, _ := db.CreateOrg(ctx, "UnlimitedRetOrg")
+	if err := db.UpdateOrgTier(ctx, org.ID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	// Set retention override to -1 (unlimited) for alert events.
+	if _, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = '{"retention_alert_events_days": -1}' WHERE id = $1`, org.ID,
+	); err != nil {
+		t.Fatalf("set tier overrides: %v", err)
+	}
+
+	// Create an alert rule and a very old alert event.
+	var ruleID uuid.UUID
+	if err := db.Pool().QueryRow(ctx,
+		`INSERT INTO alert_rules (org_id, name, logic, conditions, status)
+		 VALUES ($1, 'rule', 'and', '[]'::jsonb, 'active') RETURNING id`, org.ID,
+	).Scan(&ruleID); err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+	if _, err := db.Pool().Exec(ctx,
+		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at)
+		 VALUES ($1, $2, 'CVE-2024-UNLIM', 'hash', $3)`, org.ID, ruleID, old,
+	); err != nil {
+		t.Fatalf("seed alert event: %v", err)
+	}
+
+	cfg := defaultConfig()
+	cfg.AlertEventsDays = 90 // default would delete 500-day-old data
+
+	runner := retention.NewRunner(db.Store, cfg, slog.Default())
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Org with unlimited retention (-1 override) should keep its old data.
+	var remaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM alert_events WHERE org_id = $1", org.ID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("remaining = %d, want 1 (unlimited retention should skip org)", remaining)
+	}
+}
+
 func TestRunner_AICleanup(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

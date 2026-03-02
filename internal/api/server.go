@@ -165,6 +165,7 @@ func (srv *Server) Handler() http.Handler {
 
 		r.Route("/{org_id}", func(r chi.Router) {
 			r.Use(srv.RequireOrgRole(RoleViewer))
+			r.Use(srv.tierMiddleware)
 			r.Get("/", srv.getOrgHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
 

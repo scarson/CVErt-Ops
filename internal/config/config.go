@@ -98,6 +98,14 @@ type Config struct {
 	// ── Data retention ───────────────────────────────────────────────────────────
 	RetentionCleanupEnabled   bool `env:"RETENTION_CLEANUP_ENABLED"    envDefault:"true"`
 	RetentionCleanupBatchSize int  `env:"RETENTION_CLEANUP_BATCH_SIZE" envDefault:"10000"`
+	// Per-table retention windows.
+	RetentionRawPayloadDays      int `env:"RETENTION_RAW_PAYLOAD_DAYS"              envDefault:"90"`
+	RetentionFeedFetchLogDays    int `env:"RETENTION_FEED_FETCH_LOG_DAYS"           envDefault:"90"`
+	RetentionAlertEventsDays     int `env:"RETENTION_ALERT_EVENTS_DAYS"             envDefault:"365"`
+	RetentionNotifDeliveriesDays int `env:"RETENTION_NOTIFICATION_DELIVERIES_DAYS"  envDefault:"90"`
+	RetentionAuditLogDays        int `env:"RETENTION_AUDIT_LOG_DAYS"                envDefault:"365"`
+	RetentionJobQueueHours       int `env:"RETENTION_JOB_QUEUE_HOURS"               envDefault:"24"`
+	RetentionMaxRuntimeSeconds   int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
 
 	// ── Logging ──────────────────────────────────────────────────────────────────
 	LogLevel  string `env:"LOG_LEVEL"  envDefault:"info"`

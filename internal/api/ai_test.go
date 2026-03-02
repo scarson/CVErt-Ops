@@ -14,6 +14,7 @@ import (
 
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -738,5 +739,38 @@ func TestSummarizeHandler_CacheHit(t *testing.T) {
 	json.NewDecoder(resp2.Body).Decode(&result2) //nolint:errcheck,gosec
 	if !result2.Cached {
 		t.Error("second request should be cached")
+	}
+}
+
+func TestNLSearchHandler_ProTierQuota(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-0099", "critical", nil)
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "aipro@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "aipro@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Upgrade to pro tier — NL search limit should be 100, not 10.
+	orgID, _ := uuid.Parse(reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	// Send 11 requests (exceeds free=10, within pro=100). All should succeed.
+	for i := 0; i < 11; i++ {
+		body := fmt.Sprintf(`{"query":"pro tier query %d"}`, i)
+		resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("request %d returned 429 — pro tier should allow 100 requests/day", i)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200", i, resp.StatusCode)
+		}
 	}
 }

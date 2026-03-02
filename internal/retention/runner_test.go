@@ -454,6 +454,47 @@ func TestRunner_AuditLogRetention(t *testing.T) {
 	}
 }
 
+func TestRunner_AuditLogBatchSize(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := now.Add(-200 * 24 * time.Hour)
+	org, _ := db.CreateOrg(ctx, "AuditBatchOrg")
+
+	// Insert 15 old audit_log entries.
+	for i := 0; i < 15; i++ {
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO audit_log (org_id, actor_email, action, entity_type, entity_id, success, created_at)
+			 VALUES ($1, 'batch@example.com', 'create', 'alert_rule', $2, true, $3)`,
+			org.ID, uuid.New().String(), old.Add(time.Duration(i)*time.Second),
+		); err != nil {
+			t.Fatalf("seed audit_log %d: %v", i, err)
+		}
+	}
+
+	cfg := defaultConfig()
+	cfg.AuditLogDays = 90
+	cfg.BatchSize = 5 // should loop: 5 + 5 + 5
+
+	runner := retention.NewRunner(db.Store, cfg, slog.Default())
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// All 15 should be deleted (runner loops batches of 5).
+	var remaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM audit_log WHERE org_id = $1", org.ID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("remaining = %d, want 0 (all 15 should be deleted via batch loop)", remaining)
+	}
+}
+
 func TestRunner_AICleanup(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

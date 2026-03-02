@@ -1,5 +1,5 @@
 // ABOUTME: Tests for AES-256-GCM authenticated encryption.
-// ABOUTME: Covers round-trip, nonce uniqueness, tamper detection, wrong key, empty plaintext, and invalid key length.
+// ABOUTME: Covers round-trip, nonce uniqueness, tamper detection, wrong key, empty plaintext, and short ciphertext.
 package crypto
 
 import (
@@ -109,11 +109,10 @@ func TestAESGCM_EmptyPlaintext(t *testing.T) {
 	}
 }
 
-func TestAESGCM_InvalidKeyLength(t *testing.T) {
+func TestAESGCM_ShortCiphertext(t *testing.T) {
 	t.Parallel()
-	// This test verifies that the API requires a fixed [32]byte key.
-	// Since the key is [32]byte, the compiler enforces the length.
-	// Instead, test that ciphertext too short to contain a nonce is rejected.
+	// Key length is enforced at compile time via [32]byte. Verify that
+	// ciphertext too short to contain a nonce is rejected at runtime.
 	key := testKey(t)
 
 	_, err := Decrypt(key, []byte("short"))

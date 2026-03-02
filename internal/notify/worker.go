@@ -26,8 +26,7 @@ type WorkerConfig struct {
 	BackoffBaseSeconds  int
 	MaxConcurrentPerOrg int
 	StuckThreshold      time.Duration // default 2 minutes if zero
-	AILogRetentionDays  int           // default 90 if zero
-	RetentionEnabled    bool          // gate for all retention cleanup tickers
+	RetentionEnabled    bool          // gate for retention job scheduling
 }
 
 // Worker polls notification_deliveries and executes outbound deliveries (webhook or email).
@@ -48,9 +47,6 @@ type Worker struct {
 func NewWorker(st *store.Store, client *http.Client, cfg WorkerConfig, smtpCfg SmtpConfig, externalURL string) *Worker {
 	if cfg.StuckThreshold == 0 {
 		cfg.StuckThreshold = 2 * time.Minute
-	}
-	if cfg.AILogRetentionDays == 0 {
-		cfg.AILogRetentionDays = 90
 	}
 	return &Worker{
 		store:       st,
@@ -74,12 +70,12 @@ func (w *Worker) Start(ctx context.Context) {
 	stuckTicker := time.NewTicker(60 * time.Second)
 	recoveryTicker := time.NewTicker(5 * time.Minute)
 	digestTicker := time.NewTicker(60 * time.Second)
-	aiCleanupTicker := time.NewTicker(1 * time.Hour)
+	retentionTicker := time.NewTicker(24 * time.Hour)
 	defer claimTicker.Stop()
 	defer stuckTicker.Stop()
 	defer recoveryTicker.Stop()
 	defer digestTicker.Stop()
-	defer aiCleanupTicker.Stop()
+	defer retentionTicker.Stop()
 
 	for {
 		select {
@@ -94,8 +90,8 @@ func (w *Worker) Start(ctx context.Context) {
 			w.runRecovery(ctx)
 		case <-digestTicker.C:
 			w.runDigest(ctx)
-		case <-aiCleanupTicker.C:
-			w.runAICleanup(ctx)
+		case <-retentionTicker.C:
+			w.scheduleRetention(ctx)
 		}
 	}
 }
@@ -106,9 +102,9 @@ func (w *Worker) RunOnce(ctx context.Context) {
 	w.wg.Wait()
 }
 
-// RunAICleanupOnce executes a single AI cleanup tick. Used in tests only.
-func (w *Worker) RunAICleanupOnce(ctx context.Context) {
-	w.runAICleanup(ctx)
+// RunRetentionScheduleOnce executes a single retention scheduling tick. Used in tests only.
+func (w *Worker) RunRetentionScheduleOnce(ctx context.Context) {
+	w.scheduleRetention(ctx)
 }
 
 func (w *Worker) runClaim(ctx context.Context) {
@@ -341,22 +337,26 @@ func (w *Worker) runRecovery(ctx context.Context) {
 	}
 }
 
-func (w *Worker) runAICleanup(ctx context.Context) {
+func (w *Worker) scheduleRetention(ctx context.Context) {
 	if !w.cfg.RetentionEnabled {
 		return
 	}
 
-	n, err := w.store.CleanupExpiredAICache(ctx)
+	has, err := w.store.HasPendingOrRunningJob(ctx, "cleanup:retention")
 	if err != nil {
-		w.log.Error("cleanup expired AI cache", "err", err)
-	} else if n > 0 {
-		w.log.Info("cleaned up expired AI cache entries", "count", n)
+		w.log.Error("check pending retention job", "err", err)
+		return
+	}
+	if has {
+		w.log.Debug("retention job already pending/running, skipping")
+		return
 	}
 
-	m, err := w.store.CleanupOldAIRequestLogs(ctx, w.cfg.AILogRetentionDays)
+	lockKey := "cleanup:retention"
+	_, err = w.store.EnqueueJob(ctx, "retention_cleanup", 0, json.RawMessage(`{}`), &lockKey, 1, nil)
 	if err != nil {
-		w.log.Error("cleanup old AI request logs", "err", err)
-	} else if m > 0 {
-		w.log.Info("cleaned up old AI request logs", "count", m)
+		w.log.Error("enqueue retention job", "err", err)
+		return
 	}
+	w.log.Info("enqueued retention cleanup job")
 }

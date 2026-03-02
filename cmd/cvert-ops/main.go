@@ -45,6 +45,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/retention"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 	"github.com/scarson/cvert-ops/migrations"
@@ -165,11 +166,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		MaxAttempts:         cfg.NotifyMaxAttempts,
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
-		AILogRetentionDays:  cfg.AILogRetentionDays,
 		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+
+	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 
 	handler := apiSrv.Handler()
 
@@ -268,11 +270,12 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		MaxAttempts:         cfg.NotifyMaxAttempts,
 		BackoffBaseSeconds:  cfg.NotifyBackoffBaseSeconds,
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
-		AILogRetentionDays:  cfg.AILogRetentionDays,
 		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+
+	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
@@ -286,6 +289,25 @@ func feedIngestHandler(_ context.Context, payload json.RawMessage) error {
 	slog.Info("feed ingest job received — handler wired in commits 4–8",
 		"payload_len", len(payload))
 	return nil
+}
+
+// retentionHandler returns a worker.Handler that runs the retention cleanup runner.
+func retentionHandler(st *store.Store, cfg *config.Config) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		r := retention.NewRunner(st, retention.Config{
+			Enabled:           cfg.RetentionCleanupEnabled,
+			BatchSize:         cfg.RetentionCleanupBatchSize,
+			MaxRuntimeSeconds: cfg.RetentionMaxRuntimeSeconds,
+			RawPayloadDays:    cfg.RetentionRawPayloadDays,
+			FeedFetchLogDays:  cfg.RetentionFeedFetchLogDays,
+			JobQueueHours:     cfg.RetentionJobQueueHours,
+			AILogDays:         cfg.AILogRetentionDays,
+			AlertEventsDays:   cfg.RetentionAlertEventsDays,
+			NotifDelivDays:    cfg.RetentionNotifDeliveriesDays,
+			AuditLogDays:      cfg.RetentionAuditLogDays,
+		}, slog.Default())
+		return r.Run(ctx)
+	}
 }
 
 // ── migrate ───────────────────────────────────────────────────────────────────

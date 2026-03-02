@@ -181,6 +181,7 @@ func (srv *Server) Handler() http.Handler {
 	// ── Generic OIDC SSO routes ─────────────────────────────────────────────
 	apiRouter.Get("/auth/oidc/{connection_id}/login", srv.oidcLoginHandler)
 	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
+	apiRouter.Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
@@ -255,6 +256,7 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleOwner)).Patch("/", srv.patchSSOHandler)
 				r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSSOHandler)
 				r.With(srv.RequireOrgRole(RoleOwner)).Put("/domains", srv.putSSODomainsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Get("/link", srv.oidcLinkInitHandler)
 			})
 
 			// Audit log (enterprise only, admin+)

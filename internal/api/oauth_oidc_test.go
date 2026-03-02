@@ -1,4 +1,4 @@
-// ABOUTME: Integration tests for the generic OIDC SSO login flow.
+// ABOUTME: Integration tests for the generic OIDC SSO login and identity linking flows.
 // ABOUTME: Uses a mock OIDC IdP with RSA-signed ID tokens to test init, callback, and error paths.
 package api
 
@@ -391,5 +391,166 @@ func TestOIDCFlow_CrossOrgIsolation(t *testing.T) {
 	// Same sub, different connection → must get 403 (no linked identity for conn2).
 	if cbResp.StatusCode != http.StatusForbidden {
 		t.Errorf("cross-org callback: got %d, want 403 (identity linked to conn1, not conn2)", cbResp.StatusCode)
+	}
+}
+
+func TestIdentityLinking_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	mock := testutil.NewMockOIDC(t)
+	srv, ts := newOIDCTestServer(t, db)
+
+	orgID, connID := setupOIDCConnection(t, db, srv, ts, mock, "link-owner@example.com", nil, true)
+
+	// Login to get access token for authenticated requests.
+	loginResp := doLogin(t, ctx, ts, "link-owner@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Step 1: Init link — should redirect to IdP.
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/orgs/"+orgID+"/sso/link", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
+	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck,gosec // G104
+	if initResp.StatusCode != http.StatusFound {
+		t.Fatalf("init link: got %d, want 302", initResp.StatusCode)
+	}
+
+	// Extract state and nonce cookies.
+	var stateCookie, nonceCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		switch c.Name {
+		case "oauth_state":
+			stateCookie = c
+		case "oidc_nonce":
+			nonceCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("missing oauth_state cookie")
+	}
+	if nonceCookie == nil {
+		t.Fatal("missing oidc_nonce cookie")
+	}
+	mock.SetNonce(nonceCookie.Value)
+
+	// Step 2: Call link callback with code + state + nonce + access_token cookies.
+	callbackURL := ts.URL + "/api/v1/auth/oidc/link-callback?code=mock-code&state=" + stateCookie.Value
+	cbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	cbReq.AddCookie(stateCookie)
+	cbReq.AddCookie(nonceCookie)
+	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
+	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer cbResp.Body.Close() //nolint:errcheck,gosec // G104
+	if cbResp.StatusCode != http.StatusOK {
+		var body json.RawMessage
+		json.NewDecoder(cbResp.Body).Decode(&body) //nolint:errcheck,gosec // diagnostic
+		t.Fatalf("link callback: got %d, want 200. Body: %s", cbResp.StatusCode, body)
+	}
+
+	// Verify identity was created.
+	providerKey := "oidc:" + connID
+	user, err := db.GetUserByProviderID(ctx, providerKey, mock.Sub)
+	if err != nil {
+		t.Fatalf("GetUserByProviderID: %v", err)
+	}
+	if user == nil {
+		t.Fatal("identity not created — GetUserByProviderID returned nil")
+	}
+}
+
+func TestIdentityLinking_AlreadyLinked(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	mock := testutil.NewMockOIDC(t)
+	srv, ts := newOIDCTestServer(t, db)
+
+	orgID, connID := setupOIDCConnection(t, db, srv, ts, mock, "link-dupe@example.com", nil, true)
+
+	// Pre-create a DIFFERENT user with the same provider identity linked.
+	otherUser, err := db.CreateUser(ctx, "other@example.com", "Other", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	providerKey := "oidc:" + connID
+	if err := db.UpsertUserIdentity(ctx, otherUser.ID, providerKey, mock.Sub, "other@example.com"); err != nil {
+		t.Fatalf("UpsertUserIdentity: %v", err)
+	}
+
+	// Login as org owner.
+	loginResp := doLogin(t, ctx, ts, "link-dupe@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Init link flow.
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/orgs/"+orgID+"/sso/link", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
+	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck,gosec // G104
+	if initResp.StatusCode != http.StatusFound {
+		t.Fatalf("init link: got %d, want 302", initResp.StatusCode)
+	}
+
+	var stateCookie, nonceCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		switch c.Name {
+		case "oauth_state":
+			stateCookie = c
+		case "oidc_nonce":
+			nonceCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("missing oauth_state cookie")
+	}
+	if nonceCookie == nil {
+		t.Fatal("missing oidc_nonce cookie")
+	}
+	mock.SetNonce(nonceCookie.Value)
+
+	// Call link callback — identity already linked to different user → 409.
+	callbackURL := ts.URL + "/api/v1/auth/oidc/link-callback?code=mock-code&state=" + stateCookie.Value
+	cbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	cbReq.AddCookie(stateCookie)
+	cbReq.AddCookie(nonceCookie)
+	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
+	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer cbResp.Body.Close() //nolint:errcheck,gosec // G104
+
+	// Should get 409 Conflict — identity already linked to different user.
+	if cbResp.StatusCode != http.StatusConflict {
+		var body json.RawMessage
+		json.NewDecoder(cbResp.Body).Decode(&body) //nolint:errcheck,gosec // diagnostic
+		t.Errorf("link callback: got %d, want 409 (identity already linked to different user). Body: %s", cbResp.StatusCode, body)
 	}
 }

@@ -176,6 +176,10 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Get("/auth/oauth/google", srv.googleInitHandler)
 	apiRouter.Get("/auth/oauth/google/callback", srv.googleCallbackHandler)
 
+	// ── Generic OIDC SSO routes ─────────────────────────────────────────────
+	apiRouter.Get("/auth/oidc/{connection_id}/login", srv.oidcLoginHandler)
+	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
+
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())

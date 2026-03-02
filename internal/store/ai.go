@@ -207,21 +207,6 @@ func (s *Store) PutAICache(ctx context.Context, orgID uuid.UUID, feature, prompt
 	})
 }
 
-// CleanupExpiredAICache deletes expired cache entries. Uses bypass TX (worker cleanup).
-// Returns the number of rows deleted.
-func (s *Store) CleanupExpiredAICache(ctx context.Context) (int64, error) {
-	var n int64
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		var err error
-		n, err = q.CleanupExpiredAICache(ctx)
-		return err
-	})
-	if err != nil {
-		return 0, fmt.Errorf("cleanup expired ai cache: %w", err)
-	}
-	return n, nil
-}
-
 // InsertAIRequestLog records an AI request for observability. Uses org TX.
 func (s *Store) InsertAIRequestLog(ctx context.Context, entry AIRequestLogEntry) error {
 	return s.withOrgTx(ctx, entry.OrgID, func(q *generated.Queries) error {
@@ -242,20 +227,6 @@ func (s *Store) InsertAIRequestLog(ctx context.Context, entry AIRequestLogEntry)
 	})
 }
 
-// CleanupOldAIRequestLogs deletes request log entries older than retentionDays.
-// Uses bypass TX (worker cleanup). Returns the number of rows deleted.
-func (s *Store) CleanupOldAIRequestLogs(ctx context.Context, retentionDays int) (int64, error) {
-	var n int64
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		var err error
-		n, err = q.CleanupOldAIRequestLogs(ctx, int32(retentionDays)) //nolint:gosec // G115: retention days are always small
-		return err
-	})
-	if err != nil {
-		return 0, fmt.Errorf("cleanup old ai request logs: %w", err)
-	}
-	return n, nil
-}
 
 // toNullInt32 converts an int to sql.NullInt32; zero maps to NULL.
 func toNullInt32(v int) sql.NullInt32 {

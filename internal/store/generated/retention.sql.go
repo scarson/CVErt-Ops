@@ -217,17 +217,3 @@ func (q *Queries) CleanupRefreshTokens(ctx context.Context, arg CleanupRefreshTo
 	}
 	return result.RowsAffected()
 }
-
-const hasPendingOrRunningJob = `-- name: HasPendingOrRunningJob :one
-SELECT EXISTS(
-    SELECT 1 FROM job_queue
-    WHERE lock_key = $1::text AND status IN ('pending', 'running')
-) AS has_job
-`
-
-func (q *Queries) HasPendingOrRunningJob(ctx context.Context, lockKey string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, hasPendingOrRunningJob, lockKey)
-	var has_job bool
-	err := row.Scan(&has_job)
-	return has_job, err
-}

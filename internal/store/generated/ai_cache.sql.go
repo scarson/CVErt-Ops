@@ -12,18 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const cleanupExpiredAICache = `-- name: CleanupExpiredAICache :execrows
-DELETE FROM ai_cache WHERE expires_at < now()
-`
-
-func (q *Queries) CleanupExpiredAICache(ctx context.Context) (int64, error) {
-	result, err := q.db.ExecContext(ctx, cleanupExpiredAICache)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const getAICache = `-- name: GetAICache :one
 
 SELECT response FROM ai_cache

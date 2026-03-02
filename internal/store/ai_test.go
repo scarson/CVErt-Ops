@@ -386,40 +386,6 @@ func TestGetAICache_DifferentPromptVersion(t *testing.T) {
 	}
 }
 
-func TestCleanupExpiredAICache(t *testing.T) {
-	t.Parallel()
-	s := testutil.NewTestDB(t)
-	ctx := context.Background()
-
-	org, _ := s.CreateOrg(ctx, "AICacheOrg5")
-
-	// Put a cache entry with 1-second TTL.
-	if err := s.PutAICache(ctx, org.ID, "nl_search", "v1", "expiring", json.RawMessage(`{}`), time.Second); err != nil {
-		t.Fatalf("PutAICache: %v", err)
-	}
-
-	// Wait for expiry.
-	time.Sleep(2 * time.Second)
-
-	// Cleanup should remove the expired entry.
-	n, err := s.CleanupExpiredAICache(ctx)
-	if err != nil {
-		t.Fatalf("CleanupExpiredAICache: %v", err)
-	}
-	if n < 1 {
-		t.Errorf("CleanupExpiredAICache deleted %d rows, want >= 1", n)
-	}
-
-	// Confirm it's gone.
-	_, found, err := s.GetAICache(ctx, org.ID, "nl_search", "v1", "expiring")
-	if err != nil {
-		t.Fatalf("GetAICache after cleanup: %v", err)
-	}
-	if found {
-		t.Error("expected cache miss after cleanup of expired entry")
-	}
-}
-
 func TestInsertAIRequestLog(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -479,42 +445,6 @@ func TestInsertAIRequestLog(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("InsertAIRequestLog (cache hit): %v", err)
-	}
-}
-
-func TestCleanupOldAIRequestLogs(t *testing.T) {
-	t.Parallel()
-	s := testutil.NewTestDB(t)
-	ctx := context.Background()
-
-	org, _ := s.CreateOrg(ctx, "AILogOrg2")
-	userID := uuid.New()
-
-	// Insert a log entry (created_at defaults to now()).
-	err := s.InsertAIRequestLog(ctx, store.AIRequestLogEntry{
-		OrgID:         org.ID,
-		UserID:        userID,
-		Feature:       "nl_search",
-		InputHash:     "cleanup_test",
-		PromptVersion: "v1",
-		Model:         "gemini-2.0-flash",
-		CacheHit:      false,
-		InputTokens:   10,
-		OutputTokens:  5,
-		LatencyMS:     100,
-		Status:        "success",
-	})
-	if err != nil {
-		t.Fatalf("InsertAIRequestLog: %v", err)
-	}
-
-	// Cleanup with 0 days retention — should delete everything.
-	n, err := s.CleanupOldAIRequestLogs(ctx, 0)
-	if err != nil {
-		t.Fatalf("CleanupOldAIRequestLogs: %v", err)
-	}
-	if n < 1 {
-		t.Errorf("CleanupOldAIRequestLogs deleted %d rows, want >= 1", n)
 	}
 }
 

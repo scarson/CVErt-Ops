@@ -74,9 +74,3 @@ WITH doomed AS (
 DELETE FROM ai_usage_counters auc
 USING doomed
 WHERE auc.org_id = doomed.org_id AND auc.feature = doomed.feature AND auc.date = doomed.date;
-
--- name: HasPendingOrRunningJob :one
-SELECT EXISTS(
-    SELECT 1 FROM job_queue
-    WHERE lock_key = @lock_key::text AND status IN ('pending', 'running')
-) AS has_job;

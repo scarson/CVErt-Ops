@@ -456,3 +456,50 @@ func TestRunner_BatchLoop(t *testing.T) {
 		t.Errorf("remaining = %d, want 0 (all 25 should be deleted via batch loop)", remaining)
 	}
 }
+
+func TestRunner_ErrorIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	old := now.Add(-100 * 24 * time.Hour)
+
+	// Seed data in cve_raw_payloads and feed_fetch_log.
+	if _, err := db.Pool().Exec(ctx,
+		`INSERT INTO cve_raw_payloads (cve_id, source_name, payload, ingested_at)
+		 VALUES ('CVE-2024-ERR', 'nvd', '{}', $1)`, old,
+	); err != nil {
+		t.Fatalf("seed raw: %v", err)
+	}
+	if _, err := db.Pool().Exec(ctx,
+		`INSERT INTO feed_fetch_log (feed_name, started_at, status) VALUES ('nvd', $1, 'success')`, old,
+	); err != nil {
+		t.Fatalf("seed fetch log: %v", err)
+	}
+
+	// Break cve_raw_payloads so its cleanup query fails (rename the column
+	// referenced in the DELETE). feed_fetch_log should still be cleaned.
+	if _, err := db.Pool().Exec(ctx,
+		`ALTER TABLE cve_raw_payloads RENAME COLUMN ingested_at TO ingested_at_broken`,
+	); err != nil {
+		t.Fatalf("break table: %v", err)
+	}
+
+	cfg := defaultConfig()
+	runner := retention.NewRunner(db.Store, cfg, slog.Default())
+	if err := runner.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v (should be nil even with per-table errors)", err)
+	}
+
+	// feed_fetch_log should be cleaned despite the cve_raw_payloads error.
+	var feedRemaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM feed_fetch_log WHERE feed_name = 'nvd'",
+	).Scan(&feedRemaining); err != nil {
+		t.Fatalf("count feed: %v", err)
+	}
+	if feedRemaining != 0 {
+		t.Errorf("feed_fetch_log remaining = %d, want 0 (error in earlier table should not block)", feedRemaining)
+	}
+}

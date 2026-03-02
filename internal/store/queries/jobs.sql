@@ -69,3 +69,9 @@ RETURNING id, queue, lock_key;
 INSERT INTO job_queue (queue, priority, payload, lock_key, max_attempts, run_after)
 VALUES ($1, $2, $3, $4, $5, coalesce($6, now()))
 RETURNING id;
+
+-- name: HasPendingOrRunningJob :one
+SELECT EXISTS(
+    SELECT 1 FROM job_queue
+    WHERE lock_key = @lock_key::text AND status IN ('pending', 'running')
+) AS has_job;

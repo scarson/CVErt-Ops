@@ -107,3 +107,17 @@ func (s *Store) EnqueueJob(
 	}
 	return id, nil
 }
+
+// HasPendingOrRunningJob checks if a job with the given lock_key exists in pending or running state.
+func (s *Store) HasPendingOrRunningJob(ctx context.Context, lockKey string) (bool, error) {
+	var has bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		has, err = q.HasPendingOrRunningJob(ctx, lockKey)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("has pending or running job: %w", err)
+	}
+	return has, nil
+}

@@ -286,16 +286,22 @@ Index-based pagination is required by SCIM spec. Org member counts are typically
 
 **`PUT /Users/{id}` — Replace**
 
+PUT is a full resource replacement per SCIM spec. Omitted mutable attributes are reset to defaults. This is Okta's primary update path (Okta uses PUT for attribute updates, PATCH only for activation/deactivation).
+
 ```
 1. Lookup org_members by user_id (withOrgTx)
 2. Not found → 404
 3. If scim_exempt → return current state (200), log suppression
-4. Update users: email (409 if uniqueness conflict), display_name
+4. Update users:
+   - email: use provided userName (409 if uniqueness conflict)
+   - display_name: use provided displayName, or fall back to userName (email) if omitted
 5. Update user_identities: externalId if changed
 6. Update org_members: deactivated_at based on active flag
    → If deactivating: check sole-owner protection → 400 if sole active owner
 7. Return updated SCIM User (200)
 ```
+
+**Omitted attribute defaults:** `displayName` falls back to `userName` (email) if not provided — a human-readable default that avoids blank display names in the UI. `externalId` is preserved if omitted (not nulled — it's our identity link). `active` defaults to `true` if omitted.
 
 **`PATCH /Users/{id}` — Partial update**
 
@@ -439,13 +445,15 @@ Index-based pagination.
 Called whenever SCIM group membership changes for a non-exempt user:
 
 ```
-1. Load all scim_groups the user belongs to (via scim_group_members)
-2. Collect non-null mapped_role values
-3. Effective role = max(mapped_roles) or scim_configs.default_role if empty
-4. Role hierarchy: admin > member > viewer
-5. Never set to 'owner'
+1. If current org_members.role == 'owner' → skip (owner is always manual)
+2. Load all scim_groups the user belongs to (via scim_group_members)
+3. Collect non-null mapped_role values
+4. Effective role = max(mapped_roles) or scim_configs.default_role if empty
+5. Role hierarchy: admin > member > viewer
 6. If computed role != current org_members.role → UPDATE org_members
 ```
+
+Owner guard (step 1) prevents SCIM from downgrading a manually-assigned owner to admin/member/viewer. Owner assignment and removal are always manual operations.
 
 ### 3.7 Notification Group Sync
 
@@ -481,28 +489,92 @@ If count > 0, keep the notification group membership.
 
 ## 4. Microsoft Entra ID Compatibility
 
-### Known Spec Deviations (Must Handle)
+### 4.1 SCIM Error Response Format
 
-| Issue | Entra ID Default | Spec-Compliant | Our Handling |
-|-------|-----------------|----------------|--------------|
-| PATCH `op` casing | `"Replace"`, `"Add"`, `"Remove"` | lowercase | Case-insensitive comparison |
-| Boolean values in PATCH | `"False"` (string) | `false` (boolean) | Coerce string booleans |
-| Multi-attribute PATCH | Separate ops per attribute | Single op with value object | Handle both formats |
-| Group member removal path | `"Remove"` with value array | `"remove"` with path filter | Handle both formats |
+All SCIM endpoints return errors using RFC 7644 §3.12 format, NOT our normal RFC 9457 Problem Details. The scimgateway library handles the response envelope; our handler code returns appropriate status codes and detail messages.
 
-### Test Connection Validation
+```json
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+  "status": "409",
+  "scimType": "uniqueness",
+  "detail": "userName already exists in this organization"
+}
+```
 
-Entra ID validates connectivity by sending: `GET /Users?filter=id eq "{random-guid}"`. Must return 200 with empty ListResponse (zero results). Returning 404 fails the test.
+**Error mapping:**
 
-### Sync Behavior
+| Condition | HTTP Status | scimType | Detail |
+|-----------|------------|----------|--------|
+| Email uniqueness violation | 409 | `uniqueness` | userName already exists |
+| externalId collision | 409 | `uniqueness` | externalId already linked to different user |
+| Unsupported filter operator | 400 | `invalidFilter` | Unsupported operator: {op} |
+| Missing required attribute | 400 | `invalidValue` | {attribute} is required |
+| Sole-owner protection | 400 | `invalidValue` | Cannot deactivate the sole owner of this organization |
+| Tier member limit exceeded | 403 | — | Organization member limit reached |
+| Invalid PATCH path | 400 | `invalidPath` | Unrecognized attribute path: {path} |
+| SCIM config disabled | 403 | — | SCIM provisioning is disabled for this organization |
+| Auth failure | 401 | — | Invalid or missing bearer token |
 
-- Initial sync: full scan of all assigned users/groups.
-- Incremental sync: every ~40 minutes.
-- Data fidelity: values stored as-is. No email normalization, phone reformatting, etc.
+### 4.2 IdP Behavioral Differences
 
-### Performance
+| Aspect | Microsoft Entra ID | Okta |
+|--------|-------------------|------|
+| **PATCH op casing** | Capitalized: `"Replace"`, `"Add"`, `"Remove"` | Lowercase: `"replace"`, `"add"`, `"remove"` (spec-compliant) |
+| **Boolean values** | String: `"False"`, `"True"` | JSON boolean: `false`, `true` (spec-compliant) |
+| **User deactivation** | DELETE or PATCH `active=false` | PATCH `active=false` only — Okta **never** sends DELETE |
+| **User attribute updates** | Primarily PATCH | Primarily PUT (PATCH only for active/password) |
+| **Filter operators** | `eq`, `and` | `eq` primarily; `sw` for user import searches |
+| **Test connection** | `GET /Users?filter=id eq "{random-guid}"` → expects 200 with empty list | `GET /Users?startIndex=1&count=1` → expects 200 with pagination envelope |
+| **Group member removal** | Multiple formats (value array OR path filter expression) | Standard path filter format |
+| **Sync cycle** | ~40-minute incremental sync | Event-driven (near-real-time for user changes) |
+| **Multi-attribute PATCH** | Separate operation per attribute | N/A (uses PUT for multi-attribute updates) |
 
-Entra ID gallery minimum: 25 req/sec. Our SCIM rate limit (50 req/sec) exceeds this.
+**Our handling:** Case-insensitive op comparison. Boolean coercion from strings. Both DELETE and PATCH `active=false` produce the same outcome (soft-deactivate). PUT handler is a full implementation, not a PATCH wrapper — critical for Okta compatibility.
+
+### 4.3 Filter Operator Support
+
+| Operator | Required by | SQL mapping | Notes |
+|----------|------------|-------------|-------|
+| `eq` | Both | `WHERE col = $1` | Core — every provisioning operation uses this |
+| `and` | Both | `AND` | Compound queries |
+| `sw` | Okta (import) | `WHERE col LIKE $1 \|\| '%'` | Uses BTREE index. Okta can fall back to `eq`, but supporting `sw` avoids user import edge cases. |
+
+Unsupported operators (`ne`, `co`, `ew`, `gt`, `ge`, `lt`, `le`, `or`, `not`, `pr`) return 400 with `scimType: "invalidFilter"`. None are required by Entra ID or Okta for provisioning workflows.
+
+### 4.4 Test Connection Behavior
+
+Both IdPs validate connectivity before enabling provisioning:
+
+- **Entra ID:** `GET /Users?filter=id eq "{random-guid}"` — must return 200 with `{"totalResults": 0, "Resources": []}`. Returning 404 fails the test.
+- **Okta:** `GET /Users?startIndex=1&count=1` — must return 200 with pagination envelope. An empty org returns `{"totalResults": 0, "Resources": []}`.
+
+Both patterns work against our GET /Users implementation with no special-casing.
+
+### 4.5 Data Fidelity
+
+Values stored as received. No normalization:
+- Email casing preserved (no `strings.ToLower`)
+- displayName whitespace preserved
+- externalId is opaque — could be a GUID, UPN, SID, employee number
+
+### 4.6 Performance
+
+| Context | Requirement | Our limit |
+|---------|------------|-----------|
+| Entra ID gallery app | 25 req/sec minimum | 50 req/sec |
+| Entra ID custom enterprise app | No published minimum | 50 req/sec |
+| Okta (any) | No published minimum | 50 req/sec |
+
+The 25 req/sec requirement only applies to Entra ID gallery-listed apps. Self-hosted CVErt Ops deployments configure SCIM as a custom enterprise app. Our 50 req/sec limit provides headroom for both.
+
+### 4.7 Customer Configuration Guidance
+
+**Entra ID:** Recommend customers append `?aadOptscim062020` to the SCIM endpoint URL in their tenant config. This enables more spec-compliant behavior (lowercase ops, proper booleans, standard group member removal format). Our implementation handles both modes, but the flag reduces quirk surface.
+
+**Okta:** Ensure SCIM 2.0 (not 1.1) is selected during integration setup. Use "HTTP Header" authentication type and enter the SCIM bearer token.
+
+**Both:** The SCIM endpoint URL is `https://{host}/api/v1/orgs/{org_id}/scim/v2`. The `org_id` UUID is visible in org settings.
 
 ---
 

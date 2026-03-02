@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/crypto"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -348,6 +349,25 @@ func (srv *Server) oidcLinkCallbackHandler(w http.ResponseWriter, r *http.Reques
 		slog.ErrorContext(ctx, "oidc link: upsert identity", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// Audit: load connection to get orgID (link callback is a public route, no org context).
+	conn, connErr := srv.store.GetSSOConnectionByID(ctx, connID)
+	if connErr == nil && conn != nil {
+		srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
+			OrgID:      conn.OrgID,
+			ActorID:    &userID,
+			Action:     "create",
+			EntityType: "sso_identity",
+			EntityID:   userID.String(),
+			EntityName: claims.Email,
+			Success:    true,
+			NewState: map[string]any{
+				"provider_key":     providerKey,
+				"provider_user_id": claims.Sub,
+				"email":            claims.Email,
+			},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "linked"})

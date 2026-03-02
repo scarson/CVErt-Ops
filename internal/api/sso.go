@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/crypto"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
@@ -178,6 +179,22 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:    row.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 
+	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "sso_connection",
+		EntityID:   row.ID.String(),
+		EntityName: row.DisplayName,
+		Success:    true,
+		NewState: map[string]any{
+			"display_name":  row.DisplayName,
+			"issuer_url":    row.IssuerUrl,
+			"client_id":     row.ClientID,
+			"client_secret": req.ClientSecret,
+			"enabled":       row.Enabled,
+		},
+	})
+
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -336,6 +353,27 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:    updated.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 
+	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "sso_connection",
+		EntityID:   updated.ID.String(),
+		EntityName: updated.DisplayName,
+		Success:    true,
+		OldState: map[string]any{
+			"display_name": current.DisplayName,
+			"issuer_url":   current.IssuerUrl,
+			"client_id":    current.ClientID,
+			"enabled":      current.Enabled,
+		},
+		NewState: map[string]any{
+			"display_name": updated.DisplayName,
+			"issuer_url":   updated.IssuerUrl,
+			"client_id":    updated.ClientID,
+			"enabled":      updated.Enabled,
+		},
+	})
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -350,10 +388,29 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read current connection for audit trail before deleting.
+	current, err := srv.store.GetSSOConnection(r.Context(), orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "sso delete: get", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	if err := srv.store.DeleteSSOConnection(r.Context(), orgID); err != nil {
 		slog.ErrorContext(r.Context(), "sso delete: store", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	if current != nil {
+		srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
+			OrgID:      orgID,
+			Action:     "delete",
+			EntityType: "sso_connection",
+			EntityID:   current.ID.String(),
+			EntityName: current.DisplayName,
+			Success:    true,
+		})
 	}
 
 	w.WriteHeader(http.StatusNoContent)

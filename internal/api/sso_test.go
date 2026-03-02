@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -543,4 +545,89 @@ func TestSSODomains_ValidatesFormat(t *testing.T) {
 	if resp3.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("space domain: got %d, want 422", resp3.StatusCode)
 	}
+}
+
+// ── Audit integration ───────────────────────────────────────────────────────
+
+func newAuditSSOServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server, *audit.Writer) {
+	t.Helper()
+	srv, ts := newSSOServer(t, db)
+	w := audit.NewWriter(db.Store, slog.Default())
+	srv.SetAuditDeps(w)
+	return srv, ts, w
+}
+
+func TestAudit_SSOOperations(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts, aw := newAuditSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "audit-sso@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-sso@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// Sub-tests run sequentially: create → update → delete.
+	t.Run("Create", func(t *testing.T) {
+		body := `{"display_name":"Audit IdP","issuer_url":"https://idp.example.com","client_id":"test","client_secret":"secret","enabled":false}`
+		resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "sso_connection", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for SSO create")
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		body := `{"display_name":"Updated IdP"}`
+		resp := doPatchSSO(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("patch: got %d, want 200", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "sso_connection", "update")
+		if entry == nil {
+			t.Fatal("no audit entry for SSO update")
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		resp := doDeleteSSO(t, ctx, ts, token, reg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "sso_connection", "delete")
+		if entry == nil {
+			t.Fatal("no audit entry for SSO delete")
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+	})
 }

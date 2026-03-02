@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -552,5 +554,95 @@ func TestIdentityLinking_AlreadyLinked(t *testing.T) {
 		var body json.RawMessage
 		json.NewDecoder(cbResp.Body).Decode(&body) //nolint:errcheck,gosec // diagnostic
 		t.Errorf("link callback: got %d, want 409 (identity already linked to different user). Body: %s", cbResp.StatusCode, body)
+	}
+}
+
+// ── Audit integration ───────────────────────────────────────────────────────
+
+func newAuditOIDCTestServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server, *audit.Writer) {
+	t.Helper()
+	srv, ts := newOIDCTestServer(t, db)
+	w := audit.NewWriter(db.Store, slog.Default())
+	srv.SetAuditDeps(w)
+	return srv, ts, w
+}
+
+func TestAudit_IdentityLinking(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	mock := testutil.NewMockOIDC(t)
+	srv, ts, aw := newAuditOIDCTestServer(t, db)
+
+	orgID, _ := setupOIDCConnection(t, db, srv, ts, mock, "audit-link@example.com", nil, true)
+	oid := mustParseUUID(t, orgID)
+
+	// Login to get access token.
+	loginResp := doLogin(t, ctx, ts, "audit-link@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Init link.
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/orgs/"+orgID+"/sso/link", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
+	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck,gosec // G104
+	if initResp.StatusCode != http.StatusFound {
+		t.Fatalf("init link: got %d, want 302", initResp.StatusCode)
+	}
+
+	var stateCookie, nonceCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		switch c.Name {
+		case "oauth_state":
+			stateCookie = c
+		case "oidc_nonce":
+			nonceCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("missing oauth_state cookie")
+	}
+	if nonceCookie == nil {
+		t.Fatal("missing oidc_nonce cookie")
+	}
+	mock.SetNonce(nonceCookie.Value)
+
+	// Call link callback.
+	callbackURL := ts.URL + "/api/v1/auth/oidc/link-callback?code=mock-code&state=" + stateCookie.Value
+	cbReq, err := http.NewRequestWithContext(ctx, http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	cbReq.AddCookie(stateCookie)
+	cbReq.AddCookie(nonceCookie)
+	cbReq.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken}) //nolint:exhaustruct // test
+	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer cbResp.Body.Close() //nolint:errcheck,gosec // G104
+	if cbResp.StatusCode != http.StatusOK {
+		var body json.RawMessage
+		json.NewDecoder(cbResp.Body).Decode(&body) //nolint:errcheck,gosec // diagnostic
+		t.Fatalf("link callback: got %d, want 200. Body: %s", cbResp.StatusCode, body)
+	}
+
+	aw.Flush()
+
+	entry := findAuditEntry(t, db, oid, "sso_identity", "create")
+	if entry == nil {
+		t.Fatal("no audit entry for identity linking")
+	}
+	if !entry.Success {
+		t.Error("expected success=true")
 	}
 }

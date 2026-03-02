@@ -174,6 +174,7 @@ func (srv *Server) Handler() http.Handler {
 			r.Use(srv.tierMiddleware)
 			r.Use(srv.orgRateLimitMiddleware)
 			r.Get("/", srv.getOrgHandler)
+			r.Get("/tier", srv.getOrgTierHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
 
 			// Member management

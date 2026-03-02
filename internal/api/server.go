@@ -239,6 +239,15 @@ func (srv *Server) Handler() http.Handler {
 			// Alert event listing
 			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
 
+			// SSO connection management (enterprise only, owner only)
+			r.Route("/sso", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleOwner)).Post("/", srv.createSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Get("/", srv.getSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Patch("/", srv.patchSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Put("/domains", srv.putSSODomainsHandler)
+			})
+
 			// Audit log (enterprise only, admin+)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Get("/audit-log", srv.listAuditLogHandler)
 

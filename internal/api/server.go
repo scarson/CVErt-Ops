@@ -37,6 +37,7 @@ type Server struct {
 	ghAPIBaseURL   string           // GitHub REST API base URL; overridable in tests
 	googleOIDC     *oidc.Provider   // nil when Google OIDC is not configured
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
+	orgRL          *orgRateLimiter  // per-org API rate limiter
 	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
 	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
 	llm            ai.LLMClient    // nil until SetAIDeps is called
@@ -52,11 +53,13 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	}
 	// 10 requests per minute, burst of 10.
 	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
+	orgRL := newOrgRateLimiter(time.Now, evictTTL)
 	srv := &Server{
 		store:        s,
 		cfg:          cfg,
 		argon2Sem:    sem,
 		rateLimiter:  rl,
+		orgRL:        orgRL,
 		ghAPIBaseURL: "https://api.github.com",
 	}
 
@@ -106,6 +109,9 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 func (srv *Server) Close() {
 	if srv.rateLimiter != nil {
 		srv.rateLimiter.Stop()
+	}
+	if srv.orgRL != nil {
+		srv.orgRL.Stop()
 	}
 }
 
@@ -166,6 +172,7 @@ func (srv *Server) Handler() http.Handler {
 		r.Route("/{org_id}", func(r chi.Router) {
 			r.Use(srv.RequireOrgRole(RoleViewer))
 			r.Use(srv.tierMiddleware)
+			r.Use(srv.orgRateLimitMiddleware)
 			r.Get("/", srv.getOrgHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
 

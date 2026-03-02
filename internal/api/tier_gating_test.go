@@ -282,3 +282,45 @@ func TestTierGating_AlertRules_OverrideExpandsLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestTierGating_OrgRateLimit(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tiergate7@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tiergate7@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Set a very low rate limit override (2 req/min, burst=2) to trigger 429 quickly.
+	_, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = $1 WHERE id = $2`,
+		`{"api_rate_limit": 2}`, orgID)
+	if err != nil {
+		t.Fatalf("set tier_overrides: %v", err)
+	}
+
+	// Send requests until we get a 429.
+	got429 := false
+	for i := 0; i < 10; i++ {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+			fmt.Sprintf("%s/api/v1/orgs/%s", ts.URL, orgID), nil)
+		req.Header.Set("Cookie", "access_token="+token)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Error("expected at least one 429 response with rate limit of 2/min, but none received")
+	}
+}

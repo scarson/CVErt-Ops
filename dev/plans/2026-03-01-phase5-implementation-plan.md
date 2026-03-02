@@ -239,6 +239,9 @@ SELECT COUNT(*) FROM watchlists WHERE org_id = $1 AND deleted_at IS NULL;
 
 -- name: CountMembersByOrg :one
 SELECT COUNT(*) FROM org_members WHERE org_id = $1;
+
+-- name: ListAllOrgs :many
+SELECT id, tier, tier_overrides FROM organizations;
 ```
 
 **Step 2: Regenerate sqlc**
@@ -248,26 +251,49 @@ Expected: No errors. New files in `internal/store/generated/`.
 
 **Step 3: Write store wrapper methods**
 
-Create `internal/store/org.go` (or add to existing file) with methods that call generated queries via `withBypassTx` (org tier is read in auth middleware, before org context is set):
+Create `internal/store/org.go` (or add to existing file). **Transaction helper selection matters here:**
+- `GetOrgTier`, `UpdateOrgTier`, `ListAllOrgs` → use `withBypassTx` (called from middleware/workers, before org context is set)
+- `CountAlertRulesByOrg`, `CountWatchlistsByOrg`, `CountMembersByOrg` → use `withOrgTx` (called from handlers where `app.org_id` is already set — these tables have RLS)
 
 ```go
+// withBypassTx — called from middleware/workers (no org context yet)
 func (s *Store) GetOrgTier(ctx context.Context, orgID uuid.UUID) (string, map[string]any, error)
 func (s *Store) UpdateOrgTier(ctx context.Context, orgID uuid.UUID, tier string) error
+func (s *Store) ListAllOrgs(ctx context.Context) ([]OrgTierRow, error)
+
+// withOrgTx — called from handlers (org context set, RLS active)
 func (s *Store) CountAlertRulesByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
 func (s *Store) CountWatchlistsByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
 func (s *Store) CountMembersByOrg(ctx context.Context, orgID uuid.UUID) (int64, error)
 ```
 
-**Step 4: Verify compilation**
+**Step 4: Write integration tests**
+
+Create `internal/store/org_tier_test.go` using `testutil.NewTestDB(t)`:
+
+```go
+func TestGetOrgTier(t *testing.T)         // default tier is "free", empty overrides
+func TestUpdateOrgTier(t *testing.T)      // update to "pro", verify read-back
+func TestCountAlertRulesByOrg(t *testing.T) // create rules via AppStore, verify count (soft-deleted excluded)
+func TestCountWatchlistsByOrg(t *testing.T) // create watchlists, verify count
+func TestCountMembersByOrg(t *testing.T)  // verify member count (org creator = 1)
+func TestListAllOrgs(t *testing.T)        // create 2 orgs, verify both returned with tier info
+```
+
+Note: Count* tests should use `db.AppStore` (RLS-constrained) to verify they work under `withOrgTx`. `ListAllOrgs` should use `db.Store` (bypass) since it's cross-org.
+
+**Step 5: Run tests**
+
+Run: `go test ./internal/store/ -run "TestGetOrgTier|TestUpdateOrgTier|TestCount|TestListAllOrgs" -v`
+Expected: All PASS.
+
+**Step 6: Verify compilation + commit**
 
 Run: `go build ./...`
-Expected: No errors.
-
-**Step 5: Commit**
 
 ```bash
-git add internal/store/queries/org.sql internal/store/generated/ internal/store/org.go
-git commit -m "feat(store): org tier queries — sqlc"
+git add internal/store/queries/org.sql internal/store/generated/ internal/store/org.go internal/store/org_tier_test.go
+git commit -m "feat(store): org tier + count queries with integration tests — sqlc"
 ```
 
 ---
@@ -280,13 +306,24 @@ git commit -m "feat(store): org tier queries — sqlc"
 
 **Step 1: Write failing tests**
 
-Model after existing `internal/api/ratelimit_test.go`. Key tests:
+Test file: `internal/api/org_ratelimit_test.go` (in `package api` — white-box, same as `ratelimit_test.go`).
+
+Model after existing `internal/api/ratelimit_test.go`. The rate limiter tests construct a partial `&Server{...}` with `//nolint:exhaustruct` — no need for a full test server.
 
 ```go
-func TestOrgRateLimiter_Allow(t *testing.T)           // basic allow/deny
-func TestOrgRateLimiter_DifferentOrgs(t *testing.T)    // org A doesn't affect B
+func TestOrgRateLimiter_Allow(t *testing.T) {
+    lim := newOrgRateLimiter(testClock)
+    orgA := uuid.New()
+    // Allow at rate=10/s, burst=10
+    for i := 0; i < 10; i++ {
+        assert.True(t, lim.Allow(orgA, 10, 10))
+    }
+    assert.False(t, lim.Allow(orgA, 10, 10)) // 11th denied
+}
+
+func TestOrgRateLimiter_DifferentOrgs(t *testing.T)    // org A exhausted, org B still allowed
 func TestOrgRateLimiter_RateChange(t *testing.T)       // tier change creates new limiter
-func TestOrgRateLimiter_Eviction(t *testing.T)         // idle orgs evicted
+func TestOrgRateLimiter_Eviction(t *testing.T)         // advance clock past idle TTL, verify map entry evicted
 ```
 
 The `orgRateLimiter` should accept a `now func() time.Time` for testable clock injection (needed for eviction tests).
@@ -329,8 +366,8 @@ git commit -m "feat(api): per-org rate limiter with tier-aware rates — TDD"
 
 **Files:**
 - Modify: `internal/api/context.go` — add `ctxTierResolver` context key
-- Create or modify: `internal/api/middleware.go` — tier resolution middleware
-- Create: test for tier middleware
+- Create: `internal/api/middleware_tier.go` — tier resolution middleware (NOT `middleware.go` — that file doesn't exist; RBAC middleware is in `middleware_rbac.go`)
+- Create: `internal/api/middleware_tier_test.go` — test for tier middleware
 
 **Step 1: Write failing test**
 
@@ -342,12 +379,12 @@ Test that org-scoped requests have `tier.Resolver` in context with correct tier 
 
 **Step 3: Implement**
 
-Add `ctxTierResolver` to `context.go`. In the org-scoped middleware (where `ctxOrgID` is set), also load org tier via `store.GetOrgTier()` and construct `tier.Resolver`, injecting it into context.
+Add `ctxTierResolver` to `context.go`. Create a new chi middleware function in `middleware_tier.go` that loads org tier via `store.GetOrgTier()` and constructs `tier.Resolver`, injecting it into context. This middleware should be placed AFTER the org context middleware (which sets `ctxOrgID`) in the middleware chain.
 
 **Step 4: Run tests, verify pass. Commit.**
 
 ```bash
-git add internal/api/context.go internal/api/middleware.go
+git add internal/api/context.go internal/api/middleware_tier.go internal/api/middleware_tier_test.go
 git commit -m "feat(api): tier resolution middleware — injects Resolver into context — TDD"
 ```
 
@@ -360,7 +397,17 @@ git commit -m "feat(api): tier resolution middleware — injects Resolver into c
 
 **Step 1: Write failing tests**
 
-In the appropriate test files, add tests:
+Test file: `internal/api/tier_gating_test.go` (in `package api` — white-box).
+
+**Test setup pattern:**
+1. `db := testutil.NewTestDB(t)` — get test DB
+2. `srv, ts := newRegisterServer(t, db, "open")` — get test server
+3. `doRegister()` + `doLogin()` → get auth cookie via `cookieValue(resp, "access_token")`
+4. Set org tier in DB: `db.Store.UpdateOrgTier(ctx, orgID, "free")` (bypass RLS via Store, not AppStore)
+5. Create resources via API calls (e.g., POST alert rules) — all mutations need `X-Requested-By: CVErt-Ops` header
+6. Verify 6th creation returns 403
+
+Tests:
 - Create org with tier=free → create 5 alert rules (succeed) → create 6th (fail 403)
 - Create org with tier=pro → create 50 alert rules (succeed)
 - Create org with tier_overrides `{"max_alert_rules": 10}` → limit is 10, not 5
@@ -370,14 +417,15 @@ In the appropriate test files, add tests:
 
 **Step 3: Implement handler tier checks**
 
-In each handler's create path, before the mutation:
+In each handler's create path, before the mutation. These are chi handlers — use `http.Error` + `return`, **not** huma error returns:
 ```go
 resolver, _ := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 limit := resolver.IntLimit("max_alert_rules", 5, 50, -1)
 if limit >= 0 {
-    count, _ := srv.store.CountAlertRulesByOrg(ctx, orgID)
+    count, _ := srv.store.CountAlertRulesByOrg(r.Context(), orgID)
     if count >= int64(limit) {
-        return nil, huma.Error403Forbidden("tier limit: max alert rules reached")
+        http.Error(w, "tier limit: max alert rules reached", http.StatusForbidden)
+        return
     }
 }
 ```
@@ -405,11 +453,12 @@ git commit -m "feat(api): resource count tier gating — alert rules, watchlists
 
 **Step 3: Implement**
 
-In channel create handler, after parsing channel type:
+In channel create handler, after parsing channel type. Chi handler — use `http.Error` + `return`:
 ```go
 resolver, _ := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 if !resolver.BoolFlag("channels_"+channelType, false, true, true) {
-    return nil, huma.Error403Forbidden("tier limit: channel type not available")
+    http.Error(w, "tier limit: channel type not available", http.StatusForbidden)
+    return
 }
 ```
 
@@ -489,11 +538,28 @@ git commit -m "feat(ai): wire quota resolution to real org tier"
 
 **Step 1: Write failing test**
 
-Test `GET /api/v1/orgs/{org_id}/tier` returns `{tier, limits}` for all roles.
+Test file: `internal/api/org_tier_test.go` (in `package api`).
+
+Test `GET /api/v1/orgs/{org_id}/tier` returns tier info for all roles (viewer and above).
+
+Expected response shape:
+```json
+{
+  "tier": "free",
+  "limits": {
+    "max_alert_rules": {"limit": 5, "used": 2},
+    "max_watchlists": {"limit": 3, "used": 1},
+    "max_members": {"limit": 5, "used": 1},
+    "api_rate_limit": {"limit": 60},
+    "channels_email": {"allowed": false},
+    "channels_webhook": {"allowed": true}
+  }
+}
+```
 
 **Step 2: Write handler**
 
-Returns current tier, resolved limits (all limit names with their effective values), and current usage counts.
+Returns current tier, resolved limits (all limit names with their effective values), and current usage counts (for countable resources).
 
 **Step 3: Wire route in `Handler()`**
 
@@ -555,10 +621,10 @@ git commit -m "migration: retention cleanup indexes for Phase 5"
 
 **Step 1: Add config fields**
 
+**Important:** `RetentionCleanupEnabled` and `RetentionCleanupBatchSize` already exist in `config.go` (added in Phase 4). Do NOT re-add them. Only add the new per-table retention window fields:
+
 ```go
-// ── Data retention ───────────────────────────────────────────────────────────
-RetentionCleanupEnabled        bool `env:"RETENTION_CLEANUP_ENABLED"         envDefault:"true"`
-RetentionCleanupBatchSize      int  `env:"RETENTION_CLEANUP_BATCH_SIZE"      envDefault:"10000"`
+// ── Data retention (per-table windows — add below existing RetentionCleanup* fields) ──
 RetentionRawPayloadDays        int  `env:"RETENTION_RAW_PAYLOAD_DAYS"        envDefault:"90"`
 RetentionFeedFetchLogDays      int  `env:"RETENTION_FEED_FETCH_LOG_DAYS"     envDefault:"90"`
 RetentionAlertEventsDays       int  `env:"RETENTION_ALERT_EVENTS_DAYS"       envDefault:"365"`
@@ -581,6 +647,8 @@ git commit -m "config: add retention window env vars for all tables"
 ---
 
 ### Task 10a: Store — Retention cleanup sqlc queries + store wrappers
+
+> **TDD note:** This task writes sqlc queries and thin store wrappers (no business logic). Tests are in Task 10b, which must be completed immediately after. Do NOT proceed past Task 10b without green tests.
 
 **Files:**
 - Create: `internal/store/queries/retention.sql` — sqlc queries for bounded-batch DELETE
@@ -675,7 +743,7 @@ Run: `sqlc generate && go build ./...`
 
 **Step 3: Write store wrapper methods in `internal/store/retention.go`**
 
-Each wraps the generated query with `withBypassTx` (retention operates across all orgs).
+Each wraps the generated query with `withBypassTx` (retention operates across all orgs — these are background worker operations that need to bypass RLS). Note: even though `withBypassTx` provides `*generated.Queries` (sqlc) rather than `pgx.Tx`, it's correct here because all retention queries are sqlc-generated. `WorkerTx` would give `pgx.Tx` which we don't need.
 
 **Step 4: Verify compilation, commit**
 
@@ -693,7 +761,20 @@ git commit -m "feat(store): retention cleanup sqlc queries + wrappers"
 
 **Step 1: Write integration tests**
 
-Use `testutil.NewTestDB(t)`. For each table:
+Use `testutil.NewTestDB(t)`. Most retention tables (cve_raw_payloads, feed_fetch_log, job_queue, etc.) have no API for inserting test data, so use raw SQL via `db.Store` to insert rows with explicit timestamps:
+
+```go
+// Example: insert old + recent rows into cve_raw_payloads
+_, err := db.Store.Pool().Exec(ctx,
+    `INSERT INTO cve_raw_payloads (cve_id, feed_name, payload, ingested_at)
+     VALUES ($1, $2, $3, $4)`,
+    "CVE-2024-0001", "nvd", `{}`, time.Now().Add(-100*24*time.Hour),
+)
+```
+
+For org-scoped tables (alert_events, notification_deliveries), you'll need to create an org + org member first via the store to satisfy FK constraints. Use `db.Store` (bypass) for setup, since these inserts are cross-org setup.
+
+For each table:
 - Insert rows with explicit timestamps (some old, some recent)
 - Call cleanup with a cutoff
 - Verify old rows deleted, recent rows retained
@@ -726,6 +807,8 @@ git commit -m "test(store): retention cleanup integration tests"
 ---
 
 ### Task 10c: Retention runner implementation
+
+> **TDD note:** This task writes the runner implementation. Tests are in Task 10d, which must be completed immediately after. Do NOT proceed past Task 10d without green tests.
 
 **Files:**
 - Create: `internal/retention/runner.go`
@@ -768,7 +851,7 @@ func (r *Runner) Run(ctx context.Context) error
 
 `Run()` iterates tables, calling bounded-batch delete in a loop per table until 0 rows or max runtime hit. Logs per-table results (rows deleted, duration). Errors per table are logged but don't stop the run.
 
-For tier-gated tables (alert_events, notification_deliveries, audit_log): loads all orgs via store, groups by retention window using `tier.Resolver`, runs per-group cleanup with the group's resolved retention window.
+For tier-gated tables (alert_events, notification_deliveries, audit_log): loads all orgs via `store.ListAllOrgs()` (added in Task 3), groups by retention window using `tier.Resolver`, runs per-group cleanup with the group's resolved retention window.
 
 **Step 2: Verify compilation**
 
@@ -796,7 +879,7 @@ Uses `testutil.NewTestDB(t)` and injectable `now` clock.
 - `TestRunner_MaxRuntime` — uses a very short max runtime (e.g., 1ms), verifies it stops before completing all tables
 - `TestRunner_Disabled` — `Enabled=false` → no deletions, no errors
 - `TestRunner_ErrorIsolation` — use context cancellation mid-table, verify other tables still cleaned
-- `TestRunner_PerOrgGroup` — two orgs with different tiers (free=365d, enterprise=90d), seed data at boundary timestamps, verify per-org retention windows honored
+- `TestRunner_PerOrgGroup` — two orgs with different tiers (free=90d, enterprise=365d), seed data at boundary timestamps, verify per-org retention windows honored (enterprise retains longer than free)
 - `TestRunner_AICleanup` — verify ai_request_log, ai_cache, ai_usage_counters all cleaned
 - `TestRunner_BatchLoop` — insert 25 old rows, batch_size=10, verify all 25 eventually deleted (runner loops)
 
@@ -820,28 +903,34 @@ git commit -m "test(retention): runner unit + integration tests — TDD"
 
 ### Task 11: Job scheduling + migrate AI cleanup — TDD
 
+**Architecture context:** This project has TWO separate worker systems:
+1. **`notify.Worker`** (`internal/notify/worker.go`) — ticker-based select-loop that runs periodic jobs (feed sync, alert evaluation, notification delivery, AI cleanup). Each job runs as a ticker in the `Start()` method.
+2. **`worker.Pool`** (`internal/worker/pool.go`) — `job_queue` table-backed pool with `Register("queue_name", handler)` for on-demand jobs.
+
+The retention job should be scheduled via a **ticker in `notify.Worker`** (like the existing AI cleanup ticker). The ticker enqueues a `retention_cleanup` job into `job_queue`, and `worker.Pool` executes it (to benefit from the pool's single-execution guarantees via `lock_key`).
+
 **Files:**
-- Modify: `internal/notify/worker.go` — add retention job scheduling ticker, remove AI cleanup ticker
+- Modify: `internal/notify/worker.go` — replace AI cleanup ticker with retention job scheduling ticker
 - Modify: `internal/notify/worker_test.go` — update tests
-- Modify: `internal/api/server.go` — wire retention runner
+- Modify: `internal/api/server.go` or `cmd/cvert-ops/serve.go` — register retention handler on `worker.Pool`
 
 **Step 1: Write test for retention job scheduling**
 
-Test that the worker ticker enqueues a `retention_cleanup` job, and doesn't double-enqueue if one is pending.
+Test that the `notify.Worker` ticker enqueues a `retention_cleanup` job into `job_queue`, and doesn't double-enqueue if one is pending.
 
 **Step 2: Write test verifying AI cleanup removal**
 
-Test that `RunAICleanupOnce` is removed (or the method now delegates to the retention runner).
+Test that `RunAICleanupOnce` is removed (or the method now delegates to the retention runner). Existing AI cleanup tests that use `RunAICleanupOnce()` will need updating.
 
 **Step 3: Implement**
 
-In the worker's `Start()` select-loop, add a `retentionTicker` (daily = `24 * time.Hour`). On tick:
+In `notify.Worker.Start()` select-loop, replace `aiCleanupTicker` with `retentionTicker` (daily = `24 * time.Hour`). On tick:
 1. Check if `job_queue` has a pending/running `retention_cleanup` job
 2. If not, enqueue one with `lock_key = 'cleanup:retention'`
 
-The job executor (in the worker's claim loop) recognizes `retention_cleanup` job type and calls `retention.Runner.Run()`.
+Register `retention_cleanup` job type on `worker.Pool` — the handler calls `retention.Runner.Run()`.
 
-Remove `aiCleanupTicker` and `runAICleanup` method. The AI cache and request log cleanup is now handled by the retention runner.
+Remove `aiCleanupTicker` and `runAICleanup` method from `notify.Worker`. The AI cache and request log cleanup is now handled by the retention runner (Task 10c).
 
 **Step 4: Run full test suite**
 
@@ -851,7 +940,7 @@ Expected: All PASS. Existing AI cleanup tests may need updating to use the reten
 **Step 5: Commit**
 
 ```bash
-git commit -m "feat(worker): retention job scheduling + migrate AI cleanup to retention runner"
+git commit -m "feat(worker): retention job scheduling via notify.Worker ticker + worker.Pool handler"
 ```
 
 ---
@@ -947,9 +1036,15 @@ WHERE org_id = @org_id::uuid
   AND (@actor_id::uuid IS NULL OR actor_id = @actor_id::uuid)
   AND created_at >= @after::timestamptz
   AND created_at <= @before::timestamptz
+  AND (
+      @cursor_created_at::timestamptz IS NULL
+      OR (created_at, id) < (@cursor_created_at::timestamptz, @cursor_id::uuid)
+  )
 ORDER BY created_at DESC, id DESC
 LIMIT @page_size::int;
 ```
+
+The `ListAuditEntries` query uses keyset cursor pagination on `(created_at, id)` — Task 16 will consume this for the audit API endpoint. The `@cursor_created_at IS NULL` branch handles the first page (no cursor).
 
 **Step 2: Run `sqlc generate`**
 
@@ -991,15 +1086,17 @@ func (w *Writer) Log(ctx context.Context, entry Entry) {
 }
 ```
 
-**Step 4: Write integration tests**
+**Step 4: Write failing integration tests FIRST, then implement Writer**
 
-Using `testutil.NewTestDB(t)`:
+Using `testutil.NewTestDB(t)` — write all tests before implementing `Writer`:
 - `TestWriter_CreateAction` — old=nil, new populated, verify row in DB
 - `TestWriter_UpdateAction` — both old and new, verify redaction applied
 - `TestWriter_DeleteAction` — old populated, new=nil
 - `TestWriter_DeniedAction` — success=false, both nil
 - `TestWriter_SystemAction` — actor_id=nil, actor_email=nil
 - `TestWriter_NonBlocking` — inject broken store, verify no panic/error returned
+
+Run tests to verify they fail (Writer not implemented yet). Then implement `Writer.Log()` and re-run to verify pass.
 
 **Step 5: Run tests, verify pass. Lint. Commit.**
 
@@ -1021,16 +1118,22 @@ For each audited entity (alert_rules, channels, watchlists, members, saved_searc
 - Create entity → verify audit entry with action=create, success=true
 - Update entity → verify audit entry with action=update, old_state populated
 - Delete entity → verify audit entry with action=delete
-- Failed auth (wrong role) → verify audit entry with success=false
+- Tier-gated denial (e.g., free tier exceeding limit) → verify audit entry with success=false
 
 For channels specifically: verify `signing_secret` is `[REDACTED]` in audit entry.
+
+**Design note on RBAC failures:** RBAC failures (wrong role) are rejected in `middleware_rbac.go` before the handler executes, so handlers cannot audit them. Two options:
+1. Add audit logging to RBAC middleware itself (has org_id and actor context, but no entity info)
+2. Only audit tier-gated denials (which happen in handlers and have full entity context)
+
+**Decision: Option 2** — audit tier-gated denials in handlers (where we have entity context). RBAC denials are already logged via slog in the middleware. If RBAC audit entries are needed later, the middleware can be extended.
 
 **Step 2: Implement**
 
 In each handler's create/update/delete path:
 1. For update/delete: capture old state before mutation
 2. After successful mutation: `srv.audit.Log(ctx, entry)`
-3. For failed auth (403): `srv.audit.Log(ctx, Entry{Success: false, ...})`
+3. For tier-gated denials (403 from tier check): `srv.audit.Log(ctx, Entry{Success: false, Action: "create", Metadata: map[string]any{"reason": "tier_limit"}})`
 
 Wire `audit.Writer` into `Server` via `SetAuditDeps(w *audit.Writer)`.
 
@@ -1347,10 +1450,44 @@ This is the most complex task. The mock IdP setup is the hardest part.
 
 **Step 1: Create mock OIDC IdP test helper**
 
-In `internal/testutil/mock_oidc.go`:
-- `httptest.Server` serving `/.well-known/openid-configuration`, `/token`, `/keys` (JWKS)
-- Issues valid JWTs signed with a test RSA key
-- Configurable `sub` claim
+In `internal/testutil/mock_oidc.go`. This is the hardest part — get this right before writing any tests.
+
+The mock IdP is an `httptest.Server` that serves three endpoints:
+
+1. `GET /.well-known/openid-configuration` — returns JSON:
+   ```json
+   {
+     "issuer": "<mock server URL>",
+     "authorization_endpoint": "<mock>/authorize",
+     "token_endpoint": "<mock>/token",
+     "jwks_uri": "<mock>/keys",
+     "id_token_signing_alg_values_supported": ["RS256"],
+     "subject_types_supported": ["public"],
+     "response_types_supported": ["code"]
+   }
+   ```
+
+2. `POST /token` — exchanges auth code for tokens. Returns:
+   ```json
+   {"access_token": "mock", "token_type": "Bearer", "id_token": "<signed JWT>"}
+   ```
+   The `id_token` is a real JWT signed with the test RSA private key, containing configurable `sub`, `iss` (mock server URL), `aud` (client_id), `nonce`, `exp`, `iat` claims.
+
+3. `GET /keys` — returns JWKS with the test RSA public key in JWK format.
+
+Helper signature:
+```go
+type MockOIDC struct {
+    Server   *httptest.Server
+    Sub      string          // configurable subject claim
+    ClientID string          // expected client_id
+}
+func NewMockOIDC(t *testing.T) *MockOIDC
+```
+
+Use `crypto/rsa.GenerateKey` (2048-bit) at init time. Convert public key to JWK using `go-jose/v4` or manually construct the JWK JSON. Sign ID tokens with `golang-jwt/jwt/v5` using `jwt.SigningMethodRS256`.
+
+The test flow simulates: login handler redirects to IdP → test extracts state/nonce from redirect URL → test calls callback with code + state → mock IdP returns ID token → callback verifies and issues session JWT.
 
 **Step 2: Write failing tests**
 

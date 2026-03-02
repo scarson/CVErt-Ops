@@ -124,6 +124,15 @@ func TestRedactSecrets_NilState(t *testing.T) {
 	}
 }
 
+func TestRedactURL_InvalidURL(t *testing.T) {
+	t.Parallel()
+	// Invalid URL should return "[REDACTED]" rather than panicking.
+	got := redactURL("://not-a-url")
+	if got != "[REDACTED]" {
+		t.Errorf("invalid URL: got %q, want [REDACTED]", got)
+	}
+}
+
 func TestRedactSecrets_EmptyMap(t *testing.T) {
 	t.Parallel()
 	got := redactSecrets("channel", map[string]any{})

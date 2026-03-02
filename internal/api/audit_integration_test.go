@@ -627,3 +627,25 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 		}
 	})
 }
+
+// ── Nil-safe audit writer ────────────────────────────────────────────────────
+
+func TestAuditLog_NilWriter(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+
+	// Create a server WITHOUT calling SetAuditDeps — writer stays nil.
+	srv, ts := newRegisterServer(t, db, "open")
+	_ = ts
+
+	// auditLog must be a no-op (not panic) when writer is nil.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	srv.auditLog(req, audit.Entry{
+		OrgID:      uuid.New(),
+		Action:     "create",
+		EntityType: "test",
+		EntityID:   "test-id",
+		Success:    true,
+	})
+	// If we reach here without panicking, the test passes.
+}

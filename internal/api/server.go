@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/google/uuid"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
 )
@@ -39,9 +41,10 @@ type Server struct {
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
 	orgRL          *orgRateLimiter  // per-org API rate limiter
 	tierCache      *tierCache       // short-lived cache for org tier + overrides
-	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
-	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
-	llm            ai.LLMClient    // nil until SetAIDeps is called
+	alertCache     *alert.RuleCache  // nil until SetAlertDeps is called
+	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
+	llm            ai.LLMClient     // nil until SetAIDeps is called
+	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -329,6 +332,25 @@ func (srv *Server) SetAlertDeps(cache *alert.RuleCache, evaluator *alert.Evaluat
 // Must be called before Handler() if AI endpoints are registered.
 func (srv *Server) SetAIDeps(llm ai.LLMClient) {
 	srv.llm = llm
+}
+
+// SetAuditDeps wires the audit writer into the server.
+func (srv *Server) SetAuditDeps(w *audit.Writer) {
+	srv.auditWriter = w
+}
+
+// auditLog records an audit entry if the audit writer is configured.
+// Extracts actor context from the request. Nil-safe: no-op if writer is nil.
+func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
+	if srv.auditWriter == nil {
+		return
+	}
+	if entry.ActorID == nil {
+		if uid, ok := r.Context().Value(ctxUserID).(uuid.UUID); ok {
+			entry.ActorID = &uid
+		}
+	}
+	srv.auditWriter.Log(r.Context(), entry)
 }
 
 // acquireArgon2 tries to acquire the argon2 semaphore. Returns false if all

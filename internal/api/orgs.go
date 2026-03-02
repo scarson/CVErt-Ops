@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
 
@@ -266,6 +267,15 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 		UserID: targetID.String(),
 		Role:   req.Role,
 	})
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "member",
+		EntityID:   targetID.String(),
+		Success:    true,
+		OldState:   map[string]any{"role": *currentRole},
+		NewState:   map[string]any{"role": req.Role},
+	})
 }
 
 // removeMemberHandler handles DELETE /api/v1/orgs/{org_id}/members/{user_id}.
@@ -316,6 +326,14 @@ func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "member",
+		EntityID:   targetID.String(),
+		Success:    true,
+		OldState:   map[string]any{"role": *currentRole},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

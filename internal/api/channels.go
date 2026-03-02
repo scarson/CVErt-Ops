@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
@@ -95,6 +96,14 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !resolver.BoolFlag("channels_"+req.Type, req.Type == "webhook", true, true) {
+		srv.auditLog(r, audit.Entry{
+			OrgID:      orgID,
+			Action:     "create",
+			EntityType: "channel",
+			EntityName: req.Name,
+			Success:    false,
+			Metadata:   map[string]any{"reason": "tier_limit", "channel_type": req.Type},
+		})
 		http.Error(w, "tier limit: channel type not available", http.StatusForbidden)
 		return
 	}
@@ -148,6 +157,21 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	} else {
 		writeJSON(w, http.StatusCreated, entry)
 	}
+
+	// Build audit state with config fields at top level for proper redaction.
+	newState := channelAuditState(row.Name, row.Type, row.Config)
+	if req.Type == "webhook" {
+		newState["signing_secret"] = secret
+	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "channel",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   newState,
+	})
 }
 
 // getChannelHandler handles GET /api/v1/orgs/{org_id}/channels/{id}.
@@ -242,6 +266,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	oldState := channelAuditState(current.Name, current.Type, current.Config)
 
 	params := store.UpdateNotificationChannelParams{
 		Name:   current.Name,
@@ -296,6 +321,16 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: updated.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: updated.UpdatedAt.Format(time.RFC3339),
 	})
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "channel",
+		EntityID:   id.String(),
+		EntityName: updated.Name,
+		Success:    true,
+		OldState:   oldState,
+		NewState:   channelAuditState(updated.Name, updated.Type, updated.Config),
+	})
 }
 
 // deleteChannelHandler handles DELETE /api/v1/orgs/{org_id}/channels/{id}.
@@ -309,6 +344,18 @@ func (srv *Server) deleteChannelHandler(w http.ResponseWriter, r *http.Request) 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// Fetch before delete for audit log.
+	current, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get channel for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if current == nil {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
@@ -328,6 +375,15 @@ func (srv *Server) deleteChannelHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "channel",
+		EntityID:   id.String(),
+		EntityName: current.Name,
+		Success:    true,
+		OldState:   channelAuditState(current.Name, current.Type, current.Config),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -404,6 +460,22 @@ func (srv *Server) clearSecondarySecretHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// channelAuditState builds a flat map for audit log state, merging config fields
+// at the top level so redactSecrets can process the URL for channel entities.
+func channelAuditState(name, chType string, config json.RawMessage) map[string]any {
+	state := map[string]any{
+		"name": name,
+		"type": chType,
+	}
+	var cfgMap map[string]any
+	if err := json.Unmarshal(config, &cfgMap); err == nil {
+		for k, v := range cfgMap {
+			state[k] = v
+		}
+	}
+	return state
 }
 
 // validateEmailConfig validates email channel config:

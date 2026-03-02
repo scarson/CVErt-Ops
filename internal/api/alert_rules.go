@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
@@ -181,6 +182,13 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if count >= int64(limit) {
+			srv.auditLog(r, audit.Entry{
+				OrgID:      orgID,
+				Action:     "create",
+				EntityType: "alert_rule",
+				Success:    false,
+				Metadata:   map[string]any{"reason": "tier_limit"},
+			})
 			http.Error(w, "tier limit: max alert rules reached", http.StatusForbidden)
 			return
 		}
@@ -250,7 +258,17 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, alertRuleToEntry(*row))
+	entry := alertRuleToEntry(*row)
+	writeJSON(w, http.StatusCreated, entry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "alert_rule",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   entry,
+	})
 }
 
 // getAlertRuleHandler handles GET /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -355,6 +373,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	oldState := alertRuleToEntry(*current)
 
 	var req patchAlertRuleBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -485,7 +504,18 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		srv.alertCache.Evict(id)
 	}
 
-	writeJSON(w, http.StatusOK, alertRuleToEntry(*row))
+	newEntry := alertRuleToEntry(*row)
+	writeJSON(w, http.StatusOK, newEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "alert_rule",
+		EntityID:   id.String(),
+		EntityName: row.Name,
+		Success:    true,
+		OldState:   oldState,
+		NewState:   newEntry,
+	})
 }
 
 // deleteAlertRuleHandler handles DELETE /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -500,6 +530,19 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+
+	// Fetch before delete for audit log.
+	current, err := srv.store.GetAlertRule(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get alert rule for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if current == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	if err := srv.store.SoftDeleteAlertRule(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "delete alert rule", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -508,6 +551,15 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	if srv.alertCache != nil {
 		srv.alertCache.Evict(id)
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "alert_rule",
+		EntityID:   id.String(),
+		EntityName: current.Name,
+		Success:    true,
+		OldState:   alertRuleToEntry(*current),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

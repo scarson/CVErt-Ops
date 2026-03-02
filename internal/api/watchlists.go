@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
@@ -186,6 +187,13 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if count >= int64(limit) {
+			srv.auditLog(r, audit.Entry{
+				OrgID:      orgID,
+				Action:     "create",
+				EntityType: "watchlist",
+				Success:    false,
+				Metadata:   map[string]any{"reason": "tier_limit"},
+			})
 			http.Error(w, "tier limit: max watchlists reached", http.StatusForbidden)
 			return
 		}
@@ -227,7 +235,17 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, watchlistToEntry(*row))
+	wlEntry := watchlistToEntry(*row)
+	writeJSON(w, http.StatusCreated, wlEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "watchlist",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   wlEntry,
+	})
 }
 
 // getWatchlistHandler handles GET /api/v1/orgs/{org_id}/watchlists/{id}.
@@ -327,6 +345,7 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	oldState := watchlistToEntry(*current)
 
 	var req patchWatchlistBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -385,7 +404,18 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, watchlistToEntry(*row))
+	newEntry := watchlistToEntry(*row)
+	writeJSON(w, http.StatusOK, newEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "watchlist",
+		EntityID:   id.String(),
+		EntityName: row.Name,
+		Success:    true,
+		OldState:   oldState,
+		NewState:   newEntry,
+	})
 }
 
 // deleteWatchlistHandler handles DELETE /api/v1/orgs/{org_id}/watchlists/{id}.
@@ -403,11 +433,32 @@ func (srv *Server) deleteWatchlistHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Fetch before delete for audit log.
+	current, err := srv.store.GetWatchlist(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get watchlist for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if current == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	if err := srv.store.DeleteWatchlist(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "watchlist",
+		EntityID:   id.String(),
+		EntityName: current.Name,
+		Success:    true,
+		OldState:   watchlistToEntry(*current),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

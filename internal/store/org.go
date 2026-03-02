@@ -363,6 +363,7 @@ func (s *Store) GetOrgTier(ctx context.Context, orgID uuid.UUID) (string, map[st
 
 // UpdateOrgTier sets the tier for an org.
 // Uses RLS bypass — called from admin endpoints and background operations.
+// NOTE: callers must invalidate Server.tierCache after calling this method.
 func (s *Store) UpdateOrgTier(ctx context.Context, orgID uuid.UUID, tier string) error {
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.UpdateOrgTier(ctx, generated.UpdateOrgTierParams{

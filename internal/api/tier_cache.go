@@ -59,6 +59,8 @@ func (c *tierCache) Get(orgID uuid.UUID) (string, map[string]any, bool) {
 }
 
 // Set stores tier data in the cache, copying the overrides map.
+// NOTE: maps.Clone is a shallow copy — safe because override values are scalars
+// (float64, bool). If nested structures are added, switch to a deep copy.
 func (c *tierCache) Set(orgID uuid.UUID, tier string, overrides map[string]any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -77,6 +79,9 @@ func (c *tierCache) Invalidate(orgID uuid.UUID) {
 	delete(c.entries, orgID)
 }
 
+// cleanupLoop evicts entries older than evictTTL. The ticker fires at evictTTL/2
+// so entries linger at most 1.5x evictTTL in memory; functionally they become
+// invisible to Get after the shorter TTL.
 func (c *tierCache) cleanupLoop() {
 	ticker := time.NewTicker(c.evictTTL / 2)
 	defer ticker.Stop()

@@ -114,4 +114,15 @@ func TestTierCache_OverridesAreCopied(t *testing.T) {
 	if _, exists := cached["injected"]; exists {
 		t.Fatal("cache returned reference to caller's map — must copy on Set")
 	}
+
+	// Mutate the map returned by Get — cache should be unaffected.
+	cached["hacked"] = true
+
+	_, cached2, ok := c.Get(orgID)
+	if !ok {
+		t.Fatal("expected hit after Get mutation")
+	}
+	if _, exists := cached2["hacked"]; exists {
+		t.Fatal("cache returned reference to internal map — must copy on Get")
+	}
 }

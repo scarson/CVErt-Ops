@@ -57,3 +57,21 @@ ORDER BY created_at DESC;
 
 -- name: DeleteOrgInvitation :exec
 DELETE FROM org_invitations WHERE id = $1 AND org_id = $2;
+
+-- name: GetOrgTier :one
+SELECT tier, tier_overrides FROM organizations WHERE id = $1;
+
+-- name: UpdateOrgTier :exec
+UPDATE organizations SET tier = $2 WHERE id = $1;
+
+-- name: CountAlertRulesByOrg :one
+SELECT COUNT(*) FROM alert_rules WHERE org_id = $1 AND deleted_at IS NULL;
+
+-- name: CountWatchlistsByOrg :one
+SELECT COUNT(*) FROM watchlists WHERE org_id = $1 AND deleted_at IS NULL;
+
+-- name: CountMembersByOrg :one
+SELECT COUNT(*) FROM org_members WHERE org_id = $1;
+
+-- name: ListAllOrgs :many
+SELECT id, tier, tier_overrides FROM organizations;

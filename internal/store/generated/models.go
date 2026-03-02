@@ -360,10 +360,12 @@ type OrgMember struct {
 }
 
 type Organization struct {
-	ID        uuid.UUID
-	Name      string
-	CreatedAt time.Time
-	DeletedAt sql.NullTime
+	ID            uuid.UUID
+	Name          string
+	CreatedAt     time.Time
+	DeletedAt     sql.NullTime
+	Tier          string
+	TierOverrides json.RawMessage
 }
 
 type RefreshToken struct {

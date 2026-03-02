@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,9 +22,42 @@ func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const countAlertRulesByOrg = `-- name: CountAlertRulesByOrg :one
+SELECT COUNT(*) FROM alert_rules WHERE org_id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) CountAlertRulesByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAlertRulesByOrg, orgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countMembersByOrg = `-- name: CountMembersByOrg :one
+SELECT COUNT(*) FROM org_members WHERE org_id = $1
+`
+
+func (q *Queries) CountMembersByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countMembersByOrg, orgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countWatchlistsByOrg = `-- name: CountWatchlistsByOrg :one
+SELECT COUNT(*) FROM watchlists WHERE org_id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) CountWatchlistsByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countWatchlistsByOrg, orgID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createOrg = `-- name: CreateOrg :one
 
-INSERT INTO organizations (name) VALUES ($1) RETURNING id, name, created_at, deleted_at
+INSERT INTO organizations (name) VALUES ($1) RETURNING id, name, created_at, deleted_at, tier, tier_overrides
 `
 
 // ABOUTME: sqlc queries for organization and membership management.
@@ -36,6 +70,8 @@ func (q *Queries) CreateOrg(ctx context.Context, name string) (Organization, err
 		&i.Name,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.Tier,
+		&i.TierOverrides,
 	)
 	return i, err
 }
@@ -144,7 +180,7 @@ func (q *Queries) GetInvitationByToken(ctx context.Context, token string) (OrgIn
 }
 
 const getOrgByID = `-- name: GetOrgByID :one
-SELECT id, name, created_at, deleted_at FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1
+SELECT id, name, created_at, deleted_at, tier, tier_overrides FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 func (q *Queries) GetOrgByID(ctx context.Context, id uuid.UUID) (Organization, error) {
@@ -155,6 +191,8 @@ func (q *Queries) GetOrgByID(ctx context.Context, id uuid.UUID) (Organization, e
 		&i.Name,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.Tier,
+		&i.TierOverrides,
 	)
 	return i, err
 }
@@ -184,6 +222,55 @@ func (q *Queries) GetOrgOwnerCount(ctx context.Context, orgID uuid.UUID) (int64,
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const getOrgTier = `-- name: GetOrgTier :one
+SELECT tier, tier_overrides FROM organizations WHERE id = $1
+`
+
+type GetOrgTierRow struct {
+	Tier          string
+	TierOverrides json.RawMessage
+}
+
+func (q *Queries) GetOrgTier(ctx context.Context, id uuid.UUID) (GetOrgTierRow, error) {
+	row := q.db.QueryRowContext(ctx, getOrgTier, id)
+	var i GetOrgTierRow
+	err := row.Scan(&i.Tier, &i.TierOverrides)
+	return i, err
+}
+
+const listAllOrgs = `-- name: ListAllOrgs :many
+SELECT id, tier, tier_overrides FROM organizations
+`
+
+type ListAllOrgsRow struct {
+	ID            uuid.UUID
+	Tier          string
+	TierOverrides json.RawMessage
+}
+
+func (q *Queries) ListAllOrgs(ctx context.Context) ([]ListAllOrgsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAllOrgs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAllOrgsRow
+	for rows.Next() {
+		var i ListAllOrgsRow
+		if err := rows.Scan(&i.ID, &i.Tier, &i.TierOverrides); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listOrgInvitations = `-- name: ListOrgInvitations :many
@@ -311,7 +398,7 @@ func (q *Queries) ListUserOrgs(ctx context.Context, userID uuid.UUID) ([]ListUse
 
 const updateOrg = `-- name: UpdateOrg :one
 UPDATE organizations SET name = $2 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, created_at, deleted_at
+RETURNING id, name, created_at, deleted_at, tier, tier_overrides
 `
 
 type UpdateOrgParams struct {
@@ -327,6 +414,8 @@ func (q *Queries) UpdateOrg(ctx context.Context, arg UpdateOrgParams) (Organizat
 		&i.Name,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.Tier,
+		&i.TierOverrides,
 	)
 	return i, err
 }
@@ -344,5 +433,19 @@ type UpdateOrgMemberRoleParams struct {
 
 func (q *Queries) UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error {
 	_, err := q.db.ExecContext(ctx, updateOrgMemberRole, arg.OrgID, arg.UserID, arg.Role)
+	return err
+}
+
+const updateOrgTier = `-- name: UpdateOrgTier :exec
+UPDATE organizations SET tier = $2 WHERE id = $1
+`
+
+type UpdateOrgTierParams struct {
+	ID   uuid.UUID
+	Tier string
+}
+
+func (q *Queries) UpdateOrgTier(ctx context.Context, arg UpdateOrgTierParams) error {
+	_, err := q.db.ExecContext(ctx, updateOrgTier, arg.ID, arg.Tier)
 	return err
 }

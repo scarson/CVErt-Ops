@@ -518,6 +518,12 @@ func TestCreateChannel_EmailType(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
 	body := `{"name":"Email Alerts","type":"email","config":{"recipients":["ops@example.com","dev@example.com"]}}`
 	resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
@@ -548,6 +554,12 @@ func TestCreateChannel_EmailInvalidRecipients(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
+
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
 
 	cases := []struct {
 		desc string
@@ -601,6 +613,12 @@ func TestRotateSecret_EmailChannel_Rejected(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
 	// Create an email channel.
 	body := `{"name":"Email Chan","type":"email","config":{"recipients":["test@example.com"]}}`
 	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
@@ -633,6 +651,12 @@ func TestClearSecondary_EmailChannel_Rejected(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
+
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
 
 	// Create an email channel.
 	body := `{"name":"Email Chan","type":"email","config":{"recipients":["test@example.com"]}}`
@@ -719,6 +743,12 @@ func TestPatchChannel_EmailConfigValidation(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
+
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
 
 	// Create an email channel.
 	body := `{"name":"Email Alerts","type":"email","config":{"recipients":["ops@example.com"]}}`

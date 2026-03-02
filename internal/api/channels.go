@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -84,6 +85,14 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	if req.Type != "webhook" && req.Type != "email" {
 		http.Error(w, "type must be 'webhook' or 'email'", http.StatusUnprocessableEntity)
 		return
+	}
+
+	// Tier gating: check channel type availability.
+	if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
+		if !resolver.BoolFlag("channels_"+req.Type, req.Type == "webhook", true, true) {
+			http.Error(w, "tier limit: channel type not available", http.StatusForbidden)
+			return
+		}
 	}
 
 	// For webhook channels, validate that config contains a non-empty, SSRF-safe url.

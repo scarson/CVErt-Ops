@@ -1,5 +1,5 @@
-// ABOUTME: Integration tests for tier-based resource gating on create handlers.
-// ABOUTME: Verifies alert rules, watchlists, and member invitations respect tier limits.
+// ABOUTME: Integration tests for tier-based resource and channel type gating on create handlers.
+// ABOUTME: Verifies alert rules, watchlists, members, and channel types respect tier limits.
 package api
 
 import (
@@ -116,6 +116,129 @@ func TestTierGating_Watchlists_FreeLimit(t *testing.T) {
 	resp.Body.Close() //nolint:errcheck,gosec
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("4th watchlist: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestTierGating_Channels_FreeBlocksEmail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tiergate4@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tiergate4@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Webhook should succeed on free tier.
+	webhookBody := `{"name":"WH","type":"webhook","config":{"url":"https://example.com/hook"}}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/channels", ts.URL, orgID),
+		bytes.NewBufferString(webhookBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("webhook on free: got %d, want 201", resp.StatusCode)
+	}
+
+	// Email should fail with 403 on free tier.
+	emailBody := `{"name":"EM","type":"email","config":{"recipients":["ops@example.com"]}}`
+	req, _ = http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/channels", ts.URL, orgID),
+		bytes.NewBufferString(emailBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err = ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create email: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("email on free: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestTierGating_Channels_ProAllowsEmail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tiergate5@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tiergate5@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Upgrade to pro tier.
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	// Email should succeed on pro tier.
+	emailBody := `{"name":"EM Pro","type":"email","config":{"recipients":["ops@example.com"]}}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/channels", ts.URL, orgID),
+		bytes.NewBufferString(emailBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create email: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("email on pro: got %d, want 201", resp.StatusCode)
+	}
+}
+
+func TestTierGating_Channels_OverrideAllowsEmail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tiergate6@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tiergate6@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Free tier with override allowing email channels.
+	_, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = $1 WHERE id = $2`,
+		`{"channels_email": true}`, orgID)
+	if err != nil {
+		t.Fatalf("set tier_overrides: %v", err)
+	}
+
+	// Email should succeed with override.
+	emailBody := `{"name":"EM Override","type":"email","config":{"recipients":["ops@example.com"]}}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/channels", ts.URL, orgID),
+		bytes.NewBufferString(emailBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create email: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("email with override: got %d, want 201", resp.StatusCode)
 	}
 }
 

@@ -171,19 +171,23 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Tier gating: check watchlist count limit.
-	if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
-		limit := resolver.IntLimit("max_watchlists", 3, 20, -1)
-		if limit >= 0 {
-			count, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
-			if err != nil {
-				slog.ErrorContext(r.Context(), "count watchlists for tier check", "error", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			if count >= int64(limit) {
-				http.Error(w, "tier limit: max watchlists reached", http.StatusForbidden)
-				return
-			}
+	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
+	if !ok {
+		slog.ErrorContext(r.Context(), "tier resolver missing from context")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	limit := resolver.IntLimit("max_watchlists", 3, 20, -1)
+	if limit >= 0 {
+		count, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "count watchlists for tier check", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if count >= int64(limit) {
+			http.Error(w, "tier limit: max watchlists reached", http.StatusForbidden)
+			return
 		}
 	}
 

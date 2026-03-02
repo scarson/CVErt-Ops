@@ -283,6 +283,54 @@ func TestTierGating_AlertRules_OverrideExpandsLimit(t *testing.T) {
 	}
 }
 
+func TestTierGating_Members_FreeLimit(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "tiergate8@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tiergate8@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Org starts with 1 member (the owner). Add 4 more via DB to reach free limit of 5.
+	for i := 0; i < 4; i++ {
+		userID := uuid.New()
+		_, err := db.Pool().Exec(ctx,
+			`INSERT INTO users (id, email, display_name, password_hash) VALUES ($1, $2, $3, $4)`,
+			userID, fmt.Sprintf("filler%d@example.com", i), fmt.Sprintf("Filler %d", i), "not-a-real-hash")
+		if err != nil {
+			t.Fatalf("create filler user %d: %v", i, err)
+		}
+		_, err = db.Pool().Exec(ctx,
+			`INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'member')`,
+			orgID, userID)
+		if err != nil {
+			t.Fatalf("create filler member %d: %v", i, err)
+		}
+	}
+
+	// Creating an invitation should fail with 403 (5 members = free limit).
+	body := `{"email":"new-member@example.com","role":"member"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/api/v1/orgs/%s/invitations", ts.URL, orgID),
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+token)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("invitation at limit: got %d, want 403", resp.StatusCode)
+	}
+}
+
 func TestTierGating_OrgRateLimit(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

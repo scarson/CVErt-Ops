@@ -88,11 +88,15 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Tier gating: check channel type availability.
-	if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
-		if !resolver.BoolFlag("channels_"+req.Type, req.Type == "webhook", true, true) {
-			http.Error(w, "tier limit: channel type not available", http.StatusForbidden)
-			return
-		}
+	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
+	if !ok {
+		slog.ErrorContext(r.Context(), "tier resolver missing from context")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !resolver.BoolFlag("channels_"+req.Type, req.Type == "webhook", true, true) {
+		http.Error(w, "tier limit: channel type not available", http.StatusForbidden)
+		return
 	}
 
 	// For webhook channels, validate that config contains a non-empty, SSRF-safe url.

@@ -95,6 +95,9 @@ type Config struct {
 	TrustedProxies    string        `env:"TRUSTED_PROXIES"`
 	RateLimitEvictTTL time.Duration `env:"RATE_LIMIT_EVICT_TTL" envDefault:"15m"`
 
+	// ── SSO ─────────────────────────────────────────────────────────────────────
+	SSOEncryptionKey string `env:"SSO_ENCRYPTION_KEY"` // 32-byte hex key; required if SSO is used
+
 	// ── Data retention ───────────────────────────────────────────────────────────
 	RetentionCleanupEnabled   bool `env:"RETENTION_CLEANUP_ENABLED"    envDefault:"true"`
 	RetentionCleanupBatchSize int  `env:"RETENTION_CLEANUP_BATCH_SIZE" envDefault:"10000"`
@@ -147,6 +150,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("gemini_timeout", c.GeminiTimeout),
 		slog.Bool("gemini_mock", c.GeminiMock),
 		slog.String("nvd_api_key", masked(c.NVDAPIKey)),
+		slog.String("sso_encryption_key", masked(c.SSOEncryptionKey)),
 	)
 }
 

@@ -880,6 +880,104 @@ func TestSummarizeHandler_QuotaDisabled(t *testing.T) {
 	}
 }
 
+// ── orgID fail-closed: non-UUID org_id in URL → 400 ─────────────────────────
+
+func TestAIHandlers_InvalidOrgID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "ai-badorgid@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ai-badorgid@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	_ = reg // only needed for registration side effect
+
+	t.Run("NLSearch", func(t *testing.T) {
+		resp := doNLSearch(t, ctx, ts, token, "not-a-uuid", `{"query":"test"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("nl-search invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("Summarize", func(t *testing.T) {
+		resp := doSummarize(t, ctx, ts, token, "not-a-uuid", "CVE-2024-0001")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("summarize invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+// ── Cross-org tenant isolation: user in org A cannot access org B's AI ───────
+
+func TestAIHandlers_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-9901", "critical", nil)
+
+	_, ts := newAITestServer(t, db)
+
+	// User A: first registered user gets auto-created org.
+	regA := doRegister(t, ctx, ts, "ai-orgA@example.com", "test-password-1234")
+
+	loginA := doLogin(t, ctx, ts, "ai-orgA@example.com", "test-password-1234")
+	defer loginA.Body.Close() //nolint:errcheck,gosec
+	tokenA := cookieValue(loginA, "access_token")
+
+	// User B: second user must create their own org explicitly
+	// (BootstrapFirstUserOrg only fires for the first registration).
+	doRegister(t, ctx, ts, "ai-orgB@example.com", "test-password-1234")
+	loginB := doLogin(t, ctx, ts, "ai-orgB@example.com", "test-password-1234")
+	defer loginB.Body.Close() //nolint:errcheck,gosec
+	tokenB := cookieValue(loginB, "access_token")
+
+	orgBResp := doCreateOrg(t, ctx, ts, tokenB, "AI Org B")
+	defer orgBResp.Body.Close() //nolint:errcheck,gosec
+	if orgBResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create org B: got %d, want 201", orgBResp.StatusCode)
+	}
+	var orgB struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(orgBResp.Body).Decode(&orgB); err != nil {
+		t.Fatalf("decode org B: %v", err)
+	}
+
+	// User A tries to access org B's AI endpoints → 403.
+	t.Run("NLSearch", func(t *testing.T) {
+		resp := doNLSearch(t, ctx, ts, tokenA, orgB.OrgID, `{"query":"test"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org nl-search: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("Summarize", func(t *testing.T) {
+		resp := doSummarize(t, ctx, ts, tokenA, orgB.OrgID, "CVE-2024-9901")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org summarize: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	// Sanity: User A accessing own org works.
+	t.Run("OwnOrgWorks", func(t *testing.T) {
+		resp := doNLSearch(t, ctx, ts, tokenA, regA.OrgID, `{"query":"test"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode == http.StatusForbidden {
+			t.Error("own-org nl-search should not be 403")
+		}
+	})
+
+	_ = tokenB // used only for org creation
+}
+
 func TestNLSearchHandler_ProTierQuota(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

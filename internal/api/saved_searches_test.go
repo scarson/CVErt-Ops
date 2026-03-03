@@ -871,6 +871,195 @@ func TestSavedSearch_ExecuteNotFound(t *testing.T) {
 	}
 }
 
+// ── orgID fail-closed: non-UUID org_id in URL → 400 ─────────────────────────
+
+func TestSavedSearch_InvalidOrgID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-badorgid@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-badorgid@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	_ = reg // only needed for registration side effect
+
+	badOrg := "not-a-uuid"
+
+	t.Run("Create", func(t *testing.T) {
+		body := fmt.Sprintf(`{"name":"X","query_json":%s}`, validDSLJSON)
+		resp := doCreateSavedSearch(t, ctx, ts, token, badOrg, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("create invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("List", func(t *testing.T) {
+		resp := doListSavedSearches(t, ctx, ts, token, badOrg, "")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("list invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Get", func(t *testing.T) {
+		resp := doGetSavedSearch(t, ctx, ts, token, badOrg, uuid.New().String())
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("get invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Patch", func(t *testing.T) {
+		resp := doPatchSavedSearch(t, ctx, ts, token, badOrg, uuid.New().String(), `{"name":"x"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("patch invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Delete", func(t *testing.T) {
+		resp := doDeleteSavedSearch(t, ctx, ts, token, badOrg, uuid.New().String())
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("delete invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Execute", func(t *testing.T) {
+		resp := doExecuteSavedSearch(t, ctx, ts, token, badOrg, uuid.New().String())
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("execute invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+// ── Cross-org tenant isolation: user A cannot CRUD in org B ──────────────────
+
+func TestSavedSearch_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	// User A: first registered user gets auto-created org.
+	regA := doRegister(t, ctx, ts, "ss-orgA@example.com", "test-password-1234")
+
+	loginA := doLogin(t, ctx, ts, "ss-orgA@example.com", "test-password-1234")
+	defer loginA.Body.Close() //nolint:errcheck,gosec
+	tokenA := cookieValue(loginA, "access_token")
+
+	// User B: second user must create their own org explicitly
+	// (BootstrapFirstUserOrg only fires for the first registration).
+	doRegister(t, ctx, ts, "ss-orgB@example.com", "test-password-1234")
+	loginB := doLogin(t, ctx, ts, "ss-orgB@example.com", "test-password-1234")
+	defer loginB.Body.Close() //nolint:errcheck,gosec
+	tokenB := cookieValue(loginB, "access_token")
+
+	orgBResp := doCreateOrg(t, ctx, ts, tokenB, "SS Org B")
+	defer orgBResp.Body.Close() //nolint:errcheck,gosec
+	if orgBResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create org B: got %d, want 201", orgBResp.StatusCode)
+	}
+	var orgB struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(orgBResp.Body).Decode(&orgB); err != nil {
+		t.Fatalf("decode org B: %v", err)
+	}
+
+	// User B creates a shared saved search in org B.
+	body := fmt.Sprintf(`{"name":"Org B Search","query_json":%s,"is_shared":true}`, validDSLJSON)
+	createResp := doCreateSavedSearch(t, ctx, ts, tokenB, orgB.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("org B create: got %d, want 201", createResp.StatusCode)
+	}
+	var created savedSearchEntry
+	json.NewDecoder(createResp.Body).Decode(&created) //nolint:errcheck,gosec
+
+	// User A (org A) tries to access org B's endpoints → all forbidden.
+	t.Run("Create", func(t *testing.T) {
+		body := fmt.Sprintf(`{"name":"X","query_json":%s}`, validDSLJSON)
+		resp := doCreateSavedSearch(t, ctx, ts, tokenA, orgB.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org create: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("List", func(t *testing.T) {
+		resp := doListSavedSearches(t, ctx, ts, tokenA, orgB.OrgID, "")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("Get", func(t *testing.T) {
+		resp := doGetSavedSearch(t, ctx, ts, tokenA, orgB.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org get: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("Patch", func(t *testing.T) {
+		resp := doPatchSavedSearch(t, ctx, ts, tokenA, orgB.OrgID, created.ID, `{"name":"hacked"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org patch: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("Delete", func(t *testing.T) {
+		resp := doDeleteSavedSearch(t, ctx, ts, tokenA, orgB.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org delete: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("Execute", func(t *testing.T) {
+		resp := doExecuteSavedSearch(t, ctx, ts, tokenA, orgB.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org execute: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	// Sanity: User A accessing own org works.
+	t.Run("OwnOrgWorks", func(t *testing.T) {
+		resp := doListSavedSearches(t, ctx, ts, tokenA, regA.OrgID, "")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode == http.StatusForbidden {
+			t.Error("own-org list should not be 403")
+		}
+	})
+}
+
+// ── Unauthenticated create → 401 ────────────────────────────────────────────
+
+func TestSavedSearch_CreateUnauthenticated(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-noauth@example.com", "test-password-1234")
+
+	body := fmt.Sprintf(`{"name":"Sneaky","query_json":%s}`, validDSLJSON)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs/"+reg.OrgID+"/saved-searches",
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	// No Cookie header — unauthenticated.
+
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("unauthenticated create: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated create: got %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestSavedSearch_InvalidVisibility(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

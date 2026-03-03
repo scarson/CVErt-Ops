@@ -329,3 +329,118 @@ func TestNullByte_CVEEndpoint(t *testing.T) {
 		t.Error("null byte in cve_id returned 200 — possible null byte injection vulnerability")
 	}
 }
+
+// ── Middleware ordering tests ─────────────────────────────────────────────────
+
+// TestMiddleware_RequestID verifies that chi's RequestID middleware sets the
+// X-Request-Id response header on every request.
+func TestMiddleware_RequestID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv := newNilDBServer(t)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	reqID := resp.Header.Get("X-Request-Id")
+	if reqID == "" {
+		t.Error("X-Request-Id header is missing — RequestID middleware not active")
+	}
+}
+
+// TestMiddleware_RequestID_404 verifies that X-Request-Id is also set on
+// 404 responses (middleware runs before routing).
+func TestMiddleware_RequestID_404(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv := newNilDBServer(t)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/does-not-exist", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /does-not-exist: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.Header.Get("X-Request-Id") == "" {
+		t.Error("X-Request-Id header missing on 404 response")
+	}
+}
+
+// TestMiddleware_Recoverer_CVEPanic verifies that the Recoverer middleware
+// catches panics from nil-store handler calls and returns 500 instead of
+// crashing the server. The nil-store server causes a nil pointer dereference
+// when CVE handlers try to access the store.
+func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv := newNilDBServer(t)
+
+	// GET /api/v1/cves with nil store causes a panic in the handler.
+	// The Recoverer middleware should catch it and return 500.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/cves", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /cves (nil store): %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("nil-store panic: got status %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	// Verify the server is still alive after the panic (not crashed).
+	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new request /healthz: %v", err)
+	}
+	resp2, err := srv.Client().Do(req2) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /healthz after panic: %v — server may have crashed", err)
+	}
+	defer resp2.Body.Close() //nolint:errcheck
+
+	// /healthz with nil DB returns 503, but the point is it responded at all.
+	if resp2.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("healthz after panic: got status %d, want %d", resp2.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
+// TestMiddleware_SecurityHeaders_APIRoute verifies that security headers are
+// present on API route responses (not just infrastructure endpoints).
+func TestMiddleware_SecurityHeaders_APIRoute(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv := newNilDBServer(t)
+
+	// This hits an API route that will 500 due to nil store, but security
+	// headers should still be present.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/cves", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := srv.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /api/v1/cves: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	assertSecurityHeaders(t, resp)
+}

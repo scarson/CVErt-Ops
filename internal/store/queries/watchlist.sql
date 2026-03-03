@@ -26,8 +26,9 @@ SET deleted_at = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL;
 
 -- name: CountWatchlistItems :one
-SELECT COUNT(*) FROM watchlist_items
-WHERE watchlist_id = $1 AND deleted_at IS NULL;
+SELECT COUNT(*) FROM watchlist_items wi
+JOIN watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL
+WHERE wi.watchlist_id = $1 AND wi.deleted_at IS NULL;
 
 -- name: CreateWatchlistItem :one
 INSERT INTO watchlist_items (watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized)
@@ -35,8 +36,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetWatchlistItem :one
-SELECT * FROM watchlist_items
-WHERE id = $1 AND watchlist_id = $2 AND org_id = $3 AND deleted_at IS NULL
+SELECT wi.* FROM watchlist_items wi
+JOIN watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL
+WHERE wi.id = $1 AND wi.watchlist_id = $2 AND wi.org_id = $3 AND wi.deleted_at IS NULL
 LIMIT 1;
 
 -- name: SoftDeleteWatchlistItem :exec

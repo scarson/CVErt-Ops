@@ -434,9 +434,23 @@ func TestDeleteWatchlist_ItemCountDropsToZero(t *testing.T) {
 		t.Error("expected nil for soft-deleted watchlist")
 	}
 
-	// Items still exist in DB but are associated with the deleted watchlist.
-	// CountWatchlistItems still counts them (it doesn't check watchlist.deleted_at).
-	// The important invariant is that the watchlist is no longer accessible.
+	// CountWatchlistItems should return 0 for a soft-deleted watchlist.
+	count, err := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("CountWatchlistItems after delete: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 items after watchlist soft-delete, got %d", count)
+	}
+
+	// ListWatchlistItems should return empty for a soft-deleted watchlist.
+	items, err := s.ListWatchlistItems(ctx, org.ID, w.ID, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("ListWatchlistItems after delete: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected 0 items from ListWatchlistItems after watchlist soft-delete, got %d", len(items))
+	}
 }
 
 func TestListWatchlistItems_Pagination(t *testing.T) {

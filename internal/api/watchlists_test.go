@@ -657,7 +657,7 @@ func TestWatchlist_SoftDeleteBehavior(t *testing.T) {
 		t.Errorf("GET soft-deleted watchlist: got %d, want 404", getResp.StatusCode)
 	}
 
-	// Items listing still returns items (soft-delete does not cascade to items).
+	// Items listing returns empty after parent watchlist is soft-deleted.
 	listAfter := doListWatchlistItems(t, ctx, ts, token, aliceReg.OrgID, wl.ID)
 	defer listAfter.Body.Close() //nolint:errcheck,gosec // G104
 	if listAfter.StatusCode != http.StatusOK {
@@ -669,8 +669,8 @@ func TestWatchlist_SoftDeleteBehavior(t *testing.T) {
 	if err := json.NewDecoder(listAfter.Body).Decode(&afterItems); err != nil {
 		t.Fatalf("decode after: %v", err)
 	}
-	if len(afterItems.Items) != 1 {
-		t.Errorf("items after soft-delete: got %d, want 1 (items survive soft-delete)", len(afterItems.Items))
+	if len(afterItems.Items) != 0 {
+		t.Errorf("items after soft-delete: got %d, want 0 (soft-delete cascades to items)", len(afterItems.Items))
 	}
 }
 

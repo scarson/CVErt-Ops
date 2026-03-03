@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -417,6 +418,198 @@ func TestWorker_RetentionSchedule(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("second schedule: job count = %d, want 1 (no duplicate)", count)
+	}
+}
+
+func TestWorker_BackoffSeconds_ReflectedInSendAfter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Server always returns 500 → triggers retry with backoff.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	org, _ := s.CreateOrg(ctx, "WorkerBackoffOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerBackoffRule")
+
+	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "WorkerBackoffChan", "webhook", json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	chanID := chanRow.ID
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-BACKOFF"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+
+	beforeRetry := time.Now()
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         5,
+		BackoffBaseSeconds:  10,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunOnce(ctx)
+
+	// After first failure (attempt=1), backoff = 10 * 2^0 * [0.5,1.5) = [5,15) seconds.
+	var sendAfter time.Time
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT send_after FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&sendAfter); err != nil {
+		t.Fatalf("scan send_after: %v", err)
+	}
+
+	minExpected := beforeRetry.Add(5 * time.Second)
+	maxExpected := beforeRetry.Add(16 * time.Second) // 15s + 1s tolerance
+	if sendAfter.Before(minExpected) {
+		t.Errorf("send_after %v is before minimum expected %v", sendAfter, minExpected)
+	}
+	if sendAfter.After(maxExpected) {
+		t.Errorf("send_after %v is after maximum expected %v", sendAfter, maxExpected)
+	}
+}
+
+func TestWorker_StuckReset(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WorkerStuckOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerStuckRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "WorkerStuckChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-STUCK"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+
+	// Manually set the delivery to "processing" with an old updated_at.
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE notification_deliveries SET status='processing', updated_at=NOW() - INTERVAL '10 minutes' WHERE channel_id=$1`,
+		chanID); err != nil {
+		t.Fatalf("set stuck state: %v", err)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+		StuckThreshold:      2 * time.Minute,
+	})
+	w.RunStuckResetOnce(ctx)
+
+	// The stuck delivery should be reset to "pending".
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&status); err != nil {
+		t.Fatalf("scan status: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("stuck delivery status = %q, want %q", status, "pending")
+	}
+}
+
+func TestWorker_Recovery_OrphanedEvents(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WorkerRecoveryOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerRecoveryRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "WorkerRecoveryChan")
+
+	// Activate the rule so it's eligible.
+	if err := s.SetAlertRuleStatus(ctx, org.ID, rule.ID, "active"); err != nil {
+		t.Fatalf("SetAlertRuleStatus: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// Create an orphaned alert event: fired > 1 minute ago, no delivery exists.
+	if _, err := s.DB().ExecContext(ctx, `
+		INSERT INTO alert_events (id, org_id, rule_id, cve_id, material_hash, first_fired_at, last_match_state, suppress_delivery)
+		VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '5 minutes', true, false)`,
+		uuid.New(), org.ID, rule.ID, "CVE-2025-ORPHAN", uuid.New()); err != nil {
+		t.Fatalf("insert orphaned alert event: %v", err)
+	}
+
+	dispatcher := notify.NewDispatcher(s.Store, 0)
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.SetDispatcher(dispatcher)
+	w.RunRecoveryOnce(ctx)
+
+	// Recovery should have called Fanout, creating a delivery row.
+	var count int
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2",
+		rule.ID, chanID).Scan(&count); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("recovery delivery rows = %d, want 1", count)
+	}
+}
+
+func TestWorker_Recovery_NilDispatcher_NoOp(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// With nil dispatcher, runRecovery should return immediately (no panic).
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	// SetDispatcher NOT called — dispatcher is nil.
+	w.RunRecoveryOnce(ctx) // Should not panic.
+}
+
+func TestWorker_GracefulShutdown(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.Start(ctx)
+		close(done)
+	}()
+
+	// Cancel immediately — Start should return promptly.
+	cancel()
+	select {
+	case <-done:
+		// Success: Start returned after context cancellation.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return within 5s after context cancellation")
 	}
 }
 

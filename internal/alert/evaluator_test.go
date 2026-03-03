@@ -1338,6 +1338,59 @@ func TestEvaluatorActivation_StatusTransitionToActive(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Fanout error propagation
+// ──────────────────────────────────────────────────────────────────────────────
+
+// failingDispatcher returns an error from Fanout() to test that the evaluator
+// logs the error and continues processing subsequent events.
+type failingDispatcher struct {
+	calls int
+	mu    sync.Mutex
+}
+
+func (f *failingDispatcher) Fanout(_ context.Context, _, _ uuid.UUID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return fmt.Errorf("simulated fanout failure")
+}
+
+func TestEvaluateRealtime_FanoutErrorContinuesProcessing(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	disp := &failingDispatcher{}
+	ev.SetDispatcher(disp)
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	cveID := "CVE-FANOUT-ERR-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "fanout error test", &score, "hashfanouterr1")
+
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	// EvaluateRealtime must not return an error even when Fanout fails.
+	if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+		t.Fatalf("EvaluateRealtime should not fail when Fanout errors: %v", err)
+	}
+
+	// Alert event should still be committed (the event is written before Fanout).
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+		t.Fatalf("alert_event should be committed despite Fanout error, got %d", n)
+	}
+
+	// Fanout should have been called.
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if disp.calls != 1 {
+		t.Errorf("Fanout should have been called once, got %d", disp.calls)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // SweepZombieActivations — additional tests
 // ──────────────────────────────────────────────────────────────────────────────
 

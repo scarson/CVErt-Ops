@@ -27,11 +27,21 @@ func TestResolveLimit_TierDefault(t *testing.T) {
 		{"pro", 100},
 		{"enterprise", 1000},
 		{"unknown", 10}, // falls back to Free
+		{"", 10},         // empty tier falls back to Free
 	}
 	for _, tt := range tests {
 		got := ai.ResolveLimit(0, false, limits, tt.tier)
 		if got != tt.want {
 			t.Errorf("ResolveLimit(tier=%q) = %d, want %d", tt.tier, got, tt.want)
 		}
+	}
+}
+
+func TestResolveLimit_OverrideZero(t *testing.T) {
+	t.Parallel()
+	// override=0 with hasOverride=true should return 0 (disables the feature).
+	got := ai.ResolveLimit(0, true, ai.TierLimits{Free: 10, Pro: 100, Enterprise: 1000}, "pro")
+	if got != 0 {
+		t.Errorf("ResolveLimit(override=0, hasOverride=true) = %d, want 0", got)
 	}
 }

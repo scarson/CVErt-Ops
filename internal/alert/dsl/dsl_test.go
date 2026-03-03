@@ -4,8 +4,10 @@ package dsl_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -637,7 +639,118 @@ func TestCompile_FTSQuery_WithOtherConditions(t *testing.T) {
 	}
 }
 
+func TestValidate_FTSNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`123`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error for non-string FTS value, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "string") {
+		t.Errorf("error message = %q, expected mention of string", errs[0].Message)
+	}
+}
+
+func TestValidate_FTSQueryPlusRegexIsSelective(t *testing.T) {
+	t.Parallel()
+	// fts_query should count as a selective condition, so fts_query + regex is valid.
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`".*rce.*"`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors (fts_query is selective), got %v", errs)
+	}
+}
+
+func TestCompile_FTSNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`42`)},
+		},
+	}
+	_, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err == nil {
+		t.Fatal("expected error for non-string FTS value in Compile, got nil")
+	}
+}
+
+func TestCompile_FTSJoinDedup(t *testing.T) {
+	t.Parallel()
+	// Two FTS conditions should produce only one join.
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"remote code"`)},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Joins) != 1 {
+		t.Errorf("expected 1 join (dedup), got %d", len(compiled.Joins))
+	}
+}
+
+func TestCompile_NoJoinsWithoutFTS(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`, nil)
+	if len(c.Joins) != 0 {
+		t.Errorf("expected 0 joins for non-FTS rule, got %d", len(c.Joins))
+	}
+}
+
+func TestCompile_FTSValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	// Verify FTS search value is passed as a parameter (not interpolated into SQL).
+	injection := "'; DROP TABLE cves; --"
+	raw, _ := json.Marshal(injection)
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: raw},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	query, args, err := compiled.SQL.ToSql()
+	if err != nil {
+		t.Fatalf("ToSql: %v", err)
+	}
+	// The injection string should appear ONLY in args, never in the SQL.
+	if strings.Contains(query, "DROP") {
+		t.Errorf("SQL injection string appeared in query: %q", query)
+	}
+	if len(args) < 1 || args[0] != injection {
+		t.Errorf("injection string should be passed as parameter, got args=%v", args)
+	}
+}
+
 // ─── ILIKE Wildcard Escaping ─────────────────────────────────────────────────
+
+func TestCompile_TextContainsEscapesBackslash(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"C:\\Windows"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%c:\\windows%` {
+		t.Errorf("expected escaped backslash pattern, got %v", args)
+	}
+}
 
 func TestCompile_TextContainsEscapesWildcards(t *testing.T) {
 	t.Parallel()
@@ -663,6 +776,143 @@ func TestCompile_AffectedPackageEscapesWildcards(t *testing.T) {
 	_, args := sqlOf(t, c)
 	if len(args) != 1 || args[0] != `%my\%pkg%` {
 		t.Errorf("expected escaped package pattern, got %v", args)
+	}
+}
+
+// ─── SQL Parameterization (non-FTS value types) ─────────────────────────────
+
+func TestCompile_FloatGT(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cvss_v3_score","operator":"gt","value":9.0}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, ">") || strings.Contains(sql, ">=") {
+		t.Errorf("expected > (not >=) in SQL %q", sql)
+	}
+	if len(args) != 1 || args[0] != 9.0 {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_FloatEq(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cvss_v3_score","operator":"eq","value":7.5}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.cvss_v3_score") || !strings.Contains(sql, "=") {
+		t.Errorf("unexpected SQL %q", sql)
+	}
+	if len(args) != 1 || args[0] != 7.5 {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_FloatNeq(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cvss_v3_score","operator":"neq","value":0.0}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.cvss_v3_score") || !strings.Contains(sql, "<>") {
+		t.Errorf("expected <> in SQL %q", sql)
+	}
+	if len(args) != 1 || args[0] != 0.0 {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_TimeGTE(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"date_published","operator":"gte","value":"2024-01-01T00:00:00Z"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.date_published") || !strings.Contains(sql, ">=") {
+		t.Errorf("unexpected SQL %q", sql)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+	if _, ok := args[0].(time.Time); !ok {
+		t.Errorf("expected time.Time arg, got %T", args[0])
+	}
+}
+
+func TestCompile_EnumNotIn(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","none"]}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.severity") {
+		t.Errorf("unexpected SQL %q", sql)
+	}
+	if len(args) != 2 {
+		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
+	}
+}
+
+func TestCompile_FloatValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	// Verify float value appears in args, not interpolated into the SQL string.
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"epss_score","operator":"gte","value":0.42}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if strings.Contains(sql, "0.42") {
+		t.Errorf("float value should not appear in SQL: %q", sql)
+	}
+	if len(args) != 1 || args[0] != 0.42 {
+		t.Errorf("float value should be in args, got %v", args)
+	}
+}
+
+func TestCompile_TimeValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"date_published","operator":"lt","value":"2025-06-15T12:00:00Z"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if strings.Contains(sql, "2025") {
+		t.Errorf("time value should not appear in SQL: %q", sql)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+	if ts, ok := args[0].(time.Time); !ok || ts.Year() != 2025 {
+		t.Errorf("time value should be in args as time.Time, got %v", args[0])
+	}
+}
+
+func TestCompile_EnumValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if strings.Contains(sql, "critical") {
+		t.Errorf("enum value should not appear in SQL: %q", sql)
+	}
+	if len(args) != 1 || args[0] != "critical" {
+		t.Errorf("enum value should be in args, got %v", args)
+	}
+}
+
+func TestCompile_BoolValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"in_cisa_kev","operator":"eq","value":false}]}`, nil)
+	sql, args := sqlOf(t, c)
+	// "false" should not be interpolated into the SQL as a literal.
+	if strings.Contains(sql, "false") {
+		t.Errorf("bool value should not appear in SQL: %q", sql)
+	}
+	if len(args) != 1 || args[0] != false {
+		t.Errorf("bool value should be in args, got %v", args)
+	}
+}
+
+func TestCompile_TextValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	injection := "'; DROP TABLE cves; --"
+	raw := fmt.Sprintf(`{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":%q}]}`, injection)
+	c := compileRule(t, raw, nil)
+	sql, args := sqlOf(t, c)
+	if strings.Contains(sql, "DROP") {
+		t.Errorf("SQL injection string appeared in query: %q", sql)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+	// The arg should be the escaped ILIKE pattern, not the raw injection.
+	argStr, ok := args[0].(string)
+	if !ok || !strings.Contains(argStr, "drop table") {
+		t.Errorf("expected injection string (lowercased) in args, got %v", args[0])
 	}
 }
 

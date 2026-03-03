@@ -492,6 +492,278 @@ func TestGetDelivery(t *testing.T) {
 	}
 }
 
+func TestListDeliveries_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO1a")
+	org2, _ := s.CreateOrg(ctx, "NDOrgXO1b")
+	orgID2 := org2.ID
+
+	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO1"}`), 0)
+
+	cursor := time.Now().Add(24 * time.Hour)
+
+	// org1 sees its delivery.
+	rows, err := s.ListDeliveries(ctx, orgID1, uuid.Nil, uuid.Nil, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(org1): %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("org1 should see 1 delivery, got %d", len(rows))
+	}
+
+	// org2 must not see org1's deliveries.
+	rows, err = s.ListDeliveries(ctx, orgID2, uuid.Nil, uuid.Nil, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(wrong org): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 deliveries for wrong org, got %d", len(rows))
+	}
+}
+
+func TestGetDelivery_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO2a")
+	org2, _ := s.CreateOrg(ctx, "NDOrgXO2b")
+	orgID2 := org2.ID
+
+	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO2"}`), 0)
+
+	// Get delivery ID via raw SQL.
+	var deliveryID uuid.UUID
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT id FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2 AND status='pending'`,
+		ruleID, chanID)
+	if err := row.Scan(&deliveryID); err != nil {
+		t.Fatalf("scan delivery id: %v", err)
+	}
+
+	// org1 sees its delivery.
+	d, err := s.GetDelivery(ctx, deliveryID, orgID1)
+	if err != nil {
+		t.Fatalf("GetDelivery(org1): %v", err)
+	}
+	if d == nil {
+		t.Fatal("GetDelivery(org1) returned nil for existing delivery")
+	}
+
+	// org2 must not see org1's delivery.
+	d, err = s.GetDelivery(ctx, deliveryID, orgID2)
+	if err != nil {
+		t.Fatalf("GetDelivery(wrong org): %v", err)
+	}
+	if d != nil {
+		t.Error("GetDelivery with wrong org should return nil")
+	}
+}
+
+func TestReplayDelivery_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO3a")
+	org2, _ := s.CreateOrg(ctx, "NDOrgXO3b")
+	orgID2 := org2.ID
+
+	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO3"}`), 0)
+
+	ids := claimAndMarkProcessing(t, s, ctx)
+	if err := s.ExhaustDelivery(ctx, ids[0], "permanent failure"); err != nil {
+		t.Fatalf("ExhaustDelivery: %v", err)
+	}
+
+	// org2 attempts to replay org1's delivery — should be a no-op.
+	if err := s.ReplayDelivery(ctx, ids[0], orgID2); err != nil {
+		t.Fatalf("ReplayDelivery(wrong org): %v", err)
+	}
+
+	// Delivery must still be failed (not replayed).
+	status := getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "failed" {
+		t.Errorf("delivery should still be failed after cross-org replay, got %q", status)
+	}
+
+	// org1 can replay its own delivery.
+	if err := s.ReplayDelivery(ctx, ids[0], orgID1); err != nil {
+		t.Fatalf("ReplayDelivery(org1): %v", err)
+	}
+	status = getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "pending" {
+		t.Errorf("status after org1 replay = %q, want pending", status)
+	}
+}
+
+func TestReplayDelivery_NoOpFromPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RPNoOp1")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-RPNOOP"}`), 0)
+
+	// Get delivery ID.
+	var deliveryID uuid.UUID
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT id FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2 AND status='pending'`,
+		ruleID, chanID)
+	if err := row.Scan(&deliveryID); err != nil {
+		t.Fatalf("scan delivery id: %v", err)
+	}
+
+	// Replay from pending status should be a no-op (SQL guard: WHERE status IN ('failed', 'cancelled')).
+	if err := s.ReplayDelivery(ctx, deliveryID, orgID); err != nil {
+		t.Fatalf("ReplayDelivery(pending): %v", err)
+	}
+
+	// Status should still be pending (unchanged).
+	status := getDeliveryStatus(t, s, ctx, deliveryID)
+	if status != "pending" {
+		t.Errorf("status after replay from pending = %q, want pending", status)
+	}
+}
+
+func TestRetryDelivery_EmptyLastError(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RetryEmpty")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-RETEMPTY"}`), 0)
+
+	ids := claimAndMarkProcessing(t, s, ctx)
+
+	// Retry with empty lastError — should not error.
+	if err := s.RetryDelivery(ctx, ids[0], 5, ""); err != nil {
+		t.Fatalf("RetryDelivery(empty error): %v", err)
+	}
+
+	status := getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "pending" {
+		t.Errorf("status after retry = %q, want pending", status)
+	}
+}
+
+func TestResetStuckDeliveries_RecentlyUpdatedSurvives(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "StuckRecent")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-STUCKRECENT"}`), 0)
+
+	ids := claimAndMarkProcessing(t, s, ctx)
+
+	// Reset with a 1-hour threshold: recently-updated rows should NOT be reset.
+	if err := s.ResetStuckDeliveries(ctx, 1*time.Hour); err != nil {
+		t.Fatalf("ResetStuckDeliveries(1h): %v", err)
+	}
+
+	// Should still be processing (not reset).
+	status := getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "processing" {
+		t.Errorf("recently-updated delivery should survive 1h reset, got %q", status)
+	}
+}
+
+func TestListDeliveries_FilterByRuleAndChannel(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID1, chanID1 := setupDeliveryFixture(t, s, ctx, "FilterRC1")
+	rule2 := mustCreateAlertRule(t, s, ctx, orgID, "FilterRule2")
+	chanID2, _ := mustCreateNotificationChannel(t, s, ctx, orgID, "FilterChan2")
+
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID1, chanID1, []byte(`{"cve_id":"CVE-2024-F1"}`), 0)
+	mustUpsertDelivery(t, s, ctx, orgID, rule2.ID, chanID2, []byte(`{"cve_id":"CVE-2024-F2"}`), 0)
+
+	cursor := time.Now().Add(24 * time.Hour)
+
+	// Filter by ruleID1: should return only the first delivery.
+	byRule, err := s.ListDeliveries(ctx, orgID, ruleID1, uuid.Nil, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(by rule): %v", err)
+	}
+	if len(byRule) != 1 {
+		t.Errorf("filter by ruleID1: got %d rows, want 1", len(byRule))
+	}
+
+	// Filter by chanID2: should return only the second delivery.
+	byChan, err := s.ListDeliveries(ctx, orgID, uuid.Nil, chanID2, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(by channel): %v", err)
+	}
+	if len(byChan) != 1 {
+		t.Errorf("filter by chanID2: got %d rows, want 1", len(byChan))
+	}
+
+	// Filter by both ruleID1 + chanID2: should return 0 (no match).
+	byBoth, err := s.ListDeliveries(ctx, orgID, ruleID1, chanID2, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(mismatched rule+channel): %v", err)
+	}
+	if len(byBoth) != 0 {
+		t.Errorf("mismatched rule+channel filter: got %d rows, want 0", len(byBoth))
+	}
+}
+
+func TestOrphanedAlertEvents_SuppressedAndNonMatchingExcluded(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, _ := setupDeliveryFixture(t, s, ctx, "OrphFilter")
+
+	// Insert a suppressed event (suppress_delivery=true) backdated.
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		t.Fatalf("set bypass_rls: %v", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at)
+		VALUES ($1, $2, 'CVE-SUPPRESS-1', $3, true, true, now() - interval '15 minutes')`,
+		orgID, ruleID, uuid.New().String())
+	if err != nil {
+		t.Fatalf("insert suppressed event: %v", err)
+	}
+	// Insert a non-matching event (last_match_state=false) backdated.
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at)
+		VALUES ($1, $2, 'CVE-NOMATCH-1', $3, false, false, now() - interval '15 minutes')`,
+		orgID, ruleID, uuid.New().String())
+	if err != nil {
+		t.Fatalf("insert non-matching event: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	orphaned, err := s.OrphanedAlertEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("OrphanedAlertEvents: %v", err)
+	}
+
+	for _, row := range orphaned {
+		if row.CveID == "CVE-SUPPRESS-1" {
+			t.Error("suppressed events should be excluded from orphaned results")
+		}
+		if row.CveID == "CVE-NOMATCH-1" {
+			t.Error("non-matching events (last_match_state=false) should be excluded from orphaned results")
+		}
+	}
+}
+
 func TestInsertDigestDelivery(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

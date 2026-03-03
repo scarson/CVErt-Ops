@@ -107,6 +107,16 @@ func (w *Worker) RunRetentionScheduleOnce(ctx context.Context) {
 	w.scheduleRetention(ctx)
 }
 
+// RunStuckResetOnce executes a single stuck-delivery reset tick. Used in tests only.
+func (w *Worker) RunStuckResetOnce(ctx context.Context) {
+	w.runStuckReset(ctx)
+}
+
+// RunRecoveryOnce executes a single orphaned-event recovery tick. Used in tests only.
+func (w *Worker) RunRecoveryOnce(ctx context.Context) {
+	w.runRecovery(ctx)
+}
+
 func (w *Worker) runClaim(ctx context.Context) {
 	rows, err := w.store.ClaimPendingDeliveries(ctx, w.cfg.ClaimBatchSize)
 	if err != nil {

@@ -342,3 +342,136 @@ func TestReplayDelivery_RateLimited(t *testing.T) {
 		t.Fatalf("11th replay: got %d, want 429", resp.StatusCode)
 	}
 }
+
+// TestListDeliveries_LimitClamping verifies limit < 1 returns 400 and limit > 200 is clamped.
+func TestListDeliveries_LimitClamping(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// limit=0 → 400
+	q := url.Values{}
+	q.Set("limit", "0")
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("limit=0: got %d, want 400", resp.StatusCode)
+	}
+
+	// limit=-1 → 400
+	q2 := url.Values{}
+	q2.Set("limit", "-1")
+	resp2 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q2)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("limit=-1: got %d, want 400", resp2.StatusCode)
+	}
+
+	// limit=999 → 200 OK (clamped to 200, not rejected).
+	q3 := url.Values{}
+	q3.Set("limit", "999")
+	resp3 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q3)
+	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("limit=999: got %d, want 200 (clamped)", resp3.StatusCode)
+	}
+}
+
+// TestListDeliveries_FilterByRuleAndChannel verifies that rule_id and channel_id query params filter results.
+func TestListDeliveries_FilterByRuleAndChannel(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	chanID1 := createTestDelivery(t, ctx, db, orgID, "F1")
+	chanID2 := createTestDelivery(t, ctx, db, orgID, "F2")
+
+	// Filter by channel_id=chanID1 → expect 1.
+	q := url.Values{}
+	q.Set("channel_id", chanID1.String())
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("filter by channel_id: got %d, want 200", resp.StatusCode)
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Errorf("channel_id filter: got %d items, want 1", len(list.Items))
+	}
+
+	// Filter by channel_id=chanID2 → expect 1.
+	q2 := url.Values{}
+	q2.Set("channel_id", chanID2.String())
+	resp2 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q2)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("filter by channel_id2: got %d, want 200", resp2.StatusCode)
+	}
+	var list2 struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&list2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list2.Items) != 1 {
+		t.Errorf("channel_id2 filter: got %d items, want 1", len(list2.Items))
+	}
+
+	// Invalid rule_id → 400.
+	q3 := url.Values{}
+	q3.Set("rule_id", "not-a-uuid")
+	resp3 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q3)
+	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid rule_id: got %d, want 400", resp3.StatusCode)
+	}
+
+	// Invalid channel_id → 400.
+	q4 := url.Values{}
+	q4.Set("channel_id", "not-a-uuid")
+	resp4 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q4)
+	defer resp4.Body.Close() //nolint:errcheck,gosec // G104
+	if resp4.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid channel_id: got %d, want 400", resp4.StatusCode)
+	}
+}
+
+// TestReplayDelivery_NonExistentID verifies replaying a non-existent delivery ID.
+// ReplayDelivery uses a SQL WHERE guard (status IN ('failed','cancelled')),
+// so a non-existent ID is a no-op → 204.
+func TestReplayDelivery_NonExistentID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doReplayDelivery(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String())
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	// Non-existent ID → SQL no-op → 204 (no error from store).
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("replay non-existent: got %d, want 204", resp.StatusCode)
+	}
+}

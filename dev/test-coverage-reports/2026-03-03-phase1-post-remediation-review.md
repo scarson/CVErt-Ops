@@ -508,17 +508,20 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 
 ### Remaining Gaps
 
-#### Deferred — would need pipeline.go integration test infrastructure (7 gaps)
-- Advisory lock acquisition in `Ingest` (security-critical #25-26)
-- Two concurrent `Ingest` calls serialize (security-critical #26)
-- EPSS `applyRow` advisory lock (security-critical #27)
-- `ComputeMaterialHash` called with correct fields in `Ingest` (security-critical #29)
-- EPSS score excluded from `MaterialFields` (security-critical #28)
-- `advisoryKey` determinism and domain isolation (security-critical #21-22)
-- `CVEAdvisoryKey` delegation (security-critical #23)
+#### Deferred — `Ingest()` integration tests and advisory lock pure functions (7 gaps)
 
-#### Deferred — concurrent safety test (1 gap)
-- `ClaimJob` concurrent claim safety / SKIP LOCKED atomicity (security-critical #65). Would need concurrent goroutines racing against a real DB — non-trivial test infrastructure.
+All test infrastructure exists (`testutil.NewTestDB(t)` provides a fully-migrated Postgres via testcontainers-go, and `*store.Store` is available from it). These were deprioritized in favor of the ~340 other gaps addressed in this batch.
+
+- `advisoryKey` determinism and domain isolation (security-critical #21-22) — pure functions in `advisory.go`, trivially testable with no DB needed
+- `CVEAdvisoryKey` delegation (security-critical #23) — pure function, no DB needed
+- Advisory lock acquisition in `Ingest` (security-critical #25) — requires calling `Ingest()` with a real DB and verifying the lock is held (observable via `pg_locks`)
+- Two concurrent `Ingest` calls serialize (security-critical #26) — requires two goroutines racing `Ingest()` for the same CVE ID against a real DB; harder to write correctly (timing control) but infrastructure exists
+- EPSS `applyRow` advisory lock (security-critical #27) — same pattern as #26 but between EPSS and merge paths
+- EPSS score excluded from `MaterialFields` (security-critical #28) — call `Ingest()` with a known patch, verify stored `material_hash` matches expected value computed without EPSS
+- `ComputeMaterialHash` called with correct fields in `Ingest` (security-critical #29) — same approach as #28
+
+#### Deferred — concurrent `ClaimJob` safety (1 gap)
+- `ClaimJob` concurrent claim safety / SKIP LOCKED atomicity (security-critical #65). Requires multiple goroutines racing `ClaimJob` against a real DB. Infrastructure exists (`testutil.NewTestDB`), but writing a reliable concurrent test with timing guarantees is non-trivial.
 
 #### Deferred — handler panic recovery (1 gap)
 - `processOne` handler panic crashes queue goroutine (security-critical #66). Would need `recover()` in production code.

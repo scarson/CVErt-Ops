@@ -96,4 +96,21 @@ func (tdb *TestDB) SeedTestCVE(t *testing.T, cveID, severity string, opts *SeedC
 	if err != nil {
 		t.Fatalf("SeedTestCVE(%s): %v", cveID, err)
 	}
+
+	// Populate cve_search_index so FTS integration tests work with seeded CVEs.
+	_, err = tdb.DB().ExecContext(ctx, `
+		INSERT INTO cve_search_index (cve_id, fts_document)
+		VALUES (
+			$1,
+			setweight(to_tsvector('english', coalesce($2::text, '')), 'A') ||
+			setweight(to_tsvector($1::text), 'D')
+		)
+		ON CONFLICT (cve_id) DO UPDATE
+			SET fts_document = EXCLUDED.fts_document
+			WHERE cve_search_index.fts_document IS DISTINCT FROM EXCLUDED.fts_document`,
+		cveID, o.DescriptionPrimary,
+	)
+	if err != nil {
+		t.Fatalf("SeedTestCVE(%s) FTS index: %v", cveID, err)
+	}
 }

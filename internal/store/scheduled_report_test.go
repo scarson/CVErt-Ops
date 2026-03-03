@@ -356,6 +356,100 @@ func TestGetScheduledReportName_NotFound(t *testing.T) {
 	}
 }
 
+func TestScheduledReport_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "SRIsoA")
+	org2, _ := s.CreateOrg(ctx, "SRIsoB")
+	report := mustCreateScheduledReport(t, s, ctx, org1.ID, "Org1Report")
+
+	// Get with wrong org → nil.
+	got, err := s.GetScheduledReport(ctx, org2.ID, report.ID)
+	if err != nil {
+		t.Fatalf("GetScheduledReport(wrong org): %v", err)
+	}
+	if got != nil {
+		t.Error("GetScheduledReport with wrong org should return nil")
+	}
+
+	// List with wrong org → empty.
+	list, err := s.ListScheduledReports(ctx, org2.ID)
+	if err != nil {
+		t.Fatalf("ListScheduledReports(wrong org): %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("expected 0 reports for wrong org, got %d", len(list))
+	}
+
+	// Update with wrong org → nil (no-op).
+	updated, err := s.UpdateScheduledReport(ctx, org2.ID, report.ID, store.UpdateScheduledReportParams{
+		Name:          "Hijacked",
+		ScheduledTime: "12:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     report.NextRunAt,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("UpdateScheduledReport(wrong org): %v", err)
+	}
+	if updated != nil {
+		t.Error("UpdateScheduledReport with wrong org should return nil")
+	}
+	// Verify name unchanged.
+	got, err = s.GetScheduledReport(ctx, org1.ID, report.ID)
+	if err != nil {
+		t.Fatalf("GetScheduledReport after cross-org update: %v", err)
+	}
+	if got == nil {
+		t.Fatal("report should still exist in org1")
+	}
+	if got.Name != "Org1Report" {
+		t.Errorf("Name = %q, want Org1Report (should be unchanged)", got.Name)
+	}
+
+	// SoftDelete with wrong org → no-op.
+	if err := s.SoftDeleteScheduledReport(ctx, org2.ID, report.ID); err != nil {
+		t.Fatalf("SoftDeleteScheduledReport(wrong org): %v", err)
+	}
+	got, err = s.GetScheduledReport(ctx, org1.ID, report.ID)
+	if err != nil {
+		t.Fatalf("GetScheduledReport after cross-org delete: %v", err)
+	}
+	if got == nil {
+		t.Error("report should still exist in org1 after cross-org delete attempt")
+	}
+}
+
+func TestUpdateScheduledReport_SoftDeleted(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "SRUpdDelOrg")
+	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DeletedReport")
+
+	if err := s.SoftDeleteScheduledReport(ctx, org.ID, report.ID); err != nil {
+		t.Fatalf("SoftDeleteScheduledReport: %v", err)
+	}
+
+	// Update on soft-deleted report → nil.
+	result, err := s.UpdateScheduledReport(ctx, org.ID, report.ID, store.UpdateScheduledReportParams{
+		Name:          "Revived",
+		ScheduledTime: "08:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     report.NextRunAt,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("UpdateScheduledReport(soft-deleted): %v", err)
+	}
+	if result != nil {
+		t.Error("expected nil for soft-deleted report update")
+	}
+}
+
 func TestGetAlertRuleName_Found(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

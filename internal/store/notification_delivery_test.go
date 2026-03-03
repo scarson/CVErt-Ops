@@ -629,6 +629,30 @@ func TestReplayDelivery_NoOpFromPending(t *testing.T) {
 	}
 }
 
+func TestReplayDelivery_NoOpFromSucceeded(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RPNoOp2")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-RPNOOP2"}`), 0)
+
+	ids := claimAndMarkProcessing(t, s, ctx)
+	if err := s.CompleteDelivery(ctx, ids[0]); err != nil {
+		t.Fatalf("CompleteDelivery: %v", err)
+	}
+
+	// Replay from succeeded status should be a no-op.
+	if err := s.ReplayDelivery(ctx, ids[0], orgID); err != nil {
+		t.Fatalf("ReplayDelivery(succeeded): %v", err)
+	}
+
+	status := getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "succeeded" {
+		t.Errorf("status after replay from succeeded = %q, want succeeded", status)
+	}
+}
+
 func TestRetryDelivery_EmptyLastError(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -905,5 +929,138 @@ func TestDigestCVEs(t *testing.T) {
 	}
 	if !foundD001 {
 		t.Error("DigestCVEs(critical,high): expected CVE-2025-D001")
+	}
+}
+
+func TestDigestCVEs_ExcludesRejectedAndWithdrawn(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db := s.DB()
+	since := time.Now().Add(-1 * time.Hour)
+
+	// Rejected CVE — must be excluded.
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+		VALUES ($1, 'rejected', 'critical', 'Rejected vuln', $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET status = EXCLUDED.status, date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-REJ1", uuid.New().String(), time.Now())
+	if err != nil {
+		t.Fatalf("insert rejected CVE: %v", err)
+	}
+
+	// Withdrawn CVE — must be excluded.
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+		VALUES ($1, 'withdrawn', 'high', 'Withdrawn vuln', $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET status = EXCLUDED.status, date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-WITH1", uuid.New().String(), time.Now())
+	if err != nil {
+		t.Fatalf("insert withdrawn CVE: %v", err)
+	}
+
+	// Published CVE — should be included as control.
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'critical', 'Published vuln', $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET status = EXCLUDED.status, date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-PUB1", uuid.New().String(), time.Now())
+	if err != nil {
+		t.Fatalf("insert published CVE: %v", err)
+	}
+
+	rows, err := s.DigestCVEs(ctx, since, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+
+	foundRejected, foundWithdrawn, foundPublished := false, false, false
+	for _, row := range rows {
+		switch row.CveID {
+		case "CVE-2025-REJ1":
+			foundRejected = true
+		case "CVE-2025-WITH1":
+			foundWithdrawn = true
+		case "CVE-2025-PUB1":
+			foundPublished = true
+		}
+	}
+	if foundRejected {
+		t.Error("rejected CVE should be excluded from DigestCVEs")
+	}
+	if foundWithdrawn {
+		t.Error("withdrawn CVE should be excluded from DigestCVEs")
+	}
+	if !foundPublished {
+		t.Error("published CVE should be included in DigestCVEs")
+	}
+}
+
+func TestDigestCVEs_SortOrder(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db := s.DB()
+	since := time.Now().Add(-1 * time.Hour)
+
+	// Insert CVEs with different severities to verify sort order:
+	// critical > high > medium > low, with CVSS v3 tiebreaker.
+	cves := []struct {
+		id       string
+		severity string
+		cvss     float64
+	}{
+		{"CVE-2025-SORT-LOW", "low", 2.0},
+		{"CVE-2025-SORT-MED", "medium", 5.0},
+		{"CVE-2025-SORT-CRIT1", "critical", 9.0},
+		{"CVE-2025-SORT-CRIT2", "critical", 10.0},
+		{"CVE-2025-SORT-HIGH", "high", 7.5},
+	}
+	for _, c := range cves {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
+			VALUES ($1, 'published', $2, 'Sort test', $3, $4, $5)
+			ON CONFLICT (cve_id) DO UPDATE SET
+				severity = EXCLUDED.severity,
+				cvss_v3_score = EXCLUDED.cvss_v3_score,
+				date_modified_canonical = EXCLUDED.date_modified_canonical`,
+			c.id, c.severity, c.cvss, uuid.New().String(), time.Now())
+		if err != nil {
+			t.Fatalf("insert %s: %v", c.id, err)
+		}
+	}
+
+	rows, err := s.DigestCVEs(ctx, since, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+
+	// Extract just the sort-test CVEs in order.
+	var sortIDs []string
+	for _, row := range rows {
+		for _, c := range cves {
+			if row.CveID == c.id {
+				sortIDs = append(sortIDs, row.CveID)
+			}
+		}
+	}
+
+	// Expected order: CRIT2 (10.0) > CRIT1 (9.0) > HIGH (7.5) > MED (5.0) > LOW (2.0)
+	expected := []string{
+		"CVE-2025-SORT-CRIT2",
+		"CVE-2025-SORT-CRIT1",
+		"CVE-2025-SORT-HIGH",
+		"CVE-2025-SORT-MED",
+		"CVE-2025-SORT-LOW",
+	}
+	if len(sortIDs) != len(expected) {
+		t.Fatalf("expected %d sort-test CVEs, got %d: %v", len(expected), len(sortIDs), sortIDs)
+	}
+	for i, id := range sortIDs {
+		if id != expected[i] {
+			t.Errorf("position %d: got %s, want %s", i, id, expected[i])
+		}
 	}
 }

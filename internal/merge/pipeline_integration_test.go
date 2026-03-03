@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -643,5 +645,115 @@ func TestIngest_NilRawPayloadSkipsInsert(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected 0 raw payload rows when nil, got %d", count)
+	}
+}
+
+// TestIngest_ConcurrentWriteSerializesCorrectly verifies that two goroutines
+// ingesting different sources for the same CVE concurrently produce a correct
+// final result containing data from BOTH sources.
+//
+// Without advisory lock serialization, at READ COMMITTED isolation both writers
+// could read cve_sources before the other commits, each resolving from incomplete
+// data. The last committer's resolution overwrites the first's — losing data.
+// The advisory lock forces the second writer to block until the first commits,
+// then re-read all sources and resolve from the complete set.
+//
+// This uses the "result correctness" pattern: assert that the outcome of
+// concurrent execution matches serial execution. Multiple iterations increase
+// confidence by varying goroutine scheduling.
+func TestIngest_ConcurrentWriteSerializesCorrectly(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	q := generated.New(s.DB())
+
+	const iterations = 5
+	for i := 0; i < iterations; i++ {
+		cveID := fmt.Sprintf("CVE-2024-CONC-%04d", i)
+		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
+			// Both sources contribute MATERIAL fields so the material_hash
+			// always differs between single-source and multi-source resolution.
+			// NVD provides severity (material); GHSA provides packages (material).
+			// Without serialization, the last writer could resolve from incomplete
+			// cve_sources and produce a hash missing the other source's fields.
+			nvdSev := "HIGH"
+			nvdPatch := feed.CanonicalPatch{
+				CVEID:    cveID,
+				Status:   "published",
+				Severity: &nvdSev,
+			}
+
+			ghsaPkgName := fmt.Sprintf("concurrent-pkg-%d", i)
+			ghsaPatch := feed.CanonicalPatch{
+				CVEID:    cveID,
+				SourceID: fmt.Sprintf("GHSA-conc-%04d-aaaa", i),
+				Status:   "published",
+				AffectedPackages: []feed.AffectedPackage{
+					{Ecosystem: "npm", PackageName: ghsaPkgName, Introduced: "0.1.0", Fixed: "0.2.0"},
+				},
+			}
+
+			// Starting gate: both goroutines block until the gate is closed,
+			// maximizing the chance they enter Ingest() simultaneously.
+			gate := make(chan struct{})
+			var wg sync.WaitGroup
+			errs := make([]error, 2)
+
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				<-gate
+				errs[0] = merge.Ingest(ctx, s.Store, nvdPatch, "nvd", nil)
+			}()
+			go func() {
+				defer wg.Done()
+				<-gate
+				errs[1] = merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa", nil)
+			}()
+
+			close(gate)
+			wg.Wait()
+
+			for gi, err := range errs {
+				if err != nil {
+					t.Fatalf("Ingest goroutine %d: %v", gi, err)
+				}
+			}
+
+			// Correctness assertion: final CVE must reflect material data from
+			// BOTH sources. Without serialization, the last writer resolves from
+			// incomplete data and produces a result missing the other's fields.
+			cve, err := s.GetCVE(ctx, cveID)
+			if err != nil {
+				t.Fatalf("GetCVE: %v", err)
+			}
+			if cve == nil {
+				t.Fatal("CVE not found after concurrent Ingest")
+			}
+
+			// NVD provided severity (material field, CVSS priority).
+			if !cve.Severity.Valid || cve.Severity.String != nvdSev {
+				t.Errorf("severity = %q, want %q (from NVD source)",
+					cve.Severity.String, nvdSev)
+			}
+
+			// GHSA provided affected packages (material field).
+			pkgs, err := q.GetCVEAffectedPackages(ctx, cveID)
+			if err != nil {
+				t.Fatalf("GetCVEAffectedPackages: %v", err)
+			}
+			if len(pkgs) == 0 {
+				t.Error("affected packages should exist (from GHSA source)")
+			}
+
+			// Both sources must be stored.
+			sources, err := q.GetAllCVESources(ctx, cveID)
+			if err != nil {
+				t.Fatalf("GetAllCVESources: %v", err)
+			}
+			if len(sources) != 2 {
+				t.Errorf("expected 2 sources, got %d", len(sources))
+			}
+		})
 	}
 }

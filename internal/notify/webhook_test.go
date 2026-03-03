@@ -156,6 +156,84 @@ func TestSend_SecondarySignatureAbsentWhenNotSet(t *testing.T) {
 	assert.Empty(t, gotSecondary, "secondary signature header must be absent when SigningSecretSecondary is empty")
 }
 
+func TestSend_DeniedHeaderMixedCase(t *testing.T) {
+	var gotContentType, gotCustom string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		gotCustom = r.Header.Get("X-Custom")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	_ = notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL:           srv.URL,
+		SigningSecret: "x",
+		CustomHeaders: map[string]string{
+			"CONTENT-TYPE":        "text/plain",
+			"HoSt":               "evil.com",
+			"Transfer-ENCODING":   "chunked",
+			"X-CVERT-TIMESTAMP":   "0",
+			"X-Custom":            "allowed",
+		},
+	}, []byte(`[]`))
+
+	// Denied headers must be stripped regardless of casing.
+	assert.Equal(t, "application/json", gotContentType)
+	// Allowed headers must pass through.
+	assert.Equal(t, "allowed", gotCustom)
+}
+
+func TestSend_NetworkError(t *testing.T) {
+	// Point at a port that's not listening.
+	err := notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL: "http://127.0.0.1:1", SigningSecret: "x",
+	}, []byte(`[]`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "webhook POST")
+}
+
+func TestSend_ContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Slow server — hangs long enough for context to be cancelled.
+		time.Sleep(5 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately.
+
+	err := notify.Send(ctx, buildTestClient(), notify.WebhookConfig{
+		URL: srv.URL, SigningSecret: "x",
+	}, []byte(`[]`))
+	require.Error(t, err)
+}
+
+func TestBuildSafeClient_BlocksPrivateIPs(t *testing.T) {
+	// Start a local httptest server (binds to 127.0.0.1).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client, err := notify.BuildSafeClient()
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	// safeurl must block requests to 127.0.0.1 (private IP).
+	sendErr := notify.Send(context.Background(), client, notify.WebhookConfig{
+		URL: srv.URL, SigningSecret: "x",
+	}, []byte(`[]`))
+	require.Error(t, sendErr, "safeurl client must block requests to private IPs")
+}
+
+func TestBuildSafeClient_ReturnsValidClient(t *testing.T) {
+	client, err := notify.BuildSafeClient()
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, 10*time.Second, client.Timeout)
+}
+
 func TestSend_RedirectRejected(t *testing.T) {
 	inner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

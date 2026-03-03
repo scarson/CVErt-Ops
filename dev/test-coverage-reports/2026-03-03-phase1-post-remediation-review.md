@@ -411,20 +411,20 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 ## Remediation Summary
 
 **Remediated:** 2026-03-03
-**Branch:** `phase-5` (commits `686f4ac`..`e2d9109`)
-**Commits:** 8 (7 test batches + 1 bugfix)
+**Branch:** `dev` (commits `686f4ac`..`72fbd0a`)
+**Commits:** 9 (7 test batches + 1 store bugfix + 1 pipeline integration + bugfix)
 
 ### Stats
 
 | Metric | Count |
 |--------|-------|
 | Total gaps in review | 791 |
-| Test functions added | 152 |
+| Test functions added | 164 |
 | Subtests added (t.Run) | 30 |
-| Lines of test code added | ~3,999 |
+| Lines of test code added | ~4,655 |
 | Files modified | 17 |
-| Files created | 2 (`store/jobs_test.go`, `api/server_test.go`) |
-| Production code changed | 1 (`worker/pool.go` — interface extraction) |
+| Files created | 3 (`store/jobs_test.go`, `api/server_test.go`, `merge/pipeline_integration_test.go`) |
+| Production code changed | 2 (`worker/pool.go` — interface extraction, `merge/pipeline.go` — migrateCVEPK bugfix) |
 | Bugs discovered | 1 |
 | Lint fixes | 1 |
 
@@ -498,9 +498,13 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 
 1. **`job_queue` table missing GRANT for `cvert_ops_app` role.** The `job_queue` table predates the RLS/role system introduced in migration 001. The app DB role (`cvert_ops_app`) has no `GRANT` on this table. In production, job operations work because they go through the superuser `Store` (via `withBypassTx`/`WorkerTx`), not the RLS-scoped `AppStore`. The test initially used `s.AppStore.HasPendingOrRunningJob()` which hit `permission denied`. Fixed by using `s.Store` which matches production code paths. A migration to add proper GRANTs should be considered if `AppStore` ever needs direct job_queue access.
 
+2. **`migrateCVEPK` param count mismatch — PK migration always fails.** The `DELETE FROM cve_search_index WHERE cve_id = $1` query has one placeholder but `tx.ExecContext` is called with two args (`oldID, newID`). `database/sql` rejects mismatched param counts, so `migrateCVEPK` always errors on the first step. This means late-binding PK migration (GHSA/OSV alias promotion to CVE ID) has never worked in production. Fixed by separating the single-param DELETE from the two-param UPDATE loop.
+
 ### Production Code Changes
 
 1. **`internal/worker/pool.go` — `JobStore` interface extraction.** The `Pool.store` field was changed from concrete `*store.Store` to a `JobStore` interface (4 methods: `ClaimJob`, `CompleteJob`, `FailJob`, `RecoverStaleJobs`). This enabled unit testing `processOne`, `runStaleRecovery`, and `runQueue` without a database via `fakeJobStore`. The `*store.Store` type satisfies the interface implicitly — no changes to callers needed.
+
+2. **`internal/merge/pipeline.go` — `migrateCVEPK` param mismatch fix.** Separated the single-param DELETE (search index) from the two-param UPDATE loop (child tables + PK). The DELETE only needs `oldID`; the updates need both `oldID` and `newID`.
 
 ### Lint Fixes
 
@@ -508,17 +512,17 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 
 ### Remaining Gaps
 
-#### Deferred — `Ingest()` integration tests and advisory lock pure functions (7 gaps)
+#### Resolved — `Ingest()` integration tests and advisory lock pure functions (7 gaps → 5 closed)
 
-All test infrastructure exists (`testutil.NewTestDB(t)` provides a fully-migrated Postgres via testcontainers-go, and `*store.Store` is available from it). These were deprioritized in favor of the ~340 other gaps addressed in this batch.
+- ~~`advisoryKey` determinism and domain isolation (security-critical #21-22)~~ — already covered by `advisory_test.go` (pre-existing)
+- ~~`CVEAdvisoryKey` delegation (security-critical #23)~~ — already covered by `advisory_test.go` (pre-existing)
+- ~~Advisory lock acquisition in `Ingest` (security-critical #25)~~ — covered by `TestIngest_AdvisoryLockAcquired`
+- ~~EPSS score excluded from `MaterialFields` (security-critical #28)~~ — covered by `TestIngest_EPSSExcludedFromMaterialHash`
+- ~~`ComputeMaterialHash` called with correct fields in `Ingest` (security-critical #29)~~ — covered by `TestIngest_MaterialHashDeterministic` + `TestIngest_MaterialHashChangesOnMaterialChange`
 
-- `advisoryKey` determinism and domain isolation (security-critical #21-22) — pure functions in `advisory.go`, trivially testable with no DB needed
-- `CVEAdvisoryKey` delegation (security-critical #23) — pure function, no DB needed
-- Advisory lock acquisition in `Ingest` (security-critical #25) — requires calling `Ingest()` with a real DB and verifying the lock is held (observable via `pg_locks`)
-- Two concurrent `Ingest` calls serialize (security-critical #26) — requires two goroutines racing `Ingest()` for the same CVE ID against a real DB; harder to write correctly (timing control) but infrastructure exists
+#### Still deferred — concurrent advisory lock serialization (2 gaps)
+- Two concurrent `Ingest` calls serialize (security-critical #26) — requires two goroutines racing `Ingest()` for the same CVE ID; harder to write correctly (timing control) but infrastructure exists
 - EPSS `applyRow` advisory lock (security-critical #27) — same pattern as #26 but between EPSS and merge paths
-- EPSS score excluded from `MaterialFields` (security-critical #28) — call `Ingest()` with a known patch, verify stored `material_hash` matches expected value computed without EPSS
-- `ComputeMaterialHash` called with correct fields in `Ingest` (security-critical #29) — same approach as #28
 
 #### Deferred — concurrent `ClaimJob` safety (1 gap)
 - `ClaimJob` concurrent claim safety / SKIP LOCKED atomicity (security-critical #65). Requires multiple goroutines racing `ClaimJob` against a real DB. Infrastructure exists (`testutil.NewTestDB`), but writing a reliable concurrent test with timing guarantees is non-trivial.
@@ -542,8 +546,8 @@ All test infrastructure exists (`testutil.NewTestDB(t)` provides a fully-migrate
 
 | Metric | Before | After | Delta |
 |--------|--------|-------|-------|
-| Security-critical gaps | 66 | ~12 | -54 |
-| Correctness gaps | 640 | ~350 | -290 |
+| Security-critical gaps | 66 | ~7 | -59 |
+| Correctness gaps | 640 | ~340 | -300 |
 | Nice-to-have gaps | 85 | 85 | 0 |
 | Files with 100% gap rate | 8 | 2 (OSV, merge/fts.go) | -6 |
-| Test files | 7 | 16 | +9 |
+| Test files | 7 | 17 | +10 |

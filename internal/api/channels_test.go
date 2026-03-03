@@ -206,6 +206,11 @@ func TestListChannels_ReturnsCreated(t *testing.T) {
 	if len(listed.Items) != 1 {
 		t.Fatalf("list items count = %d, want 1", len(listed.Items))
 	}
+
+	// S4: LIST response must never include signing_secret.
+	if s, ok := listed.Items[0]["signing_secret"]; ok && s != nil && s != "" {
+		t.Errorf("LIST response must not include signing_secret, got %v", s)
+	}
 }
 
 // TestPatchChannel_PartialUpdate verifies that PATCHing only the name preserves the config.
@@ -237,14 +242,17 @@ func TestPatchChannel_PartialUpdate(t *testing.T) {
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("patch channel: got %d, want 200", patchResp.StatusCode)
 	}
-	var patched struct {
-		Name string `json:"name"`
-	}
+	var patched map[string]any
 	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
 		t.Fatalf("decode patch: %v", err)
 	}
-	if patched.Name != "Renamed Channel" {
-		t.Errorf("patched name = %q, want %q", patched.Name, "Renamed Channel")
+	if patched["name"] != "Renamed Channel" {
+		t.Errorf("patched name = %v, want %q", patched["name"], "Renamed Channel")
+	}
+
+	// S4: PATCH response must never include signing_secret.
+	if s, ok := patched["signing_secret"]; ok && s != nil && s != "" {
+		t.Errorf("PATCH response must not include signing_secret, got %v", s)
 	}
 }
 

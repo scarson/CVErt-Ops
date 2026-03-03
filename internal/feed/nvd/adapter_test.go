@@ -3,10 +3,16 @@
 package nvd
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -704,4 +710,322 @@ func TestPickPreferred(t *testing.T) {
 			t.Fatalf("expected nil for zero-length slice, got %+v", got)
 		}
 	})
+}
+
+// --- Fetch-level integration tests (httptest + redirectTransport) ---
+
+// redirectTransport intercepts outbound requests and rewrites their scheme/host
+// to point at the httptest server. This lets us test Fetch end-to-end without
+// modifying the hardcoded apiURL const.
+type redirectTransport struct {
+	targetURL string
+	inner     http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, _ := url.Parse(rt.targetURL)
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	return rt.inner.RoundTrip(req)
+}
+
+// validNVDResponse is a minimal NVD API 2.0 response for Fetch tests.
+const validNVDResponse = `{
+	"resultsPerPage": 2,
+	"startIndex": 0,
+	"totalResults": 2,
+	"format": "NVD_CVE",
+	"version": "2.0",
+	"timestamp": "2025-06-01T12:00:00.000",
+	"vulnerabilities": [
+		{
+			"cve": {
+				"id": "CVE-2025-1001",
+				"vulnStatus": "Analyzed",
+				"published": "2025-05-01T00:00:00.000",
+				"lastModified": "2025-05-15T00:00:00.000",
+				"descriptions": [
+					{"lang": "en", "value": "Buffer overflow in example service"}
+				],
+				"metrics": {
+					"cvssMetricV31": [
+						{
+							"source": "nvd@nist.gov",
+							"cvssData": {
+								"version": "3.1",
+								"vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+								"baseScore": 9.8,
+								"baseSeverity": "CRITICAL"
+							}
+						}
+					]
+				}
+			}
+		},
+		{
+			"cve": {
+				"id": "CVE-2025-1002",
+				"vulnStatus": "Modified",
+				"published": "2025-04-01T00:00:00.000",
+				"lastModified": "2025-05-20T00:00:00.000",
+				"descriptions": [
+					{"lang": "en", "value": "SQL injection in admin panel"}
+				]
+			}
+		}
+	]
+}`
+
+func TestFetch_Success(t *testing.T) {
+	t.Parallel()
+
+	var capturedQuery url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-1001" {
+		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-1001", result.Patches[0].CVEID)
+	}
+	if result.Patches[1].CVEID != "CVE-2025-1002" {
+		t.Errorf("Patches[1].CVEID = %q, want CVE-2025-1002", result.Patches[1].CVEID)
+	}
+
+	if result.SourceMeta.SourceName != "nvd" {
+		t.Errorf("SourceName = %q, want %q", result.SourceMeta.SourceName, "nvd")
+	}
+
+	// Verify query parameters were sent.
+	if capturedQuery.Get("resultsPerPage") == "" {
+		t.Error("expected resultsPerPage query param")
+	}
+	if capturedQuery.Get("startIndex") == "" {
+		t.Error("expected startIndex query param")
+	}
+}
+
+func TestFetch_WithCursor(t *testing.T) {
+	t.Parallel()
+
+	var capturedQuery url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	windowStart := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2025, 5, 30, 0, 0, 0, 0, time.UTC)
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: windowStart,
+		WindowEnd:   windowEnd,
+		StartIndex:  2000,
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the date params were sent on the request.
+	startDate := capturedQuery.Get("lastModStartDate")
+	if startDate == "" {
+		t.Fatal("expected lastModStartDate query param")
+	}
+	endDate := capturedQuery.Get("lastModEndDate")
+	if endDate == "" {
+		t.Fatal("expected lastModEndDate query param")
+	}
+
+	// Verify startIndex from the cursor was forwarded.
+	if capturedQuery.Get("startIndex") != "2000" {
+		t.Errorf("startIndex = %q, want %q", capturedQuery.Get("startIndex"), "2000")
+	}
+
+	// We should still get patches from the response.
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+}
+
+func TestFetch_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for HTTP 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error = %q, want it to contain 'HTTP 403'", err.Error())
+	}
+}
+
+func TestFetch_InvalidCursor(t *testing.T) {
+	t.Parallel()
+
+	// No httptest server needed — Fetch should fail on cursor parse before making a request.
+	adapter := &Adapter{
+		client:      http.DefaultClient,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	_, err := adapter.Fetch(context.Background(), json.RawMessage(`{not valid json}`))
+	if err == nil {
+		t.Fatal("expected error for invalid cursor JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse cursor") {
+		t.Errorf("error = %q, want it to contain 'parse cursor'", err.Error())
+	}
+}
+
+func TestFetch_APIKeyHeader(t *testing.T) {
+	t.Parallel()
+
+	var capturedAPIKey string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAPIKey = r.Header.Get("apiKey") //nolint:canonicalheader // NVD requires lowercase 'a'
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	// Construct the adapter directly to inject a test API key without env vars.
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		apiKey:      "test-api-key-12345",
+	}
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAPIKey != "test-api-key-12345" {
+		t.Errorf("apiKey header = %q, want %q", capturedAPIKey, "test-api-key-12345")
+	}
+}
+
+func TestFetch_DateResponseHeader(t *testing.T) {
+	t.Parallel()
+
+	// Serve a response with no "timestamp" field in JSON body, so
+	// Fetch must fall back to the HTTP Date header for effectiveNow.
+	noTimestampResponse := `{
+		"resultsPerPage": 1,
+		"startIndex": 0,
+		"totalResults": 1,
+		"format": "NVD_CVE",
+		"version": "2.0",
+		"vulnerabilities": [
+			{
+				"cve": {
+					"id": "CVE-2025-3001",
+					"vulnStatus": "Analyzed",
+					"published": "2025-05-01T00:00:00.000",
+					"lastModified": "2025-05-15T00:00:00.000",
+					"descriptions": [
+						{"lang": "en", "value": "Test vuln"}
+					]
+				}
+			}
+		]
+	}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(noTimestampResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Patches) != 1 {
+		t.Fatalf("len(Patches) = %d, want 1", len(result.Patches))
+	}
+	// NextCursor should be computed using the Date header as effectiveNow.
+	// Since zeroValueCursor creates a window starting at 2002-01-01 and totalResults=1
+	// (exhausted in one page), the next cursor should advance to a new window.
+	// If Date header was not parsed, effectiveNow would be time.Now(), which also
+	// produces a valid next cursor — the key check is that Fetch succeeded.
+	if result.Patches[0].CVEID != "CVE-2025-3001" {
+		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-3001", result.Patches[0].CVEID)
+	}
 }

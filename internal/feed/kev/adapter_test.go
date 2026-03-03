@@ -3,7 +3,11 @@
 package kev
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -476,5 +480,183 @@ func TestExtractCWEs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- Fetch-level integration tests (httptest + redirectTransport) ---
+
+// redirectTransport intercepts outbound requests and rewrites their scheme/host
+// to point at the httptest server. This lets us test Fetch end-to-end without
+// modifying the hardcoded feedURL const.
+type redirectTransport struct {
+	targetURL string
+	inner     http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, _ := url.Parse(rt.targetURL)
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	return rt.inner.RoundTrip(req)
+}
+
+// validKEVCatalog is a minimal KEV JSON catalog for Fetch tests.
+const validKEVCatalog = `{
+	"title": "CISA KEV Catalog",
+	"catalogVersion": "2025.01.15",
+	"dateReleased": "2025-01-15",
+	"count": 2,
+	"vulnerabilities": [
+		{
+			"cveID": "CVE-2025-0001",
+			"vendorProject": "Acme",
+			"product": "Router",
+			"vulnerabilityName": "Acme Router RCE",
+			"dateAdded": "2025-01-10",
+			"shortDescription": "Remote code execution via crafted packet",
+			"requiredAction": "Apply update",
+			"dueDate": "2025-02-10",
+			"knownRansomwareCampaignUse": "Unknown",
+			"notes": "",
+			"cwes": ["CWE-787"]
+		},
+		{
+			"cveID": "CVE-2025-0002",
+			"vendorProject": "Beta",
+			"product": "Firewall",
+			"vulnerabilityName": "Beta Firewall Auth Bypass",
+			"dateAdded": "2025-01-12",
+			"shortDescription": "Authentication bypass in admin panel",
+			"requiredAction": "Apply update",
+			"dueDate": "2025-02-12",
+			"knownRansomwareCampaignUse": "Known",
+			"notes": ""
+		}
+	]
+}`
+
+func TestFetch_Success(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validKEVCatalog))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-0001" {
+		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-0001", result.Patches[0].CVEID)
+	}
+	if result.Patches[1].CVEID != "CVE-2025-0002" {
+		t.Errorf("Patches[1].CVEID = %q, want CVE-2025-0002", result.Patches[1].CVEID)
+	}
+
+	if result.SourceMeta.SourceName != "kev" {
+		t.Errorf("SourceName = %q, want %q", result.SourceMeta.SourceName, "kev")
+	}
+
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor should be non-nil")
+	}
+	var cursor Cursor
+	if err := json.Unmarshal(result.NextCursor, &cursor); err != nil {
+		t.Fatalf("failed to unmarshal NextCursor: %v", err)
+	}
+	if cursor.CatalogVersion != "2025.01.15" {
+		t.Errorf("cursor.CatalogVersion = %q, want %q", cursor.CatalogVersion, "2025.01.15")
+	}
+	if cursor.DateReleased != "2025-01-15" {
+		t.Errorf("cursor.DateReleased = %q, want %q", cursor.DateReleased, "2025-01-15")
+	}
+}
+
+func TestFetch_ShortCircuit(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validKEVCatalog))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	// Pass a cursor with the same catalogVersion as the served catalog.
+	cursorJSON, _ := json.Marshal(Cursor{
+		CatalogVersion: "2025.01.15",
+		DateReleased:   "2025-01-15",
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Patches) != 0 {
+		t.Fatalf("len(Patches) = %d, want 0 (short-circuit on matching catalogVersion)", len(result.Patches))
+	}
+}
+
+func TestFetch_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for HTTP 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want it to contain 'HTTP 500'", err.Error())
+	}
+}
+
+func TestFetch_InvalidCursor(t *testing.T) {
+	t.Parallel()
+
+	// No httptest server needed — Fetch should fail on cursor parse before making a request.
+	adapter := New(nil)
+
+	_, err := adapter.Fetch(context.Background(), json.RawMessage(`{not valid json}`))
+	if err == nil {
+		t.Fatal("expected error for invalid cursor JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse cursor") {
+		t.Errorf("error = %q, want it to contain 'parse cursor'", err.Error())
 	}
 }

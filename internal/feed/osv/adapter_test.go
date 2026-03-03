@@ -1,11 +1,19 @@
-// ABOUTME: Unit tests for OSV feed adapter pure parse/convert functions.
-// ABOUTME: Covers isAdvisoryEntry, parseAdvisory, and extractPackageRange.
+// ABOUTME: Unit tests for OSV feed adapter parse/convert functions and Fetch integration.
+// ABOUTME: Covers isAdvisoryEntry, parseAdvisory, extractPackageRange, and Fetch with synthetic ZIP archives.
 package osv
 
 import (
+	"archive/zip"
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -666,5 +674,247 @@ func TestNullByteStripping(t *testing.T) {
 	want := "GHSA-1234-5678"
 	if cleaned != want {
 		t.Errorf("StripNullBytes(%q) = %q, want %q", dirty, cleaned, want)
+	}
+}
+
+// --- Fetch integration tests ---
+
+// redirectTransport rewrites all request URLs to point at the test server,
+// allowing tests to intercept requests to the hardcoded bulkZIPURL constant.
+type redirectTransport struct {
+	target *url.URL
+	inner  http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return rt.inner.RoundTrip(req)
+}
+
+// buildOSVZip creates an in-memory ZIP archive from the given entries.
+func buildOSVZip(t *testing.T, entries []zipEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range entries {
+		var fw io.Writer
+		var err error
+		if e.header != nil {
+			e.header.Name = e.name
+			fw, err = zw.CreateHeader(e.header)
+		} else {
+			fw, err = zw.Create(e.name)
+		}
+		if err != nil {
+			t.Fatalf("zip create %s: %v", e.name, err)
+		}
+		if _, err := fw.Write(e.content); err != nil {
+			t.Fatalf("zip write %s: %v", e.name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+type zipEntry struct {
+	name    string
+	content []byte
+	header  *zip.FileHeader // optional; set Modified for cursor tests
+}
+
+// minimalOSVAdvisoryJSON returns a minimal valid OSV advisory JSON.
+func minimalOSVAdvisoryJSON(id string, aliases []string) []byte {
+	adv := osvAdvisory{
+		ID:        id,
+		Aliases:   aliases,
+		Published: "2024-03-01T12:00:00Z",
+		Modified:  "2024-03-15T08:30:00Z",
+		Details:   "Test advisory for " + id,
+	}
+	b, _ := json.Marshal(adv)
+	return b
+}
+
+// newTestAdapter creates an Adapter whose HTTP client redirects all requests
+// to the given test server.
+func newTestAdapter(ts *httptest.Server) *Adapter {
+	tsURL, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: tsURL,
+			inner:  http.DefaultTransport,
+		},
+	}
+	return New(client)
+}
+
+func TestFetch_Success(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildOSVZip(t, []zipEntry{
+		{
+			name:    "Go/GHSA-xxxx-xxxx-xxxx.json",
+			content: minimalOSVAdvisoryJSON("GHSA-xxxx-xxxx-xxxx", nil),
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "GHSA-xxxx-xxxx-xxxx" {
+		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "GHSA-xxxx-xxxx-xxxx")
+	}
+	if result.SourceMeta.SourceName != "osv" {
+		t.Errorf("SourceName = %q, want %q", result.SourceMeta.SourceName, "osv")
+	}
+	if result.NextCursor == nil {
+		t.Error("NextCursor is nil, want non-nil")
+	}
+}
+
+func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {
+	t.Parallel()
+
+	oldTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	newTime := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC)
+
+	oldHeader := &zip.FileHeader{Modified: oldTime, Method: zip.Deflate}
+	newHeader := &zip.FileHeader{Modified: newTime, Method: zip.Deflate}
+
+	zipData := buildOSVZip(t, []zipEntry{
+		{
+			name:    "Go/GHSA-old0-old0-old0.json",
+			content: minimalOSVAdvisoryJSON("GHSA-old0-old0-old0", nil),
+			header:  oldHeader,
+		},
+		{
+			name:    "Go/GHSA-new0-new0-new0.json",
+			content: minimalOSVAdvisoryJSON("GHSA-new0-new0-new0", nil),
+			header:  newHeader,
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	// Cursor: last_modified = 2024-03-01 (between old and new entries).
+	cursorTime := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	cursorJSON, _ := json.Marshal(Cursor{LastModified: cursorTime})
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1 (old entry should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].SourceID != "GHSA-new0-new0-new0" {
+		t.Errorf("SourceID = %q, want %q", result.Patches[0].SourceID, "GHSA-new0-new0-new0")
+	}
+}
+
+func TestFetch_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("Fetch should return error for HTTP 500")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want it to mention status 500", err.Error())
+	}
+}
+
+func TestFetch_AliasResolution(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildOSVZip(t, []zipEntry{
+		{
+			name:    "Go/GHSA-alias-test-0001.json",
+			content: minimalOSVAdvisoryJSON("GHSA-alias-test-0001", []string{"CVE-2024-99999"}),
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1", len(result.Patches))
+	}
+	patch := result.Patches[0]
+	if patch.CVEID != "CVE-2024-99999" {
+		t.Errorf("CVEID = %q, want %q (alias resolution)", patch.CVEID, "CVE-2024-99999")
+	}
+	if patch.SourceID != "GHSA-alias-test-0001" {
+		t.Errorf("SourceID = %q, want %q (native ID)", patch.SourceID, "GHSA-alias-test-0001")
+	}
+}
+
+func TestFetch_NonJSONEntriesSkipped(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildOSVZip(t, []zipEntry{
+		{
+			name:    "Go/README.txt",
+			content: []byte("This is not an advisory"),
+		},
+		{
+			name:    "Go/GHSA-json-only-0001.json",
+			content: minimalOSVAdvisoryJSON("GHSA-json-only-0001", nil),
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1 (non-JSON entry should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].SourceID != "GHSA-json-only-0001" {
+		t.Errorf("SourceID = %q, want %q", result.Patches[0].SourceID, "GHSA-json-only-0001")
 	}
 }

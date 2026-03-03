@@ -1,10 +1,17 @@
-// ABOUTME: Unit tests for GHSA feed adapter pure parse/convert functions.
-// ABOUTME: Covers parseLinkHeader and parseAdvisory.
+// ABOUTME: Unit tests for GHSA feed adapter parse/convert functions and Fetch integration.
+// ABOUTME: Covers parseLinkHeader, parseAdvisory, and Fetch with httptest.
 package ghsa
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseLinkHeader(t *testing.T) {
@@ -724,5 +731,269 @@ func TestAdapterRateLimiterNonNil(t *testing.T) {
 	}
 	if a.client == nil {
 		t.Fatal("client is nil — adapter would panic on Fetch")
+	}
+}
+
+// --- Fetch-level integration tests (httptest + redirectTransport) ---
+
+// redirectTransport intercepts outbound requests and rewrites their scheme/host
+// to point at the httptest server. This lets us test Fetch end-to-end without
+// modifying the hardcoded advisoriesURL const.
+type redirectTransport struct {
+	target *url.URL
+	inner  http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return rt.inner.RoundTrip(req)
+}
+
+// validGHSAAdvisory is a minimal GHSA REST API advisory for Fetch tests.
+// The REST response is a top-level JSON array of these objects.
+const validGHSAAdvisory = `[
+	{
+		"ghsa_id": "GHSA-test-0001-aaaa",
+		"cve_id": "CVE-2025-10001",
+		"summary": "Test advisory for Fetch",
+		"description": "A test advisory used by Fetch-level tests.",
+		"severity": "high",
+		"published_at": "2025-01-10T10:00:00Z",
+		"updated_at": "2025-01-11T12:00:00Z",
+		"withdrawn_at": null,
+		"cvss": null,
+		"cvss_severities": null,
+		"cwes": [],
+		"vulnerabilities": [],
+		"references": [],
+		"identifiers": [
+			{"type": "GHSA", "value": "GHSA-test-0001-aaaa"},
+			{"type": "CVE", "value": "CVE-2025-10001"}
+		],
+		"html_url": "https://github.com/advisories/GHSA-test-0001-aaaa"
+	}
+]`
+
+func TestFetch_Success(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validGHSAAdvisory))
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("len(Patches) = %d, want 1", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-10001" {
+		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-10001", result.Patches[0].CVEID)
+	}
+	if result.SourceMeta.SourceName != "ghsa" {
+		t.Errorf("SourceName = %q, want %q", result.SourceMeta.SourceName, "ghsa")
+	}
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor should be non-nil")
+	}
+	var cursor Cursor
+	if err := json.Unmarshal(result.NextCursor, &cursor); err != nil {
+		t.Fatalf("failed to unmarshal NextCursor: %v", err)
+	}
+	if cursor.Since == "" {
+		t.Error("cursor.Since should be non-empty")
+	}
+	// The since timestamp should be parseable as RFC3339.
+	if _, err := time.Parse(time.RFC3339, cursor.Since); err != nil {
+		t.Errorf("cursor.Since %q is not valid RFC3339: %v", cursor.Since, err)
+	}
+}
+
+func TestFetch_Pagination(t *testing.T) {
+	t.Parallel()
+
+	page1 := `[{
+		"ghsa_id": "GHSA-page-0001-aaaa",
+		"cve_id": "CVE-2025-20001",
+		"summary": "Page 1 advisory",
+		"severity": "medium",
+		"published_at": "2025-02-01T10:00:00Z",
+		"updated_at": "2025-02-02T12:00:00Z",
+		"cwes": [],
+		"vulnerabilities": [],
+		"references": [],
+		"identifiers": [],
+		"html_url": ""
+	}]`
+
+	page2 := `[{
+		"ghsa_id": "GHSA-page-0002-bbbb",
+		"cve_id": "CVE-2025-20002",
+		"summary": "Page 2 advisory",
+		"severity": "low",
+		"published_at": "2025-02-03T10:00:00Z",
+		"updated_at": "2025-02-04T12:00:00Z",
+		"cwes": [],
+		"vulnerabilities": [],
+		"references": [],
+		"identifiers": [],
+		"html_url": ""
+	}]`
+
+	requestCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+
+		switch afterParam := r.URL.Query().Get("after"); afterParam {
+		case "":
+			// First page: include Link header pointing to page 2.
+			linkURL := fmt.Sprintf("<%s/advisories?after=cursor2&per_page=100>; rel=\"next\"", "https://api.github.com")
+			w.Header().Set("Link", linkURL)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(page1))
+		case "cursor2":
+			// Second page: no Link header (last page).
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(page2))
+		default:
+			t.Errorf("unexpected after param: %q", afterParam)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-20001" {
+		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-20001", result.Patches[0].CVEID)
+	}
+	if result.Patches[1].CVEID != "CVE-2025-20002" {
+		t.Errorf("Patches[1].CVEID = %q, want CVE-2025-20002", result.Patches[1].CVEID)
+	}
+}
+
+func TestFetch_WithCursor(t *testing.T) {
+	t.Parallel()
+
+	sinceTimestamp := "2025-03-01T10:00:00Z"
+	sinceTime, _ := time.Parse(time.RFC3339, sinceTimestamp)
+	expectedUpdated := sinceTime.Add(-15 * time.Minute).UTC().Format(time.RFC3339)
+
+	var receivedUpdated string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedUpdated = r.URL.Query().Get("updated")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	cursorJSON, _ := json.Marshal(Cursor{Since: sinceTimestamp})
+	_, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The adapter should send `updated=>=TIMESTAMP` with the 15-minute overlap applied.
+	wantUpdated := ">=" + expectedUpdated
+	if receivedUpdated != wantUpdated {
+		t.Errorf("updated param = %q, want %q (15-min overlap applied)", receivedUpdated, wantUpdated)
+	}
+}
+
+func TestFetch_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for HTTP 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error = %q, want it to contain 'HTTP 403'", err.Error())
+	}
+}
+
+func TestFetch_EmptyPage(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Patches) != 0 {
+		t.Fatalf("len(Patches) = %d, want 0", len(result.Patches))
+	}
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor should be non-nil even for empty results")
 	}
 }

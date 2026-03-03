@@ -1,10 +1,19 @@
-// ABOUTME: Unit tests for the MITRE feed adapter's pure parse/convert functions.
-// ABOUTME: Covers isCVEEntry, parseCVE5, applyCVSS, and cloneStrings.
+// ABOUTME: Unit tests for the MITRE feed adapter's parse/convert functions and Fetch integration.
+// ABOUTME: Covers isCVEEntry, parseCVE5, applyCVSS, cloneStrings, and Fetch with synthetic ZIP archives.
 package mitre
 
 import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -864,4 +873,260 @@ func TestCloneStrings(t *testing.T) {
 			t.Error("cloneStrings did not create independent copy; mutating input affected result")
 		}
 	})
+}
+
+// --- Fetch integration tests ---
+
+// redirectTransport rewrites all request URLs to point at the test server,
+// allowing tests to intercept requests to the hardcoded bulkZIPURL constant.
+type redirectTransport struct {
+	target *url.URL
+	inner  http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return rt.inner.RoundTrip(req)
+}
+
+// buildMITREZip creates an in-memory ZIP archive containing the given entries.
+// Each entry is a name/content pair. If fh is non-nil it is used as the file header
+// (allowing control over Modified time); otherwise a default header is used.
+func buildMITREZip(t *testing.T, entries []zipEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, e := range entries {
+		var fw io.Writer
+		var err error
+		if e.header != nil {
+			e.header.Name = e.name
+			fw, err = zw.CreateHeader(e.header)
+		} else {
+			fw, err = zw.Create(e.name)
+		}
+		if err != nil {
+			t.Fatalf("zip create %s: %v", e.name, err)
+		}
+		if _, err := fw.Write(e.content); err != nil {
+			t.Fatalf("zip write %s: %v", e.name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+type zipEntry struct {
+	name    string
+	content []byte
+	header  *zip.FileHeader // optional; set Modified for cursor tests
+}
+
+// minimalCVE5JSON returns a minimal valid CVE 5.0 JSON for the given CVE ID.
+func minimalCVE5JSON(cveID string) []byte {
+	root := cve5Root{
+		CVEMetadata: cve5Metadata{
+			CVEID:         cveID,
+			State:         "PUBLISHED",
+			DatePublished: "2024-03-01T12:00:00Z",
+			DateUpdated:   "2024-03-15T08:30:00Z",
+		},
+		Containers: cve5Containers{
+			CNA: cve5CNA{
+				Descriptions: []cve5Description{
+					{Lang: "en", Value: "Test vulnerability in " + cveID},
+				},
+			},
+		},
+	}
+	b, _ := json.Marshal(root)
+	return b
+}
+
+// newTestAdapter creates an Adapter whose HTTP client redirects all requests
+// to the given test server.
+func newTestAdapter(ts *httptest.Server) *Adapter {
+	tsURL, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: tsURL,
+			inner:  http.DefaultTransport,
+		},
+	}
+	return New(client)
+}
+
+func TestFetch_Success(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildMITREZip(t, []zipEntry{
+		{
+			name:    "cvelistV5-main/cves/2024/1xxx/CVE-2024-1234.json",
+			content: minimalCVE5JSON("CVE-2024-1234"),
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2024-1234" {
+		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "CVE-2024-1234")
+	}
+	if result.SourceMeta.SourceName != "mitre" {
+		t.Errorf("SourceName = %q, want %q", result.SourceMeta.SourceName, "mitre")
+	}
+	if result.NextCursor == nil {
+		t.Error("NextCursor is nil, want non-nil")
+	}
+}
+
+func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {
+	t.Parallel()
+
+	oldTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	newTime := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC)
+
+	oldHeader := &zip.FileHeader{Modified: oldTime, Method: zip.Deflate}
+	newHeader := &zip.FileHeader{Modified: newTime, Method: zip.Deflate}
+
+	zipData := buildMITREZip(t, []zipEntry{
+		{
+			name:    "cvelistV5-main/cves/2024/0xxx/CVE-2024-0001.json",
+			content: minimalCVE5JSON("CVE-2024-0001"),
+			header:  oldHeader,
+		},
+		{
+			name:    "cvelistV5-main/cves/2024/0xxx/CVE-2024-0002.json",
+			content: minimalCVE5JSON("CVE-2024-0002"),
+			header:  newHeader,
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	// Cursor: last_modified = 2024-03-01 (between old and new entries).
+	cursorTime := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	cursorJSON, _ := json.Marshal(Cursor{LastModified: cursorTime})
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1 (old entry should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2024-0002" {
+		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "CVE-2024-0002")
+	}
+}
+
+func TestFetch_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("Fetch should return error for HTTP 500")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want it to mention status 500", err.Error())
+	}
+}
+
+func TestFetch_NonCVEEntriesSkipped(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildMITREZip(t, []zipEntry{
+		{
+			name:    "cvelistV5-main/README.md",
+			content: []byte("# CVE List V5"),
+		},
+		{
+			name:    "cvelistV5-main/delta.json",
+			content: []byte(`{"fetchTime":"2024-01-01T00:00:00Z"}`),
+		},
+		{
+			name:    "cvelistV5-main/cves/2024/1xxx/CVE-2024-1234.json",
+			content: minimalCVE5JSON("CVE-2024-1234"),
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1 (non-CVE entries should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2024-1234" {
+		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "CVE-2024-1234")
+	}
+}
+
+func TestFetch_MalformedEntrySkipped(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildMITREZip(t, []zipEntry{
+		{
+			name:    "cvelistV5-main/cves/2024/0xxx/CVE-2024-0001.json",
+			content: []byte(`{not valid json at all`),
+		},
+		{
+			name:    "cvelistV5-main/cves/2024/1xxx/CVE-2024-1234.json",
+			content: minimalCVE5JSON("CVE-2024-1234"),
+		},
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch returned error: %v", err)
+	}
+
+	if len(result.Patches) != 1 {
+		t.Fatalf("Patches len = %d, want 1 (malformed entry should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2024-1234" {
+		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "CVE-2024-1234")
+	}
 }

@@ -637,7 +637,118 @@ func TestCompile_FTSQuery_WithOtherConditions(t *testing.T) {
 	}
 }
 
+func TestValidate_FTSNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`123`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error for non-string FTS value, got %d: %v", len(errs), errs)
+	}
+	if !strings.Contains(errs[0].Message, "string") {
+		t.Errorf("error message = %q, expected mention of string", errs[0].Message)
+	}
+}
+
+func TestValidate_FTSQueryPlusRegexIsSelective(t *testing.T) {
+	t.Parallel()
+	// fts_query should count as a selective condition, so fts_query + regex is valid.
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`".*rce.*"`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors (fts_query is selective), got %v", errs)
+	}
+}
+
+func TestCompile_FTSNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`42`)},
+		},
+	}
+	_, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err == nil {
+		t.Fatal("expected error for non-string FTS value in Compile, got nil")
+	}
+}
+
+func TestCompile_FTSJoinDedup(t *testing.T) {
+	t.Parallel()
+	// Two FTS conditions should produce only one join.
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"remote code"`)},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Joins) != 1 {
+		t.Errorf("expected 1 join (dedup), got %d", len(compiled.Joins))
+	}
+}
+
+func TestCompile_NoJoinsWithoutFTS(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`, nil)
+	if len(c.Joins) != 0 {
+		t.Errorf("expected 0 joins for non-FTS rule, got %d", len(c.Joins))
+	}
+}
+
+func TestCompile_FTSValueIsParameterized(t *testing.T) {
+	t.Parallel()
+	// Verify FTS search value is passed as a parameter (not interpolated into SQL).
+	injection := "'; DROP TABLE cves; --"
+	raw, _ := json.Marshal(injection)
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: raw},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	query, args, err := compiled.SQL.ToSql()
+	if err != nil {
+		t.Fatalf("ToSql: %v", err)
+	}
+	// The injection string should appear ONLY in args, never in the SQL.
+	if strings.Contains(query, "DROP") {
+		t.Errorf("SQL injection string appeared in query: %q", query)
+	}
+	if len(args) < 1 || args[0] != injection {
+		t.Errorf("injection string should be passed as parameter, got args=%v", args)
+	}
+}
+
 // ─── ILIKE Wildcard Escaping ─────────────────────────────────────────────────
+
+func TestCompile_TextContainsEscapesBackslash(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"C:\\Windows"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%c:\\windows%` {
+		t.Errorf("expected escaped backslash pattern, got %v", args)
+	}
+}
 
 func TestCompile_TextContainsEscapesWildcards(t *testing.T) {
 	t.Parallel()

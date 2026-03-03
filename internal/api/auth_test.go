@@ -222,9 +222,11 @@ func TestRegisterRateLimited(t *testing.T) {
 
 	srv, ts := newRegisterServer(t, db, "open")
 
-	// Replace the rate limiter with a tight burst of 1.
+	// Replace the rate limiter with burst=1 and near-zero replenishment rate.
+	// rate.Every(time.Hour) ensures tokens don't replenish between requests
+	// (the first request includes argon2 hashing which can take >1s in CI).
 	srv.rateLimiter.Stop()
-	srv.rateLimiter = newIPRateLimiter(rate.Limit(1), 1, time.Minute)
+	srv.rateLimiter = newIPRateLimiter(rate.Every(time.Hour), 1, time.Minute)
 
 	// First registration: allowed.
 	body := `{"email":"rl1@example.com","password":"test-password-1234"}`
@@ -634,6 +636,292 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Errorf("old refresh after change-password: got %d, want 401", resp2.StatusCode)
+	}
+}
+
+// ── Registration mode ─────────────────────────────────────────────────────────
+
+func TestRegisterInviteOnlyMode(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "invite-only")
+
+	body := `{"email":"blocked@example.com","password":"test-password-1234"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("invite-only register: got %d, want 403", resp.StatusCode)
+	}
+}
+
+// ── Refresh edge cases ────────────────────────────────────────────────────────
+
+func TestRefreshMissingCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Refresh with no cookie at all.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("refresh without cookie: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestRefreshInvalidToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Refresh with garbage token.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "totally-invalid-jwt"})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("refresh with invalid token: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestRefreshRevokedTokenVersion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	regOut := doRegister(t, ctx, ts, "tvrev@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "tvrev@example.com", "test-password-1234")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	refreshToken := cookieValue(loginResp, "refresh_token")
+
+	// Manually increment token_version to simulate password change or admin logout-all.
+	userID := uuid.MustParse(regOut.UserID)
+	if _, err := db.IncrementTokenVersion(ctx, userID); err != nil {
+		t.Fatalf("increment token version: %v", err)
+	}
+
+	// The refresh token's token_version no longer matches → 401.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("refresh with revoked token_version: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// ── /auth/me edge cases ───────────────────────────────────────────────────────
+
+func TestGetMe_NoCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("get me: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("me without cookie: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestGetMe_InvalidToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: "garbage-token"})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("get me: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("me with invalid token: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// ── Change password edge cases ────────────────────────────────────────────────
+
+func TestChangePassword_NoCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	body := `{"current_password":"anything","new_password":"test-new-password-1"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("change-password: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("change-password without auth: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestChangePassword_OAuthOnlyAccount(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Create an OAuth-only user (no password hash).
+	oauthUser, err := db.CreateUser(ctx, "oauthonly@example.com", "OAuth User", "", 0)
+	if err != nil {
+		t.Fatalf("create oauth user: %v", err)
+	}
+
+	// Issue a valid access token for this user.
+	accessToken, err := auth.IssueAccessToken([]byte("regtestsecret"), oauthUser.ID, 0, accessTokenTTL)
+	if err != nil {
+		t.Fatalf("issue access token: %v", err)
+	}
+
+	body := `{"current_password":"something","new_password":"test-new-password-1"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("change-password: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("change-password on OAuth-only account: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// ── Invitation edge cases ─────────────────────────────────────────────────────
+
+func TestGetInvitation_Expired(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Create invitation.
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "viewer")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+
+	// Backdate the expiry to simulate expired invitation.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations: err=%v, len=%d", err, len(invitations))
+	}
+	token := invitations[0].Token
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE org_invitations SET expires_at = now() - interval '1 hour' WHERE token = $1",
+		token); err != nil {
+		t.Fatalf("backdate expires_at: %v", err)
+	}
+
+	resp := doGetInvitation(t, ctx, ts, token)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusGone {
+		t.Errorf("expired invitation: got %d, want 410", resp.StatusCode)
+	}
+}
+
+func TestAcceptInvitation_Expired(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+
+	// Alice creates invitation for bob.
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations: err=%v, len=%d", err, len(invitations))
+	}
+	invToken := invitations[0].Token
+
+	// Backdate the expiry.
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE org_invitations SET expires_at = now() - interval '1 hour' WHERE token = $1",
+		invToken); err != nil {
+		t.Fatalf("backdate expires_at: %v", err)
+	}
+
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	resp := doAcceptInvitation(t, ctx, ts, bobToken, invToken)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusGone {
+		t.Errorf("accept expired invitation: got %d, want 410", resp.StatusCode)
+	}
+}
+
+func TestAcceptInvitation_NoCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/invitations/sometoken/accept", nil)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("accept without auth: got %d, want 401", resp.StatusCode)
 	}
 }
 

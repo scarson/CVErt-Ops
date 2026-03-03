@@ -434,3 +434,176 @@ func TestGroupMembers_AddListRemove(t *testing.T) {
 		t.Errorf("after remove, got %d members, want 0", len(members2))
 	}
 }
+
+// ── Cross-org group isolation ─────────────────────────────────────────────────
+
+// TestCrossOrg_GroupAccess verifies that a user from org A cannot access org B's groups.
+func TestCrossOrg_GroupAccess(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A with a group.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateGroup(t, ctx, ts, aliceToken, aliceReg.OrgID, "Eng", "")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create group: got %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Bob owns org B, tries to access Alice's group.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	t.Run("list groups", func(t *testing.T) {
+		t.Parallel()
+		resp := doListGroups(t, ctx, ts, bobToken, aliceReg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list groups: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("get group", func(t *testing.T) {
+		t.Parallel()
+		resp := doGetGroup(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org get group: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("update group", func(t *testing.T) {
+		t.Parallel()
+		resp := doUpdateGroup(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID, "Hacked", "")
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org update group: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete group", func(t *testing.T) {
+		t.Parallel()
+		resp := doDeleteGroup(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org delete group: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("add member", func(t *testing.T) {
+		t.Parallel()
+		resp := doAddGroupMember(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID, uuid.New().String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org add group member: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("list members", func(t *testing.T) {
+		t.Parallel()
+		resp := doListGroupMembers(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list group members: got %d, want 403", resp.StatusCode)
+		}
+	})
+}
+
+// TestGetGroup_NotFound verifies that GET /groups/{id} returns 404 for a non-existent group.
+func TestGetGroup_NotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doGetGroup(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("get non-existent group: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestAddGroupMember_Duplicate verifies that adding a member who is already in the group
+// does not cause a 500 error. The store layer should handle the duplicate gracefully.
+func TestAddGroupMember_Duplicate(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Bob is a member of Alice's org.
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "member"); err != nil {
+		t.Fatalf("add Bob: %v", err)
+	}
+
+	// Create a group.
+	createResp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "Dev", "")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var group struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&group); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Add Bob to the group.
+	resp1 := doAddGroupMember(t, ctx, ts, accessToken, aliceReg.OrgID, group.ID, bobReg.UserID)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusNoContent {
+		t.Fatalf("first add: got %d, want 204", resp1.StatusCode)
+	}
+
+	// Add Bob again — should not return 500.
+	resp2 := doAddGroupMember(t, ctx, ts, accessToken, aliceReg.OrgID, group.ID, bobReg.UserID)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode == http.StatusInternalServerError {
+		t.Error("duplicate add returned 500, expected a non-error status")
+	}
+}
+
+// TestCreateGroup_EmptyName verifies that POST /groups with empty name returns 400.
+func TestCreateGroup_EmptyName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "", "Description")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+	}
+}

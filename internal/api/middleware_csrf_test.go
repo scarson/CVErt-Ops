@@ -167,3 +167,101 @@ func TestCSRF_AllowsAPIKeyPostWithoutHeader(t *testing.T) {
 		t.Errorf("API key POST without CSRF header: got %d, want 201", resp.StatusCode)
 	}
 }
+
+// TestCSRF_SafeMethodsAllowed verifies that all safe HTTP methods bypass the
+// CSRF check even when a cookie is present.
+func TestCSRF_SafeMethodsAllowed(t *testing.T) {
+	t.Parallel()
+	safeMethods := []string{
+		http.MethodGet,
+		http.MethodHead,
+		http.MethodOptions,
+		http.MethodTrace,
+	}
+	for _, method := range safeMethods {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest(method, "/api/v1/test", nil)
+			req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s with cookie: got %d, want 200", method, rec.Code)
+			}
+		})
+	}
+}
+
+// TestCSRF_StateChangingMethodsBlocked verifies that all state-changing HTTP
+// methods are blocked when a cookie is present without the CSRF header.
+func TestCSRF_StateChangingMethodsBlocked(t *testing.T) {
+	t.Parallel()
+	unsafeMethods := []string{
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+	}
+	for _, method := range unsafeMethods {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest(method, "/api/v1/test", nil)
+			req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Errorf("%s with cookie, no CSRF header: got %d, want 403", method, rec.Code)
+			}
+		})
+	}
+}
+
+// TestCSRF_WrongHeaderValue verifies that the wrong X-Requested-By value is
+// rejected — the check is an exact string match, not just presence.
+func TestCSRF_WrongHeaderValue(t *testing.T) {
+	t.Parallel()
+	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/test", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+	req.Header.Set("X-Requested-By", "wrong-value")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("POST with wrong CSRF header value: got %d, want 403", rec.Code)
+	}
+}
+
+// TestCSRF_NoCookieBypassesCheck verifies that requests without an
+// access_token cookie bypass the CSRF check for all state-changing methods.
+func TestCSRF_NoCookieBypassesCheck(t *testing.T) {
+	t.Parallel()
+	unsafeMethods := []string{
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+	}
+	for _, method := range unsafeMethods {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+			handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest(method, "/api/v1/test", nil)
+			// No cookie — should pass through without CSRF header.
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s without cookie: got %d, want 200", method, rec.Code)
+			}
+		})
+	}
+}

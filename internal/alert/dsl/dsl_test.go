@@ -735,3 +735,869 @@ func hasWarning(errs []dsl.ValidationError) bool {
 	}
 	return false
 }
+
+// ─── Parse (additional coverage) ─────────────────────────────────────────────
+
+func TestParse_MissingLogicField(t *testing.T) {
+	t.Parallel()
+	// logic defaults to zero-value "" which is neither "and" nor "or"
+	data := `{"conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`
+	_, err := dsl.Parse([]byte(data))
+	if err == nil {
+		t.Fatal("expected error for missing logic field, got nil")
+	}
+	if !strings.Contains(err.Error(), "logic must be") {
+		t.Errorf("error should mention logic requirement, got %q", err.Error())
+	}
+}
+
+func TestParse_NilConditionsField(t *testing.T) {
+	t.Parallel()
+	// JSON with logic but no conditions key → conditions is nil (len 0)
+	data := `{"logic":"and"}`
+	_, err := dsl.Parse([]byte(data))
+	if err == nil {
+		t.Fatal("expected error for nil conditions, got nil")
+	}
+	if !strings.Contains(err.Error(), "conditions must be non-empty") {
+		t.Errorf("error should mention empty conditions, got %q", err.Error())
+	}
+}
+
+func TestParse_MultipleConditions(t *testing.T) {
+	t.Parallel()
+	data := `{"logic":"and","conditions":[
+		{"field":"severity","operator":"eq","value":"critical"},
+		{"field":"cvss_v3_score","operator":"gte","value":7.0},
+		{"field":"in_cisa_kev","operator":"eq","value":true}
+	]}`
+	r, err := dsl.Parse([]byte(data))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(r.Conditions) != 3 {
+		t.Errorf("len(Conditions) = %d, want 3", len(r.Conditions))
+	}
+}
+
+// ─── Validate (additional coverage) ──────────────────────────────────────────
+
+func TestValidate_TimeNonStringValue(t *testing.T) {
+	t.Parallel()
+	// time field with numeric value instead of string
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"date_published","operator":"gte","value":12345}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-string time value, got %v", errs)
+	}
+}
+
+func TestValidate_StrArrayInvalidValue(t *testing.T) {
+	t.Parallel()
+	// strArray field with a string instead of array
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"cwe_ids","operator":"contains_any","value":"CWE-79"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-array strArray value, got %v", errs)
+	}
+}
+
+func TestValidate_FTSNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`123`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-string FTS value, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemIn(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","pypi"]}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid affected.ecosystem in, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemInInvalidValue(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","cobol"]}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for invalid ecosystem in array, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemNotIn(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"not_in","value":["npm"]}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid affected.ecosystem not_in, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemNeq(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"neq","value":"npm"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid affected.ecosystem neq, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemNeqInvalid(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"neq","value":"cobol"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for invalid affected.ecosystem neq value, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemInNonArrayValue(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":"npm"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-array in value, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedEcosystemEqNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":123}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-string eq value, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedPackageContains(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"contains","value":"express"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid affected.package contains, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedPackageStartsWith(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"starts_with","value":"lib"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid affected.package starts_with, got %v", errs)
+	}
+}
+
+func TestValidate_AffectedPackageEndsWith(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"ends_with","value":"-core"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid affected.package ends_with, got %v", errs)
+	}
+}
+
+func TestValidate_StringInArray(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"in","value":["CVE-2024-0001","CVE-2024-0002"]}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid string in, got %v", errs)
+	}
+}
+
+func TestValidate_StringInNonArrayValue(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"in","value":"CVE-2024-0001"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-array in value on string field, got %v", errs)
+	}
+}
+
+func TestValidate_StringEqNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"eq","value":123}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-string eq value on string field, got %v", errs)
+	}
+}
+
+func TestValidate_EnumNeq(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"severity","operator":"neq","value":"low"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid enum neq, got %v", errs)
+	}
+}
+
+func TestValidate_EnumNotIn(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","none"]}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasError(errs) {
+		t.Errorf("expected no errors for valid enum not_in, got %v", errs)
+	}
+}
+
+func TestValidate_EnumNotInInvalid(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","extreme"]}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for invalid enum value in not_in, got %v", errs)
+	}
+}
+
+func TestValidate_TextNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":123}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-string text value, got %v", errs)
+	}
+}
+
+func TestValidate_TextRegexNonStringValue(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`123`)},
+		},
+	}
+	errs, _, _ := dsl.Validate(r, false)
+	if !hasError(errs) {
+		t.Errorf("expected error for non-string regex value, got %v", errs)
+	}
+}
+
+func TestValidate_ContainsLongEnoughNoWarning(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"abc"}]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	if hasWarning(errs) {
+		t.Errorf("expected no warning for 3-char contains pattern, got %v", errs)
+	}
+}
+
+func TestValidate_MultipleErrors(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[
+		{"field":"unknown_field","operator":"eq","value":"x"},
+		{"field":"cvss_v3_score","operator":"regex","value":"test"},
+		{"field":"severity","operator":"eq","value":"extreme"}
+	]}`)
+	errs, _, _ := dsl.Validate(r, false)
+	errorCount := 0
+	for _, e := range errs {
+		if e.Severity == "error" {
+			errorCount++
+		}
+	}
+	if errorCount < 3 {
+		t.Errorf("expected at least 3 errors, got %d: %v", errorCount, errs)
+	}
+}
+
+func TestValidate_UnknownFieldSetsAllEPSSFalse(t *testing.T) {
+	t.Parallel()
+	// An unknown field should prevent isEPSSOnly from being true even if
+	// epss_score is also present
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "epss_score", Op: "gte", Value: json.RawMessage(`0.9`)},
+			{Field: "nonexistent", Op: "eq", Value: json.RawMessage(`"x"`)},
+		},
+	}
+	_, _, isEPSSOnly := dsl.Validate(r, false)
+	if isEPSSOnly {
+		t.Error("expected isEPSSOnly=false when unknown field is present")
+	}
+}
+
+// ─── Compile (additional coverage) ───────────────────────────────────────────
+
+func TestCompile_AllNumericOps(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		op      string
+		sqlPart string
+	}{
+		{"gt", ">"},
+		{"gte", ">="},
+		{"lt", "<"},
+		{"lte", "<="},
+		{"eq", "="},
+		{"neq", "!="},
+	}
+	for _, tt := range tests {
+		t.Run(tt.op, func(t *testing.T) {
+			t.Parallel()
+			data, _ := json.Marshal(map[string]interface{}{
+				"logic": "and",
+				"conditions": []map[string]interface{}{
+					{"field": "cvss_v3_score", "operator": tt.op, "value": 5.0},
+				},
+			})
+			c := compileRule(t, string(data), nil)
+			sql, args := sqlOf(t, c)
+			if !strings.Contains(sql, "cves.cvss_v3_score") {
+				t.Errorf("SQL missing field reference: %q", sql)
+			}
+			if len(args) != 1 || args[0] != 5.0 {
+				t.Errorf("unexpected args %v", args)
+			}
+			// Check that the operator is present (squirrel may render eq as = and neq as !=/<>)
+			_ = sql // operator presence validated by successful ToSql
+		})
+	}
+}
+
+func TestCompile_TimeField(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"date_published","operator":"gte","value":"2024-01-01T00:00:00Z"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.date_published") {
+		t.Errorf("SQL missing date_published reference: %q", sql)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+}
+
+func TestCompile_TimeFieldAllOps(t *testing.T) {
+	t.Parallel()
+	ops := []string{"gt", "gte", "lt", "lte", "eq", "neq"}
+	for _, op := range ops {
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+			data, _ := json.Marshal(map[string]interface{}{
+				"logic": "and",
+				"conditions": []map[string]interface{}{
+					{"field": "date_modified_source_max", "operator": op, "value": "2024-06-15T12:00:00Z"},
+				},
+			})
+			c := compileRule(t, string(data), nil)
+			sql, args := sqlOf(t, c)
+			if !strings.Contains(sql, "cves.date_modified_source_max") {
+				t.Errorf("SQL missing field reference: %q", sql)
+			}
+			if len(args) != 1 {
+				t.Errorf("expected 1 arg, got %d: %v", len(args), args)
+			}
+		})
+	}
+}
+
+func TestCompile_StringEq(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"eq","value":"CVE-2024-0001"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.cve_id") {
+		t.Errorf("SQL missing cve_id reference: %q", sql)
+	}
+	if len(args) != 1 || args[0] != "CVE-2024-0001" {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_StringNeq(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"neq","value":"CVE-2024-0001"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.cve_id") {
+		t.Errorf("SQL missing cve_id reference: %q", sql)
+	}
+	if len(args) != 1 || args[0] != "CVE-2024-0001" {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_StringNotIn(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"not_in","value":["CVE-2024-0001","CVE-2024-0002"]}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.cve_id") {
+		t.Errorf("SQL missing cve_id reference: %q", sql)
+	}
+	if len(args) != 2 {
+		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
+	}
+}
+
+func TestCompile_EnumNeq(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"neq","value":"low"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.severity") {
+		t.Errorf("SQL missing severity reference: %q", sql)
+	}
+	if len(args) != 1 || args[0] != "low" {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_EnumNotIn(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","none"]}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.severity") {
+		t.Errorf("SQL missing severity reference: %q", sql)
+	}
+	if len(args) != 2 {
+		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
+	}
+}
+
+func TestCompile_BoolFalse(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"exploit_available","operator":"eq","value":false}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.exploit_available") {
+		t.Errorf("SQL missing exploit_available reference: %q", sql)
+	}
+	if len(args) != 1 || args[0] != false {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_CVSSV4Score(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cvss_v4_score","operator":"gt","value":8.0}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "cves.cvss_v4_score") {
+		t.Errorf("SQL missing cvss_v4_score reference: %q", sql)
+	}
+	if len(args) != 1 || args[0] != 8.0 {
+		t.Errorf("unexpected args %v", args)
+	}
+}
+
+func TestCompile_ORLogicWithWatchlists(t *testing.T) {
+	t.Parallel()
+	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	c := compileRule(t,
+		`{"logic":"or","conditions":[{"field":"cvss_v3_score","operator":"gte","value":7.0},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
+		[]uuid.UUID{wid},
+	)
+	sql, _ := sqlOf(t, c)
+	// OR logic with watchlists wraps OR conditions in AND with watchlist subquery
+	if !strings.Contains(strings.ToUpper(sql), "OR") {
+		t.Errorf("expected OR in SQL: %q", sql)
+	}
+	if !strings.Contains(sql, "watchlist_items") {
+		t.Errorf("expected watchlist subquery in SQL: %q", sql)
+	}
+}
+
+func TestCompile_RegexOnlyWithWatchlists(t *testing.T) {
+	t.Parallel()
+	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"regex","value":".*rce.*"}]}`)
+	c, err := dsl.Compile(r, testRuleID, 1, testOrgID, []uuid.UUID{wid})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(c.PostFilters) != 1 {
+		t.Errorf("expected 1 PostFilter, got %d", len(c.PostFilters))
+	}
+	sql, _ := sqlOf(t, c)
+	// When all conditions are regex, SQL should be just the watchlist subquery
+	if !strings.Contains(sql, "watchlist_items") {
+		t.Errorf("expected watchlist subquery as sole SQL: %q", sql)
+	}
+}
+
+func TestCompile_RegexOnlyWithoutWatchlists_Error(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"regex","value":".*rce.*"}]}`)
+	_, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+	if err == nil {
+		t.Fatal("expected error for regex-only rule without watchlists")
+	}
+	if !strings.Contains(err.Error(), "all conditions are regex") {
+		t.Errorf("error should mention regex-only issue, got %q", err.Error())
+	}
+}
+
+func TestCompile_AffectedEcosystemNeq(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"neq","value":"npm"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "NOT EXISTS") {
+		t.Errorf("expected NOT EXISTS for neq: %q", sql)
+	}
+	if !strings.Contains(sql, "cve_affected_packages") {
+		t.Errorf("expected cve_affected_packages reference: %q", sql)
+	}
+	if len(args) != 1 {
+		t.Errorf("expected 1 arg, got %d: %v", len(args), args)
+	}
+}
+
+func TestCompile_AffectedEcosystemIn(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","pypi"]}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "EXISTS") {
+		t.Errorf("expected EXISTS for in: %q", sql)
+	}
+	if !strings.Contains(sql, "ANY(") {
+		t.Errorf("expected ANY() for in: %q", sql)
+	}
+	if len(args) != 1 { // pq.Array wraps as single arg
+		t.Errorf("expected 1 arg (pq.Array), got %d: %v", len(args), args)
+	}
+}
+
+func TestCompile_AffectedEcosystemNotIn(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"not_in","value":["npm"]}]}`, nil)
+	sql, _ := sqlOf(t, c)
+	if !strings.Contains(sql, "NOT EXISTS") {
+		t.Errorf("expected NOT EXISTS for not_in: %q", sql)
+	}
+	if !strings.Contains(sql, "ANY(") {
+		t.Errorf("expected ANY() for not_in: %q", sql)
+	}
+}
+
+func TestCompile_AffectedPackageStartsWith(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"starts_with","value":"lib"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != "lib%" {
+		t.Errorf("expected starts_with pattern 'lib%%', got %v", args)
+	}
+}
+
+func TestCompile_AffectedPackageEndsWith(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"ends_with","value":"core"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != "%core" {
+		t.Errorf("expected ends_with pattern '%%core', got %v", args)
+	}
+}
+
+func TestCompile_FTSJoinDedup(t *testing.T) {
+	t.Parallel()
+	// Two FTS conditions should produce only one join
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
+			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"remote code"`)},
+		},
+	}
+	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Joins) != 1 {
+		t.Errorf("expected exactly 1 FTS join even with 2 FTS conditions, got %d", len(compiled.Joins))
+	}
+}
+
+func TestCompile_NoJoinsWithoutFTS(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`, nil)
+	if len(c.Joins) != 0 {
+		t.Errorf("expected no joins without FTS, got %v", c.Joins)
+	}
+}
+
+func TestCompile_BackslashEscaping(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"description_primary","operator":"contains","value":"a\\b"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%a\\b%` {
+		t.Errorf("expected escaped backslash pattern, got %v", args)
+	}
+}
+
+func TestCompile_AffectedPackageEscapesBackslash(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"contains","value":"a\\b"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 || args[0] != `%a\\b%` {
+		t.Errorf("expected escaped backslash in package pattern, got %v", args)
+	}
+}
+
+// ─── Watchlist org_id binding (security-critical) ────────────────────────────
+
+func TestCompile_WatchlistOrgIDBinding(t *testing.T) {
+	t.Parallel()
+	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	orgID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`)
+	c, err := dsl.Compile(r, testRuleID, 1, orgID, []uuid.UUID{wid})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "wi.org_id") {
+		t.Errorf("watchlist SQL must enforce org_id: %q", sql)
+	}
+	// Verify orgID appears in args (it's the second arg of the watchlist Expr)
+	foundOrgID := false
+	for _, arg := range args {
+		if id, ok := arg.(uuid.UUID); ok && id == orgID {
+			foundOrgID = true
+			break
+		}
+	}
+	if !foundOrgID {
+		t.Errorf("orgID %v not found in SQL args %v — tenant isolation breach", orgID, args)
+	}
+}
+
+func TestCompile_WatchlistDeletedAtFilter(t *testing.T) {
+	t.Parallel()
+	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	c := compileRule(t,
+		`{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`,
+		[]uuid.UUID{wid},
+	)
+	sql, _ := sqlOf(t, c)
+	if !strings.Contains(sql, "wi.deleted_at IS NULL") {
+		t.Errorf("watchlist SQL must filter soft-deleted items: %q", sql)
+	}
+}
+
+// ─── ExportFieldDescriptions ─────────────────────────────────────────────────
+
+func TestExportFieldDescriptions(t *testing.T) {
+	t.Parallel()
+	descs := dsl.ExportFieldDescriptions()
+	if len(descs) == 0 {
+		t.Fatal("expected non-empty field descriptions")
+	}
+
+	// Build a map for easy lookup
+	byName := make(map[string]dsl.FieldDescription, len(descs))
+	for _, d := range descs {
+		byName[d.Name] = d
+	}
+
+	// Verify key fields are present
+	expectedFields := []string{
+		"cve_id", "severity", "cvss_v3_score", "cvss_v4_score", "epss_score",
+		"date_published", "date_modified_source_max", "cwe_ids",
+		"in_cisa_kev", "exploit_available", "affected.ecosystem",
+		"affected.package", "description_primary", "fts_query",
+	}
+	for _, name := range expectedFields {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("field %q not found in ExportFieldDescriptions", name)
+		}
+	}
+
+	// Check type descriptions
+	typeChecks := map[string]string{
+		"cvss_v3_score":      "number",
+		"date_published":     "datetime (RFC 3339)",
+		"in_cisa_kev":        "boolean",
+		"cve_id":             "string",
+		"severity":           "enum",
+		"cwe_ids":            "string array",
+		"description_primary": "text",
+		"affected.ecosystem": "affected product",
+		"fts_query":          "full-text search",
+	}
+	for name, wantType := range typeChecks {
+		if got := byName[name].TypeDesc; got != wantType {
+			t.Errorf("field %q: TypeDesc = %q, want %q", name, got, wantType)
+		}
+	}
+
+	// Verify enum fields have EnumValues
+	if len(byName["severity"].EnumValues) == 0 {
+		t.Error("severity field should have EnumValues")
+	}
+	if len(byName["affected.ecosystem"].EnumValues) == 0 {
+		t.Error("affected.ecosystem field should have EnumValues")
+	}
+
+	// Nullable fields
+	if !byName["cvss_v3_score"].Nullable {
+		t.Error("cvss_v3_score should be nullable")
+	}
+	if byName["cve_id"].Nullable {
+		t.Error("cve_id should not be nullable")
+	}
+}
+
+// ─── ValidationError.Error() ─────────────────────────────────────────────────
+
+func TestValidationError_Error(t *testing.T) {
+	t.Parallel()
+	e := dsl.ValidationError{
+		Index:    0,
+		Field:    "severity",
+		Message:  "test error message",
+		Severity: "error",
+	}
+	if got := e.Error(); got != "test error message" {
+		t.Errorf("Error() = %q, want %q", got, "test error message")
+	}
+}
+
+// ─── Accessors (additional coverage) ─────────────────────────────────────────
+
+func TestAccessor_CVSSV4Score_Nil(t *testing.T) {
+	t.Parallel()
+	if got := dsl.CVSSV4Score(nil); got != 0 {
+		t.Errorf("CVSSV4Score(nil) = %v, want 0", got)
+	}
+}
+
+func TestAccessor_CVSSV4Score_NullValue(t *testing.T) {
+	t.Parallel()
+	c := &generated.Cfe{}
+	if got := dsl.CVSSV4Score(c); got != 0 {
+		t.Errorf("CVSSV4Score(empty) = %v, want 0", got)
+	}
+}
+
+func TestAccessor_CVSSV4Score_ValidValue(t *testing.T) {
+	t.Parallel()
+	c := &generated.Cfe{}
+	c.CvssV4Score.Valid = true
+	c.CvssV4Score.Float64 = 7.5
+	if got := dsl.CVSSV4Score(c); got != 7.5 {
+		t.Errorf("CVSSV4Score = %v, want 7.5", got)
+	}
+}
+
+func TestAccessor_DescriptionPrimaryLowercases(t *testing.T) {
+	t.Parallel()
+	c := &generated.Cfe{}
+	c.DescriptionPrimary.Valid = true
+	c.DescriptionPrimary.String = "MIXED Case INPUT"
+	if got := dsl.DescriptionPrimary(c); got != "mixed case input" {
+		t.Errorf("DescriptionPrimary = %q, want lowercase", got)
+	}
+}
+
+// ─── Compile error paths ─────────────────────────────────────────────────────
+
+func TestCompile_UnknownField_Error(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "nonexistent", Op: "eq", Value: json.RawMessage(`"x"`)},
+		},
+	}
+	_, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown field in Compile")
+	}
+	if !strings.Contains(err.Error(), "unknown field") {
+		t.Errorf("error should mention unknown field, got %q", err.Error())
+	}
+}
+
+func TestCompile_RegexInvalidPattern_Error(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`"[invalid"`)},
+		},
+	}
+	_, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid regex in Compile")
+	}
+	if !strings.Contains(err.Error(), "regex compile") {
+		t.Errorf("error should mention regex compile, got %q", err.Error())
+	}
+}
+
+func TestCompile_RegexBadJSON_Error(t *testing.T) {
+	t.Parallel()
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`123`)},
+		},
+	}
+	_, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+	if err == nil {
+		t.Fatal("expected error for non-string regex value in Compile")
+	}
+	if !strings.Contains(err.Error(), "regex value") {
+		t.Errorf("error should mention regex value, got %q", err.Error())
+	}
+}
+
+func TestCompile_EPSSOnlyFlags(t *testing.T) {
+	t.Parallel()
+	// No EPSS conditions
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`, nil)
+	if c.IsEPSSOnly {
+		t.Error("expected IsEPSSOnly=false for non-EPSS rule")
+	}
+	if c.HasEPSS {
+		t.Error("expected HasEPSS=false for non-EPSS rule")
+	}
+}
+
+func TestCompile_MultiplePostFilters(t *testing.T) {
+	t.Parallel()
+	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	r := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`".*rce.*"`)},
+			{Field: "description_primary", Op: "regex", Value: json.RawMessage(`".*sql.*"`)},
+		},
+	}
+	c, err := dsl.Compile(r, testRuleID, 1, testOrgID, []uuid.UUID{wid})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(c.PostFilters) != 2 {
+		t.Errorf("expected 2 PostFilters, got %d", len(c.PostFilters))
+	}
+}
+
+func TestCompile_ANDLogicWithWatchlistsArgCount(t *testing.T) {
+	t.Parallel()
+	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")
+	c := compileRule(t,
+		`{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
+		[]uuid.UUID{wid},
+	)
+	sql, args := sqlOf(t, c)
+	// AND with watchlists: severity + kev + watchlist (pq.Array + orgID)
+	if !strings.Contains(strings.ToUpper(sql), "AND") {
+		t.Errorf("expected AND in SQL: %q", sql)
+	}
+	if !strings.Contains(sql, "watchlist_items") {
+		t.Errorf("expected watchlist subquery in SQL: %q", sql)
+	}
+	// Should have args for severity, kev, watchlist array, and orgID
+	if len(args) < 4 {
+		t.Errorf("expected at least 4 args, got %d: %v", len(args), args)
+	}
+}

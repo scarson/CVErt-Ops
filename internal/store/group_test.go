@@ -144,3 +144,146 @@ func TestListGroupMembers_OrgScoped(t *testing.T) {
 		t.Errorf("unexpected member: got %v, want %v", members[0].UserID, user1.ID)
 	}
 }
+
+func TestRemoveGroupMember(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg6")
+	grp, _ := s.CreateGroup(ctx, org.ID, "RemoveTeam", "")
+	user, _ := s.CreateUser(ctx, "grpremove@example.com", "GrpRemove", "", 0)
+
+	_ = s.AddGroupMember(ctx, org.ID, grp.ID, user.ID)
+
+	if err := s.RemoveGroupMember(ctx, org.ID, grp.ID, user.ID); err != nil {
+		t.Fatalf("RemoveGroupMember: %v", err)
+	}
+
+	members, err := s.ListGroupMembers(ctx, org.ID, grp.ID)
+	if err != nil {
+		t.Fatalf("ListGroupMembers: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("expected 0 members after remove, got %d", len(members))
+	}
+}
+
+func TestRemoveGroupMember_NonExistentIsNoOp(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg7")
+	grp, _ := s.CreateGroup(ctx, org.ID, "NoopRemove", "")
+	user, _ := s.CreateUser(ctx, "grpnoopremove@example.com", "GrpNoopRemove", "", 0)
+
+	// Removing a user who was never added should not error.
+	if err := s.RemoveGroupMember(ctx, org.ID, grp.ID, user.ID); err != nil {
+		t.Fatalf("RemoveGroupMember (non-existent): %v", err)
+	}
+}
+
+func TestListGroupMembers_EmptyGroup(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg8")
+	grp, _ := s.CreateGroup(ctx, org.ID, "Empty Team", "")
+
+	members, err := s.ListGroupMembers(ctx, org.ID, grp.ID)
+	if err != nil {
+		t.Fatalf("ListGroupMembers (empty): %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("expected 0 members in empty group, got %d", len(members))
+	}
+}
+
+func TestUpdateGroup(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg9")
+	grp, _ := s.CreateGroup(ctx, org.ID, "OriginalTeam", "old desc")
+
+	if err := s.UpdateGroup(ctx, org.ID, grp.ID, "RenamedTeam", "new desc"); err != nil {
+		t.Fatalf("UpdateGroup: %v", err)
+	}
+
+	got, err := s.GetGroup(ctx, org.ID, grp.ID)
+	if err != nil {
+		t.Fatalf("GetGroup: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetGroup returned nil after update")
+	}
+	if got.Name != "RenamedTeam" {
+		t.Errorf("Name = %q, want RenamedTeam", got.Name)
+	}
+	if got.Description != "new desc" {
+		t.Errorf("Description = %q, want 'new desc'", got.Description)
+	}
+}
+
+func TestListOrgGroups(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg10")
+	_, _ = s.CreateGroup(ctx, org.ID, "Beta Team", "")
+	_, _ = s.CreateGroup(ctx, org.ID, "Alpha Team", "")
+
+	groups, err := s.ListOrgGroups(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListOrgGroups: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("ListOrgGroups = %d groups, want 2", len(groups))
+	}
+	// ListOrgGroups orders by name ASC.
+	if groups[0].Name != "Alpha Team" || groups[1].Name != "Beta Team" {
+		t.Errorf("unexpected order: %q, %q", groups[0].Name, groups[1].Name)
+	}
+}
+
+func TestListOrgGroups_Empty(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg11")
+
+	groups, err := s.ListOrgGroups(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListOrgGroups (empty): %v", err)
+	}
+	if len(groups) != 0 {
+		t.Errorf("ListOrgGroups on empty org = %d groups, want 0", len(groups))
+	}
+}
+
+func TestListOrgGroups_ExcludesDeleted(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupOrg12")
+	grp1, _ := s.CreateGroup(ctx, org.ID, "Active Team", "")
+	grp2, _ := s.CreateGroup(ctx, org.ID, "Deleted Team", "")
+	_ = s.SoftDeleteGroup(ctx, org.ID, grp2.ID)
+
+	groups, err := s.ListOrgGroups(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListOrgGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("ListOrgGroups = %d groups, want 1 (soft-deleted excluded)", len(groups))
+	}
+	if groups[0].ID != grp1.ID {
+		t.Errorf("expected active group %v, got %v", grp1.ID, groups[0].ID)
+	}
+}

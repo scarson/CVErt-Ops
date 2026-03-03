@@ -318,3 +318,153 @@ func TestRevokeAPIKey_NotOwner(t *testing.T) {
 		t.Errorf("member revoke other key: got %d, want 403", revokeResp.StatusCode)
 	}
 }
+
+// ── Additional API key tests ──────────────────────────────────────────────────
+
+// TestCreateAPIKey_ViewerForbidden verifies that a viewer cannot create API keys.
+// The route requires member+ role via RequireOrgRole(RoleMember) middleware.
+func TestCreateAPIKey_ViewerForbidden(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
+
+	// Bob is a viewer in Alice's org.
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add Bob as viewer: %v", err)
+	}
+
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	resp := doCreateAPIKey(t, ctx, ts, bobToken, aliceReg.OrgID, "Sneaky Key", "viewer")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer create api key: got %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestCreateAPIKey_InvalidRole verifies that creating a key with an invalid role returns 400.
+func TestCreateAPIKey_InvalidRole(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, "Bad Key", "superadmin")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid role: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestRevokeAPIKey_Idempotent verifies that revoking an already-revoked key does not error.
+func TestRevokeAPIKey_Idempotent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, "Revoke Twice", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create key: %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// First revoke.
+	resp1 := doRevokeAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, created.ID)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusNoContent {
+		t.Fatalf("first revoke: got %d, want 204", resp1.StatusCode)
+	}
+
+	// Second revoke — should not return 500.
+	resp2 := doRevokeAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, created.ID)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode == http.StatusInternalServerError {
+		t.Error("second revoke returned 500 — should be idempotent")
+	}
+}
+
+// TestCrossOrg_APIKeyAccess verifies that a user from org A cannot access org B's API keys.
+func TestCrossOrg_APIKeyAccess(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A, Bob owns org B.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+
+	// Alice creates a key in her org.
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateAPIKey(t, ctx, ts, aliceToken, aliceReg.OrgID, "Alice Key", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create key: %d", createResp.StatusCode)
+	}
+	var aliceKey struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&aliceKey); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Bob tries to access Alice's org's API keys.
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	t.Run("list keys", func(t *testing.T) {
+		t.Parallel()
+		resp := doListAPIKeys(t, ctx, ts, bobToken, aliceReg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list api keys: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("create key", func(t *testing.T) {
+		t.Parallel()
+		resp := doCreateAPIKey(t, ctx, ts, bobToken, aliceReg.OrgID, "Hacked Key", "viewer")
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org create api key: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("revoke key", func(t *testing.T) {
+		t.Parallel()
+		resp := doRevokeAPIKey(t, ctx, ts, bobToken, aliceReg.OrgID, aliceKey.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org revoke api key: got %d, want 403", resp.StatusCode)
+		}
+	})
+}

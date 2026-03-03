@@ -302,3 +302,201 @@ func TestBootstrapFirstUserOrg_MultipleUsers(t *testing.T) {
 		t.Errorf("BootstrapFirstUserOrg should return nil for non-first user, got org %v", org.ID)
 	}
 }
+
+func TestCreateOrgMember_Duplicate(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "DupMemberOrg")
+	user, _ := s.CreateUser(ctx, "dupmember@example.com", "DupMember", "", 0)
+	if err := s.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember (first): %v", err)
+	}
+
+	// Adding the same user again should fail (unique constraint on org_id + user_id).
+	err := s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+	if err == nil {
+		t.Error("expected error on duplicate org member, got nil")
+	}
+}
+
+func TestAcceptOrgInvitation_Flow(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AcceptInvOrg")
+	admin, _ := s.CreateUser(ctx, "acceptinv-admin@example.com", "Admin", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
+
+	token := "accept-flow-token"
+	inv, err := s.CreateOrgInvitation(ctx, org.ID, "joiner@example.com", "member", token, admin.ID, time.Now().Add(48*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateOrgInvitation: %v", err)
+	}
+
+	// Create the joining user.
+	joiner, _ := s.CreateUser(ctx, "joiner@example.com", "Joiner", "", 0)
+
+	// AcceptOrgInvitation atomically creates member + marks invitation accepted.
+	if err := s.AcceptOrgInvitation(ctx, org.ID, joiner.ID, "member", inv.ID); err != nil {
+		t.Fatalf("AcceptOrgInvitation: %v", err)
+	}
+
+	// Verify user is now a member.
+	role, err := s.GetOrgMemberRole(ctx, org.ID, joiner.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMemberRole: %v", err)
+	}
+	if role == nil || *role != "member" {
+		t.Errorf("role = %v, want member", role)
+	}
+
+	// Verify invitation is marked accepted.
+	inv2, _ := s.GetInvitationByToken(ctx, token)
+	if !inv2.AcceptedAt.Valid {
+		t.Error("AcceptedAt should be set after AcceptOrgInvitation")
+	}
+}
+
+func TestGetOrgOwnerCount(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "OwnerCountOrg")
+	user1, _ := s.CreateUser(ctx, "owner1@example.com", "Owner1", "", 0)
+	user2, _ := s.CreateUser(ctx, "owner2@example.com", "Owner2", "", 0)
+	user3, _ := s.CreateUser(ctx, "member1@example.com", "Member1", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user1.ID, "owner")
+	_ = s.CreateOrgMember(ctx, org.ID, user2.ID, "owner")
+	_ = s.CreateOrgMember(ctx, org.ID, user3.ID, "member")
+
+	n, err := s.GetOrgOwnerCount(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetOrgOwnerCount: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("GetOrgOwnerCount = %d, want 2", n)
+	}
+}
+
+func TestCreateOrgWithOwner(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, _ := s.CreateUser(ctx, "withowner@example.com", "WithOwner", "", 0)
+
+	org, err := s.CreateOrgWithOwner(ctx, "OwnerOrg", user.ID)
+	if err != nil {
+		t.Fatalf("CreateOrgWithOwner: %v", err)
+	}
+	if org == nil {
+		t.Fatal("CreateOrgWithOwner returned nil")
+	}
+	if org.Name != "OwnerOrg" {
+		t.Errorf("org.Name = %q, want OwnerOrg", org.Name)
+	}
+
+	// Verify user is owner.
+	role, err := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMemberRole: %v", err)
+	}
+	if role == nil || *role != "owner" {
+		t.Errorf("role = %v, want owner", role)
+	}
+}
+
+func TestUpdateOrg(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "OldName")
+
+	updated, err := s.UpdateOrg(ctx, org.ID, "NewName")
+	if err != nil {
+		t.Fatalf("UpdateOrg: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("UpdateOrg returned nil")
+	}
+	if updated.Name != "NewName" {
+		t.Errorf("Name = %q, want NewName", updated.Name)
+	}
+}
+
+func TestUpdateOrg_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	updated, err := s.UpdateOrg(ctx, uuid.New(), "X")
+	if err != nil {
+		t.Fatalf("UpdateOrg(not found): %v", err)
+	}
+	if updated != nil {
+		t.Error("UpdateOrg should return nil for non-existent org")
+	}
+}
+
+func TestCancelInvitation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "CancelInvOrg")
+	admin, _ := s.CreateUser(ctx, "cancelinv-admin@example.com", "CancelAdmin", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
+
+	inv, err := s.CreateOrgInvitation(ctx, org.ID, "cancel@example.com", "member", "cancel-tok", admin.ID, time.Now().Add(48*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateOrgInvitation: %v", err)
+	}
+
+	if err := s.CancelInvitation(ctx, org.ID, inv.ID); err != nil {
+		t.Fatalf("CancelInvitation: %v", err)
+	}
+
+	// After cancellation, the invitation should no longer be findable.
+	got, err := s.GetInvitationByToken(ctx, "cancel-tok")
+	if err != nil {
+		t.Fatalf("GetInvitationByToken: %v", err)
+	}
+	if got != nil {
+		t.Error("cancelled invitation should not be findable")
+	}
+}
+
+func TestGetInvitationByToken_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	got, err := s.GetInvitationByToken(ctx, "nonexistent-token")
+	if err != nil {
+		t.Fatalf("GetInvitationByToken: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for non-existent token, got %+v", got)
+	}
+}
+
+func TestListUserOrgs_NoOrgs(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, _ := s.CreateUser(ctx, "noorgs@example.com", "NoOrgs", "", 0)
+
+	orgs, err := s.ListUserOrgs(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListUserOrgs: %v", err)
+	}
+	if len(orgs) != 0 {
+		t.Errorf("ListUserOrgs = %d orgs, want 0", len(orgs))
+	}
+}

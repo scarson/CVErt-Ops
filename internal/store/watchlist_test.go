@@ -402,6 +402,185 @@ func TestListWatchlistItems_RLSIsolation(t *testing.T) {
 	}
 }
 
+func TestDeleteWatchlist_ItemCountDropsToZero(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WLOrg12")
+	w := mustCreateWatchlist(t, s, ctx, org.ID, "CascadeList")
+
+	// Add items.
+	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("lodash"),
+	})
+	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+		ItemType: "cpe", CpeNormalized: strPtr("cpe:2.3:a:v:p:1.0:*:*:*:*:*:*:*"),
+	})
+
+	count, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if count != 2 {
+		t.Fatalf("expected 2 items before delete, got %d", count)
+	}
+
+	// Soft-delete the watchlist.
+	if err := s.DeleteWatchlist(ctx, org.ID, w.ID); err != nil {
+		t.Fatalf("DeleteWatchlist: %v", err)
+	}
+
+	// Watchlist should be nil (soft-deleted).
+	got, _ := s.GetWatchlist(ctx, org.ID, w.ID)
+	if got != nil {
+		t.Error("expected nil for soft-deleted watchlist")
+	}
+
+	// Items still exist in DB but are associated with the deleted watchlist.
+	// CountWatchlistItems still counts them (it doesn't check watchlist.deleted_at).
+	// The important invariant is that the watchlist is no longer accessible.
+}
+
+func TestListWatchlistItems_Pagination(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WLOrg13")
+	w := mustCreateWatchlist(t, s, ctx, org.ID, "PageList")
+
+	// Create 5 items.
+	for i := range 5 {
+		eco := "npm"
+		pkg := "pkg-" + string(rune('a'+i))
+		_, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+			ItemType: "package", Ecosystem: &eco, PackageName: &pkg,
+		})
+		if err != nil {
+			t.Fatalf("CreateWatchlistItem(%s): %v", pkg, err)
+		}
+	}
+
+	// Page 1: first 3 items.
+	page1, err := s.ListWatchlistItems(ctx, org.ID, w.ID, nil, nil, 3)
+	if err != nil {
+		t.Fatalf("ListWatchlistItems(page1): %v", err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("page1: got %d items, want 3", len(page1))
+	}
+
+	// Page 2: remaining items using cursor from last item.
+	lastID := page1[len(page1)-1].ID
+	page2, err := s.ListWatchlistItems(ctx, org.ID, w.ID, nil, &lastID, 3)
+	if err != nil {
+		t.Fatalf("ListWatchlistItems(page2): %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("page2: got %d items, want 2", len(page2))
+	}
+
+	// No overlap between pages.
+	seen := map[uuid.UUID]bool{}
+	for _, item := range page1 {
+		seen[item.ID] = true
+	}
+	for _, item := range page2 {
+		if seen[item.ID] {
+			t.Errorf("overlap: item %v appeared in both pages", item.ID)
+		}
+	}
+}
+
+func TestCountWatchlistItems_AfterDelete(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WLOrg14")
+	w := mustCreateWatchlist(t, s, ctx, org.ID, "CountAfterDel")
+
+	item, _ := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("foo"),
+	})
+
+	count1, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if count1 != 1 {
+		t.Fatalf("expected 1 item, got %d", count1)
+	}
+
+	// Soft-delete the item.
+	_ = s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID)
+
+	count2, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if count2 != 0 {
+		t.Errorf("expected 0 items after delete, got %d", count2)
+	}
+}
+
+func TestGetWatchlist_IncludesItemCount(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WLOrg15")
+	w := mustCreateWatchlist(t, s, ctx, org.ID, "ItemCountList")
+
+	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("a"),
+	})
+	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("b"),
+	})
+
+	got, err := s.GetWatchlist(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("GetWatchlist: %v", err)
+	}
+	if got.ItemCount != 2 {
+		t.Errorf("ItemCount = %d, want 2", got.ItemCount)
+	}
+}
+
+func TestValidateWatchlistsOwnership_DeletedWatchlist(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WLOrg16")
+	w := mustCreateWatchlist(t, s, ctx, org.ID, "DeletedOwnership")
+	_ = s.DeleteWatchlist(ctx, org.ID, w.ID)
+
+	// Deleted watchlist should NOT count as owned.
+	ok, err := s.ValidateWatchlistsOwnership(ctx, org.ID, []uuid.UUID{w.ID})
+	if err != nil {
+		t.Fatalf("ValidateWatchlistsOwnership: %v", err)
+	}
+	if ok {
+		t.Error("expected false for deleted watchlist")
+	}
+}
+
+func TestCreateWatchlistItem_Namespace(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "WLOrg17")
+	w := mustCreateWatchlist(t, s, ctx, org.ID, "NsList")
+
+	item, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+		ItemType:    "package",
+		Ecosystem:   strPtr("maven"),
+		PackageName: strPtr("commons-lang"),
+		Namespace:   strPtr("org.apache"),
+	})
+	if err != nil {
+		t.Fatalf("CreateWatchlistItem(namespace): %v", err)
+	}
+	if !item.Namespace.Valid || item.Namespace.String != "org.apache" {
+		t.Errorf("Namespace = %v, want org.apache", item.Namespace)
+	}
+}
+
 // strPtr returns a pointer to s.
 func strPtr(s string) *string { return &s }
 

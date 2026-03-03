@@ -3,6 +3,7 @@
 package auth_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/auth"
@@ -55,5 +56,44 @@ func TestHashPasswordUnique(t *testing.T) {
 	}
 	if hash1 == hash2 {
 		t.Error("two hashes of the same password should differ (different salts)")
+	}
+}
+
+func TestHashPasswordOWASPParameters(t *testing.T) {
+	t.Parallel()
+	hash, err := auth.HashPassword("test-password")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	// PHC format: $argon2id$v=19$m=M,t=T,p=P$salt$key
+	// OWASP parameters: m=19456, t=2, p=1
+	if !strings.Contains(hash, "$argon2id$v=19$m=19456,t=2,p=1$") {
+		t.Errorf("hash does not contain OWASP parameters, got %q", hash)
+	}
+}
+
+func TestVerifyPasswordMalformedHash(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		hash string
+	}{
+		{"empty", ""},
+		{"not PHC format", "plaintext-hash"},
+		{"wrong algorithm", "$bcrypt$v=19$m=19456,t=2,p=1$c2FsdA$a2V5"},
+		{"too few parts", "$argon2id$v=19$m=19456,t=2,p=1"},
+		{"bad params", "$argon2id$v=19$garbage$c2FsdA$a2V5"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := auth.VerifyPassword("password", tc.hash)
+			if err == nil {
+				t.Error("expected error for malformed hash, got nil")
+			}
+		})
 	}
 }

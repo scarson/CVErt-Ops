@@ -314,3 +314,193 @@ func TestGitHubCallback_InvalidState(t *testing.T) {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }
+
+func TestGitHubCallback_MismatchedStateCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ghMock := newGitHubMockServer(t)
+	_, ts := newGitHubTestServer(t, db, ghMock)
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	// Init to get a valid state cookie.
+	initReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/auth/oauth/github", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck
+
+	var stateCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		if c.Name == "oauth_state" {
+			stateCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("no oauth_state cookie from init")
+	}
+
+	// Callback with the cookie but a DIFFERENT state in the query string.
+	callbackURL := ts.URL + "/api/v1/auth/oauth/github/callback?code=fake-code&state=tampered-state"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(stateCookie)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGitHubCallback_NoVerifiedPrimaryEmail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+
+	// Mock server that returns no verified primary email.
+	noEmailMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:gosec // G104: test mock server
+				"access_token": "gho_test_access_token",
+				"token_type":   "bearer",
+				"scope":        "user:email",
+			})
+		case "/user":
+			_ = json.NewEncoder(w).Encode(map[string]any{ //nolint:gosec // G104: test mock server
+				"id":    99999,
+				"login": "noemail",
+				"name":  "",
+			})
+		case "/user/emails":
+			// Only unverified emails — no verified primary.
+			_ = json.NewEncoder(w).Encode([]map[string]any{ //nolint:gosec // G104: test mock server
+				{"email": "unverified@example.com", "primary": true, "verified": false},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(noEmailMock.Close)
+
+	_, ts := newGitHubTestServer(t, db, noEmailMock)
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	// Init.
+	initReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/auth/oauth/github", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck
+
+	var stateCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		if c.Name == "oauth_state" {
+			stateCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("no oauth_state cookie from init")
+	}
+
+	// Callback.
+	callbackURL := ts.URL + "/api/v1/auth/oauth/github/callback?code=fake-code&state=" + stateCookie.Value
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(stateCookie)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("no verified email: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGitHubCallback_IdentityLinking(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ghMock := newGitHubMockServer(t)
+	_, ts := newGitHubTestServer(t, db, ghMock)
+
+	// Pre-create a user with a DIFFERENT email and link it to the same GitHub ID.
+	// On next OAuth login, the existing user should be found by provider ID
+	// (not email), and the email should be updated via UpsertUserIdentity.
+	ctx := t.Context()
+	existingUser, err := db.CreateUser(ctx, "old-gh@example.com", "Old GH User", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := db.UpsertUserIdentity(ctx, existingUser.ID, "github", "12345", "old-gh@example.com"); err != nil {
+		t.Fatalf("UpsertUserIdentity: %v", err)
+	}
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	initReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/auth/oauth/github", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck
+
+	var stateCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		if c.Name == "oauth_state" {
+			stateCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("no oauth_state cookie from init")
+	}
+
+	callbackURL := ts.URL + "/api/v1/auth/oauth/github/callback?code=fake-code&state=" + stateCookie.Value
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(stateCookie)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Verify the same user was returned (looked up by provider ID, not email).
+	var body struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.UserID != existingUser.ID.String() {
+		t.Errorf("user_id = %q, want %q (should match existing user by provider ID)", body.UserID, existingUser.ID.String())
+	}
+}

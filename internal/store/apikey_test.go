@@ -176,3 +176,150 @@ func TestRevokeAPIKey_WrongOrg(t *testing.T) {
 		t.Error("key should still be active after wrong-org revoke attempt")
 	}
 }
+
+func TestRevokeAPIKey_AlreadyRevoked(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "KeyOrg7")
+	user, _ := s.CreateUser(ctx, "keyuser7@example.com", "KeyUser7", "", 0)
+
+	hash := "doublerevoke_" + uuid.New().String()
+	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "Double Revoke", "member", sql.NullTime{})
+
+	// Revoke once.
+	if err := s.RevokeAPIKey(ctx, org.ID, key.ID); err != nil {
+		t.Fatalf("RevokeAPIKey (first): %v", err)
+	}
+
+	// Revoke again — should not error (idempotent: UPDATE sets revoked_at = now() again).
+	if err := s.RevokeAPIKey(ctx, org.ID, key.ID); err != nil {
+		t.Fatalf("RevokeAPIKey (second): %v", err)
+	}
+
+	// Key should still be revoked.
+	got, _ := s.LookupAPIKey(ctx, hash)
+	if got != nil {
+		t.Error("key should still be revoked after double revoke")
+	}
+}
+
+func TestListOrgAPIKeys_Empty(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "KeyOrg8")
+
+	keys, err := s.ListOrgAPIKeys(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("ListOrgAPIKeys (empty): %v", err)
+	}
+	if len(keys) != 0 {
+		t.Errorf("ListOrgAPIKeys on empty org = %d keys, want 0", len(keys))
+	}
+}
+
+func TestGetOrgAPIKey(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "KeyOrg9")
+	user, _ := s.CreateUser(ctx, "keyuser9@example.com", "KeyUser9", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+
+	hash := "getorgkey_" + uuid.New().String()
+	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "GetMe", "member", sql.NullTime{})
+
+	got, err := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	if err != nil {
+		t.Fatalf("GetOrgAPIKey: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetOrgAPIKey returned nil for existing key")
+	}
+	if got.Name != "GetMe" {
+		t.Errorf("Name = %q, want GetMe", got.Name)
+	}
+}
+
+func TestGetOrgAPIKey_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "KeyOrg10")
+
+	got, err := s.GetOrgAPIKey(ctx, org.ID, uuid.New())
+	if err != nil {
+		t.Fatalf("GetOrgAPIKey(not found): %v", err)
+	}
+	if got != nil {
+		t.Error("GetOrgAPIKey should return nil for non-existent key")
+	}
+}
+
+func TestGetOrgAPIKey_WrongOrg(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "KeyOrg11a")
+	org2, _ := s.CreateOrg(ctx, "KeyOrg11b")
+	user, _ := s.CreateUser(ctx, "keyuser11@example.com", "KeyUser11", "", 0)
+
+	hash := "crossorgget_" + uuid.New().String()
+	key, _ := s.CreateAPIKey(ctx, org1.ID, user.ID, hash, "CrossOrgGet", "member", sql.NullTime{})
+
+	// GetOrgAPIKey with wrong org should return nil.
+	got, err := s.GetOrgAPIKey(ctx, org2.ID, key.ID)
+	if err != nil {
+		t.Fatalf("GetOrgAPIKey(wrong org): %v", err)
+	}
+	if got != nil {
+		t.Error("GetOrgAPIKey with wrong org should return nil")
+	}
+}
+
+func TestUpdateAPIKeyLastUsed(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "KeyOrg12")
+	user, _ := s.CreateUser(ctx, "keyuser12@example.com", "KeyUser12", "", 0)
+
+	hash := "lastused_" + uuid.New().String()
+	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "LastUsed Key", "member", sql.NullTime{})
+
+	// last_used_at should be null initially.
+	got, _ := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	if got.LastUsedAt.Valid {
+		t.Error("LastUsedAt should be null initially")
+	}
+
+	if err := s.UpdateAPIKeyLastUsed(ctx, key.ID); err != nil {
+		t.Fatalf("UpdateAPIKeyLastUsed: %v", err)
+	}
+
+	got2, _ := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	if !got2.LastUsedAt.Valid {
+		t.Error("LastUsedAt should be set after UpdateAPIKeyLastUsed")
+	}
+}
+
+func TestLookupAPIKey_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	got, err := s.LookupAPIKey(ctx, "nonexistent-hash-"+uuid.New().String())
+	if err != nil {
+		t.Fatalf("LookupAPIKey: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for non-existent hash, got %+v", got)
+	}
+}

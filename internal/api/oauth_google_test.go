@@ -446,3 +446,178 @@ func TestGoogleCallback_NonceMismatch(t *testing.T) {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }
+
+func TestGoogleCallback_MissingNonceCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	googleMock := newGoogleMockServer(t)
+	_, ts := newGoogleTestServer(t, db, googleMock)
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	// Init to get state and nonce cookies.
+	initReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/auth/oauth/google", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck
+
+	var stateCookie, nonceCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		switch c.Name {
+		case "oauth_state":
+			stateCookie = c
+		case "oidc_nonce":
+			nonceCookie = c
+		}
+	}
+	if stateCookie == nil || nonceCookie == nil {
+		t.Fatal("missing cookies from init")
+	}
+
+	// Tell mock to embed the correct nonce so ID token passes verification.
+	googleMock.setNonce(nonceCookie.Value)
+
+	// Call callback WITH state cookie but WITHOUT nonce cookie.
+	callbackURL := ts.URL + "/api/v1/auth/oauth/google/callback?code=fake-code&state=" + stateCookie.Value
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(stateCookie) // only state cookie, no nonce cookie
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("missing nonce cookie: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGoogleCallback_MismatchedStateCookie(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	googleMock := newGoogleMockServer(t)
+	_, ts := newGoogleTestServer(t, db, googleMock)
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	// Init to get valid cookies.
+	initReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/auth/oauth/google", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck
+
+	var stateCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		if c.Name == "oauth_state" {
+			stateCookie = c
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("no state cookie from init")
+	}
+
+	// Callback with state cookie present but a DIFFERENT state in the URL query.
+	callbackURL := ts.URL + "/api/v1/auth/oauth/google/callback?code=fake-code&state=tampered-state"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(stateCookie)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("mismatched state: status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGoogleCallback_IdentityLinking(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	googleMock := newGoogleMockServer(t)
+	_, ts := newGoogleTestServer(t, db, googleMock)
+
+	// Pre-create a user with a DIFFERENT email and link to the same Google sub.
+	// On next OAuth login, the existing user should be found by provider sub
+	// (not email), and the identity upserted with the current email.
+	ctx := t.Context()
+	existingUser, err := db.CreateUser(ctx, "old-google@example.com", "Old Google User", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := db.UpsertUserIdentity(ctx, existingUser.ID, "google", "google-sub-12345", "old-google@example.com"); err != nil {
+		t.Fatalf("UpsertUserIdentity: %v", err)
+	}
+
+	client := ts.Client()
+	client.CheckRedirect = noRedirect
+
+	initReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/auth/oauth/google", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer initResp.Body.Close() //nolint:errcheck
+
+	var stateCookie, nonceCookie *http.Cookie
+	for _, c := range initResp.Cookies() {
+		switch c.Name {
+		case "oauth_state":
+			stateCookie = c
+		case "oidc_nonce":
+			nonceCookie = c
+		}
+	}
+	if stateCookie == nil || nonceCookie == nil {
+		t.Fatal("missing cookies from init")
+	}
+
+	googleMock.setNonce(nonceCookie.Value)
+
+	callbackURL := ts.URL + "/api/v1/auth/oauth/google/callback?code=fake-code&state=" + stateCookie.Value
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, callbackURL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(stateCookie)
+	req.AddCookie(nonceCookie)
+	resp, err := client.Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Verify the same user was returned (looked up by provider sub, not email).
+	var body struct {
+		UserID string `json:"user_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.UserID != existingUser.ID.String() {
+		t.Errorf("user_id = %q, want %q (should match existing user by provider sub)", body.UserID, existingUser.ID.String())
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -407,5 +408,379 @@ func TestListAlertEvents_Filters(t *testing.T) {
 	}
 	if len(all) != 3 {
 		t.Errorf("all: got %d, want 3", len(all))
+	}
+}
+
+func TestListAlertRules_Pagination(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg12")
+	for i := range 5 {
+		mustCreateAlertRule(t, s, ctx, org.ID, "PageRule-"+string(rune('a'+i)))
+	}
+
+	// Page 1: first 3 rules.
+	page1, err := s.ListAlertRules(ctx, org.ID, nil, nil, nil, 3)
+	if err != nil {
+		t.Fatalf("ListAlertRules(page1): %v", err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("page1: got %d rules, want 3", len(page1))
+	}
+
+	// Page 2: remaining rules using cursor from last item.
+	last := page1[len(page1)-1]
+	page2, err := s.ListAlertRules(ctx, org.ID, nil, &last.CreatedAt, &last.ID, 3)
+	if err != nil {
+		t.Fatalf("ListAlertRules(page2): %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("page2: got %d rules, want 2", len(page2))
+	}
+
+	// No overlap.
+	seen := map[uuid.UUID]bool{}
+	for _, r := range page1 {
+		seen[r.ID] = true
+	}
+	for _, r := range page2 {
+		if seen[r.ID] {
+			t.Errorf("overlap: rule %v appeared in both pages", r.ID)
+		}
+	}
+}
+
+func TestUpdateAlertRule_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg13")
+
+	updated, err := s.UpdateAlertRule(ctx, org.ID, uuid.New(), store.UpdateAlertRuleParams{
+		Name:       "Ghost",
+		Logic:      "and",
+		Conditions: json.RawMessage(`[]`),
+		Status:     "draft",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAlertRule(not found): %v", err)
+	}
+	if updated != nil {
+		t.Error("UpdateAlertRule should return nil for non-existent rule")
+	}
+}
+
+func TestListActiveRulesForEPSS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg14")
+
+	// Create an EPSS-conditioned active rule.
+	epssRule, err := s.CreateAlertRule(ctx, org.ID, store.CreateAlertRuleParams{
+		Name:             "EPSS Rule",
+		Logic:            "and",
+		Conditions:       json.RawMessage(`[{"field":"epss_score","operator":"gte","value":0.5}]`),
+		HasEpssCondition: true,
+		IsEpssOnly:       true,
+		Status:           "draft",
+	})
+	if err != nil {
+		t.Fatalf("CreateAlertRule (EPSS): %v", err)
+	}
+	_ = s.SetAlertRuleStatus(ctx, org.ID, epssRule.ID, "active")
+
+	// Create a non-EPSS active rule — should not appear in EPSS list.
+	nonEpss := mustCreateAlertRule(t, s, ctx, org.ID, "NonEPSSRule")
+	_ = s.SetAlertRuleStatus(ctx, org.ID, nonEpss.ID, "active")
+
+	rules, err := s.ListActiveRulesForEPSS(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveRulesForEPSS: %v", err)
+	}
+
+	found := false
+	for _, rule := range rules {
+		if rule.ID == epssRule.ID {
+			found = true
+		}
+		if !rule.HasEpssCondition {
+			t.Errorf("non-EPSS rule %v found in EPSS list", rule.ID)
+		}
+	}
+	if !found {
+		t.Errorf("EPSS rule %v not found in ListActiveRulesForEPSS", epssRule.ID)
+	}
+}
+
+func TestInsertAlertEvent_DifferentMaterialHash(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg15")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "DiffHashRule")
+
+	// Same (org, rule, cve) but different material_hash should create separate events.
+	id1, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0020", "hashA", false)
+	if err != nil {
+		t.Fatalf("InsertAlertEvent (hashA): %v", err)
+	}
+	if id1 == uuid.Nil {
+		t.Error("first insert should return non-nil UUID")
+	}
+
+	id2, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0020", "hashB", false)
+	if err != nil {
+		t.Fatalf("InsertAlertEvent (hashB): %v", err)
+	}
+	if id2 == uuid.Nil {
+		t.Error("second insert with different hash should return non-nil UUID")
+	}
+	if id1 == id2 {
+		t.Error("different hashes should produce different event IDs")
+	}
+}
+
+func TestListAlertEvents_LastMatchStateFilter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg16")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "MatchStateRule")
+
+	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0030", "h30", false)
+	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0031", "h31", false)
+
+	// Resolve one event.
+	_ = s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0030")
+
+	// Filter for unresolved (last_match_state = true).
+	matchTrue := true
+	unresolved, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
+		LastMatchState: &matchTrue,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(unresolved): %v", err)
+	}
+	if len(unresolved) != 1 {
+		t.Errorf("unresolved: got %d, want 1", len(unresolved))
+	}
+	if len(unresolved) > 0 && unresolved[0].CveID != "CVE-2024-0031" {
+		t.Errorf("unresolved cve = %q, want CVE-2024-0031", unresolved[0].CveID)
+	}
+
+	// Filter for resolved (last_match_state = false).
+	matchFalse := false
+	resolved, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
+		LastMatchState: &matchFalse,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(resolved): %v", err)
+	}
+	if len(resolved) != 1 {
+		t.Errorf("resolved: got %d, want 1", len(resolved))
+	}
+	if len(resolved) > 0 && resolved[0].CveID != "CVE-2024-0030" {
+		t.Errorf("resolved cve = %q, want CVE-2024-0030", resolved[0].CveID)
+	}
+}
+
+func TestListAlertEvents_SinceFilter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg17")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "SinceRule")
+
+	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0040", "h40", false)
+
+	// Since = now() means only events from now onward — the just-inserted event should be excluded.
+	since := time.Now().Add(1 * time.Second)
+	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
+		Since: &since,
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(since): %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("since filter: got %d events, want 0", len(events))
+	}
+}
+
+func TestListAlertEvents_Pagination(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg18")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "PageEventRule")
+
+	for i := range 5 {
+		cveID := "CVE-2024-005" + string(rune('0'+i))
+		hash := "ph" + string(rune('0'+i))
+		_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, hash, false)
+	}
+
+	page1, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 3})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(page1): %v", err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("page1: got %d events, want 3", len(page1))
+	}
+
+	last := page1[len(page1)-1]
+	page2, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
+		AfterTime: &last.FirstFiredAt,
+		AfterID:   &last.ID,
+		Limit:     3,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(page2): %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("page2: got %d events, want 2", len(page2))
+	}
+
+	seen := map[uuid.UUID]bool{}
+	for _, e := range page1 {
+		seen[e.ID] = true
+	}
+	for _, e := range page2 {
+		if seen[e.ID] {
+			t.Errorf("overlap: event %v appeared in both pages", e.ID)
+		}
+	}
+}
+
+func TestSoftDeleteAlertRule_NotVisibleInList(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg19")
+	r1 := mustCreateAlertRule(t, s, ctx, org.ID, "ActiveRule19")
+	r2 := mustCreateAlertRule(t, s, ctx, org.ID, "DeletedRule19")
+
+	_ = s.SoftDeleteAlertRule(ctx, org.ID, r2.ID)
+
+	rules, err := s.ListAlertRules(ctx, org.ID, nil, nil, nil, 10)
+	if err != nil {
+		t.Fatalf("ListAlertRules: %v", err)
+	}
+	for _, rule := range rules {
+		if rule.ID == r2.ID {
+			t.Error("soft-deleted rule should not appear in ListAlertRules")
+		}
+	}
+	found := false
+	for _, rule := range rules {
+		if rule.ID == r1.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("active rule should appear in ListAlertRules")
+	}
+}
+
+func TestInsertAlertEvent_SuppressDelivery(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg20")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "SuppressRule")
+
+	id, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0060", "h60", true)
+	if err != nil {
+		t.Fatalf("InsertAlertEvent (suppress): %v", err)
+	}
+	if id == uuid.Nil {
+		t.Fatal("expected non-nil event ID")
+	}
+
+	events, _ := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 10})
+	found := false
+	for _, e := range events {
+		if e.ID == id {
+			found = true
+			if !e.SuppressDelivery {
+				t.Error("SuppressDelivery should be true")
+			}
+		}
+	}
+	if !found {
+		t.Error("suppressed event not found in list")
+	}
+}
+
+func TestUpdateAlertRuleRun_WithError(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg21")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "ErrorRunRule")
+
+	run, err := s.InsertAlertRuleRun(ctx, r.ID, org.ID, "batch")
+	if err != nil {
+		t.Fatalf("InsertAlertRuleRun: %v", err)
+	}
+
+	errMsg := "evaluation timeout exceeded"
+	if err := s.UpdateAlertRuleRun(ctx, run.ID, "error", 50, 0, &errMsg); err != nil {
+		t.Fatalf("UpdateAlertRuleRun (error): %v", err)
+	}
+}
+
+func TestCreateAlertRule_WithWatchlistIds(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg22")
+
+	r, err := s.CreateAlertRule(ctx, org.ID, store.CreateAlertRuleParams{
+		Name:         "Watchlist Rule",
+		Logic:        "and",
+		Conditions:   json.RawMessage(`[{"field":"severity","operator":"eq","value":"high"}]`),
+		WatchlistIds: []uuid.UUID{uuid.New(), uuid.New()},
+		Status:       "draft",
+	})
+	if err != nil {
+		t.Fatalf("CreateAlertRule: %v", err)
+	}
+	if len(r.WatchlistIds) != 2 {
+		t.Errorf("WatchlistIds = %d, want 2", len(r.WatchlistIds))
+	}
+}
+
+func TestListAlertEvents_DefaultLimit(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AROrg23")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "DefaultLimitRule")
+	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0070", "h70", false)
+
+	// Limit = 0 should default to 100 (per ListAlertEvents implementation).
+	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 0})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(default limit): %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("default limit: got %d events, want 1", len(events))
 	}
 }

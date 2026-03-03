@@ -1,24 +1,28 @@
-# Phase 5 Coverage Review — A/B Test Results
+# Coverage Review — A/B Test Results
 
 **Date:** 2026-03-03
-**Purpose:** Compare test coverage review approaches on the same Phase 5 codebase, then validate targeted improvements.
+**Purpose:** Compare test coverage review approaches, validate targeted improvements, and test generalization across codebases.
 
 ---
 
 ## Runs
 
-| Run | Skill | Version | Status | Report |
-|-----|-------|---------|--------|--------|
-| A | `test-coverage-review` | Original path-mapping | Done | `phase5-test-coverage-review.md` |
-| B | `test-coverage-review-go` | Original coverage-tool | Done | `phase5-coverage-tool-review.md` |
-| C | `test-coverage-review-go` | Enhanced v2 (matrix + semantic) | Done | `phase5-enhanced-coverage-tool-review.md` |
-| D | `test-coverage-review-hybrid-go` | Hybrid v1 | Done | `phase5-hybrid-review.md` |
-| E | `test-coverage-review-go` | Enhanced v3 (8 improvements from C/D analysis) | **Planned** | `phase5-enhanced-v3-review.md` |
-| F | `test-coverage-review-hybrid-go` | Hybrid v2 (8 improvements from C/D analysis) | **Planned** | `phase5-hybrid-v2-review.md` |
+| Run | Skill | Version | Scope | Status | Report |
+|-----|-------|---------|-------|--------|--------|
+| A | `test-coverage-review` | Original path-mapping | Phase 5 | Done | `phase5-test-coverage-review.md` |
+| B | `test-coverage-review-go` | Original coverage-tool | Phase 5 | Done | `phase5-coverage-tool-review.md` |
+| C | `test-coverage-review-go` | Enhanced v2 (matrix + semantic) | Phase 5 | Done | `phase5-enhanced-coverage-tool-review.md` |
+| D | `test-coverage-review-hybrid-go` | Hybrid v1 | Phase 5 | Done | `phase5-hybrid-review.md` |
+| E | `test-coverage-review-go` | Enhanced v3 (8 improvements) | Phase 5 | **Planned** | `phase5-enhanced-v3-review.md` |
+| F | `test-coverage-review-hybrid-go` | Hybrid v2 (8 improvements) | Phase 5 | **Planned** | `phase5-hybrid-v2-review.md` |
+| G | `test-coverage-review-go` | Enhanced v3 (8 improvements) | **Phase 1** | **Planned** | `phase1-enhanced-v3-review.md` |
+| H | `test-coverage-review-hybrid-go` | Hybrid v2 (8 improvements) | **Phase 1** | **Planned** | `phase1-hybrid-v2-review.md` |
 
 **Controlled variables (Runs A-D):** Same `dev` branch HEAD, same scope (`internal/api/...`, `internal/store/...`, `internal/tier/...`), same pre-generated coverage data (`coverage-ab.out`, 73.5% overall, 560 functions), separate Claude Code sessions, no cross-contamination. Both C and D hit auto-compaction during analysis.
 
 **Controlled variables (Runs E-F):** Same as A-D. Same coverage data files. No source code changes to scope since C/D (last source change: `4c8062a`). See test design document for verification steps.
+
+**Controlled variables (Runs G-H):** Same `dev` branch HEAD as E-F. Different scope: `internal/feed/...`, `internal/merge/...`, `internal/worker/...`. New coverage data (`coverage-phase1.out`). No org-scoped API endpoints — matrix improvements untestable; semantic improvements are the focus.
 
 ---
 
@@ -319,3 +323,64 @@ Runs E and F test whether the 8 targeted improvements derived from C/D analysis 
 | GET /reports/{id}/channels | GAP | Tested | — | — | — |
 | DELETE /groups/{id}/members/{uid} | GAP | Tested | — | — | — |
 | GET /sso/link | GAP | Not listed | — | — | — |
+
+---
+
+## Runs G-H: Phase 1 Generalization Test (Planned)
+
+Runs G and H test whether the improvements generalize beyond Phase 5's HTTP handlers to Phase 1's data ingestion code (feed adapters, merge pipeline, worker pool). See [test design](2026-03-03-phase5-ab-test-design.md) §"Runs G and H" for full methodology.
+
+**Key difference from E-F:** Phase 1 has no org-scoped API endpoints. Matrix improvements (audit log column, cite-test-name, route enumeration, spot-check) are untestable. Semantic improvements (TOCTOU, cross-handler consistency, assertion quality, wrong-function-called) are the focus.
+
+### Phase 1 Coverage Baseline
+
+*To be filled after coverage data generation.*
+
+| Package | Coverage | Functions | Uncovered |
+|---------|----------|-----------|-----------|
+| internal/feed/... | — | — | — |
+| internal/merge/... | — | — | — |
+| internal/worker/... | — | — | — |
+| **Overall** | **—** | **—** | **—** |
+
+### Scoring (G/H — Phase 1 reduced rubric)
+
+*To be filled after runs complete. Matrix-specific metrics are N/A for Phase 1.*
+
+| Metric | Weight | G (enhanced v3) | H (hybrid v2) | How scored |
+|--------|--------|:-:|:-:|------------|
+| Production bugs / design violations | 25% | — | — | Wrong function called, missing side effects, pattern violations. No benchmarks — all genuine. |
+| TOCTOU windows | 20% | — | — | Count. Multi-step flow enumeration? Advisory lock analysis? |
+| Cross-handler consistency | 20% | — | — | Feed adapter patterns compared (all 6?). Violations found. |
+| Assertion quality | 15% | — | — | Count. Conditional assertion check applied? |
+| False positives | 10% | — | — | Fabricated endpoints, mischaracterized packages, wrong coverage interpretation. |
+| Non-API adaptation | 10% | — | — | Matrix correctly N/A? No forced org-scoped analysis? |
+| **Weighted total** | **100%** | **—** | **—** | |
+
+### Generalization Hypotheses
+
+*To be filled after runs complete.*
+
+| # | Prediction | Run G | Run H | Confirmed? |
+|---|-----------|-------|-------|:----------:|
+| G1 | TOCTOU: ≥1 temporal window in merge pipeline | — | — | — |
+| G2 | Cross-handler: shared patterns across 6 feed adapters identified | — | — | — |
+| G3 | Assertion quality: shallow assertions found in feed/merge tests | — | — | — |
+| G4 | Wrong-function-called: incorrect function usage identified | — | — | — |
+| G5 | Non-API scope: matrix correctly N/A, no fabricated endpoints | — | — | — |
+| G6 | Structural separation: hybrid (H) finds more semantic issues than enhanced (G) | N/A | — | — |
+
+**Success criteria:** ≥4 of 6 hypotheses confirmed.
+
+### Cross-Phase Comparison
+
+*To be filled after all 8 runs complete. Compares findings density and type distribution between Phase 5 (E/F) and Phase 1 (G/H).*
+
+| Metric | E (Phase 5) | F (Phase 5) | G (Phase 1) | H (Phase 1) |
+|--------|:-:|:-:|:-:|:-:|
+| Total findings | — | — | — | — |
+| Security-critical | — | — | — | — |
+| TOCTOU windows | — | — | — | — |
+| Cross-handler violations | — | — | — | — |
+| Assertion quality issues | — | — | — | — |
+| False positives | — | — | — | — |

@@ -745,6 +745,141 @@ func TestSummarizeHandler_CacheHit(t *testing.T) {
 	}
 }
 
+// ── Malformed JSON + nil LLM + quota-disabled tests ─────────────────────────
+
+func TestNLSearchHandler_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nlbadjson@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlbadjson@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, `{invalid json`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestNLSearchHandler_NilLLM(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create server WITHOUT calling SetAIDeps — llm remains nil.
+	_, ts := newAITestServerWithLLM(t, db, nil)
+	reg := doRegister(t, ctx, ts, "nlnilllm@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlnilllm@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, `{"query":"test"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil LLM: got %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestSummarizeHandler_NilLLM(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-8001", "critical", nil)
+
+	_, ts := newAITestServerWithLLM(t, db, nil)
+	reg := doRegister(t, ctx, ts, "summnilllm@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "summnilllm@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-8001")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil LLM summarize: got %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestNLSearchHandler_QuotaDisabled(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-8002", "critical", nil)
+
+	// Create server with quota disabled.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "aitestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		AIQuotaEnabled:      false,
+		GeminiModel:         "gemini-2.0-flash",
+		AICacheNLSearchTTL:  1 * time.Hour,
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetAIDeps(ai.NewMockClient())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	reg := doRegister(t, ctx, ts, "nlnoquota@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlnoquota@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, `{"query":"critical CVEs"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("quota disabled: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestSummarizeHandler_QuotaDisabled(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-8003", "high", nil)
+
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:            "aitestsecret",
+		RegistrationMode:     "open",
+		Argon2MaxConcurrent:  5,
+		AIQuotaEnabled:       false,
+		GeminiModel:          "gemini-2.0-flash",
+		AICacheSummarizeTTL:  24 * time.Hour,
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetAIDeps(ai.NewMockClient())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	reg := doRegister(t, ctx, ts, "summnoquota@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "summnoquota@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-8003")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("summarize quota disabled: got %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestNLSearchHandler_ProTierQuota(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

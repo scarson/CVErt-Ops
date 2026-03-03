@@ -740,3 +740,152 @@ func TestSavedSearch_RBAC(t *testing.T) {
 		}
 	})
 }
+
+// ── Malformed JSON, invalid UUID, not-found, visibility filter tests ────────
+
+func TestSavedSearch_CreateMalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ssbadjson@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ssbadjson@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, `{not valid json`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSavedSearch_PatchMalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sspatchbad@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sspatchbad@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Create a valid search first.
+	body := fmt.Sprintf(`{"name":"For Patch","query_json":%s,"is_shared":false}`, validDSLJSON)
+	createResp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	var created savedSearchEntry
+	json.NewDecoder(createResp.Body).Decode(&created) //nolint:errcheck,gosec
+
+	resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID, `{not valid json`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("patch malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSavedSearch_InvalidUUID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ssuuid@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ssuuid@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	badID := "not-a-valid-uuid"
+
+	t.Run("Get", func(t *testing.T) {
+		resp := doGetSavedSearch(t, ctx, ts, token, reg.OrgID, badID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("get invalid UUID: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Patch", func(t *testing.T) {
+		resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, badID, `{"name":"x"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("patch invalid UUID: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Delete", func(t *testing.T) {
+		resp := doDeleteSavedSearch(t, ctx, ts, token, reg.OrgID, badID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("delete invalid UUID: got %d, want 400", resp.StatusCode)
+		}
+	})
+	t.Run("Execute", func(t *testing.T) {
+		resp := doExecuteSavedSearch(t, ctx, ts, token, reg.OrgID, badID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("execute invalid UUID: got %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+func TestSavedSearch_PatchNotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sspatchnf@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sspatchnf@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	nonexistentID := uuid.New().String()
+	resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, nonexistentID, `{"name":"Ghost"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("patch nonexistent: got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestSavedSearch_ExecuteNotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ssexecnf@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ssexecnf@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	nonexistentID := uuid.New().String()
+	resp := doExecuteSavedSearch(t, ctx, ts, token, reg.OrgID, nonexistentID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("execute nonexistent: got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestSavedSearch_InvalidVisibility(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ssvis@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ssvis@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doListSavedSearches(t, ctx, ts, token, reg.OrgID, "bogus")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid visibility: got %d, want 400", resp.StatusCode)
+	}
+}

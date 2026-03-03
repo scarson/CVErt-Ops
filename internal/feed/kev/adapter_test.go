@@ -1,0 +1,480 @@
+// ABOUTME: Unit tests for the KEV feed adapter's pure parse/convert functions.
+// ABOUTME: Covers parseKEV streaming parser, recordToPatch conversion, and extractCWEs helper.
+package kev
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/scarson/cvert-ops/internal/feed"
+)
+
+func TestParseKEV_FullCatalog(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"title": "CISA KEV Catalog",
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"count": 2,
+		"vulnerabilities": [
+			{
+				"cveID": "CVE-2024-1111",
+				"vendorProject": "Acme",
+				"product": "Widget",
+				"vulnerabilityName": "Acme Widget RCE",
+				"dateAdded": "2024-08-01",
+				"shortDescription": "Remote code execution in Widget",
+				"requiredAction": "Apply update",
+				"dueDate": "2024-09-01",
+				"knownRansomwareCampaignUse": "Known",
+				"notes": "",
+				"cwes": ["CWE-78"]
+			},
+			{
+				"cveID": "CVE-2024-2222",
+				"vendorProject": "Beta Corp",
+				"product": "Gadget",
+				"vulnerabilityName": "Beta Gadget SQLi",
+				"dateAdded": "2024-09-02",
+				"shortDescription": "SQL injection in Gadget",
+				"requiredAction": "Apply update",
+				"dueDate": "2024-10-02",
+				"knownRansomwareCampaignUse": "Unknown",
+				"notes": "Patch available"
+			}
+		]
+	}`
+
+	patches, catalogVersion, dateReleased, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalogVersion != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want %q", catalogVersion, "2024.09.03")
+	}
+	if dateReleased != "2024-09-03" {
+		t.Errorf("dateReleased = %q, want %q", dateReleased, "2024-09-03")
+	}
+	if len(patches) != 2 {
+		t.Fatalf("len(patches) = %d, want 2", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-1111" {
+		t.Errorf("patches[0].CVEID = %q, want %q", patches[0].CVEID, "CVE-2024-1111")
+	}
+	if patches[1].CVEID != "CVE-2024-2222" {
+		t.Errorf("patches[1].CVEID = %q, want %q", patches[1].CVEID, "CVE-2024-2222")
+	}
+}
+
+func TestParseKEV_ShortCircuit(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": [
+			{
+				"cveID": "CVE-2024-1111",
+				"dateAdded": "2024-08-01",
+				"shortDescription": "Should be skipped"
+			}
+		]
+	}`
+
+	patches, catalogVersion, dateReleased, err := parseKEV(strings.NewReader(body), "2024.09.03")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalogVersion != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want %q", catalogVersion, "2024.09.03")
+	}
+	if dateReleased != "2024-09-03" {
+		t.Errorf("dateReleased = %q, want %q", dateReleased, "2024-09-03")
+	}
+	if len(patches) != 0 {
+		t.Errorf("expected empty patches on short-circuit, got %d", len(patches))
+	}
+}
+
+func TestParseKEV_EmptyVulnerabilities(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": []
+	}`
+
+	patches, catalogVersion, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalogVersion != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want %q", catalogVersion, "2024.09.03")
+	}
+	if len(patches) != 0 {
+		t.Errorf("expected empty patches, got %d", len(patches))
+	}
+}
+
+func TestParseKEV_UnknownTopLevelKeys(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"title": "CISA KEV Catalog",
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"unknownField": "some value",
+		"anotherUnknown": 42,
+		"nestedUnknown": {"key": "value"},
+		"vulnerabilities": [
+			{
+				"cveID": "CVE-2024-5555",
+				"dateAdded": "2024-01-15",
+				"shortDescription": "Test vuln"
+			}
+		]
+	}`
+
+	patches, catalogVersion, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalogVersion != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want %q", catalogVersion, "2024.09.03")
+	}
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-5555" {
+		t.Errorf("patches[0].CVEID = %q, want %q", patches[0].CVEID, "CVE-2024-5555")
+	}
+}
+
+func TestParseKEV_EmptyCVEIDSkipped(t *testing.T) {
+	t.Parallel()
+
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": [
+			{
+				"cveID": "",
+				"dateAdded": "2024-01-15",
+				"shortDescription": "Should be skipped"
+			},
+			{
+				"cveID": "CVE-2024-9999",
+				"dateAdded": "2024-01-16",
+				"shortDescription": "Should be included"
+			}
+		]
+	}`
+
+	patches, _, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1 (empty cveID should be skipped)", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-9999" {
+		t.Errorf("patches[0].CVEID = %q, want %q", patches[0].CVEID, "CVE-2024-9999")
+	}
+}
+
+func TestParseKEV_VulnerabilitiesBeforeVersion(t *testing.T) {
+	t.Parallel()
+
+	// When vulnerabilities appear before catalogVersion, the short-circuit
+	// cannot fire (gotVersion is false), so all records are parsed.
+	body := `{
+		"vulnerabilities": [
+			{
+				"cveID": "CVE-2024-0001",
+				"dateAdded": "2024-01-01",
+				"shortDescription": "First"
+			}
+		],
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03"
+	}`
+
+	patches, catalogVersion, _, err := parseKEV(strings.NewReader(body), "2024.09.03")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if catalogVersion != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want %q", catalogVersion, "2024.09.03")
+	}
+	// Even though storedVersion matches, vulnerabilities came first so
+	// gotVersion was false when the array was encountered → records are parsed.
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1 (vulnerabilities before catalogVersion)", len(patches))
+	}
+}
+
+func TestRecordToPatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		rec   kevRecord
+		check func(t *testing.T, p *feed.CanonicalPatch)
+	}{
+		{
+			name: "all fields populated",
+			rec: kevRecord{
+				CVEID:            "CVE-2024-1234",
+				VendorProject:    "Acme",
+				Product:          "Widget",
+				DateAdded:        "2024-06-15",
+				ShortDescription: "Remote code execution in Widget",
+				CWEs:             json.RawMessage(`["CWE-78","CWE-79"]`),
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.CVEID != "CVE-2024-1234" {
+					t.Errorf("CVEID = %q, want %q", p.CVEID, "CVE-2024-1234")
+				}
+				if p.SourceID != "CVE-2024-1234" {
+					t.Errorf("SourceID = %q, want %q", p.SourceID, "CVE-2024-1234")
+				}
+				if p.InCISAKEV == nil || !*p.InCISAKEV {
+					t.Error("InCISAKEV should be true")
+				}
+				if p.ExploitAvailable == nil || !*p.ExploitAvailable {
+					t.Error("ExploitAvailable should be true")
+				}
+				if p.DatePublished == nil {
+					t.Fatal("DatePublished should not be nil")
+				}
+				if p.DatePublished.Year() != 2024 || p.DatePublished.Month() != 6 || p.DatePublished.Day() != 15 {
+					t.Errorf("DatePublished = %v, want 2024-06-15", p.DatePublished)
+				}
+				if p.DateModified == nil {
+					t.Fatal("DateModified should not be nil")
+				}
+				if !p.DateModified.Equal(*p.DatePublished) {
+					t.Errorf("DateModified = %v, want same as DatePublished %v", p.DateModified, p.DatePublished)
+				}
+				if p.DescriptionPrimary == nil {
+					t.Fatal("DescriptionPrimary should not be nil")
+				}
+				if *p.DescriptionPrimary != "Remote code execution in Widget" {
+					t.Errorf("DescriptionPrimary = %q, want %q", *p.DescriptionPrimary, "Remote code execution in Widget")
+				}
+				if len(p.CWEIDs) != 2 {
+					t.Fatalf("len(CWEIDs) = %d, want 2", len(p.CWEIDs))
+				}
+				if p.CWEIDs[0] != "CWE-78" || p.CWEIDs[1] != "CWE-79" {
+					t.Errorf("CWEIDs = %v, want [CWE-78, CWE-79]", p.CWEIDs)
+				}
+			},
+		},
+		{
+			name: "empty cveID returns nil",
+			rec: kevRecord{
+				CVEID:            "",
+				ShortDescription: "Should be skipped",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p != nil {
+					t.Errorf("expected nil for empty cveID, got %+v", p)
+				}
+			},
+		},
+		{
+			name: "empty shortDescription yields nil DescriptionPrimary",
+			rec: kevRecord{
+				CVEID:            "CVE-2023-0001",
+				DateAdded:        "2023-01-01",
+				ShortDescription: "",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.DescriptionPrimary != nil {
+					t.Errorf("DescriptionPrimary should be nil for empty description, got %q", *p.DescriptionPrimary)
+				}
+			},
+		},
+		{
+			name: "missing dateAdded yields nil dates",
+			rec: kevRecord{
+				CVEID:            "CVE-2023-0002",
+				ShortDescription: "No date record",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.DatePublished != nil {
+					t.Errorf("DatePublished should be nil when dateAdded is empty, got %v", p.DatePublished)
+				}
+				if p.DateModified != nil {
+					t.Errorf("DateModified should be nil when dateAdded is empty, got %v", p.DateModified)
+				}
+			},
+		},
+		{
+			name: "no cwes field yields nil CWEIDs",
+			rec: kevRecord{
+				CVEID:     "CVE-2023-0003",
+				DateAdded: "2023-03-15",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.CWEIDs != nil {
+					t.Errorf("CWEIDs should be nil when cwes absent, got %v", p.CWEIDs)
+				}
+			},
+		},
+		{
+			name: "null cwes field yields nil CWEIDs",
+			rec: kevRecord{
+				CVEID:     "CVE-2023-0004",
+				DateAdded: "2023-04-15",
+				CWEs:      json.RawMessage(`null`),
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.CWEIDs != nil {
+					t.Errorf("CWEIDs should be nil when cwes is null, got %v", p.CWEIDs)
+				}
+			},
+		},
+		{
+			name: "InCISAKEV and ExploitAvailable always true",
+			rec: kevRecord{
+				CVEID:     "CVE-2024-7777",
+				DateAdded: "2024-07-01",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.InCISAKEV == nil {
+					t.Fatal("InCISAKEV should not be nil")
+				}
+				if !*p.InCISAKEV {
+					t.Error("InCISAKEV should be true for all KEV records")
+				}
+				if p.ExploitAvailable == nil {
+					t.Fatal("ExploitAvailable should not be nil")
+				}
+				if !*p.ExploitAvailable {
+					t.Error("ExploitAvailable should be true for all KEV records")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := recordToPatch(tc.rec)
+			tc.check(t, p)
+		})
+	}
+}
+
+func TestExtractCWEs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+		want []string
+	}{
+		{
+			name: "nil raw returns nil",
+			raw:  nil,
+			want: nil,
+		},
+		{
+			name: "empty raw returns nil",
+			raw:  json.RawMessage(``),
+			want: nil,
+		},
+		{
+			name: "null literal returns nil",
+			raw:  json.RawMessage(`null`),
+			want: nil,
+		},
+		{
+			name: "valid array",
+			raw:  json.RawMessage(`["CWE-78","CWE-79","CWE-89"]`),
+			want: []string{"CWE-78", "CWE-79", "CWE-89"},
+		},
+		{
+			name: "single element array",
+			raw:  json.RawMessage(`["CWE-200"]`),
+			want: []string{"CWE-200"},
+		},
+		{
+			name: "empty strings filtered out",
+			raw:  json.RawMessage(`["CWE-78","","CWE-89",""]`),
+			want: []string{"CWE-78", "CWE-89"},
+		},
+		{
+			name: "all empty strings yields empty slice",
+			raw:  json.RawMessage(`["",""]`),
+			want: []string{},
+		},
+		{
+			name: "empty array",
+			raw:  json.RawMessage(`[]`),
+			want: []string{},
+		},
+		{
+			name: "invalid JSON returns nil",
+			raw:  json.RawMessage(`{not valid json`),
+			want: nil,
+		},
+		{
+			name: "wrong type returns nil",
+			raw:  json.RawMessage(`{"cwe": "CWE-78"}`),
+			want: nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractCWEs(tc.raw)
+
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("extractCWEs() = %v, want nil", got)
+				}
+				return
+			}
+
+			if len(got) != len(tc.want) {
+				t.Fatalf("extractCWEs() len = %d, want %d; got %v", len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("extractCWEs()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

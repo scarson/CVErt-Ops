@@ -173,24 +173,27 @@ func TestNLSearchHandler_QuotaDenied(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAITestServer(t, db)
+	srv, ts := newAITestServer(t, db)
+	// Use a small AI quota so we exhaust it well before the org rate limiter's
+	// burst window (free tier = 10 burst). With quota=3 we only need 4 requests.
+	srv.cfg.AINLSearchLimitFree = 3
 	reg := doRegister(t, ctx, ts, "nlquota@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "nlquota@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
 	token := cookieValue(loginResp, "access_token")
 
-	// Seed a CVE so the DSL query returns something for the first 10 calls.
+	// Seed a CVE so the DSL query returns something.
 	db.SeedTestCVE(t, "CVE-2024-0010", "critical", nil)
 
-	// Exhaust the quota (limit is 10 for free tier).
+	// Exhaust the quota (limit is 3 for this test).
 	// Each query must be unique to avoid cache hits (cache hits are free).
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 3; i++ {
 		body := fmt.Sprintf(`{"query":"quota test query %d"}`, i)
 		resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
 		resp.Body.Close() //nolint:errcheck,gosec
 	}
 
-	// The 11th request should be denied.
+	// The 4th request should be denied.
 	body := `{"query":"quota test query overflow"}`
 	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec

@@ -222,9 +222,11 @@ func TestRegisterRateLimited(t *testing.T) {
 
 	srv, ts := newRegisterServer(t, db, "open")
 
-	// Replace the rate limiter with a tight burst of 1.
+	// Replace the rate limiter with burst=1 and near-zero replenishment rate.
+	// rate.Every(time.Hour) ensures tokens don't replenish between requests
+	// (the first request includes argon2 hashing which can take >1s in CI).
 	srv.rateLimiter.Stop()
-	srv.rateLimiter = newIPRateLimiter(rate.Limit(1), 1, time.Minute)
+	srv.rateLimiter = newIPRateLimiter(rate.Every(time.Hour), 1, time.Minute)
 
 	// First registration: allowed.
 	body := `{"email":"rl1@example.com","password":"test-password-1234"}`

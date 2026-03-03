@@ -354,3 +354,57 @@ Detailed per-function tables are preserved in these evidence files:
 - `2026-03-03-phase4-subagent-api-handlers.md` — `internal/api/` handlers + server.go
 - `2026-03-03-phase4-subagent-store-layer.md` — `internal/store/ai.go` + `saved_search.go` + SQL queries
 - `2026-03-03-phase4-subagent-cli-config-metrics.md` — CLI, config, metrics, main.go wire-up
+
+---
+
+## Remediation Summary
+
+**Remediation date:** 2026-03-03
+**Branch:** `phase-5`
+**Commits:** `cf3e20b`..`ba45247` (11 commits)
+
+### Stats
+
+| Metric | Count |
+|--------|-------|
+| Test functions added | 69 |
+| Test lines added | 1,718 |
+| Production files fixed | 3 |
+| Production lines changed | 62 |
+| New test files created | 5 |
+| Existing test files extended | 9 |
+
+### Bugs Found During Remediation
+
+1. **SearchCVEs FTS JOIN broken** (`internal/store/cve.go`): `FROM "cves c"` alias mismatched `cveColumns` which uses `cves.col` (fully qualified). With a FTS JOIN, Postgres rejected the query. Fixed by dropping the alias to match `dsl_executor.go`'s pattern. This was a latent bug — the FTS search path had never been integration-tested against real Postgres.
+
+2. **Sanitizer regex didn't strip markdown images** (`internal/ai/sanitize.go`): The `markdownLinkRe` regex didn't handle `![alt](url)` syntax. Fixed by prepending `!?` to the pattern. This was a prompt injection vector.
+
+3. **Test flakiness** (`internal/api/auth_test.go`): Quota and rate limiter tests were flaky due to IP rate limiter interference. Fixed by widening the IP limiter in affected tests.
+
+### Batches
+
+| Batch | Scope | Tests Added | Gaps Closed |
+|-------|-------|-------------|-------------|
+| 1 | Sanitizer regex fix + attack vector coverage | 11 | 14 security |
+| 2 | RBAC for saved searches | 5 | 5 security |
+| 3 | DSL FTS + escapeLike tests | 6 | 3 correctness |
+| 4 | Store executor cursor/limit/nil-SQL | 5 | 9 correctness |
+| 5 | AppStore RLS for Phase 4 tables | 12 | 12 security |
+| 6 | API handler error paths | 11 (+4 sub) | 15 correctness |
+| 7 | Config + CLI validateConfig | 10 | 12 correctness |
+| 8 | AI schema builder + quota edges | 5 | 5 correctness |
+| 9 | FTS integration + SeedTestCVE fix | 4 | 5 correctness + 1 bug |
+| 10 | Gemini security config verification | 3 | 6 security |
+| 11 | Metrics + main.go wiring | 0 (skipped) | 0 (nice-to-have) |
+
+### Remaining Gaps
+
+The following gaps were not addressed (all nice-to-have or require external mocking):
+
+- **gemini.go API call paths** (17): Require HTTP-level mocking of Gemini API or real credentials. `getClient` lazy init, `GenerateStructuredQuery`/`Summarize` success/failure branches. Not cost-effective to test without a proper HTTP fake.
+- **metrics/ai.go** (6): Prometheus counter declarations via `promauto` — testing registration correctness is compile-time, not runtime.
+- **main.go wiring** (20): Three-way LLM init branch, `SetAIDeps`/`SetAlertDeps` wiring. Tested indirectly through API integration tests.
+- **cmd/quota.go CLI** (23): End-to-end CLI testing requires process-level harness. Quota resolution logic is tested at the `ai.ResolveLimit` level.
+- **evaluator.go FTS paths** (5): Evaluator FTS JOIN against real Postgres. Partially covered by DSL compiler unit tests + new FTS store integration tests.
+- **mock.go** (2): Prompt forwarding, CVESummaryInput field usage — by-design gaps in a test double.

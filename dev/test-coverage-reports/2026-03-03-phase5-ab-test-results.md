@@ -334,14 +334,18 @@ Runs G and H test whether the improvements generalize beyond Phase 5's HTTP hand
 
 ### Phase 1 Coverage Baseline
 
-*To be filled after coverage data generation.*
-
-| Package | Coverage | Functions | Uncovered |
-|---------|----------|-----------|-----------|
-| internal/feed/... | — | — | — |
-| internal/merge/... | — | — | — |
-| internal/worker/... | — | — | — |
-| **Overall** | **—** | **—** | **—** |
+| Package | Coverage | Functions | Notes |
+|---------|----------|-----------|-------|
+| internal/feed (root) | — | 5 | `ParseTime`, `ParseTimePtr`, `StripNullBytes`, `StripNullBytesJSON`, `ResolveCanonicalID` — all 100% |
+| internal/feed/epss | 2.5% | 4 | `Apply` 14.3%, `applyRow` 0.0% — heavy integration logic uncovered |
+| internal/feed/ghsa | 13.2% | 5 | `Fetch` 85.2%, `fetchPage` 86.8%, `parseAdvisory` 100% |
+| internal/feed/kev | 7.4% | 5 | `Fetch` 80.0%, `parseKEV` 72.7% |
+| internal/feed/mitre | 11.2% | 8 | `Fetch` 84.8%, `downloadToTemp` 57.1%, `parseCVE5` 100% |
+| internal/feed/nvd | 14.9% | 11 | `Fetch` 85.2%, `cveToCanonical` 97.3%, `New` 0.0% |
+| internal/feed/osv | 10.7% | 7 | `Fetch` 81.8%, `downloadToTemp` 57.1% |
+| internal/merge | 22.8% | 22 | `Ingest` 67.6%, `resolve` 92.5%, `ComputeMaterialHash` 88.0% |
+| internal/worker | 4.8% | 6 | `runStaleRecovery` 53.8%, `runQueue` 87.5% |
+| **Overall** | **83.4%** | **73** | Per-test-package coverage ranges 1.4%–22.8%; aggregate is high due to cross-package test execution |
 
 ### Scoring (G/H — Phase 1 reduced rubric)
 

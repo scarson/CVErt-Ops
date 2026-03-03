@@ -5,6 +5,7 @@ package config
 import (
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func TestIsDevelopment(t *testing.T) {
@@ -83,6 +84,86 @@ func TestLogValue_EmptySecretsNotMasked(t *testing.T) {
 			if attr.Value.String() != "" {
 				t.Errorf("LogValue: %s = %q for empty secret, want empty", attr.Key, attr.Value.String())
 			}
+		}
+	}
+}
+
+func TestLoad_Defaults(t *testing.T) {
+	// Set only the required env vars; all envDefault fields should get defaults.
+	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")
+	t.Setenv("JWT_SECRET", "test-secret-for-defaults")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	defaults := []struct {
+		name string
+		got  interface{}
+		want interface{}
+	}{
+		// Database
+		{"DBMaxConns", cfg.DBMaxConns, int32(25)},
+		{"DBMaxConnIdleTime", cfg.DBMaxConnIdleTime, 5 * time.Minute},
+		{"DBStatementTimeoutMS", cfg.DBStatementTimeoutMS, 14000},
+		{"DBQueryExecMode", cfg.DBQueryExecMode, "simple_protocol"},
+		// Server
+		{"ListenAddr", cfg.ListenAddr, ":8080"},
+		{"AppEnv", cfg.AppEnv, "development"},
+		{"ExternalURL", cfg.ExternalURL, "http://localhost:8080"},
+		{"ShutdownTimeoutSeconds", cfg.ShutdownTimeoutSeconds, 60},
+		{"RegistrationMode", cfg.RegistrationMode, "open"},
+		// Auth
+		{"JWTAlgorithm", cfg.JWTAlgorithm, "HS256"},
+		{"CookieSecure", cfg.CookieSecure, false},
+		{"Argon2MaxConcurrent", cfg.Argon2MaxConcurrent, 5},
+		// Email
+		{"SMTPHost", cfg.SMTPHost, "localhost"},
+		{"SMTPPort", cfg.SMTPPort, 1025},
+		{"SMTPFrom", cfg.SMTPFrom, "cvert-ops@localhost"},
+		{"SMTPTLS", cfg.SMTPTLS, false},
+		// AI
+		{"GeminiModel", cfg.GeminiModel, "gemini-2.0-flash"},
+		{"GeminiTimeout", cfg.GeminiTimeout, 30 * time.Second},
+		{"AIQuotaEnabled", cfg.AIQuotaEnabled, true},
+		{"AINLSearchLimitFree", cfg.AINLSearchLimitFree, 10},
+		{"AINLSearchLimitPro", cfg.AINLSearchLimitPro, 100},
+		{"AINLSearchLimitEnterprise", cfg.AINLSearchLimitEnterprise, 1000},
+		{"AISummarizeLimitFree", cfg.AISummarizeLimitFree, 5},
+		{"AISummarizeLimitPro", cfg.AISummarizeLimitPro, 50},
+		{"AISummarizeLimitEnterprise", cfg.AISummarizeLimitEnterprise, 500},
+		{"AICacheNLSearchTTL", cfg.AICacheNLSearchTTL, 1 * time.Hour},
+		{"AICacheSummarizeTTL", cfg.AICacheSummarizeTTL, 24 * time.Hour},
+		{"AILogRetentionDays", cfg.AILogRetentionDays, 90},
+		{"GeminiMock", cfg.GeminiMock, false},
+		// Notifications
+		{"NotifyMaxConcurrentPerOrg", cfg.NotifyMaxConcurrentPerOrg, 5},
+		{"NotifyDebounceSeconds", cfg.NotifyDebounceSeconds, 120},
+		{"WebhookSecretGraceHours", cfg.WebhookSecretGraceHours, 24},
+		{"NotifyClaimBatchSize", cfg.NotifyClaimBatchSize, 50},
+		{"NotifyMaxAttempts", cfg.NotifyMaxAttempts, 4},
+		{"NotifyBackoffBaseSeconds", cfg.NotifyBackoffBaseSeconds, 30},
+		// Rate limiting
+		{"RateLimitEvictTTL", cfg.RateLimitEvictTTL, 15 * time.Minute},
+		// Data retention
+		{"RetentionCleanupEnabled", cfg.RetentionCleanupEnabled, true},
+		{"RetentionCleanupBatchSize", cfg.RetentionCleanupBatchSize, 10000},
+		{"RetentionRawPayloadDays", cfg.RetentionRawPayloadDays, 90},
+		{"RetentionFeedFetchLogDays", cfg.RetentionFeedFetchLogDays, 90},
+		{"RetentionAlertEventsDays", cfg.RetentionAlertEventsDays, 365},
+		{"RetentionNotifDeliveriesDays", cfg.RetentionNotifDeliveriesDays, 90},
+		{"RetentionAuditLogDays", cfg.RetentionAuditLogDays, 365},
+		{"RetentionJobQueueHours", cfg.RetentionJobQueueHours, 24},
+		{"RetentionMaxRuntimeSeconds", cfg.RetentionMaxRuntimeSeconds, 300},
+		// Logging
+		{"LogLevel", cfg.LogLevel, "info"},
+		{"LogFormat", cfg.LogFormat, "json"},
+	}
+
+	for _, tc := range defaults {
+		if tc.got != tc.want {
+			t.Errorf("%s: got %v (%T), want %v (%T)", tc.name, tc.got, tc.got, tc.want, tc.want)
 		}
 	}
 }

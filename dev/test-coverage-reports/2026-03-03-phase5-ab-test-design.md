@@ -526,3 +526,283 @@ Phase 1 uses a reduced rubric — matrix-specific metrics are N/A:
 - The prompt tells the skill that org-scoped endpoints don't exist — watch whether the skill reads and respects this or ignores it
 - Phase 1 has many functions at 0% coverage (all 6 feed adapters). This tests whether the skills handle 0% functions efficiently (one row per function with risk classification, not exhaustive branch enumeration)
 - If either session hits context limits, note this — Phase 1 has fewer functions than Phase 5 (560), so compaction is less likely
+
+---
+
+## Runs I5, J5, K1, L1: Retry with Context-Efficient Prompts
+
+**Date added:** 2026-03-03
+**Purpose:** Re-run all four test conditions (enhanced v3 + hybrid v2 × Phase 5 + Phase 1) with updated skill prompts designed to avoid the context exhaustion that truncated Run H and may have degraded Run E's semantic analysis. Also validates any skill changes made after scoring Runs E/G/H.
+
+### Why Retry?
+
+Runs E-H produced useful data but had execution problems:
+
+| Prior run | Problem | Impact on scoring |
+|-----------|---------|-------------------|
+| E (enhanced v3, Phase 5) | 3/7 false "Tested" marks; missed BUG-2 | v1 score 7.35 — below D's 8.85. BUG-2 miss may be random variance or skill defect. |
+| F (hybrid v2, Phase 5) | Never executed | H7, H8 untestable. No Phase 5 hybrid v2 data at all. |
+| G (enhanced v3, Phase 1) | Clean execution, highest score (9.05) | Baseline for comparison. Re-run validates consistency. |
+| H (hybrid v2, Phase 1) | Truncated at 141 lines | Estimated score 6.55†. Missing: bugs, assertions, TOCTOU, observations. |
+
+The retry addresses two classes of issue:
+1. **Context exhaustion** (H truncated, possibly affected E quality) — mitigated by prompt changes
+2. **Skill defects** (cite-test-name false positives, audit column not triggering cross-handler analysis) — mitigated by skill updates
+
+### The Twelve Runs (Updated)
+
+| Run | Skill | Version | Scope | Status | Report file |
+|-----|-------|---------|-------|--------|-------------|
+| A–D | (see above) | — | Phase 5 | Done | (see above) |
+| E–H | (see above) | v3 / hybrid v2 | Phase 5 + Phase 1 | Done (E,G) / Missing (F) / Truncated (H) | (see above) |
+| I5 | `test-coverage-review-go` | Enhanced v4 | Phase 5 | Done | `phase5-enhanced-v4-review.md` |
+| J5 | `test-coverage-review-hybrid-go` | Hybrid v3 | Phase 5 | Done | `phase5-hybrid-v3-review.md` |
+| K1 | `test-coverage-review-go` | Enhanced v4 | **Phase 1** | Done (retry) | `phase1-enhanced-v4-review.md` |
+| L1 | `test-coverage-review-hybrid-go` | Hybrid v3 | **Phase 1** | Done | `phase1-hybrid-v3-review.md` |
+
+### What Changed Between E→I5/K1 and H→J5/L1
+
+**Skill changes** (list specific changes made to skill files after E/G/H scoring):
+
+| # | Change | Skill | Addresses which E/G/H failure? |
+|---|--------|-------|-------------------------------|
+| S1 | Added Context Management section with scope-size heuristics table (small <100 functions: no subagents; medium 100–300: 2 max; large 300–600: 3 max, incremental report; XL 600+: split into sub-scopes) | Both | H truncation (73 functions = small scope, subagents may have added unnecessary overhead). E quality degradation (559 functions = large scope, needed incremental writing). |
+| S2 | File-based subagent output: subagents write full analysis to temp file (`subagent-{scope}-findings.md`), return only file path + severity counts + top 3 findings (~200 tokens vs ~30,000 per subagent) | Both | Subagent results flooding main agent context. With 3 subagents, this reduces context intake from ~90K tokens to ~600 tokens. |
+| S3 | Incremental report writing: write report skeleton at start, append matrix section immediately after completion, append each analysis section as completed, write summary last | Both | H truncated at "What's Well-Covered" — lost production bugs, assertion quality, TOCTOU, and key observations sections. With incremental writing, completed sections are persisted regardless of context exhaustion. |
+| S4 | Targeted reads: use line-range reads (`Read lines 86-115`) instead of full files; use Grep with `head_limit` to cap search result size | Both | General context pressure across all large-scope runs. Every tool result enters context — minimizing input size is the only lever the agent controls. |
+| S5 | Expanded subagent prompt template with structured output format (per-function table, not prose) and explicit file-based output location | Both | Standardizes subagent behavior. Prevents ad-hoc subagent responses that vary in verbosity and format. |
+| S6 | Incremental reading: process one package at a time (read source+test → analyze → write findings → next package). Do NOT read all source/test files upfront. Cross-adapter notes accumulate in the report, not in context. | Both | K1 died reading 17 files simultaneously before writing any output. Even small scopes (<100 functions) can exhaust context by reading all files at once. |
+
+**Prompt changes** (context exhaustion mitigations — see test prompts below):
+
+| # | Change | Rationale |
+|---|--------|-----------|
+| P1 | "Write each major section to the report file as you complete it" | Prevents losing analysis if context runs out during report generation |
+| P2 | "For the matrix, use compact format: T(TestName) for tested cells, GAP(reason) for gaps" | Reduces token count in the largest section |
+| P3 | "Limit nice-to-have gaps to a count + top 5 examples" | Run G listed 53 nice-to-haves — massive token sink with low value |
+| P4 | "If you hit context pressure, prioritize completing the report over adding more detail" | Explicit priority: finished report > thorough report |
+
+---
+
+### Primary Question (I5/J5/K1/L1)
+
+**Do the retried runs produce more accurate and complete results than E/G/H?**
+
+This is a regression test AND improvement test:
+- I5 vs E: Does the enhanced skill find BUG-2? Are the 3 false "Tested" marks fixed?
+- J5 vs D: Does hybrid v2 on Phase 5 extend D's 8.85 lead? (First Phase 5 hybrid v2 data)
+- K1 vs G: Consistency check — does enhanced v4 match G's 9.05 on the same code?
+- L1 vs H: Does the hybrid complete without truncation? Does it match or beat G/K1?
+
+### Testable Hypotheses
+
+| # | Prediction | Run | How to verify |
+|---|-----------|-----|---------------|
+| I1 | I5 finds BUG-2 (wrong count function) — E missed it | I5 | Search report for CountMembersByOrg / CountMemberSlotsUsedByOrg |
+| I2 | I5 resolves ≥5/7 disputed endpoints correctly (E got 4/7) | I5 | Compare against ground truth table from results doc |
+| I3 | I5 TOCTOU maintained: ≥3 windows (E found 3) | I5 | Count TOCTOU findings. Regression if < 3 |
+| J1 | J5 finds both BUG-1 AND BUG-2 (D found both) | J5 | Search report for both benchmark bugs |
+| J2 | J5 completes without truncation (Run F never ran) | J5 | Report file exists and has ≥200 lines |
+| J3 | J5 scores ≥8.5 on v1 rubric (matching D's 8.85) | J5 | Score on v1 rubric |
+| K1h | K1 finds ≥1 of G's 2 production bugs (ParseTime, PK migration) | K1 | Search for RFC1123 / migrateCVEPK |
+| K2 | K1 assertion quality count ≥8 (G found 10) | K1 | Count. Regression if < 8 |
+| L1h | L1 completes without truncation (H truncated at 141 lines) | L1 | Report file exists and ends with a complete section |
+| L2 | L1 TOCTOU: ≥2 windows (H's truncation hid this section) | L1 | Count TOCTOU findings |
+| L3 | L1 adapted matrix present (H's adapted matrix was excellent) | L1 | Check for domain-specific matrix columns |
+
+**Success criteria:** ≥8 of 11 hypotheses confirmed.
+
+---
+
+### Controlled Variables
+
+**Phase 5 (I5, J5):**
+- **Codebase state:** `dev` branch at current HEAD. Verify no source changes to `internal/api/...`, `internal/store/...`, `internal/tier/...` since E/F/G/H
+- **Coverage data:** Same `coverage-ab.out` and `coverage-ab-func.txt` (73.5% overall, 559 functions). Do NOT re-generate
+- **Scope:** `./internal/api/...`, `./internal/store/...`, `./internal/tier/...`
+
+**Phase 1 (K1, L1):**
+- **Codebase state:** Same `dev` branch HEAD as I5/J5
+- **Coverage data:** Same `coverage-phase1.out` and `coverage-phase1-func.txt` (83.4% overall, 73 functions). Do NOT re-generate
+- **Scope:** `./internal/feed/...`, `./internal/merge/...`, `./internal/worker/...`
+
+**Both:**
+- **Model:** Same as E/G/H (check with `/model` at start)
+- **Sessions:** Separate Claude Code sessions, no cross-contamination, no mention of A/B test or prior runs
+
+### Pre-step: Verify Controlled Variables
+
+Before any run:
+
+```bash
+# Verify no source changes since E/G/H
+git log --oneline --diff-filter=M -- "internal/api/*.go" "internal/store/*.go" "internal/tier/*.go" "internal/feed/**/*.go" "internal/merge/*.go" "internal/worker/*.go" | head -5
+
+# Verify coverage data files exist
+ls -la coverage-ab.out coverage-ab-func.txt coverage-phase1.out coverage-phase1-func.txt
+```
+
+If source code HAS changed, re-generate coverage data and note the deviation.
+
+---
+
+### Test Prompts
+
+#### Run I5: Enhanced v4 on Phase 5
+
+```
+Run /test-coverage-review-go on Phase 5 scope.
+
+Scope: ./internal/api/..., ./internal/store/..., ./internal/tier/...
+
+Coverage data has already been generated — use the files:
+- coverage-ab.out (coverage profile)
+- coverage-ab-func.txt (per-function coverage)
+
+Read coverage-ab-func.txt and use it as your §1 output. Do NOT re-run go test.
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase5-enhanced-v4-review.md
+
+IMPORTANT — write each major section (Coverage Baseline, Security Matrix, Gap Analysis, TOCTOU, Assertion Quality, Key Observations) to the report file as you complete it. Do not wait until the end to write the full report. This prevents losing work if the session runs long.
+
+For the matrix, use compact format: T(TestName) for tested cells, GAP(reason) for gaps. Do not write prose descriptions of tested cells.
+
+Limit nice-to-have gaps to a count and top 5 examples.
+
+Follow the skill instructions exactly — do not skip any steps, especially the Security Checklist Matrix (§3), TOCTOU Analysis (§4.6), and Semantic Spot-Checks (§4.5). Every step matters.
+```
+
+#### Run J5: Hybrid v3 on Phase 5
+
+```
+Run /test-coverage-review-hybrid-go on Phase 5 scope.
+
+Scope: ./internal/api/..., ./internal/store/..., ./internal/tier/...
+
+Coverage data has already been generated — use the files:
+- coverage-ab.out (coverage profile)
+- coverage-ab-func.txt (per-function coverage)
+
+Read coverage-ab-func.txt and use it as your §1 output. Do NOT re-run go test.
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase5-hybrid-v3-review.md
+
+IMPORTANT — write each major section to the report file as you complete it, using the Edit tool to append. Do not accumulate the entire report in memory. This is critical for avoiding context exhaustion on large scopes.
+
+For the security matrix, use compact format: T(TestName) for tested cells, GAP(reason) for gaps. Do not write prose descriptions of tested cells.
+
+Limit nice-to-have gaps to a count and top 5 examples. If you feel context pressure, prioritize completing all sections over adding exhaustive detail to any one section.
+
+Follow the skill instructions exactly — do not skip any steps, especially the Security Checklist Matrix (§3) and Semantic Code Analysis (§4). Every step matters.
+```
+
+#### Run K1: Enhanced v4 on Phase 1
+
+```
+Run /test-coverage-review-go on Phase 1 scope.
+
+Scope: ./internal/feed/..., ./internal/merge/..., ./internal/worker/...
+
+Coverage data has already been generated — use the files:
+- coverage-phase1.out (coverage profile)
+- coverage-phase1-func.txt (per-function coverage)
+
+Read coverage-phase1-func.txt and use it as your §1 output. Do NOT re-run go test.
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase1-enhanced-v4-review.md
+
+IMPORTANT — write each major section to the report file as you complete it. Do not wait until the end.
+
+This scope has no org-scoped API endpoints, so the Security Checklist Matrix (§3) should be marked N/A. Focus analysis on TOCTOU (§4.6), cross-adapter consistency, and assertion quality.
+
+Limit nice-to-have gaps to a count and top 5 examples.
+
+Follow the skill instructions exactly — do not skip any steps. Every step matters.
+```
+
+#### Run L1: Hybrid v3 on Phase 1
+
+```
+Run /test-coverage-review-hybrid-go on Phase 1 scope.
+
+Scope: ./internal/feed/..., ./internal/merge/..., ./internal/worker/...
+
+Coverage data has already been generated — use the files:
+- coverage-phase1.out (coverage profile)
+- coverage-phase1-func.txt (per-function coverage)
+
+Read coverage-phase1-func.txt and use it as your §1 output. Do NOT re-run go test.
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase1-hybrid-v3-review.md
+
+IMPORTANT — write each major section to the report file as you complete it, using the Edit tool to append. Do not accumulate the entire report in memory. This is the #1 priority — a complete shorter report is far more valuable than a detailed truncated one.
+
+This scope has no org-scoped API endpoints. The Security Checklist Matrix (§3) should be adapted for data pipeline concerns (advisory locks, streaming parse safety, null-byte stripping, temp file cleanup) OR marked N/A — do not fabricate org-scoped endpoints.
+
+Limit nice-to-have gaps to a count and top 5 examples.
+
+Follow the skill instructions exactly — do not skip any steps. Every step matters.
+```
+
+---
+
+### Scoring Rubrics
+
+**Phase 5 (I5, J5):** Score on both v1 and v2 rubrics (same as E/F). Add columns to the existing scoring tables.
+
+**Phase 1 (K1, L1):** Score on the Phase 1 reduced rubric (same as G/H). Add columns to the existing scoring table.
+
+**All runs:** Also score against the hypothesis table above.
+
+---
+
+### Post-Test Analysis
+
+After all four runs complete:
+
+1. **Score on rubrics** — fill in I5/J5/K1/L1 columns in the results document
+2. **Check hypotheses** — mark each confirmed/refuted with evidence
+3. **Disputed endpoints** — verify I5/J5 against the ground truth table (all 7 are GAPs)
+4. **Context exhaustion** — did J5 and L1 complete? Note line counts vs H's 141
+5. **Consistency** — K1 vs G: does the same skill on the same code produce similar results?
+6. **Delta analysis** — for each run, compute deltas against the prior version (I5 vs E, J5 vs D, K1 vs G, L1 vs H)
+
+Structure for results:
+
+```
+## Runs I5/J5/K1/L1: Retry Results
+
+### Execution Status
+| Run | Lines | Truncated? | Context compaction? |
+
+### Scoring (Phase 5 — v1 rubric, adding I5/J5 columns)
+[Existing table with new columns]
+
+### Scoring (Phase 5 — v2 rubric, adding I5/J5 columns)
+[Existing table with new columns]
+
+### Scoring (Phase 1 — reduced rubric, adding K1/L1 columns)
+[Existing table with new columns]
+
+### Hypothesis Results
+| # | Prediction | Result | Evidence | Confirmed? |
+
+### Consistency Analysis (K1 vs G)
+[Side-by-side comparison of findings]
+
+### Delta Analysis
+| Metric | E→I5 | D→J5 | G→K1 | H→L1 |
+
+### Updated Recommendation
+[Based on all 12 runs]
+```
+
+---
+
+### Execution Notes
+
+- Same isolation rules: separate sessions, no mention of A/B test or prior runs
+- Run order: I5 and K1 first (enhanced), then J5 and L1 (hybrid). If enhanced runs reveal new skill bugs, fix before hybrid runs
+- The "write incrementally" instruction is the key context exhaustion mitigation. Watch whether each skill actually writes to the file incrementally or accumulates in memory
+- If any run still truncates despite the prompt changes, note the line count and which section was being written — this identifies whether the bottleneck is analysis or report generation
+- The compact matrix format ("T(TestName)" vs prose) should significantly reduce Phase 5 token usage — Phase 5 has 72 endpoints × 7 columns = 504 cells. At ~20 tokens per prose cell vs ~5 tokens for compact, this saves ~7,500 tokens in the matrix alone

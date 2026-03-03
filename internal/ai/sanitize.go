@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	markdownLinkRe = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	markdownLinkRe = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
 	htmlTagRe      = regexp.MustCompile(`<[^>]*>`)
 )
 
@@ -20,11 +20,16 @@ func Sanitize(s string) string {
 	s = markdownLinkRe.ReplaceAllString(s, "$1")
 	// Strip HTML tags.
 	s = htmlTagRe.ReplaceAllString(s, "")
-	// Remove control characters except newline (\n) and tab (\t).
+	// Remove control characters (Cc) and format characters (Cf: bidi overrides,
+	// zero-width spaces, BOM) except newline (\n) and tab (\t).
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		if r == '\n' || r == '\t' {
+			b.WriteRune(r)
+			continue
+		}
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
 			continue
 		}
 		b.WriteRune(r)

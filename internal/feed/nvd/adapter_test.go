@@ -561,6 +561,101 @@ func TestCveToCanonical(t *testing.T) {
 	})
 }
 
+func TestCveToCanonical_NullByteStripping(t *testing.T) {
+	t.Parallel()
+
+	cve := nvdCVE{
+		ID:           "CVE-2024\x00-5555",
+		VulnStatus:   "Ana\x00lyzed",
+		Published:    "2024-01-15T10:00:00.000",
+		LastModified: "2024-02-20T14:30:00.000",
+		Descriptions: []nvdDescription{
+			{Lang: "en", Value: "Buffer\x00 overflow in example"},
+		},
+		Weaknesses: []nvdWeakness{
+			{Description: []nvdDescription{
+				{Lang: "en", Value: "CWE-\x00120"},
+			}},
+		},
+		References: []nvdReference{
+			{URL: "https://example\x00.com/advisory", Tags: []string{"Vendor Advisory"}},
+		},
+		Configurations: []nvdConfig{
+			{Nodes: []nvdNode{
+				{CPEMatch: []nvdCPEMatch{
+					{Criteria: "cpe:2.3:a:\x00vendor:product:1.0:*:*:*:*:*:*:*", Vulnerable: true},
+				}},
+			}},
+		},
+	}
+
+	p := cveToCanonical(cve)
+	if p == nil {
+		t.Fatal("expected non-nil patch")
+	}
+
+	if strings.Contains(p.CVEID, "\x00") {
+		t.Errorf("CVEID contains null byte: %q", p.CVEID)
+	}
+	if p.CVEID != "CVE-2024-5555" {
+		t.Errorf("CVEID = %q, want %q", p.CVEID, "CVE-2024-5555")
+	}
+
+	if strings.Contains(p.SourceID, "\x00") {
+		t.Errorf("SourceID contains null byte: %q", p.SourceID)
+	}
+
+	if strings.Contains(p.Status, "\x00") {
+		t.Errorf("Status contains null byte: %q", p.Status)
+	}
+	if p.Status != "Analyzed" {
+		t.Errorf("Status = %q, want %q", p.Status, "Analyzed")
+	}
+
+	if p.DescriptionPrimary == nil {
+		t.Fatal("DescriptionPrimary is nil")
+	}
+	if strings.Contains(*p.DescriptionPrimary, "\x00") {
+		t.Errorf("DescriptionPrimary contains null byte: %q", *p.DescriptionPrimary)
+	}
+	if *p.DescriptionPrimary != "Buffer overflow in example" {
+		t.Errorf("DescriptionPrimary = %q, want %q", *p.DescriptionPrimary, "Buffer overflow in example")
+	}
+
+	if len(p.CWEIDs) != 1 {
+		t.Fatalf("CWEIDs len = %d, want 1", len(p.CWEIDs))
+	}
+	if strings.Contains(p.CWEIDs[0], "\x00") {
+		t.Errorf("CWEIDs[0] contains null byte: %q", p.CWEIDs[0])
+	}
+	if p.CWEIDs[0] != "CWE-120" {
+		t.Errorf("CWEIDs[0] = %q, want %q", p.CWEIDs[0], "CWE-120")
+	}
+
+	if len(p.References) != 1 {
+		t.Fatalf("References len = %d, want 1", len(p.References))
+	}
+	if strings.Contains(p.References[0].URL, "\x00") {
+		t.Errorf("References[0].URL contains null byte: %q", p.References[0].URL)
+	}
+	if p.References[0].URL != "https://example.com/advisory" {
+		t.Errorf("References[0].URL = %q, want %q", p.References[0].URL, "https://example.com/advisory")
+	}
+
+	if len(p.AffectedCPEs) != 1 {
+		t.Fatalf("AffectedCPEs len = %d, want 1", len(p.AffectedCPEs))
+	}
+	if strings.Contains(p.AffectedCPEs[0].CPE, "\x00") {
+		t.Errorf("AffectedCPEs[0].CPE contains null byte: %q", p.AffectedCPEs[0].CPE)
+	}
+	if p.AffectedCPEs[0].CPE != "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*" {
+		t.Errorf("AffectedCPEs[0].CPE = %q, want %q", p.AffectedCPEs[0].CPE, "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*")
+	}
+	if strings.Contains(p.AffectedCPEs[0].CPENormalized, "\x00") {
+		t.Errorf("AffectedCPEs[0].CPENormalized contains null byte: %q", p.AffectedCPEs[0].CPENormalized)
+	}
+}
+
 func TestApplyNVDCVSS(t *testing.T) {
 	t.Parallel()
 

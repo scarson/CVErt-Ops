@@ -564,6 +564,111 @@ func TestParseCVE5_FullEntry(t *testing.T) {
 	}
 }
 
+func TestParseCVE5_NullByteStripping(t *testing.T) {
+	t.Parallel()
+
+	// Use JSON \u0000 escape to inject null bytes into string values.
+	// Go's json.Decoder interprets \u0000 and produces actual null bytes in
+	// Go strings, which parseCVE5 must strip via feed.StripNullBytes.
+	input := `{
+		"cveMetadata": {
+			"cveId": "CVE-2024\u0000-7777",
+			"state": "PUB\u0000LISHED",
+			"datePublished": "2024-03-01T12:00:00Z",
+			"dateUpdated": "2024-03-15T08:30:00Z"
+		},
+		"containers": {
+			"cna": {
+				"descriptions": [
+					{"lang": "en", "value": "A vuln with\u0000 null bytes."}
+				],
+				"problemTypes": [
+					{
+						"descriptions": [
+							{"type": "CWE", "cweId": "CWE\u0000-79", "lang": "en"}
+						]
+					}
+				],
+				"references": [
+					{"url": "https://example\u0000.com/advisory"}
+				],
+				"affected": [
+					{"cpes": ["cpe:2.3:a:\u0000vendor:product:1.0:*:*:*:*:*:*:*"]}
+				]
+			}
+		}
+	}`
+
+	patch, err := parseCVE5(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patch == nil {
+		t.Fatal("expected non-nil patch")
+	}
+
+	if strings.Contains(patch.CVEID, "\x00") {
+		t.Errorf("CVEID contains null byte: %q", patch.CVEID)
+	}
+	if patch.CVEID != "CVE-2024-7777" {
+		t.Errorf("CVEID = %q, want %q", patch.CVEID, "CVE-2024-7777")
+	}
+
+	if strings.Contains(patch.SourceID, "\x00") {
+		t.Errorf("SourceID contains null byte: %q", patch.SourceID)
+	}
+
+	if strings.Contains(patch.Status, "\x00") {
+		t.Errorf("Status contains null byte: %q", patch.Status)
+	}
+	if patch.Status != "PUBLISHED" {
+		t.Errorf("Status = %q, want %q", patch.Status, "PUBLISHED")
+	}
+
+	if patch.DescriptionPrimary == nil {
+		t.Fatal("DescriptionPrimary is nil")
+	}
+	if strings.Contains(*patch.DescriptionPrimary, "\x00") {
+		t.Errorf("DescriptionPrimary contains null byte: %q", *patch.DescriptionPrimary)
+	}
+	if *patch.DescriptionPrimary != "A vuln with null bytes." {
+		t.Errorf("DescriptionPrimary = %q, want %q", *patch.DescriptionPrimary, "A vuln with null bytes.")
+	}
+
+	if len(patch.CWEIDs) != 1 {
+		t.Fatalf("CWEIDs len = %d, want 1", len(patch.CWEIDs))
+	}
+	if strings.Contains(patch.CWEIDs[0], "\x00") {
+		t.Errorf("CWEIDs[0] contains null byte: %q", patch.CWEIDs[0])
+	}
+	if patch.CWEIDs[0] != "CWE-79" {
+		t.Errorf("CWEIDs[0] = %q, want %q", patch.CWEIDs[0], "CWE-79")
+	}
+
+	if len(patch.References) != 1 {
+		t.Fatalf("References len = %d, want 1", len(patch.References))
+	}
+	if strings.Contains(patch.References[0].URL, "\x00") {
+		t.Errorf("References[0].URL contains null byte: %q", patch.References[0].URL)
+	}
+	if patch.References[0].URL != "https://example.com/advisory" {
+		t.Errorf("References[0].URL = %q, want %q", patch.References[0].URL, "https://example.com/advisory")
+	}
+
+	if len(patch.AffectedCPEs) != 1 {
+		t.Fatalf("AffectedCPEs len = %d, want 1", len(patch.AffectedCPEs))
+	}
+	if strings.Contains(patch.AffectedCPEs[0].CPE, "\x00") {
+		t.Errorf("AffectedCPEs[0].CPE contains null byte: %q", patch.AffectedCPEs[0].CPE)
+	}
+	if patch.AffectedCPEs[0].CPE != "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*" {
+		t.Errorf("AffectedCPEs[0].CPE = %q, want %q", patch.AffectedCPEs[0].CPE, "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*")
+	}
+	if strings.Contains(patch.AffectedCPEs[0].CPENormalized, "\x00") {
+		t.Errorf("AffectedCPEs[0].CPENormalized contains null byte: %q", patch.AffectedCPEs[0].CPENormalized)
+	}
+}
+
 func TestParseCVE5_DateFields(t *testing.T) {
 	t.Parallel()
 

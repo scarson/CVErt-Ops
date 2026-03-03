@@ -717,6 +717,177 @@ func TestParseAdvisory(t *testing.T) {
 	_ = floatPtr
 }
 
+func TestParseAdvisory_NullByteStripping(t *testing.T) {
+	t.Parallel()
+
+	strPtr := func(s string) *string { return &s }
+
+	rec := ghsaAdvisory{
+		GHSAID:      "GHSA-null\x00-test-0001",
+		CVEID:       strPtr("CVE-2024\x00-55555"),
+		Summary:     "Summary\x00 with null.",
+		Description: strPtr("Description\x00 with null bytes."),
+		Severity:    "hi\x00gh",
+		PublishedAt: "2024-01-15T10:00:00Z",
+		UpdatedAt:   "2024-01-16T12:00:00Z",
+		CVSS: &ghsaCVSSEntry{
+			Score:        7.5,
+			VectorString: "CVSS:3.1/AV:\x00N/AC:L",
+		},
+		CVSSSeverities: &ghsaCVSSSeverities{
+			CVSSv3: &ghsaCVSSEntry{
+				Score:        9.8,
+				VectorString: "CVSS:3.1/AV:N\x00/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+			},
+			CVSSv4: &ghsaCVSSEntry{
+				Score:        8.5,
+				VectorString: "CVSS:4.0/AV:N\x00/AC:L/AT:N/PR:N/UI:N",
+			},
+		},
+		CWEs: []ghsaCWE{
+			{CWEID: "CWE-\x0079", Name: "XSS"},
+		},
+		Vulnerabilities: []ghsaVulnerability{
+			{
+				Package: struct {
+					Ecosystem string `json:"ecosystem"`
+					Name      string `json:"name"`
+				}{Ecosystem: "n\x00pm", Name: "lod\x00ash"},
+				FirstPatchedVersion: strPtr("4.17\x00.21"),
+			},
+		},
+		Identifiers: []ghsaIdentifier{
+			{Type: "CVE", Value: "CVE-2024\x00-55555"},
+		},
+		HTMLURL: "https://github\x00.com/advisories/GHSA-null-test-0001",
+		References: []ghsaReference{
+			{URL: "https://example\x00.com/ref"},
+		},
+	}
+
+	patch := parseAdvisory(rec)
+	if patch == nil {
+		t.Fatal("expected non-nil patch")
+	}
+
+	// GHSA ID (SourceID) should be stripped.
+	if strings.Contains(patch.SourceID, "\x00") {
+		t.Errorf("SourceID contains null byte: %q", patch.SourceID)
+	}
+	if patch.SourceID != "GHSA-null-test-0001" {
+		t.Errorf("SourceID = %q, want %q", patch.SourceID, "GHSA-null-test-0001")
+	}
+
+	// CVE ID from top-level cve_id should be stripped.
+	if strings.Contains(patch.CVEID, "\x00") {
+		t.Errorf("CVEID contains null byte: %q", patch.CVEID)
+	}
+	if patch.CVEID != "CVE-2024-55555" {
+		t.Errorf("CVEID = %q, want %q", patch.CVEID, "CVE-2024-55555")
+	}
+
+	// Description should be stripped (prefers description over summary).
+	if patch.DescriptionPrimary == nil {
+		t.Fatal("DescriptionPrimary is nil")
+	}
+	if strings.Contains(*patch.DescriptionPrimary, "\x00") {
+		t.Errorf("DescriptionPrimary contains null byte: %q", *patch.DescriptionPrimary)
+	}
+	if *patch.DescriptionPrimary != "Description with null bytes." {
+		t.Errorf("DescriptionPrimary = %q, want %q", *patch.DescriptionPrimary, "Description with null bytes.")
+	}
+
+	// Severity should be stripped.
+	if patch.Severity == nil {
+		t.Fatal("Severity is nil")
+	}
+	if strings.Contains(*patch.Severity, "\x00") {
+		t.Errorf("Severity contains null byte: %q", *patch.Severity)
+	}
+	if *patch.Severity != "HIGH" {
+		t.Errorf("Severity = %q, want %q", *patch.Severity, "HIGH")
+	}
+
+	// CVSS v3 vector from cvss_severities should be stripped.
+	if patch.CVSSv3Vector == nil {
+		t.Fatal("CVSSv3Vector is nil")
+	}
+	if strings.Contains(*patch.CVSSv3Vector, "\x00") {
+		t.Errorf("CVSSv3Vector contains null byte: %q", *patch.CVSSv3Vector)
+	}
+	if *patch.CVSSv3Vector != "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" {
+		t.Errorf("CVSSv3Vector = %q, want %q", *patch.CVSSv3Vector, "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+	}
+
+	// CVSS v4 vector from cvss_severities should be stripped.
+	if patch.CVSSv4Vector == nil {
+		t.Fatal("CVSSv4Vector is nil")
+	}
+	if strings.Contains(*patch.CVSSv4Vector, "\x00") {
+		t.Errorf("CVSSv4Vector contains null byte: %q", *patch.CVSSv4Vector)
+	}
+	if *patch.CVSSv4Vector != "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N" {
+		t.Errorf("CVSSv4Vector = %q, want %q", *patch.CVSSv4Vector, "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N")
+	}
+
+	// CWE IDs should be stripped.
+	if len(patch.CWEIDs) != 1 {
+		t.Fatalf("CWEIDs len = %d, want 1", len(patch.CWEIDs))
+	}
+	if strings.Contains(patch.CWEIDs[0], "\x00") {
+		t.Errorf("CWEIDs[0] contains null byte: %q", patch.CWEIDs[0])
+	}
+	if patch.CWEIDs[0] != "CWE-79" {
+		t.Errorf("CWEIDs[0] = %q, want %q", patch.CWEIDs[0], "CWE-79")
+	}
+
+	// Affected packages: ecosystem, name, fixed version should be stripped.
+	if len(patch.AffectedPackages) != 1 {
+		t.Fatalf("AffectedPackages len = %d, want 1", len(patch.AffectedPackages))
+	}
+	pkg := patch.AffectedPackages[0]
+	if strings.Contains(pkg.Ecosystem, "\x00") {
+		t.Errorf("Ecosystem contains null byte: %q", pkg.Ecosystem)
+	}
+	if pkg.Ecosystem != "npm" {
+		t.Errorf("Ecosystem = %q, want %q", pkg.Ecosystem, "npm")
+	}
+	if strings.Contains(pkg.PackageName, "\x00") {
+		t.Errorf("PackageName contains null byte: %q", pkg.PackageName)
+	}
+	if pkg.PackageName != "lodash" {
+		t.Errorf("PackageName = %q, want %q", pkg.PackageName, "lodash")
+	}
+	if strings.Contains(pkg.Fixed, "\x00") {
+		t.Errorf("Fixed contains null byte: %q", pkg.Fixed)
+	}
+	if pkg.Fixed != "4.17.21" {
+		t.Errorf("Fixed = %q, want %q", pkg.Fixed, "4.17.21")
+	}
+
+	// HTML URL reference should be stripped.
+	if len(patch.References) < 1 {
+		t.Fatalf("References len = %d, want at least 1", len(patch.References))
+	}
+	if strings.Contains(patch.References[0].URL, "\x00") {
+		t.Errorf("References[0].URL (html_url) contains null byte: %q", patch.References[0].URL)
+	}
+	if patch.References[0].URL != "https://github.com/advisories/GHSA-null-test-0001" {
+		t.Errorf("References[0].URL = %q, want %q", patch.References[0].URL, "https://github.com/advisories/GHSA-null-test-0001")
+	}
+
+	// Additional reference URLs should be stripped.
+	if len(patch.References) < 2 {
+		t.Fatalf("References len = %d, want at least 2", len(patch.References))
+	}
+	if strings.Contains(patch.References[1].URL, "\x00") {
+		t.Errorf("References[1].URL contains null byte: %q", patch.References[1].URL)
+	}
+	if patch.References[1].URL != "https://example.com/ref" {
+		t.Errorf("References[1].URL = %q, want %q", patch.References[1].URL, "https://example.com/ref")
+	}
+}
+
 // TestAdapterRateLimiterNonNil verifies that New always initialises the
 // per-adapter rate limiter. A nil limiter would panic on Wait.
 func TestAdapterRateLimiterNonNil(t *testing.T) {

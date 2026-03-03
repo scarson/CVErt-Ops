@@ -399,6 +399,55 @@ func TestRecordToPatch(t *testing.T) {
 	}
 }
 
+func TestRecordToPatch_NullByteStripping(t *testing.T) {
+	t.Parallel()
+
+	rec := kevRecord{
+		CVEID:            "CVE-2024\x00-8888",
+		VendorProject:    "Acme",
+		Product:          "Widget",
+		DateAdded:        "2024-06-15",
+		ShortDescription: "Remote\x00 code execution",
+		CWEs:             json.RawMessage(`["CWE-\u000078"]`),
+	}
+
+	p := recordToPatch(rec)
+	if p == nil {
+		t.Fatal("expected non-nil patch")
+	}
+
+	if strings.Contains(p.CVEID, "\x00") {
+		t.Errorf("CVEID contains null byte: %q", p.CVEID)
+	}
+	if p.CVEID != "CVE-2024-8888" {
+		t.Errorf("CVEID = %q, want %q", p.CVEID, "CVE-2024-8888")
+	}
+
+	if strings.Contains(p.SourceID, "\x00") {
+		t.Errorf("SourceID contains null byte: %q", p.SourceID)
+	}
+
+	if p.DescriptionPrimary == nil {
+		t.Fatal("DescriptionPrimary is nil")
+	}
+	if strings.Contains(*p.DescriptionPrimary, "\x00") {
+		t.Errorf("DescriptionPrimary contains null byte: %q", *p.DescriptionPrimary)
+	}
+	if *p.DescriptionPrimary != "Remote code execution" {
+		t.Errorf("DescriptionPrimary = %q, want %q", *p.DescriptionPrimary, "Remote code execution")
+	}
+
+	if len(p.CWEIDs) != 1 {
+		t.Fatalf("CWEIDs len = %d, want 1", len(p.CWEIDs))
+	}
+	if strings.Contains(p.CWEIDs[0], "\x00") {
+		t.Errorf("CWEIDs[0] contains null byte: %q", p.CWEIDs[0])
+	}
+	if p.CWEIDs[0] != "CWE-78" {
+		t.Errorf("CWEIDs[0] = %q, want %q", p.CWEIDs[0], "CWE-78")
+	}
+}
+
 func TestExtractCWEs(t *testing.T) {
 	t.Parallel()
 
@@ -446,6 +495,11 @@ func TestExtractCWEs(t *testing.T) {
 			name: "empty array",
 			raw:  json.RawMessage(`[]`),
 			want: []string{},
+		},
+		{
+			name: "null bytes stripped from values",
+			raw:  json.RawMessage(`["CWE-\u000078","CWE-89"]`),
+			want: []string{"CWE-78", "CWE-89"},
 		},
 		{
 			name: "invalid JSON returns nil",

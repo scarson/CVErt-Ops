@@ -497,3 +497,199 @@ func TestAICache_OrgIsolation(t *testing.T) {
 		t.Error("org2 should not see org1's cache entry")
 	}
 }
+
+// ── AppStore RLS tests ──────────────────────────────────────────────────────
+// These tests use AppStore (cvert_ops_app, NOBYPASSRLS) to verify that
+// RLS policies on ai_usage_counters, ai_cache, and ai_request_log are enforced.
+
+func TestIncrementAIUsage_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "AIUsageRLS1")
+	org2, _ := s.CreateOrg(ctx, "AIUsageRLS2")
+
+	// Increment via AppStore for both orgs.
+	count1, err := s.AppStore.IncrementAIUsage(ctx, org1.ID, "nl_search")
+	if err != nil {
+		t.Fatalf("AppStore.IncrementAIUsage org1: %v", err)
+	}
+	if count1 != 1 {
+		t.Errorf("org1 count = %d, want 1", count1)
+	}
+
+	count2, err := s.AppStore.IncrementAIUsage(ctx, org2.ID, "nl_search")
+	if err != nil {
+		t.Fatalf("AppStore.IncrementAIUsage org2: %v", err)
+	}
+	if count2 != 1 {
+		t.Errorf("org2 count = %d, want 1 (independent from org1)", count2)
+	}
+
+	// Increment org1 again — should be 2, not 3 (no cross-org contamination).
+	count1, err = s.AppStore.IncrementAIUsage(ctx, org1.ID, "nl_search")
+	if err != nil {
+		t.Fatalf("AppStore.IncrementAIUsage org1 (2nd): %v", err)
+	}
+	if count1 != 2 {
+		t.Errorf("org1 count after 2nd increment = %d, want 2", count1)
+	}
+}
+
+func TestDecrementAIUsage_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AIDecrRLS")
+
+	// Create a row via superuser store, decrement via AppStore.
+	if _, err := s.IncrementAIUsage(ctx, org.ID, "nl_search"); err != nil {
+		t.Fatalf("seed IncrementAIUsage: %v", err)
+	}
+
+	if err := s.AppStore.DecrementAIUsage(ctx, org.ID, "nl_search"); err != nil {
+		t.Fatalf("AppStore.DecrementAIUsage: %v", err)
+	}
+
+	// Verify count is 0 by incrementing back to 1.
+	count, err := s.AppStore.IncrementAIUsage(ctx, org.ID, "nl_search")
+	if err != nil {
+		t.Fatalf("AppStore.IncrementAIUsage after decrement: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count after decrement+increment = %d, want 1", count)
+	}
+}
+
+func TestUpdateAIUsageTokens_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AITokenRLS")
+
+	// Create usage row first.
+	if _, err := s.IncrementAIUsage(ctx, org.ID, "summarize"); err != nil {
+		t.Fatalf("seed IncrementAIUsage: %v", err)
+	}
+
+	// Update tokens via AppStore.
+	if err := s.AppStore.UpdateAIUsageTokens(ctx, org.ID, "summarize", 100, 50); err != nil {
+		t.Fatalf("AppStore.UpdateAIUsageTokens: %v", err)
+	}
+}
+
+func TestGetAIQuotaOverride_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "AIQuotaRLS1")
+	org2, _ := s.CreateOrg(ctx, "AIQuotaRLS2")
+
+	// Set override via superuser bypass TX.
+	if err := s.SetAIQuotaOverride(ctx, org1.ID, "nl_search", 500); err != nil {
+		t.Fatalf("SetAIQuotaOverride org1: %v", err)
+	}
+	if err := s.SetAIQuotaOverride(ctx, org2.ID, "nl_search", 999); err != nil {
+		t.Fatalf("SetAIQuotaOverride org2: %v", err)
+	}
+
+	// Read via AppStore — org1 should see 500, not 999.
+	limit, found, err := s.AppStore.GetAIQuotaOverride(ctx, org1.ID, "nl_search")
+	if err != nil {
+		t.Fatalf("AppStore.GetAIQuotaOverride org1: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true for org1 override")
+	}
+	if limit != 500 {
+		t.Errorf("org1 limit = %d, want 500", limit)
+	}
+}
+
+func TestGetAICache_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "AICacheRLS1")
+	org2, _ := s.CreateOrg(ctx, "AICacheRLS2")
+
+	// Seed cache via superuser store.
+	if err := s.PutAICache(ctx, org1.ID, "nl_search", "v1", "rlshash", json.RawMessage(`{"org":"one"}`), time.Hour); err != nil {
+		t.Fatalf("PutAICache org1: %v", err)
+	}
+
+	// AppStore with org1 context should find it.
+	resp, found, err := s.AppStore.GetAICache(ctx, org1.ID, "nl_search", "v1", "rlshash")
+	if err != nil {
+		t.Fatalf("AppStore.GetAICache org1: %v", err)
+	}
+	if !found {
+		t.Fatal("expected cache hit for org1")
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	// AppStore with org2 context should miss — RLS isolates the cache.
+	_, found, err = s.AppStore.GetAICache(ctx, org2.ID, "nl_search", "v1", "rlshash")
+	if err != nil {
+		t.Fatalf("AppStore.GetAICache org2: %v", err)
+	}
+	if found {
+		t.Error("org2 should not see org1's cache entry via AppStore (RLS violation)")
+	}
+}
+
+func TestPutAICache_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AIPutCacheRLS")
+
+	// Put via AppStore.
+	if err := s.AppStore.PutAICache(ctx, org.ID, "nl_search", "v1", "putrlshash", json.RawMessage(`{"ok":true}`), time.Hour); err != nil {
+		t.Fatalf("AppStore.PutAICache: %v", err)
+	}
+
+	// Verify readable via AppStore.
+	_, found, err := s.AppStore.GetAICache(ctx, org.ID, "nl_search", "v1", "putrlshash")
+	if err != nil {
+		t.Fatalf("AppStore.GetAICache: %v", err)
+	}
+	if !found {
+		t.Error("expected cache hit after AppStore.PutAICache")
+	}
+}
+
+func TestInsertAIRequestLog_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "AILogRLS")
+	userID := uuid.New()
+
+	// Insert via AppStore — must succeed (WITH CHECK clause for org_id).
+	err := s.AppStore.InsertAIRequestLog(ctx, store.AIRequestLogEntry{
+		OrgID:         org.ID,
+		UserID:        userID,
+		Feature:       "nl_search",
+		InputHash:     "rlshash1",
+		PromptVersion: "v1",
+		Model:         "gemini-2.0-flash",
+		CacheHit:      false,
+		InputTokens:   50,
+		OutputTokens:  25,
+		LatencyMS:     100,
+		Status:        "success",
+	})
+	if err != nil {
+		t.Fatalf("AppStore.InsertAIRequestLog: %v", err)
+	}
+}

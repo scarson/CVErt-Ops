@@ -417,3 +417,209 @@ func TestSavedSearch_CleanupOrphanedPrivate(t *testing.T) {
 		t.Errorf("other remaining Name = %q, want Other Private", otherRemaining[0].Name)
 	}
 }
+
+// ── AppStore RLS tests ──────────────────────────────────────────────────────
+// These tests use AppStore (cvert_ops_app, NOBYPASSRLS) to verify that
+// RLS policies on saved_searches are enforced.
+
+func TestCreateSavedSearch_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "SSCreateRLS")
+	user, _ := s.CreateUser(ctx, "sscreaterls@example.com", "SSCreateRLS", "", 0)
+
+	// Create via AppStore — WITH CHECK clause requires matching org_id.
+	row, err := s.AppStore.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		Name:      "RLS Created",
+		QueryJSON: json.RawMessage(`{"q":"test"}`),
+		IsShared:  false,
+	})
+	if err != nil {
+		t.Fatalf("AppStore.CreateSavedSearch: %v", err)
+	}
+	if row == nil {
+		t.Fatal("AppStore.CreateSavedSearch returned nil")
+	}
+	if row.Name != "RLS Created" {
+		t.Errorf("Name = %q, want RLS Created", row.Name)
+	}
+}
+
+func TestGetSavedSearch_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "SSGetRLS1")
+	org2, _ := s.CreateOrg(ctx, "SSGetRLS2")
+	user, _ := s.CreateUser(ctx, "ssgetrls@example.com", "SSGetRLS", "", 0)
+
+	// Create a search for org1 via superuser store.
+	created, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		Name:      "Org1 Search",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  false,
+	})
+	if err != nil {
+		t.Fatalf("seed CreateSavedSearch: %v", err)
+	}
+
+	// AppStore with org1 context should find it.
+	got, err := s.AppStore.GetSavedSearch(ctx, org1.ID, created.ID)
+	if err != nil {
+		t.Fatalf("AppStore.GetSavedSearch org1: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected search to be found via AppStore with org1 context")
+	}
+
+	// AppStore with org2 context should NOT find it — RLS isolation.
+	got2, err := s.AppStore.GetSavedSearch(ctx, org2.ID, created.ID)
+	if err != nil {
+		t.Fatalf("AppStore.GetSavedSearch org2: %v", err)
+	}
+	if got2 != nil {
+		t.Error("org2 should not see org1's saved search via AppStore (RLS violation)")
+	}
+}
+
+func TestListSavedSearches_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "SSListRLS1")
+	org2, _ := s.CreateOrg(ctx, "SSListRLS2")
+	user, _ := s.CreateUser(ctx, "sslistrls@example.com", "SSListRLS", "", 0)
+
+	// Create searches in both orgs via superuser store.
+	_, _ = s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		Name:      "Org1 Shared",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  true,
+	})
+	_, _ = s.CreateSavedSearch(ctx, org2.ID, store.CreateSavedSearchParams{
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		Name:      "Org2 Shared",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  true,
+	})
+
+	// AppStore with org1 context — should only see org1's search.
+	rows, err := s.AppStore.ListSavedSearches(ctx, org1.ID, user.ID, "all", 200)
+	if err != nil {
+		t.Fatalf("AppStore.ListSavedSearches org1: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 search for org1, got %d", len(rows))
+	}
+	if rows[0].Name != "Org1 Shared" {
+		t.Errorf("Name = %q, want Org1 Shared", rows[0].Name)
+	}
+}
+
+func TestUpdateSavedSearch_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "SSUpdRLS1")
+	org2, _ := s.CreateOrg(ctx, "SSUpdRLS2")
+	user, _ := s.CreateUser(ctx, "ssupdrls@example.com", "SSUpdRLS", "", 0)
+
+	// Create a search for org1.
+	created, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		Name:      "Before Update",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  false,
+	})
+	if err != nil {
+		t.Fatalf("seed CreateSavedSearch: %v", err)
+	}
+
+	// Update via AppStore with correct org — should succeed.
+	updated, err := s.AppStore.UpdateSavedSearch(ctx, org1.ID, created.ID, store.UpdateSavedSearchParams{
+		Name:      "After Update",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  true,
+	})
+	if err != nil {
+		t.Fatalf("AppStore.UpdateSavedSearch org1: %v", err)
+	}
+	if updated == nil {
+		t.Fatal("expected non-nil updated search")
+	}
+	if updated.Name != "After Update" {
+		t.Errorf("Name = %q, want After Update", updated.Name)
+	}
+
+	// Update via AppStore with wrong org — should return nil (RLS hides the row).
+	updated2, err := s.AppStore.UpdateSavedSearch(ctx, org2.ID, created.ID, store.UpdateSavedSearchParams{
+		Name:      "Cross-Org Attack",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  false,
+	})
+	if err != nil {
+		t.Fatalf("AppStore.UpdateSavedSearch org2: %v", err)
+	}
+	if updated2 != nil {
+		t.Error("org2 should not be able to update org1's search via AppStore (RLS violation)")
+	}
+}
+
+func TestSoftDeleteSavedSearch_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "SSDelRLS1")
+	org2, _ := s.CreateOrg(ctx, "SSDelRLS2")
+	user, _ := s.CreateUser(ctx, "ssdelrls@example.com", "SSDelRLS", "", 0)
+
+	// Create a search for org1.
+	created, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
+		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
+		Name:      "To Delete RLS",
+		QueryJSON: json.RawMessage(`{}`),
+		IsShared:  false,
+	})
+	if err != nil {
+		t.Fatalf("seed CreateSavedSearch: %v", err)
+	}
+
+	// Soft-delete via AppStore with wrong org — should not delete (row invisible).
+	// SoftDeleteSavedSearch uses UPDATE SET deleted_at WHERE id=? AND org_id=?.
+	// With RLS, the row is invisible to org2's context, so the update matches 0 rows.
+	if err := s.AppStore.SoftDeleteSavedSearch(ctx, org2.ID, created.ID); err != nil {
+		t.Fatalf("AppStore.SoftDeleteSavedSearch org2: %v", err)
+	}
+
+	// Verify the search still exists in org1.
+	got, err := s.GetSavedSearch(ctx, org1.ID, created.ID)
+	if err != nil {
+		t.Fatalf("GetSavedSearch after cross-org delete attempt: %v", err)
+	}
+	if got == nil {
+		t.Error("search was deleted by wrong org — RLS violation")
+	}
+
+	// Soft-delete via AppStore with correct org — should succeed.
+	if err := s.AppStore.SoftDeleteSavedSearch(ctx, org1.ID, created.ID); err != nil {
+		t.Fatalf("AppStore.SoftDeleteSavedSearch org1: %v", err)
+	}
+
+	// Verify it's gone.
+	got, err = s.GetSavedSearch(ctx, org1.ID, created.ID)
+	if err != nil {
+		t.Fatalf("GetSavedSearch after correct delete: %v", err)
+	}
+	if got != nil {
+		t.Error("search should be soft-deleted")
+	}
+}

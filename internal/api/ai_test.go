@@ -8,15 +8,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"fmt"
-
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/config"
+	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -976,6 +976,63 @@ func TestAIHandlers_CrossOrgIsolation(t *testing.T) {
 	})
 
 	_ = tokenB // used only for org creation
+}
+
+// ── buildSummaryInput sanitizes description ──────────────────────────────────
+
+func TestBuildSummaryInput_SanitizesDescription(t *testing.T) {
+	t.Parallel()
+	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+		CveID: "CVE-2024-0001",
+	}
+	cve.DescriptionPrimary.Valid = true
+	cve.DescriptionPrimary.String = "Vuln in [lib](https://evil.com/exfil) <script>alert(1)</script>"
+
+	input := buildSummaryInput(cve)
+
+	// Markdown link URL and HTML tags should be stripped by Sanitize().
+	if strings.Contains(input.Description, "evil.com") {
+		t.Errorf("description should have markdown URLs stripped, got: %s", input.Description)
+	}
+	if strings.Contains(input.Description, "<script>") {
+		t.Errorf("description should have HTML tags stripped, got: %s", input.Description)
+	}
+	// Preserved text content.
+	if !strings.Contains(input.Description, "Vuln in lib") {
+		t.Errorf("description should preserve text, got: %s", input.Description)
+	}
+}
+
+func TestBuildSummaryInput_NullFields(t *testing.T) {
+	t.Parallel()
+	// All NullXxx fields are zero-valued (not valid).
+	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+		CveID: "CVE-2024-0002",
+	}
+
+	input := buildSummaryInput(cve)
+
+	if input.CVEID != "CVE-2024-0002" {
+		t.Errorf("CVEID = %q, want CVE-2024-0002", input.CVEID)
+	}
+	if input.Description != "" {
+		t.Errorf("Description should be empty for null, got %q", input.Description)
+	}
+	if input.Severity != "" {
+		t.Errorf("Severity should be empty for null, got %q", input.Severity)
+	}
+	if input.CVSSV3Score != nil {
+		t.Errorf("CVSSV3Score should be nil for null, got %v", input.CVSSV3Score)
+	}
+	if input.CVSSV4Score != nil {
+		t.Errorf("CVSSV4Score should be nil for null, got %v", input.CVSSV4Score)
+	}
+	if input.EPSSScore != nil {
+		t.Errorf("EPSSScore should be nil for null, got %v", input.EPSSScore)
+	}
+	if input.CWEIDs != nil {
+		t.Errorf("CWEIDs should be nil for null, got %v", input.CWEIDs)
+	}
 }
 
 func TestNLSearchHandler_ProTierQuota(t *testing.T) {

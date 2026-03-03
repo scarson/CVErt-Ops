@@ -850,6 +850,59 @@ func TestEvaluateRealtime_FanoutErrorContinuesProcessing(t *testing.T) {
 	}
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// candidateCap fail-closed
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestDryRun_CandidateCapPartial(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	// Insert 5001 CVEs with cvss_v3_score >= 7.0 (matching the rule below).
+	// Use generate_series for speed — individual inserts would be too slow.
+	_, err := tdb.DB().ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, cvss_v3_score, material_hash)
+		SELECT
+			'CVE-CAP-' || lpad(i::text, 5, '0'),
+			'Analyzed',
+			7.0 + (i % 30) * 0.1,
+			'hash-cap-' || i
+		FROM generate_series(1, 5001) AS i
+		ON CONFLICT (cve_id) DO NOTHING
+	`)
+	if err != nil {
+		t.Fatalf("bulk insert CVEs: %v", err)
+	}
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	result, err := ev.DryRun(ctx, rule.ID, orgID)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result == nil {
+		t.Fatal("DryRun returned nil result")
+	}
+	if !result.Partial {
+		t.Error("DryRun should be partial when candidate count exceeds cap")
+	}
+	// When partial, no alert_events should be written (fail-closed).
+	var eventCount int
+	err = tdb.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM alert_events WHERE rule_id = $1`, rule.ID,
+	).Scan(&eventCount)
+	if err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if eventCount != 0 {
+		t.Errorf("candidateCap fail-closed: expected 0 alert_events, got %d", eventCount)
+	}
+}
+
 // NOTE: applyPostFilters Negate path (evaluator.go:529-531) is structurally dead code —
 // the DSL compiler never sets PostFilter.Negate=true. The "not_regex" operator does not
 // exist. Testable only when a future DSL version adds negated regex support.

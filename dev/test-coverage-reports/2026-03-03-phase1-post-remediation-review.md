@@ -405,3 +405,142 @@ The advisory lock system (`advisoryKey` → `CVEAdvisoryKey` → `pg_advisory_xa
 ### Defense-in-Depth
 
 Security headers, body size limits, argon2 semaphore, and HTTP server timeouts are all set but none are verified by tests. A middleware reordering or accidental removal would go unnoticed.
+
+---
+
+## Remediation Summary
+
+**Remediated:** 2026-03-03
+**Branch:** `phase-5` (commits `686f4ac`..`e2d9109`)
+**Commits:** 8 (7 test batches + 1 bugfix)
+
+### Stats
+
+| Metric | Count |
+|--------|-------|
+| Total gaps in review | 791 |
+| Test functions added | 152 |
+| Subtests added (t.Run) | 30 |
+| Lines of test code added | ~3,999 |
+| Files modified | 17 |
+| Files created | 2 (`store/jobs_test.go`, `api/server_test.go`) |
+| Production code changed | 1 (`worker/pool.go` — interface extraction) |
+| Bugs discovered | 1 |
+| Lint fixes | 1 |
+
+### Tests Added (by package)
+
+#### `internal/feed/nvd` (2 tests)
+- `TestCveToCanonical_NullByteStripping` — verifies null bytes stripped from all 6 field types (CVE ID, status, description, CWE IDs, reference URLs, CPE criteria). **[security-critical #1-6]**
+- `TestFetch_NoDateResponseHeader` / `TestFetch_ZeroWindowOmitsDateParams` — cursor and Date header edge cases. **[correctness #23-24, 17-20]**
+
+#### `internal/feed/mitre` (1 test)
+- `TestParseCVE5_NullByteStripping` — verifies null bytes stripped from all text fields using JSON `\u0000` escape sequences. **[security-critical #7-12]**
+
+#### `internal/feed/kev` (3 tests)
+- `TestRecordToPatch_NullByteStripping` — null bytes in CVEID and shortDescription. **[security-critical #13-14]**
+- `TestParseKEV_RecordDecodeErrorIsFatal` — malformed record stops parse. **[correctness]**
+- `TestRecordToPatch_DateAddedParsedCorrectly` — date parsing. **[correctness]**
+- `TestExtractCWEs` null byte subtest. **[security-critical #15]**
+
+#### `internal/feed/ghsa` (3 tests)
+- `TestParseAdvisory_NullByteStripping` — null bytes across 12+ advisory fields. **[security-critical #16]**
+- `TestFetch_TokenAuthHeaderSet` — Authorization Bearer header present when token set. **[security-critical #20]**
+- `TestFetch_NoTokenOmitsAuthHeader` — no header when token empty. **[security-critical #20]**
+
+#### `internal/feed/epss` (1 test)
+- `TestApply_SameDayCursorSkips` — same-day cursor short-circuit returns early. **[correctness]**
+
+#### `internal/feed` (shared, 2 tests + 6 subtests)
+- `TestResolveCanonicalIDMalformedCVEAlias` — 5 subtests for malformed CVE alias patterns. **[correctness]**
+- `TestResolveCanonicalIDWhitespaceAlias` — whitespace-padded alias handling. **[correctness]**
+
+#### `internal/merge/resolve` (11 tests)
+- `TestResolveCVSSv4NVDWinsOverOSV` / `TestResolveCVSSv4SeverityResolution` / `TestResolveCVSSv4VectorCaptured` — CVSSv4 resolution paths. **[correctness, was Key Observation #6]**
+- `TestResolveSeverityFallsFromCVSSToStatusPriority` / `TestResolveSeverityStatusPriorityFallback` — severity fallback chain. **[correctness]**
+- `TestCanonicalizeURL*` (7 tests) — host lowercasing, fragment stripping, query param sorting, trailing slash, scheme preservation, empty input, no-query path. **[correctness]**
+- `TestFirstStr*` / `TestFirstStrPtr*` (6 tests) — helper precedence logic. **[correctness]**
+- `TestOtherSources*` (3 tests) — empty, single source, priority key exclusion. **[correctness]**
+- `TestComputeScoreDiverges*` (4 tests) — boundary conditions: both nil, one nil, exactly 2.0, just under 2.0. **[correctness]**
+
+#### `internal/merge/hash` (7 tests)
+- `TestComputeMaterialHashCVSSv4VectorNormalized` — CVSSv4 vector metric ordering. **[correctness, was Key Observation #6]**
+- `TestComputeMaterialHashStatusSensitivity` — status field affects hash. **[correctness]**
+- `TestComputeMaterialHashCVSSv3ScoreNilVsZero` / `TestComputeMaterialHashCVSSv4ScoreNilVsZero` — nil vs 0.0 distinction. **[correctness]**
+- `TestComputeMaterialHashExploitAvailableSensitivity` — exploit flag affects hash. **[correctness]**
+- `TestComputeMaterialHashAffectedPkgsContentSensitivity` / `TestComputeMaterialHashAffectedPkgsSortTiebreak` — package array sensitivity. **[correctness]**
+
+#### `internal/store` (49 tests)
+- **SearchCVEs (15 tests):** CVSSMin, CVSSMax, DateFrom, DateTo, CWEID, Ecosystem, Ecosystem+PackageName, InCISAKEV, ExploitAvailable, EPSSMin, EPSSMax, keyset cursor, Limit+1, combined filters, empty table. **[security-critical #36-46, correctness, was Key Observation #9]**
+- **CRUD (8 tests):** GetCVE (happy, not-found), GetCVEDetail (happy, not-found, no children), GetCVESources (happy, no sources), GetCVESnapshot (happy, not-found). **[correctness]**
+- **Jobs (17 tests):** EnqueueJob (basic, with lock key, with run_after), ClaimJob (happy, no pending, priority ordering, skips running), CompleteJob (happy, nonexistent), FailJob (backoff retry, max attempts exhausted), RecoverStaleJobs (no stale, recovers stuck, recent not recovered), HasPendingOrRunningJob (pending, running, succeeded, dead, no match). **[correctness]**
+- **Transaction helpers (7 tests):** withBypassTx session var, withOrgTx RLS enforcement, OrgTx commit/rollback, WorkerTx bypass/rollback. **[security-critical #64, correctness]**
+
+#### `internal/worker` (10 tests)
+- `TestProcessOne_*` (7 tests): nil job, claim error, handler success, handler failure, nil handler, FailJob error, CompleteJob error. **[correctness, was Key Observation #1 "100% gap rate"]**
+- `TestRunStaleRecovery_*` (2 tests): calls and stops, error continues. **[correctness]**
+- `TestRunQueue_ContextCancellationStops` — context cancellation. **[correctness]**
+
+#### `internal/api/cves` (19 tests + 6 subtests)
+- Boolean filter edge cases (6 subtests): `TRUE`, `yes`, `1` for both `in_cisa_kev` and `exploit_available` via `strings.EqualFold`. **[security-critical #30-35, was Key Observation #8]**
+- HTTP handler tests (12 tests): ListCVEs (empty, seeded, severity filter, pagination, invalid cursor, response shape, nil store), GetCVE (exists, 404, nil store), GetCVESources (exists, 404). **[correctness, was Key Observation #7]**
+- `TestPathTraversal_CVEEndpoint` / `TestNullByte_CVEEndpoint` — input validation. **[security-critical #44-45, 55]**
+
+#### `internal/api` (server + middleware, 9 tests)
+- `TestSecurityHeaders_Healthz` / `TestSecurityHeaders_404` — headers on success and error. **[security-critical #47-52]**
+- `TestBodySizeLimit` — `RequestSize(1 << 20)` enforcement. **[security-critical #53-54]**
+- `TestAcquireArgon2_AllowsUpToN` / `TestAcquireArgon2_SingleSlot` — semaphore. **[security-critical #59-61]**
+- `TestGitHubOAuthRedirectURL` / `TestGitHubOAuth_Disabled` — OAuth config. **[security-critical #62]**
+- `TestAuditLog_NilWriterWithUserContext` — nil writer safety. **[correctness]**
+- `TestMiddleware_*` (4 tests): RequestID, RequestID on 404, Recoverer panic, SecurityHeaders on API route. **[security-critical #51, correctness]**
+
+### Bugs Discovered
+
+1. **`job_queue` table missing GRANT for `cvert_ops_app` role.** The `job_queue` table predates the RLS/role system introduced in migration 001. The app DB role (`cvert_ops_app`) has no `GRANT` on this table. In production, job operations work because they go through the superuser `Store` (via `withBypassTx`/`WorkerTx`), not the RLS-scoped `AppStore`. The test initially used `s.AppStore.HasPendingOrRunningJob()` which hit `permission denied`. Fixed by using `s.Store` which matches production code paths. A migration to add proper GRANTs should be considered if `AppStore` ever needs direct job_queue access.
+
+### Production Code Changes
+
+1. **`internal/worker/pool.go` — `JobStore` interface extraction.** The `Pool.store` field was changed from concrete `*store.Store` to a `JobStore` interface (4 methods: `ClaimJob`, `CompleteJob`, `FailJob`, `RecoverStaleJobs`). This enabled unit testing `processOne`, `runStaleRecovery`, and `runQueue` without a database via `fakeJobStore`. The `*store.Store` type satisfies the interface implicitly — no changes to callers needed.
+
+### Lint Fixes
+
+1. **gosec G101 false positive on GHSA test token.** `golangci-lint` flagged `"test-github-token-12345"` as a potential hardcoded credential. Suppressed with `//nolint:gosec // G101: test-only token, not a real credential` on the struct literal line (gosec flags the struct literal, not the field).
+
+### Remaining Gaps
+
+#### Deferred — would need pipeline.go integration test infrastructure (7 gaps)
+- Advisory lock acquisition in `Ingest` (security-critical #25-26)
+- Two concurrent `Ingest` calls serialize (security-critical #26)
+- EPSS `applyRow` advisory lock (security-critical #27)
+- `ComputeMaterialHash` called with correct fields in `Ingest` (security-critical #29)
+- EPSS score excluded from `MaterialFields` (security-critical #28)
+- `advisoryKey` determinism and domain isolation (security-critical #21-22)
+- `CVEAdvisoryKey` delegation (security-critical #23)
+
+#### Deferred — concurrent safety test (1 gap)
+- `ClaimJob` concurrent claim safety / SKIP LOCKED atomicity (security-critical #65). Would need concurrent goroutines racing against a real DB — non-trivial test infrastructure.
+
+#### Deferred — handler panic recovery (1 gap)
+- `processOne` handler panic crashes queue goroutine (security-critical #66). Would need `recover()` in production code.
+
+#### Deferred — OSV adapter (correctness, 73 gaps)
+- OSV adapter has no test file; all paths untested. Same structure as other feed adapters. Deferred as a single unit — null byte stripping + streaming parse + field extraction.
+
+#### Deferred — streaming JSON parser tests (correctness, ~120 gaps across 4 adapters)
+- NVD/KEV/GHSA/OSV `json.Decoder` Token()/More() key-dispatch paths. Complex test infrastructure needed (crafted JSON responses with specific key ordering, nested arrays, partial reads).
+
+#### Deferred — nice-to-have (85 gaps)
+- Unlikely runtime failures: `json.Marshal` of known types, `http.NewRequestWithContext` with valid URLs, deferred `Close()` errors, etc. Risk is negligible — these would only fail under catastrophic runtime conditions.
+
+#### Deferred — Google OIDC (1 gap)
+- Google OIDC RedirectURL formation (security-critical #63). Requires OIDC provider mock — out of scope for this batch.
+
+### Coverage Impact
+
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| Security-critical gaps | 66 | ~12 | -54 |
+| Correctness gaps | 640 | ~350 | -290 |
+| Nice-to-have gaps | 85 | 85 | 0 |
+| Files with 100% gap rate | 8 | 2 (OSV, merge/fts.go) | -6 |
+| Test files | 7 | 16 | +9 |

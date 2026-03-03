@@ -559,6 +559,20 @@ func (m *mockDispatcher) Fanout(_ context.Context, orgID, ruleID uuid.UUID, cveI
 	return nil
 }
 
+// failingDispatcher returns an error from Fanout() to test that the evaluator
+// logs the error and continues processing subsequent events.
+type failingDispatcher struct {
+	calls int
+	mu    sync.Mutex
+}
+
+func (f *failingDispatcher) Fanout(_ context.Context, _, _ uuid.UUID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return fmt.Errorf("simulated fanout failure")
+}
+
 func TestEvaluateRealtime_FanoutCalledForNewEvent(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ev := newTestEvaluator(t, tdb)
@@ -669,3 +683,173 @@ func TestEvaluateRealtime_FanoutNotCalledForDuplicateEvent(t *testing.T) {
 		t.Fatalf("want exactly 1 Fanout call (dedup suppresses second), got %d", len(disp.calls))
 	}
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// EvaluateEPSS path
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestEvaluateEPSS(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	// Insert a CVE with EPSS score and recent date_epss_updated.
+	cveID := "CVE-EPSS-001"
+	score := 8.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "epss test vuln", &score, "hashepss1")
+	_, err := tdb.DB().ExecContext(ctx,
+		`UPDATE cves SET epss_score = 0.95, date_epss_updated = now() WHERE cve_id = $1`, cveID)
+	if err != nil {
+		t.Fatalf("set epss_score: %v", err)
+	}
+
+	// Create a rule with has_epss_condition=true.
+	const epssCond = `[{"field":"epss_score","operator":"gte","value":0.5}]`
+	rule, err2 := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
+		Name:             "epss-test-rule",
+		Logic:            "and",
+		Conditions:       json.RawMessage(epssCond),
+		HasEpssCondition: true,
+		IsEpssOnly:       true,
+		Status:           "active",
+	})
+	if err2 != nil {
+		t.Fatalf("create EPSS rule: %v", err2)
+	}
+	t.Cleanup(func() {
+		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, rule.ID)
+	})
+
+	if err := ev.EvaluateEPSS(ctx); err != nil {
+		t.Fatalf("EvaluateEPSS: %v", err)
+	}
+
+	// Alert event should have been created.
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+		t.Fatalf("want 1 alert_event for EPSS match, got %d", n)
+	}
+
+	// A run row should exist.
+	if n := countRuns(t, tdb.DB(), rule.ID); n != 1 {
+		t.Fatalf("want 1 run row for EPSS evaluation, got %d", n)
+	}
+}
+
+func TestEvaluateEPSS_NoCandidates(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+
+	// No CVEs with EPSS updates — should advance cursor without error.
+	if err := ev.EvaluateEPSS(ctx); err != nil {
+		t.Fatalf("EvaluateEPSS (empty): %v", err)
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DryRun path
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestDryRun_Match(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	cveID := "CVE-DRYRUN-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "critical dryrun vuln", &score, "hashdryrun1")
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	result, err := ev.DryRun(ctx, rule.ID, orgID)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result == nil {
+		t.Fatal("DryRun returned nil result")
+	}
+	if result.MatchCount < 1 {
+		t.Errorf("DryRun MatchCount = %d, want >= 1", result.MatchCount)
+	}
+	if result.Partial {
+		t.Error("DryRun should not be partial for small corpus")
+	}
+
+	// No alert_events should be written.
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 0 {
+		t.Fatalf("DryRun must not write alert_events, got %d", n)
+	}
+
+	// SampleCVEs should contain our CVE.
+	found := false
+	for _, s := range result.SampleCVEs {
+		if s == cveID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("DryRun SampleCVEs should contain %s, got %v", cveID, result.SampleCVEs)
+	}
+}
+
+func TestDryRun_NotFound(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	result, err := ev.DryRun(ctx, uuid.New(), orgID)
+	if err != nil {
+		t.Fatalf("DryRun(not found): %v", err)
+	}
+	if result != nil {
+		t.Error("DryRun with nonexistent rule should return nil result")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Fanout error propagation
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestEvaluateRealtime_FanoutErrorContinuesProcessing(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	disp := &failingDispatcher{}
+	ev.SetDispatcher(disp)
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	cveID := "CVE-FANOUT-ERR-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "fanout error test", &score, "hashfanouterr1")
+
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	// EvaluateRealtime must not return an error even when Fanout fails.
+	if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+		t.Fatalf("EvaluateRealtime should not fail when Fanout errors: %v", err)
+	}
+
+	// Alert event should still be committed (the event is written before Fanout).
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+		t.Fatalf("alert_event should be committed despite Fanout error, got %d", n)
+	}
+
+	// Fanout should have been called.
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if disp.calls != 1 {
+		t.Errorf("Fanout should have been called once, got %d", disp.calls)
+	}
+}
+
+// NOTE: applyPostFilters Negate path (evaluator.go:529-531) is structurally dead code —
+// the DSL compiler never sets PostFilter.Negate=true. The "not_regex" operator does not
+// exist. Testable only when a future DSL version adds negated regex support.

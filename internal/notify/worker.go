@@ -117,6 +117,11 @@ func (w *Worker) RunRecoveryOnce(ctx context.Context) {
 	w.runRecovery(ctx)
 }
 
+// RunDigestOnce executes a single digest tick. Used in tests only.
+func (w *Worker) RunDigestOnce(ctx context.Context) {
+	w.runDigest(ctx)
+}
+
 func (w *Worker) runClaim(ctx context.Context) {
 	rows, err := w.store.ClaimPendingDeliveries(ctx, w.cfg.ClaimBatchSize)
 	if err != nil {

@@ -167,6 +167,66 @@ func TestSanitizeSubject(t *testing.T) {
 	}
 }
 
+// TestRenderAlert_XSSEscaping verifies that adversarial input containing HTML/JS
+// is auto-escaped by html/template, preventing XSS in rendered email output.
+func TestRenderAlert_XSSEscaping(t *testing.T) {
+	xssPayload := `<script>alert('xss')</script>`
+	data := AlertTemplateData{
+		RuleName: xssPayload,
+		RuleID:   "rule-xss",
+		CVEs: []CVESummary{
+			{
+				CVEID:       "CVE-2024-XSS",
+				Severity:    xssPayload,
+				Description: xssPayload,
+			},
+		},
+		CVErtOpsURL: "https://app.example.com",
+	}
+
+	_, html, _, err := RenderAlert(data)
+	if err != nil {
+		t.Fatalf("RenderAlert: %v", err)
+	}
+
+	// The HTML output must NOT contain the raw script tag.
+	if strings.Contains(html, "<script>") {
+		t.Error("HTML output contains unescaped <script> tag — XSS vulnerability")
+	}
+	// html/template escapes < as &lt;
+	if !strings.Contains(html, "&lt;script&gt;") {
+		t.Error("HTML output should contain escaped form of <script>")
+	}
+}
+
+// TestRenderDigest_XSSEscaping verifies XSS escaping in digest email templates.
+func TestRenderDigest_XSSEscaping(t *testing.T) {
+	xssPayload := `<img src=x onerror=alert(1)>`
+	data := DigestTemplateData{
+		OrgName:    xssPayload,
+		ReportName: xssPayload,
+		Date:       "2026-03-01",
+		CVEs: []CVESummary{
+			{
+				CVEID:       "CVE-2024-XSS2",
+				Severity:    "critical",
+				Description: xssPayload,
+			},
+		},
+		TotalCount:  1,
+		CVErtOpsURL: "https://app.example.com",
+	}
+
+	_, html, _, err := RenderDigest(data)
+	if err != nil {
+		t.Fatalf("RenderDigest: %v", err)
+	}
+
+	if strings.Contains(html, "<img src=x") {
+		t.Error("HTML output contains unescaped <img> tag — XSS vulnerability")
+	}
+}
+
 func TestSnapshotsToCVESummaries(t *testing.T) {
 	sev := "critical"
 	snaps := []cveSnapshot{

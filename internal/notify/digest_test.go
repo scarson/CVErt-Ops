@@ -165,6 +165,39 @@ func TestIsPermanentSMTPError(t *testing.T) {
 	}
 }
 
+func TestExpandSeverityThreshold_CaseSensitive(t *testing.T) {
+	t.Parallel()
+	// expandSeverityThreshold uses lowercase keys. Uppercase input returns nil.
+	got := expandSeverityThreshold("CRITICAL")
+	if got != nil {
+		t.Errorf("expandSeverityThreshold(\"CRITICAL\") = %v, want nil (case-sensitive)", got)
+	}
+	got2 := expandSeverityThreshold("High")
+	if got2 != nil {
+		t.Errorf("expandSeverityThreshold(\"High\") = %v, want nil (case-sensitive)", got2)
+	}
+}
+
+func TestAdvanceNextRunAt_DSTFallBack(t *testing.T) {
+	t.Parallel()
+	// Test the November DST fall-back (clock goes back 1 hour: EDT→EST).
+	// Nov 2, 2025 is when clocks fall back in the US at 02:00 AM.
+	// A 14:00 EDT (UTC-4) time on Nov 1 should advance to 14:00 EST (UTC-5) on Nov 2.
+	loc, _ := time.LoadLocation("America/New_York")
+	// Nov 1, 2025 14:00 EDT = 18:00 UTC
+	base := time.Date(2025, 11, 1, 14, 0, 0, 0, loc).UTC()
+
+	next, err := advanceNextRunAt(base, "America/New_York")
+	if err != nil {
+		t.Fatalf("advanceNextRunAt: %v", err)
+	}
+	// Nov 2, 2025 14:00 EST = 19:00 UTC (EST = UTC-5, one hour more than EDT)
+	expected := time.Date(2025, 11, 2, 19, 0, 0, 0, time.UTC)
+	if !next.Equal(expected) {
+		t.Errorf("advanceNextRunAt DST fall-back = %v, want %v", next, expected)
+	}
+}
+
 func TestComputeNextRunAt(t *testing.T) {
 	t.Parallel()
 	// Depends on time.Now() so we can only test basic properties:

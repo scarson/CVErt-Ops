@@ -4,6 +4,7 @@ package notify_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -682,5 +683,273 @@ func TestWorker_EmailDigestBranch(t *testing.T) {
 	}
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	}
+}
+
+func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org, _ := s.CreateOrg(ctx, "DigestE2EOrg")
+
+	// Create an email channel and bind it to a report.
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"digest-e2e@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestE2EChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+
+	// Create a second channel to verify fan-out to multiple channels.
+	emailCfg2, _ := json.Marshal(map[string]any{
+		"recipients": []string{"digest-e2e-2@example.com"},
+	})
+	chanRow2, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestE2EChan2", "email", json.RawMessage(emailCfg2))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel (2): %v", err)
+	}
+
+	// Report with next_run_at in the past so ClaimDueReports picks it up.
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestE2EReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+
+	// Bind both channels to the report.
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow2.ID); err != nil {
+		t.Fatalf("BindChannelToReport (2): %v", err)
+	}
+
+	// Insert a CVE modified after the report's created_at (so DigestCVEs returns it).
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'critical', 'Digest E2E vuln', 9.8, $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET
+			severity = EXCLUDED.severity,
+			date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-DIGEST-E2E", uuid.New().String(), time.Now()); err != nil {
+		t.Fatalf("insert CVE: %v", err)
+	}
+
+	// Record the original next_run_at for comparison.
+	originalNextRunAt := report.NextRunAt
+
+	// Run the digest tick.
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// Verify: delivery rows were created for both channels.
+	var deliveryCount int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notification_deliveries WHERE report_id=$1",
+		report.ID).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveryCount != 2 {
+		t.Errorf("delivery count = %d, want 2 (one per channel)", deliveryCount)
+	}
+
+	// Verify: delivery payload contains the CVE snapshot.
+	var payload json.RawMessage
+	if err := db.QueryRowContext(ctx,
+		"SELECT payload FROM notification_deliveries WHERE report_id=$1 LIMIT 1",
+		report.ID).Scan(&payload); err != nil {
+		t.Fatalf("scan payload: %v", err)
+	}
+	var snaps []map[string]any
+	if err := json.Unmarshal(payload, &snaps); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if len(snaps) == 0 {
+		t.Fatal("payload contains no CVE snapshots")
+	}
+	if id, _ := snaps[0]["cve_id"].(string); id != "CVE-2025-DIGEST-E2E" {
+		t.Errorf("payload cve_id = %q, want %q", id, "CVE-2025-DIGEST-E2E")
+	}
+
+	// Verify: next_run_at was advanced (should be ~1 day after the original).
+	var newNextRunAt time.Time
+	var lastRunAt time.Time
+	if err := db.QueryRowContext(ctx,
+		"SELECT next_run_at, last_run_at FROM scheduled_reports WHERE id=$1",
+		report.ID).Scan(&newNextRunAt, &lastRunAt); err != nil {
+		t.Fatalf("scan report state: %v", err)
+	}
+	if !newNextRunAt.After(originalNextRunAt) {
+		t.Errorf("next_run_at %v should be after original %v", newNextRunAt, originalNextRunAt)
+	}
+	if lastRunAt.IsZero() {
+		t.Error("last_run_at should be set after digest execution")
+	}
+}
+
+func TestWorker_DigestPipeline_SendOnEmptyFalse_NoCVEs(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org, _ := s.CreateOrg(ctx, "DigestNoSendOrg")
+
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"nosend@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestNoSendChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+
+	// SendOnEmpty=false — no deliveries should be created if no CVEs match.
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestNoSendReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   false,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// No CVEs inserted — digest window is empty.
+	originalNextRunAt := report.NextRunAt
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// Verify: no deliveries created (send_on_empty=false).
+	var deliveryCount int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notification_deliveries WHERE report_id=$1",
+		report.ID).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveryCount != 0 {
+		t.Errorf("delivery count = %d, want 0 (send_on_empty=false, no CVEs)", deliveryCount)
+	}
+
+	// Verify: next_run_at was still advanced (so we don't re-query the same window).
+	var newNextRunAt time.Time
+	if err := db.QueryRowContext(ctx,
+		"SELECT next_run_at FROM scheduled_reports WHERE id=$1",
+		report.ID).Scan(&newNextRunAt); err != nil {
+		t.Fatalf("scan next_run_at: %v", err)
+	}
+	if !newNextRunAt.After(originalNextRunAt) {
+		t.Errorf("next_run_at %v should be after original %v even with no CVEs", newNextRunAt, originalNextRunAt)
+	}
+}
+
+func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org, _ := s.CreateOrg(ctx, "DigestSevOrg")
+
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"sev@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestSevChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+
+	// Report with severity_threshold="high" — should only include critical and high CVEs.
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:              "DigestSevReport",
+		ScheduledTime:     "10:00:00",
+		Timezone:          "UTC",
+		NextRunAt:         time.Now().Add(-1 * time.Hour),
+		SeverityThreshold: sql.NullString{String: "high", Valid: true},
+		SendOnEmpty:       true,
+		Status:            "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// Insert CVEs: one critical (should match), one low (should NOT match).
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'critical', 'Critical sev test', $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET severity = EXCLUDED.severity, date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-SEV-CRIT", uuid.New().String(), time.Now()); err != nil {
+		t.Fatalf("insert critical CVE: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+		VALUES ($1, 'published', 'low', 'Low sev test', $2, $3)
+		ON CONFLICT (cve_id) DO UPDATE SET severity = EXCLUDED.severity, date_modified_canonical = EXCLUDED.date_modified_canonical`,
+		"CVE-2025-SEV-LOW", uuid.New().String(), time.Now()); err != nil {
+		t.Fatalf("insert low CVE: %v", err)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// Verify: delivery payload should only contain the critical CVE (severity >= high).
+	var payload json.RawMessage
+	if err := db.QueryRowContext(ctx,
+		"SELECT payload FROM notification_deliveries WHERE report_id=$1 LIMIT 1",
+		report.ID).Scan(&payload); err != nil {
+		t.Fatalf("scan payload: %v", err)
+	}
+	var snaps []map[string]any
+	if err := json.Unmarshal(payload, &snaps); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	// Should have exactly the critical CVE (not the low one).
+	for _, snap := range snaps {
+		sev, _ := snap["severity"].(string)
+		if sev == "low" {
+			t.Errorf("payload contains low-severity CVE — threshold 'high' should exclude it")
+		}
+	}
+	// At minimum, the critical CVE should be present.
+	found := false
+	for _, snap := range snaps {
+		if id, _ := snap["cve_id"].(string); id == "CVE-2025-SEV-CRIT" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("payload should contain CVE-2025-SEV-CRIT (critical severity >= high threshold)")
 	}
 }

@@ -56,3 +56,48 @@ func TestPromptVersion_Stable(t *testing.T) {
 		t.Errorf("PromptVersion length = %d, want 8", len(v1))
 	}
 }
+
+func TestBuildSchemaDescription_NullableAnnotation(t *testing.T) {
+	t.Parallel()
+	desc := ai.BuildSchemaDescription()
+	// At least one nullable field should produce "Nullable: true".
+	if !strings.Contains(desc, "Nullable: true") {
+		t.Error("schema description missing Nullable annotation")
+	}
+}
+
+func TestBuildSchemaDescription_EnumValues(t *testing.T) {
+	t.Parallel()
+	desc := ai.BuildSchemaDescription()
+	// severity has enum values: critical, high, medium, low, none.
+	if !strings.Contains(desc, "Values:") {
+		t.Error("schema description missing Values annotation for enum fields")
+	}
+	if !strings.Contains(desc, "critical") {
+		t.Error("schema description missing 'critical' enum value for severity")
+	}
+}
+
+func TestBuildSchemaDescription_FieldsSortedByName(t *testing.T) {
+	t.Parallel()
+	desc := ai.BuildSchemaDescription()
+	// Extract field names from "- fieldname (type: ...)" lines.
+	lines := strings.Split(desc, "\n")
+	var fieldNames []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "- ") {
+			paren := strings.Index(l, " (type:")
+			if paren > 2 {
+				fieldNames = append(fieldNames, l[2:paren])
+			}
+		}
+	}
+	if len(fieldNames) < 5 {
+		t.Fatalf("expected at least 5 fields, got %d", len(fieldNames))
+	}
+	for i := 1; i < len(fieldNames); i++ {
+		if fieldNames[i-1] > fieldNames[i] {
+			t.Errorf("fields not sorted: %q > %q", fieldNames[i-1], fieldNames[i])
+		}
+	}
+}

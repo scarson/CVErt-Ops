@@ -1138,6 +1138,79 @@ func TestFetch_HTTPError(t *testing.T) {
 	}
 }
 
+func TestFetch_TokenAuthHeaderSet(t *testing.T) {
+	t.Parallel()
+
+	var capturedAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	// Construct adapter directly to inject a test token.
+	adapter := &Adapter{ //nolint:gosec // G101 false positive: test-only token, not a real credential
+		client:      client,
+		rateLimiter: New(nil).rateLimiter,
+		token:       "test-github-token-12345",
+	}
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantAuth := "Bearer test-github-token-12345"
+	if capturedAuth != wantAuth {
+		t.Errorf("Authorization header = %q, want %q", capturedAuth, wantAuth)
+	}
+}
+
+func TestFetch_NoTokenOmitsAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	var capturedAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	// Construct adapter with empty token.
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: New(nil).rateLimiter,
+		token:       "",
+	}
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedAuth != "" {
+		t.Errorf("Authorization header = %q, want empty (no token configured)", capturedAuth)
+	}
+}
+
 func TestFetch_EmptyPage(t *testing.T) {
 	t.Parallel()
 

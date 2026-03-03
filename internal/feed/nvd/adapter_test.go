@@ -301,6 +301,47 @@ func TestParseNVDResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("empty body returns error", func(t *testing.T) {
+		t.Parallel()
+		_, _, _, err := parseNVDResponse(strings.NewReader(""))
+		if err == nil {
+			t.Fatal("expected error for empty body, got nil")
+		}
+	})
+
+	t.Run("unknown keys discarded without error", func(t *testing.T) {
+		t.Parallel()
+		body := `{
+			"totalResults": 1,
+			"timestamp": "2024-06-01T12:00:00.000",
+			"unknownField": "should be ignored",
+			"anotherUnknown": 42,
+			"nestedUnknown": {"key": "value"},
+			"vulnerabilities": [
+				{
+					"cve": {
+						"id": "CVE-2024-9001",
+						"vulnStatus": "Analyzed",
+						"descriptions": [{"lang": "en", "value": "Test vuln"}]
+					}
+				}
+			]
+		}`
+		patches, total, _, err := parseNVDResponse(strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if total != 1 {
+			t.Fatalf("totalResults = %d, want 1", total)
+		}
+		if len(patches) != 1 {
+			t.Fatalf("len(patches) = %d, want 1", len(patches))
+		}
+		if patches[0].CVEID != "CVE-2024-9001" {
+			t.Fatalf("patches[0].CVEID = %q, want CVE-2024-9001", patches[0].CVEID)
+		}
+	})
+
 	t.Run("malformed individual records skipped", func(t *testing.T) {
 		t.Parallel()
 		body := `{
@@ -559,6 +600,71 @@ func TestCveToCanonical(t *testing.T) {
 			t.Fatalf("References[1].URL = %q, unexpected", p.References[1].URL)
 		}
 	})
+
+	t.Run("no english description yields nil DescriptionPrimary", func(t *testing.T) {
+		t.Parallel()
+		p := cveToCanonical(nvdCVE{
+			ID: "CVE-2024-5004",
+			Descriptions: []nvdDescription{
+				{Lang: "es", Value: "Solo español"},
+				{Lang: "fr", Value: "Seulement français"},
+			},
+		})
+		if p == nil {
+			t.Fatal("expected non-nil patch")
+		}
+		if p.DescriptionPrimary != nil {
+			t.Errorf("DescriptionPrimary = %q, want nil (no english descriptions)", *p.DescriptionPrimary)
+		}
+	})
+
+	t.Run("multiple english descriptions selects first", func(t *testing.T) {
+		t.Parallel()
+		p := cveToCanonical(nvdCVE{
+			ID: "CVE-2024-5005",
+			Descriptions: []nvdDescription{
+				{Lang: "en", Value: "First English"},
+				{Lang: "en", Value: "Second English"},
+			},
+		})
+		if p == nil {
+			t.Fatal("expected non-nil patch")
+		}
+		if p.DescriptionPrimary == nil {
+			t.Fatal("DescriptionPrimary should not be nil")
+		}
+		if *p.DescriptionPrimary != "First English" {
+			t.Errorf("DescriptionPrimary = %q, want %q", *p.DescriptionPrimary, "First English")
+		}
+	})
+
+	t.Run("CPE normalized to lowercase", func(t *testing.T) {
+		t.Parallel()
+		p := cveToCanonical(nvdCVE{
+			ID: "CVE-2024-5006",
+			Configurations: []nvdConfig{
+				{Nodes: []nvdNode{
+					{CPEMatch: []nvdCPEMatch{
+						{Criteria: "cpe:2.3:a:Vendor:Product:1.0:*:*:*:*:*:*:*"},
+					}},
+				}},
+			},
+		})
+		if p == nil {
+			t.Fatal("expected non-nil patch")
+		}
+		if len(p.AffectedCPEs) != 1 {
+			t.Fatalf("len(AffectedCPEs) = %d, want 1", len(p.AffectedCPEs))
+		}
+		// Original case preserved in CPE field.
+		if p.AffectedCPEs[0].CPE != "cpe:2.3:a:Vendor:Product:1.0:*:*:*:*:*:*:*" {
+			t.Errorf("CPE = %q, want original case preserved", p.AffectedCPEs[0].CPE)
+		}
+		// Normalized form is lowercase.
+		if p.AffectedCPEs[0].CPENormalized != "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*" {
+			t.Errorf("CPENormalized = %q, want lowercase", p.AffectedCPEs[0].CPENormalized)
+		}
+	})
 }
 
 func TestCveToCanonical_NullByteStripping(t *testing.T) {
@@ -732,6 +838,61 @@ func TestApplyNVDCVSS(t *testing.T) {
 		// Severity comes from v3.1 (set first), not overridden by v4.0.
 		if patch.Severity == nil || *patch.Severity != "CRITICAL" {
 			t.Fatalf("Severity = %v, want CRITICAL (from v3.1, not overridden by v4.0)", patch.Severity)
+		}
+	})
+
+	t.Run("v40 severity only set when Severity is nil", func(t *testing.T) {
+		t.Parallel()
+		patch := &feed.CanonicalPatch{}
+		m := nvdMetrics{
+			CVSSV31: []nvdCVSSMetric{
+				{
+					Source:   "nvd@nist.gov",
+					CVSSData: nvdCVSSData{Version: "3.1", VectorString: "CVSS:3.1/AV:N", BaseScore: 7.5, BaseSeverity: "High"},
+				},
+			},
+			CVSSV40: []nvdCVSSMetric{
+				{
+					Source:   "nvd@nist.gov",
+					CVSSData: nvdCVSSData{Version: "4.0", VectorString: "CVSS:4.0/AV:N", BaseScore: 8.0, BaseSeverity: "Critical"},
+				},
+			},
+		}
+		applyNVDCVSS(patch, m)
+		// Severity set by v3.1 first; v4.0 should NOT overwrite.
+		if patch.Severity == nil || *patch.Severity != "HIGH" {
+			t.Fatalf("Severity = %v, want HIGH (v3.1 set first, v4.0 must not overwrite)", patch.Severity)
+		}
+	})
+
+	t.Run("severity empty string not set", func(t *testing.T) {
+		t.Parallel()
+		patch := &feed.CanonicalPatch{}
+		m := nvdMetrics{
+			CVSSV31: []nvdCVSSMetric{
+				{
+					Source:   "nvd@nist.gov",
+					CVSSData: nvdCVSSData{Version: "3.1", VectorString: "CVSS:3.1/AV:N", BaseScore: 5.0, BaseSeverity: ""},
+				},
+			},
+			CVSSV40: []nvdCVSSMetric{
+				{
+					Source:   "nvd@nist.gov",
+					CVSSData: nvdCVSSData{Version: "4.0", VectorString: "CVSS:4.0/AV:N", BaseScore: 6.0, BaseSeverity: ""},
+				},
+			},
+		}
+		applyNVDCVSS(patch, m)
+		// Both severity strings are empty — Severity should remain nil.
+		if patch.Severity != nil {
+			t.Fatalf("Severity = %v, want nil (empty severity strings should not be set)", patch.Severity)
+		}
+		// Scores should still be set.
+		if patch.CVSSv3Score == nil || *patch.CVSSv3Score != 5.0 {
+			t.Fatalf("CVSSv3Score = %v, want 5.0", patch.CVSSv3Score)
+		}
+		if patch.CVSSv4Score == nil || *patch.CVSSv4Score != 6.0 {
+			t.Fatalf("CVSSv4Score = %v, want 6.0", patch.CVSSv4Score)
 		}
 	})
 
@@ -1024,6 +1185,86 @@ func TestFetch_InvalidCursor(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parse cursor") {
 		t.Errorf("error = %q, want it to contain 'parse cursor'", err.Error())
+	}
+}
+
+func TestFetch_ZeroWindowOmitsDateParams(t *testing.T) {
+	t.Parallel()
+
+	var capturedQuery url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	// Construct a cursor with zero WindowStart and WindowEnd.
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Time{},
+		WindowEnd:   time.Time{},
+		StartIndex:  0,
+	})
+
+	// parseCursor with zero WindowStart falls back to zeroValueCursor,
+	// which sets non-zero dates. Verify they are present as non-zero.
+	_, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The zeroValueCursor sets both window fields, so date params are present.
+	if capturedQuery.Get("lastModStartDate") == "" {
+		t.Error("expected lastModStartDate query param (zeroValueCursor sets it)")
+	}
+	if capturedQuery.Get("lastModEndDate") == "" {
+		t.Error("expected lastModEndDate query param (zeroValueCursor sets it)")
+	}
+}
+
+func TestFetch_NoDateResponseHeader(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Deliberately omit Date header.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	// Fetch should succeed even without a Date header; effectiveNow falls back
+	// to the response timestamp or time.Now().
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
 	}
 }
 

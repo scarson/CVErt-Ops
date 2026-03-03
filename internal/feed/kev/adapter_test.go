@@ -537,6 +537,54 @@ func TestExtractCWEs(t *testing.T) {
 	}
 }
 
+func TestParseKEV_RecordDecodeErrorIsFatal(t *testing.T) {
+	t.Parallel()
+
+	// KEV records that fail to decode are fatal (unlike NVD which skips them).
+	// Inject a non-object value in the vulnerabilities array to trigger a
+	// decode error on the record struct.
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": [
+			"this is not a valid JSON object for a kevRecord"
+		]
+	}`
+
+	_, _, _, err := parseKEV(strings.NewReader(body), "")
+	if err == nil {
+		t.Fatal("expected error for malformed record in vulnerabilities array, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode record") {
+		t.Errorf("error = %q, want it to contain 'decode record'", err.Error())
+	}
+}
+
+func TestRecordToPatch_DateAddedParsedCorrectly(t *testing.T) {
+	t.Parallel()
+
+	rec := kevRecord{
+		CVEID:     "CVE-2024-3333",
+		DateAdded: "2024-07-22",
+	}
+	p := recordToPatch(rec)
+	if p == nil {
+		t.Fatal("expected non-nil patch")
+	}
+	if p.DatePublished == nil {
+		t.Fatal("DatePublished should not be nil")
+	}
+	if p.DatePublished.Year() != 2024 || p.DatePublished.Month() != 7 || p.DatePublished.Day() != 22 {
+		t.Errorf("DatePublished = %v, want 2024-07-22", p.DatePublished)
+	}
+	if p.DateModified == nil {
+		t.Fatal("DateModified should not be nil")
+	}
+	if !p.DateModified.Equal(*p.DatePublished) {
+		t.Errorf("DateModified = %v, should equal DatePublished %v", p.DateModified, p.DatePublished)
+	}
+}
+
 // --- Fetch-level integration tests (httptest + redirectTransport) ---
 
 // redirectTransport intercepts outbound requests and rewrites their scheme/host

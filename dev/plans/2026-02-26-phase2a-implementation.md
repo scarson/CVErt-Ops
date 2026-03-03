@@ -2607,3 +2607,42 @@ Before marking Phase 2a complete, verify each required item from PLAN.md §7:
 - [ ] Invitation flow never reveals whether email is registered
 - [ ] API key effective role = min(key.role, currentOrgRole)
 - [ ] Rate limiting on login, register, refresh endpoints
+
+---
+
+## Test coverage gap review (2026-03-02)
+
+Systematic test coverage review across all Phase 2a code using the `test-coverage-review` skill. Mapped every code path in source files and cross-referenced against test assertions.
+
+### Tests added (~120 new test functions)
+
+**`internal/auth/` (7 tests)**
+- JWT adversarial: `alg:none` attack, wrong secret, expired — for both access and refresh tokens
+- Argon2id OWASP parameter assertion (verifies m=19456, t=2, p=1 in PHC output)
+- `VerifyPassword` malformed hash format (5 subtests: empty, non-PHC, wrong algorithm, too few parts, bad params)
+
+**`internal/api/middleware_*` (19 tests)**
+- CSRF: all safe methods (GET, HEAD, OPTIONS, TRACE) bypass check; all state-changing methods (POST, PUT, PATCH, DELETE) blocked without header; wrong header value rejected; no-cookie bypasses check
+- Auth middleware: non-Bearer prefix fallthrough, malformed JWT → 401, wrong secret → 401, API key context values set correctly
+- RBAC: missing userID → 401, invalid org_id → 400, exact role match (4 roles), API key role not capped upward
+- Rate limiter: `clientIPMiddleware` (previously untested) — host:port, bare IP, IPv6; `checkAuthRateLimit` (previously untested) — within burst, after burst, missing IP fallback; `authRateLimit` port stripping
+
+**`internal/store/` (48 tests)**
+- RLS fail-closed: `api_keys`, `groups`, `group_members` return 0 rows when `app.org_id` unset (6 tests)
+- Auth store: `GetUserByID` happy + not-found, `CountUsers`, `UpdateLastLogin`, `UpdatePasswordHash` + version bump, identity upsert conflict (same provider_user_id different user), `DeleteExpiredRefreshTokens`, duplicate email constraint
+- Org store: duplicate member add, invitation accept flow, owner count, `CreateOrgWithOwner`, update + not-found, cancel invitation, invitation not-found, `ListUserOrgs` empty
+- API key store: revoke idempotent, list empty, get by ID + not-found + wrong org, update last used, lookup not-found
+- Group store: remove member, remove non-existent (no-op), empty members list, update, list + empty + excludes deleted
+
+**`internal/api/` handlers (29 tests)**
+- Auth: register invite-only mode, refresh missing/invalid/revoked-version cookies, `/auth/me` unauthenticated, change password unauthenticated + OAuth-only account, expired invitation (get + accept), accept without auth
+- OAuth GitHub: mismatched state cookie, no verified primary email, identity linking by provider_user_id
+- OAuth Google: missing nonce cookie, mismatched state cookie, identity linking by provider sub
+- Orgs: cross-org member operations (7 subtests), empty name, remove non-existent member, invalid invitation role
+- Groups: cross-org group access (6 subtests), not-found, duplicate member, empty name
+- API keys: viewer forbidden from create, invalid role, revoke idempotent, cross-org access (3 subtests)
+
+### Remaining gaps (nice-to-have, deferred)
+- Internal error wrapping consistency
+- Unlikely runtime failures (rand.Reader, json.Marshal of known types)
+- Cache eviction edge cases

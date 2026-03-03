@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -728,6 +730,178 @@ func TestCreateReport_DuplicateName(t *testing.T) {
 	// within the same org. Handler returns 500 (unique violation not caught as 409).
 	if resp2.StatusCode == http.StatusCreated {
 		t.Error("create duplicate name: should be rejected (unique constraint)")
+	}
+}
+
+// TestReports_RBAC_ViewerCannotWrite verifies that a viewer-role user can read
+// reports but cannot create, update, delete, or manage channel bindings.
+func TestReports_RBAC_ViewerCannotWrite(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice is the org owner.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	// Bob is a viewer in Alice's org.
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add Bob as viewer: %v", err)
+	}
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	// Alice creates a report and a channel for bind tests.
+	createResp := doCreateReport(t, ctx, ts, aliceToken, aliceReg.OrgID, validReportBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("alice create report: got %d", createResp.StatusCode)
+	}
+	var report reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	chanResp := doCreateChannel(t, ctx, ts, aliceToken, aliceReg.OrgID, validChannelBody)
+	defer chanResp.Body.Close() //nolint:errcheck,gosec // G104
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(chanResp.Body).Decode(&ch); err != nil {
+		t.Fatalf("decode channel: %v", err)
+	}
+
+	// Viewer CAN read.
+	t.Run("GET /reports", func(t *testing.T) {
+		resp := doListReports(t, ctx, ts, bobToken, aliceReg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("viewer list reports: got %d, want 200", resp.StatusCode)
+		}
+	})
+	t.Run("GET /reports/{id}", func(t *testing.T) {
+		resp := doGetReport(t, ctx, ts, bobToken, aliceReg.OrgID, report.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("viewer get report: got %d, want 200", resp.StatusCode)
+		}
+	})
+	t.Run("GET /reports/{id}/channels", func(t *testing.T) {
+		resp := doListReportChannels(t, ctx, ts, bobToken, aliceReg.OrgID, report.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("viewer list report channels: got %d, want 200", resp.StatusCode)
+		}
+	})
+
+	// Viewer CANNOT write.
+	t.Run("POST /reports", func(t *testing.T) {
+		resp := doCreateReport(t, ctx, ts, bobToken, aliceReg.OrgID,
+			`{"name":"Sneaky Report","scheduled_time":"10:00","timezone":"UTC"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer create report: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("PATCH /reports/{id}", func(t *testing.T) {
+		resp := doPatchReport(t, ctx, ts, bobToken, aliceReg.OrgID, report.ID, `{"name":"Hacked"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer patch report: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("DELETE /reports/{id}", func(t *testing.T) {
+		resp := doDeleteReport(t, ctx, ts, bobToken, aliceReg.OrgID, report.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer delete report: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("PUT /reports/{id}/channels/{channel_id}", func(t *testing.T) {
+		resp := doBindReportChannel(t, ctx, ts, bobToken, aliceReg.OrgID, report.ID, ch.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer bind channel: got %d, want 403", resp.StatusCode)
+		}
+	})
+	t.Run("DELETE /reports/{id}/channels/{channel_id}", func(t *testing.T) {
+		resp := doUnbindReportChannel(t, ctx, ts, bobToken, aliceReg.OrgID, report.ID, ch.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer unbind channel: got %d, want 403", resp.StatusCode)
+		}
+	})
+}
+
+// TestBindChannelToReport_CrossOrgChannelRejected verifies that binding
+// org B's channel to org A's report is rejected (channel not found in org A).
+func TestBindChannelToReport_CrossOrgChannelRejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	// Bob owns org B.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+	bobOrgReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs", bytes.NewBufferString(`{"name":"Bob Org"}`))
+	bobOrgReq.Header.Set("Content-Type", "application/json")
+	bobOrgReq.Header.Set("Cookie", "access_token="+bobToken)
+	bobOrgReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	bobOrgResp, err := ts.Client().Do(bobOrgReq) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create bob org: %v", err)
+	}
+	defer bobOrgResp.Body.Close() //nolint:errcheck,gosec // G104
+	var bobOrg struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(bobOrgResp.Body).Decode(&bobOrg); err != nil {
+		t.Fatalf("decode bob org: %v", err)
+	}
+
+	// Bob creates a channel in his org.
+	bobChanResp := doCreateChannel(t, ctx, ts, bobToken, bobOrg.OrgID, validChannelBody)
+	defer bobChanResp.Body.Close() //nolint:errcheck,gosec // G104
+	if bobChanResp.StatusCode != http.StatusCreated {
+		t.Fatalf("bob create channel: got %d", bobChanResp.StatusCode)
+	}
+	var bobChan struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(bobChanResp.Body).Decode(&bobChan); err != nil {
+		t.Fatalf("decode bob channel: %v", err)
+	}
+
+	// Alice creates a report in her org.
+	createResp := doCreateReport(t, ctx, ts, aliceToken, aliceReg.OrgID, validReportBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var report reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+
+	// Alice tries to bind Bob's channel to her report — should fail with 404
+	// (channel not found in Alice's org).
+	bindResp := doBindReportChannel(t, ctx, ts, aliceToken, aliceReg.OrgID, report.ID, bobChan.ID)
+	defer bindResp.Body.Close() //nolint:errcheck,gosec // G104
+	if bindResp.StatusCode != http.StatusNotFound {
+		t.Errorf("bind cross-org channel: got %d, want 404", bindResp.StatusCode)
 	}
 }
 

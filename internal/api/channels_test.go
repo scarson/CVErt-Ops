@@ -952,6 +952,67 @@ func TestCreateChannel_EmailExceed50Recipients_422(t *testing.T) {
 	}
 }
 
+// TestCreateChannel_EmailHeaderInjection verifies that actual CRLF bytes in
+// recipient display names are rejected by mail.ParseAddress validation,
+// preventing email header injection attacks.
+func TestCreateChannel_EmailHeaderInjection(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	// Each case uses a unique channel name to avoid duplicate key constraint.
+	// Recipients contain actual control characters (CR, LF) — not literal backslash escapes.
+	cases := []struct {
+		desc      string
+		name      string
+		recipient string
+	}{
+		{"CRLF in display name", "Inject CRLF", "\"Name\r\nBcc: evil@attacker.com\" <legit@example.com>"},
+		{"bare newline", "Inject LF", "\"Name\nBcc: evil@attacker.com\" <legit@example.com>"},
+		{"bare carriage return", "Inject CR", "\"Name\rBcc: evil@attacker.com\" <legit@example.com>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			// Build JSON with the control characters properly escaped via json.Marshal.
+			type emailConfig struct {
+				Recipients []string `json:"recipients"`
+			}
+			type createBody struct {
+				Name   string      `json:"name"`
+				Type   string      `json:"type"`
+				Config emailConfig `json:"config"`
+			}
+			payload := createBody{
+				Name: tc.name,
+				Type: "email",
+				Config: emailConfig{
+					Recipients: []string{tc.recipient},
+				},
+			}
+			bodyBytes, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, string(bodyBytes))
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode == http.StatusCreated {
+				t.Errorf("header injection (%s): should be rejected, got 201", tc.desc)
+			}
+		})
+	}
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // mustParseUUID parses a UUID string and fails the test if invalid.

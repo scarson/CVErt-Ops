@@ -238,6 +238,36 @@ func TestResolveOptionalFilters(t *testing.T) {
 			params:      map[string]string{"exploit_available": "TRUE"},
 			wantExploit: boolPtr(true),
 		},
+		{
+			name:    "in_cisa_kev True (mixed case) — EqualFold accepts any casing",
+			params:  map[string]string{"in_cisa_kev": "True"},
+			wantKEV: boolPtr(true),
+		},
+		{
+			name:    "in_cisa_kev yes — not a boolean synonym, resolves to false",
+			params:  map[string]string{"in_cisa_kev": "yes"},
+			wantKEV: boolPtr(false),
+		},
+		{
+			name:    "in_cisa_kev 1 — not a boolean synonym, resolves to false",
+			params:  map[string]string{"in_cisa_kev": "1"},
+			wantKEV: boolPtr(false),
+		},
+		{
+			name:        "exploit_available True (mixed case)",
+			params:      map[string]string{"exploit_available": "True"},
+			wantExploit: boolPtr(true),
+		},
+		{
+			name:        "exploit_available yes — resolves to false",
+			params:      map[string]string{"exploit_available": "yes"},
+			wantExploit: boolPtr(false),
+		},
+		{
+			name:        "exploit_available 1 — resolves to false",
+			params:      map[string]string{"exploit_available": "1"},
+			wantExploit: boolPtr(false),
+		},
 	}
 
 	for _, tc := range tests {

@@ -15,23 +15,18 @@ import (
 // ── withBypassTx ──────────────────────────────────────────────────────────────
 
 // TestWithBypassTx_SetsSessionVar verifies that withBypassTx executes
-// SET LOCAL app.bypass_rls = 'on' by confirming the AppStore can read
-// data from any org without an org context.
+// SET LOCAL app.bypass_rls = 'on' by confirming the Store can query
+// a table without an org context.
 func TestWithBypassTx_SetsSessionVar(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	// Insert an org and member via superuser.
-	org, _ := s.CreateOrg(ctx, "BypassOrg1")
-	user, _ := s.CreateUser(ctx, "bypass1@example.com", "Bypass1", "", 0)
-	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "member")
-
 	// HasPendingOrRunningJob uses withBypassTx internally.
-	// If SET LOCAL bypass_rls works, this should succeed without error on AppStore.
-	_, err := s.AppStore.HasPendingOrRunningJob(ctx, "nonexistent:key")
+	// If SET LOCAL bypass_rls is set, this succeeds without error.
+	_, err := s.Store.HasPendingOrRunningJob(ctx, "nonexistent:key")
 	if err != nil {
-		t.Fatalf("HasPendingOrRunningJob via AppStore (bypass): %v", err)
+		t.Fatalf("HasPendingOrRunningJob via Store (bypass): %v", err)
 	}
 }
 

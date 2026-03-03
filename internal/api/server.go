@@ -147,6 +147,14 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── Standard chi middleware ───────────────────────────────────────────────
 	r.Use(middleware.RequestID)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+				w.Header().Set(middleware.RequestIDHeader, reqID)
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
 	r.Use(middleware.RealIP)
 	r.Use(clientIPMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies

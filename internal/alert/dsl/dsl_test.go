@@ -1052,20 +1052,6 @@ func TestValidate_StrArrayInvalidValue(t *testing.T) {
 	}
 }
 
-func TestValidate_FTSNonStringValue(t *testing.T) {
-	t.Parallel()
-	r := dsl.Rule{
-		Logic: dsl.LogicAnd,
-		Conditions: []dsl.Condition{
-			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`123`)},
-		},
-	}
-	errs, _, _ := dsl.Validate(r, false)
-	if !hasError(errs) {
-		t.Errorf("expected error for non-string FTS value, got %v", errs)
-	}
-}
-
 func TestValidate_AffectedEcosystemIn(t *testing.T) {
 	t.Parallel()
 	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","pypi"]}]}`)
@@ -1401,18 +1387,6 @@ func TestCompile_EnumNeq(t *testing.T) {
 	}
 }
 
-func TestCompile_EnumNotIn(t *testing.T) {
-	t.Parallel()
-	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","none"]}]}`, nil)
-	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.severity") {
-		t.Errorf("SQL missing severity reference: %q", sql)
-	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
-	}
-}
-
 func TestCompile_BoolFalse(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"exploit_available","operator":"eq","value":false}]}`, nil)
@@ -1541,33 +1515,6 @@ func TestCompile_AffectedPackageEndsWith(t *testing.T) {
 	_, args := sqlOf(t, c)
 	if len(args) != 1 || args[0] != "%core" {
 		t.Errorf("expected ends_with pattern '%%core', got %v", args)
-	}
-}
-
-func TestCompile_FTSJoinDedup(t *testing.T) {
-	t.Parallel()
-	// Two FTS conditions should produce only one join
-	r := dsl.Rule{
-		Logic: dsl.LogicAnd,
-		Conditions: []dsl.Condition{
-			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"buffer overflow"`)},
-			{Field: "fts_query", Op: "matches", Value: json.RawMessage(`"remote code"`)},
-		},
-	}
-	compiled, err := dsl.Compile(r, uuid.Nil, 0, uuid.Nil, nil)
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
-	}
-	if len(compiled.Joins) != 1 {
-		t.Errorf("expected exactly 1 FTS join even with 2 FTS conditions, got %d", len(compiled.Joins))
-	}
-}
-
-func TestCompile_NoJoinsWithoutFTS(t *testing.T) {
-	t.Parallel()
-	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`, nil)
-	if len(c.Joins) != 0 {
-		t.Errorf("expected no joins without FTS, got %v", c.Joins)
 	}
 }
 

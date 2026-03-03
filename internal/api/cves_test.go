@@ -223,6 +223,21 @@ func TestResolveOptionalFilters(t *testing.T) {
 			wantCVSSMax: floatPtr(9),
 			wantKEV:     boolPtr(true),
 		},
+		{
+			name:    "in_cisa_kev TRUE (uppercase) — must not silently coerce to false",
+			params:  map[string]string{"in_cisa_kev": "TRUE"},
+			wantKEV: boolPtr(true),
+		},
+		{
+			name:    "in_cisa_kev FALSE (uppercase) — case-insensitive comparison",
+			params:  map[string]string{"in_cisa_kev": "FALSE"},
+			wantKEV: boolPtr(false),
+		},
+		{
+			name:        "exploit_available TRUE (uppercase)",
+			params:      map[string]string{"exploit_available": "TRUE"},
+			wantExploit: boolPtr(true),
+		},
 	}
 
 	for _, tc := range tests {

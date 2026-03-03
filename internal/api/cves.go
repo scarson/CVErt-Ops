@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -258,11 +259,11 @@ func (i *ListCVEsInput) resolveOptionalFilters(queryFn func(string) string) []er
 	parseFloat("epss_max", 0, 1, &i.EPSSMax)
 
 	if i.InCISAKEV != "" {
-		b := i.InCISAKEV == "true"
+		b := strings.EqualFold(i.InCISAKEV, "true")
 		i.inCISAKEVBool = &b
 	}
 	if i.ExploitAvail != "" {
-		b := i.ExploitAvail == "true"
+		b := strings.EqualFold(i.ExploitAvail, "true")
 		i.exploitAvailBool = &b
 	}
 

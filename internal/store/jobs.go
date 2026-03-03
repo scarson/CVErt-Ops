@@ -1,3 +1,5 @@
+// ABOUTME: Store methods for the job queue — claim, complete, fail, recover stale, and enqueue.
+// ABOUTME: Wraps sqlc-generated queries with domain types and error formatting.
 package store
 
 import (

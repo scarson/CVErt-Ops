@@ -323,3 +323,67 @@ The `deliveryEntry` struct includes `ReportID` and `Kind` fields to support dige
 13. **`ListActiveChannelsForDigest` signing secret assertion** — verify secrets are present in returned rows
 14. **`ReplayDelivery` no-op for non-replayable statuses** — pending/succeeded → no change
 15. **Template XSS regression test** — adversarial input → escaped in rendered HTML
+
+---
+
+## Remediation Summary
+
+### Stats
+
+| Metric | Count |
+|--------|-------|
+| Total gaps identified | 15 security-critical + correctness, 43 nice-to-have |
+| Tests added | 24 new test functions across 7 files |
+| Lines added | ~1,270 lines of test code |
+| Commits | 4 (store, API, notify integration, notify edge cases) |
+| Bugs discovered | 0 (all paths behaved as designed) |
+
+### Tests Added (by package)
+
+**`internal/store/` — commit `e0c56b2` (435 lines)**
+- `TestScheduledReport_CrossOrgIsolation` — get/list/update/delete from wrong org returns nil/0 rows
+- `TestReportChannel_CrossOrgIsolation` — bind/list from wrong org returns nil/0 rows
+- `TestCreateNotificationChannel_EmailType_NoSecret` — email channels have NULL signing secret
+- `TestReplayDelivery_NoOpFromPending` — replay on pending delivery is no-op
+- `TestReplayDelivery_NoOpFromSucceeded` — replay on succeeded delivery is no-op
+- `TestChannelHasActiveBoundReports_PausedAndDeletedExcluded` — paused/deleted reports excluded
+- `TestChannelHasActiveBindings_ShortCircuitOnRules` — rules=true short-circuits reports check
+- `TestChannelHasActiveBindings_BothRulesAndReports` — combined binding logic
+- `TestListActiveChannelsForDigest_SigningSecretPresent` — signing secret columns in query result
+
+**`internal/api/` — commit `ae521fe` (410 lines)**
+- `TestReports_RBAC_ViewerCannotWrite` — viewer can GET (3 endpoints), gets 403 on POST/PATCH/DELETE/PUT/unbind (5 endpoints)
+- `TestBindChannelToReport_CrossOrgChannelRejected` — bind org B's channel to org A's report → 404
+- `TestDeliveries_CrossOrgIsolation` — org B cannot get/list/replay org A's deliveries
+- `TestReplayDelivery_RBAC_ViewerMemberForbidden` — viewer + member → 403, both can still read
+- `TestCreateChannel_EmailHeaderInjection` — CRLF/LF/CR in recipient display names rejected
+
+**`internal/notify/` — commits `90551a4`, `3e0a72d` (425 lines)**
+- `TestWorker_DigestPipeline_EndToEnd` — full executeDigestReport integration (claim → query → fan-out to 2 channels → advance next_run_at + last_run_at)
+- `TestWorker_DigestPipeline_SendOnEmptyFalse_NoCVEs` — no deliveries created, next_run_at still advances
+- `TestWorker_DigestPipeline_SeverityThresholdFiltering` — threshold="high" excludes low CVEs in payload
+- `TestExpandSeverityThreshold_CaseSensitive` — uppercase input returns nil (case-sensitive map keys)
+- `TestAdvanceNextRunAt_DSTFallBack` — November DST fall-back transition (EDT→EST)
+- `TestComputeNextRunAt` — basic properties + invalid timezone/time errors
+- `TestRenderAlert_XSSEscaping` — `<script>` in rule name/description → escaped to `&lt;script&gt;`
+- `TestRenderDigest_XSSEscaping` — `<img onerror>` in org name/description → escaped
+- `TestSnapshotsToCVESummaries_EdgeCases` — nil severity, empty baseURL, short description, nil input, all score fields + InCISAKEV
+- `RunDigestOnce` export added to `worker.go` for digest pipeline testing
+
+### Remaining Gaps (with rationale)
+
+**Deferred — requires infrastructure not available in CI:**
+- **Permanent SMTP error integration test** (#9): Unit test for `isPermanentSMTPError` exists and covers all 5xx codes. Integration test requires a real SMTP server returning 5xx responses. The worker path (worker.go:183-186) is a 3-line conditional calling `exhaust()`, which is already tested via `TestWorker_ExhaustsAfterMaxAttempts`.
+
+**Deferred — lower priority correctness:**
+- **Delivery pagination test** (#11): API pagination uses the same cursor pattern as CVE search, which is already tested. Phase 3b delivery endpoints are non-security-sensitive read paths.
+- **API validation edge cases** (report §Prioritized Remediation): 10+ individual edge cases (>50 recipients, empty scheduled_time, invalid UUIDs, etc.). These are input validation paths behind authenticated endpoints where huma framework provides baseline validation. Low risk relative to effort.
+- **Digest delivery fields in API list response** (cross-cutting #9): `ReportID`/`Kind` fields populate in list/detail responses. The mapping is mechanical (3 lines in `deliveryToEntry`). Low risk.
+
+**Not fixable via tests (design observations):**
+- **`AdvanceReport` missing `deleted_at IS NULL` guard** (cross-cutting #8): Race between soft-delete and advance. Requires SQL change, not a test. Documented for future hardening.
+- **`MarkDeliveriesProcessing` has no status guard** (cross-cutting #6): SQL accepts any delivery ID regardless of status. Requires SQL change. Low risk since `ClaimPendingDeliveries` already filters to `pending` status.
+- **Duplicate report name returns 500 instead of 409** (#observation): Unique constraint violation not caught. Requires API handler change, not a test.
+
+**Nice-to-have (43 items):**
+- Most are internal helper edge cases, defensive checks duplicating upstream validation, or DB error wrapping paths. See §Nice-to-Have Gaps above. None are security-relevant. `snapshotsToCVESummaries` edge cases were addressed; remaining items deferred.

@@ -139,8 +139,8 @@ func Ingest(
 		cweIDs = []string{}
 	}
 
-	// Step 6: upsert cves. IS DISTINCT FROM guard on material_hash means
-	// date_modified_canonical is only bumped on actual material changes.
+	// Step 6: upsert cves. All resolved fields are always written; date_modified_canonical
+	// is only bumped when material_hash changes (CASE expression in SQL).
 	if err := q.UpsertCVE(ctx, generated.UpsertCVEParams{
 		CveID:                 patch.CVEID,
 		Status:                toNullString(resolved.Status),

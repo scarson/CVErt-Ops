@@ -569,7 +569,12 @@ ON CONFLICT (cve_id) DO UPDATE
     SET status                   = EXCLUDED.status,
         date_published           = EXCLUDED.date_published,
         date_modified_source_max = EXCLUDED.date_modified_source_max,
-        date_modified_canonical  = EXCLUDED.date_modified_canonical,
+        -- Only bump date_modified_canonical on material changes (triggers alert eval).
+        date_modified_canonical  = CASE
+            WHEN cves.material_hash IS DISTINCT FROM EXCLUDED.material_hash
+            THEN EXCLUDED.date_modified_canonical
+            ELSE cves.date_modified_canonical
+        END,
         description_primary      = EXCLUDED.description_primary,
         severity                 = EXCLUDED.severity,
         cvss_v3_score            = EXCLUDED.cvss_v3_score,
@@ -583,7 +588,6 @@ ON CONFLICT (cve_id) DO UPDATE
         exploit_available        = EXCLUDED.exploit_available,
         in_cisa_kev              = EXCLUDED.in_cisa_kev,
         material_hash            = EXCLUDED.material_hash
-    WHERE cves.material_hash IS DISTINCT FROM EXCLUDED.material_hash
 `
 
 type UpsertCVEParams struct {

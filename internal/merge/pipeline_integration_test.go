@@ -757,3 +757,69 @@ func TestIngest_ConcurrentWriteSerializesCorrectly(t *testing.T) {
 		})
 	}
 }
+
+// TestIngest_NonMaterialFieldUpdateNotDropped verifies that a second source
+// adding only non-material fields (e.g., description) to an existing CVE
+// actually persists those fields. Regression test for UpsertCVE's
+// IS DISTINCT FROM guard on material_hash silently dropping non-material updates.
+func TestIngest_NonMaterialFieldUpdateNotDropped(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2024-99913"
+
+	// Source 1: GHSA provides packages (material field). No description.
+	ghsaPatch := feed.CanonicalPatch{
+		CVEID:    cveID,
+		SourceID: "GHSA-nonmat-test",
+		Status:   "published",
+		AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "npm", PackageName: "nonmat-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
+		},
+	}
+	err := merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa", nil)
+	if err != nil {
+		t.Fatalf("Ingest (ghsa): %v", err)
+	}
+
+	// Verify CVE exists with packages but no description.
+	cve1, _ := s.GetCVE(ctx, cveID)
+	if cve1 == nil {
+		t.Fatal("CVE not found after first Ingest")
+	}
+	if cve1.DescriptionPrimary.Valid {
+		t.Fatal("description should be NULL after GHSA-only ingest")
+	}
+	hash1 := cve1.MaterialHash.String
+
+	// Source 2: NVD provides ONLY a description (non-material). No new material
+	// fields — packages come from GHSA during resolution, same as before.
+	nvdDesc := "Detailed description from NVD"
+	nvdPatch := feed.CanonicalPatch{
+		CVEID:              cveID,
+		Status:             "published",
+		DescriptionPrimary: &nvdDesc,
+	}
+	err = merge.Ingest(ctx, s.Store, nvdPatch, "nvd", nil)
+	if err != nil {
+		t.Fatalf("Ingest (nvd): %v", err)
+	}
+
+	// The material_hash should be unchanged (description is not material).
+	cve2, _ := s.GetCVE(ctx, cveID)
+	if cve2 == nil {
+		t.Fatal("CVE not found after second Ingest")
+	}
+	if cve2.MaterialHash.String != hash1 {
+		t.Logf("material_hash changed: %q → %q (unexpected but not the point of this test)",
+			hash1, cve2.MaterialHash.String)
+	}
+
+	// Critical assertion: the description must be persisted even though
+	// the material_hash did not change.
+	if !cve2.DescriptionPrimary.Valid || cve2.DescriptionPrimary.String != nvdDesc {
+		t.Errorf("description = %q, want %q — non-material field update was dropped",
+			cve2.DescriptionPrimary.String, nvdDesc)
+	}
+}

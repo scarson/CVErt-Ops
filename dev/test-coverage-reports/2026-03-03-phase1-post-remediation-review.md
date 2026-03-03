@@ -411,21 +411,21 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 ## Remediation Summary
 
 **Remediated:** 2026-03-03
-**Branch:** `dev` (commits `686f4ac`..`72fbd0a`)
-**Commits:** 9 (7 test batches + 1 store bugfix + 1 pipeline integration + bugfix)
+**Branch:** `dev` (commits `686f4ac`..`dfac27c`)
+**Commits:** 12 (7 test batches + 1 store bugfix + 1 pipeline integration + bugfix + 1 concurrent serialization test + 1 UpsertCVE bugfix)
 
 ### Stats
 
 | Metric | Count |
 |--------|-------|
 | Total gaps in review | 791 |
-| Test functions added | 164 |
-| Subtests added (t.Run) | 30 |
-| Lines of test code added | ~4,655 |
-| Files modified | 17 |
+| Test functions added | 166 |
+| Subtests added (t.Run) | 35 |
+| Lines of test code added | ~4,850 |
+| Files modified | 19 |
 | Files created | 3 (`store/jobs_test.go`, `api/server_test.go`, `merge/pipeline_integration_test.go`) |
-| Production code changed | 2 (`worker/pool.go` — interface extraction, `merge/pipeline.go` — migrateCVEPK bugfix) |
-| Bugs discovered | 1 |
+| Production code changed | 3 (`worker/pool.go` — interface extraction, `merge/pipeline.go` — migrateCVEPK bugfix, `store/queries/cves.sql` — UpsertCVE non-material field fix) |
+| Bugs discovered | 3 |
 | Lint fixes | 1 |
 
 ### Tests Added (by package)
@@ -462,6 +462,10 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 - `TestFirstStr*` / `TestFirstStrPtr*` (6 tests) — helper precedence logic. **[correctness]**
 - `TestOtherSources*` (3 tests) — empty, single source, priority key exclusion. **[correctness]**
 - `TestComputeScoreDiverges*` (4 tests) — boundary conditions: both nil, one nil, exactly 2.0, just under 2.0. **[correctness]**
+
+#### `internal/merge/pipeline` (2 additional tests + 5 subtests)
+- `TestIngest_ConcurrentWriteSerializesCorrectly` — 5 subtests, each iteration races two goroutines (NVD severity + GHSA packages) for the same CVE via starting-gate channel; asserts final CVE reflects both sources. Uses the "result correctness" pattern. **[security-critical #26]**
+- `TestIngest_NonMaterialFieldUpdateNotDropped` — regression test: GHSA ingests packages (material), then NVD ingests only a description (non-material); asserts description persists even though material_hash is unchanged. Exposed UpsertCVE bug. **[correctness, regression]**
 
 #### `internal/merge/hash` (7 tests)
 - `TestComputeMaterialHashCVSSv4VectorNormalized` — CVSSv4 vector metric ordering. **[correctness, was Key Observation #6]**
@@ -500,11 +504,15 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 
 2. **`migrateCVEPK` param count mismatch — PK migration always fails.** The `DELETE FROM cve_search_index WHERE cve_id = $1` query has one placeholder but `tx.ExecContext` is called with two args (`oldID, newID`). `database/sql` rejects mismatched param counts, so `migrateCVEPK` always errors on the first step. This means late-binding PK migration (GHSA/OSV alias promotion to CVE ID) has never worked in production. Fixed by separating the single-param DELETE from the two-param UPDATE loop.
 
+3. **`UpsertCVE` silently drops non-material field updates.** The `ON CONFLICT DO UPDATE ... WHERE cves.material_hash IS DISTINCT FROM EXCLUDED.material_hash` guard gated ALL field updates on the material hash changing. When only non-material fields changed (description, dates, CVSS source attribution, score_diverges), the entire UPDATE was skipped and the new data was silently lost. Concrete scenario: GHSA ingests packages (material), then NVD adds a description (non-material) — description is never persisted because the material_hash hasn't changed. Fixed by removing the WHERE clause and making `date_modified_canonical` conditional via a CASE expression (only bumps on material changes, preserving alert evaluation behavior).
+
 ### Production Code Changes
 
 1. **`internal/worker/pool.go` — `JobStore` interface extraction.** The `Pool.store` field was changed from concrete `*store.Store` to a `JobStore` interface (4 methods: `ClaimJob`, `CompleteJob`, `FailJob`, `RecoverStaleJobs`). This enabled unit testing `processOne`, `runStaleRecovery`, and `runQueue` without a database via `fakeJobStore`. The `*store.Store` type satisfies the interface implicitly — no changes to callers needed.
 
 2. **`internal/merge/pipeline.go` — `migrateCVEPK` param mismatch fix.** Separated the single-param DELETE (search index) from the two-param UPDATE loop (child tables + PK). The DELETE only needs `oldID`; the updates need both `oldID` and `newID`.
+
+3. **`internal/store/queries/cves.sql` — `UpsertCVE` non-material field fix.** Removed the `WHERE cves.material_hash IS DISTINCT FROM EXCLUDED.material_hash` guard that gated all field updates. All resolved fields are now always written. `date_modified_canonical` uses a CASE expression to only bump on material changes, preserving alert evaluation behavior. Regenerated `internal/store/generated/cves.sql.go` via `sqlc generate`.
 
 ### Lint Fixes
 
@@ -520,9 +528,11 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 - ~~EPSS score excluded from `MaterialFields` (security-critical #28)~~ — covered by `TestIngest_EPSSExcludedFromMaterialHash`
 - ~~`ComputeMaterialHash` called with correct fields in `Ingest` (security-critical #29)~~ — covered by `TestIngest_MaterialHashDeterministic` + `TestIngest_MaterialHashChangesOnMaterialChange`
 
-#### Still deferred — concurrent advisory lock serialization (2 gaps)
-- Two concurrent `Ingest` calls serialize (security-critical #26) — requires two goroutines racing `Ingest()` for the same CVE ID; harder to write correctly (timing control) but infrastructure exists
-- EPSS `applyRow` advisory lock (security-critical #27) — same pattern as #26 but between EPSS and merge paths
+#### Resolved — concurrent advisory lock serialization (1 of 2 closed)
+- ~~Two concurrent `Ingest` calls serialize (security-critical #26)~~ — covered by `TestIngest_ConcurrentWriteSerializesCorrectly` (5 iterations, starting-gate pattern, result correctness assertion)
+
+#### Still deferred — EPSS/merge cross-path advisory lock (1 gap)
+- EPSS `applyRow` advisory lock (security-critical #27) — requires racing EPSS adapter `applyRow` against merge `Ingest` for the same CVE; same pattern as #26 but across two different code paths
 
 #### Deferred — concurrent `ClaimJob` safety (1 gap)
 - `ClaimJob` concurrent claim safety / SKIP LOCKED atomicity (security-critical #65). Requires multiple goroutines racing `ClaimJob` against a real DB. Infrastructure exists (`testutil.NewTestDB`), but writing a reliable concurrent test with timing guarantees is non-trivial.
@@ -546,8 +556,8 @@ Security headers, body size limits, argon2 semaphore, and HTTP server timeouts a
 
 | Metric | Before | After | Delta |
 |--------|--------|-------|-------|
-| Security-critical gaps | 66 | ~7 | -59 |
-| Correctness gaps | 640 | ~340 | -300 |
+| Security-critical gaps | 66 | ~6 | -60 |
+| Correctness gaps | 640 | ~339 | -301 |
 | Nice-to-have gaps | 85 | 85 | 0 |
 | Files with 100% gap rate | 8 | 2 (OSV, merge/fts.go) | -6 |
 | Test files | 7 | 17 | +10 |

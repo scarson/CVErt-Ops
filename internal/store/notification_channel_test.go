@@ -559,6 +559,156 @@ func TestGetNotificationChannelForDelivery_BypassRLSWorks(t *testing.T) {
 	}
 }
 
+func TestUpdateNotificationChannel_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrgUpdNF")
+
+	result, err := s.UpdateNotificationChannel(ctx, org.ID, uuid.New(), store.UpdateNotificationChannelParams{
+		Name:   "NewName",
+		Config: webhookConfig("https://example.com/hook"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateNotificationChannel(not found): %v", err)
+	}
+	if result != nil {
+		t.Error("expected nil for nonexistent channel")
+	}
+}
+
+func TestUpdateNotificationChannel_SoftDeleted(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrgUpdSD")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UpdSDChan")
+
+	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("SoftDeleteNotificationChannel: %v", err)
+	}
+
+	result, err := s.UpdateNotificationChannel(ctx, org.ID, chanID, store.UpdateNotificationChannelParams{
+		Name:   "NewName",
+		Config: webhookConfig("https://example.com/hook"),
+	})
+	if err != nil {
+		t.Fatalf("UpdateNotificationChannel(soft-deleted): %v", err)
+	}
+	if result != nil {
+		t.Error("expected nil for soft-deleted channel")
+	}
+}
+
+func TestRotateSigningSecret_NotFound(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrgRotNF")
+
+	secret, err := s.RotateSigningSecret(ctx, org.ID, uuid.New())
+	if err != nil {
+		t.Fatalf("RotateSigningSecret(not found): %v", err)
+	}
+	if secret != "" {
+		t.Errorf("expected empty secret for nonexistent channel, got %q", secret)
+	}
+}
+
+func TestRotateSigningSecret_SoftDeleted(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrgRotSD")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "RotSDChan")
+
+	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("SoftDeleteNotificationChannel: %v", err)
+	}
+
+	secret, err := s.RotateSigningSecret(ctx, org.ID, chanID)
+	if err != nil {
+		t.Fatalf("RotateSigningSecret(soft-deleted): %v", err)
+	}
+	if secret != "" {
+		t.Errorf("expected empty secret for soft-deleted channel, got %q", secret)
+	}
+}
+
+func TestSoftDeleteNotificationChannel_Idempotent(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrgDelIdem")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "IdemDelChan")
+
+	// First delete.
+	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("SoftDelete (first): %v", err)
+	}
+
+	// Second delete must not error.
+	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
+		t.Fatalf("SoftDelete (second, idempotent): %v", err)
+	}
+}
+
+func TestChannelHasActiveBoundRules_DraftDisabledExcluded(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "NCOrgDraftDisable")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DraftDisableChan")
+
+	// Create a rule in draft status (default from mustCreateAlertRule is 'activating').
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "DraftRule")
+	if err := s.SetAlertRuleStatus(ctx, org.ID, rule.ID, "draft"); err != nil {
+		t.Fatalf("SetAlertRuleStatus(draft): %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// Draft rule should not count as active.
+	has, err := s.ChannelHasActiveBoundRules(ctx, org.ID, chanID)
+	if err != nil {
+		t.Fatalf("ChannelHasActiveBoundRules(draft): %v", err)
+	}
+	if has {
+		t.Error("draft rule should not count as active bound rule")
+	}
+
+	// Set to disabled — still should not count as active.
+	if err := s.SetAlertRuleStatus(ctx, org.ID, rule.ID, "disabled"); err != nil {
+		t.Fatalf("SetAlertRuleStatus(disabled): %v", err)
+	}
+	has, err = s.ChannelHasActiveBoundRules(ctx, org.ID, chanID)
+	if err != nil {
+		t.Fatalf("ChannelHasActiveBoundRules(disabled): %v", err)
+	}
+	if has {
+		t.Error("disabled rule should not count as active bound rule")
+	}
+
+	// Set to active — should now count.
+	if err := s.SetAlertRuleStatus(ctx, org.ID, rule.ID, "active"); err != nil {
+		t.Fatalf("SetAlertRuleStatus(active): %v", err)
+	}
+	has, err = s.ChannelHasActiveBoundRules(ctx, org.ID, chanID)
+	if err != nil {
+		t.Fatalf("ChannelHasActiveBoundRules(active): %v", err)
+	}
+	if !has {
+		t.Error("active rule should count as active bound rule")
+	}
+}
+
 func TestCreateNotificationChannel_EmailType_NoSecret(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

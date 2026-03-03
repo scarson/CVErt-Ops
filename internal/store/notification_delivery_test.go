@@ -492,6 +492,114 @@ func TestGetDelivery(t *testing.T) {
 	}
 }
 
+func TestListDeliveries_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO1a")
+	org2, _ := s.CreateOrg(ctx, "NDOrgXO1b")
+	orgID2 := org2.ID
+
+	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO1"}`), 0)
+
+	cursor := time.Now().Add(24 * time.Hour)
+
+	// org1 sees its delivery.
+	rows, err := s.ListDeliveries(ctx, orgID1, uuid.Nil, uuid.Nil, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(org1): %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("org1 should see 1 delivery, got %d", len(rows))
+	}
+
+	// org2 must not see org1's deliveries.
+	rows, err = s.ListDeliveries(ctx, orgID2, uuid.Nil, uuid.Nil, "", cursor, uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries(wrong org): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 deliveries for wrong org, got %d", len(rows))
+	}
+}
+
+func TestGetDelivery_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO2a")
+	org2, _ := s.CreateOrg(ctx, "NDOrgXO2b")
+	orgID2 := org2.ID
+
+	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO2"}`), 0)
+
+	// Get delivery ID via raw SQL.
+	var deliveryID uuid.UUID
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT id FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2 AND status='pending'`,
+		ruleID, chanID)
+	if err := row.Scan(&deliveryID); err != nil {
+		t.Fatalf("scan delivery id: %v", err)
+	}
+
+	// org1 sees its delivery.
+	d, err := s.GetDelivery(ctx, deliveryID, orgID1)
+	if err != nil {
+		t.Fatalf("GetDelivery(org1): %v", err)
+	}
+	if d == nil {
+		t.Fatal("GetDelivery(org1) returned nil for existing delivery")
+	}
+
+	// org2 must not see org1's delivery.
+	d, err = s.GetDelivery(ctx, deliveryID, orgID2)
+	if err != nil {
+		t.Fatalf("GetDelivery(wrong org): %v", err)
+	}
+	if d != nil {
+		t.Error("GetDelivery with wrong org should return nil")
+	}
+}
+
+func TestReplayDelivery_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO3a")
+	org2, _ := s.CreateOrg(ctx, "NDOrgXO3b")
+	orgID2 := org2.ID
+
+	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO3"}`), 0)
+
+	ids := claimAndMarkProcessing(t, s, ctx)
+	if err := s.ExhaustDelivery(ctx, ids[0], "permanent failure"); err != nil {
+		t.Fatalf("ExhaustDelivery: %v", err)
+	}
+
+	// org2 attempts to replay org1's delivery — should be a no-op.
+	if err := s.ReplayDelivery(ctx, ids[0], orgID2); err != nil {
+		t.Fatalf("ReplayDelivery(wrong org): %v", err)
+	}
+
+	// Delivery must still be failed (not replayed).
+	status := getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "failed" {
+		t.Errorf("delivery should still be failed after cross-org replay, got %q", status)
+	}
+
+	// org1 can replay its own delivery.
+	if err := s.ReplayDelivery(ctx, ids[0], orgID1); err != nil {
+		t.Fatalf("ReplayDelivery(org1): %v", err)
+	}
+	status = getDeliveryStatus(t, s, ctx, ids[0])
+	if status != "pending" {
+		t.Errorf("status after org1 replay = %q, want pending", status)
+	}
+}
+
 func TestInsertDigestDelivery(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

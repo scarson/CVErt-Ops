@@ -350,11 +350,17 @@ func collectPackageNames(pkgs []feed.AffectedPackage) []string {
 // reference to cves(cve_id) without ON UPDATE CASCADE. After migrating the
 // cves PK, Ingest step 10 re-inserts the search index under the new ID.
 func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
-	steps := []struct {
+	// Step 1: delete search index (FK to cves without ON UPDATE CASCADE).
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM cve_search_index WHERE cve_id = $1", oldID); err != nil {
+		return fmt.Errorf("delete search index (%s→%s): %w", oldID, newID, err)
+	}
+
+	// Step 2: update all child tables and the cves PK to the new ID.
+	updates := []struct {
 		desc string
 		q    string
 	}{
-		{"delete search index", "DELETE FROM cve_search_index WHERE cve_id = $1"},
 		{"update sources", "UPDATE cve_sources SET cve_id = $2 WHERE cve_id = $1"},
 		{"update references", "UPDATE cve_references SET cve_id = $2 WHERE cve_id = $1"},
 		{"update packages", "UPDATE cve_affected_packages SET cve_id = $2 WHERE cve_id = $1"},
@@ -363,7 +369,7 @@ func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 		{"update EPSS staging", "UPDATE epss_staging SET cve_id = $2 WHERE cve_id = $1"},
 		{"update cves PK", "UPDATE cves SET cve_id = $2 WHERE cve_id = $1"},
 	}
-	for _, step := range steps {
+	for _, step := range updates {
 		if _, err := tx.ExecContext(ctx, step.q, oldID, newID); err != nil {
 			return fmt.Errorf("%s (%s→%s): %w", step.desc, oldID, newID, err)
 		}

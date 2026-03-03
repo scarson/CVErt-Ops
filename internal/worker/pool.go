@@ -10,6 +10,15 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
+// JobStore is the subset of store.Store that the worker pool needs to claim,
+// complete, fail, and recover jobs.
+type JobStore interface {
+	ClaimJob(ctx context.Context, queue, workerID string) (*store.Job, error)
+	CompleteJob(ctx context.Context, id uuid.UUID) error
+	FailJob(ctx context.Context, id uuid.UUID, errMsg string) error
+	RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) (int, error)
+}
+
 const (
 	// pollInterval is how often each queue goroutine checks for new jobs.
 	pollInterval = 2 * time.Second
@@ -25,7 +34,7 @@ const (
 // the job_queue table. One polling goroutine runs per registered queue; a
 // shared stale-lock recovery goroutine resets stuck jobs.
 type Pool struct {
-	store    *store.Store
+	store    JobStore
 	workerID string
 	mu       sync.RWMutex
 	handlers map[string]Handler
@@ -33,7 +42,7 @@ type Pool struct {
 
 // New creates a Pool backed by s. A random workerID is generated at construction
 // time to distinguish this process in the locked_by column.
-func New(s *store.Store) *Pool {
+func New(s JobStore) *Pool {
 	return &Pool{
 		store:    s,
 		workerID: uuid.New().String(),

@@ -307,6 +307,27 @@ _ = srv.store.UpdateLastLogin(ctx, user.ID)
 
 **Step 4: Run tests, full auth suite, commit**
 
+### Implementation Record
+
+**Commit:** `afd1b83` — fix(auth): enforce RegistrationMode, email collision, constant-time nonce, UpdateLastLogin
+
+**Code changes:**
+- `internal/api/oauth_github.go`: Added RegistrationMode check before user creation (403 if not open); added pgErrCode "23505" handling for email collision (409); added `UpdateLastLogin` call after successful login.
+- `internal/api/oauth_google.go`: Same RegistrationMode, email collision, and UpdateLastLogin fixes; changed nonce comparison from `!=` to `subtle.ConstantTimeCompare`.
+- `internal/api/oauth_oidc.go`: Changed nonce comparison from `!=` to `subtle.ConstantTimeCompare`; added `UpdateLastLogin` call after token issuance.
+- **Note:** "Admin can remove org owner" sub-bug deferred per Question 6.
+
+| File | Change | Test Name | Purpose |
+|------|--------|-----------|---------|
+| `internal/api/oauth_github_test.go` | **Added** | `TestGitHubCallback_InviteOnlyRejectsNewUser` | Sets RegistrationMode="invite-only", verifies 403 and no user created. |
+| `internal/api/oauth_github_test.go` | **Added** | `TestGitHubCallback_EmailCollisionReturns409` | Pre-creates user with same email, verifies 409 (not 500). |
+| `internal/api/oauth_github_test.go` | **Added** | `TestGitHubCallback_UpdatesLastLogin` | Verifies `last_login_at` is set after OAuth login. |
+| `internal/api/oauth_github_test.go` | **Modified** | All existing tests | Added `RegistrationMode: "open"` to test server config. |
+| `internal/api/oauth_google_test.go` | **Added** | `TestGoogleCallback_InviteOnlyRejectsNewUser` | Sets RegistrationMode="invite-only", verifies 403 and no user created. |
+| `internal/api/oauth_google_test.go` | **Added** | `TestGoogleCallback_EmailCollisionReturns409` | Pre-creates user with same email, verifies 409 (not 500). |
+| `internal/api/oauth_google_test.go` | **Added** | `TestGoogleCallback_UpdatesLastLogin` | Verifies `last_login_at` is set after OAuth login. |
+| `internal/api/oauth_google_test.go` | **Modified** | All existing tests | Added `RegistrationMode: "open"` to test server config. |
+
 ---
 
 ## Task 5: Fix auth security — API key scoping (P1 — Security)
@@ -358,6 +379,21 @@ if err != nil {
 ```
 
 **Step 4: Run tests, commit**
+
+### Implementation Record
+
+**Commit:** `d2e8e6b` — fix(auth): scope API keys to their org and return 500 on DB errors
+
+**Code changes:**
+- `internal/api/context.go`: Added `ctxAPIKeyOrgID` context key for API key org scoping.
+- `internal/api/middleware_auth.go`: Split `tryAPIKeyAuth` error handling — DB errors now return 500 (not masked as 401); injects `key.OrgID` into context via `ctxAPIKeyOrgID`.
+- `internal/api/middleware_rbac.go`: Added cross-org API key check — rejects with 403 if API key's org doesn't match URL org.
+
+| File | Change | Test Name | Purpose |
+|------|--------|-----------|---------|
+| `internal/api/middleware_auth_test.go` | **Modified** | `TestRequireAuthenticated_APIKey_ContextValues` | Updated to verify `ctxAPIKeyOrgID` is set in context. |
+| `internal/api/middleware_rbac_test.go` | **Added** | `TestRequireOrgRole_APIKeyCrossOrg_403` | API key from org A rejected for org B with 403. |
+| `internal/api/middleware_rbac_test.go` | **Added** | `TestRequireOrgRole_APIKeySameOrg_200` | API key works for its own org. |
 
 ---
 

@@ -1,8 +1,8 @@
 // ABOUTME: Vite configuration for the CVErt Ops frontend.
-// ABOUTME: Includes Tailwind CSS v4, Vue, path aliases, and API proxy.
+// ABOUTME: Includes Tailwind CSS v4, Vue, path aliases, API proxy, and Vitest.
 
 import path from 'node:path'
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import tailwindcss from '@tailwindcss/vite'
 import vue from '@vitejs/plugin-vue'
 
@@ -20,5 +20,11 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  test: {
+    globals: true,
+    environment: 'happy-dom',
+    include: ['src/**/*.{test,spec}.{ts,tsx}'],
+    exclude: ['node_modules', 'dist'],
   },
 })

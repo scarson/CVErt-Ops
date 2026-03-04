@@ -33,7 +33,6 @@
   },
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",
-    "@types/jsdom": "^28.0.0",
     "@types/node": "^24.11.0",
     "@vitejs/plugin-vue": "^6.0.4",
     "@vitest/eslint-plugin": "^1.6.9",
@@ -44,8 +43,8 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-oxlint": "~1.50.0",
     "eslint-plugin-vue": "~10.8.0",
+    "happy-dom": "^20.8.3",
     "jiti": "^2.6.1",
-    "jsdom": "^28.1.0",
     "npm-run-all2": "^8.0.4",
     "openapi-typescript": "^7.13.0",
     "oxlint": "~1.50.0",

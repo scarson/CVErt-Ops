@@ -401,3 +401,174 @@ Prioritized by severity and impact:
 7. **CVSS 0.0 rejection** (minor) — BH-B found this. Change `> 0` to `>= 0` in MITRE/GHSA adapters.
 8. **Staged EPSS after tombstone** (minor) — BH-C found this. Skip staged EPSS application for withdrawn CVEs.
 9. **ResolveCanonicalID non-deterministic** (minor) — BH-C found this. Sort CVE aliases before selecting canonical ID.
+
+---
+
+## Phase 3a Runs (Notification Delivery)
+
+### Scope
+
+Different domain from Phase 1 (data pipeline → notification delivery). Tests whether holistic dominance generalizes.
+
+**Files:** `internal/notify/` (dispatcher.go, client.go, webhook.go, email.go, template.go, render.go, digest.go, worker.go), `internal/alert/evaluator.go`, `internal/store/notification_channel.go`, `internal/store/alert_rule_channel.go`, `internal/store/notification_delivery.go`, `internal/api/channels.go`, `internal/api/deliveries.go`, `internal/api/alert_rules.go`
+
+15 source files, ~104 functions. Cross-cutting concerns: SSRF protection, HMAC signing, per-org concurrency semaphore, delivery retry/DLQ, alert rule activation lifecycle.
+
+### Test Prompts
+
+#### Run BH-D: Holistic
+```
+Run /code-bug-hunter-holistic on Phase 3a scope.
+
+Scope: internal/notify/dispatcher.go, internal/notify/client.go, internal/notify/webhook.go,
+internal/notify/email.go, internal/notify/template.go, internal/notify/render.go,
+internal/notify/digest.go, internal/notify/worker.go, internal/alert/evaluator.go,
+internal/store/notification_channel.go, internal/store/alert_rule_channel.go,
+internal/store/notification_delivery.go, internal/api/channels.go, internal/api/deliveries.go,
+internal/api/alert_rules.go
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase3a-bughunt-holistic.md
+```
+
+#### Run BH-E: Multi-pass
+```
+Run /code-bug-hunter-multipass on Phase 3a scope.
+
+Scope: internal/notify/dispatcher.go, internal/notify/client.go, internal/notify/webhook.go,
+internal/notify/email.go, internal/notify/template.go, internal/notify/render.go,
+internal/notify/digest.go, internal/notify/worker.go, internal/alert/evaluator.go,
+internal/store/notification_channel.go, internal/store/alert_rule_channel.go,
+internal/store/notification_delivery.go, internal/api/channels.go, internal/api/deliveries.go,
+internal/api/alert_rules.go
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase3a-bughunt-multipass.md
+```
+
+#### Run BH-F: Exploratory
+```
+Run /code-bug-hunter-exploratory on Phase 3a scope.
+
+Scope: internal/notify/dispatcher.go, internal/notify/client.go, internal/notify/webhook.go,
+internal/notify/email.go, internal/notify/template.go, internal/notify/render.go,
+internal/notify/digest.go, internal/notify/worker.go, internal/alert/evaluator.go,
+internal/store/notification_channel.go, internal/store/alert_rule_channel.go,
+internal/store/notification_delivery.go, internal/api/channels.go, internal/api/deliveries.go,
+internal/api/alert_rules.go
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase3a-bughunt-exploratory.md
+```
+
+### Phase 3a Execution Status
+
+| Run | Skill | Bugs found | Design concerns | Report file |
+|-----|-------|:----------:|:---------------:|-------------|
+| BH-D | code-bug-hunter-holistic | 5 | 3 | `2026-03-03-phase3a-bughunt-holistic.md` |
+| BH-E | code-bug-hunter-multipass | 7 | 3 | `2026-03-03-phase3a-bughunt-multipass.md` |
+| BH-F | code-bug-hunter-exploratory | 4 | 3 | `2026-03-03-phase3a-bughunt-exploratory.md` |
+
+All three variants completed without truncation or context exhaustion.
+
+### Phase 3a Bug Detection
+
+9 unique bugs across all variants:
+
+| # | Bug | Severity | BH-D | BH-E | BH-F |
+|---|-----|----------|:----:|:----:|:----:|
+| 1 | Activation pipeline not wired — rules stuck in "activating" forever | critical | #1 (critical) | **MISSED** | #2 (significant) |
+| 2 | Claim/mark TOCTOU — duplicate deliveries under multi-worker | significant | #5 (minor) | #5 (significant) | #1 (significant) |
+| 3 | 201 vs 202 status code for activating rules | significant | #2 (significant) | #1 (significant) | #4 (minor) |
+| 4 | Worker delivery goroutines use cancelled parent context | significant | #3 (significant) | — | — |
+| 5 | Deterministic email errors retried instead of immediately exhausted | significant | — | #4 (significant) | — |
+| 6 | Replay handler 204 on no-op + wastes rate limit tokens | minor | #4 (minor) | #2 (minor) | #3 (minor) |
+| 7 | Delivery list pagination phantom last page | minor | — | #3 (minor) | — |
+| 8 | Per-org semaphore head-of-line blocking across orgs | minor | — | #6 (minor) | — |
+| 9 | Batch evaluator advances cursor on partial evaluation failure | minor | — | #7 (minor) | — |
+
+**Unique contributions:**
+- **BH-D:** 1 unique significant (cancelled context → duplicates on shutdown)
+- **BH-E:** 4 unique (1 significant: email retry waste; 3 minor: pagination, semaphore, cursor)
+- **BH-F:** 0 unique — all 4 findings are a subset of BH-D's
+
+**Critical miss:** BH-E (multipass) missed the activation pipeline bug — the most critical finding in the scope. Its Pass 1 (Contract Violations) found the 201/202 symptom but assumed the activation scan IS queued, never checking `main.go` for handler registration or `alert_rules.go` for `EnqueueJob` calls.
+
+### Phase 3a Scoring
+
+#### Rubric 1: Bugs-Only (adapted — no pre-planted ground truth)
+
+Since Phase 3a has no pre-planted ground-truth bugs, the 40% weight becomes "critical bug detection" — ability to find the most impactful bugs. The activation pipeline bug is the clear standout: it breaks the entire alert rule lifecycle.
+
+| Metric | Weight | BH-D | BH-E | BH-F |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 40% | 10 (found + correctly rated critical) | 4 (found symptom only, missed root cause) | 8 (found it, underrated as significant) |
+| Novel/unique bugs found | 20% | 8 (1 unique significant, 5 total) | 10 (4 unique, 7 total — most of any variant) | 3 (0 unique, 4 total — complete subset of BH-D) |
+| Evidence quality | 20% | 9 (thorough lifecycle tracing, main.go wiring check; slightly underrated claim/mark) | 9 (systematic SQL evidence, 4 email error types with line numbers; missed deeper activation issue) | 8 (solid evidence with CTE fix suggestion; underrated activation severity) |
+| False positive rate | 20% | 10 (all genuine) | 10 (all genuine) | 10 (all genuine) |
+| **Weighted total** | | **9.40** | **7.40** | **7.40** |
+
+#### Rubric 2: Bugs + Analysis Quality
+
+| Metric | Weight | BH-D | BH-E | BH-F |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 25% | 10 | 4 | 8 |
+| Novel bugs found | 15% | 8 | 10 | 3 |
+| Cross-file reasoning | 20% | 10 (API→evaluator→main.go wiring, SIGTERM→ctx→DB→stuck→restart chain) | 7 (systematic per-pass but missed cross-file activation thread; sibling comparison excellent) | 9 (claim→mark→SQL thread, activation→main.go; good depth-first following) |
+| Failure mode depth | 15% | 9 (SIGTERM shutdown scenario, 5-step activation lifecycle, rate limit exhaustion) | 9 (4 permanent email error types, transaction flow for TOCTOU, cursor edge case) | 7 (stated problems clearly, proposed CTE fix, but shorter failure chains) |
+| Evidence quality | 15% | 9 | 9 | 8 |
+| False positive rate | 10% | 10 | 10 | 10 |
+| **Weighted total** | | **9.40** | **7.60** | **7.50** |
+
+#### Phase 1 vs Phase 3a Comparison
+
+| Variant | Phase 1 R1 | Phase 3a R1 | Phase 1 R2 | Phase 3a R2 |
+|---------|:----------:|:-----------:|:----------:|:-----------:|
+| **Holistic** | 9.80 (BH-A) | 9.40 (BH-D) | 9.70 (BH-A) | 9.40 (BH-D) |
+| **Multipass** | 9.60 (BH-B) | 7.40 (BH-E) | 9.35 (BH-B) | 7.60 (BH-E) |
+| **Exploratory** | 9.20 (BH-C) | 7.40 (BH-F) | 9.05 (BH-C) | 7.50 (BH-F) |
+
+Holistic is remarkably consistent (±0.40 across domains). The other two dropped significantly (2+ points on R1).
+
+### Phase 3a Analysis
+
+#### Why BH-E missed the critical bug
+
+BH-E's multipass structure found the 201/202 status code mismatch in Pass 1 (Contract Violations) but assumed the activation scan was actually queued. It never followed the thread from the API handler to `main.go` to discover no handler is registered. The pass structure created a boundary: "is the status code wrong?" is a contract question, but "is the activation pipeline wired end-to-end?" requires cross-file tracing that spans passes.
+
+This is the same failure mode as Phase 1 (H4 refuted): structured passes inhibit cross-pollination. BH-D naturally followed the thread from "status is set to activating" → "where is the job enqueued?" → "where is the handler registered?" → "it's not registered anywhere." Multipass compartmentalized this reasoning.
+
+#### Why BH-F found nothing unique
+
+In Phase 1, BH-C (exploratory) found 2 unique bugs (staged EPSS, ResolveCanonicalID). In Phase 3a, BH-F found nothing unique — every one of its 4 bugs was also found by BH-D. The depth-first approach's advantage is selective deep analysis when the scope is too large to read everything. Phase 3a (15 files) is well within the holistic variant's reading capacity, neutralizing the exploratory variant's differentiation.
+
+#### BH-E's unique contributions are still valuable
+
+Despite missing the critical bug, BH-E found 4 bugs nobody else found, including the deterministic email retry waste (significant). Its Pass 3 (Failure Mode Reasoning) identified that template rendering, payload unmarshal, empty recipients, and config parse errors are all permanent but get retried. Its Pass 4 (Concurrency) found both the TOCTOU and the head-of-line blocking. These passes work well individually — the weakness is in cross-pass thread following.
+
+#### Severity calibration varies across variants
+
+- **Claim/mark TOCTOU:** BH-D says minor, BH-E/F say significant. Significant is more accurate — duplicate deliveries is a real-world impact.
+- **201 vs 202:** BH-D/E say significant, BH-F says minor. BH-F's reasoning ("since activation isn't wired, 201 is arguably correct") is defensible but the API contract violation stands regardless.
+- **Activation pipeline:** BH-D says critical, BH-F says significant. Critical is correct — the entire feature is broken.
+
+### Updated Recommendation
+
+Phase 3a strongly reinforces the Phase 1 conclusion:
+
+**BH-A/D (holistic) is the clear primary bug hunter.** Consistent 9.40–9.80 across domains and rubrics. The only variant that reliably finds critical bugs through cross-file reasoning.
+
+**BH-B/E (multipass) produces the most raw findings but has a critical blind spot.** The compartmentalized pass structure finds many smaller bugs but can miss the most important one. In Phase 1 this wasn't punished because all variants found both ground-truth bugs. In Phase 3a, the blind spot cost multipass ~2 points. For maximum coverage, run multipass as a complement to holistic — never as a replacement.
+
+**BH-C/F (exploratory) adds no value when scope fits holistic reading capacity.** All of its findings were a subset of holistic's. The exploratory approach's depth-first selection is only valuable when the scope is too large for holistic to read everything — which wasn't the case for either Phase 1 (8 files) or Phase 3a (15 files).
+
+### Phase 3a Actionable bugs to fix
+
+Prioritized by severity and impact:
+
+1. **Activation pipeline not wired** (critical) — enqueue `alert_activation` job in create/update handlers, register handler in main.go
+2. **Claim/mark TOCTOU** (significant) — combine SELECT and UPDATE into a single CTE
+3. **201 vs 202 status code** (significant) — conditional response code based on `status`
+4. **Cancelled context in delivery goroutines** (significant) — `context.WithoutCancel()` wrapper
+5. **Deterministic email errors retried** (significant) — classify permanent errors, exhaust immediately
+6. **Replay no-op + rate limit waste** (minor) — check delivery exists/replayable before consuming token
+7. **Pagination phantom page** (minor) — use `limit+1` pattern like alert rules handler
+8. **Semaphore head-of-line blocking** (minor) — group claimed rows by org, dispatch org batches in parallel
+9. **Batch cursor advancement on failure** (minor) — don't advance cursor past failed rules

@@ -759,31 +759,248 @@ Prioritized by severity and impact:
 
 ---
 
-## Full Cross-Phase Comparison
+## Phase 2a Runs (Auth & RBAC)
 
-| Variant | Ph1 R1 | Ph3a R1 | Ph3b R1 | Ph4 R1 | **Avg R1** | Ph1 R2 | Ph3a R2 | Ph3b R2 | Ph4 R2 | **Avg R2** |
-|---------|:------:|:-------:|:-------:|:------:|:----------:|:------:|:-------:|:-------:|:------:|:----------:|
-| **Holistic** | **9.80** | **9.40** | 8.00 | **9.60** | **9.20** | **9.70** | **9.40** | 7.95 | **9.55** | **9.15** |
-| **Multipass** | 9.60 | 7.40 | **9.40** | 7.00 | 8.35 | 9.35 | 7.60 | **9.05** | 6.65 | 8.16 |
-| **Exploratory** | 9.20 | 7.40 | 6.60 | 5.80 | 7.25 | 9.05 | 7.50 | 6.60 | 6.45 | 7.40 |
+### Scope
+
+Security-critical scope: authentication middleware, JWT, OAuth flows, RBAC enforcement, API keys. Tests whether multipass's cross-sibling strength extends to security pattern comparisons.
+
+**Files:** `internal/auth/apikey.go`, `internal/auth/hash.go`, `internal/auth/jwt.go`, `internal/store/auth.go`, `internal/store/apikey.go`, `internal/store/org.go`, `internal/store/group.go`, `internal/api/server.go`, `internal/api/context.go`, `internal/api/role.go`, `internal/api/middleware_auth.go`, `internal/api/middleware_rbac.go`, `internal/api/middleware_csrf.go`, `internal/api/middleware_tier.go`, `internal/api/ratelimit.go`, `internal/api/auth.go`, `internal/api/orgs.go`, `internal/api/groups.go`, `internal/api/apikeys.go`, `internal/api/oauth_helpers.go`, `internal/api/oauth_github.go`, `internal/api/oauth_google.go`, `internal/api/oauth_oidc.go`
+
+23 source files. Cross-cutting concerns: OAuth registration bypass, RBAC hierarchy enforcement, API key org scoping, nonce/state validation, token rotation.
+
+### Phase 2a Execution Status
+
+| Run | Skill | Bugs found | Design concerns | Report file |
+|-----|-------|:----------:|:---------------:|-------------|
+| BH-M | code-bug-hunter-holistic | 3 | 2 | `2026-03-03-phase2a-bughunt-holistic.md` |
+| BH-N | code-bug-hunter-multipass | 5 | 5 | `2026-03-03-phase2a-bughunt-multipass.md` |
+| BH-O | code-bug-hunter-exploratory | 3 | 1 | `2026-03-03-phase2a-bughunt-exploratory.md` |
+
+All three variants completed without truncation or context exhaustion.
+
+### Phase 2a Bug Detection
+
+8 unique bugs across all variants:
+
+| # | Bug | Severity | BH-M | BH-N | BH-O |
+|---|-----|----------|:----:|:----:|:----:|
+| 1 | Admin can remove org owner (missing caller-vs-target role check) | significant | — | #1 | — |
+| 2 | GitHub/Google OAuth bypass RegistrationMode | significant | #1 | #2 | #2 |
+| 3 | OAuth email collision produces generic 500 | significant | #2 | Design concern | — |
+| 4 | AcceptInvitation store method bypasses RLS | minor | #3 | #3 | — |
+| 5 | API key not scoped to its org during authentication | significant | — | — | #1 |
+| 6 | OIDC nonce comparison not constant-time | minor | — | — | #3 |
+| 7 | tryAPIKeyAuth swallows database errors as 401 | minor | — | #4 | — |
+| 8 | OAuth callbacks don't update last_login_at | minor | — | #5 | — |
+
+**Unique contributions:**
+- **BH-M:** 1 unique (OAuth email collision 500 as bug; multipass had it as design concern)
+- **BH-N:** 3 unique (admin remove owner, tryAPIKeyAuth, last_login_at)
+- **BH-O:** 2 unique (API key org scoping, nonce non-constant-time)
+
+**Three-way differentiation:** First phase where all three variants found at least one unique significant bug. The security scope created enough different analytical threads for each approach to follow.
+
+**Key finding — admin can remove org owner (BH-N only):** A textbook cross-sibling pattern violation. `updateMemberRoleHandler` blocks admins from modifying owners, but `removeMemberHandler` has no equivalent check. Multipass's Pass 2 is designed for exactly this comparison. Neither holistic nor exploratory found it despite reading the same code.
+
+**Key finding — API key org scoping (BH-O only):** Exploratory's depth-first trace from the auth middleware followed the API key authentication path and noticed `org_id` is stored but never enforced. Holistic and multipass read the same middleware but focused on the JWT path and RBAC chain.
+
+### Phase 2a Scoring
+
+#### Rubric 1: Bugs-Only
+
+| Metric | Weight | BH-M | BH-N | BH-O |
+|--------|--------|:----:|:----:|:----:|
+| Critical/important bug detection | 40% | 6 (found OAuth bypass + email collision; missed admin remove owner + API key scoping) | 9 (found admin remove owner + OAuth bypass; missed API key scoping + email collision as bug) | 8 (found API key scoping + OAuth bypass; missed admin remove owner + email collision) |
+| Novel/unique bugs found | 20% | 5 (3 total, 1 unique: email collision) | 8 (5 total, 3 unique: admin remove, tryAPIKeyAuth, last_login) | 7 (3 total, 2 unique: API key scoping, nonce) |
+| Evidence quality | 20% | 9 (OIDC cross-ref showing inconsistency, RLS nil analysis) | 9 (cross-sibling handler comparison, SQL evidence) | 7 (good middleware tracing; overstated nonce risk) |
+| False positive rate | 20% | 10 | 10 | 10 |
+| **Weighted total** | | **7.20** | **9.00** | **8.00** |
+
+#### Rubric 2: Bugs + Analysis Quality
+
+| Metric | Weight | BH-M | BH-N | BH-O |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 25% | 6 | 9 | 8 |
+| Novel bugs found | 15% | 5 | 8 | 7 |
+| Cross-file reasoning | 20% | 8 (OAuth flow tracing across github/google/oidc; RLS analysis) | 9 (five passes systematically compared handlers; removeMember vs updateMemberRole) | 9 (middleware→store→RBAC for API key; three-flow OAuth comparison) |
+| Failure mode depth | 15% | 8 (email collision user scenario well-described) | 8 (admin removing owner scenario; DB error masking) | 8 (API key cross-org scenario) |
+| Evidence quality | 15% | 9 | 9 | 7 |
+| False positive rate | 10% | 10 | 10 | 10 |
+| **Weighted total** | | **7.40** | **8.80** | **8.10** |
+
+### Phase 2a Analysis
+
+#### Why multipass wins Phase 2a
+
+Phase 2a's bugs are predominantly pattern violations: handlers that enforce a rule in one place but not another (admin remove owner vs update role), flows that check a condition in one path but not another (native register vs OAuth), and audit inconsistencies (last_login_at updates). These are exactly the class of bugs multipass's structured passes — especially Pass 1 (Contract Violations) and Pass 2 (Cross-Sibling Pattern Violations) — are designed to find.
+
+#### Holistic's first last-place finish
+
+Holistic found only 3 bugs — the fewest — and missed both the admin-remove-owner bug (a classic cross-sibling violation) and the API key org-scoping bug (a middleware tracing issue). Its unconstrained reading covered all 23 files but without the forced comparisons that multipass performs, it focused on the OAuth flows (finding the email collision bug uniquely) while missing the handler-vs-handler pattern violations.
+
+#### Exploratory's best showing
+
+Exploratory achieved its best R1 score (8.00) by finding the API key org-scoping bug — a significant finding that neither other variant caught. Its depth-first exploration starting from the auth middleware followed the API key authentication path deeply enough to notice the stored-but-unenforced `org_id`. This validates the exploratory approach for security-sensitive code where following a single authentication thread to its conclusion can reveal issues that breadth-first approaches skip.
+
+### Phase 2a Actionable bugs to fix
+
+Prioritized by severity and impact:
+
+1. **Admin can remove org owner** (significant) — add `if *currentRole == "owner"` check to removeMemberHandler, matching updateMemberRoleHandler
+2. **OAuth bypass RegistrationMode** (significant) — add `srv.cfg.RegistrationMode` check to GitHub/Google OAuth callbacks
+3. **OAuth email collision 500** (significant) — handle `pgErrCode == "23505"` in OAuth callbacks, matching native register handler
+4. **API key org scoping** (significant) — add `key.OrgID` check against URL's org in tryAPIKeyAuth
+5. **AcceptInvitation RLS bypass** (minor) — wrap in `withBypassTx` or remove dead method
+6. **OAuth no last_login_at** (minor) — call `UpdateLastLogin` in all OAuth callbacks
+7. **tryAPIKeyAuth swallows errors** (minor) — distinguish "not found" from DB error, log DB errors, return 500
+8. **Nonce non-constant-time** (minor) — use `subtle.ConstantTimeCompare` matching state cookie pattern
+
+---
+
+## Phase 2b Runs (Watchlists / Alert DSL / Evaluator)
+
+### Scope
+
+15 files, overlapping with Phase 3a (6 files) and Phase 4 (8 files). Tests variant performance on scope with known cross-phase overlap — do variants productively focus on new bugs vs. re-reporting known ones?
+
+**Files:** `internal/alert/dsl/field.go`, `internal/alert/dsl/parser.go`, `internal/alert/dsl/validator.go`, `internal/alert/dsl/compiler.go`, `internal/alert/dsl/accessor.go`, `internal/alert/dsl/types.go`, `internal/alert/evaluator.go`, `internal/alert/cache.go`, `internal/store/watchlist.go`, `internal/store/alert_rule.go`, `internal/store/alert_rule_channel.go`, `internal/store/dsl_executor.go`, `internal/api/watchlists.go`, `internal/api/alert_rules.go`, `internal/api/alert_events.go`
+
+15 source files. Cross-cutting concerns: DSL compilation + evaluation lifecycle, RLS context in non-handler paths, activation state machine, cursor encoding, cache invalidation.
+
+### Phase 2b Execution Status
+
+| Run | Skill | Bugs found | Design concerns | Report file |
+|-----|-------|:----------:|:---------------:|-------------|
+| BH-P | code-bug-hunter-holistic | 5 | 2 | `2026-03-03-phase2b-bughunt-holistic.md` |
+| BH-Q | code-bug-hunter-multipass | 7 | 4 | `2026-03-03-phase2b-bughunt-multipass.md` |
+| BH-R | code-bug-hunter-exploratory | 3 | 2 | `2026-03-03-phase2b-bughunt-exploratory.md` |
+
+All three variants completed without truncation or context exhaustion.
+
+### Phase 2b Bug Detection
+
+10 unique new bugs across all variants (plus 2 re-finds from earlier phases):
+
+| # | Bug | Severity | BH-P | BH-Q | BH-R |
+|---|-----|----------|:----:|:----:|:----:|
+| — | Float parse `return v, json.Unmarshal` (re-find) | critical | #1 | #1 (significant) | Cross-ref |
+| — | Activation pipeline not wired (re-find) | significant | #2 | #3 (critical) | Cross-ref |
+| 1 | ExecuteDSLQuery RLS bypass for watchlist conditions | significant | #3 | — | — |
+| 2 | DryRun readTx missing RLS context | significant | — | — | #1 |
+| 3 | EvaluateActivation overwrites concurrent user disables | significant | — | #4 | Design concern |
+| 4 | SweepZombieActivations TOCTOU — overwrites completed scan | significant | — | #7 | — |
+| 5 | Cache eviction missing for error/disabled→activating transition | significant | — | — | #2 |
+| 6 | base64.StdEncoding cursor corrupted by URL `+` decoding | minor | #4 | — | — |
+| 7 | Duplicate watchlist IDs rejected with misleading error | minor | #5 | — | — |
+| 8 | 201 vs 202 status code for activating rules | minor | (in #2) | #2 | #3 |
+| 9 | deleteWatchlistItemHandler 204 on non-existent items | minor | — | #5 | — |
+| 10 | Worker event methods use withOrgTx instead of withBypassTx | minor | — | #6 | — |
+
+**Unique contributions:**
+- **BH-P:** 3 unique (ExecuteDSLQuery RLS, base64 cursor, duplicate watchlist IDs)
+- **BH-Q:** 4 unique (EvaluateActivation overwrites, SweepZombie TOCTOU, deleteWatchlistItem 204, worker tx helper)
+- **BH-R:** 2 unique (DryRun RLS, cache eviction)
+
+**Re-find handling:** BH-P and BH-Q both re-reported the float parse and activation pipeline bugs at full severity. BH-R cross-referenced prior phase findings without re-reporting — cleaner methodology but used report space on the cross-reference section.
+
+**Complementary RLS findings:** BH-P found ExecuteDSLQuery queries `s.db` directly (used by NL search + saved searches). BH-R found DryRun uses `readTx` without RLS context (used by rule testing). Both are "watchlist RLS bypass in non-handler code paths" but in different functions affecting different features. Neither found both.
+
+### Phase 2b Scoring
+
+#### Rubric 1: Bugs-Only
+
+| Metric | Weight | BH-P | BH-Q | BH-R |
+|--------|--------|:----:|:----:|:----:|
+| Critical/important bug detection | 40% | 7 (1 significant new: ExecuteDSLQuery RLS; 2 re-finds; missed EvaluateActivation, SweepZombie, DryRun RLS, cache eviction) | 9 (2 significant new: EvaluateActivation overwrite + SweepZombie TOCTOU; 2 re-finds; missed RLS bugs + cache eviction) | 7 (2 significant new: DryRun RLS + cache eviction; good cross-refs; missed EvaluateActivation, SweepZombie, ExecuteDSLQuery RLS) |
+| Novel/unique bugs found | 20% | 7 (3 unique: 1 significant + 2 minor) | 9 (4 unique: 2 significant + 2 minor; most unique bugs) | 6 (2 unique, both significant; fewest total bugs) |
+| Evidence quality | 20% | 9 (base64 probability analysis, RLS fail-closed tracing, dsl_executor cross-ref) | 8 (cross-sibling handler table, TOCTOU timing scenarios, convention citations) | 9 (RLS policy SQL from migration confirmed, dsl_version SQL verified, clean cross-refs) |
+| False positive rate | 20% | 10 | 10 | 10 |
+| **Weighted total** | | **8.00** | **9.00** | **7.80** |
+
+#### Rubric 2: Bugs + Analysis Quality
+
+| Metric | Weight | BH-P | BH-Q | BH-R |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 25% | 7 | 9 | 7 |
+| Novel bugs found | 15% | 7 | 9 | 6 |
+| Cross-file reasoning | 20% | 8 (dsl_executor→watchlist RLS, base64 cross-ref with URLEncoding) | 8 (evaluator→store→SQL unconditional updates, cross-sibling handler patterns) | 9 (evaluator→readTx→migration RLS policy, handler→SQL→cache key analysis) |
+| Failure mode depth | 15% | 8 (base64 probability, RLS fail-closed scenario) | 9 (3-step TOCTOU scenarios for both EvaluateActivation and SweepZombie) | 8 (DryRun silent failure, stale rule activation chain) |
+| Evidence quality | 15% | 9 | 8 | 9 |
+| False positive rate | 10% | 10 | 10 | 10 |
+| **Weighted total** | | **7.95** | **8.75** | **8.00** |
+
+### Phase 2b Analysis
+
+#### Why multipass wins Phase 2b
+
+Multipass found the most total bugs (7), most new bugs (5), and most unique bugs (4). The activation lifecycle produced race conditions (EvaluateActivation overwrite, SweepZombie TOCTOU) that multipass's Pass 3 (Failure Mode Reasoning) systematically catches — it considers "what if step A completes between step B and step C?" Holistic and exploratory each found RLS bypass bugs (different ones) but missed the race conditions. Multipass also continued its strong Pass 2 (Cross-Sibling) performance, catching the deleteWatchlistItem/deleteWatchlist handler inconsistency and worker tx helper deviation.
+
+#### Exploratory's strongest unique contributions
+
+Exploratory found 2 unique significant bugs — DryRun RLS and cache eviction — its best showing for unique significant findings. The DryRun RLS finding required tracing evaluator → readTx → migration SQL to confirm the RLS policy, demonstrating genuine depth-first value. The cache eviction bug traced the handler state machine → sqlc UPDATE query → cache key construction. Both required following a specific thread to its conclusion rather than broad comparison.
+
+#### Three-way differentiation continues
+
+For the second consecutive phase (after Phase 2a), all three variants found unique significant bugs the others missed. Scopes with overlapping concerns (alert lifecycle + RLS + state machine + pagination) create enough different analytical threads for each approach to follow a different one. This is the strongest argument for running multiple variants.
+
+### Phase 2b Actionable bugs to fix
+
+Prioritized by severity and impact:
+
+1. **ExecuteDSLQuery RLS bypass** (significant) — wrap query in `withBypassTx` or `withOrgTx`, matching evaluator's `bypassTx` pattern
+2. **DryRun readTx missing RLS** (significant) — switch DryRun to `bypassTx`, matching non-DryRun evaluation path
+3. **EvaluateActivation overwrites user disables** (significant) — add `WHERE status = 'activating'` guard to `SetAlertRuleStatus` call
+4. **SweepZombieActivations TOCTOU** (significant) — add status preconditions to both rule and job updates
+5. **Cache eviction for error/disabled transitions** (significant) — set `needsCacheEvict = true` in error/disabled/draft cases when re-enabling
+6. **base64.StdEncoding cursor corruption** (minor) — switch all cursor encoding to `base64.URLEncoding`, matching dsl_executor
+7. **Duplicate watchlist IDs** (minor) — deduplicate in `parseWatchlistUUIDs` before validation
+8. **201 vs 202 status code** (minor) — return `http.StatusAccepted` when status is "activating"
+9. **deleteWatchlistItemHandler 204** (minor) — add existence check matching other delete handlers
+10. **Worker event methods tx helper** (minor) — switch to `withBypassTx` matching other evaluator-called methods
+
+---
+
+## Full Cross-Phase Comparison (6 Phases)
+
+| Variant | Ph1 R1 | Ph2a R1 | Ph2b R1 | Ph3a R1 | Ph3b R1 | Ph4 R1 | **Avg R1** | **σ R1** |
+|---------|:------:|:-------:|:-------:|:-------:|:-------:|:------:|:----------:|:--------:|
+| **Holistic** | **9.80** | 7.20 | 8.00 | **9.40** | 8.00 | **9.60** | **8.67** | 0.98 |
+| **Multipass** | 9.60 | **9.00** | **9.00** | 7.40 | **9.40** | 7.00 | **8.57** | 1.00 |
+| **Exploratory** | 9.20 | 8.00 | 7.80 | 7.40 | 6.60 | 5.80 | **7.47** | 1.07 |
+
+| Variant | Ph1 R2 | Ph2a R2 | Ph2b R2 | Ph3a R2 | Ph3b R2 | Ph4 R2 | **Avg R2** | **σ R2** |
+|---------|:------:|:-------:|:-------:|:-------:|:-------:|:------:|:----------:|:--------:|
+| **Holistic** | **9.70** | 7.40 | 7.95 | **9.40** | 7.95 | **9.55** | **8.66** | 0.91 |
+| **Multipass** | 9.35 | **8.80** | **8.75** | 7.60 | **9.05** | 6.65 | **8.37** | 0.94 |
+| **Exploratory** | 9.05 | 8.10 | 8.00 | 7.50 | 6.60 | 6.45 | **7.62** | 0.90 |
 
 ### Wins by phase
 
 | Phase | Winner (R1) | Winner (R2) | Bug type that dominated |
 |-------|-------------|-------------|------------------------|
 | Phase 1 (data pipeline) | Holistic (9.80) | Holistic (9.70) | Cross-file (PK migration cascade) |
+| Phase 2a (auth/RBAC/OAuth) | **Multipass (9.00)** | **Multipass (8.80)** | Pattern violations (admin remove owner, OAuth bypass) |
+| Phase 2b (watchlists/DSL/evaluator) | **Multipass (9.00)** | **Multipass (8.75)** | Race conditions + pattern violations |
 | Phase 3a (notification delivery) | Holistic (9.40) | Holistic (9.40) | Cross-file (activation pipeline wiring) |
 | Phase 3b (email/templates/digests) | **Multipass (9.40)** | **Multipass (9.05)** | Localized pattern violations (RuleID serialization) |
 | Phase 4 (AI/DSL/saved searches) | Holistic (9.60) | Holistic (9.55) | Cross-file (PostFilter flow across packages) |
 
-Holistic wins 3 of 4 phases. Multipass wins when bugs are localized contract/pattern violations.
+**Holistic wins 3 of 6 phases. Multipass wins 3 of 6 phases. Dead even.**
 
-### Final Recommendation
+### Bug type predicts the winner
 
-**Adopt holistic as the primary bug hunter skill.** Average R1 9.20, R2 9.15. Wins 3 of 4 phases. Remarkably consistent (8.00–9.80 on R1, σ=0.70). The only variant that reliably finds critical bugs through cross-file reasoning.
+The single strongest signal from this experiment: the type of bugs in the scope determines which variant wins, not any inherent quality difference between the approaches.
 
-**Keep multipass as a complement for focused contract/pattern audits.** Average R1 8.35, R2 8.16. Wins Phase 3b decisively (9.40 vs 8.00) when bugs are localized. High variance (7.00–9.60 on R1, σ=1.12) — excels at pattern violations, fails at cross-file reasoning. Run it alongside holistic when the scope is dominated by API handlers, serialization, or cross-sibling patterns. Never as a replacement.
+- **Holistic wins when bugs require deep cross-file reasoning:** tracing data flow across 3+ packages (Phase 1: PK migration cascade, Phase 3a: activation pipeline wiring, Phase 4: PostFilter flow through compiler→evaluator→executor).
+- **Multipass wins when bugs are localized pattern violations or race conditions:** comparing sibling handlers (Phase 2a: admin remove vs update role), checking serialization consistency (Phase 3b: RuleID vs ReportID), reasoning about concurrent state transitions (Phase 2b: EvaluateActivation overwrite, SweepZombie TOCTOU).
 
-**Retire exploratory or reserve for very large scopes (30+ files).** Average R1 7.25, R2 7.40. Zero unique contributions in 3 of 4 phases. The 21-file scope of Phase 4 still didn't differentiate it from holistic. Its one bright spot (Phase 4: ExecuteDSLQuery) shows it CAN find things holistic misses when following different threads, but this is inconsistent. If future scopes exceed holistic's reading capacity, re-evaluate.
+### Final Recommendation (Updated for 6 Phases)
 
-**For maximum bug yield: run holistic + multipass on the same scope.** The union of their findings captures nearly all bugs. Holistic provides the critical cross-file finds; multipass fills in the localized pattern violations holistic sometimes misses.
+**Adopt holistic and multipass as co-primary bug hunter skills.** With a 3-3 win split, nearly identical averages (Holistic R1 8.67 vs Multipass R1 8.57), and similar consistency (σ ≈ 1.0 for both), neither approach is reliably superior. They excel at different bug types — holistic at cross-file reasoning, multipass at pattern violations and race conditions — making them genuinely complementary.
+
+**Run both on every scope.** The union of holistic + multipass findings captures nearly all bugs found across the experiment. Their non-overlapping strengths mean running one alone consistently misses the class of bugs the other excels at. The cost (2x run time) is justified by the coverage.
+
+**Retire exploratory as a standalone skill, or reserve for high-risk scopes.** Average R1 7.47 — a full point below both primaries. Found unique significant bugs in 3 of 6 phases (Phase 2a: API key org scoping, Phase 2b: DryRun RLS + cache eviction, Phase 4: ExecuteDSLQuery drops PostFilters). When it contributes, its findings are genuinely valuable. But running it alongside both primaries is expensive (3x) for inconsistent marginal value. Reserve for scopes where depth-first exploration of high-risk code paths (auth middleware, RLS enforcement, evaluator transaction patterns) has shown it adds value.
+
+**Key change from 4-phase conclusion:** The 4-phase analysis (Phases 1, 3a, 3b, 4) recommended holistic as primary with multipass as complement. The addition of Phases 2a and 2b — where multipass won decisively — reveals that the initial sample was biased toward cross-file reasoning scopes where holistic naturally excels. The full 6-phase picture shows a true partnership, not a hierarchy.

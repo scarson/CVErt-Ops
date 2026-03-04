@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -188,7 +189,7 @@ func (srv *Server) oidcVerifyCallback(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, "invalid nonce: "+err.Error(), http.StatusBadRequest)
 		return uuid.Nil, nil, false
 	}
-	if storedNonce != c.Nonce {
+	if subtle.ConstantTimeCompare([]byte(storedNonce), []byte(c.Nonce)) != 1 {
 		http.Error(w, "nonce mismatch", http.StatusBadRequest)
 		return uuid.Nil, nil, false
 	}
@@ -272,6 +273,8 @@ func (srv *Server) oidcCallbackHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	_ = srv.store.UpdateLastLogin(ctx, user.ID)
 
 	for _, cookieStr := range authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure) {
 		w.Header().Add("Set-Cookie", cookieStr)

@@ -133,6 +133,12 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	if user == nil {
+		// Enforce registration mode — only allow auto-creation when registration is open.
+		if srv.cfg.RegistrationMode != "open" {
+			http.Error(w, "registration is not open", http.StatusForbidden)
+			return
+		}
+
 		// New user — create account with no password (OAuth-only).
 		displayName := ghUser.Name
 		if displayName == "" {
@@ -140,6 +146,10 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 		}
 		user, err = srv.store.CreateUser(ctx, primaryEmail, displayName, "", 0)
 		if err != nil {
+			if pgErrCode(err) == "23505" {
+				http.Error(w, "email already registered via another method", http.StatusConflict)
+				return
+			}
 			slog.ErrorContext(ctx, "github oauth: create user", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -180,7 +190,10 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 8. Set auth cookies and respond.
+	// 8. Update last login timestamp (non-fatal — informational only).
+	_ = srv.store.UpdateLastLogin(ctx, user.ID)
+
+	// 9. Set auth cookies and respond.
 	for _, cookieStr := range authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure) {
 		w.Header().Add("Set-Cookie", cookieStr)
 	}

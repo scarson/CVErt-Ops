@@ -718,3 +718,167 @@ The v4/v3 data changes the recommendation:
 3. **Production bug detection on Phase 1 remains unsolved.** The ParseTime RFC1123 bug requires cross-package semantic analysis (seeing util.go and nvd/adapter.go together). The PK migration collision requires reasoning about `ON CONFLICT` failure modes. Both are beyond what incremental reading can achieve. For small scopes, the skill should explicitly permit full-context analysis.
 
 4. **Run F remains unexecuted.** H7 and H8 (hybrid matrix completeness gate, subagent matrix delegation) are still untestable. However, J5's results partially address these — J5 verified endpoint count (72 enumerated, 72 rows) and used subagent delegation.
+
+---
+
+## Runs M1, N1: Small-Scope Fix Results
+
+Runs M1/N1 re-test Phase 1 with S7 (scope-size exception: <100 functions may read all SOURCE files before analysis). See [test design](2026-03-03-phase5-ab-test-design.md) §"Runs M1, N1" for full methodology.
+
+**Key context:** M1's first attempt died from context exhaustion when the skill loaded 13 source files + 10 test files simultaneously. S7 was refined to explicitly separate source files (load all upfront for cross-package pattern recognition) from test files (load per-package during triage). N1 ran with the pre-refinement S7 wording and likely still used incremental reading.
+
+### Execution Status
+
+| Run | Skill | Lines | Truncated? | Context compaction? | Notes |
+|-----|-------|-------|:----------:|:-------------------:|-------|
+| M1 | Enhanced v5 | 203 | No | No | First attempt died (context exhaustion). Retry with refined S7 succeeded. Confirmed holistic source reading (line 104: cross-adapter ParseTime check). |
+| N1 | Hybrid v4 | 392 | No | No | Ran with pre-refinement S7. Likely still used incremental reading (old wording was ambiguous). |
+
+### Scoring (Phase 1 — reduced rubric, adding M1/N1 columns)
+
+| Metric | Weight | G (enhanced v3) | H (hybrid v2) † | K1 (enhanced v4) | L1 (hybrid v3) | M1 (enhanced v5) | N1 (hybrid v4) |
+|--------|--------|:-:|:-:|:-:|:-:|:-:|:-:|
+| Production bugs / design violations | 25% | 10 | 6 † | 2 | 2 | **2** | **2** |
+| TOCTOU windows | 20% | 8 | 4 † | 7 | 5 | **7** | **5** |
+| Cross-handler consistency | 20% | 8 | 7 | 6 | 7 | **7** | **7** |
+| Assertion quality | 15% | 9 | 7 † | 5 | 4 | **6** | **2** |
+| False positives | 10% | 10 | 9 | 10 | 10 | **10** | **9** |
+| Non-API adaptation | 10% | 10 | 10 | 10 | 10 | **10** | **10** |
+| **Weighted total** | **100%** | **9.05** | **6.55** † | **5.85** | **5.50** | **6.20** | **5.10** |
+
+### M1 Score Rationale
+
+**Run M1 (6.20):** Modest improvement over K1 (5.85) but still far below G (9.05). Confirmed holistic source reading — line 104 explicitly states "feed.ParseTime used consistently for timestamp parsing across all adapters (not time.Parse with a single layout)" — M1 had all source files in context and examined ParseTime but concluded it was correct, missing the RFC1123 bug that G found. This is significant: the holistic reading enabled by S7 restored cross-package visibility, but the skill still didn't find the bug.
+
+0 production bugs (G found 2). 6 TOCTOU flows enumerated with good depth — TOCTOU-2 identifies the untested advisory lock coordination, TOCTOU-5 identifies the worker claim/complete gap, TOCTOU-6 catches the midnight edge case. Cross-adapter analysis covers 4 patterns across all adapters with KEV inconsistency noted and downloadToTemp dedup recommendation. 5 assertion quality issues (AQ-1 through AQ-5) — a clear improvement over K1's 4, catching execution-only tests (AQ-1, AQ-2) and t.Skip stubs (AQ-4). Zero false positives. Matrix correctly N/A.
+
+### N1 Score Rationale
+
+**Run N1 (5.10):** Regression from L1 (5.50) despite nominally having S7 available. N1 ran with the pre-refinement S7 wording and likely still used incremental reading (the old wording was ambiguous enough that the skill didn't change behavior).
+
+0 production bugs. TOCTOU analysis checks 4 flows but concludes "No TOCTOU windows found" — misses the worker claim/complete gap and the midnight edge case that M1 identified. Cross-adapter analysis covers 4 patterns across all 6 adapters — comparable to M1. The adapted pipeline security matrix is excellent (7 columns, 9 components, 4 GAPs, 3 spot-checks verified) — the best matrix format in any Phase 1 run. However, assertion quality is the major weakness: §5 claims "No anti-patterns detected" despite clear issues that M1 found (AQ-1: TestApply_SameDayCursorSkips is execution-only, AQ-3: recoverCalls never asserted, AQ-4: t.Skip stubs). This incorrect "clean" assessment is a false negative, scored 2/10. False positives penalized slightly for the overstated assertion quality claim.
+
+### Hypothesis Results (M1/N1)
+
+| # | Prediction | Result | Evidence | Confirmed? |
+|---|-----------|--------|----------|:----------:|
+| M1h | M1 finds ≥1 of G's 2 production bugs (ParseTime RFC1123, PK migration) | 0 production bugs found. Line 104 explicitly examined ParseTime and concluded it was correct — M1 had the context but not the analytical insight. | Report §4.5B: "No wrong-function-called issues" + §6 Production Bugs: "None." | **Refuted** |
+| M2 | M1 assertion quality count ≥8 (G found 10, K1 found 4) | 5 found (AQ-1 through AQ-5). Improvement over K1 (4) but well below G (10). | Report §4 Assertion Quality Issues | **Refuted** |
+| M3 | M1 TOCTOU count ≥4 (G found 8, K1 found 8) | 6 flows enumerated. 2 temporal windows (TOCTOU-5: worker claim gap, TOCTOU-6: midnight edge). 1 untested coordination (TOCTOU-2). | Report §4.6 | **Confirmed** |
+| M4 | M1 cross-adapter consistency identifies patterns across all 6 adapters | All 6 adapters compared for malformed records, downloadToTemp, null bytes, constructor nil-client. KEV inconsistency noted. | Report §4.5A | **Confirmed** |
+| M5 | M1 score ≥7.5 (recovering from K1's 5.85 toward G's 9.05) | 6.20. Only +0.35 over K1. 2.85 below G. | Scoring above | **Refuted** |
+| N1h | N1 finds ≥1 production bug (L1 found 0) | 0 production bugs found. "Semantic analysis (§4) found no wrong-function-called bugs." | Report §4 and Production Bugs | **Refuted** |
+| N2 | N1 cross-adapter consistency improves over L1 | Comparable, not clearly improved. N1 covers 4 patterns across all 6 adapters — similar scope to L1. Both scored 7/10 on cross-handler. | Report §4A | **Partial** |
+| N3 | N1 completes without truncation (L1 completed at 450 lines) | 392-line report with all sections present. Complete. | Report file length | **Confirmed** |
+| N4 | N1 score ≥6.5 (recovering from L1's 5.50) | 5.10. Regression of -0.40 from L1. | Scoring above | **Refuted** |
+
+**Testable: 9.** Confirmed: 3 (M3, M4, N3). Partial: 1 (N2). Refuted: 5 (M1h, M2, M5, N1h, N4).
+
+**Success criteria: ≥6 of 9 confirmed.** 3 confirmed + 1 partial = **CLEAR FAIL.** The critical hypotheses (M1h, M5) were both refuted. Holistic source reading did NOT restore production bug detection or recover toward G's score.
+
+### Root Cause Validation
+
+**S6 was NOT the sole cause of the K1/L1 regression.**
+
+The M1/N1 experiment was designed to test whether restoring holistic file reading for small scopes would recover G-level performance. The result is conclusive: it didn't.
+
+| Run | Skill version | Holistic reading? | Production bugs | Score | Delta from G |
+|-----|--------------|:-:|:-:|------:|-----:|
+| G | Enhanced v3 (no S1-S6) | Yes (by default) | 2 | 9.05 | — |
+| K1 | Enhanced v4 (S1-S6) | No (S6 forced incremental) | 0 | 5.85 | -3.20 |
+| M1 | Enhanced v5 (S1-S6 + S7) | Yes (S7 exception) | 0 | 6.20 | -2.85 |
+
+M1 improved only **+0.35** over K1 (from 5.85 to 6.20). The improvement came from slightly better assertion quality (5 vs 4 issues) and marginally better cross-handler analysis (7/10 vs 6/10). But production bug detection — the highest-weighted metric — remained at 0/10 for both.
+
+The most telling evidence is M1's line 104: the skill had all source files in context, explicitly examined ParseTime's usage across adapters, and concluded "used consistently" — the opposite of G's finding that ParseTime doesn't support RFC1123 format. This means the regression isn't about context visibility (which S7 restored) but about **analytical depth**: the S1-S5 structural changes and P1-P4 prompt mitigations appear to bias the skill toward efficient gap reporting rather than deep semantic analysis.
+
+**Three-way comparison (G → K1 → M1):**
+
+| Metric | G | K1 | M1 | K1→M1 delta | G→M1 gap |
+|--------|:-:|:-:|:-:|:-:|:-:|
+| Production bugs | 10 | 2 | 2 | 0 | **-8** |
+| TOCTOU | 8 | 7 | 7 | 0 | -1 |
+| Cross-handler | 8 | 6 | 7 | +1 | -1 |
+| Assertion quality | 9 | 5 | 6 | +1 | -3 |
+| False positives | 10 | 10 | 10 | 0 | 0 |
+| Non-API | 10 | 10 | 10 | 0 | 0 |
+| **Weighted** | **9.05** | **5.85** | **6.20** | **+0.35** | **-2.85** |
+
+The production bugs metric (25% weight) accounts for 2.00 of the 2.85-point gap. The remaining 0.85 comes from assertion quality (-0.45) and cross-handler consistency (-0.20) and TOCTOU (-0.20). This confirms that production bug detection is both the most impactful metric and the one most resistant to the incremental improvements in S1-S7.
+
+### Delta Analysis
+
+| Comparison | Score delta | Key changes |
+|------------|:----------:|-------------|
+| M1 vs K1 | **+0.35** | Same 0 prod bugs. +1 assertion quality issue (AQ-4: t.Skip stubs). +1 cross-handler score (downloadToTemp dedup recommendation). S7 restored holistic reading but didn't unlock deeper analysis. |
+| N1 vs L1 | **-0.40** | Same 0 prod bugs. Assertion quality collapsed (0 vs 1 issue, wrong "no anti-patterns" claim). Pipeline matrix improved. N1 likely didn't benefit from S7 (ran with ambiguous wording). |
+| M1 vs G | **-2.85** | 0 vs 2 prod bugs (the critical gap). 5 vs 10 assertion quality. 7 vs 8 cross-handler. M1 had the context but not the analytical insight. |
+| N1 vs H | **-1.45** | Both complete. N1 has better matrix format. But N1's assertion quality regression (2/10 vs 7/10†) drags the score below H's estimate. |
+
+### Phase 1 Trend (6 runs)
+
+| Run | Skill | Score | Prod bugs | Key characteristic |
+|-----|-------|------:|:-:|---|
+| G | Enhanced v3 | **9.05** | 2 | No S1-S6; holistic reading by default; deepest semantic analysis |
+| H † | Hybrid v2 | 6.55 | 1 † | Truncated at 141 lines; score estimated |
+| K1 | Enhanced v4 | 5.85 | 0 | S1-S6 applied; incremental reading; completed but shallow |
+| L1 | Hybrid v3 | 5.50 | 0 | S1-S6 applied; incremental reading; complete but shallow |
+| M1 | Enhanced v5 | 6.20 | 0 | S7 holistic source reading restored; still no prod bugs |
+| N1 | Hybrid v4 | 5.10 | 0 | S7 available but likely unused (ambiguous wording); worst assertion quality |
+
+**The trend is clear:** G remains the best Phase 1 run by a wide margin. Every subsequent skill version (v4, v5) with S1-S6 improvements has scored 2.85–3.95 points lower. The context management improvements that dramatically helped Phase 5 (I5: 9.45, J5: 9.25) actively harmed Phase 1 performance, and S7 provided only marginal recovery.
+
+---
+
+## Updated Recommendation (All 14 Runs)
+
+### Summary of all scores
+
+| Run | Skill | Scope | Rubric | Score |
+|-----|-------|-------|--------|------:|
+| A | path-mapping | Phase 5 | v1 | 4.60 |
+| B | orig coverage-tool | Phase 5 | v1 | 1.85 |
+| C | enhanced v2 | Phase 5 | v1 | 7.05 |
+| D | hybrid v1 | Phase 5 | v1 | 8.85 |
+| E | enhanced v3 | Phase 5 | v1 | 7.35 |
+| E | enhanced v3 | Phase 5 | v2 | 6.60 |
+| F | hybrid v2 | Phase 5 | — | N/A |
+| G | enhanced v3 | Phase 1 | Phase 1 | **9.05** |
+| H | hybrid v2 | Phase 1 | Phase 1 | 6.55 † |
+| I5 | enhanced v4 | Phase 5 | v1 | **9.45** |
+| I5 | enhanced v4 | Phase 5 | v2 | 8.35 |
+| J5 | hybrid v3 | Phase 5 | v1 | 9.25 |
+| J5 | hybrid v3 | Phase 5 | v2 | 8.25 |
+| K1 | enhanced v4 | Phase 1 | Phase 1 | 5.85 |
+| L1 | hybrid v3 | Phase 1 | Phase 1 | 5.50 |
+| M1 | enhanced v5 | Phase 1 | Phase 1 | 6.20 |
+| N1 | hybrid v4 | Phase 1 | Phase 1 | 5.10 |
+
+### What M1/N1 taught us
+
+**S7 (holistic source reading) is necessary but not sufficient for small-scope bug detection.** M1 proved that having all source files in context is a prerequisite for cross-package analysis — the skill explicitly compared ParseTime usage across adapters (line 104). But it drew the wrong conclusion ("used consistently"), meaning the analytical depth that found G's bugs requires something beyond context visibility.
+
+**The regression root cause is cumulative, not single-variable.** The hypothesis that S6 alone caused the K1/L1 regression was refuted. The actual cause is the combined effect of S1-S6 + P1-P4 structural and prompt changes that bias the skill toward:
+1. Efficient coverage gap enumeration over deep semantic analysis
+2. Systematic section-by-section processing over exploratory cross-file reasoning
+3. Completeness assurance over analytical risk-taking
+
+**G's success may be partially irreproducible.** G ran with enhanced v3 — no context management guardrails (S1-S6), no prompt mitigations (P1-P4). Its exceptional performance came from unconstrained analytical freedom combined with a small-enough scope to fit in context. The guardrails added in v4/v5 are necessary for large scopes (I5/J5 prove this) but cannot be selectively disabled for small scopes without also losing the structural discipline that prevents context exhaustion.
+
+### Revised scope-based selection rule (final)
+
+- **Large scope (300+ functions):** Use enhanced v4 or hybrid v3 — both perform comparably (I5: 9.45 vs J5: 9.25). Context management improvements are essential and effective.
+
+- **Small scope (<100 functions):** Use enhanced **v3** (the G configuration). The v4/v5 context management improvements are counterproductive for small scopes. S7's holistic reading exception is insufficient to recover G-level analytical depth. If using v4+, the entire S1-S6 stack constrains the skill's analytical freedom in ways that can't be fixed by a single S7 exception.
+
+- **Alternative for small scope:** Accept 6.20-level output from v5 (M1) as the "reliable minimum" and use it when consistency matters more than peak performance. G's 9.05 may have variance that makes it unreliable as a baseline.
+
+### Open questions (updated)
+
+1. **Are G's results reproducible?** G's 9.05 score with 2 production bugs may include variance from favorable context ordering or analytical choices that aren't consistently reproducible. A re-run of G's exact configuration (enhanced v3, Phase 1, no S1-S7) would test this.
+
+2. **Can targeted prompt changes restore bug detection without full v3 rollback?** The production bug detection regression appears linked to the overall analytical style imposed by S1-S6, not to any single change. A skill version that preserves S3 (incremental writing) and S7 (small-scope exception) but removes S1-S2 (scope classification/subagent planning) and S4-S5 (compact matrix format) might find a middle ground.
+
+3. **Cite-test-name sub-endpoint verification still needed.** 4/7 accuracy across E, I5, J5 confirms a systematic failure mode. This is a design fix, not a context management issue.
+
+4. **Run F remains unexecuted.** Low priority given J5's comparable data.

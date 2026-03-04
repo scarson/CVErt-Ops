@@ -806,3 +806,207 @@ Structure for results:
 - The "write incrementally" instruction is the key context exhaustion mitigation. Watch whether each skill actually writes to the file incrementally or accumulates in memory
 - If any run still truncates despite the prompt changes, note the line count and which section was being written — this identifies whether the bottleneck is analysis or report generation
 - The compact matrix format ("T(TestName)" vs prose) should significantly reduce Phase 5 token usage — Phase 5 has 72 endpoints × 7 columns = 504 cells. At ~20 tokens per prose cell vs ~5 tokens for compact, this saves ~7,500 tokens in the matrix alone
+
+---
+
+## Runs M1, N1: Phase 1 Small-Scope Fix
+
+**Date added:** 2026-03-03
+**Purpose:** Re-test Phase 1 with a targeted fix for the small-scope regression identified in K1/L1 scoring. S7 adds a scope-size exception to the incremental reading rule: scopes with <100 functions may read all source files before analysis, restoring the cross-package pattern recognition that made Run G the highest-scoring run (9.05).
+
+### Why Retry?
+
+K1 and L1 regressed sharply compared to G, despite using skills with more improvements (S1-S6). Root cause analysis identified S6 (incremental reading for ALL scopes) as the culprit:
+
+| Prior run | Score | Problem | Root cause |
+|-----------|-------|---------|------------|
+| G (enhanced v3, Phase 1) | 9.05 | Best run overall — found 2 production bugs, 10 assertion quality issues | Read all 73 functions into context simultaneously → cross-package pattern recognition enabled |
+| K1 (enhanced v4, Phase 1) | 5.85 | 0 production bugs, 4 assertion quality issues | S6 forced per-package reading → couldn't compare adapters side-by-side → missed ParseTime RFC1123 bug |
+| L1 (hybrid v3, Phase 1) | 5.50 | 0 genuine production bugs, 1 assertion quality issue | Same S6 constraint → lost cross-adapter visibility |
+
+The fix is surgical: S7 changes "Incremental reading (ALL scopes)" to "Incremental reading (medium+ scopes, ≥100 functions)" and adds an explicit small-scope rule allowing holistic file reading for <100-function scopes.
+
+### The Fourteen Runs (Updated)
+
+| Run | Skill | Version | Scope | Status | Report file |
+|-----|-------|---------|-------|--------|-------------|
+| A–D | (see above) | — | Phase 5 | Done | (see above) |
+| E–H | (see above) | v3 / hybrid v2 | Phase 5 + Phase 1 | Done (E,G) / Missing (F) / Truncated (H) | (see above) |
+| I5 | `test-coverage-review-go` | Enhanced v4 | Phase 5 | Done | `phase5-enhanced-v4-review.md` |
+| J5 | `test-coverage-review-hybrid-go` | Hybrid v3 | Phase 5 | Done | `phase5-hybrid-v3-review.md` |
+| K1 | `test-coverage-review-go` | Enhanced v4 | Phase 1 | Done | `phase1-enhanced-v4-review.md` |
+| L1 | `test-coverage-review-hybrid-go` | Hybrid v3 | Phase 1 | Done | `phase1-hybrid-v3-review.md` |
+| M1 | `test-coverage-review-go` | Enhanced v5 | **Phase 1** | Done | `phase1-enhanced-v5-review.md` |
+| N1 | `test-coverage-review-hybrid-go` | Hybrid v4 | **Phase 1** | Done | `phase1-hybrid-v4-review.md` |
+
+### What Changed Between K1→M1 and L1→N1
+
+| # | Change | Skill | Addresses which K1/L1 failure? |
+|---|--------|-------|-------------------------------|
+| S7 | Scope-size exception for incremental reading: changed "ALL scopes" to "medium+ scopes (≥100 functions)". For small scopes (<100 functions), read all SOURCE files before analysis (for cross-package pattern recognition), but read TEST files one package at a time during triage. Explicit 4-step workflow: (1) coverage data → (2) all source files → (3) per-package test reading + triage + write findings → (4) cross-cutting analysis. | Both | K1 and L1 found 0 production bugs because per-package reading prevented comparing adapters side-by-side. G found 2 bugs by holding all 73 functions in context. S7 restores G's holistic source reading for small scopes while preventing the context exhaustion that killed M1's first attempt (which loaded all source AND test files simultaneously). |
+
+**Note:** M1's first attempt died from context exhaustion despite the original S7 wording ("read all source files before analysis"). The skill interpreted this as "read everything" and loaded 13 source files + 10 test files, exhausting context. S7 was refined to explicitly distinguish source files (load all upfront for pattern recognition) from test files (load per-package during triage — they don't contribute to cross-package visibility).
+
+This is a single-variable test: only S7 changed. All other S1-S6 improvements and P1-P4 prompt mitigations remain identical to K1/L1.
+
+---
+
+### Primary Question (M1/N1)
+
+**Does restoring holistic file reading for small scopes recover the production-bug-finding capability lost in K1/L1?**
+
+This is a controlled regression test. G (enhanced v3, no S1-S6) scored 9.05 with holistic reading. K1 (enhanced v4, with S1-S6 including restrictive S6) scored 5.85 with per-package reading. M1 (enhanced v5, S1-S6 plus S7 exception) should recover toward G's level if S6 was the root cause.
+
+Secondary question: Does the hybrid skill also benefit from holistic reading on small scopes, or does its two-pass structure provide enough cross-package visibility regardless?
+
+### Testable Hypotheses
+
+| # | Prediction | Run | How to verify |
+|---|-----------|-----|---------------|
+| M1h | M1 finds ≥1 of G's 2 production bugs (ParseTime RFC1123, PK migration) | M1 | Search report for RFC1123 / migrateCVEPK. K1 found 0; G found 2. |
+| M2 | M1 assertion quality count ≥8 (G found 10, K1 found 4) | M1 | Count assertion quality findings. |
+| M3 | M1 TOCTOU count ≥4 (G found 8, K1 found 8 — TOCTOU was unaffected by S6) | M1 | Count. TOCTOU should remain stable since it's per-flow analysis. |
+| M4 | M1 cross-adapter consistency identifies patterns across all 6 adapters | M1 | Check whether all 6 adapters are compared in cross-handler analysis. K1 compared them but missed pattern violations. |
+| M5 | M1 v1-equivalent score ≥7.5 (recovering from K1's 5.85 toward G's 9.05) | M1 | Score on Phase 1 reduced rubric. |
+| N1h | N1 finds ≥1 production bug (L1 found 0) | N1 | Search report for production bugs. |
+| N2 | N1 cross-adapter consistency improves over L1 | N1 | Compare pattern violation counts: L1 had limited cross-adapter findings. |
+| N3 | N1 completes without truncation (L1 completed at 450 lines — this should be stable) | N1 | Report file ends with a complete section. |
+| N4 | N1 v1-equivalent score ≥6.5 (recovering from L1's 5.50) | N1 | Score on Phase 1 reduced rubric. |
+
+**Success criteria:** ≥6 of 9 hypotheses confirmed. The critical ones are M1h and M5 — if the small-scope exception doesn't restore production bug detection, the root cause analysis was wrong.
+
+---
+
+### Controlled Variables
+
+- **Codebase state:** Same `dev` branch HEAD as K1/L1. Verify no source changes to `internal/feed/...`, `internal/merge/...`, `internal/worker/...`
+- **Coverage data:** Same `coverage-phase1.out` and `coverage-phase1-func.txt` (83.4% overall, 73 functions). Do NOT re-generate
+- **Scope:** `./internal/feed/...`, `./internal/merge/...`, `./internal/worker/...`
+- **Model:** Same as K1/L1 (check with `/model` at start)
+- **Sessions:** Separate Claude Code sessions, no cross-contamination, no mention of A/B test or prior runs
+
+### Pre-step: Verify Controlled Variables
+
+Before either run:
+
+```bash
+# Verify no source changes since K1/L1
+git log --oneline --diff-filter=M -- "internal/feed/**/*.go" "internal/merge/*.go" "internal/worker/*.go" | head -5
+
+# Verify coverage data files exist
+ls -la coverage-phase1.out coverage-phase1-func.txt
+```
+
+---
+
+### Test Prompts
+
+#### Run M1: Enhanced v5 on Phase 1
+
+```
+Run /test-coverage-review-go on Phase 1 scope.
+
+Scope: ./internal/feed/..., ./internal/merge/..., ./internal/worker/...
+
+Coverage data has already been generated — use the files:
+- coverage-phase1.out (coverage profile)
+- coverage-phase1-func.txt (per-function coverage)
+
+Read coverage-phase1-func.txt and use it as your §1 output. Do NOT re-run go test.
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase1-enhanced-v5-review.md
+
+IMPORTANT — write each major section to the report file as you complete it. Do not wait until the end.
+
+This scope has no org-scoped API endpoints, so the Security Checklist Matrix (§3) should be marked N/A. Focus analysis on TOCTOU (§4.6), cross-adapter consistency, and assertion quality.
+
+Limit nice-to-have gaps to a count and top 5 examples.
+
+Follow the skill instructions exactly — do not skip any steps. Every step matters.
+```
+
+#### Run N1: Hybrid v4 on Phase 1
+
+```
+Run /test-coverage-review-hybrid-go on Phase 1 scope.
+
+Scope: ./internal/feed/..., ./internal/merge/..., ./internal/worker/...
+
+Coverage data has already been generated — use the files:
+- coverage-phase1.out (coverage profile)
+- coverage-phase1-func.txt (per-function coverage)
+
+Read coverage-phase1-func.txt and use it as your §1 output. Do NOT re-run go test.
+
+Save the report to: dev/test-coverage-reports/2026-03-03-phase1-hybrid-v4-review.md
+
+IMPORTANT — write each major section to the report file as you complete it, using the Edit tool to append. Do not accumulate the entire report in memory. This is the #1 priority — a complete shorter report is far more valuable than a detailed truncated one.
+
+This scope has no org-scoped API endpoints. The Security Checklist Matrix (§3) should be adapted for data pipeline concerns (advisory locks, streaming parse safety, null-byte stripping, temp file cleanup) OR marked N/A — do not fabricate org-scoped endpoints.
+
+Limit nice-to-have gaps to a count and top 5 examples.
+
+Follow the skill instructions exactly — do not skip any steps. Every step matters.
+```
+
+---
+
+### Scoring Rubric
+
+Score on the Phase 1 reduced rubric (same as G/H/K1/L1):
+
+| Metric | Weight | How to score |
+|--------|--------|--------------|
+| Production bugs / design violations | 25% | Wrong function called, missing side effects, pattern violations. No benchmark bugs — everything is genuine discovery. |
+| TOCTOU windows | 20% | Count. Multi-step flow enumeration performed? Advisory lock analysis? |
+| Cross-handler consistency | 20% | Feed adapter pattern comparison (all 6 compared?). Merge step consistency. Pattern violations found. |
+| Assertion quality | 15% | Count. Conditional assertion check applied? Shallow assertion identification? |
+| False positives | 10% | Fabricated endpoints, mischaracterized packages, wrong coverage data interpretation. |
+| Non-API adaptation | 10% | Matrix correctly N/A? No forced org-scoped analysis on global code? |
+
+---
+
+### Post-Test Analysis
+
+After both runs complete:
+
+1. **Score on Phase 1 reduced rubric** — add M1/N1 columns to the existing G/H/K1/L1 table
+2. **Check hypotheses** — mark each confirmed/refuted with evidence
+3. **Delta analysis** — M1 vs K1 vs G, N1 vs L1 vs H. Three-way comparison isolates S7's effect
+4. **Production bug detection** — did holistic reading restore the ability to find ParseTime RFC1123? This is the key diagnostic
+5. **Cross-adapter pattern analysis** — did having all adapters in context improve pattern violation detection?
+6. **Root cause validation** — if M1 recovers to G-level scores, S6 was confirmed as the K1/L1 regression root cause. If M1 still regresses, other factors (S1-S5, prompt changes P1-P4) are also contributing
+
+Structure for results:
+
+```
+## Runs M1/N1: Small-Scope Fix Results
+
+### Execution Status
+| Run | Lines | Truncated? | Context compaction? |
+
+### Scoring (Phase 1 — reduced rubric, adding M1/N1 columns)
+[Existing table with new columns — now G, H, K1, L1, M1, N1]
+
+### Hypothesis Results
+| # | Prediction | Result | Evidence | Confirmed? |
+
+### Root Cause Validation
+[Did S7 fix the K1/L1 regression? Three-way comparison: G vs K1 vs M1]
+
+### Delta Analysis
+| Metric | K1→M1 | L1→N1 | G→M1 (target: ~0) |
+
+### Updated Recommendation
+[Based on all 14 runs — does scope-size-aware context management resolve the trade-off?]
+```
+
+---
+
+### Execution Notes
+
+- Same isolation rules: separate sessions, no mention of A/B test or prior runs
+- Run M1 first (enhanced). If it reveals new skill bugs, fix before N1
+- The test prompts are identical to K1/L1 — the only difference is the skill version (S7). This makes it a clean single-variable test
+- Watch specifically for: does the skill actually read all source files upfront (as S7 allows for small scopes), or does it still process incrementally? If it still processes incrementally despite S7, the exception wording may need strengthening
+- G scored 9.05 with no S1-S6 at all. M1 has S1-S5 plus S7. If M1 matches G, S7 was sufficient. If M1 exceeds G, S1-S5 add value on top of holistic reading. If M1 is between K1 and G, S7 partially helps but other S1-S5 changes still interfere

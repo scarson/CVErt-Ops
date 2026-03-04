@@ -572,3 +572,218 @@ Prioritized by severity and impact:
 7. **Pagination phantom page** (minor) — use `limit+1` pattern like alert rules handler
 8. **Semaphore head-of-line blocking** (minor) — group claimed rows by org, dispatch org batches in parallel
 9. **Batch cursor advancement on failure** (minor) — don't advance cursor past failed rules
+
+---
+
+## Phase 3b Runs (Email/Templates/Digests)
+
+### Scope
+
+Overlapping domain with Phase 3a (shared: worker.go, notification_delivery.go, deliveries.go, channels.go). Tests whether multipass's cross-sibling strength generalizes when bugs are localized pattern violations rather than deep cross-file issues.
+
+**Files:** `internal/store/scheduled_report.go`, `internal/store/report_channel.go`, `internal/store/notification_channel.go`, `internal/store/notification_delivery.go`, `internal/notify/email.go`, `internal/notify/render.go`, `internal/notify/template.go`, `internal/notify/digest.go`, `internal/notify/worker.go`, `internal/api/channels.go`, `internal/api/reports.go`, `internal/api/deliveries.go`, `internal/api/server.go`
+
+13 source files. Cross-cutting concerns: digest execution lifecycle, PATCH semantics for nullable fields, delivery serialization, secret rotation, worker transaction patterns.
+
+### Phase 3b Execution Status
+
+| Run | Skill | Bugs found | Design concerns | Report file |
+|-----|-------|:----------:|:---------------:|-------------|
+| BH-G | code-bug-hunter-holistic | 4 | 2 | `2026-03-03-phase3b-bughunt-holistic.md` |
+| BH-H | code-bug-hunter-multipass | 5 | 3 | `2026-03-03-phase3b-bughunt-multipass.md` |
+| BH-I | code-bug-hunter-exploratory | 3 | 2 | `2026-03-03-phase3b-bughunt-exploratory.md` |
+
+All three variants completed without truncation or context exhaustion.
+
+### Phase 3b Bug Detection
+
+7 unique bugs across all variants:
+
+| # | Bug | Severity | BH-G | BH-H | BH-I |
+|---|-----|----------|:----:|:----:|:----:|
+| 1 | Digest runner calls wrong store method (API path instead of worker path) | significant | #1 (significant) | #1 (significant) | Design concern only |
+| 2 | PATCH /reports can't clear severity_threshold to NULL | significant | #2 (significant) | #3 (significant) | #3 (minor) |
+| 3 | RuleID zero UUID for digest deliveries | significant | **MISSED** | #2 (significant) | #2 (minor) |
+| 4 | rotateSecretHandler TOCTOU — empty secret with 200 | minor | #3 (minor) | — | — |
+| 5 | Replay rate limit consumed on no-op | minor | #4 (minor) | Design concern | — |
+| 6 | deleteReportHandler 204 for non-existent reports | minor | — | #4 (minor) | — |
+| 7 | Claim/mark TOCTOU (re-found from Phase 3a overlap) | significant | — | #5 (significant) | #1 (significant) |
+
+**Unique contributions:**
+- **BH-G:** 2 unique (rotateSecret TOCTOU, replay rate limit as bug)
+- **BH-H:** 1 unique (deleteReport 204)
+- **BH-I:** 0 unique — complete subset of other variants
+
+**Key miss:** BH-G (holistic) missed the RuleID zero UUID bug — a textbook cross-sibling pattern violation where `ReportID` uses `*string` with `.Valid` check but `RuleID` uses `string` with unconditional `.UUID.String()`. This is exactly the class of bug multipass's Pass 2 (Cross-Sibling) is designed to catch.
+
+### Phase 3b Scoring
+
+#### Rubric 1: Bugs-Only (adapted)
+
+Phase 3b has no single critical bug. The most important findings are PATCH clearing (direct user impact), RuleID zero UUID (incorrect API for all digest deliveries), and digest wrong store method (convention violation + dead code).
+
+| Metric | Weight | BH-G | BH-H | BH-I |
+|--------|--------|:----:|:----:|:----:|
+| Critical/important bug detection | 40% | 7 (found PATCH clear + digest method; missed RuleID zero UUID) | 10 (found all three important bugs at correct severity) | 6 (found PATCH + RuleID but both rated minor; digest only design concern) |
+| Novel/unique bugs found | 20% | 7 (4 total, 2 unique: rotateSecret TOCTOU, replay rate limit) | 8 (5 total, most bugs; 1 truly unique: deleteReport 204) | 3 (3 total, 0 unique — complete subset) |
+| Evidence quality | 20% | 9 (design doc cross-refs, TOCTOU scenario, code from both sides) | 9 (cross-sibling RuleID/ReportID comparison, SQL evidence) | 8 (good CTE fix suggestion on claim/mark; shorter analysis on others) |
+| False positive rate | 20% | 10 | 10 | 10 |
+| **Weighted total** | | **8.00** | **9.40** | **6.60** |
+
+#### Rubric 2: Bugs + Analysis Quality
+
+| Metric | Weight | BH-G | BH-H | BH-I |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 25% | 7 | 10 | 6 |
+| Novel bugs found | 15% | 7 | 8 | 3 |
+| Cross-file reasoning | 20% | 8 (digest flow tracing good; missed RuleID sibling pattern) | 9 (Pass 2 cross-sibling excellent; SQL↔handler contract checking) | 7 (good claim/mark depth; digest method only a concern) |
+| Failure mode depth | 15% | 8 (TOCTOU scenario, severity_threshold dead-end analysis) | 8 (RuleID consumer confusion, deleteReport audit gap) | 7 (CTE fix solid, but shorter chains overall) |
+| Evidence quality | 15% | 9 | 9 | 8 |
+| False positive rate | 10% | 10 | 10 | 10 |
+| **Weighted total** | | **7.95** | **9.05** | **6.60** |
+
+### Phase 3b Analysis
+
+#### Why multipass wins Phase 3b
+
+Phase 3b's bugs are localized contract/pattern violations, not deep cross-file reasoning problems. The RuleID zero UUID bug is a textbook cross-sibling pattern violation — `ReportID` uses `*string` with `.Valid` check while `RuleID` uses `string` with unconditional `.UUID.String()`. Multipass's Pass 2 is specifically designed to catch exactly this class of bug. Holistic read all the same code but never forced itself into a systematic sibling comparison.
+
+This is the **first reversal** — multipass wins on both rubrics. The pattern is clear: when bugs require deep cross-file reasoning (Phase 1, Phase 3a), holistic wins. When bugs are localized contract/pattern violations (Phase 3b), multipass wins.
+
+#### Why holistic dropped
+
+Holistic's strength is following threads across package boundaries (API→evaluator→main.go in Phase 3a). Phase 3b's bugs don't require that — they're within-file or adjacent-file pattern issues. Holistic's unconstrained exploration doesn't penalize but also doesn't force the systematic comparison that catches serialization asymmetries.
+
+#### Exploratory continues to underperform
+
+Zero unique contributions again (3rd time in 4 phases). Its depth-first selection focused on worker.go and digest.go — re-finding the claim/mark TOCTOU from Phase 3a scope overlap — while giving insufficient attention to the API serialization patterns where the novel bugs were.
+
+### Phase 3b Actionable bugs to fix
+
+Prioritized by severity and impact:
+
+1. **Digest runner wrong store method** (significant) — call `ListActiveChannelsForDigest` instead of `ListChannelsForReport`
+2. **PATCH can't clear severity_threshold** (significant) — add sentinel value or use three-state type to distinguish null from absent
+3. **RuleID zero UUID** (significant) — change `RuleID` to `*string` with `.Valid` check, matching `ReportID` pattern
+4. **Claim/mark TOCTOU** (significant) — already listed in Phase 3a; combine into single CTE
+5. **rotateSecretHandler TOCTOU** (minor) — check `if secret == ""` and return 404
+6. **Replay rate limit on no-op** (minor) — already listed in Phase 3a
+7. **deleteReportHandler 204** (minor) — add existence check before delete, matching channel handler pattern
+
+---
+
+## Phase 4 Runs (AI/DSL/Saved Searches)
+
+### Scope
+
+Largest scope tested (21 files). Different domain (DSL compilation, alert evaluation, AI features). Tests whether holistic hits reading capacity limits and exploratory differentiates at larger scale.
+
+**Files:** `internal/ai/ai.go`, `internal/ai/gemini.go`, `internal/ai/mock.go`, `internal/ai/quota.go`, `internal/ai/sanitize.go`, `internal/ai/schema.go`, `internal/alert/dsl/field.go`, `internal/alert/dsl/types.go`, `internal/alert/dsl/compiler.go`, `internal/alert/dsl/validator.go`, `internal/alert/evaluator.go`, `internal/store/dsl_executor.go`, `internal/api/ai.go`, `internal/api/saved_searches.go`, `internal/api/server.go`, `internal/store/ai.go`, `internal/store/saved_search.go`, `cmd/cvert-ops/quota.go`, `cmd/cvert-ops/main.go`, `internal/config/config.go`, `internal/metrics/ai.go`
+
+21 source files. Cross-cutting concerns: DSL compilation + evaluation, PostFilter regex handling, float value parsing, quota management, NL search pipeline.
+
+### Phase 4 Execution Status
+
+| Run | Skill | Bugs found | Design concerns | Report file |
+|-----|-------|:----------:|:---------------:|-------------|
+| BH-J | code-bug-hunter-holistic | 2 | 2 | `2026-03-03-phase4-bughunt-holistic.md` |
+| BH-K | code-bug-hunter-multipass | 1 | 2 | `2026-03-03-phase4-bughunt-multipass.md` |
+| BH-L | code-bug-hunter-exploratory | 1 | 2 | `2026-03-03-phase4-bughunt-exploratory.md` |
+
+All three variants completed without truncation or context exhaustion.
+
+### Phase 4 Bug Detection
+
+3 unique bugs across all variants:
+
+| # | Bug | Severity | BH-J | BH-K | BH-L |
+|---|-----|----------|:----:|:----:|:----:|
+| 1 | Float parse `return v, json.Unmarshal(raw, &v)` — unspecified eval order | critical (disputed) | #1 (critical) | #1 (critical) | Design concern ("tests pass") |
+| 2 | PostFilter AND semantics breaks OR rules in evaluator | significant | #2 | — | — |
+| 3 | ExecuteDSLQuery silently drops PostFilters (NL search + saved search) | significant | — | — | #1 |
+
+**Unique contributions:**
+- **BH-J:** 1 unique significant (PostFilter AND semantics in evaluator)
+- **BH-K:** 0 unique — its only finding was also found by BH-J
+- **BH-L:** 1 unique significant (ExecuteDSLQuery drops PostFilters)
+
+**The float bug dispute:** BH-J/K both claim `return v, json.Unmarshal(raw, &v)` always returns 0.0 (left-to-right evaluation). BH-L claims "Tests confirm this works correctly with the current gc compiler." The Go spec says the order of variable reads relative to function calls is **not specified** — both positions are partially right. BH-J/K correctly identify code that should be fixed (unspecified behavior); BH-L correctly notes the uncertainty but incorrectly dismisses it. Verification requires running the tests. Regardless, the code should be fixed — `kindTime` right below does it correctly.
+
+**Complementary PostFilter findings:** BH-J traced compiler→evaluator and found `applyPostFilters` always uses AND (wrong for OR rules). BH-L traced compiler→evaluator→dsl_executor and found `ExecuteDSLQuery` never applies PostFilters at all. Neither found both — different analytical threads, both genuine.
+
+### Phase 4 Scoring
+
+#### Rubric 1: Bugs-Only (adapted)
+
+| Metric | Weight | BH-J | BH-K | BH-L |
+|--------|--------|:----:|:----:|:----:|
+| Critical/important bug detection | 40% | 10 (found float bug + PostFilter AND — deepest analysis) | 7 (found float bug only; missed both PostFilter issues) | 4 (incorrectly dismissed float bug; found ExecuteDSLQuery drop) |
+| Novel/unique bugs found | 20% | 8 (2 total, 1 unique: PostFilter AND) | 3 (1 total, 0 unique) | 5 (1 bug + 1 correct concern, 1 unique: ExecuteDSLQuery) |
+| Evidence quality | 20% | 10 (Go spec citation, kindTime comparison, concrete OR example) | 8 (same float analysis, fix included; thin — only 1 finding) | 6 (good ExecuteDSLQuery tracing; wrong on float bug assessment) |
+| False positive rate | 20% | 10 | 10 | 10 |
+| **Weighted total** | | **9.60** | **7.00** | **5.80** |
+
+#### Rubric 2: Bugs + Analysis Quality
+
+| Metric | Weight | BH-J | BH-K | BH-L |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 25% | 10 | 7 | 4 |
+| Novel bugs found | 15% | 8 | 3 | 5 |
+| Cross-file reasoning | 20% | 10 (compiler→evaluator PostFilter AND + compiler→validator float) | 6 (float bug is single-file; no cross-file findings) | 8 (compiler→evaluator→dsl_executor three-package tracing) |
+| Failure mode depth | 15% | 9 (OR rule example, all-consumer enumeration) | 7 (consumer list but no failure scenarios beyond float) | 8 (LLM-generated regex scenario, caller tracing) |
+| Evidence quality | 15% | 10 | 8 | 6 |
+| False positive rate | 10% | 10 | 10 | 10 |
+| **Weighted total** | | **9.55** | **6.65** | **6.45** |
+
+### Phase 4 Analysis
+
+#### The 21-file scope didn't differentiate exploratory
+
+Phase 4 was the largest scope tested — 21 files, which was expected to test whether holistic hits reading capacity limits. It didn't. Holistic read everything and found the most bugs (2), including both the critical float bug and the unique PostFilter AND bug. The exploratory variant's selective depth-first approach found a unique bug (ExecuteDSLQuery) but incorrectly dismissed the critical one. Multipass had its weakest showing across all phases (1 bug in 21 files).
+
+#### Why multipass was weakest in Phase 4
+
+Multipass's five passes missed both PostFilter issues despite having Pass 2 (Cross-Sibling Pattern Violations) and Pass 5 (Error Propagation) which should have caught them. The PostFilter AND semantics bug is a cross-sibling issue (evaluator applies PostFilters differently than the rule's logic field suggests), and the ExecuteDSLQuery drop is an error propagation issue (compiler output is consumed differently by two callers). The structured passes may lose depth at larger scopes — more files per pass means less attention per file.
+
+#### Complementary analysis between BH-J and BH-L
+
+The most interesting Phase 4 result: holistic and exploratory each found a unique PostFilter bug the other missed. BH-J focused on the evaluator's AND semantics; BH-L assumed the evaluator was correct and traced to dsl_executor. Running both would have caught all three bugs. This is the first phase where exploratory found something holistic missed.
+
+### Phase 4 Actionable bugs to fix
+
+Prioritized by severity and impact:
+
+1. **Float parse unspecified behavior** (critical/significant) — split Unmarshal and return into separate statements, matching `kindTime` pattern
+2. **PostFilter AND semantics in evaluator** (significant) — propagate rule logic to `applyPostFilters`, use OR when rule logic is OR
+3. **ExecuteDSLQuery drops PostFilters** (significant) — apply PostFilters after SQL query in the executor, or have callers apply them
+
+---
+
+## Full Cross-Phase Comparison
+
+| Variant | Ph1 R1 | Ph3a R1 | Ph3b R1 | Ph4 R1 | **Avg R1** | Ph1 R2 | Ph3a R2 | Ph3b R2 | Ph4 R2 | **Avg R2** |
+|---------|:------:|:-------:|:-------:|:------:|:----------:|:------:|:-------:|:-------:|:------:|:----------:|
+| **Holistic** | **9.80** | **9.40** | 8.00 | **9.60** | **9.20** | **9.70** | **9.40** | 7.95 | **9.55** | **9.15** |
+| **Multipass** | 9.60 | 7.40 | **9.40** | 7.00 | 8.35 | 9.35 | 7.60 | **9.05** | 6.65 | 8.16 |
+| **Exploratory** | 9.20 | 7.40 | 6.60 | 5.80 | 7.25 | 9.05 | 7.50 | 6.60 | 6.45 | 7.40 |
+
+### Wins by phase
+
+| Phase | Winner (R1) | Winner (R2) | Bug type that dominated |
+|-------|-------------|-------------|------------------------|
+| Phase 1 (data pipeline) | Holistic (9.80) | Holistic (9.70) | Cross-file (PK migration cascade) |
+| Phase 3a (notification delivery) | Holistic (9.40) | Holistic (9.40) | Cross-file (activation pipeline wiring) |
+| Phase 3b (email/templates/digests) | **Multipass (9.40)** | **Multipass (9.05)** | Localized pattern violations (RuleID serialization) |
+| Phase 4 (AI/DSL/saved searches) | Holistic (9.60) | Holistic (9.55) | Cross-file (PostFilter flow across packages) |
+
+Holistic wins 3 of 4 phases. Multipass wins when bugs are localized contract/pattern violations.
+
+### Final Recommendation
+
+**Adopt holistic as the primary bug hunter skill.** Average R1 9.20, R2 9.15. Wins 3 of 4 phases. Remarkably consistent (8.00–9.80 on R1, σ=0.70). The only variant that reliably finds critical bugs through cross-file reasoning.
+
+**Keep multipass as a complement for focused contract/pattern audits.** Average R1 8.35, R2 8.16. Wins Phase 3b decisively (9.40 vs 8.00) when bugs are localized. High variance (7.00–9.60 on R1, σ=1.12) — excels at pattern violations, fails at cross-file reasoning. Run it alongside holistic when the scope is dominated by API handlers, serialization, or cross-sibling patterns. Never as a replacement.
+
+**Retire exploratory or reserve for very large scopes (30+ files).** Average R1 7.25, R2 7.40. Zero unique contributions in 3 of 4 phases. The 21-file scope of Phase 4 still didn't differentiate it from holistic. Its one bright spot (Phase 4: ExecuteDSLQuery) shows it CAN find things holistic misses when following different threads, but this is inconsistent. If future scopes exceed holistic's reading capacity, re-evaluate.
+
+**For maximum bug yield: run holistic + multipass on the same scope.** The union of their findings captures nearly all bugs. Holistic provides the critical cross-file finds; multipass fills in the localized pattern violations holistic sometimes misses.

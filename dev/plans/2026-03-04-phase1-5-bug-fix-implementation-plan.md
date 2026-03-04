@@ -94,6 +94,16 @@ to it, producing 0.0 for all float conditions. Split into separate
 unmarshal and return statements, matching the kindTime pattern."
 ```
 
+### Implementation Record
+
+**Commit:** `7747f14` — fix: DSL compiler float parse uses unspecified evaluation order
+
+**Code change:** Split `return v, json.Unmarshal(raw, &v)` into separate unmarshal-then-return in `compiler.go:141-148`, matching the existing `kindTime` pattern.
+
+| File | Change | Test Name | Purpose |
+|------|--------|-----------|---------|
+| `internal/alert/dsl/dsl_test.go` | **Added** | `TestCompile_FloatParseReturnsSplitValue` | Regression: compiles `epss_score >= 0.75`, asserts SQL arg is `0.75` (not `0`). Validates the float parse closure returns the unmarshalled value. |
+
 ---
 
 ## Task 2: Fix PK migration collision + advisory lock gap (P0 — Critical)
@@ -199,6 +209,20 @@ After the update, enqueue activation job if status transitioned to "activating".
 In `main.go`: register the `alert_activation` queue handler that calls `EvaluateActivation`.
 
 **Step 4: Run tests, full suite, commit**
+
+### Implementation Record
+
+**Commit:** `c7e694a` — fix: wire activation pipeline, return 202 for activating rules, fix cache eviction
+
+**Code changes:**
+- `internal/api/alert_rules.go`: Added `enqueueActivation` helper method; create handler returns 202 for activating rules, 201 for draft; update handler sets `needsCacheEvict = true` for error/draft/disabled → activating transitions and enqueues activation job.
+- `cmd/cvert-ops/main.go`: Added `activationHandler` function; registered `alert_activation` queue in both `runServe` and `runWorker`; moved `workerPool.Start()` after all registrations.
+
+| File | Change | Test Name | Purpose |
+|------|--------|-----------|---------|
+| `internal/api/alert_rules_test.go` | **Added** | `TestAlertRule_ActivatingEnqueuesJob` | Creates enabled rule, verifies `job_queue` has pending `alert_activation` entry. |
+| `internal/api/alert_rules_test.go` | **Added** | `TestAlertRule_ReEnableSetsActivating` | Creates draft rule, PATCHes `enabled=true`, verifies status=`"activating"` and job enqueued. |
+| `internal/api/alert_rules_test.go` | **Modified** (10 sites) | `TestAlertRuleCRUD`, `TestAlertRule_CrossOrgPatchAndDelete`, `TestAlertRule_PatchInvalidDSL`, `TestAlertRule_WatchlistAttachment`, `TestAlertRule_FilterByStatus`, `TestAlertRule_Pagination`, `TestAlertRule_PaginationDefaultEnabled`, `TestAlertRule_ChannelAttachment` | Updated enabled rule creation assertions: `201 Created` → `202 Accepted`. |
 
 ---
 
@@ -951,3 +975,4 @@ Tasks 6-10 (P2) have some dependencies:
 Tasks 11-13 (P3) are all independent and can be parallelized.
 
 Task 14 (Phase 5 SSO + retention) is independent of all other tasks and can run in parallel with any wave.
+

@@ -1778,6 +1778,21 @@ func TestCompile_MultiplePostFilters(t *testing.T) {
 	}
 }
 
+func TestCompile_FloatParseReturnsSplitValue(t *testing.T) {
+	t.Parallel()
+	// Regression: the float parse closure must unmarshal before returning
+	// the value. `return v, json.Unmarshal(raw, &v)` has unspecified
+	// evaluation order per Go spec — v may be read before Unmarshal writes.
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"epss_score","operator":"gte","value":0.75}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+	if args[0] != 0.75 {
+		t.Errorf("float value = %v, want 0.75", args[0])
+	}
+}
+
 func TestCompile_ANDLogicWithWatchlistsArgCount(t *testing.T) {
 	t.Parallel()
 	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")

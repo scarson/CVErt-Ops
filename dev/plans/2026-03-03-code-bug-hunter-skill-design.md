@@ -1004,3 +1004,79 @@ The single strongest signal from this experiment: the type of bugs in the scope 
 **Retire exploratory as a standalone skill, or reserve for high-risk scopes.** Average R1 7.47 — a full point below both primaries. Found unique significant bugs in 3 of 6 phases (Phase 2a: API key org scoping, Phase 2b: DryRun RLS + cache eviction, Phase 4: ExecuteDSLQuery drops PostFilters). When it contributes, its findings are genuinely valuable. But running it alongside both primaries is expensive (3x) for inconsistent marginal value. Reserve for scopes where depth-first exploration of high-risk code paths (auth middleware, RLS enforcement, evaluator transaction patterns) has shown it adds value.
 
 **Key change from 4-phase conclusion:** The 4-phase analysis (Phases 1, 3a, 3b, 4) recommended holistic as primary with multipass as complement. The addition of Phases 2a and 2b — where multipass won decisively — reveals that the initial sample was biased toward cross-file reasoning scopes where holistic naturally excels. The full 6-phase picture shows a true partnership, not a hierarchy.
+
+---
+
+## Phase 5 Runs (Hardening & SaaS Readiness) — Pending
+
+### Scope
+
+Security-critical scope: tier enforcement, data retention, audit logging/secret redaction, SSO/OIDC + AES crypto. High-risk attack surface — identity flows, cryptographic operations, tier-based access control, data lifecycle management.
+
+**Files:** `internal/tier/resolver.go`, `internal/tier/limits.go`, `internal/api/middleware_tier.go`, `internal/api/tier_cache.go`, `internal/api/org_ratelimit.go`, `internal/api/org_tier.go`, `internal/retention/runner.go`, `internal/store/retention.go`, `internal/audit/redact.go`, `internal/audit/writer.go`, `internal/api/audit_log.go`, `internal/store/audit.go`, `internal/crypto/aes.go`, `internal/api/sso.go`, `internal/store/sso.go`
+
+15 source files. Cross-cutting concerns: tier limit enforcement consistency across handlers, retention cascade correctness, audit log completeness, SSO config encryption at rest.
+
+### Test Prompts
+
+#### Run BH-S: Holistic
+
+```
+Run /code-bug-hunter-holistic on Phase 5 scope.
+
+Scope: internal/tier/resolver.go, internal/tier/limits.go,
+internal/api/middleware_tier.go, internal/api/tier_cache.go,
+internal/api/org_ratelimit.go, internal/api/org_tier.go,
+internal/retention/runner.go, internal/store/retention.go,
+internal/audit/redact.go, internal/audit/writer.go,
+internal/api/audit_log.go, internal/store/audit.go,
+internal/crypto/aes.go, internal/api/sso.go, internal/store/sso.go
+
+Save the report to: dev/test-coverage-reports/2026-03-04-phase5-bughunt-holistic.md
+
+Follow the skill instructions exactly.
+```
+
+#### Run BH-T: Multi-pass
+
+```
+Run /code-bug-hunter-multipass on Phase 5 scope.
+
+Scope: internal/tier/resolver.go, internal/tier/limits.go,
+internal/api/middleware_tier.go, internal/api/tier_cache.go,
+internal/api/org_ratelimit.go, internal/api/org_tier.go,
+internal/retention/runner.go, internal/store/retention.go,
+internal/audit/redact.go, internal/audit/writer.go,
+internal/api/audit_log.go, internal/store/audit.go,
+internal/crypto/aes.go, internal/api/sso.go, internal/store/sso.go
+
+Save the report to: dev/test-coverage-reports/2026-03-04-phase5-bughunt-multipass.md
+
+Follow the skill instructions exactly.
+```
+
+#### Run BH-U: Exploratory
+
+```
+Run /code-bug-hunter-exploratory on Phase 5 scope.
+
+Scope: internal/tier/resolver.go, internal/tier/limits.go,
+internal/api/middleware_tier.go, internal/api/tier_cache.go,
+internal/api/org_ratelimit.go, internal/api/org_tier.go,
+internal/retention/runner.go, internal/store/retention.go,
+internal/audit/redact.go, internal/audit/writer.go,
+internal/api/audit_log.go, internal/store/audit.go,
+internal/crypto/aes.go, internal/api/sso.go, internal/store/sso.go
+
+Save the report to: dev/test-coverage-reports/2026-03-04-phase5-bughunt-exploratory.md
+
+Follow the skill instructions exactly.
+```
+
+### Phase 5 Execution Status
+
+| Run | Skill | Bugs found | Design concerns | Report file |
+|-----|-------|:----------:|:---------------:|-------------|
+| BH-S | code-bug-hunter-holistic | — | — | `2026-03-04-phase5-bughunt-holistic.md` |
+| BH-T | code-bug-hunter-multipass | — | — | `2026-03-04-phase5-bughunt-multipass.md` |
+| BH-U | code-bug-hunter-exploratory | — | — | `2026-03-04-phase5-bughunt-exploratory.md` |

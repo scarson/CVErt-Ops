@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -48,7 +49,12 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.ResponseWriter, next http.Handler) bool {
 	hash := auth.HashAPIKey(rawKey)
 	key, err := srv.store.LookupAPIKey(r.Context(), hash)
-	if err != nil || key == nil {
+	if err != nil {
+		slog.ErrorContext(r.Context(), "api key auth: database error", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return true // response sent
+	}
+	if key == nil {
 		return false
 	}
 	// Defense-in-depth: constant-time compare to prevent timing attacks.
@@ -62,6 +68,7 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	}()
 	ctx := context.WithValue(r.Context(), ctxUserID, key.CreatedByUserID)
 	ctx = context.WithValue(ctx, ctxAPIKeyRole, key.Role)
+	ctx = context.WithValue(ctx, ctxAPIKeyOrgID, key.OrgID)
 	next.ServeHTTP(w, r.WithContext(ctx))
 	return true
 }

@@ -262,7 +262,7 @@ func TestRequireAuthenticated_JWT_WrongSecret_401(t *testing.T) {
 }
 
 // TestRequireAuthenticated_APIKey_ContextValues verifies that a valid API key
-// request sets both ctxUserID and ctxAPIKeyRole correctly in the context.
+// request sets ctxUserID, ctxAPIKeyRole, and ctxAPIKeyOrgID correctly in the context.
 func TestRequireAuthenticated_APIKey_ContextValues(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -290,9 +290,11 @@ func TestRequireAuthenticated_APIKey_ContextValues(t *testing.T) {
 	srv := newAuthTestServer("testsecret", db)
 	var gotUserID uuid.UUID
 	var gotAPIKeyRole string
+	var gotAPIKeyOrgID uuid.UUID
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID, _ = r.Context().Value(ctxUserID).(uuid.UUID)
 		gotAPIKeyRole, _ = r.Context().Value(ctxAPIKeyRole).(string)
+		gotAPIKeyOrgID, _ = r.Context().Value(ctxAPIKeyOrgID).(uuid.UUID)
 		w.WriteHeader(http.StatusOK)
 	}))
 	ts := httptest.NewServer(handler)
@@ -313,5 +315,8 @@ func TestRequireAuthenticated_APIKey_ContextValues(t *testing.T) {
 	}
 	if gotAPIKeyRole != "admin" {
 		t.Errorf("ctxAPIKeyRole = %q, want %q", gotAPIKeyRole, "admin")
+	}
+	if gotAPIKeyOrgID != org.ID {
+		t.Errorf("ctxAPIKeyOrgID = %v, want %v", gotAPIKeyOrgID, org.ID)
 	}
 }

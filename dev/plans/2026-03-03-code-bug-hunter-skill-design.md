@@ -961,19 +961,19 @@ Prioritized by severity and impact:
 
 ---
 
-## Full Cross-Phase Comparison (6 Phases)
+## Full Cross-Phase Comparison (7 Phases)
 
-| Variant | Ph1 R1 | Ph2a R1 | Ph2b R1 | Ph3a R1 | Ph3b R1 | Ph4 R1 | **Avg R1** | **σ R1** |
-|---------|:------:|:-------:|:-------:|:-------:|:-------:|:------:|:----------:|:--------:|
-| **Holistic** | **9.80** | 7.20 | 8.00 | **9.40** | 8.00 | **9.60** | **8.67** | 0.98 |
-| **Multipass** | 9.60 | **9.00** | **9.00** | 7.40 | **9.40** | 7.00 | **8.57** | 1.00 |
-| **Exploratory** | 9.20 | 8.00 | 7.80 | 7.40 | 6.60 | 5.80 | **7.47** | 1.07 |
+| Variant | Ph1 R1 | Ph2a R1 | Ph2b R1 | Ph3a R1 | Ph3b R1 | Ph4 R1 | Ph5 R1 | **Avg R1** | **σ R1** |
+|---------|:------:|:-------:|:-------:|:-------:|:-------:|:------:|:------:|:----------:|:--------:|
+| **Holistic** | **9.80** | 7.20 | 8.00 | **9.40** | 8.00 | **9.60** | 8.00 | **8.57** | 0.93 |
+| **Multipass** | 9.60 | **9.00** | **9.00** | 7.40 | **9.40** | 7.00 | **8.80** | **8.60** | 0.93 |
+| **Exploratory** | 9.20 | 8.00 | 7.80 | 7.40 | 6.60 | 5.80 | 6.20 | **7.29** | 1.10 |
 
-| Variant | Ph1 R2 | Ph2a R2 | Ph2b R2 | Ph3a R2 | Ph3b R2 | Ph4 R2 | **Avg R2** | **σ R2** |
-|---------|:------:|:-------:|:-------:|:-------:|:-------:|:------:|:----------:|:--------:|
-| **Holistic** | **9.70** | 7.40 | 7.95 | **9.40** | 7.95 | **9.55** | **8.66** | 0.91 |
-| **Multipass** | 9.35 | **8.80** | **8.75** | 7.60 | **9.05** | 6.65 | **8.37** | 0.94 |
-| **Exploratory** | 9.05 | 8.10 | 8.00 | 7.50 | 6.60 | 6.45 | **7.62** | 0.90 |
+| Variant | Ph1 R2 | Ph2a R2 | Ph2b R2 | Ph3a R2 | Ph3b R2 | Ph4 R2 | Ph5 R2 | **Avg R2** | **σ R2** |
+|---------|:------:|:-------:|:-------:|:-------:|:-------:|:------:|:------:|:----------:|:--------:|
+| **Holistic** | **9.70** | 7.40 | 7.95 | **9.40** | 7.95 | **9.55** | 8.25 | **8.60** | 0.86 |
+| **Multipass** | 9.35 | **8.80** | **8.75** | 7.60 | **9.05** | 6.65 | **8.50** | **8.39** | 0.86 |
+| **Exploratory** | 9.05 | 8.10 | 8.00 | 7.50 | 6.60 | 6.45 | 6.35 | **7.44** | 0.93 |
 
 ### Wins by phase
 
@@ -985,29 +985,30 @@ Prioritized by severity and impact:
 | Phase 3a (notification delivery) | Holistic (9.40) | Holistic (9.40) | Cross-file (activation pipeline wiring) |
 | Phase 3b (email/templates/digests) | **Multipass (9.40)** | **Multipass (9.05)** | Localized pattern violations (RuleID serialization) |
 | Phase 4 (AI/DSL/saved searches) | Holistic (9.60) | Holistic (9.55) | Cross-file (PostFilter flow across packages) |
+| Phase 5 (hardening/SaaS readiness) | **Multipass (8.80)** | **Multipass (8.50)** | Contract violations + pattern violations (Runner.Run nil, deleteSSOHandler 204) |
 
-**Holistic wins 3 of 6 phases. Multipass wins 3 of 6 phases. Dead even.**
+**Holistic wins 3 of 7 phases. Multipass wins 4 of 7 phases.**
 
 ### Bug type predicts the winner
 
 The single strongest signal from this experiment: the type of bugs in the scope determines which variant wins, not any inherent quality difference between the approaches.
 
 - **Holistic wins when bugs require deep cross-file reasoning:** tracing data flow across 3+ packages (Phase 1: PK migration cascade, Phase 3a: activation pipeline wiring, Phase 4: PostFilter flow through compiler→evaluator→executor).
-- **Multipass wins when bugs are localized pattern violations or race conditions:** comparing sibling handlers (Phase 2a: admin remove vs update role), checking serialization consistency (Phase 3b: RuleID vs ReportID), reasoning about concurrent state transitions (Phase 2b: EvaluateActivation overwrite, SweepZombie TOCTOU).
+- **Multipass wins when bugs are localized pattern violations, contract violations, or race conditions:** comparing sibling handlers (Phase 2a: admin remove vs update role), checking serialization consistency (Phase 3b: RuleID vs ReportID), reasoning about concurrent state transitions (Phase 2b: EvaluateActivation overwrite, SweepZombie TOCTOU), checking implementations against documented contracts (Phase 5: Runner.Run docstring).
 
-### Final Recommendation (Updated for 6 Phases)
+### Final Recommendation (Updated for 7 Phases)
 
-**Adopt holistic and multipass as co-primary bug hunter skills.** With a 3-3 win split, nearly identical averages (Holistic R1 8.67 vs Multipass R1 8.57), and similar consistency (σ ≈ 1.0 for both), neither approach is reliably superior. They excel at different bug types — holistic at cross-file reasoning, multipass at pattern violations and race conditions — making them genuinely complementary.
+**Adopt holistic and multipass as co-primary bug hunter skills.** With nearly identical averages (Holistic R1 8.57 vs Multipass R1 8.60, σ ≈ 0.93 for both), the variants are statistically indistinguishable in aggregate performance. Multipass edges ahead 4-3 on phase wins, but the margin is narrow — holistic's 3 wins are often more decisive (9.80, 9.40, 9.60 vs multipass's 9.00, 9.00, 9.40, 8.80).
 
 **Run both on every scope.** The union of holistic + multipass findings captures nearly all bugs found across the experiment. Their non-overlapping strengths mean running one alone consistently misses the class of bugs the other excels at. The cost (2x run time) is justified by the coverage.
 
-**Retire exploratory as a standalone skill, or reserve for high-risk scopes.** Average R1 7.47 — a full point below both primaries. Found unique significant bugs in 3 of 6 phases (Phase 2a: API key org scoping, Phase 2b: DryRun RLS + cache eviction, Phase 4: ExecuteDSLQuery drops PostFilters). When it contributes, its findings are genuinely valuable. But running it alongside both primaries is expensive (3x) for inconsistent marginal value. Reserve for scopes where depth-first exploration of high-risk code paths (auth middleware, RLS enforcement, evaluator transaction patterns) has shown it adds value.
+**Retire exploratory.** Average R1 7.29 — over 1.3 points below both primaries. Zero unique contributions in Phase 5, and only 3 unique finds across all 7 phases (Phase 2a: API key org scoping, Phase 2b: DryRun RLS + cache eviction, Phase 4: ExecuteDSLQuery drops PostFilters). The 7-phase dataset is large enough to be definitive: exploratory adds inconsistent marginal value that doesn't justify 3x run time. Its occasional unique finds don't change the calculus — the holistic + multipass duo captures the vast majority of bugs.
 
-**Key change from 4-phase conclusion:** The 4-phase analysis (Phases 1, 3a, 3b, 4) recommended holistic as primary with multipass as complement. The addition of Phases 2a and 2b — where multipass won decisively — reveals that the initial sample was biased toward cross-file reasoning scopes where holistic naturally excels. The full 6-phase picture shows a true partnership, not a hierarchy.
+**Key insight from Phase 5:** Multipass's Pass 1 (Contract Violations) is genuinely differentiated — checking docstrings against implementations is a systematic task that holistic's unconstrained exploration doesn't naturally prioritize. Phase 5's Runner.Run bug is the clearest example: the docstring says one thing, the code does another, and only multipass caught it.
 
 ---
 
-## Phase 5 Runs (Hardening & SaaS Readiness) — Pending
+## Phase 5 Runs (Hardening & SaaS Readiness)
 
 ### Scope
 
@@ -1017,66 +1018,92 @@ Security-critical scope: tier enforcement, data retention, audit logging/secret 
 
 15 source files. Cross-cutting concerns: tier limit enforcement consistency across handlers, retention cascade correctness, audit log completeness, SSO config encryption at rest.
 
-### Test Prompts
-
-#### Run BH-S: Holistic
-
-```
-Run /code-bug-hunter-holistic on Phase 5 scope.
-
-Scope: internal/tier/resolver.go, internal/tier/limits.go,
-internal/api/middleware_tier.go, internal/api/tier_cache.go,
-internal/api/org_ratelimit.go, internal/api/org_tier.go,
-internal/retention/runner.go, internal/store/retention.go,
-internal/audit/redact.go, internal/audit/writer.go,
-internal/api/audit_log.go, internal/store/audit.go,
-internal/crypto/aes.go, internal/api/sso.go, internal/store/sso.go
-
-Save the report to: dev/test-coverage-reports/2026-03-04-phase5-bughunt-holistic.md
-
-Follow the skill instructions exactly.
-```
-
-#### Run BH-T: Multi-pass
-
-```
-Run /code-bug-hunter-multipass on Phase 5 scope.
-
-Scope: internal/tier/resolver.go, internal/tier/limits.go,
-internal/api/middleware_tier.go, internal/api/tier_cache.go,
-internal/api/org_ratelimit.go, internal/api/org_tier.go,
-internal/retention/runner.go, internal/store/retention.go,
-internal/audit/redact.go, internal/audit/writer.go,
-internal/api/audit_log.go, internal/store/audit.go,
-internal/crypto/aes.go, internal/api/sso.go, internal/store/sso.go
-
-Save the report to: dev/test-coverage-reports/2026-03-04-phase5-bughunt-multipass.md
-
-Follow the skill instructions exactly.
-```
-
-#### Run BH-U: Exploratory
-
-```
-Run /code-bug-hunter-exploratory on Phase 5 scope.
-
-Scope: internal/tier/resolver.go, internal/tier/limits.go,
-internal/api/middleware_tier.go, internal/api/tier_cache.go,
-internal/api/org_ratelimit.go, internal/api/org_tier.go,
-internal/retention/runner.go, internal/store/retention.go,
-internal/audit/redact.go, internal/audit/writer.go,
-internal/api/audit_log.go, internal/store/audit.go,
-internal/crypto/aes.go, internal/api/sso.go, internal/store/sso.go
-
-Save the report to: dev/test-coverage-reports/2026-03-04-phase5-bughunt-exploratory.md
-
-Follow the skill instructions exactly.
-```
-
 ### Phase 5 Execution Status
 
 | Run | Skill | Bugs found | Design concerns | Report file |
 |-----|-------|:----------:|:---------------:|-------------|
-| BH-S | code-bug-hunter-holistic | — | — | `2026-03-04-phase5-bughunt-holistic.md` |
-| BH-T | code-bug-hunter-multipass | — | — | `2026-03-04-phase5-bughunt-multipass.md` |
-| BH-U | code-bug-hunter-exploratory | — | — | `2026-03-04-phase5-bughunt-exploratory.md` |
+| BH-S | code-bug-hunter-holistic | 4 | 4 | `2026-03-04-phase5-bughunt-holistic.md` |
+| BH-T | code-bug-hunter-multipass | 4 | 3 | `2026-03-04-phase5-bughunt-multipass.md` |
+| BH-U | code-bug-hunter-exploratory | 2 | 3 | `2026-03-04-phase5-bughunt-exploratory.md` |
+
+All three variants completed without truncation or context exhaustion.
+
+### Phase 5 Bug Detection
+
+6 unique bugs across all variants:
+
+| # | Bug | Severity | BH-S | BH-T | BH-U |
+|---|-----|----------|:----:|:----:|:----:|
+| 1 | PATCH SSO allows empty required fields | significant | #1 | — | #1 |
+| 2 | Missing audit trail for SSO domain changes | significant | #2 | #2 | — |
+| 3 | Runner.Run always returns nil — violates contract | significant | — | #1 | — |
+| 4 | SSO domain conflict returns 500 instead of 409 | minor | #3 | — | #2 |
+| 5 | deleteSSOHandler returns 204 for non-existent connection | minor | — | #3 | — |
+| 6 | Malformed cursor silently resets pagination | minor | #4 | #4 | DC only |
+
+**Unique contributions:**
+- **BH-S:** 0 unique (all findings shared with at least one other variant)
+- **BH-T:** 2 unique (Runner.Run contract violation, deleteSSOHandler 204)
+- **BH-U:** 0 unique — complete subset of other variants
+
+**Key finds:**
+- **Runner.Run contract violation (BH-T only):** The docstring says "Returns nil unless the context is cancelled" but the function always returns nil on line 97 — even when `cleanupTierGated` fails due to DB errors. Found via Pass 1 (Contract Violations). This is exactly the class of bug multipass is built for: the code says one thing, does another. Holistic read the same file but didn't systematically compare docstrings to implementations.
+- **PATCH SSO empty fields (BH-S + BH-U):** Create handler validates non-empty; PATCH handler doesn't. Classic cross-sibling pattern violation — yet multipass's Pass 2 missed it. The PATCH handler does `strings.TrimSpace` (suggesting awareness of empty values) but never checks the result. BH-T may have focused on the SSO domain handlers rather than the PATCH merge logic.
+- **Cursor reset (re-find from earlier phases):** Already identified as a cross-codebase pattern in Phase 4 and listed in the bug fix plan (Task 11). BH-U classified it as a design concern rather than a bug, consistent with exploratory's tendency to underweight systematic patterns.
+
+### Phase 5 Scoring
+
+#### Rubric 1: Bugs-Only
+
+Phase 5 has three significant bugs. PATCH SSO is the most impactful (breaks OIDC for the org). Missing audit trail is the most security-relevant (SSO domain changes with no record). Runner.Run nil is a contract violation that hides cleanup failures.
+
+| Metric | Weight | BH-S | BH-T | BH-U |
+|--------|--------|:----:|:----:|:----:|
+| Critical/important bug detection | 40% | 8 (found 2/3 significant: PATCH SSO + audit trail; missed Runner.Run) | 8 (found 2/3 significant: Runner.Run + audit trail; missed PATCH SSO) | 5 (found 1/3 significant: PATCH SSO only; missed audit trail + Runner.Run) |
+| Novel/unique bugs found | 20% | 5 (4 total, 0 unique — all shared with at least one other) | 9 (4 total, 2 unique: Runner.Run contract, deleteSSOHandler 204) | 3 (2 total, 0 unique — complete subset) |
+| Evidence quality | 20% | 9 (create↔PATCH validation comparison, all 4 SSO handlers listed for audit gap, cross-codebase cursor pattern note, PATCH scopes analysis) | 9 (docstring contract analysis with line refs, cross-sibling GET/PATCH/DELETE 404 comparison, pass attribution) | 8 (good code snippets, SQL analysis with UpsertSSOEmailDomain naming; shorter overall) |
+| False positive rate | 20% | 10 | 10 | 10 |
+| **Weighted total** | | **8.00** | **8.80** | **6.20** |
+
+#### Rubric 2: Bugs + Analysis Quality
+
+| Metric | Weight | BH-S | BH-T | BH-U |
+|--------|--------|:----:|:----:|:----:|
+| Critical bug detection | 25% | 8 | 8 | 5 |
+| Novel bugs found | 15% | 5 | 9 | 3 |
+| Cross-file reasoning | 20% | 9 (create↔PATCH handler comparison, store↔SQL↔handler for domain conflict, all SSO handlers for audit gap, cursor pattern cross-codebase) | 8 (Runner.Run→cleanupTable→cleanupTierGated call chain, deleteSSOHandler↔getSSOHandler↔patchSSOHandler comparison) | 7 (create↔PATCH comparison, SQL↔handler domain conflict; fewer cross-file threads overall) |
+| Failure mode depth | 15% | 9 (OIDC runtime failure scenario for PATCH, attacker SSO domain add/remove scenario, client pagination infinite loop) | 8 (job system can't distinguish success/failure, API consumer cannot distinguish delete-nothing from delete-something) | 7 (OIDC flow breakage, opaque error UX for domain conflicts) |
+| Evidence quality | 15% | 9 | 9 | 8 |
+| False positive rate | 10% | 10 | 10 | 10 |
+| **Weighted total** | | **8.25** | **8.50** | **6.35** |
+
+### Phase 5 Analysis
+
+#### Multipass wins on unique contributions
+
+BH-T found 2 bugs nobody else found — Runner.Run contract violation and deleteSSOHandler 204. Both are classic multipass strengths: Pass 1 (Contract Violations) caught the docstring-vs-implementation mismatch in Runner.Run, and Pass 2 (Cross-Sibling Pattern Violations) caught the inconsistent 404 handling in deleteSSOHandler vs getSSOHandler and patchSSOHandler.
+
+Holistic found more total bugs (4) with broader coverage of SSO issues, but zero unique contributions. Every bug BH-S found was also found by at least one other variant. This is the inverse of Phase 4 (where holistic had the unique PostFilter AND find) — Phase 5's bugs are more pattern-violation-shaped than cross-file-reasoning-shaped.
+
+#### Multipass missed PATCH SSO — surprising
+
+PATCH SSO empty fields is a textbook cross-sibling pattern violation (create validates, PATCH doesn't). Multipass's Pass 2 should have caught it, but didn't. One explanation: BH-T's Pass 2 focused on the delete handler's 404 behavior and the SSO domain audit gap, and didn't systematically compare create vs PATCH field validation. With 15 files and 5 passes, each pass has limited attention budget.
+
+#### Exploratory's weakest phase
+
+BH-U found only 2 bugs (fewest across all 7 phases) and zero unique contributions. Its depth-first exploration followed threads into `sso.go` (finding PATCH empty fields and domain conflict) but didn't reach `runner.go` (missing the contract violation), the audit trail gap (missing the security bug), or the delete handler inconsistency. The cursor bug was downgraded to a design concern — consistent with exploratory's tendency to dismiss systematic patterns.
+
+#### Design concerns: strong agreement
+
+All three variants flagged `redactSecrets` not recursing into arrays and the rate limiter burst reset on tier change. These are genuine latent risks. BH-S uniquely flagged PATCH clearing OIDC scopes (a variant of the PATCH empty fields bug applied to the scopes array) and retention table ordering starvation. BH-T uniquely flagged the audit writer's `context.WithoutCancel` having no timeout. BH-U uniquely flagged the misleading `UpsertSSOEmailDomain` SQL name.
+
+### Phase 5 Actionable bugs to fix
+
+Prioritized by severity and impact:
+
+1. **PATCH SSO allows empty required fields** (significant) — add non-empty validation after trimming for `display_name`, `issuer_url`, `client_id`, `client_secret` in patchSSOHandler, matching createSSOHandler
+2. **Missing audit trail for SSO domain changes** (significant) — add `srv.auditLog(...)` call to `putSSODomainsHandler`, matching the three sibling SSO handlers
+3. **Runner.Run always returns nil** (significant) — return `ctx.Err()` when context is cancelled; propagate `cleanupTierGated` errors
+4. **SSO domain conflict returns 500 instead of 409** (minor) — check `isUniqueViolation(err)` in `putSSODomainsHandler` and return 409 Conflict, matching `createSSOHandler`
+5. **deleteSSOHandler returns 204 for non-existent connection** (minor) — add `if current == nil { return 404 }` check before delete, matching getSSOHandler and patchSSOHandler
+6. **Malformed cursor resets pagination** (minor) — already in bug fix plan (Task 11, cross-codebase pattern)

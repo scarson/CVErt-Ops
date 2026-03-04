@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Fix all 39 deduplicated bugs found across the 6-phase bug hunter A/B test (Phases 1, 2a, 2b, 3a, 3b, 4).
+**Goal:** Fix all 44 deduplicated bugs found across the 7-phase bug hunter A/B test (Phases 1, 2a, 2b, 3a, 3b, 4, 5).
 
 **Architecture:** TDD for each fix — write a failing test, implement the minimal fix, verify. Bugs grouped by file/subsystem to minimize context switching. Priority-ordered: P0 critical bugs first, P1 security bugs second, P2 significant correctness third, P3 minor last.
 
@@ -808,6 +808,115 @@ Switch `InsertAlertEvent`, `GetUnresolvedAlertEventCVEs`, and `ResolveAlertEvent
 
 ---
 
+## Task 14: Fix SSO handler bugs + retention Runner.Run (P2 — Significant + P3 — Minor)
+
+**Bugs:**
+- PATCH SSO allows empty required fields — no non-empty validation after trimming (Phase 5 #1)
+- Missing audit trail for SSO domain changes — `putSSODomainsHandler` has no `auditLog` call (Phase 5 #2)
+- Runner.Run always returns nil — violates documented contract "Returns nil unless context cancelled" (Phase 5 #3)
+- SSO domain conflict returns 500 instead of 409 — missing `isUniqueViolation` check (Phase 5 #4)
+- deleteSSOHandler returns 204 for non-existent connection — missing nil check (Phase 5 #5)
+
+**Files:**
+- Modify: `internal/api/sso.go:280-315` (PATCH validation), `internal/api/sso.go:426-471` (audit log + domain conflict), `internal/api/sso.go:386-423` (delete nil check)
+- Modify: `internal/retention/runner.go:49-98` (return ctx.Err / propagate errors)
+- Test: `internal/api/sso_test.go`, `internal/retention/runner_test.go`
+
+**Step 1: Write failing tests**
+
+```go
+func TestPatchSSO_RejectsEmptyRequiredFields(t *testing.T) {
+    // Create SSO connection
+    // PATCH with {"display_name": ""}
+    // Verify: 422 Unprocessable Entity, not 200
+    // Repeat for issuer_url, client_id, client_secret
+}
+
+func TestPutSSODomains_AuditLogEntry(t *testing.T) {
+    // Create SSO connection
+    // PUT domains
+    // Verify: audit log entry exists with action "update" for SSO entity
+}
+
+func TestRunnerRun_ReturnsCancelledContextError(t *testing.T) {
+    // Create runner, cancel context mid-run
+    // Verify: Run returns ctx.Err(), not nil
+}
+
+func TestRunnerRun_ReturnsErrorOnCleanupFailure(t *testing.T) {
+    // Create runner with failing store (ListAllOrgs returns error)
+    // Verify: Run returns error, not nil
+}
+
+func TestPutSSODomains_ConflictReturns409(t *testing.T) {
+    // Create SSO connection for org A, claim domain "example.com"
+    // Create SSO connection for org B, try to claim "example.com"
+    // Verify: 409 Conflict, not 500
+}
+
+func TestDeleteSSO_NotFoundReturns404(t *testing.T) {
+    // Attempt DELETE on org with no SSO connection
+    // Verify: 404, not 204
+}
+```
+
+**Step 2: Run tests — expect FAIL**
+
+**Step 3: Implement fixes**
+
+**PATCH SSO validation:** Add non-empty checks after trimming, matching `createSSOHandler`:
+```go
+if req.DisplayName != nil {
+    displayName = strings.TrimSpace(*req.DisplayName)
+    if displayName == "" {
+        http.Error(w, "display_name cannot be empty", http.StatusUnprocessableEntity)
+        return
+    }
+}
+// Same for issuer_url, client_id, client_secret
+```
+
+**Audit log for SSO domains:** Add `srv.auditLog(...)` call after successful domain update:
+```go
+srv.auditLog(r.Context(), w, orgID, "sso_connection", conn.ID.String(), "update_domains", userID)
+```
+
+**Runner.Run error propagation:** Check context and propagate cleanup errors:
+```go
+if err := ctx.Err(); err != nil {
+    return err
+}
+// After cleanupTierGated:
+if cleanupErr != nil {
+    return fmt.Errorf("tier-gated cleanup: %w", cleanupErr)
+}
+```
+
+**SSO domain conflict 409:** Add unique violation check:
+```go
+if err := srv.store.SetSSOEmailDomains(r.Context(), conn.ID, orgID, req.Domains); err != nil {
+    if isUniqueViolation(err) {
+        http.Error(w, "one or more domains already claimed by another org", http.StatusConflict)
+        return
+    }
+    slog.ErrorContext(r.Context(), "sso put domains: store", "error", err)
+    http.Error(w, "internal error", http.StatusInternalServerError)
+    return
+}
+```
+
+**deleteSSOHandler nil check:** Add existence check matching sibling handlers:
+```go
+if current == nil {
+    http.Error(w, "sso connection not found", http.StatusNotFound)
+    return
+}
+```
+
+**Step 4: Run tests, full SSO + retention suite, commit**
+
+---
+
 ## Deferred (Needs Discussion)
 
 ### Batch cursor advancement on failure
@@ -840,3 +949,5 @@ Tasks 6-10 (P2) have some dependencies:
 - Task 10 is independent
 
 Tasks 11-13 (P3) are all independent and can be parallelized.
+
+Task 14 (Phase 5 SSO + retention) is independent of all other tasks and can run in parallel with any wave.

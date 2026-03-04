@@ -35,6 +35,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -113,7 +114,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// which happens before or alongside HTTP server shutdown.
 	workerPool := worker.New(st)
 	workerPool.Register("feed_ingest", feedIngestHandler)
-	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
 	// development and testing; GeminiClient for production.
@@ -171,7 +171,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
+	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	handler := apiSrv.Handler()
 
@@ -248,8 +250,13 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	defer stop()
 
 	st := store.New(db)
+
+	alertCache := alert.NewRuleCache()
+	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
+
 	workerPool := worker.New(st)
 	workerPool.Register("feed_ingest", feedIngestHandler)
+	workerPool.Register("alert_activation", activationHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
 	deliveryClient, err := notify.BuildSafeClient()
@@ -289,6 +296,29 @@ func feedIngestHandler(_ context.Context, payload json.RawMessage) error {
 	slog.Info("feed ingest job received — handler wired in commits 4–8",
 		"payload_len", len(payload))
 	return nil
+}
+
+// activationHandler returns a worker.Handler that runs the activation scan for
+// a newly created or re-enabled alert rule.
+func activationHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, payload json.RawMessage) error {
+		var p struct {
+			RuleID string `json:"rule_id"`
+			OrgID  string `json:"org_id"`
+		}
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return fmt.Errorf("unmarshal activation payload: %w", err)
+		}
+		ruleID, err := uuid.Parse(p.RuleID)
+		if err != nil {
+			return fmt.Errorf("parse rule_id: %w", err)
+		}
+		orgID, err := uuid.Parse(p.OrgID)
+		if err != nil {
+			return fmt.Errorf("parse org_id: %w", err)
+		}
+		return eval.EvaluateActivation(ctx, ruleID, orgID)
+	}
 }
 
 // retentionHandler returns a worker.Handler that runs the retention cleanup runner.

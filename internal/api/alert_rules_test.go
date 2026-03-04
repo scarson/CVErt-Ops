@@ -120,8 +120,8 @@ func TestAlertRuleCRUD(t *testing.T) {
 	// Create returns 202 (activating scan queued).
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create alert rule: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID     string `json:"id"`
@@ -334,8 +334,8 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	// Create a valid rule.
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -377,8 +377,8 @@ func TestAlertRule_CrossOrgIsolation(t *testing.T) {
 
 	createResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -476,8 +476,8 @@ func TestBindChannelToRule_Idempotent(t *testing.T) {
 
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -544,8 +544,8 @@ func TestBindChannelToRule_CrossOrgChannelRejected(t *testing.T) {
 	// Alice creates a rule in her org.
 	createRuleResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusCreated {
-		t.Fatalf("alice create rule: got %d, want 201", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("alice create rule: got %d, want 202", createRuleResp.StatusCode)
 	}
 	var aliceRule struct {
 		ID string `json:"id"`
@@ -601,8 +601,8 @@ func TestUnbindChannelFromRule_204(t *testing.T) {
 
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -642,8 +642,8 @@ func TestUnbindChannelFromRule_404(t *testing.T) {
 
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -702,8 +702,8 @@ func TestListChannelsForRule(t *testing.T) {
 	// Create a rule.
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -1107,8 +1107,8 @@ func TestDryRun_WithEvaluator(t *testing.T) {
 	// Create a rule.
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create rule: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create rule: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -1157,8 +1157,8 @@ func TestDryRun_WithoutEvaluator(t *testing.T) {
 
 	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create rule: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create rule: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -1220,8 +1220,8 @@ func TestDryRun_CrossOrgIsolation(t *testing.T) {
 
 	createResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -1467,8 +1467,8 @@ func TestAlertRule_CrossOrgPatchAndDelete(t *testing.T) {
 
 	createResp := doCreateAlertRule(t, ctx, ts, aliceToken, aliceReg.OrgID, validRuleDSL)
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
 	}
 	var created struct {
 		ID string `json:"id"`
@@ -1663,8 +1663,8 @@ func TestAlertRule_ListWithStatusFilter(t *testing.T) {
 	// Create an enabled rule (activating) and a draft rule.
 	enabledResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer enabledResp.Body.Close() //nolint:errcheck,gosec // G104
-	if enabledResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create enabled: got %d, want 201", enabledResp.StatusCode)
+	if enabledResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create enabled: got %d, want 202", enabledResp.StatusCode)
 	}
 
 	draftBody := `{
@@ -1774,5 +1774,110 @@ func TestAlertRule_ViewerCannotWrite(t *testing.T) {
 	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
 	if createResp.StatusCode != http.StatusForbidden {
 		t.Errorf("viewer create: got %d, want 403", createResp.StatusCode)
+	}
+}
+
+// TestAlertRule_ActivatingEnqueuesJob verifies that creating an enabled rule
+// enqueues an alert_activation job in the job_queue.
+func TestAlertRule_ActivatingEnqueuesJob(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", createResp.StatusCode)
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Verify a job was enqueued with queue = 'alert_activation'.
+	var count int
+	err := db.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM job_queue WHERE queue = 'alert_activation' AND status = 'pending'`,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("query job_queue: %v", err)
+	}
+	if count == 0 {
+		t.Error("expected activation job in job_queue, found none")
+	}
+}
+
+// TestAlertRule_ReEnableSetsActivating verifies that re-enabling a disabled rule
+// transitions it to "activating" and sets cache eviction.
+func TestAlertRule_ReEnableSetsActivating(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newRegisterServer(t, db, "open")
+	alertCache := alert.NewRuleCache()
+	alertEval := alert.New(nil, db.Store, alertCache, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	srv.SetAlertDeps(alertCache, alertEval)
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create a disabled rule (draft).
+	const draftBody = `{
+  "name": "Re-enable Test",
+  "logic": "and",
+  "conditions": [{"field": "in_cisa_kev", "operator": "eq", "value": true}],
+  "watchlist_ids": [],
+  "enabled": false
+}`
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, draftBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if created.Status != "draft" {
+		t.Fatalf("expected draft, got %q", created.Status)
+	}
+
+	// Re-enable via PATCH.
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"enabled": true}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	if patched.Status != "activating" {
+		t.Errorf("status after re-enable = %q, want %q", patched.Status, "activating")
+	}
+
+	// Verify activation job was enqueued.
+	var count int
+	err := db.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM job_queue WHERE queue = 'alert_activation' AND status = 'pending'`,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("query job_queue: %v", err)
+	}
+	if count == 0 {
+		t.Error("expected activation job enqueued after re-enable, found none")
 	}
 }

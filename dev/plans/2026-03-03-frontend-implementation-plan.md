@@ -2086,7 +2086,7 @@ git commit -m "feat(web): 404 page"
 
 ## Phase E: Polish
 
-### Task 32: Loading skeletons and empty states
+### Task 32: Loading skeletons and empty states ✅ `b732cad`
 
 **Files:**
 - Create: `web/src/components/LoadingSkeleton.vue`
@@ -2137,7 +2137,7 @@ git commit -m "feat(web): reusable loading skeleton and empty state components"
 
 ---
 
-### Task 33: Global error handler
+### Task 33: Global error handler ✅ `a344d5d`
 
 **Files:**
 - Modify: `web/src/main.ts`
@@ -2200,7 +2200,9 @@ git commit -m "feat(web): global error handler and reusable error alert"
 
 ---
 
-### Task 34: Final lint, type-check, and test run
+### Task 34: Final lint, type-check, and test run ✅ `e5008ff`
+
+> **Notes:** Fixed accumulated type/lint issues: unused imports, `Response.json()` type assertions, reka-ui `AcceptableValue` type mismatches, test tsconfig lib additions, ESLint overrides for shadcn-vue components. Build passes cleanly.
 
 **Step 1:** Run all frontend checks:
 
@@ -2234,7 +2236,9 @@ git commit -m "fix(web): lint and type-check fixes"
 
 ---
 
-### Task 35: Remove smoke test
+### Task 35: Remove smoke test ✅ `6f3a2b8`
+
+> **Final state:** 26 test files, 320 tests, all passing. Lint clean, type-check clean, production build clean.
 
 **Files:**
 - Delete: `web/src/components/__tests__/smoke.test.ts`

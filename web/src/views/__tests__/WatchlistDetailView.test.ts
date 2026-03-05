@@ -1,0 +1,384 @@
+// ABOUTME: Tests for the watchlist detail view page.
+// ABOUTME: Covers loading, 404, inline editing, items table, add/remove item flows.
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
+
+let mockRouteParams: Record<string, string> = { id: 'wl-123' }
+const mockPush = vi.fn()
+
+vi.mock('vue-router', () => ({
+  useRoute: vi.fn(() => ({ params: mockRouteParams })),
+  useRouter: vi.fn(() => ({ push: mockPush })),
+  RouterLink: {
+    name: 'RouterLink',
+    props: ['to'],
+    template: '<a :href="to"><slot /></a>',
+  },
+}))
+
+const mockFetch = vi.fn()
+vi.stubGlobal('fetch', mockFetch)
+
+const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
+
+function makeWatchlist(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'wl-123',
+    name: 'Production Deps',
+    description: 'Tracks production packages',
+    item_count: 3,
+    created_at: '2025-01-01T00:00:00Z',
+    updated_at: '2025-01-15T10:30:00Z',
+    ...overrides,
+  }
+}
+
+function makePackageItem(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'item-001',
+    item_type: 'package',
+    ecosystem: 'npm',
+    package_name: 'lodash',
+    namespace: undefined,
+    cpe_normalized: undefined,
+    created_at: '2025-01-10T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function makeCpeItem(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'item-002',
+    item_type: 'cpe',
+    ecosystem: undefined,
+    package_name: undefined,
+    namespace: undefined,
+    cpe_normalized: 'cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*',
+    created_at: '2025-01-12T00:00:00Z',
+    ...overrides,
+  }
+}
+
+function mockWatchlistSuccess(wl = makeWatchlist()) {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve(wl),
+  })
+}
+
+function mockWatchlistNotFound() {
+  mockFetch.mockResolvedValueOnce({
+    ok: false,
+    status: 404,
+    json: () => Promise.resolve({ detail: 'watchlist not found' }),
+  })
+}
+
+function mockItemsSuccess(items: unknown[] = [], nextCursor?: string) {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ items, next_cursor: nextCursor }),
+  })
+}
+
+function mockPatchSuccess(wl = makeWatchlist()) {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve(wl),
+  })
+}
+
+function mockDeleteItemSuccess() {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    status: 204,
+    json: () => Promise.resolve(null),
+  })
+}
+
+// Dialog content renders inside a portal (teleported to body).
+function findTestId(id: string): HTMLElement | null {
+  return document.querySelector(`[data-testid="${id}"]`)
+}
+
+function getInput(testId: string): HTMLInputElement {
+  return findTestId(testId) as HTMLInputElement
+}
+
+async function setInputValue(testId: string, value: string) {
+  const input = getInput(testId)
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  )?.set
+  nativeInputValueSetter?.call(input, value)
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+async function clickTestId(testId: string) {
+  const el = findTestId(testId)
+  el?.click()
+}
+
+let wrapper: VueWrapper
+
+async function mountView() {
+  const { default: WatchlistDetailView } = await import(
+    '@/views/WatchlistDetailView.vue'
+  )
+  wrapper = mount(WatchlistDetailView, {
+    attachTo: document.body,
+  })
+  return wrapper
+}
+
+describe('WatchlistDetailView', () => {
+  beforeEach(() => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    vi.clearAllMocks()
+    mockRouteParams = { id: 'wl-123' }
+
+    const auth = useAuthStore()
+    auth.activeOrgId = TEST_ORG_ID
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+  })
+
+  describe('loading state', () => {
+    it('shows loading indicator while fetching', async () => {
+      mockFetch.mockImplementation(() => new Promise(() => {}))
+      await mountView()
+
+      expect(wrapper.text()).toContain('Loading')
+    })
+  })
+
+  describe('404 state', () => {
+    it('shows not found message when watchlist returns 404', async () => {
+      mockWatchlistNotFound()
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Watchlist not found')
+    })
+  })
+
+  describe('rendering with data', () => {
+    it('renders watchlist name and description', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([makePackageItem()])
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Production Deps')
+      expect(wrapper.text()).toContain('Tracks production packages')
+    })
+
+    it('renders items table with package items', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([
+        makePackageItem({ id: 'p1', ecosystem: 'npm', package_name: 'lodash' }),
+        makePackageItem({ id: 'p2', ecosystem: 'pypi', package_name: 'requests' }),
+      ])
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('npm/lodash')
+      expect(wrapper.text()).toContain('pypi/requests')
+    })
+
+    it('renders items table with CPE items', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([
+        makeCpeItem({
+          id: 'c1',
+          cpe_normalized: 'cpe:2.3:a:apache:log4j:*:*:*:*:*:*:*:*',
+        }),
+      ])
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('cpe:2.3:a:apache:log4j')
+    })
+
+    it('renders empty items state', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('No items in this watchlist')
+      expect(wrapper.text()).toContain('Add packages or CPE patterns to monitor')
+    })
+
+    it('has back link to watchlists', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      const backLink = wrapper.find('a[href="/watchlists"]')
+      expect(backLink.exists()).toBe(true)
+    })
+  })
+
+  describe('edit mode', () => {
+    it('clicking name switches to edit input', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      await clickTestId('edit-name-btn')
+      await flushPromises()
+
+      const input = findTestId('edit-name-input') as HTMLInputElement
+      expect(input).not.toBeNull()
+      expect(input.value).toBe('Production Deps')
+    })
+
+    it('save calls PATCH and updates display', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      // Enter edit mode
+      await clickTestId('edit-name-btn')
+      await flushPromises()
+
+      // Change name
+      await setInputValue('edit-name-input', 'Updated Name')
+      await flushPromises()
+
+      // Mock PATCH response
+      mockPatchSuccess(makeWatchlist({ name: 'Updated Name' }))
+
+      // Save
+      await clickTestId('save-name-btn')
+      await flushPromises()
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123`,
+        expect.objectContaining({
+          method: 'PATCH',
+          credentials: 'include',
+          headers: expect.objectContaining({
+            'Content-Type': 'application/json',
+            'X-Requested-By': 'CVErt-Ops',
+          }),
+        }),
+      )
+
+      // Verify the name was updated in the display
+      expect(wrapper.text()).toContain('Updated Name')
+    })
+  })
+
+  describe('delete item', () => {
+    it('calls DELETE endpoint and removes item from list', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([
+        makePackageItem({ id: 'item-keep', package_name: 'kept-pkg' }),
+        makePackageItem({ id: 'item-del', package_name: 'deleted-pkg' }),
+      ])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockClear()
+      mockDeleteItemSuccess()
+
+      // Click delete on the second item
+      const deleteBtns = wrapper.findAll('[data-testid="delete-item-btn"]')
+      expect(deleteBtns.length).toBe(2)
+      await deleteBtns[1]!.trigger('click')
+      await flushPromises()
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123/items/item-del`,
+        expect.objectContaining({
+          method: 'DELETE',
+          credentials: 'include',
+          headers: expect.objectContaining({
+            'X-Requested-By': 'CVErt-Ops',
+          }),
+        }),
+      )
+
+      expect(wrapper.text()).toContain('kept-pkg')
+      expect(wrapper.text()).not.toContain('deleted-pkg')
+    })
+  })
+
+  describe('add item flow', () => {
+    it('clicking Add Item opens dialog', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      await wrapper.find('[data-testid="add-item-btn-trigger"]').trigger('click')
+      await flushPromises()
+
+      // Dialog content is in portal
+      expect(findTestId('item-type-package')).not.toBeNull()
+    })
+
+    it('adds item to list after dialog emits added', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      // Open dialog
+      await wrapper.find('[data-testid="add-item-btn-trigger"]').trigger('click')
+      await flushPromises()
+
+      // Simulate AddItemDialog emitting 'added'
+      const dialog = wrapper.findComponent({ name: 'AddItemDialog' })
+      expect(dialog.exists()).toBe(true)
+
+      const newItem = makePackageItem({ id: 'item-new', package_name: 'express' })
+      dialog.vm.$emit('added', newItem)
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('npm/express')
+    })
+  })
+
+  describe('API integration', () => {
+    it('fetches watchlist and items with correct URLs', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([makePackageItem()])
+      await mountView()
+      await flushPromises()
+
+      // First call: fetch watchlist
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123`,
+        expect.objectContaining({
+          method: 'GET',
+          credentials: 'include',
+        }),
+      )
+
+      // Second call: fetch items
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123/items`,
+        expect.objectContaining({
+          method: 'GET',
+          credentials: 'include',
+        }),
+      )
+    })
+  })
+})

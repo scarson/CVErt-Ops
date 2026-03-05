@@ -1831,7 +1831,9 @@ git commit -m "feat(web): CVE Detail page with scores and source comparison"
 
 ---
 
-### Task 25: Watchlist List page
+### Task 25: Watchlist List page ✅ `b6bf3b7`
+
+> **Notes:** Installed `dialog` and `alert-dialog` shadcn-vue components. Created CreateWatchlistDialog with WatchlistEntry type export. 27 new tests (205 total).
 
 **Files:**
 - Modify: `web/src/views/WatchlistListView.vue`
@@ -1870,7 +1872,9 @@ git commit -m "feat(web): Watchlist List page with create dialog"
 
 ---
 
-### Task 26: Watchlist Detail page
+### Task 26: Watchlist Detail page ✅ `57d70c1`
+
+> **Notes:** Created AddItemDialog with package/CPE type toggle and ecosystem dropdown. Inline editing for watchlist name/description. 23 new tests (228 total).
 
 **Files:**
 - Modify: `web/src/views/WatchlistDetailView.vue`
@@ -1905,7 +1909,9 @@ git commit -m "feat(web): Watchlist Detail page with item management"
 
 ---
 
-### Task 27: Members page
+### Task 27: Members page ✅ `7e9df86`
+
+> **Notes:** Full RBAC-gated UI with role hierarchy. Pending invitations section. Role change via exposed method for testability. 33 new tests (261 total).
 
 **Files:**
 - Modify: `web/src/views/MembersView.vue`
@@ -1947,7 +1953,9 @@ git commit -m "feat(web): Members page with invitations and role management"
 
 ---
 
-### Task 28: Groups page
+### Task 28: Groups page ✅ `0aee06b`
+
+> **Notes:** Created GroupDialog (dual-mode create/edit) and GroupMembersDialog with add/remove member management. 41 new tests (302 total).
 
 **Files:**
 - Modify: `web/src/views/GroupsView.vue`
@@ -1981,7 +1989,9 @@ git commit -m "feat(web): Groups page with member management"
 
 ---
 
-### Task 29: Feed Status page
+### Task 29: Feed Status page ✅ `64acf03`
+
+> **Deviation:** Feed admin API endpoints don't exist yet. Built as a meaningful placeholder with "Coming soon" badge. 4 tests.
 
 **Files:**
 - Modify: `web/src/views/FeedStatusView.vue`
@@ -2009,7 +2019,9 @@ git commit -m "feat(web): Feed Status admin page"
 
 ---
 
-### Task 30: Invitation Acceptance page
+### Task 30: Invitation Acceptance page ✅ `3489344`
+
+> **Notes:** Uses typed API client (huma-registered endpoints in OpenAPI schema). Handles auth/unauth flows, 404/410/403 errors. 12 tests.
 
 **Files:**
 - Modify: `web/src/views/InvitationView.vue`
@@ -2035,7 +2047,9 @@ git commit -m "feat(web): Invitation acceptance page"
 
 ---
 
-### Task 31: 404 page
+### Task 31: 404 page ✅ `992fef1`
+
+> **Notes:** Simple page with 404 heading, message, and back link. 3 tests. 321 total tests at this point.
 
 **Files:**
 - Modify: `web/src/views/NotFoundView.vue`

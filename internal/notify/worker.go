@@ -248,9 +248,13 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 				ruleName = name
 			}
 		}
+		ruleID := ""
+		if row.RuleID.Valid {
+			ruleID = row.RuleID.UUID.String()
+		}
 		subject, htmlBody, textBody, renderErr = RenderAlert(AlertTemplateData{
 			RuleName:    ruleName,
-			RuleID:      row.RuleID.UUID.String(),
+			RuleID:      ruleID,
 			CVEs:        summaries,
 			CVErtOpsURL: w.externalURL,
 		})

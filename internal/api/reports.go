@@ -280,11 +280,15 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 		recalcNextRun = true
 	}
 	if req.SeverityThreshold != nil {
-		if !validSeverityThresholds[*req.SeverityThreshold] {
+		if *req.SeverityThreshold == "" {
+			// Empty string clears the severity threshold to NULL (no filter).
+			params.SeverityThreshold = sql.NullString{}
+		} else if !validSeverityThresholds[*req.SeverityThreshold] {
 			http.Error(w, "severity_threshold must be critical, high, medium, or low", http.StatusUnprocessableEntity)
 			return
+		} else {
+			params.SeverityThreshold = sql.NullString{String: *req.SeverityThreshold, Valid: true}
 		}
-		params.SeverityThreshold = sql.NullString{String: *req.SeverityThreshold, Valid: true}
 	}
 	if req.WatchlistIDs != nil {
 		ids := make([]uuid.UUID, len(*req.WatchlistIDs))

@@ -158,10 +158,10 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 		return fmt.Errorf("marshal digest payload: %w", err)
 	}
 
-	// List active channels for this report.
-	channels, err := w.store.ListChannelsForReport(ctx, report.OrgID, report.ID)
+	// List active channels for this report (bypass-RLS — worker context).
+	channels, err := w.store.ListActiveChannelsForDigest(ctx, report.OrgID, report.ID)
 	if err != nil {
-		return fmt.Errorf("list channels for report: %w", err)
+		return fmt.Errorf("list channels for digest: %w", err)
 	}
 
 	// Insert a delivery row per channel.

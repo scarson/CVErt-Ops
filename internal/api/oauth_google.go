@@ -168,9 +168,9 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 9. Set auth cookies and respond.
+	// 9. Set auth cookies and redirect to frontend.
 	for _, cookieStr := range authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure) {
 		w.Header().Add("Set-Cookie", cookieStr)
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"user_id": user.ID.String()})
+	http.Redirect(w, r, srv.cfg.FrontendURL, http.StatusFound)
 }

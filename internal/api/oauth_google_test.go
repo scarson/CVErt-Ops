@@ -115,6 +115,7 @@ func newGoogleTestServer(t *testing.T, db *testutil.TestDB, googleMock *googleMo
 		JWTSecret:           "ggtest-secret-32-bytes-minimum-aa",
 		Argon2MaxConcurrent: 5,
 		ExternalURL:         "http://localhost",
+		FrontendURL:         "http://localhost:5173",
 	}
 	srv, err := NewServer(db.Store, cfg)
 	if err != nil {
@@ -269,8 +270,11 @@ func TestGoogleCallback_NewUser(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want 302", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "http://localhost:5173" {
+		t.Errorf("Location = %q, want %q", got, "http://localhost:5173")
 	}
 
 	// Verify auth cookies are set.
@@ -357,19 +361,23 @@ func TestGoogleCallback_ExistingUser(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want 302", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "http://localhost:5173" {
+		t.Errorf("Location = %q, want %q", got, "http://localhost:5173")
 	}
 
-	// Verify the same user ID is returned (not a new user).
-	var body struct {
-		UserID string `json:"user_id"`
+	// Verify the same user was returned (looked up by provider sub, not email).
+	user, err := db.GetUserByProviderID(t.Context(), "google", "google-sub-12345")
+	if err != nil {
+		t.Fatalf("GetUserByProviderID: %v", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode body: %v", err)
+	if user == nil {
+		t.Fatal("expected user to exist")
 	}
-	if body.UserID != existingUser.ID.String() {
-		t.Errorf("user_id = %q, want %q", body.UserID, existingUser.ID.String())
+	if user.ID != existingUser.ID {
+		t.Errorf("user.ID = %v, want %v (should match existing user by provider sub)", user.ID, existingUser.ID)
 	}
 }
 
@@ -606,18 +614,22 @@ func TestGoogleCallback_IdentityLinking(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want 302", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Location"); got != "http://localhost:5173" {
+		t.Errorf("Location = %q, want %q", got, "http://localhost:5173")
 	}
 
 	// Verify the same user was returned (looked up by provider sub, not email).
-	var body struct {
-		UserID string `json:"user_id"`
+	user, err := db.GetUserByProviderID(t.Context(), "google", "google-sub-12345")
+	if err != nil {
+		t.Fatalf("GetUserByProviderID: %v", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode body: %v", err)
+	if user == nil {
+		t.Fatal("expected user to exist")
 	}
-	if body.UserID != existingUser.ID.String() {
-		t.Errorf("user_id = %q, want %q (should match existing user by provider sub)", body.UserID, existingUser.ID.String())
+	if user.ID != existingUser.ID {
+		t.Errorf("user.ID = %v, want %v (should match existing user by provider sub)", user.ID, existingUser.ID)
 	}
 }

@@ -298,14 +298,6 @@ func (s *Store) AcceptOrgInvitation(ctx context.Context, orgID, userID uuid.UUID
 	})
 }
 
-// AcceptInvitation marks the invitation as accepted by setting accepted_at = now().
-func (s *Store) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.AcceptInvitation(ctx, id); err != nil {
-		return fmt.Errorf("accept invitation: %w", err)
-	}
-	return nil
-}
-
 // ListOrgInvitations returns all pending, unexpired invitations for an org.
 func (s *Store) ListOrgInvitations(ctx context.Context, orgID uuid.UUID) ([]generated.OrgInvitation, error) {
 	var rows []generated.OrgInvitation

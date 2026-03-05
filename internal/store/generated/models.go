@@ -254,6 +254,17 @@ type CveSource struct {
 	IngestedAt         time.Time
 }
 
+type CveVendorEnrichment struct {
+	ID             uuid.UUID
+	CveID          string
+	SourceName     string
+	VendorSeverity sql.NullString
+	VendorFixState sql.NullString
+	Enrichment     json.RawMessage
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type CweDictionary struct {
 	CweID       string
 	Name        string

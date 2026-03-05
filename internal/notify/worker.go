@@ -5,6 +5,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -123,6 +124,7 @@ func (w *Worker) RunDigestOnce(ctx context.Context) {
 }
 
 func (w *Worker) runClaim(ctx context.Context) {
+	// ClaimPendingDeliveries atomically claims and marks rows as processing.
 	rows, err := w.store.ClaimPendingDeliveries(ctx, w.cfg.ClaimBatchSize)
 	if err != nil {
 		w.log.Error("claim pending deliveries", "err", err)
@@ -132,14 +134,9 @@ func (w *Worker) runClaim(ctx context.Context) {
 		return
 	}
 
-	ids := make([]uuid.UUID, len(rows))
-	for i, r := range rows {
-		ids[i] = r.ID
-	}
-	if err := w.store.MarkDeliveriesProcessing(ctx, ids); err != nil {
-		w.log.Error("mark deliveries processing", "err", err)
-		return
-	}
+	// Detach from parent context so in-flight deliveries survive shutdown.
+	// The worker's wg.Wait() in Start() ensures graceful completion.
+	detached := context.WithoutCancel(ctx)
 
 	for _, row := range rows {
 		row := row
@@ -149,7 +146,7 @@ func (w *Worker) runClaim(ctx context.Context) {
 		go func() {
 			defer func() { <-sem }()
 			defer w.wg.Done()
-			w.deliver(ctx, row)
+			w.deliver(detached, row)
 		}()
 	}
 }
@@ -184,9 +181,9 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
-	// For email, permanent SMTP errors (5xx) should exhaust immediately.
-	if ch.Type == "email" && isPermanentSMTPError(sendErr) {
-		w.log.Warn("permanent SMTP failure", "id", row.ID, "err", sendErr)
+	// Permanent errors should exhaust immediately — retrying will never help.
+	if isPermanentDeliveryError(sendErr) {
+		w.log.Warn("permanent delivery failure", "id", row.ID, "type", ch.Type, "err", sendErr)
 		w.exhaust(ctx, row.ID, sendErr.Error())
 		return
 	}
@@ -220,15 +217,16 @@ func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, 
 }
 
 func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
-	// Parse channel config for recipients.
+	// Parse channel config for recipients. Config errors are permanent — the
+	// channel data won't change between retries.
 	var emailCfg struct {
 		Recipients []string `json:"recipients"`
 	}
 	if err := json.Unmarshal(ch.Config, &emailCfg); err != nil {
-		return fmt.Errorf("parse email config: %w", err)
+		return &permanentDeliveryError{err: fmt.Errorf("parse email config: %w", err)}
 	}
 	if len(emailCfg.Recipients) == 0 {
-		return fmt.Errorf("email channel has no recipients")
+		return &permanentDeliveryError{err: fmt.Errorf("email channel has no recipients")}
 	}
 
 	// Deserialize payload into CVE snapshots.
@@ -283,7 +281,7 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 			CVErtOpsURL: w.externalURL,
 		})
 	default:
-		return fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)
+		return &permanentDeliveryError{err: fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)}
 	}
 	if renderErr != nil {
 		return fmt.Errorf("render email template: %w", renderErr)
@@ -292,14 +290,28 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 	return EmailSend(ctx, w.smtpCfg, emailCfg.Recipients, subject, htmlBody, textBody)
 }
 
-// isPermanentSMTPError checks if the error message indicates a permanent SMTP failure (5xx).
-// Permanent failures should not be retried.
-func isPermanentSMTPError(err error) bool {
+// permanentDeliveryError wraps errors that should never be retried (config
+// parse failures, missing recipients, SMTP 5xx, etc.).
+type permanentDeliveryError struct {
+	err error
+}
+
+func (e *permanentDeliveryError) Error() string { return e.err.Error() }
+func (e *permanentDeliveryError) Unwrap() error { return e.err }
+
+// isPermanentDeliveryError returns true if the error is known to be permanent
+// and retrying will never succeed. Covers both Go-level config errors (wrapped
+// with permanentDeliveryError) and SMTP 5xx responses.
+func isPermanentDeliveryError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	var pe *permanentDeliveryError
+	if errors.As(err, &pe) {
+		return true
+	}
 	// SMTP 5xx codes indicate permanent failures (mailbox doesn't exist, relay denied, etc.).
+	msg := err.Error()
 	for _, code := range []string{"550 ", "551 ", "552 ", "553 ", "554 ", "555 "} {
 		if strings.Contains(msg, code) {
 			return true

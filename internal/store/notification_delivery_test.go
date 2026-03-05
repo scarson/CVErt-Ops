@@ -82,8 +82,8 @@ func getPayloadLength(t *testing.T, s *testutil.TestDB, ctx context.Context, rul
 	return len(items)
 }
 
-// claimAndMarkProcessing is a helper that claims pending deliveries and marks them processing.
-// Returns the IDs of the claimed deliveries.
+// claimAndMarkProcessing claims pending deliveries (which atomically marks them
+// processing) and returns the IDs of the claimed deliveries.
 func claimAndMarkProcessing(t *testing.T, s *testutil.TestDB, ctx context.Context) []uuid.UUID {
 	t.Helper()
 	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
@@ -96,9 +96,6 @@ func claimAndMarkProcessing(t *testing.T, s *testutil.TestDB, ctx context.Contex
 	ids := make([]uuid.UUID, len(claimed))
 	for i, c := range claimed {
 		ids[i] = c.ID
-	}
-	if err := s.MarkDeliveriesProcessing(ctx, ids); err != nil {
-		t.Fatalf("MarkDeliveriesProcessing: %v", err)
 	}
 	return ids
 }
@@ -418,9 +415,7 @@ func TestListDeliveries_FilterByStatus(t *testing.T) {
 	if id2 == uuid.Nil {
 		t.Fatal("could not find claimed delivery for ruleID2")
 	}
-	if err := s.MarkDeliveriesProcessing(ctx, []uuid.UUID{id2}); err != nil {
-		t.Fatalf("MarkDeliveriesProcessing: %v", err)
-	}
+	// ClaimPendingDeliveries already marked the row as processing.
 	if err := s.CompleteDelivery(ctx, id2); err != nil {
 		t.Fatalf("CompleteDelivery: %v", err)
 	}

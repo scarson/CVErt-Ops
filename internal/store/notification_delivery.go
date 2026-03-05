@@ -50,30 +50,28 @@ func (s *Store) UpsertDelivery(ctx context.Context, orgID, ruleID, channelID uui
 	return tx.Commit()
 }
 
-// ClaimPendingDeliveries claims up to limit pending delivery rows that are ready to send
-// (send_after <= now()). Uses FOR UPDATE SKIP LOCKED for concurrent-worker safety.
+// ClaimPendingDeliveries atomically claims up to limit pending delivery rows
+// that are ready to send (send_after <= now()) and transitions them to
+// "processing". Both SELECT FOR UPDATE SKIP LOCKED and the status UPDATE
+// happen in the same transaction, preventing TOCTOU races between workers.
 func (s *Store) ClaimPendingDeliveries(ctx context.Context, limit int) ([]ClaimedDelivery, error) {
 	var result []ClaimedDelivery
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
 		result, err = q.ClaimPendingDeliveries(ctx, int32(limit)) //nolint:gosec // G115: limit validated by caller
-		return err
+		if err != nil || len(result) == 0 {
+			return err
+		}
+		ids := make([]uuid.UUID, len(result))
+		for i, r := range result {
+			ids[i] = r.ID
+		}
+		return q.MarkDeliveriesProcessing(ctx, ids)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim pending deliveries: %w", err)
 	}
 	return result, nil
-}
-
-// MarkDeliveriesProcessing transitions the given delivery IDs from pending to processing.
-func (s *Store) MarkDeliveriesProcessing(ctx context.Context, ids []uuid.UUID) error {
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		return q.MarkDeliveriesProcessing(ctx, ids)
-	})
-	if err != nil {
-		return fmt.Errorf("mark deliveries processing: %w", err)
-	}
-	return nil
 }
 
 // CompleteDelivery marks a delivery as succeeded.

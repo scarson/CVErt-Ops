@@ -136,7 +136,7 @@ func TestAdvanceNextRunAt_SkipForward(t *testing.T) {
 	}
 }
 
-func TestIsPermanentSMTPError(t *testing.T) {
+func TestIsPermanentDeliveryError(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -154,12 +154,14 @@ func TestIsPermanentSMTPError(t *testing.T) {
 		{"555 syntax error", fmt.Errorf("555 MAIL FROM/RCPT TO parameters not recognized"), true},
 		{"550 embedded in message", fmt.Errorf("email send: 550 mailbox unavailable"), true},
 		{"random error", fmt.Errorf("something went wrong"), false},
+		{"permanent config error", &permanentDeliveryError{err: fmt.Errorf("parse email config")}, true},
+		{"wrapped permanent", fmt.Errorf("outer: %w", &permanentDeliveryError{err: fmt.Errorf("no recipients")}), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isPermanentSMTPError(tc.err)
+			got := isPermanentDeliveryError(tc.err)
 			if got != tc.want {
-				t.Errorf("isPermanentSMTPError(%v) = %v, want %v", tc.err, got, tc.want)
+				t.Errorf("isPermanentDeliveryError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

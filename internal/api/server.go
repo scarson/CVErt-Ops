@@ -28,6 +28,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/web"
 )
 
 // Server holds the dependencies for the HTTP layer.
@@ -348,6 +349,11 @@ func (srv *Server) Handler() http.Handler {
 	})
 
 	r.Mount("/api/v1", apiRouter)
+
+	// ── SPA fallback (serves embedded frontend) ─────────────────────────────
+	if frontendFS, err := web.Assets(); err == nil {
+		r.Handle("/*", newSPAHandler(frontendFS))
+	}
 
 	return r
 }

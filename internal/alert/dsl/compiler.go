@@ -99,14 +99,15 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 
 	isEPSSOnly := hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	return &CompiledRule{
-		RuleID:      ruleID,
-		DSLVersion:  dslVersion,
-		SQL:         combined,
-		Joins:       joins,
-		PostFilters: postFilters,
-		Logic:       r.Logic,
-		IsEPSSOnly:  isEPSSOnly,
-		HasEPSS:     hasEPSSCond,
+		RuleID:       ruleID,
+		DSLVersion:   dslVersion,
+		SQL:          combined,
+		Joins:        joins,
+		PostFilters:  postFilters,
+		Logic:        r.Logic,
+		IsEPSSOnly:   isEPSSOnly,
+		HasEPSS:      hasEPSSCond,
+		HasWatchlist: len(watchlistIDs) > 0,
 	}, nil
 }
 

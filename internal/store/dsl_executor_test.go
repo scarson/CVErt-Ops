@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
@@ -362,5 +363,51 @@ func TestExecuteDSLQuery_NilSQL(t *testing.T) {
 	// Should return the 2 non-rejected CVEs.
 	if len(results) != 2 {
 		t.Errorf("nil SQL: got %d results, want 2 (excluded rejected)", len(results))
+	}
+}
+
+func TestExecuteDSLQuery_AppliesPostFilters(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 3 CVEs: two with "apache" in description, one without.
+	s.SeedTestCVE(t, "CVE-2024-PF01", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "apache http server remote code execution",
+	})
+	s.SeedTestCVE(t, "CVE-2024-PF02", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "windows kernel privilege escalation",
+	})
+	s.SeedTestCVE(t, "CVE-2024-PF03", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "apache tomcat denial of service",
+	})
+
+	// Compile a rule with severity=high, then attach a regex PostFilter manually.
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, compileErr := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if compileErr != nil {
+		t.Fatalf("Compile: %v", compileErr)
+	}
+	compiled.PostFilters = []dsl.PostFilter{
+		{Negate: false, Pattern: regexp.MustCompile("apache")},
+	}
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+	// PostFilter should reduce 3 high-severity CVEs to 2 matching "apache".
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (PostFilter 'apache')", len(results))
+	}
+	for _, r := range results {
+		if r.CveID == "CVE-2024-PF02" {
+			t.Error("CVE-2024-PF02 (windows) should be excluded by PostFilter")
+		}
 	}
 }

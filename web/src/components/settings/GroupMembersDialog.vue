@@ -1,0 +1,236 @@
+<!-- ABOUTME: Dialog for managing group membership — add and remove org members from a group. -->
+<!-- ABOUTME: Fetches group members and org members on open; exposes addMember for test access. -->
+
+<script setup lang="ts">
+import { ref, computed, watch } from 'vue'
+import { useAuthStore } from '@/stores/auth'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Trash2, Loader2, UserPlus } from 'lucide-vue-next'
+
+interface GroupMemberEntry {
+  user_id: string
+  email: string
+  display_name: string
+  joined_at: string
+}
+
+interface OrgMemberEntry {
+  user_id: string
+  email: string
+  display_name: string
+  role: string
+  joined_at: string
+}
+
+const props = defineProps<{
+  open: boolean
+  groupId: string
+  groupName: string
+}>()
+
+const emit = defineEmits<{
+  'update:open': [value: boolean]
+}>()
+
+const auth = useAuthStore()
+const groupMembers = ref<GroupMemberEntry[]>([])
+const orgMembers = ref<OrgMemberEntry[]>([])
+const loading = ref(true)
+const selectedUserId = ref('')
+
+const availableMembers = computed(() => {
+  const memberIds = new Set(groupMembers.value.map((m) => m.user_id))
+  return orgMembers.value.filter((m) => !memberIds.has(m.user_id))
+})
+
+function apiBase() {
+  return `/api/v1/orgs/${auth.activeOrgId}`
+}
+
+async function fetchData() {
+  loading.value = true
+
+  try {
+    const [groupResp, orgResp] = await Promise.all([
+      fetch(`${apiBase()}/groups/${props.groupId}/members`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      fetch(`${apiBase()}/members`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ])
+
+    if (groupResp.ok) {
+      groupMembers.value = await groupResp.json()
+    }
+    if (orgResp.ok) {
+      orgMembers.value = await orgResp.json()
+    }
+  } catch {
+    // Silently fail
+  } finally {
+    loading.value = false
+  }
+}
+
+async function addMember(userId: string) {
+  if (!userId) return
+
+  try {
+    const resp = await fetch(`${apiBase()}/groups/${props.groupId}/members`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-By': 'CVErt-Ops',
+      },
+      body: JSON.stringify({ user_id: userId }),
+    })
+
+    if (resp.ok) {
+      // Move the user from available to group members
+      const orgMember = orgMembers.value.find((m) => m.user_id === userId)
+      if (orgMember) {
+        groupMembers.value = [
+          ...groupMembers.value,
+          {
+            user_id: orgMember.user_id,
+            email: orgMember.email,
+            display_name: orgMember.display_name,
+            joined_at: new Date().toISOString(),
+          },
+        ]
+      }
+      selectedUserId.value = ''
+    }
+  } catch {
+    // Silently fail
+  }
+}
+
+async function removeMember(userId: string) {
+  try {
+    const resp = await fetch(`${apiBase()}/groups/${props.groupId}/members/${userId}`, {
+      method: 'DELETE',
+      credentials: 'include',
+      headers: {
+        'X-Requested-By': 'CVErt-Ops',
+      },
+    })
+
+    if (resp.ok) {
+      groupMembers.value = groupMembers.value.filter((m) => m.user_id !== userId)
+    }
+  } catch {
+    // Silently fail
+  }
+}
+
+function handleSelectAdd(userId: string) {
+  addMember(userId)
+}
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      groupMembers.value = []
+      orgMembers.value = []
+      selectedUserId.value = ''
+      fetchData()
+    }
+  },
+  { immediate: true },
+)
+
+// Expose addMember for test access (reka-ui Select is hard to trigger in JSDOM)
+defineExpose({ addMember, availableMembers })
+</script>
+
+<template>
+  <Dialog
+    :open="props.open"
+    @update:open="emit('update:open', $event)"
+  >
+    <DialogContent :show-close-button="true" class="max-w-lg">
+      <DialogHeader>
+        <DialogTitle>{{ groupName }} — Members</DialogTitle>
+        <DialogDescription>
+          Manage members of this group.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div class="space-y-4 py-2">
+        <!-- Loading state -->
+        <div v-if="loading" class="flex items-center justify-center py-8 text-muted-foreground">
+          <Loader2 class="mr-2 size-5 animate-spin" />
+          Loading members...
+        </div>
+
+        <template v-else>
+          <!-- Add member section -->
+          <div v-if="availableMembers.length > 0" class="flex items-center gap-2">
+            <Select :model-value="selectedUserId" @update:model-value="handleSelectAdd">
+              <SelectTrigger data-testid="add-member-select" class="flex-1">
+                <SelectValue placeholder="Add a member..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem
+                  v-for="m in availableMembers"
+                  :key="m.user_id"
+                  :value="m.user_id"
+                >
+                  {{ m.display_name }} ({{ m.email }})
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <!-- Members list -->
+          <div v-if="groupMembers.length === 0" class="py-6 text-center text-sm text-muted-foreground">
+            No members in this group yet.
+          </div>
+
+          <div v-else class="divide-y">
+            <div
+              v-for="m in groupMembers"
+              :key="m.user_id"
+              class="flex items-center justify-between py-2"
+            >
+              <div>
+                <p class="text-sm font-medium">{{ m.display_name }}</p>
+                <p class="text-xs text-muted-foreground">{{ m.email }}</p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid="remove-group-member-btn"
+                @click="removeMember(m.user_id)"
+              >
+                <Trash2 class="size-4 text-destructive" />
+              </Button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </DialogContent>
+  </Dialog>
+</template>

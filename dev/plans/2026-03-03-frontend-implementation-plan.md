@@ -1183,7 +1183,7 @@ git commit -m "feat(web): auth Pinia store with org context and localStorage per
 
 ---
 
-### Task 14: Create UI store (toasts)
+### Task 14: Create UI store (toasts) ✅ `9f20ffc`
 
 **Files:**
 - Create: `web/src/stores/ui.ts`
@@ -1224,7 +1224,7 @@ git commit -m "feat(web): UI store for sidebar state"
 
 ## Phase C: Layout + Routing
 
-### Task 15: Create PublicLayout
+### Task 15: Create PublicLayout ✅ `e5c06df`
 
 **Files:**
 - Create: `web/src/layouts/PublicLayout.vue`
@@ -1260,7 +1260,9 @@ git commit -m "feat(web): PublicLayout for unauthenticated pages"
 
 ---
 
-### Task 16: Create AuthenticatedLayout (sidebar)
+### Task 16: Create AuthenticatedLayout (sidebar) ✅ `db783e2`
+
+> **Note:** Added 8 component tests for sidebar nav links, org switcher, and user menu. Uses sidebar CSS variables from main.css theme. Mobile responsive via Sheet component.
 
 **Files:**
 - Create: `web/src/layouts/AuthenticatedLayout.vue`
@@ -1310,7 +1312,9 @@ git commit -m "feat(web): AuthenticatedLayout with sidebar navigation"
 
 ---
 
-### Task 17: Create Vue Router with guards
+### Task 17: Create Vue Router with guards ✅ `f9b31a7`
+
+> **Note:** Extracted guard functions as named exports for testability. 17 tests covering auth redirect, org check, login redirect, session restore, title updates. Tests use real Pinia with `createMemoryHistory()`, mock only `fetchMe`.
 
 **Files:**
 - Modify: `web/src/router/index.ts`
@@ -1507,7 +1511,9 @@ git commit -m "feat(web): Vue Router with auth and org navigation guards"
 
 ---
 
-### Task 18: Wire up App.vue with layouts
+### Task 18: Wire up App.vue with layouts ✅ `769684a`
+
+> **Note:** Also cleaned up all Vue scaffold remnants (HelloWorld, Welcome, icons, logo, and their test). 55 tests passing.
 
 **Files:**
 - Modify: `web/src/App.vue`
@@ -1577,7 +1583,9 @@ For each page below, the implementing agent should:
 4. Implement the component following TDD
 5. Commit after each page
 
-### Task 19: Create stub views for all routes
+### Task 19: Create stub views for all routes ✅ `aa9ec20`
+
+> **Deviation:** Executed before Task 17 (not after) so router lazy imports could resolve. Also removed unused scaffold views (AboutView, HomeView).
 
 **Files:**
 - Create stub `.vue` files for every route to prevent router import errors

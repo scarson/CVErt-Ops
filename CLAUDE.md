@@ -181,7 +181,14 @@ YOU MUST follow this debugging framework for ANY technical issue:
 
 # NOTE: Claude Code's Bash tool runs bash (Unix syntax). Use bash/forward-slash paths in Bash commands.
 # PowerShell is available if explicitly needed for Windows-specific tasks.
-# Do NOT prefix bash commands with "cd /c/Users/Sam/Code/CVErt-Ops" unless you're outside the project base directory. Prefixing with that will cause Claude to unnecessarily prompt the user for permission to use already approved commands. 
+# Do NOT prefix bash commands with "cd /c/Users/Sam/Code/CVErt-Ops" unless you're outside the project base directory. Prefixing with that will cause Claude to unnecessarily prompt the user for permission to use already approved commands.
+
+# WORKTREE COMMANDS: When running git commands in a worktree, use `git -C <path>` instead of
+# `cd <path> && git <command>`. The `cd && command` pattern triggers permission prompts because
+# the glob matcher can't reliably parse compound shell commands.
+# Example: `git -C .worktrees/bug-fixes status` instead of `cd .worktrees/bug-fixes && git status`
+# For go commands in worktrees, use `go -C` the same way (Go 1.24+).
+# For npm/npx in worktrees, `cd <path> && npm ...` will prompt — that's expected and acceptable.
 
 ```bash
 golangci-lint run                    # lint (NOT go vet alone)

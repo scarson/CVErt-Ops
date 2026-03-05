@@ -1641,7 +1641,7 @@ git commit -m "feat(web): stub views for all routes"
 
 ---
 
-### Task 20: Login page
+### Task 20: Login page ✅ `a97da63`
 
 **Files:**
 - Modify: `web/src/views/LoginView.vue`
@@ -1692,7 +1692,7 @@ git commit -m "feat(web): Login page with email/password and OAuth"
 
 ---
 
-### Task 21: Register page
+### Task 21: Register page ✅ `a7446a8`
 
 **Files:**
 - Modify: `web/src/views/RegisterView.vue`
@@ -1719,7 +1719,9 @@ git commit -m "feat(web): Register page with invite-only handling"
 
 ---
 
-### Task 22: Create Organization page
+### Task 22: Create Organization page ✅ `a51c578`
+
+> **Deviation:** Uses raw `fetch()` instead of typed API client because the org management endpoints are chi-registered (not in OpenAPI spec). CSRF header added manually.
 
 **Files:**
 - Modify: `web/src/views/CreateOrgView.vue`
@@ -1744,7 +1746,9 @@ git commit -m "feat(web): Create Organization page"
 
 ---
 
-### Task 23: CVE Search page
+### Task 23: CVE Search page ✅ `00ed3fc`
+
+> **Deviation:** Installed `table`, `badge`, `select` shadcn-vue components (not `pagination` or `skeleton` — keyset pagination uses custom buttons, skeletons deferred to Task 32). 45 new tests (135 total at this point).
 
 **Files:**
 - Modify: `web/src/views/CveSearchView.vue`
@@ -1785,7 +1789,9 @@ git commit -m "feat(web): CVE Search page with filters and keyset pagination"
 
 ---
 
-### Task 24: CVE Detail page
+### Task 24: CVE Detail page ✅ `d0f5078`
+
+> **Notes:** Installed `tabs` shadcn-vue component. Created CveScoreCard (reusable) and CveSourceComparison components. 43 new tests (178 total).
 
 **Files:**
 - Modify: `web/src/views/CveDetailView.vue`

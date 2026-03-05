@@ -24,7 +24,7 @@ func TestWithBypassTx_SetsSessionVar(t *testing.T) {
 
 	// HasPendingOrRunningJob uses withBypassTx internally.
 	// If SET LOCAL bypass_rls is set, this succeeds without error.
-	_, err := s.Store.HasPendingOrRunningJob(ctx, "nonexistent:key")
+	_, err := s.HasPendingOrRunningJob(ctx, "nonexistent:key")
 	if err != nil {
 		t.Fatalf("HasPendingOrRunningJob via Store (bypass): %v", err)
 	}

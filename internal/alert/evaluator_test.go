@@ -1599,7 +1599,7 @@ func TestEvaluateActivation_DoesNotOverrideDisabledStatus(t *testing.T) {
 	})
 
 	// Simulate user disabling the rule during activation (before EvaluateActivation completes)
-	if err := tdb.Store.SetAlertRuleStatus(ctx, orgID, row.ID, "disabled"); err != nil {
+	if err := tdb.SetAlertRuleStatus(ctx, orgID, row.ID, "disabled"); err != nil {
 		t.Fatalf("disable rule: %v", err)
 	}
 

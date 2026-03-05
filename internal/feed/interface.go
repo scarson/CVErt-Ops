@@ -64,7 +64,18 @@ type CanonicalPatch struct {
 	References         []ReferenceEntry  `json:"references,omitempty"`
 	AffectedPackages   []AffectedPackage `json:"affected_packages,omitempty"`
 	AffectedCPEs       []AffectedCPE     `json:"affected_cpes,omitempty"`
+	VendorEnrichment   *VendorEnrichment `json:"vendor_enrichment,omitempty"`
 	IsWithdrawn        bool              `json:"is_withdrawn,omitempty"`
+}
+
+// VendorEnrichment holds vendor-specific metadata that doesn't map to
+// standard CanonicalPatch fields. Written to cve_vendor_enrichment by
+// the merge pipeline. Only populated by vendor-specific adapters
+// (KEV, MSRC, Red Hat).
+type VendorEnrichment struct {
+	VendorSeverity *string         `json:"vendor_severity,omitempty"`
+	VendorFixState *string         `json:"vendor_fix_state,omitempty"`
+	Data           json.RawMessage `json:"data"`
 }
 
 // ReferenceEntry is a single hyperlink reference associated with a CVE.

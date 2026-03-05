@@ -1,3 +1,5 @@
+// ABOUTME: Worker pool that claims and executes jobs from the job_queue table.
+// ABOUTME: Per-queue concurrency semaphores, panic recovery, and stale-job reclamation.
 package worker
 
 import (
@@ -34,29 +36,43 @@ const (
 
 // Pool manages a set of goroutine workers that claim and execute jobs from
 // the job_queue table. One polling goroutine runs per registered queue; a
-// shared stale-lock recovery goroutine resets stuck jobs.
+// shared stale-lock recovery goroutine resets stuck jobs. Per-queue concurrency
+// limits control how many jobs execute simultaneously within each queue.
 type Pool struct {
-	store    JobStore
-	workerID string
-	mu       sync.RWMutex
-	handlers map[string]Handler
+	store       JobStore
+	workerID    string
+	mu          sync.RWMutex
+	handlers    map[string]Handler
+	concurrency map[string]int
 }
 
 // New creates a Pool backed by s. A random workerID is generated at construction
 // time to distinguish this process in the locked_by column.
 func New(s JobStore) *Pool {
 	return &Pool{
-		store:    s,
-		workerID: uuid.New().String(),
-		handlers: make(map[string]Handler),
+		store:       s,
+		workerID:    uuid.New().String(),
+		handlers:    make(map[string]Handler),
+		concurrency: make(map[string]int),
 	}
 }
 
-// Register associates h with the named queue. Must be called before Start.
+// Register associates h with the named queue with concurrency 1 (sequential).
+// Must be called before Start.
 func (p *Pool) Register(queue string, h Handler) {
+	p.RegisterWithConcurrency(queue, h, 1)
+}
+
+// RegisterWithConcurrency associates h with the named queue and allows up to
+// concurrency jobs to execute simultaneously. Must be called before Start.
+func (p *Pool) RegisterWithConcurrency(queue string, h Handler, concurrency int) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.handlers[queue] = h
+	p.concurrency[queue] = concurrency
 }
 
 // Start launches one polling goroutine per registered queue plus the stale-lock
@@ -91,21 +107,43 @@ func (p *Pool) Start(ctx context.Context) {
 	slog.Info("worker pool stopped", "worker_id", p.workerID)
 }
 
-// runQueue polls queue for jobs until ctx is cancelled. Uses time.NewTicker
-// (not time.After) to avoid timer leaks.
+// runQueue polls queue for jobs until ctx is cancelled. A per-queue semaphore
+// limits how many jobs execute concurrently. Uses time.NewTicker (not
+// time.After) to avoid timer leaks.
 func (p *Pool) runQueue(ctx context.Context, queue string) {
+	p.mu.RLock()
+	maxConc := p.concurrency[queue]
+	p.mu.RUnlock()
+	if maxConc < 1 {
+		maxConc = 1
+	}
+
+	sem := make(chan struct{}, maxConc)
+	var inflight sync.WaitGroup
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	slog.Info("worker queue started", "queue", queue, "worker_id", p.workerID)
+	slog.Info("worker queue started", "queue", queue, "worker_id", p.workerID, "concurrency", maxConc)
 
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("worker queue stopping", "queue", queue)
+			inflight.Wait()
 			return
 		case <-ticker.C:
-			p.processOne(ctx, queue)
+			select {
+			case sem <- struct{}{}:
+				inflight.Add(1)
+				go func() {
+					defer inflight.Done()
+					defer func() { <-sem }()
+					p.processOne(ctx, queue)
+				}()
+			default:
+				// all concurrency slots occupied, skip this tick
+			}
 		}
 	}
 }

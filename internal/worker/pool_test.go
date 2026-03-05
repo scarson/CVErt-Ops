@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -524,5 +525,157 @@ func TestRunQueue_ContextCancellationStops(t *testing.T) {
 		// Stopped cleanly.
 	case <-time.After(5 * time.Second):
 		t.Fatal("runQueue did not stop within 5s after cancel")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Per-queue concurrency tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestRegisterWithConcurrency(t *testing.T) {
+	t.Parallel()
+
+	p := New(nil)
+	p.RegisterWithConcurrency("alerts", func(_ context.Context, _ json.RawMessage) error {
+		return nil
+	}, 4)
+
+	if p.handlers["alerts"] == nil {
+		t.Fatal("handler not stored")
+	}
+	if got := p.concurrency["alerts"]; got != 4 {
+		t.Errorf("concurrency = %d, want 4", got)
+	}
+}
+
+func TestRegisterDefaultConcurrencyIsOne(t *testing.T) {
+	t.Parallel()
+
+	p := New(nil)
+	p.Register("q", func(_ context.Context, _ json.RawMessage) error {
+		return nil
+	})
+
+	if got := p.concurrency["q"]; got != 1 {
+		t.Errorf("concurrency = %d, want 1 (default)", got)
+	}
+}
+
+func TestRunQueue_ConcurrentProcessing(t *testing.T) {
+	t.Parallel()
+
+	const maxConc = 3
+	var running int32
+	var maxRunning int32
+
+	started := make(chan struct{}, 10)
+	block := make(chan struct{})
+
+	fs := &fakeJobStore{
+		claimFn: func(_ context.Context, _, _ string) (*store.Job, error) {
+			return &store.Job{ID: uuid.New(), Queue: "q", Payload: json.RawMessage(`{}`), Attempts: 1}, nil
+		},
+	}
+	p := New(fs)
+	p.RegisterWithConcurrency("q", func(_ context.Context, _ json.RawMessage) error {
+		n := atomic.AddInt32(&running, 1)
+		for {
+			old := atomic.LoadInt32(&maxRunning)
+			if n <= old || atomic.CompareAndSwapInt32(&maxRunning, old, n) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-block
+		atomic.AddInt32(&running, -1)
+		return nil
+	}, maxConc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		p.runQueue(ctx, "q")
+		close(done)
+	}()
+
+	// Wait for maxConc handlers to start (may take up to maxConc*pollInterval).
+	for i := 0; i < maxConc; i++ {
+		select {
+		case <-started:
+		case <-time.After(15 * time.Second):
+			t.Fatalf("handler %d did not start within timeout", i+1)
+		}
+	}
+
+	// Verify exactly maxConc are running.
+	if got := atomic.LoadInt32(&running); got != int32(maxConc) {
+		t.Errorf("running handlers = %d, want %d", got, maxConc)
+	}
+
+	// Wait one more tick and verify no more than maxConc started.
+	time.Sleep(3 * time.Second)
+	if got := atomic.LoadInt32(&maxRunning); got > int32(maxConc) {
+		t.Errorf("max concurrent = %d, exceeds limit %d", got, maxConc)
+	}
+
+	close(block)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runQueue did not stop within timeout")
+	}
+}
+
+func TestRunQueue_ConcurrencyOneIsSequential(t *testing.T) {
+	t.Parallel()
+
+	var running int32
+	var maxRunning int32
+	jobCount := 0
+
+	fs := &fakeJobStore{
+		claimFn: func(_ context.Context, _, _ string) (*store.Job, error) {
+			return &store.Job{ID: uuid.New(), Queue: "q", Payload: json.RawMessage(`{}`), Attempts: 1}, nil
+		},
+	}
+	p := New(fs)
+	p.Register("q", func(_ context.Context, _ json.RawMessage) error {
+		n := atomic.AddInt32(&running, 1)
+		for {
+			old := atomic.LoadInt32(&maxRunning)
+			if n <= old || atomic.CompareAndSwapInt32(&maxRunning, old, n) {
+				break
+			}
+		}
+		jobCount++
+		time.Sleep(50 * time.Millisecond)
+		atomic.AddInt32(&running, -1)
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		p.runQueue(ctx, "q")
+		close(done)
+	}()
+
+	// Let a few ticks execute.
+	time.Sleep(5 * time.Second)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runQueue did not stop within timeout")
+	}
+
+	if got := atomic.LoadInt32(&maxRunning); got > 1 {
+		t.Errorf("max concurrent = %d, want 1 for default concurrency", got)
 	}
 }

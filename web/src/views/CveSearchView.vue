@@ -2,7 +2,7 @@
 <!-- ABOUTME: Primary landing page for authenticated users. -->
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import client from '@/lib/api/client'
 import type { components } from '@/lib/api/schema'

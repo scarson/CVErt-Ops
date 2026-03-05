@@ -173,7 +173,7 @@ describe('refresh middleware', () => {
     // Refresh call should have been made.
     expect(fetchMock).toHaveBeenCalledTimes(2)
     // First call is the refresh.
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/auth/refresh')
+    expect(fetchMock.mock.calls[0]![0]).toBe('/api/v1/auth/refresh')
     // The result should be the retry response.
     expect((result as Response).status).toBe(200)
   })

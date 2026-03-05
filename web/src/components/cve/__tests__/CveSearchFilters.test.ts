@@ -3,7 +3,6 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn(() => ({ query: {} })),

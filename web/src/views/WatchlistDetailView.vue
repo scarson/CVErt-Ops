@@ -67,7 +67,7 @@ async function fetchWatchlist() {
       return
     }
 
-    watchlist.value = await resp.json()
+    watchlist.value = await resp.json() as WatchlistEntry
   } catch {
     loading.value = false
   }
@@ -82,7 +82,7 @@ async function fetchItems() {
     })
 
     if (resp.ok) {
-      const data = await resp.json()
+      const data = await resp.json() as { items?: WatchlistItemEntry[] }
       items.value = data.items ?? []
     }
   } finally {
@@ -133,7 +133,7 @@ async function saveName() {
     })
 
     if (resp.ok) {
-      watchlist.value = await resp.json()
+      watchlist.value = await resp.json() as WatchlistEntry
     }
   } finally {
     editingName.value = false

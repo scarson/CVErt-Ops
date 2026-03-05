@@ -127,7 +127,7 @@ describe('auth store', () => {
     })
 
     it('returns false on API error', async () => {
-      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { detail: 'unauthorized' }, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { type: 'about:blank', detail: 'unauthorized' }, response: {} as Response })
 
       const auth = useAuthStore()
       const result = await auth.fetchMe()

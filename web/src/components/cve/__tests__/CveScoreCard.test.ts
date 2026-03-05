@@ -4,9 +4,9 @@
 import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 
-async function mountCard(props = {}) {
+async function mountCard(props: Record<string, unknown> = {}) {
   const { default: CveScoreCard } = await import('@/components/cve/CveScoreCard.vue')
-  return mount(CveScoreCard, { props })
+  return mount(CveScoreCard, { props: props as any })
 }
 
 describe('CveScoreCard', () => {

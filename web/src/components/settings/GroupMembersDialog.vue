@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Trash2, Loader2, UserPlus } from 'lucide-vue-next'
+import { Trash2, Loader2 } from 'lucide-vue-next'
 
 interface GroupMemberEntry {
   user_id: string
@@ -144,8 +144,11 @@ async function removeMember(userId: string) {
   }
 }
 
-function handleSelectAdd(userId: string) {
-  addMember(userId)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function handleSelectAdd(userId: string | number | bigint | Record<string, any> | null) {
+  if (typeof userId === 'string') {
+    addMember(userId)
+  }
 }
 
 watch(

@@ -65,10 +65,6 @@ function findTestId(id: string): HTMLElement | null {
   return document.querySelector(`[data-testid="${id}"]`)
 }
 
-function findAllTestId(id: string): NodeListOf<HTMLElement> {
-  return document.querySelectorAll(`[data-testid="${id}"]`)
-}
-
 function bodyText(): string {
   return document.body.textContent ?? ''
 }

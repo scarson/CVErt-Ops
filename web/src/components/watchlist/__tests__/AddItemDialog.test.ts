@@ -48,7 +48,7 @@ function makeCpeItem(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function mockAddSuccess(item = makePackageItem()) {
+function mockAddSuccess(item: Record<string, unknown> = makePackageItem()) {
   mockFetch.mockResolvedValueOnce({
     ok: true,
     status: 201,

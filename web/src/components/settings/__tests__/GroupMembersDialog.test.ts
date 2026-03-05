@@ -76,10 +76,6 @@ function mockRemoveMemberSuccess() {
 }
 
 // Dialog content renders inside a portal (teleported to body).
-function findTestId(id: string): HTMLElement | null {
-  return document.querySelector(`[data-testid="${id}"]`)
-}
-
 function findAllTestId(id: string): NodeListOf<HTMLElement> {
   return document.querySelectorAll(`[data-testid="${id}"]`)
 }

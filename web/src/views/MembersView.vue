@@ -106,7 +106,7 @@ async function fetchMembers() {
       return
     }
 
-    members.value = await resp.json()
+    members.value = await resp.json() as MemberEntry[]
 
     // Fetch invitations in parallel for admin+ users
     if (isAdmin.value) {
@@ -128,7 +128,7 @@ async function fetchInvitations() {
     })
 
     if (resp.ok) {
-      invitations.value = await resp.json()
+      invitations.value = await resp.json() as InvitationEntry[]
     }
   } catch {
     // Silently fail — invitations are supplementary
@@ -148,7 +148,7 @@ async function changeRole(userId: string, newRole: string) {
     })
 
     if (resp.ok) {
-      const updated = await resp.json()
+      const updated: MemberEntry = await resp.json()
       members.value = members.value.map((m) =>
         m.user_id === userId ? { ...m, role: updated.role } : m,
       )
@@ -279,7 +279,7 @@ onMounted(() => {
               <Select
                 v-if="canChangeRole(m)"
                 :model-value="m.role"
-                @update:model-value="(val: string) => changeRole(m.user_id, val)"
+                @update:model-value="(val) => changeRole(m.user_id, String(val))"
               >
                 <SelectTrigger data-testid="role-select-trigger" class="w-28" size="sm">
                   <SelectValue />

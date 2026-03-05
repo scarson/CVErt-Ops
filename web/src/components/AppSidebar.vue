@@ -2,7 +2,6 @@
 <!-- ABOUTME: Renders nav sections (main, settings, admin) with route-aware active highlighting. -->
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import {
   Search,

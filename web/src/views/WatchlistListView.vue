@@ -59,7 +59,7 @@ async function fetchWatchlists() {
       return
     }
 
-    const data = await resp.json()
+    const data = await resp.json() as { items?: WatchlistEntry[] }
     watchlists.value = data.items ?? []
   } catch {
     error.value = 'Failed to load watchlists. Please try again.'

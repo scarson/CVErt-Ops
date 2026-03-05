@@ -33,11 +33,11 @@ function makeSource(overrides: Partial<CVESourceResponse> = {}): CVESourceRespon
   }
 }
 
-async function mountComponent(props = {}) {
+async function mountComponent(props: Record<string, unknown> = {}) {
   const { default: CveSourceComparison } = await import(
     '@/components/cve/CveSourceComparison.vue'
   )
-  return mount(CveSourceComparison, { props })
+  return mount(CveSourceComparison, { props: props as any })
 }
 
 describe('CveSourceComparison', () => {

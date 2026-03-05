@@ -37,7 +37,7 @@ async function onSubmit() {
       return
     }
 
-    const data = await response.json()
+    const data: { org_id: string } = await response.json()
 
     // Refresh user session to pick up the org membership.
     await auth.fetchMe()

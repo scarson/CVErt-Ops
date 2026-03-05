@@ -2,7 +2,7 @@
 // ABOUTME: Verifies auth redirect, org check, and login redirect behavior.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { createRouter, createMemoryHistory, type RouteLocationNormalized } from 'vue-router'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { routes, authGuard, titleGuard } from '../index'

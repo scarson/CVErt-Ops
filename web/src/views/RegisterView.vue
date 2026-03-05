@@ -6,6 +6,7 @@ import { ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import client from '@/lib/api/client'
+import type { components } from '@/lib/api/schema'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,7 +34,7 @@ async function onSubmit() {
   submitting.value = true
 
   try {
-    const body: Record<string, string> = {
+    const body: components['schemas']['RegisterInputBody'] = {
       email: email.value,
       password: password.value,
     }
@@ -41,7 +42,7 @@ async function onSubmit() {
       body.display_name = displayName.value.trim()
     }
 
-    const { error: apiError, response } = await client.POST('/auth/register', { body: body as any })
+    const { error: apiError, response } = await client.POST('/auth/register', { body })
 
     if (apiError) {
       if (response?.status === 409) {

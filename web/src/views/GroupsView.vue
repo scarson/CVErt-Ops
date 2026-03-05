@@ -73,7 +73,7 @@ async function fetchGroups() {
       return
     }
 
-    groups.value = await resp.json()
+    groups.value = await resp.json() as GroupEntry[]
   } catch {
     error.value = 'Failed to load groups. Please try again.'
   } finally {

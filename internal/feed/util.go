@@ -3,6 +3,7 @@ package feed
 import (
 	"bytes"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -15,6 +16,8 @@ var timeLayouts = []string{
 	time.RFC3339,
 	"2006-01-02T15:04:05",
 	"2006-01-02",
+	time.RFC1123,
+	time.RFC1123Z,
 }
 
 // ParseTime parses a feed timestamp using a multi-layout fallback. Returns a
@@ -65,7 +68,12 @@ var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d+$`)
 // stored under its own ID and merged if a CVE alias is discovered later via
 // late-binding PK migration).
 func ResolveCanonicalID(nativeID string, aliases []string) string {
-	for _, alias := range aliases {
+	// Sort aliases so the result is deterministic when multiple CVE IDs exist.
+	sorted := make([]string, len(aliases))
+	copy(sorted, aliases)
+	sort.Strings(sorted)
+
+	for _, alias := range sorted {
 		if cveIDPattern.MatchString(alias) {
 			return alias
 		}

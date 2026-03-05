@@ -2,7 +2,9 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -110,6 +112,7 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 
 // processOne claims one job from queue and executes it. Errors are logged but
 // do not stop the polling loop — the goroutine continues to the next tick.
+// Panics in handlers are recovered and the job is marked as failed.
 func (p *Pool) processOne(ctx context.Context, queue string) {
 	job, err := p.store.ClaimJob(ctx, queue, p.workerID)
 	if err != nil {
@@ -133,7 +136,7 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 	slog.Info("executing job",
 		"queue", queue, "job_id", job.ID, "attempts", job.Attempts)
 
-	if err := h(ctx, job.Payload); err != nil {
+	if err := p.safeExecute(ctx, h, job.Payload); err != nil {
 		slog.Error("job handler failed",
 			"queue", queue, "job_id", job.ID, "error", err)
 		if failErr := p.store.FailJob(ctx, job.ID, err.Error()); failErr != nil {
@@ -147,6 +150,19 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 		return
 	}
 	slog.Info("job completed", "queue", queue, "job_id", job.ID)
+}
+
+// safeExecute runs a handler with panic recovery. If the handler panics,
+// the panic is caught and returned as an error with a stack trace.
+func (p *Pool) safeExecute(ctx context.Context, h Handler, payload []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("worker panic recovered",
+				"error", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return h(ctx, payload)
 }
 
 // runStaleRecovery periodically resets jobs stuck in 'running' state. Uses

@@ -361,14 +361,14 @@ func parseAdvisory(rec ghsaAdvisory) *feed.CanonicalPatch {
 
 	// CVSS: prefer cvss_severities (explicit V3/V4 split) over top-level cvss.
 	if cs := rec.CVSSSeverities; cs != nil {
-		if v4 := cs.CVSSv4; v4 != nil && v4.Score > 0 {
+		if v4 := cs.CVSSv4; v4 != nil && v4.Score >= 0 {
 			score := v4.Score
 			patch.CVSSv4Score = &score
 			if vec := strings.Clone(feed.StripNullBytes(v4.VectorString)); vec != "" {
 				patch.CVSSv4Vector = &vec
 			}
 		}
-		if v3 := cs.CVSSv3; v3 != nil && v3.Score > 0 {
+		if v3 := cs.CVSSv3; v3 != nil && v3.Score >= 0 {
 			score := v3.Score
 			patch.CVSSv3Score = &score
 			if vec := strings.Clone(feed.StripNullBytes(v3.VectorString)); vec != "" {
@@ -377,7 +377,7 @@ func parseAdvisory(rec ghsaAdvisory) *feed.CanonicalPatch {
 		}
 	}
 	// Fallback: top-level cvss (no version distinction — treat as V3).
-	if patch.CVSSv3Score == nil && rec.CVSS != nil && rec.CVSS.Score > 0 {
+	if patch.CVSSv3Score == nil && rec.CVSS != nil && rec.CVSS.Score >= 0 {
 		score := rec.CVSS.Score
 		patch.CVSSv3Score = &score
 		if vec := strings.Clone(feed.StripNullBytes(rec.CVSS.VectorString)); vec != "" {

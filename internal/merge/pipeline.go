@@ -227,11 +227,12 @@ func Ingest(
 
 	// Step 9: apply staged EPSS. The staging row is always deleted regardless
 	// of whether a score was found — prevents stale accumulation (pitfall §2.7).
+	// Skip applying the score if the CVE is withdrawn/rejected (tombstoned in Step 7).
 	staging, err := q.GetEPSSStaging(ctx, patch.CVEID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("merge: get EPSS staging: %w", err)
 	}
-	if err == nil {
+	if err == nil && !resolved.IsWithdrawn {
 		// Score in staging: apply to cves. IS DISTINCT FROM guard prevents
 		// dead tuples if score happens to match the current value.
 		if err := q.UpdateCVEEPSS(ctx, generated.UpdateCVEEPSSParams{

@@ -63,6 +63,7 @@ type AlertRuleStore interface {
 	UpdateAlertRule(ctx context.Context, orgID, id uuid.UUID, p UpdateAlertRuleParams) (*AlertRuleRow, error)
 	SoftDeleteAlertRule(ctx context.Context, orgID, id uuid.UUID) error
 	SetAlertRuleStatus(ctx context.Context, orgID, id uuid.UUID, status string) error
+	SetAlertRuleStatusIf(ctx context.Context, orgID, id uuid.UUID, newStatus, requiredCurrentStatus string) (bool, error)
 	ListAlertRules(ctx context.Context, orgID uuid.UUID, status *string, afterTime *time.Time, afterID *uuid.UUID, limit int) ([]AlertRuleRow, error)
 	InsertAlertRuleRun(ctx context.Context, ruleID, orgID uuid.UUID, path string) (*generated.AlertRuleRun, error)
 	UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status string, candidatesEvaluated, matchesFound int32, errorMsg *string) error
@@ -166,6 +167,29 @@ func (s *Store) SetAlertRuleStatus(ctx context.Context, orgID, id uuid.UUID, sta
 	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		return q.SetAlertRuleStatus(ctx, generated.SetAlertRuleStatusParams{ID: id, OrgID: orgID, Status: status})
 	})
+}
+
+// SetAlertRuleStatusIf updates the status field only if the current status matches
+// requiredCurrentStatus. Returns true if the row was updated, false if the precondition
+// did not match (e.g. user disabled the rule during activation).
+func (s *Store) SetAlertRuleStatusIf(ctx context.Context, orgID, id uuid.UUID, newStatus, requiredCurrentStatus string) (bool, error) {
+	var updated bool
+	err := s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			`UPDATE alert_rules SET status = $1, updated_at = now()
+			 WHERE id = $2 AND org_id = $3 AND status = $4 AND deleted_at IS NULL`,
+			newStatus, id, orgID, requiredCurrentStatus)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		updated = n > 0
+		return nil
+	})
+	return updated, err
 }
 
 // ListAlertRules returns a page of non-deleted alert rules for an org, ordered by

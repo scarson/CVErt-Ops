@@ -39,6 +39,7 @@ type CompiledRule struct {
 	SQL         sq.Sqlizer   // WHERE predicate only; no LIMIT, no FROM
 	Joins       []string     // optional JOINs (e.g., FTS cve_search_index)
 	PostFilters []PostFilter // Go-side regex filters (description_primary only, MVP)
+	Logic       Logic        // and/or — controls PostFilter combination semantics
 	IsEPSSOnly  bool         // all conditions reference epss_score
 	HasEPSS     bool         // any condition references epss_score
 }

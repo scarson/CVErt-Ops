@@ -104,6 +104,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		SQL:         combined,
 		Joins:       joins,
 		PostFilters: postFilters,
+		Logic:       r.Logic,
 		IsEPSSOnly:  isEPSSOnly,
 		HasEPSS:     hasEPSSCond,
 	}, nil

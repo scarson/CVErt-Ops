@@ -1570,6 +1570,162 @@ func TestRuleCache_EvictMultipleVersions(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Bug fix tests — Task 6
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestEvaluateActivation_DoesNotOverrideDisabledStatus(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	// Insert a CVE that will match the rule
+	score := 8.0
+	insertCVE(t, tdb.DB(), "CVE-DISABLE-001", "Analyzed", "disable test", &score, "disablehash1")
+
+	// Create rule in 'activating' status
+	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
+	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
+		Name:       "disable-race-rule",
+		Logic:      "and",
+		Conditions: conds,
+		Status:     "activating",
+	})
+	if err != nil {
+		t.Fatalf("create alert rule: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
+	})
+
+	// Simulate user disabling the rule during activation (before EvaluateActivation completes)
+	if err := tdb.Store.SetAlertRuleStatus(ctx, orgID, row.ID, "disabled"); err != nil {
+		t.Fatalf("disable rule: %v", err)
+	}
+
+	// Run activation — should complete without error
+	if err := ev.EvaluateActivation(ctx, row.ID, orgID); err != nil {
+		t.Fatalf("EvaluateActivation: %v", err)
+	}
+
+	// Rule should remain 'disabled' — NOT overwritten to 'active'
+	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "disabled" {
+		t.Fatalf("want rule status 'disabled' (user-set), got %q", s)
+	}
+}
+
+func TestSweepZombieActivations_SkipsCompletedJobs(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	// Create a rule that successfully completed activation (status = 'active')
+	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
+	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
+		Name:       "completed-activation-rule",
+		Logic:      "and",
+		Conditions: conds,
+		Status:     "active", // already completed activation
+	})
+	if err != nil {
+		t.Fatalf("create alert rule: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
+	})
+
+	// Insert a zombie job for this rule (old locked_at) — simulates a TOCTOU race where
+	// the activation completed just before the sweep query ran
+	payload, _ := json.Marshal(map[string]string{
+		"rule_id": row.ID.String(),
+		"org_id":  orgID.String(),
+	})
+	var jobID uuid.UUID
+	err = tdb.DB().QueryRowContext(ctx, `
+		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
+		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '20 minutes')
+		RETURNING id
+	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
+	if err != nil {
+		t.Fatalf("insert zombie job: %v", err)
+	}
+
+	if err := ev.SweepZombieActivations(ctx); err != nil {
+		t.Fatalf("SweepZombieActivations: %v", err)
+	}
+
+	// Rule should STILL be 'active' — sweep must NOT overwrite to 'error'
+	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "active" {
+		t.Fatalf("want rule status 'active' (completed), got %q", s)
+	}
+
+	// Job should be marked 'failed' (zombie cleanup is fine for the job row)
+	var jobStatus string
+	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
+		t.Fatalf("get job status: %v", err)
+	}
+	if jobStatus != "failed" {
+		t.Fatalf("want job status 'failed', got %q", jobStatus)
+	}
+}
+
+func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	// Insert CVEs: one matches "apache", other matches "windows", neither matches both
+	score := 8.0
+	insertCVE(t, tdb.DB(), "CVE-ORPF-001", "Analyzed", "Apache HTTP server exploit", &score, "orpf-hash1")
+	insertCVE(t, tdb.DB(), "CVE-ORPF-002", "Analyzed", "Windows kernel overflow", &score, "orpf-hash2")
+	insertCVE(t, tdb.DB(), "CVE-ORPF-003", "Analyzed", "Linux privilege escalation", &score, "orpf-hash3")
+
+	// Create an OR rule with two regex PostFilters:
+	// "apache" OR "windows" — both CVE-ORPF-001 and CVE-ORPF-002 should match
+	const orRegexConds = `[
+		{"field":"description_primary","operator":"regex","value":"apache"},
+		{"field":"description_primary","operator":"regex","value":"windows"}
+	]`
+	// Need a SQL condition too since all-regex with no watchlist fails compilation
+	const orCondWithCVSS = `[
+		{"field":"cvss_v3_score","operator":"gte","value":7.0},
+		{"field":"description_primary","operator":"regex","value":"apache"},
+		{"field":"description_primary","operator":"regex","value":"windows"}
+	]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orCondWithCVSS, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	// DryRun to check results
+	result, err := ev.DryRun(ctx, rule.ID, orgID)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result == nil {
+		t.Fatal("DryRun returned nil")
+	}
+
+	// With OR logic, any CVE matching "apache" OR "windows" should be included.
+	// CVE-ORPF-001 (apache) and CVE-ORPF-002 (windows) should match.
+	// CVE-ORPF-003 (linux) should NOT match.
+	matched := make(map[string]bool)
+	for _, id := range result.SampleCVEs {
+		matched[id] = true
+	}
+
+	if !matched["CVE-ORPF-001"] {
+		t.Error("CVE-ORPF-001 (apache) should match OR rule")
+	}
+	if !matched["CVE-ORPF-002"] {
+		t.Error("CVE-ORPF-002 (windows) should match OR rule")
+	}
+	if matched["CVE-ORPF-003"] {
+		t.Error("CVE-ORPF-003 (linux) should NOT match OR rule")
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Batch evaluator — empty candidates
 // ──────────────────────────────────────────────────────────────────────────────
 

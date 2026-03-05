@@ -199,7 +199,7 @@ func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.U
 
 	compiled, err := e.loadAndCompileRule(rule)
 	if err != nil {
-		_ = e.rules.SetAlertRuleStatus(ctx, orgID, ruleID, "error")
+		_, _ = e.rules.SetAlertRuleStatusIf(ctx, orgID, ruleID, "error", "activating")
 		return fmt.Errorf("compile rule %s: %w", ruleID, err)
 	}
 
@@ -236,10 +236,17 @@ func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.U
 	_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, totalCandidates, totalMatches, errMsg)
 
 	if runErr != nil {
-		_ = e.rules.SetAlertRuleStatus(ctx, orgID, ruleID, "error")
+		_, _ = e.rules.SetAlertRuleStatusIf(ctx, orgID, ruleID, "error", "activating")
 		return fmt.Errorf("activation scan for %s: %w", ruleID, runErr)
 	}
-	return e.rules.SetAlertRuleStatus(ctx, orgID, ruleID, "active")
+	updated, err := e.rules.SetAlertRuleStatusIf(ctx, orgID, ruleID, "active", "activating")
+	if err != nil {
+		return fmt.Errorf("set rule %s active: %w", ruleID, err)
+	}
+	if !updated {
+		e.log.Info("activation complete but rule status changed concurrently", "rule_id", ruleID)
+	}
+	return nil
 }
 
 // SweepZombieActivations finds activation jobs stuck in 'running' for more than 15 minutes,
@@ -279,11 +286,11 @@ func (e *Evaluator) SweepZombieActivations(ctx context.Context) error {
 	for _, z := range zombies {
 		e.log.Warn("zombie activation job detected", "job_id", z.JobID, "rule_id", z.RuleID)
 
-		if err := e.rules.SetAlertRuleStatus(ctx, z.OrgID, z.RuleID, "error"); err != nil {
+		if _, err := e.rules.SetAlertRuleStatusIf(ctx, z.OrgID, z.RuleID, "error", "activating"); err != nil {
 			e.log.Error("set zombie rule to error", "rule_id", z.RuleID, "err", err)
 		}
 		if _, err := e.db.ExecContext(ctx,
-			`UPDATE job_queue SET status = 'failed', finished_at = now() WHERE id = $1`,
+			`UPDATE job_queue SET status = 'failed', finished_at = now() WHERE id = $1 AND status = 'running'`,
 			z.JobID,
 		); err != nil {
 			e.log.Error("fail zombie job", "job_id", z.JobID, "err", err)
@@ -310,7 +317,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 
 	var candidates []cveSummary
 	var partial bool
-	if err := e.readTx(ctx, func(tx *sql.Tx) error {
+	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
 		var err error
 		candidates, partial, err = e.queryCandidatesAll(ctx, tx, compiled)
 		return err
@@ -322,7 +329,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 		return &DryRunResult{Partial: true, CandidatesEvaluated: candidateCap + 1}, nil
 	}
 
-	matched := applyPostFilters(candidates, compiled.PostFilters)
+	matched := applyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
 
 	sample := make([]string, 0, 10)
 	for i, m := range matched {
@@ -369,7 +376,7 @@ func (e *Evaluator) evaluateRule(
 		return 0, true, len(candidateIDs), nil
 	}
 
-	matched := applyPostFilters(candidates, compiled.PostFilters)
+	matched := applyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
 
 	// Resolution detection: find previously matched CVEs that no longer match.
 	var prevMatched []string
@@ -516,26 +523,43 @@ func (e *Evaluator) queryCandidatesAll(ctx context.Context, tx *sql.Tx, compiled
 }
 
 // applyPostFilters filters candidates through the compiled regex PostFilters.
-// All filters must match (AND semantics) for the candidate to be included.
-func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter) []cveSummary {
+// When logic is "or", any filter matching includes the candidate; otherwise all must match (AND).
+func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter, logic dsl.Logic) []cveSummary {
 	if len(filters) == 0 {
 		return candidates
 	}
 	var matched []cveSummary
 	for _, c := range candidates {
-		pass := true
-		for _, f := range filters {
-			ok := f.Pattern.MatchString(c.Description)
-			if f.Negate {
-				ok = !ok
+		if logic == dsl.LogicOr {
+			pass := false
+			for _, f := range filters {
+				ok := f.Pattern.MatchString(c.Description)
+				if f.Negate {
+					ok = !ok
+				}
+				if ok {
+					pass = true
+					break
+				}
 			}
-			if !ok {
-				pass = false
-				break
+			if pass {
+				matched = append(matched, c)
 			}
-		}
-		if pass {
-			matched = append(matched, c)
+		} else {
+			pass := true
+			for _, f := range filters {
+				ok := f.Pattern.MatchString(c.Description)
+				if f.Negate {
+					ok = !ok
+				}
+				if !ok {
+					pass = false
+					break
+				}
+			}
+			if pass {
+				matched = append(matched, c)
+			}
 		}
 	}
 	return matched

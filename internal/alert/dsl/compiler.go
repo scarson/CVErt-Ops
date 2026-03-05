@@ -44,7 +44,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 			if err != nil {
 				return nil, fmt.Errorf("compile: regex compile: %w", err)
 			}
-			postFilters = append(postFilters, PostFilter{Negate: false, Pattern: re})
+			postFilters = append(postFilters, PostFilter{Field: c.Field, Negate: false, Pattern: re})
 			continue
 		}
 

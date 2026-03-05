@@ -46,8 +46,9 @@ type CompiledRule struct {
 }
 
 // PostFilter is an in-process regex filter applied to SQL result set candidates.
-// Field is always description_primary in MVP.
+// Field identifies which candidate field to match against (e.g., "description_primary", "cve_id").
 type PostFilter struct {
+	Field   string // DSL field name (e.g., "description_primary", "cve_id")
 	Negate  bool
 	Pattern *regexp.Regexp
 }

@@ -533,7 +533,7 @@ func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter, logic d
 		if logic == dsl.LogicOr {
 			pass := false
 			for _, f := range filters {
-				ok := f.Pattern.MatchString(c.Description)
+				ok := f.Pattern.MatchString(postFilterTarget(c, f))
 				if f.Negate {
 					ok = !ok
 				}
@@ -548,7 +548,7 @@ func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter, logic d
 		} else {
 			pass := true
 			for _, f := range filters {
-				ok := f.Pattern.MatchString(c.Description)
+				ok := f.Pattern.MatchString(postFilterTarget(c, f))
 				if f.Negate {
 					ok = !ok
 				}
@@ -563,6 +563,16 @@ func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter, logic d
 		}
 	}
 	return matched
+}
+
+// postFilterTarget returns the candidate field value that a PostFilter should match against.
+func postFilterTarget(c cveSummary, f dsl.PostFilter) string {
+	switch f.Field {
+	case "cve_id":
+		return c.CVEID
+	default:
+		return c.Description
+	}
 }
 
 // loadAndCompileRule returns the CompiledRule from cache, or compiles it from the rule's

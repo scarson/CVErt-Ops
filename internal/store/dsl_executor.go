@@ -237,11 +237,10 @@ func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query
 func applyDSLPostFilters(results []generated.Cfe, filters []dsl.PostFilter, logic dsl.Logic) []generated.Cfe {
 	var filtered []generated.Cfe
 	for _, c := range results {
-		desc := c.DescriptionPrimary.String
 		if logic == dsl.LogicOr {
 			pass := false
 			for _, f := range filters {
-				ok := f.Pattern.MatchString(desc)
+				ok := f.Pattern.MatchString(dslPostFilterTarget(c, f))
 				if f.Negate {
 					ok = !ok
 				}
@@ -256,7 +255,7 @@ func applyDSLPostFilters(results []generated.Cfe, filters []dsl.PostFilter, logi
 		} else {
 			pass := true
 			for _, f := range filters {
-				ok := f.Pattern.MatchString(desc)
+				ok := f.Pattern.MatchString(dslPostFilterTarget(c, f))
 				if f.Negate {
 					ok = !ok
 				}
@@ -271,4 +270,14 @@ func applyDSLPostFilters(results []generated.Cfe, filters []dsl.PostFilter, logi
 		}
 	}
 	return filtered
+}
+
+// dslPostFilterTarget returns the CVE field value that a PostFilter should match against.
+func dslPostFilterTarget(c generated.Cfe, f dsl.PostFilter) string {
+	switch f.Field {
+	case "cve_id":
+		return c.CveID
+	default:
+		return c.DescriptionPrimary.String
+	}
 }

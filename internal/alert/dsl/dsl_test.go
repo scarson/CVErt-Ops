@@ -1793,6 +1793,39 @@ func TestCompile_FloatParseReturnsSplitValue(t *testing.T) {
 	}
 }
 
+func TestCompile_PostFilterCarriesFieldName(t *testing.T) {
+	t.Parallel()
+	// severity provides the selective SQL; regex becomes a PostFilter with Field set.
+	c := compileRule(t,
+		`{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"},{"field":"description_primary","operator":"regex","value":"buffer.*overflow"}]}`,
+		nil,
+	)
+	if len(c.PostFilters) != 1 {
+		t.Fatalf("expected 1 PostFilter, got %d", len(c.PostFilters))
+	}
+	if c.PostFilters[0].Field != "description_primary" {
+		t.Errorf("PostFilter.Field = %q, want %q", c.PostFilters[0].Field, "description_primary")
+	}
+}
+
+func TestCompile_CVEIDRegexCreatesPostFilter(t *testing.T) {
+	t.Parallel()
+	// severity provides the selective SQL; cve_id regex becomes a PostFilter targeting cve_id.
+	c := compileRule(t,
+		`{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical"},{"field":"cve_id","operator":"regex","value":"CVE-2024-.*"}]}`,
+		nil,
+	)
+	if len(c.PostFilters) != 1 {
+		t.Fatalf("expected 1 PostFilter, got %d", len(c.PostFilters))
+	}
+	if c.PostFilters[0].Field != "cve_id" {
+		t.Errorf("PostFilter.Field = %q, want %q", c.PostFilters[0].Field, "cve_id")
+	}
+	if !c.PostFilters[0].Pattern.MatchString("CVE-2024-1234") {
+		t.Error("expected pattern to match CVE-2024-1234")
+	}
+}
+
 func TestCompile_ANDLogicWithWatchlistsArgCount(t *testing.T) {
 	t.Parallel()
 	wid := uuid.MustParse("33333333-3333-3333-3333-333333333333")

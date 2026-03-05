@@ -10,20 +10,49 @@
 
 **Source:** `dev/plans/2026-03-03-code-bug-hunter-skill-design.md` — full bug evidence with file:line references, severity, and impact analysis.
 
+**Status:** All 14 original tasks complete. 4 deferred items resolved (3 implemented, 1 accepted as-is).
+
+| Task | Priority | Status | Commit |
+|------|----------|--------|--------|
+| 1. DSL compiler float parse | P0 | COMPLETE | `7747f14` |
+| 2. PK migration collision + advisory lock | P0 | COMPLETE | `404ebbc` |
+| 3. Activation pipeline + response codes | P0 | COMPLETE | `c7e694a` |
+| 4. OAuth + RBAC security | P1 | COMPLETE | `afd1b83` |
+| 5. API key scoping | P1 | COMPLETE | `d2e8e6b` |
+| 6. Evaluator core bugs | P2 | COMPLETE | `82093a6` |
+| 7. DSL executor bugs | P2 | COMPLETE | `5c680b1` |
+| 8. Notification delivery bugs | P2 | COMPLETE | `9ad176d` |
+| 9. Email/digest/reports bugs | P2 | COMPLETE | `8a62ee8` |
+| 10. Feed pipeline bugs | P2/P3 | COMPLETE | `bc00a8d` |
+| 11. Pagination & cursor bugs | P3 | COMPLETE | `6ed888f` |
+| 12. API handler consistency | P3 | COMPLETE | `c0613fb` |
+| 13. Store/worker misc | P3 | COMPLETE | `4e8f078` |
+| 14. SSO handlers + retention Runner | P2/P3 | COMPLETE | `067745a` |
+
+### Deferred Items (resolved in follow-up session)
+
+| Item | Resolution | Commit |
+|------|-----------|--------|
+| PK migration collision (Task 2) | Merge-and-delete + lock both CVE IDs | `404ebbc` |
+| PostFilter field reference (Task 6) | Field-aware dispatch + cve_id regex support | `58b0e57` |
+| Admin-can-remove-owner RBAC (Task 4) | Only owners can remove other owners | `33d859d` |
+| Worker semaphore HOL blocking | Per-queue concurrency semaphores | `84715b5` |
+| Batch cursor advancement (Task 6) | Accepted as-is — no change needed | — |
+
 ---
 
-## Open Questions (Deferred — Resolve Before Implementing Affected Tasks)
+## Open Questions (All Resolved)
 
-1. **PK migration collision fix strategy (Task 2):** merge-and-delete vs delete-then-update. **DEFERRED.**
-2. **Batch cursor advancement on failure (Task 6):** leave as-is vs smart retry. **DEFERRED.**
-3. **PostFilter field reference (Task 6):** minimal AND/OR fix vs add field ref. **DEFERRED.**
-4. **Digest store method (Task 9):** verify in code during implementation.
-5. **Worker semaphore HOL blocking:** defer to separate PR. **DEFERRED.**
-6. **Admin-can-remove-owner RBAC intent (Task 4):** bug or design choice. **DEFERRED.**
+1. **PK migration collision fix strategy (Task 2):** Merge-and-delete — move non-conflicting sources, delete orphaned old rows, re-resolve from combined sources. **RESOLVED** (`404ebbc`).
+2. **Batch cursor advancement on failure (Task 6):** Accepted as-is — current behavior is correct for MVP. **RESOLVED** (no change).
+3. **PostFilter field reference (Task 6):** Added `Field` to PostFilter struct, field-aware dispatch in evaluator + executor, cve_id regex support. **RESOLVED** (`58b0e57`).
+4. **Digest store method (Task 9):** Verified during implementation. **RESOLVED.**
+5. **Worker semaphore HOL blocking:** Per-queue concurrency semaphores via `RegisterWithConcurrency`. **RESOLVED** (`84715b5`).
+6. **Admin-can-remove-owner RBAC intent (Task 4):** Confirmed bug — only owners should manage other owners. Transfer-ownership endpoint deferred to future PR. **RESOLVED** (`33d859d`).
 
 ---
 
-## Task 1: Fix DSL compiler float parse (P0 — Critical)
+## Task 1: Fix DSL compiler float parse (P0 — Critical) — COMPLETE
 
 **Bugs:** Float parse `return v, json.Unmarshal(raw, &v)` — unspecified eval order (Phase 4 #1, Phase 2b re-find)
 
@@ -106,7 +135,7 @@ unmarshal and return statements, matching the kindTime pattern."
 
 ---
 
-## Task 2: Fix PK migration collision + advisory lock gap (P0 — Critical)
+## Task 2: Fix PK migration collision + advisory lock gap (P0 — Critical) — COMPLETE
 
 **Bugs:**
 - PK migration collision — `UPDATE cves SET cve_id = $2 WHERE cve_id = $1` hits unique constraint when target exists (Phase 1 #1)
@@ -147,7 +176,7 @@ Replace the simple UPDATE with a merge strategy:
 
 ---
 
-## Task 3: Wire activation pipeline + fix handler response codes (P0 — Critical)
+## Task 3: Wire activation pipeline + fix handler response codes (P0 — Critical) — COMPLETE
 
 **Bugs:**
 - Activation pipeline not wired — rules stuck in "activating" forever (Phase 3a #1)
@@ -226,7 +255,7 @@ In `main.go`: register the `alert_activation` queue handler that calls `Evaluate
 
 ---
 
-## Task 4: Fix auth security — OAuth + RBAC (P1 — Security)
+## Task 4: Fix auth security — OAuth + RBAC (P1 — Security) — COMPLETE
 
 **Bugs:**
 - OAuth bypass RegistrationMode — GitHub/Google auto-create without checking (Phase 2a #2)
@@ -330,7 +359,7 @@ _ = srv.store.UpdateLastLogin(ctx, user.ID)
 
 ---
 
-## Task 5: Fix auth security — API key scoping (P1 — Security)
+## Task 5: Fix auth security — API key scoping (P1 — Security) — COMPLETE
 
 **Bugs:**
 - API key not scoped to its org during auth (Phase 2a #5)
@@ -397,7 +426,7 @@ if err != nil {
 
 ---
 
-## Task 6: Fix evaluator core bugs (P2 — Significant)
+## Task 6: Fix evaluator core bugs (P2 — Significant) — COMPLETE
 
 **Bugs:**
 - DryRun readTx missing RLS context (Phase 2b #2) — `evaluator.go:313`
@@ -514,7 +543,7 @@ Update all callers to pass `compiled.Logic` (or the rule's logic field).
 
 ---
 
-## Task 7: Fix DSL executor bugs (P2 — Significant)
+## Task 7: Fix DSL executor bugs (P2 — Significant) — COMPLETE
 
 **Bugs:**
 - ExecuteDSLQuery RLS bypass for watchlist conditions (Phase 2b #1) — `dsl_executor.go:160`
@@ -583,7 +612,7 @@ if len(compiled.PostFilters) > 0 {
 
 ---
 
-## Task 8: Fix notification delivery bugs (P2 — Significant)
+## Task 8: Fix notification delivery bugs (P2 — Significant) — COMPLETE
 
 **Bugs:**
 - Claim/mark TOCTOU — SELECT + UPDATE not atomic (Phase 3a #2)
@@ -662,7 +691,7 @@ func isPermanentEmailError(err error) bool {
 
 ---
 
-## Task 9: Fix email/digest/reports bugs (P2 — Significant)
+## Task 9: Fix email/digest/reports bugs (P2 — Significant) — COMPLETE
 
 **Bugs:**
 - Digest runner calls wrong store method (Phase 3b #1)
@@ -689,7 +718,7 @@ func isPermanentEmailError(err error) bool {
 
 ---
 
-## Task 10: Fix feed pipeline bugs (P2 — Significant + P3 — Minor)
+## Task 10: Fix feed pipeline bugs (P2 — Significant + P3 — Minor) — COMPLETE
 
 **Bugs:**
 - NextCursor contract violation — adapters don't return nil when done (Phase 1 #3)
@@ -754,7 +783,7 @@ go func() {
 
 ---
 
-## Task 11: Fix pagination & cursor bugs (P3 — Minor)
+## Task 11: Fix pagination & cursor bugs (P3 — Minor) — COMPLETE
 
 **Bugs:**
 - base64.StdEncoding cursor corrupted by URL `+` decoding (Phase 2b #6)
@@ -797,7 +826,7 @@ func decodeTimeCursor(s string) (time.Time, uuid.UUID, error) {
 
 ---
 
-## Task 12: Fix API handler consistency bugs (P3 — Minor)
+## Task 12: Fix API handler consistency bugs (P3 — Minor) — COMPLETE
 
 **Bugs:**
 - deleteWatchlistItemHandler 204 on non-existent items (Phase 2b #9)
@@ -847,7 +876,7 @@ func parseWatchlistUUIDs(raw []string) ([]uuid.UUID, error) {
 
 ---
 
-## Task 13: Fix store/worker misc bugs (P3 — Minor)
+## Task 13: Fix store/worker misc bugs (P3 — Minor) — COMPLETE
 
 **Bugs:**
 - Worker event methods use withOrgTx instead of withBypassTx (Phase 2b #10) — `alert_rule.go:257, 283, 296`
@@ -868,7 +897,7 @@ Switch `InsertAlertEvent`, `GetUnresolvedAlertEventCVEs`, and `ResolveAlertEvent
 
 ---
 
-## Task 14: Fix SSO handler bugs + retention Runner.Run (P2 — Significant + P3 — Minor)
+## Task 14: Fix SSO handler bugs + retention Runner.Run (P2 — Significant + P3 — Minor) — COMPLETE
 
 **Bugs:**
 - PATCH SSO allows empty required fields — no non-empty validation after trimming (Phase 5 #1)
@@ -986,6 +1015,68 @@ See Question 2 — depends on Sam's trade-off preference.
 See Question 5 — architectural change, may warrant separate PR.
 
 ---
+
+## Appendix: New Tests Written
+
+21 new test functions across 8 `*_bugfix_test.go` files, plus updates to existing tests.
+
+### Task 10 — Feed Pipeline Bugs
+
+**`internal/feed/util_bugfix_test.go`** (3 tests)
+- `TestParseTimeRFC1123` — RFC 1123 timestamp parsing (e.g. `Mon, 02 Jan 2006 15:04:05 MST`)
+- `TestParseTimeRFC1123Z` — RFC 1123Z timestamp parsing (numeric timezone offset)
+- `TestResolveCanonicalIDDeterministic` — alias sorting produces deterministic CVE ID selection
+
+**`internal/feed/mitre/adapter_bugfix_test.go`** (3 tests)
+- `TestApplyCVSS_ZeroScore` — CVSS v3.1 baseScore 0.0 accepted (not rejected)
+- `TestApplyCVSS_ZeroScoreV4` — CVSS v4.0 baseScore 0.0 accepted
+- `TestApplyCVSS_ZeroScoreV30` — CVSS v3.0 baseScore 0.0 accepted
+
+**`internal/feed/ghsa/adapter_bugfix_test.go`** (3 tests)
+- `TestParseAdvisory_CVSSv3ZeroScore` — CVSSv3 score 0.0 from cvss_severities accepted
+- `TestParseAdvisory_CVSSv4ZeroScore` — CVSSv4 score 0.0 from cvss_severities accepted
+- `TestParseAdvisory_CVSSFallbackZeroScore` — fallback cvss score 0.0 accepted
+
+**`internal/feed/osv/adapter_bugfix_test.go`** (4 tests)
+- `TestExtractPackageRange_MultipleEventPairs` — two introduced/fixed pairs produce two AffectedPackage entries
+- `TestExtractPackageRange_SingleEventPair` — single pair produces one entry
+- `TestExtractPackageRange_LastAffected` — last_affected event handled correctly
+- `TestExtractPackageRange_EmptyEvents` — empty events array returns nil
+
+**`internal/worker/pool_bugfix_test.go`** (1 test)
+- `TestProcessOne_HandlerPanic` — handler panic recovered, job marked failed (not process crash)
+
+**Existing test updates (Task 10):**
+- `internal/feed/mitre/adapter_test.go` — "zero baseScore entries skipped" → "zero baseScore entries accepted"
+- `internal/feed/ghsa/adapter_test.go` — "zero score in cvss_severities ignored" → "zero score in cvss_severities accepted"
+- `internal/feed/osv/adapter_test.go` — 6 subtests updated for `extractPackageRanges` slice return type
+
+### Task 11 — Pagination & Cursor Bugs
+
+**`internal/api/cursor_bugfix_test.go`** (3 tests)
+- `TestTimeCursor_RoundTripSurvivesURLQueryParsing` — encode → url.ParseQuery → decode round-trip
+- `TestTimeCursor_NoURLUnsafeCharacters` — 10,000 random cursors contain no `+` or `/`
+- `TestTimeCursor_RoundTripBasic` — basic encode/decode identity
+
+### Task 12 — API Handler Consistency Bugs
+
+**`internal/api/handler_bugfix_test.go`** (3 tests)
+- `TestParseWatchlistUUIDs_DeduplicatesDuplicates` — 5 inputs with 2 unique → 2 results
+- `TestParseWatchlistUUIDs_PreservesOrder` — first-occurrence order maintained
+- `TestParseWatchlistUUIDs_InvalidUUID` — invalid UUID returns error
+
+**Existing test updates (Task 12):**
+- `internal/store/watchlist_test.go` — updated for `DeleteWatchlistItem` `(bool, error)` return type
+
+### Task 13 — Store/Worker Misc Bugs
+
+**Existing test updates (Task 13):**
+- `internal/store/org_test.go` — `TestCreateOrgInvitation_AcceptFlow` updated to use `AcceptOrgInvitation` (production path) instead of removed dead `AcceptInvitation` wrapper
+
+### Task 14 — SSO Handler Bugs + Retention Runner.Run
+
+**`internal/retention/runner_bugfix_test.go`** (1 test)
+- `TestRunnerRun_ReturnsCancelledContextError` — cancelled context returns `context.Canceled`, not nil
 
 ## Verification
 

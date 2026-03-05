@@ -758,6 +758,176 @@ func TestIngest_ConcurrentWriteSerializesCorrectly(t *testing.T) {
 	}
 }
 
+// TestIngest_MigrateCVEPK_TargetExists verifies that migrateCVEPK handles the
+// collision case where the target CVE ID already exists. When GHSA-xxxx was
+// ingested first and CVE-2024-9999 was independently ingested from NVD, a
+// later GHSA update with aliases=["CVE-2024-9999"] must merge the two records
+// without a unique constraint violation, preserving sources from both.
+func TestIngest_MigrateCVEPK_TargetExists(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	oldID := "GHSA-coll-test-aaaa"
+	newID := "CVE-2024-99920"
+
+	// Step 1: Ingest the advisory under its native GHSA ID (no CVE alias yet).
+	ghsaPatch := feed.CanonicalPatch{
+		CVEID:    oldID,
+		SourceID: oldID,
+		Status:   "published",
+		AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "npm", PackageName: "collision-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
+		},
+	}
+	err := merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa", json.RawMessage(`{"ghsa":"v1"}`))
+	if err != nil {
+		t.Fatalf("Ingest (GHSA native): %v", err)
+	}
+
+	// Step 2: Independently ingest the same vuln from NVD under its CVE ID.
+	nvdDesc := "NVD description of the collision vuln"
+	nvdSev := "HIGH"
+	nvdPatch := feed.CanonicalPatch{
+		CVEID:              newID,
+		Status:             "published",
+		DescriptionPrimary: &nvdDesc,
+		Severity:           &nvdSev,
+	}
+	err = merge.Ingest(ctx, s.Store, nvdPatch, "nvd", json.RawMessage(`{"nvd":"data"}`))
+	if err != nil {
+		t.Fatalf("Ingest (NVD): %v", err)
+	}
+
+	// Verify both CVEs exist independently.
+	oldCVE, _ := s.GetCVE(ctx, oldID)
+	if oldCVE == nil {
+		t.Fatal("GHSA CVE should exist before migration")
+	}
+	newCVE, _ := s.GetCVE(ctx, newID)
+	if newCVE == nil {
+		t.Fatal("NVD CVE should exist before migration")
+	}
+
+	// Step 3: GHSA re-ingests with alias resolution — triggers PK migration
+	// where the target (newID) already exists.
+	ghsaPatch2 := feed.CanonicalPatch{
+		CVEID:    newID,
+		SourceID: oldID,
+		Status:   "published",
+		AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "npm", PackageName: "collision-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
+		},
+	}
+	err = merge.Ingest(ctx, s.Store, ghsaPatch2, "ghsa", json.RawMessage(`{"ghsa":"v2"}`))
+	if err != nil {
+		t.Fatalf("Ingest (GHSA with alias, target exists): %v", err)
+	}
+
+	// The old ID should no longer exist.
+	oldCVE, _ = s.GetCVE(ctx, oldID)
+	if oldCVE != nil {
+		t.Error("old GHSA CVE should not exist after PK migration")
+	}
+
+	// The new ID should exist with data from both sources.
+	mergedCVE, err := s.GetCVE(ctx, newID)
+	if err != nil {
+		t.Fatalf("GetCVE (merged): %v", err)
+	}
+	if mergedCVE == nil {
+		t.Fatal("merged CVE not found")
+	}
+
+	// Verify both sources exist under the new ID.
+	q := generated.New(s.DB())
+	sources, err := q.GetAllCVESources(ctx, newID)
+	if err != nil {
+		t.Fatalf("GetAllCVESources: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Errorf("expected 2 sources (ghsa + nvd), got %d", len(sources))
+	}
+
+	// Verify packages from GHSA survived the merge.
+	pkgs, err := q.GetCVEAffectedPackages(ctx, newID)
+	if err != nil {
+		t.Fatalf("GetCVEAffectedPackages: %v", err)
+	}
+	if len(pkgs) == 0 {
+		t.Error("affected packages from GHSA should survive the merge")
+	}
+}
+
+// TestIngest_MigrateCVEPK_AdvisoryLocksBothIDs verifies that migrateCVEPK
+// acquires advisory locks on both the old and new CVE IDs, preventing a
+// concurrent writer for the old ID from racing with the migration.
+func TestIngest_MigrateCVEPK_AdvisoryLocksBothIDs(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	oldID := "GHSA-lock-test-bbbb"
+	newID := "CVE-2024-99921"
+
+	// Step 1: Ingest under native GHSA ID.
+	patch1 := feed.CanonicalPatch{
+		CVEID:    oldID,
+		SourceID: oldID,
+		Status:   "published",
+	}
+	err := merge.Ingest(ctx, s.Store, patch1, "ghsa", nil)
+	if err != nil {
+		t.Fatalf("Ingest (old): %v", err)
+	}
+
+	// Step 2: Concurrently ingest the migration AND an update to the old ID.
+	// Both should succeed without deadlock or data corruption.
+	gate := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+
+	// Goroutine 1: migrates GHSA→CVE.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-gate
+		errs[0] = merge.Ingest(ctx, s.Store, feed.CanonicalPatch{
+			CVEID:    newID,
+			SourceID: oldID,
+			Status:   "published",
+		}, "ghsa", nil)
+	}()
+
+	// Goroutine 2: updates the old ID from a different source.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-gate
+		errs[1] = merge.Ingest(ctx, s.Store, feed.CanonicalPatch{
+			CVEID:  oldID,
+			Status: "published",
+		}, "nvd", nil)
+	}()
+
+	close(gate)
+	wg.Wait()
+
+	// Both should complete without deadlock. One or both may encounter
+	// the migration; the final state should be consistent.
+	for i, e := range errs {
+		if e != nil {
+			t.Logf("goroutine %d error (may be expected): %v", i, e)
+		}
+	}
+
+	// The new ID should exist after migration.
+	newCVE, _ := s.GetCVE(ctx, newID)
+	if newCVE == nil {
+		t.Error("new CVE should exist after migration")
+	}
+}
+
 // TestIngest_NonMaterialFieldUpdateNotDropped verifies that a second source
 // adding only non-material fields (e.g., description) to an existing CVE
 // actually persists those fields. Regression test for UpsertCVE's

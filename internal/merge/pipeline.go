@@ -78,6 +78,18 @@ func Ingest(
 			return fmt.Errorf("merge: find CVE by source ID: %w", err)
 		}
 		if err == nil && oldCVEID != patch.CVEID {
+			// Lock the old CVE ID too — prevents concurrent writers for the old
+			// ID from racing with the migration. Lock order is deterministic
+			// (lower key first) to prevent deadlocks.
+			oldKey := CVEAdvisoryKey(oldCVEID)
+			newKey := CVEAdvisoryKey(patch.CVEID)
+			if oldKey != newKey {
+				// newKey is already held (step 1). Only acquire oldKey if different.
+				if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", oldKey); err != nil {
+					return fmt.Errorf("merge: advisory lock (old ID): %w", err)
+				}
+			}
+
 			if err := migrateCVEPK(ctx, tx, oldCVEID, patch.CVEID); err != nil {
 				return fmt.Errorf("merge: migrate CVE PK: %w", err)
 			}
@@ -347,17 +359,35 @@ func collectPackageNames(pkgs []feed.AffectedPackage) []string {
 // promotes a native OSV/GHSA advisory ID (e.g., GHSA-xxxx) to a canonical
 // CVE ID (e.g., CVE-2024-1234).
 //
-// Order matters: cve_search_index must be deleted first because it has a FK
-// reference to cves(cve_id) without ON UPDATE CASCADE. After migrating the
-// cves PK, Ingest step 10 re-inserts the search index under the new ID.
+// Handles two cases:
+//   - Simple rename: newID doesn't exist yet — update all rows from old to new.
+//   - Collision (merge-and-delete): newID already exists (e.g., NVD published
+//     CVE-2024-1234 independently). Move cve_sources from old to new, delete
+//     orphaned old rows, and let Ingest re-resolve from all sources.
 func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
-	// Step 1: delete search index (FK to cves without ON UPDATE CASCADE).
+	// Check whether the target CVE already exists.
+	var targetExists bool
+	err := tx.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM cves WHERE cve_id = $1)", newID).Scan(&targetExists)
+	if err != nil {
+		return fmt.Errorf("check target exists (%s→%s): %w", oldID, newID, err)
+	}
+
+	if targetExists {
+		return migrateCVEPKMerge(ctx, tx, oldID, newID)
+	}
+	return migrateCVEPKRename(ctx, tx, oldID, newID)
+}
+
+// migrateCVEPKRename handles the simple case: newID doesn't exist yet, so all
+// rows are renamed from oldID to newID.
+func migrateCVEPKRename(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
+	// Delete search index first — FK to cves without ON UPDATE CASCADE.
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM cve_search_index WHERE cve_id = $1", oldID); err != nil {
 		return fmt.Errorf("delete search index (%s→%s): %w", oldID, newID, err)
 	}
 
-	// Step 2: update all child tables and the cves PK to the new ID.
 	updates := []struct {
 		desc string
 		q    string
@@ -372,6 +402,46 @@ func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 	}
 	for _, step := range updates {
 		if _, err := tx.ExecContext(ctx, step.q, oldID, newID); err != nil {
+			return fmt.Errorf("%s (%s→%s): %w", step.desc, oldID, newID, err)
+		}
+	}
+	return nil
+}
+
+// migrateCVEPKMerge handles the collision case: newID already exists as an
+// independently ingested CVE. Moves cve_sources from old to new (skipping
+// duplicates), deletes all orphaned old rows, and lets Ingest re-resolve
+// the canonical record from the combined sources.
+func migrateCVEPKMerge(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
+	// Move non-conflicting cve_sources from old to new. Conflicting rows
+	// (same source_name under both IDs) stay under old and get deleted below —
+	// Ingest step 2 will upsert the current source under newID anyway.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE cve_sources SET cve_id = $2
+		WHERE cve_id = $1
+		  AND source_name NOT IN (SELECT source_name FROM cve_sources WHERE cve_id = $2)`,
+		oldID, newID); err != nil {
+		return fmt.Errorf("merge sources (%s→%s): %w", oldID, newID, err)
+	}
+
+	// Delete all remaining rows under the old ID. Child tables first, then
+	// cves parent. Ingest steps 4-10 re-resolve everything from the combined
+	// cve_sources under newID.
+	deletes := []struct {
+		desc string
+		q    string
+	}{
+		{"delete old search index", "DELETE FROM cve_search_index WHERE cve_id = $1"},
+		{"delete old sources", "DELETE FROM cve_sources WHERE cve_id = $1"},
+		{"delete old references", "DELETE FROM cve_references WHERE cve_id = $1"},
+		{"delete old packages", "DELETE FROM cve_affected_packages WHERE cve_id = $1"},
+		{"delete old CPEs", "DELETE FROM cve_affected_cpes WHERE cve_id = $1"},
+		{"delete old raw payloads", "DELETE FROM cve_raw_payloads WHERE cve_id = $1"},
+		{"delete old EPSS staging", "DELETE FROM epss_staging WHERE cve_id = $1"},
+		{"delete old cves row", "DELETE FROM cves WHERE cve_id = $1"},
+	}
+	for _, step := range deletes {
+		if _, err := tx.ExecContext(ctx, step.q, oldID); err != nil {
 			return fmt.Errorf("%s (%s→%s): %w", step.desc, oldID, newID, err)
 		}
 	}

@@ -357,7 +357,7 @@ func TestParseAdvisory(t *testing.T) {
 		}
 	})
 
-	t.Run("zero score in cvss_severities ignored", func(t *testing.T) {
+	t.Run("zero score in cvss_severities accepted", func(t *testing.T) {
 		t.Parallel()
 		rec := ghsaAdvisory{
 			GHSAID: "GHSA-cvss-zero-0001",
@@ -366,16 +366,16 @@ func TestParseAdvisory(t *testing.T) {
 				VectorString: "CVSS:3.1/AV:N/AC:H/PR:L/UI:R/S:U/C:L/I:L/A:N",
 			},
 			CVSSSeverities: &ghsaCVSSSeverities{
-				CVSSv3: &ghsaCVSSEntry{Score: 0, VectorString: ""},
+				CVSSv3: &ghsaCVSSEntry{Score: 0, VectorString: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"},
 			},
 		}
 		patch := parseAdvisory(rec)
 		if patch == nil {
 			t.Fatal("expected non-nil patch")
 		}
-		// Zero-score v3 in severities should be skipped; fallback to top-level.
-		if patch.CVSSv3Score == nil || *patch.CVSSv3Score != 4.5 {
-			t.Errorf("CVSSv3Score = %v, want 4.5 (zero-score severities skipped)", patch.CVSSv3Score)
+		// Zero score in cvss_severities is valid — should be used, not skipped.
+		if patch.CVSSv3Score == nil || *patch.CVSSv3Score != 0.0 {
+			t.Errorf("CVSSv3Score = %v, want 0.0 (zero score is valid)", patch.CVSSv3Score)
 		}
 	})
 

@@ -113,8 +113,10 @@ func decodeDSLCursor(s string) (dslCursor, error) {
 // pagination. Returns matching CVEs, a cursor for the next page (empty string
 // if no more results), and any error.
 //
-// The cves table is global (no org_id, no RLS), so this queries s.db directly
-// without a transaction wrapper.
+// The cves table is global (no org_id, no RLS). However, compiled rules with
+// watchlist conditions reference the org-scoped watchlist_items table via
+// EXISTS subqueries, so those queries run inside a bypass transaction.
+// PostFilters (regex conditions) are applied in-process after the SQL query.
 func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule, cursor string, limit int) ([]generated.Cfe, string, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 25
@@ -157,22 +159,35 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		return nil, "", fmt.Errorf("store: build dsl query: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, "", fmt.Errorf("store: execute dsl query: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
 	var results []generated.Cfe
-	for rows.Next() {
-		c, scanErr := scanCVERow(rows)
-		if scanErr != nil {
-			return nil, "", fmt.Errorf("store: scan dsl query row: %w", scanErr)
+
+	// Watchlist subqueries reference org-scoped watchlist_items (has RLS).
+	// The compiled SQL already embeds the org_id explicitly, but the session
+	// needs bypass_rls to read the table without app.org_id being set.
+	if compiled.HasWatchlist {
+		var tx *sql.Tx
+		tx, err = s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return nil, "", fmt.Errorf("store: begin bypass tx: %w", err)
 		}
-		results = append(results, c)
+		defer tx.Rollback() //nolint:errcheck // rollback is safe after commit
+		if _, err = tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+			return nil, "", fmt.Errorf("store: set bypass_rls: %w", err)
+		}
+		err = s.scanDSLRows(ctx, tx.QueryContext, query, args, &results)
+		if commitErr := tx.Commit(); commitErr != nil && err == nil {
+			err = fmt.Errorf("store: commit bypass tx: %w", commitErr)
+		}
+	} else {
+		err = s.scanDSLRows(ctx, s.db.QueryContext, query, args, &results)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, "", fmt.Errorf("store: dsl query rows error: %w", err)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// Apply in-process PostFilters (regex conditions) to SQL results.
+	if len(compiled.PostFilters) > 0 {
+		results = applyDSLPostFilters(results, compiled.PostFilters, compiled.Logic)
 	}
 
 	// If we got limit+1 rows, there is a next page. Trim the extra row and
@@ -191,4 +206,78 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 	}
 
 	return results, nextCursor, nil
+}
+
+// queryContextFunc abstracts *sql.DB.QueryContext and *sql.Tx.QueryContext.
+type queryContextFunc func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
+
+// scanDSLRows executes a query via queryFn and scans all rows into results.
+func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query string, args []interface{}, results *[]generated.Cfe) error {
+	rows, err := queryFn(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("store: execute dsl query: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	for rows.Next() {
+		c, scanErr := scanCVERow(rows)
+		if scanErr != nil {
+			return fmt.Errorf("store: scan dsl query row: %w", scanErr)
+		}
+		*results = append(*results, c)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: dsl query rows error: %w", err)
+	}
+	return nil
+}
+
+// applyDSLPostFilters filters CVE results by regex PostFilters. AND logic
+// requires all filters to pass; OR logic requires any filter to pass.
+func applyDSLPostFilters(results []generated.Cfe, filters []dsl.PostFilter, logic dsl.Logic) []generated.Cfe {
+	var filtered []generated.Cfe
+	for _, c := range results {
+		if logic == dsl.LogicOr {
+			pass := false
+			for _, f := range filters {
+				ok := f.Pattern.MatchString(dslPostFilterTarget(c, f))
+				if f.Negate {
+					ok = !ok
+				}
+				if ok {
+					pass = true
+					break
+				}
+			}
+			if pass {
+				filtered = append(filtered, c)
+			}
+		} else {
+			pass := true
+			for _, f := range filters {
+				ok := f.Pattern.MatchString(dslPostFilterTarget(c, f))
+				if f.Negate {
+					ok = !ok
+				}
+				if !ok {
+					pass = false
+					break
+				}
+			}
+			if pass {
+				filtered = append(filtered, c)
+			}
+		}
+	}
+	return filtered
+}
+
+// dslPostFilterTarget returns the CVE field value that a PostFilter should match against.
+func dslPostFilterTarget(c generated.Cfe, f dsl.PostFilter) string {
+	switch f.Field {
+	case "cve_id":
+		return c.CveID
+	default:
+		return c.DescriptionPrimary.String
+	}
 }

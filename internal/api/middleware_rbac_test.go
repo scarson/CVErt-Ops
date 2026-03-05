@@ -355,5 +355,79 @@ func TestRequireOrgRole_APIKeyRoleNotCapped(t *testing.T) {
 	}
 }
 
+// TestRequireOrgRole_APIKeyCrossOrg_403 verifies that an API key scoped to org A
+// cannot be used to access org B's resources, even if the user is a member of both.
+func TestRequireOrgRole_APIKeyCrossOrg_403(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgA, _ := db.CreateOrg(ctx, "RBACOrgA")
+	orgB, _ := db.CreateOrg(ctx, "RBACOrgB")
+	user, _ := db.CreateUser(ctx, "rbac_crossorg@example.com", "RBACCrossOrg", "", 0)
+	// User is a member of both orgs.
+	_ = db.CreateOrgMember(ctx, orgA.ID, user.ID, "admin")
+	_ = db.CreateOrgMember(ctx, orgB.ID, user.ID, "admin")
+
+	// Create an API key scoped to org A.
+	rawKey, keyHash, _ := auth.GenerateAPIKey()
+	_, err := db.CreateAPIKey(ctx, orgA.ID, user.ID, keyHash, "orgA-key", "admin", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	srv := newRBACServer(t, db, "rbactestsecret6")
+	ts, _ := buildRBACTestServer(t, srv, RoleViewer)
+	t.Cleanup(ts.Close)
+
+	// Use org A's API key to access org B's resource — must be rejected.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+orgB.ID.String()+"/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("API key from org A accessing org B: got %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestRequireOrgRole_APIKeySameOrg_200 verifies that an API key scoped to org A
+// can access org A's resources normally.
+func TestRequireOrgRole_APIKeySameOrg_200(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := db.CreateOrg(ctx, "RBACOrgSame")
+	user, _ := db.CreateUser(ctx, "rbac_sameorg@example.com", "RBACSameOrg", "", 0)
+	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+
+	rawKey, keyHash, _ := auth.GenerateAPIKey()
+	_, err := db.CreateAPIKey(ctx, org.ID, user.ID, keyHash, "same-org-key", "admin", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	srv := newRBACServer(t, db, "rbactestsecret7")
+	ts, gotRole := buildRBACTestServer(t, srv, RoleViewer)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("API key accessing same org: got %d, want 200", resp.StatusCode)
+	}
+	if *gotRole != RoleAdmin {
+		t.Errorf("ctxRole = %v, want RoleAdmin (%d)", *gotRole, RoleAdmin)
+	}
+}
+
 // Suppress unused import when uuid is not referenced directly.
 var _ = uuid.UUID{}

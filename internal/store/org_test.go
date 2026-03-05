@@ -197,8 +197,9 @@ func TestCreateOrgInvitation_AcceptFlow(t *testing.T) {
 		t.Error("AcceptedAt should be null before acceptance")
 	}
 
-	if err := s.AcceptInvitation(ctx, inv.ID); err != nil {
-		t.Fatalf("AcceptInvitation: %v", err)
+	newbie, _ := s.CreateUser(ctx, "newbie@example.com", "Newbie", "", 0)
+	if err := s.AcceptOrgInvitation(ctx, org.ID, newbie.ID, "member", inv.ID); err != nil {
+		t.Fatalf("AcceptOrgInvitation: %v", err)
 	}
 	inv2, _ := s.GetInvitationByToken(ctx, token)
 	if !inv2.AcceptedAt.Valid {

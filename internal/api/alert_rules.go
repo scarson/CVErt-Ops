@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -142,15 +143,20 @@ func hasBlockingErrors(errs []dsl.ValidationError) bool {
 	return false
 }
 
-// parseWatchlistUUIDs converts string UUIDs to uuid.UUID slice.
+// parseWatchlistUUIDs converts string UUIDs to a deduplicated uuid.UUID slice,
+// preserving first-occurrence order.
 func parseWatchlistUUIDs(ids []string) ([]uuid.UUID, error) {
-	result := make([]uuid.UUID, len(ids))
-	for i, s := range ids {
+	seen := make(map[uuid.UUID]bool, len(ids))
+	result := make([]uuid.UUID, 0, len(ids))
+	for _, s := range ids {
 		id, err := uuid.Parse(s)
 		if err != nil {
 			return nil, err
 		}
-		result[i] = id
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
 	}
 	return result, nil
 }
@@ -259,7 +265,14 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	entry := alertRuleToEntry(*row)
-	writeJSON(w, http.StatusCreated, entry)
+
+	if status == "activating" {
+		srv.enqueueActivation(r.Context(), orgID, row.ID)
+		writeJSON(w, http.StatusAccepted, entry)
+	} else {
+		writeJSON(w, http.StatusCreated, entry)
+	}
+
 	srv.auditLog(r, audit.Entry{
 		OrgID:      orgID,
 		Action:     "create",
@@ -477,6 +490,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	case "error", "draft", "disabled":
 		if req.Enabled != nil && *req.Enabled {
 			newStatus = "activating"
+			needsCacheEvict = true
 		}
 	}
 
@@ -502,6 +516,9 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 
 	if needsCacheEvict && srv.alertCache != nil {
 		srv.alertCache.Evict(id)
+	}
+	if newStatus == "activating" {
+		srv.enqueueActivation(r.Context(), orgID, id)
 	}
 
 	newEntry := alertRuleToEntry(*row)
@@ -768,6 +785,20 @@ func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// enqueueActivation enqueues an alert_activation job for the given rule.
+// Errors are logged but not propagated — the rule is already persisted and
+// the sweep zombie mechanism will recover stuck activations.
+func (srv *Server) enqueueActivation(ctx context.Context, orgID, ruleID uuid.UUID) {
+	payload, _ := json.Marshal(map[string]string{
+		"rule_id": ruleID.String(),
+		"org_id":  orgID.String(),
+	})
+	lockKey := "activation:" + ruleID.String()
+	if _, err := srv.store.EnqueueJob(ctx, "alert_activation", 10, payload, &lockKey, 3, nil); err != nil {
+		slog.ErrorContext(ctx, "enqueue activation job", "rule_id", ruleID, "error", err)
+	}
 }
 
 // valErrsToEntries converts DSL ValidationErrors to API-level entries.

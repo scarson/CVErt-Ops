@@ -222,7 +222,7 @@ func TestDeleteWatchlistItem(t *testing.T) {
 		PackageName: strPtr("requests"),
 	})
 
-	if err := s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID); err != nil {
+	if _, err := s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID); err != nil {
 		t.Fatalf("DeleteWatchlistItem: %v", err)
 	}
 
@@ -522,7 +522,7 @@ func TestCountWatchlistItems_AfterDelete(t *testing.T) {
 	}
 
 	// Soft-delete the item.
-	_ = s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID)
+	_, _ = s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID)
 
 	count2, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
 	if count2 != 0 {

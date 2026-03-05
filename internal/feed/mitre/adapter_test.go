@@ -835,7 +835,7 @@ func TestApplyCVSS(t *testing.T) {
 		}
 	})
 
-	t.Run("zero baseScore entries skipped", func(t *testing.T) {
+	t.Run("zero baseScore entries accepted", func(t *testing.T) {
 		t.Parallel()
 
 		patch := &feed.CanonicalPatch{}
@@ -848,11 +848,11 @@ func TestApplyCVSS(t *testing.T) {
 
 		applyCVSS(patch, metrics)
 
-		if patch.CVSSv3Score != nil {
-			t.Errorf("CVSSv3Score = %v, want nil (zero score should be skipped)", patch.CVSSv3Score)
+		if patch.CVSSv3Score == nil || *patch.CVSSv3Score != 0.0 {
+			t.Errorf("CVSSv3Score = %v, want 0.0 (zero score is valid)", patch.CVSSv3Score)
 		}
-		if patch.CVSSv4Score != nil {
-			t.Errorf("CVSSv4Score = %v, want nil (zero score should be skipped)", patch.CVSSv4Score)
+		if patch.CVSSv4Score == nil || *patch.CVSSv4Score != 0.0 {
+			t.Errorf("CVSSv4Score = %v, want 0.0 (zero score is valid)", patch.CVSSv4Score)
 		}
 	})
 

@@ -4,6 +4,7 @@ package retention
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -87,14 +88,20 @@ func (r *Runner) Run(ctx context.Context) error {
 		return r.store.CleanupAIUsageCounters(ctx, cutoff, batch)
 	}, start.AddDate(0, 0, -r.cfg.AILogDays))
 
+	// Check for context cancellation between global and tier-gated phases.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Tier-gated tables: group orgs by retention window, run per-group cleanup.
 	if err := r.cleanupTierGated(ctx, deadline, start); err != nil {
 		r.log.Error("tier-gated retention cleanup", "error", err)
+		return fmt.Errorf("tier-gated cleanup: %w", err)
 	}
 
 	elapsed := r.now().Sub(start)
 	r.log.Info("retention cleanup finished", "elapsed", elapsed)
-	return nil
+	return ctx.Err()
 }
 
 // cleanupTierGated handles org-scoped tables with tier-configurable retention windows.

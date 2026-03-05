@@ -270,17 +270,21 @@ func (s *Store) ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.
 }
 
 // DeleteWatchlistItem soft-deletes an item from a watchlist.
-func (s *Store) DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) error {
-	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
-		if err := q.SoftDeleteWatchlistItem(ctx, generated.SoftDeleteWatchlistItemParams{
+func (s *Store) DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) (bool, error) {
+	var deleted bool
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		n, err := q.SoftDeleteWatchlistItem(ctx, generated.SoftDeleteWatchlistItemParams{
 			ID:          itemID,
 			WatchlistID: watchlistID,
 			OrgID:       orgID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("delete watchlist item: %w", err)
 		}
+		deleted = n > 0
 		return nil
 	})
+	return deleted, err
 }
 
 // ValidateWatchlistsOwnership returns true if all given watchlist IDs belong to orgID

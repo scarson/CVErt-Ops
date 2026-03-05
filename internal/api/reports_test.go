@@ -525,6 +525,61 @@ func TestPatchReport_IndividualFields(t *testing.T) {
 	}
 }
 
+// TestPatchReport_ClearSeverityThreshold verifies that PATCH with empty string
+// severity_threshold clears it to null (no severity filter).
+func TestPatchReport_ClearSeverityThreshold(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create report with severity_threshold = "high".
+	createResp := doCreateReport(t, ctx, ts, token, reg.OrgID,
+		`{"name":"Sev Test","scheduled_time":"09:00","timezone":"UTC","severity_threshold":"high"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created reportEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if created.SeverityThreshold == nil || *created.SeverityThreshold != "high" {
+		t.Fatalf("created severity_threshold = %v, want high", created.SeverityThreshold)
+	}
+
+	// PATCH with empty string to clear severity_threshold.
+	patchResp := doPatchReport(t, ctx, ts, token, reg.OrgID, created.ID,
+		`{"severity_threshold":""}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch clear severity: got %d, want 200", patchResp.StatusCode)
+	}
+	var patched reportEntry
+	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	if patched.SeverityThreshold != nil {
+		t.Errorf("severity_threshold after clear = %v, want nil", *patched.SeverityThreshold)
+	}
+
+	// Verify via GET too.
+	getResp := doGetReport(t, ctx, ts, token, reg.OrgID, created.ID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	var fetched reportEntry
+	if err := json.NewDecoder(getResp.Body).Decode(&fetched); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if fetched.SeverityThreshold != nil {
+		t.Errorf("severity_threshold after GET = %v, want nil", *fetched.SeverityThreshold)
+	}
+}
+
 // TestPatchReport_InvalidStatus verifies that invalid status values are rejected.
 func TestPatchReport_InvalidStatus(t *testing.T) {
 	t.Parallel()

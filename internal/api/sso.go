@@ -277,18 +277,30 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Merge patch fields onto current values.
+	// Merge patch fields onto current values, rejecting empty-after-trim values.
 	displayName := current.DisplayName
 	if req.DisplayName != nil {
 		displayName = strings.TrimSpace(*req.DisplayName)
+		if displayName == "" {
+			http.Error(w, "display_name cannot be empty", http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	issuerURL := current.IssuerUrl
 	if req.IssuerURL != nil {
 		issuerURL = strings.TrimSpace(*req.IssuerURL)
+		if issuerURL == "" {
+			http.Error(w, "issuer_url cannot be empty", http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	clientID := current.ClientID
 	if req.ClientID != nil {
 		clientID = strings.TrimSpace(*req.ClientID)
+		if clientID == "" {
+			http.Error(w, "client_id cannot be empty", http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	secretEnc := current.ClientSecretEnc
 	if req.ClientSecret != nil {
@@ -400,6 +412,10 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if current == nil {
+		http.Error(w, "no SSO connection", http.StatusNotFound)
+		return
+	}
 
 	if err := srv.store.DeleteSSOConnection(r.Context(), orgID); err != nil {
 		slog.ErrorContext(r.Context(), "sso delete: store", "error", err)
@@ -462,10 +478,23 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := srv.store.SetSSOEmailDomains(r.Context(), conn.ID, orgID, req.Domains); err != nil {
+		if isUniqueViolation(err) {
+			http.Error(w, "domain already claimed by another organization", http.StatusConflict)
+			return
+		}
 		slog.ErrorContext(r.Context(), "sso put domains: store", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
+		OrgID:      orgID,
+		Action:     "update_domains",
+		EntityType: "sso_connection",
+		EntityID:   conn.ID.String(),
+		EntityName: conn.DisplayName,
+		Success:    true,
+	})
 
 	writeJSON(w, http.StatusOK, map[string]any{"domains": req.Domains})
 }

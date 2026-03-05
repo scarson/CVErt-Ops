@@ -518,10 +518,11 @@ func TestExtractPackageRange(t *testing.T) {
 			Type:   "SEMVER",
 			Events: json.RawMessage(`[{"introduced":"1.0.0"},{"fixed":"1.2.3"}]`),
 		}
-		pkg := extractPackageRange("npm", "lodash", rng)
-		if pkg == nil {
-			t.Fatal("expected non-nil package")
+		pkgs := extractPackageRanges("npm", "lodash", rng)
+		if len(pkgs) != 1 {
+			t.Fatalf("expected 1 package, got %d", len(pkgs))
 		}
+		pkg := pkgs[0]
 		if pkg.Ecosystem != "npm" {
 			t.Errorf("Ecosystem = %q, want %q", pkg.Ecosystem, "npm")
 		}
@@ -548,10 +549,11 @@ func TestExtractPackageRange(t *testing.T) {
 			Type:   "ECOSYSTEM",
 			Events: json.RawMessage(`[{"introduced":"2.0.0"},{"last_affected":"2.5.9"}]`),
 		}
-		pkg := extractPackageRange("PyPI", "requests", rng)
-		if pkg == nil {
-			t.Fatal("expected non-nil package")
+		pkgs := extractPackageRanges("PyPI", "requests", rng)
+		if len(pkgs) != 1 {
+			t.Fatalf("expected 1 package, got %d", len(pkgs))
 		}
+		pkg := pkgs[0]
 		if pkg.Introduced != "2.0.0" {
 			t.Errorf("Introduced = %q, want %q", pkg.Introduced, "2.0.0")
 		}
@@ -563,27 +565,15 @@ func TestExtractPackageRange(t *testing.T) {
 		}
 	})
 
-	t.Run("empty events returns package with zero-value strings", func(t *testing.T) {
+	t.Run("empty events returns no packages", func(t *testing.T) {
 		t.Parallel()
 		rng := osvRange{
 			Type:   "GIT",
 			Events: nil,
 		}
-		pkg := extractPackageRange("Go", "stdlib", rng)
-		if pkg == nil {
-			t.Fatal("expected non-nil package")
-		}
-		if pkg.Introduced != "" {
-			t.Errorf("Introduced = %q, want empty", pkg.Introduced)
-		}
-		if pkg.Fixed != "" {
-			t.Errorf("Fixed = %q, want empty", pkg.Fixed)
-		}
-		if pkg.LastAffected != "" {
-			t.Errorf("LastAffected = %q, want empty", pkg.LastAffected)
-		}
-		if pkg.RangeType != "GIT" {
-			t.Errorf("RangeType = %q, want %q", pkg.RangeType, "GIT")
+		pkgs := extractPackageRanges("Go", "stdlib", rng)
+		if len(pkgs) != 0 {
+			t.Errorf("expected 0 packages for nil events, got %d", len(pkgs))
 		}
 	})
 
@@ -594,12 +584,12 @@ func TestExtractPackageRange(t *testing.T) {
 			Type:   "SEMVER",
 			Events: rawEvents,
 		}
-		pkg := extractPackageRange("npm", "express", rng)
-		if pkg == nil {
-			t.Fatal("expected non-nil package")
+		pkgs := extractPackageRanges("npm", "express", rng)
+		if len(pkgs) != 1 {
+			t.Fatalf("expected 1 package, got %d", len(pkgs))
 		}
-		if string(pkg.Events) != string(rawEvents) {
-			t.Errorf("Events = %s, want %s", string(pkg.Events), string(rawEvents))
+		if string(pkgs[0].Events) != string(rawEvents) {
+			t.Errorf("Events = %s, want %s", string(pkgs[0].Events), string(rawEvents))
 		}
 	})
 
@@ -609,31 +599,27 @@ func TestExtractPackageRange(t *testing.T) {
 			Type:   "SEMVER",
 			Events: json.RawMessage(`[{"introduced":"1.0.0"},42,{"fixed":"2.0.0"}]`),
 		}
-		pkg := extractPackageRange("npm", "foo", rng)
-		if pkg == nil {
-			t.Fatal("expected non-nil package")
+		pkgs := extractPackageRanges("npm", "foo", rng)
+		if len(pkgs) != 1 {
+			t.Fatalf("expected 1 package, got %d", len(pkgs))
 		}
-		if pkg.Introduced != "1.0.0" {
-			t.Errorf("Introduced = %q, want %q", pkg.Introduced, "1.0.0")
+		if pkgs[0].Introduced != "1.0.0" {
+			t.Errorf("Introduced = %q, want %q", pkgs[0].Introduced, "1.0.0")
 		}
-		if pkg.Fixed != "2.0.0" {
-			t.Errorf("Fixed = %q, want %q", pkg.Fixed, "2.0.0")
+		if pkgs[0].Fixed != "2.0.0" {
+			t.Errorf("Fixed = %q, want %q", pkgs[0].Fixed, "2.0.0")
 		}
 	})
 
-	t.Run("malformed events array is handled", func(t *testing.T) {
+	t.Run("malformed events array returns nil", func(t *testing.T) {
 		t.Parallel()
 		rng := osvRange{
 			Type:   "SEMVER",
 			Events: json.RawMessage(`not-json`),
 		}
-		pkg := extractPackageRange("npm", "bar", rng)
-		if pkg == nil {
-			t.Fatal("expected non-nil package")
-		}
-		// With malformed JSON, no events are parsed — fields stay zero-value.
-		if pkg.Introduced != "" {
-			t.Errorf("Introduced = %q, want empty", pkg.Introduced)
+		pkgs := extractPackageRanges("npm", "bar", rng)
+		if len(pkgs) != 0 {
+			t.Errorf("expected 0 packages for malformed JSON, got %d", len(pkgs))
 		}
 	})
 }

@@ -280,11 +280,15 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 		recalcNextRun = true
 	}
 	if req.SeverityThreshold != nil {
-		if !validSeverityThresholds[*req.SeverityThreshold] {
+		if *req.SeverityThreshold == "" {
+			// Empty string clears the severity threshold to NULL (no filter).
+			params.SeverityThreshold = sql.NullString{}
+		} else if !validSeverityThresholds[*req.SeverityThreshold] {
 			http.Error(w, "severity_threshold must be critical, high, medium, or low", http.StatusUnprocessableEntity)
 			return
+		} else {
+			params.SeverityThreshold = sql.NullString{String: *req.SeverityThreshold, Valid: true}
 		}
-		params.SeverityThreshold = sql.NullString{String: *req.SeverityThreshold, Valid: true}
 	}
 	if req.WatchlistIDs != nil {
 		ids := make([]uuid.UUID, len(*req.WatchlistIDs))
@@ -350,6 +354,16 @@ func (srv *Server) deleteReportHandler(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	existing, err := srv.store.GetScheduledReport(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get report for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if existing == nil {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	if err := srv.store.SoftDeleteScheduledReport(r.Context(), orgID, id); err != nil {

@@ -89,12 +89,12 @@ type watchlistItemsResponse struct {
 // encodeTimeCursor encodes a (time, uuid) pair as a base64 cursor string.
 func encodeTimeCursor(t time.Time, id uuid.UUID) string {
 	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id.String()
-	return base64.StdEncoding.EncodeToString([]byte(raw))
+	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
 // decodeTimeCursor decodes a base64 cursor into a (time, uuid) pair.
 func decodeTimeCursor(s string) (time.Time, uuid.UUID, error) {
-	raw, err := base64.StdEncoding.DecodeString(s)
+	raw, err := base64.URLEncoding.DecodeString(s)
 	if err != nil {
 		return time.Time{}, uuid.Nil, fmt.Errorf("decode cursor: %w", err)
 	}
@@ -605,9 +605,14 @@ func (srv *Server) deleteWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID); err != nil {
+	deleted, err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID)
+	if err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist item", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

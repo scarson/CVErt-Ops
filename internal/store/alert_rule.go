@@ -63,6 +63,7 @@ type AlertRuleStore interface {
 	UpdateAlertRule(ctx context.Context, orgID, id uuid.UUID, p UpdateAlertRuleParams) (*AlertRuleRow, error)
 	SoftDeleteAlertRule(ctx context.Context, orgID, id uuid.UUID) error
 	SetAlertRuleStatus(ctx context.Context, orgID, id uuid.UUID, status string) error
+	SetAlertRuleStatusIf(ctx context.Context, orgID, id uuid.UUID, newStatus, requiredCurrentStatus string) (bool, error)
 	ListAlertRules(ctx context.Context, orgID uuid.UUID, status *string, afterTime *time.Time, afterID *uuid.UUID, limit int) ([]AlertRuleRow, error)
 	InsertAlertRuleRun(ctx context.Context, ruleID, orgID uuid.UUID, path string) (*generated.AlertRuleRun, error)
 	UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status string, candidatesEvaluated, matchesFound int32, errorMsg *string) error
@@ -168,6 +169,29 @@ func (s *Store) SetAlertRuleStatus(ctx context.Context, orgID, id uuid.UUID, sta
 	})
 }
 
+// SetAlertRuleStatusIf updates the status field only if the current status matches
+// requiredCurrentStatus. Returns true if the row was updated, false if the precondition
+// did not match (e.g. user disabled the rule during activation).
+func (s *Store) SetAlertRuleStatusIf(ctx context.Context, orgID, id uuid.UUID, newStatus, requiredCurrentStatus string) (bool, error) {
+	var updated bool
+	err := s.withOrgRawTx(ctx, orgID, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			`UPDATE alert_rules SET status = $1, updated_at = now()
+			 WHERE id = $2 AND org_id = $3 AND status = $4 AND deleted_at IS NULL`,
+			newStatus, id, orgID, requiredCurrentStatus)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		updated = n > 0
+		return nil
+	})
+	return updated, err
+}
+
 // ListAlertRules returns a page of non-deleted alert rules for an org, ordered by
 // created_at DESC, id DESC. An optional status filter limits results to matching rules.
 // Caller passes Limit+1 to detect whether a next page exists.
@@ -252,9 +276,10 @@ func (s *Store) UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status str
 
 // InsertAlertEvent inserts a new alert event using exactly-once ON CONFLICT DO NOTHING semantics.
 // Returns the new event ID, or uuid.Nil if the event already existed (duplicate suppressed).
+// Worker path: uses bypass_rls since this is called from the alert evaluator.
 func (s *Store) InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error) {
 	var id uuid.UUID
-	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
 		id, err = q.InsertAlertEvent(ctx, generated.InsertAlertEventParams{
 			OrgID:            orgID,
@@ -278,9 +303,10 @@ func (s *Store) InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, c
 
 // GetUnresolvedAlertEventCVEs returns the CVE IDs of alert events for ruleID that are
 // currently in a matched state (last_match_state = true).
+// Worker path: uses bypass_rls since this is called from the alert evaluator.
 func (s *Store) GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID uuid.UUID) ([]string, error) {
 	var cveIDs []string
-	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
 		cveIDs, err = q.GetUnresolvedAlertEventCVEs(ctx, generated.GetUnresolvedAlertEventCVEsParams{
 			RuleID: ruleID,
@@ -292,8 +318,9 @@ func (s *Store) GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID u
 }
 
 // ResolveAlertEvent marks a previously-matched alert event as no longer matching.
+// Worker path: uses bypass_rls since this is called from the alert evaluator.
 func (s *Store) ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) error {
-	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.ResolveAlertEvent(ctx, generated.ResolveAlertEventParams{
 			RuleID: ruleID,
 			OrgID:  orgID,

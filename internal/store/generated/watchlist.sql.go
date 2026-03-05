@@ -198,7 +198,7 @@ func (q *Queries) SoftDeleteWatchlist(ctx context.Context, arg SoftDeleteWatchli
 	return err
 }
 
-const softDeleteWatchlistItem = `-- name: SoftDeleteWatchlistItem :exec
+const softDeleteWatchlistItem = `-- name: SoftDeleteWatchlistItem :execrows
 UPDATE watchlist_items
 SET deleted_at = now()
 WHERE id = $1 AND watchlist_id = $2 AND org_id = $3 AND deleted_at IS NULL
@@ -210,9 +210,12 @@ type SoftDeleteWatchlistItemParams struct {
 	OrgID       uuid.UUID
 }
 
-func (q *Queries) SoftDeleteWatchlistItem(ctx context.Context, arg SoftDeleteWatchlistItemParams) error {
-	_, err := q.db.ExecContext(ctx, softDeleteWatchlistItem, arg.ID, arg.WatchlistID, arg.OrgID)
-	return err
+func (q *Queries) SoftDeleteWatchlistItem(ctx context.Context, arg SoftDeleteWatchlistItemParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, softDeleteWatchlistItem, arg.ID, arg.WatchlistID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateWatchlist = `-- name: UpdateWatchlist :one

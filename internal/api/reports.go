@@ -356,6 +356,16 @@ func (srv *Server) deleteReportHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+	existing, err := srv.store.GetScheduledReport(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get report for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if existing == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err := srv.store.SoftDeleteScheduledReport(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "soft delete scheduled report", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

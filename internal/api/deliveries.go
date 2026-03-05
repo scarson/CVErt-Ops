@@ -291,6 +291,18 @@ func (srv *Server) replayDeliveryHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Verify delivery exists before consuming a rate-limit token.
+	delivery, err := srv.store.GetDelivery(r.Context(), id, orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get delivery for replay", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if delivery == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	if !checkReplayLimit(orgID) {
 		http.Error(w, "rate limit exceeded: max 10 replays per hour per org", http.StatusTooManyRequests)
 		return

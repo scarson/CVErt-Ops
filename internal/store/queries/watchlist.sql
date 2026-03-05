@@ -41,7 +41,7 @@ JOIN watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL
 WHERE wi.id = $1 AND wi.watchlist_id = $2 AND wi.org_id = $3 AND wi.deleted_at IS NULL
 LIMIT 1;
 
--- name: SoftDeleteWatchlistItem :exec
+-- name: SoftDeleteWatchlistItem :execrows
 UPDATE watchlist_items
 SET deleted_at = now()
 WHERE id = $1 AND watchlist_id = $2 AND org_id = $3 AND deleted_at IS NULL;

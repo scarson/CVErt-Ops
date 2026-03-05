@@ -605,9 +605,14 @@ func (srv *Server) deleteWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID); err != nil {
+	deleted, err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID)
+	if err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist item", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -422,6 +422,11 @@ func (srv *Server) rotateSecretHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if secret == "" {
+		// Channel was deleted between GET and rotate (TOCTOU).
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	writeJSON(w, http.StatusOK, rotateSecretResponse{SigningSecret: secret})
 }
 

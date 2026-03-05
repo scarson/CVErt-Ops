@@ -143,15 +143,20 @@ func hasBlockingErrors(errs []dsl.ValidationError) bool {
 	return false
 }
 
-// parseWatchlistUUIDs converts string UUIDs to uuid.UUID slice.
+// parseWatchlistUUIDs converts string UUIDs to a deduplicated uuid.UUID slice,
+// preserving first-occurrence order.
 func parseWatchlistUUIDs(ids []string) ([]uuid.UUID, error) {
-	result := make([]uuid.UUID, len(ids))
-	for i, s := range ids {
+	seen := make(map[uuid.UUID]bool, len(ids))
+	result := make([]uuid.UUID, 0, len(ids))
+	for _, s := range ids {
 		id, err := uuid.Parse(s)
 		if err != nil {
 			return nil, err
 		}
-		result[i] = id
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
 	}
 	return result, nil
 }

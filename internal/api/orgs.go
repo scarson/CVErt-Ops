@@ -306,8 +306,13 @@ func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent removing the sole owner.
+	// Only owners can remove other owners; prevent removing the sole owner.
 	if *currentRole == "owner" {
+		callerRole, ok := r.Context().Value(ctxRole).(Role)
+		if !ok || callerRole < RoleOwner {
+			http.Error(w, "only owners can remove other owners", http.StatusForbidden)
+			return
+		}
 		ownerCount, err := srv.store.GetOrgOwnerCount(r.Context(), orgID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "get owner count", "error", err)

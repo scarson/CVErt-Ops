@@ -1174,6 +1174,42 @@ func TestRemoveMember_NotFound(t *testing.T) {
 	}
 }
 
+// TestRemoveMember_AdminCannotRemoveOwner verifies that an admin cannot remove
+// an owner, even when multiple owners exist (only owners can remove owners).
+func TestRemoveMember_AdminCannotRemoveOwner(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice (owner) creates org. Bob and Charlie register.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	charlieReg := doRegister(t, ctx, ts, "charlie@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	charlieUserID, _ := uuid.Parse(charlieReg.UserID)
+
+	// Make Bob a second owner, Charlie an admin.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "owner"); err != nil {
+		t.Fatalf("add bob as owner: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, orgID, charlieUserID, "admin"); err != nil {
+		t.Fatalf("add charlie as admin: %v", err)
+	}
+
+	// Charlie (admin) tries to remove Bob (owner) — should be 403.
+	charlieLogin := doLogin(t, ctx, ts, "charlie@example.com", "test-password-1234")
+	defer charlieLogin.Body.Close() //nolint:errcheck,gosec // G104
+	charlieToken := cookieValue(charlieLogin, "access_token")
+
+	resp := doRemoveMember(t, ctx, ts, charlieToken, aliceReg.OrgID, bobReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("admin removing owner: got %d, want 403", resp.StatusCode)
+	}
+}
+
 // TestCreateInvitation_InvalidRole verifies that POST /invitations with an invalid role returns 400.
 func TestCreateInvitation_InvalidRole(t *testing.T) {
 	t.Parallel()

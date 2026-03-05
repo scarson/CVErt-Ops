@@ -36,7 +36,7 @@ Read these files to understand the existing codebase:
 
 ## Phase A: Project Foundation
 
-### Task 1: Scaffold Vue 3 project
+### Task 1: Scaffold Vue 3 project ✅ `dd99764`
 
 **Files:**
 - Create: `web/` directory (entire scaffolded project)
@@ -91,7 +91,7 @@ git commit -m "feat(web): scaffold Vue 3 + TypeScript project"
 
 ---
 
-### Task 2: Add Tailwind CSS v4
+### Task 2: Add Tailwind CSS v4 ✅ `85a3923`
 
 **Files:**
 - Modify: `web/vite.config.ts`
@@ -165,7 +165,7 @@ git commit -m "feat(web): add Tailwind CSS v4"
 
 ---
 
-### Task 3: Initialize shadcn-vue
+### Task 3: Initialize shadcn-vue ✅ `d402974`
 
 **Files:**
 - Create: `web/components.json`
@@ -242,7 +242,7 @@ git commit -m "feat(web): initialize shadcn-vue with base components"
 
 ---
 
-### Task 4: Install API client tooling
+### Task 4: Install API client tooling ✅ `e136e1b`
 
 **Files:**
 - Modify: `web/package.json` (new dependencies + script)
@@ -274,7 +274,9 @@ git commit -m "feat(web): add openapi-typescript + openapi-fetch"
 
 ---
 
-### Task 5: Configure Vitest for Vue
+### Task 5: Configure Vitest for Vue ✅ `3691fba`
+
+> **Deviation:** Swapped jsdom for happy-dom (faster, lighter). Added `happy-dom` to devDependencies, removed `jsdom`. Updated `tsconfig.vitest.json` types accordingly. Extra commit `1d01817` for tsconfig fix.
 
 **Files:**
 - Modify: `web/vite.config.ts` (add test config)
@@ -373,7 +375,7 @@ git commit -m "feat(web): configure Vitest with happy-dom"
 
 ---
 
-### Task 6: Create web/embed.go
+### Task 6: Create web/embed.go ✅ `183267c`
 
 **Files:**
 - Create: `web/embed.go`
@@ -450,7 +452,7 @@ git commit -m "feat(web): add embed.go for SPA static assets"
 
 ---
 
-### Task 7: Add FRONTEND_URL config
+### Task 7: Add FRONTEND_URL config ✅ `458d970`
 
 **Files:**
 - Modify: `internal/config/config.go`
@@ -496,7 +498,7 @@ git commit -m "feat(config): add FRONTEND_URL for post-OAuth redirect"
 
 ---
 
-### Task 8: Add SPA fallback handler
+### Task 8: Add SPA fallback handler ✅ `3402730`
 
 **Files:**
 - Create: `internal/api/spa.go`
@@ -695,7 +697,7 @@ git commit -m "feat(api): add SPA fallback handler for embedded frontend"
 
 ---
 
-### Task 9: OAuth callback redirect
+### Task 9: OAuth callback redirect ✅ `d681984`
 
 **Files:**
 - Modify: `internal/api/auth.go` (GitHub + Google callback handlers)
@@ -736,7 +738,9 @@ git commit -m "feat(auth): OAuth callbacks redirect to FRONTEND_URL instead of r
 
 ---
 
-### Task 10: Verify end-to-end dev workflow
+### Task 10: Verify end-to-end dev workflow ⏳ DEFERRED
+
+> **Deferred:** Requires running Go server + Postgres + Vite dev server simultaneously. Will verify manually once all frontend code is in place.
 
 **Not a code task — manual verification.**
 
@@ -776,7 +780,9 @@ Open `http://localhost:8080`. Verify the Vue app is served from the Go binary.
 
 ## Phase B: API Client + Auth Infrastructure
 
-### Task 11: Generate API types from OpenAPI spec
+### Task 11: Generate API types from OpenAPI spec ✅ `2d0e20b`, `f34050d`
+
+> **Deviation:** Instead of curling the spec from a running server, created `internal/api/openapi_test.go` (`TestOpenAPISpec`) that generates the spec from huma route registrations without a database. Run `GENERATE_OPENAPI=1 go test -run TestOpenAPISpec ./internal/api/` to regenerate. `openapi.json` is committed (not gitignored) to document the API contract.
 
 **Files:**
 - Create: `web/src/lib/api/schema.d.ts` (generated)
@@ -825,7 +831,9 @@ git commit -m "feat(web): generate TypeScript API types from OpenAPI spec"
 
 ---
 
-### Task 12: Create API client with CSRF + refresh interceptor
+### Task 12: Create API client with CSRF + refresh interceptor ✅ `aea2ecf`
+
+> **Note:** Tests expanded from 3 (plan) to 12 — added coverage for PUT, DELETE, HEAD, OPTIONS methods and refresh middleware behavior (non-401 passthrough, login/refresh endpoint exclusion, retry on success, redirect on failure).
 
 **Files:**
 - Create: `web/src/lib/api/client.ts`
@@ -979,7 +987,9 @@ git commit -m "feat(web): API client with CSRF header and 401 refresh intercepto
 
 ---
 
-### Task 13: Create auth Pinia store
+### Task 13: Create auth Pinia store ✅ `53fa732`
+
+> **Note:** Used generated OpenAPI schema types (`MeOutputBody`, `OrgEntry`) instead of defining duplicate `User`/`UserOrg` interfaces. Tests expanded from 4 (plan) to 17 — added coverage for `activeOrg` computed, `fetchMe` edge cases (auto-select single org, stale org cleanup), login/logout flows.
 
 **Files:**
 - Create: `web/src/stores/auth.ts`

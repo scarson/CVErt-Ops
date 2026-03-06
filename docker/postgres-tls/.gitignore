@@ -1,0 +1,3 @@
+# Generated TLS cert/key — machine-specific, regenerate with generate-cert.sh
+server.crt
+server.key

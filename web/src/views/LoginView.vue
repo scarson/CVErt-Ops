@@ -64,6 +64,8 @@ function loginWithGoogle() {
             placeholder="you@example.com"
             required
             autocomplete="email"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'login-error' : undefined"
           />
         </div>
         <div class="space-y-2">
@@ -75,10 +77,12 @@ function loginWithGoogle() {
             placeholder="Enter your password"
             required
             autocomplete="current-password"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'login-error' : undefined"
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive" role="alert">{{ error }}</p>
+        <p v-if="error" id="login-error" class="text-sm text-destructive" role="alert">{{ error }}</p>
 
         <Button type="submit" class="w-full" :disabled="submitting">
           {{ submitting ? 'Logging in...' : 'Log in' }}

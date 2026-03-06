@@ -146,6 +146,8 @@ async function handleSend() {
               data-testid="invite-email-input"
               placeholder="user@example.com"
               :disabled="submitting"
+              :aria-invalid="!!error || undefined"
+              :aria-describedby="error ? 'invite-error' : undefined"
             />
           </div>
 
@@ -168,7 +170,7 @@ async function handleSend() {
             </Select>
           </div>
 
-          <p v-if="error" class="text-sm text-destructive" role="alert" data-testid="invite-error">
+          <p v-if="error" id="invite-error" class="text-sm text-destructive" role="alert" data-testid="invite-error">
             {{ error }}
           </p>
         </template>

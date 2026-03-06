@@ -120,6 +120,8 @@ async function handleCreate() {
             data-testid="watchlist-name-input"
             placeholder="e.g. Production Dependencies"
             :disabled="submitting"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'create-watchlist-error' : undefined"
           />
         </div>
 
@@ -134,7 +136,7 @@ async function handleCreate() {
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive" role="alert" data-testid="create-error">
+        <p v-if="error" id="create-watchlist-error" class="text-sm text-destructive" role="alert" data-testid="create-error">
           {{ error }}
         </p>
       </div>

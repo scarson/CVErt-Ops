@@ -195,6 +195,31 @@ describe('LoginView', () => {
       expect(errorEl.attributes('role')).toBe('alert')
     })
 
+    it('associates error message with form via aria-describedby', async () => {
+      const auth = useAuthStore()
+      vi.spyOn(auth, 'login').mockResolvedValue({
+        success: false,
+        error: 'Invalid email or password',
+      })
+
+      const wrapper = await mountLogin()
+
+      await wrapper.find('input[type="email"]').setValue('test@example.com')
+      await wrapper.find('input[type="password"]').setValue('password')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+
+      // Error element should have id and role="alert" (added in Task 4)
+      const errorEl = wrapper.find('[role="alert"]')
+      expect(errorEl.exists()).toBe(true)
+      expect(errorEl.attributes('id')).toBe('login-error')
+
+      // Form fields should reference the error
+      const emailInput = wrapper.find('#email')
+      expect(emailInput.attributes('aria-invalid')).toBe('true')
+      expect(emailInput.attributes('aria-describedby')).toBe('login-error')
+    })
+
     it('does not navigate on failed login', async () => {
       const auth = useAuthStore()
       vi.spyOn(auth, 'login').mockResolvedValue({

@@ -140,6 +140,8 @@ async function handleSubmit() {
             data-testid="group-name-input"
             placeholder="Group name"
             :disabled="submitting"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'group-error' : undefined"
           />
         </div>
 
@@ -154,7 +156,7 @@ async function handleSubmit() {
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive" role="alert" data-testid="group-error">
+        <p v-if="error" id="group-error" class="text-sm text-destructive" role="alert" data-testid="group-error">
           {{ error }}
         </p>
       </div>

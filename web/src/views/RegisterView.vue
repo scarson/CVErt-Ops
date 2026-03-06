@@ -93,6 +93,8 @@ function registerWithGoogle() {
             placeholder="you@example.com"
             required
             autocomplete="email"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'register-error' : undefined"
           />
         </div>
         <div class="space-y-2">
@@ -114,6 +116,8 @@ function registerWithGoogle() {
             placeholder="Enter your password"
             required
             autocomplete="new-password"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'register-error' : undefined"
           />
           <p class="text-xs text-muted-foreground">16+ characters</p>
         </div>
@@ -126,10 +130,12 @@ function registerWithGoogle() {
             placeholder="Confirm your password"
             required
             autocomplete="new-password"
+            :aria-invalid="!!error || undefined"
+            :aria-describedby="error ? 'register-error' : undefined"
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive" role="alert">{{ error }}</p>
+        <p v-if="error" id="register-error" class="text-sm text-destructive" role="alert">{{ error }}</p>
 
         <Button type="submit" class="w-full" :disabled="submitting">
           {{ submitting ? 'Registering...' : 'Register' }}

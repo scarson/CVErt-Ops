@@ -227,6 +227,8 @@ function selectEcosystem(value: string) {
               data-testid="package-name-input"
               placeholder="e.g. lodash"
               :disabled="submitting"
+              :aria-invalid="!!error || undefined"
+              :aria-describedby="error ? 'add-item-error' : undefined"
             />
           </div>
 
@@ -252,6 +254,8 @@ function selectEcosystem(value: string) {
               data-testid="cpe-input"
               placeholder="cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*"
               :disabled="submitting"
+              :aria-invalid="!!error || undefined"
+              :aria-describedby="error ? 'add-item-error' : undefined"
             />
             <p class="text-muted-foreground text-xs">
               Must start with "cpe:2.3:"
@@ -259,7 +263,7 @@ function selectEcosystem(value: string) {
           </div>
         </template>
 
-        <p v-if="error" class="text-destructive text-sm" role="alert" data-testid="add-item-error">
+        <p v-if="error" id="add-item-error" class="text-destructive text-sm" role="alert" data-testid="add-item-error">
           {{ error }}
         </p>
       </div>

@@ -154,14 +154,15 @@ describe('InvitationView', () => {
   })
 
   describe('accept flow', () => {
-    it('calls POST, refreshes auth, and navigates to /cves on success', async () => {
+    it('calls POST, refreshes auth, activates joined org, and navigates to /cves on success', async () => {
       const auth = useAuthStore()
       auth.user = {
         user_id: 'u1',
         email: 'sam@example.com',
         display_name: 'Sam Carter',
-        orgs: [],
+        orgs: [{ org_id: 'org-old', name: 'Old Org', role: 'admin' }],
       }
+      auth.setActiveOrg('org-old')
 
       mockGET.mockResolvedValue({
         data: { org_name: 'Acme Corp', role: 'member', expires_at: '2026-12-31T00:00:00Z' },
@@ -169,7 +170,20 @@ describe('InvitationView', () => {
       })
 
       mockPOST.mockResolvedValue({ error: undefined })
-      vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
+      vi.spyOn(auth, 'fetchMe').mockImplementation(async () => {
+        // After fetchMe, user now has both orgs
+        auth.user = {
+          user_id: 'u1',
+          email: 'sam@example.com',
+          display_name: 'Sam Carter',
+          orgs: [
+            { org_id: 'org-old', name: 'Old Org', role: 'admin' },
+            { org_id: 'org-new', name: 'Acme Corp', role: 'member' },
+          ],
+        }
+        return true
+      })
+      const setActiveOrgSpy = vi.spyOn(auth, 'setActiveOrg')
 
       const wrapper = await mountInvitation()
       await flushPromises()
@@ -184,6 +198,8 @@ describe('InvitationView', () => {
         params: { path: { token: 'test-token-abc' } },
       })
       expect(auth.fetchMe).toHaveBeenCalled()
+      // Should activate the newly joined org
+      expect(setActiveOrgSpy).toHaveBeenCalledWith('org-new')
       expect(mockPush).toHaveBeenCalledWith('/cves')
     })
 

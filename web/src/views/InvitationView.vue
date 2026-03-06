@@ -67,6 +67,11 @@ async function acceptInvitation() {
     }
 
     await auth.fetchMe()
+    // Activate the org the user just joined.
+    const joinedOrg = auth.user?.orgs?.find((o) => o.name === invitation.value?.org_name)
+    if (joinedOrg) {
+      auth.setActiveOrg(joinedOrg.org_id)
+    }
     router.push('/cves')
   } finally {
     accepting.value = false

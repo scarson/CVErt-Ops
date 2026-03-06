@@ -92,6 +92,7 @@ function apiBase() {
 async function fetchMembers() {
   loading.value = true
   error.value = ''
+  invitations.value = []
 
   try {
     const resp = await fetch(`${apiBase()}/members`, {

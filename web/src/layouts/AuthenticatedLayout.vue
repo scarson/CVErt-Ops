@@ -2,7 +2,8 @@
 <!-- ABOUTME: Fixed sidebar on desktop, sheet/drawer on mobile, with main content slot. -->
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { Menu } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import {
@@ -12,7 +13,12 @@ import {
 } from '@/components/ui/sheet'
 import AppSidebar from '@/components/AppSidebar.vue'
 
+const route = useRoute()
 const mobileOpen = ref(false)
+
+watch(() => route.path, () => {
+  mobileOpen.value = false
+})
 </script>
 
 <template>

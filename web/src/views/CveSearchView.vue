@@ -26,8 +26,10 @@ const error = ref('')
 const { cursor, hasPrev, hasNext, setNextCursor, goNext, goPrev, reset } = usePagination()
 
 const PAGE_LIMIT = 25
+let fetchId = 0
 
 async function fetchCves() {
+  const currentFetchId = ++fetchId
   loading.value = true
   error.value = ''
 
@@ -43,6 +45,9 @@ async function fetchCves() {
       query: params as Record<string, never>,
     },
   })
+
+  // Discard stale response if a newer fetch was started.
+  if (currentFetchId !== fetchId) return
 
   loading.value = false
 

@@ -2,11 +2,12 @@
 <!-- ABOUTME: Shows CVSS, EPSS, references, affected products, and source data. -->
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import client from '@/lib/api/client'
 import type { components } from '@/lib/api/schema'
+import { safeHref } from '@/lib/utils'
 import CveScoreCard from '@/components/cve/CveScoreCard.vue'
 import CveSourceComparison from '@/components/cve/CveSourceComparison.vue'
 import { Badge } from '@/components/ui/badge'
@@ -108,6 +109,11 @@ async function fetchSources() {
 }
 
 onMounted(() => {
+  fetchCve()
+  fetchSources()
+})
+
+watch(cveId, () => {
   fetchCve()
   fetchSources()
 })
@@ -276,7 +282,7 @@ onMounted(() => {
             <ExternalLink class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
             <div>
               <a
-                :href="ref.url"
+                :href="safeHref(ref.url)"
                 target="_blank"
                 rel="noopener noreferrer"
                 class="break-all underline underline-offset-4 hover:text-foreground"

@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { components } from '@/lib/api/schema'
+import { safeHref } from '@/lib/utils'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Loader2 } from 'lucide-vue-next'
 
@@ -89,7 +90,7 @@ const defaultTab = computed(() =>
           <span v-if="source.source_url">
             Source:
             <a
-              :href="source.source_url"
+              :href="safeHref(source.source_url ?? '')"
               target="_blank"
               rel="noopener noreferrer"
               class="underline underline-offset-4 hover:text-foreground"

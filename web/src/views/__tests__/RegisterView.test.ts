@@ -189,6 +189,49 @@ describe('RegisterView', () => {
       expect(auth.login).toHaveBeenCalledWith('user@example.com', 'abcdefghijklmnop')
     })
 
+    it('navigates to /create-org after successful registration and auto-login', async () => {
+      vi.mocked(mockClient.POST).mockResolvedValue({
+        data: { user_id: 'u1' },
+        error: undefined,
+        response: new Response(),
+      } as any)
+
+      const auth = useAuthStore()
+      vi.spyOn(auth, 'login').mockResolvedValue({ success: true })
+
+      const wrapper = await mountRegister()
+
+      await wrapper.find('input[type="email"]').setValue('user@example.com')
+      await wrapper.find('#password').setValue('abcdefghijklmnop')
+      await wrapper.find('#confirm-password').setValue('abcdefghijklmnop')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+
+      expect(mockPush).toHaveBeenCalledWith('/create-org')
+    })
+
+    it('shows error when auto-login fails after registration', async () => {
+      vi.mocked(mockClient.POST).mockResolvedValue({
+        data: { user_id: 'u1' },
+        error: undefined,
+        response: new Response(),
+      } as any)
+
+      const auth = useAuthStore()
+      vi.spyOn(auth, 'login').mockResolvedValue({ success: false, error: 'Invalid credentials' })
+
+      const wrapper = await mountRegister()
+
+      await wrapper.find('input[type="email"]').setValue('user@example.com')
+      await wrapper.find('#password').setValue('abcdefghijklmnop')
+      await wrapper.find('#confirm-password').setValue('abcdefghijklmnop')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Invalid credentials')
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
     it('disables register button while submitting', async () => {
       let resolvePost: (value: unknown) => void
       vi.mocked(mockClient.POST).mockImplementation(

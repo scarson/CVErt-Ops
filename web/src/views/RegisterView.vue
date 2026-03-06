@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import client from '@/lib/api/client'
 import type { components } from '@/lib/api/schema'
@@ -15,6 +15,7 @@ import { Separator } from '@/components/ui/separator'
 import { Github } from 'lucide-vue-next'
 
 const auth = useAuthStore()
+const router = useRouter()
 
 const email = ref('')
 const password = ref('')
@@ -56,7 +57,12 @@ async function onSubmit() {
     }
 
     // Auto-login after successful registration.
-    await auth.login(email.value, password.value)
+    const result = await auth.login(email.value, password.value)
+    if (result.success) {
+      router.push('/create-org')
+    } else {
+      error.value = result.error ?? 'Login failed after registration'
+    }
   } finally {
     submitting.value = false
   }

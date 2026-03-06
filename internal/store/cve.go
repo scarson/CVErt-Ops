@@ -106,40 +106,40 @@ type SearchParams struct {
 // is applied to prevent NULL rows from disappearing (pitfall §pagination).
 func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	sb := psql.Select(cveColumns...).From("cves c")
+	sb := psql.Select(cveColumns...).From("cves")
 
 	// FTS search via cve_search_index.
 	if p.Q != "" {
 		sb = sb.
-			Join("cve_search_index si ON c.cve_id = si.cve_id").
+			Join("cve_search_index si ON cves.cve_id = si.cve_id").
 			Where("si.fts_document @@ websearch_to_tsquery('english', ?)", p.Q)
 	}
 
 	// Severity filter — IN ($1, $2, ...) is safe since severity has 5 possible values.
 	if len(p.Severity) > 0 {
-		sb = sb.Where(sq.Eq{"c.severity": p.Severity})
+		sb = sb.Where(sq.Eq{"cves.severity": p.Severity})
 	}
 
 	// CVSS score range.
 	if p.CVSSMin != nil {
 		// Prefer v4 score, fall back to v3. COALESCE so NULLs don't silently drop rows.
-		sb = sb.Where("COALESCE(c.cvss_v4_score, c.cvss_v3_score) >= ?", *p.CVSSMin)
+		sb = sb.Where("COALESCE(cves.cvss_v4_score, cves.cvss_v3_score) >= ?", *p.CVSSMin)
 	}
 	if p.CVSSMax != nil {
-		sb = sb.Where("COALESCE(c.cvss_v4_score, c.cvss_v3_score) <= ?", *p.CVSSMax)
+		sb = sb.Where("COALESCE(cves.cvss_v4_score, cves.cvss_v3_score) <= ?", *p.CVSSMax)
 	}
 
 	// Date range on date_modified_canonical.
 	if p.DateFrom != nil {
-		sb = sb.Where("c.date_modified_canonical >= ?", *p.DateFrom)
+		sb = sb.Where("cves.date_modified_canonical >= ?", *p.DateFrom)
 	}
 	if p.DateTo != nil {
-		sb = sb.Where("c.date_modified_canonical <= ?", *p.DateTo)
+		sb = sb.Where("cves.date_modified_canonical <= ?", *p.DateTo)
 	}
 
-	// CWE ID — array containment: $1 = ANY(c.cwe_ids).
+	// CWE ID — array containment: $1 = ANY(cves.cwe_ids).
 	if p.CWEID != nil {
-		sb = sb.Where("? = ANY(c.cwe_ids)", *p.CWEID)
+		sb = sb.Where("? = ANY(cves.cwe_ids)", *p.CWEID)
 	}
 
 	// Ecosystem / package filter via EXISTS subquery to avoid duplicate rows
@@ -147,12 +147,12 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 	if p.Ecosystem != nil {
 		if p.PackageName != nil {
 			sb = sb.Where(
-				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = c.cve_id AND p.ecosystem = ? AND p.package_name = ?)",
+				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND p.ecosystem = ? AND p.package_name = ?)",
 				*p.Ecosystem, *p.PackageName,
 			)
 		} else {
 			sb = sb.Where(
-				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = c.cve_id AND p.ecosystem = ?)",
+				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND p.ecosystem = ?)",
 				*p.Ecosystem,
 			)
 		}
@@ -160,29 +160,29 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 
 	// Boolean flags.
 	if p.InCISAKEV != nil {
-		sb = sb.Where(sq.Eq{"c.in_cisa_kev": *p.InCISAKEV})
+		sb = sb.Where(sq.Eq{"cves.in_cisa_kev": *p.InCISAKEV})
 	}
 	if p.ExploitAvail != nil {
-		sb = sb.Where(sq.Eq{"c.exploit_available": *p.ExploitAvail})
+		sb = sb.Where(sq.Eq{"cves.exploit_available": *p.ExploitAvail})
 	}
 
 	// EPSS score range. COALESCE guards against NULL rows being dropped (pitfall §pagination).
 	if p.EPSSMin != nil {
-		sb = sb.Where("COALESCE(c.epss_score, -1) >= ?", *p.EPSSMin)
+		sb = sb.Where("COALESCE(cves.epss_score, -1) >= ?", *p.EPSSMin)
 	}
 	if p.EPSSMax != nil {
-		sb = sb.Where("COALESCE(c.epss_score, 2) <= ?", *p.EPSSMax)
+		sb = sb.Where("COALESCE(cves.epss_score, 2) <= ?", *p.EPSSMax)
 	}
 
 	// Keyset cursor: WHERE (date_modified_canonical, cve_id) < (last_date, last_id)
 	// Both columns are DESC; row comparison handles the composite tiebreak correctly.
 	// (A, B) < (C, D) ≡ A < C OR (A = C AND B < D).
 	if p.CursorDate != nil && p.CursorCVEID != "" {
-		sb = sb.Where("(c.date_modified_canonical, c.cve_id) < (?, ?)", *p.CursorDate, p.CursorCVEID)
+		sb = sb.Where("(cves.date_modified_canonical, cves.cve_id) < (?, ?)", *p.CursorDate, p.CursorCVEID)
 	}
 
 	sb = sb.
-		OrderBy("c.date_modified_canonical DESC, c.cve_id DESC").
+		OrderBy("cves.date_modified_canonical DESC, cves.cve_id DESC").
 		Limit(uint64(p.Limit)) //nolint:gosec // G115: Limit is validated as 1-101 by huma before reaching here
 
 	query, args, err := sb.ToSql()

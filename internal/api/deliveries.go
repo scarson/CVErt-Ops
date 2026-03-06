@@ -159,11 +159,17 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	rows, err := srv.store.ListDeliveries(r.Context(), orgID, ruleID, channelID, status, cursorTime, cursorID, limit)
+	// Fetch limit+1 rows to detect if more pages exist without a phantom last page.
+	rows, err := srv.store.ListDeliveries(r.Context(), orgID, ruleID, channelID, status, cursorTime, cursorID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list deliveries", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
 	}
 
 	items := make([]deliveryEntry, len(rows))
@@ -200,7 +206,7 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	resp := deliveryListResponse{Items: items}
-	if len(rows) == limit {
+	if hasMore {
 		last := rows[len(rows)-1]
 		cursor := encodeDeliveryCursor(last.CreatedAt, last.ID)
 		resp.NextCursor = &cursor
@@ -282,6 +288,18 @@ func (srv *Server) replayDeliveryHandler(w http.ResponseWriter, r *http.Request)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// Verify delivery exists before consuming a rate-limit token.
+	delivery, err := srv.store.GetDelivery(r.Context(), id, orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get delivery for replay", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if delivery == nil {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 

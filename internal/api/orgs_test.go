@@ -1030,3 +1030,201 @@ func TestAcceptInvitation_WrongEmail(t *testing.T) {
 		t.Errorf("wrong-email accept: got %d, want 403", resp.StatusCode)
 	}
 }
+
+// ── Cross-org isolation tests ─────────────────────────────────────────────────
+
+// TestCrossOrg_MemberOperations verifies that a user from org A cannot manage org B members.
+func TestCrossOrg_MemberOperations(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice registers first (gets auto-bootstrapped org).
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	// Bob registers second (no auto-bootstrap — only first user gets one).
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+
+	// Bob creates his own org via the API.
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+	bobOrgResp := doCreateOrg(t, ctx, ts, bobToken, "Bob Org")
+	defer bobOrgResp.Body.Close() //nolint:errcheck,gosec // G104
+	if bobOrgResp.StatusCode != http.StatusCreated {
+		t.Fatalf("bob create org: got %d, want 201", bobOrgResp.StatusCode)
+	}
+	var bobOrg struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(bobOrgResp.Body).Decode(&bobOrg); err != nil {
+		t.Fatalf("decode bob org: %v", err)
+	}
+
+	// Use Alice's user ID as a target for update/remove — Alice will be
+	// rejected at the RequireOrgRole middleware before any member lookup.
+	targetUserID := aliceReg.UserID
+
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	t.Run("list members", func(t *testing.T) {
+		t.Parallel()
+		resp := doListMembers(t, ctx, ts, aliceToken, bobOrg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list members: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("update member role", func(t *testing.T) {
+		t.Parallel()
+		resp := doUpdateMemberRole(t, ctx, ts, aliceToken, bobOrg.OrgID, targetUserID, "member")
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org update member role: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("remove member", func(t *testing.T) {
+		t.Parallel()
+		resp := doRemoveMember(t, ctx, ts, aliceToken, bobOrg.OrgID, targetUserID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org remove member: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("create invitation", func(t *testing.T) {
+		t.Parallel()
+		resp := doCreateInvitation(t, ctx, ts, aliceToken, bobOrg.OrgID, "dave@example.com", "member")
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org create invitation: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("list invitations", func(t *testing.T) {
+		t.Parallel()
+		resp := doListInvitations(t, ctx, ts, aliceToken, bobOrg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list invitations: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("get org", func(t *testing.T) {
+		t.Parallel()
+		resp := doGetOrg(t, ctx, ts, aliceToken, bobOrg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org get org: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("update org", func(t *testing.T) {
+		t.Parallel()
+		resp := doUpdateOrg(t, ctx, ts, aliceToken, bobOrg.OrgID, "Hacked Name")
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org update org: got %d, want 403", resp.StatusCode)
+		}
+	})
+}
+
+// TestCreateOrg_EmptyName verifies that POST /api/v1/orgs with empty name returns 400.
+func TestCreateOrg_EmptyName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateOrg(t, ctx, ts, accessToken, "")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty name create org: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestRemoveMember_NotFound verifies that DELETE /members/{user_id} returns 404
+// for a user who is not a member of the org.
+func TestRemoveMember_NotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Try to remove a non-existent member.
+	fakeUserID := uuid.New().String()
+	resp := doRemoveMember(t, ctx, ts, aliceToken, aliceReg.OrgID, fakeUserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("remove non-member: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestRemoveMember_AdminCannotRemoveOwner verifies that an admin cannot remove
+// an owner, even when multiple owners exist (only owners can remove owners).
+func TestRemoveMember_AdminCannotRemoveOwner(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice (owner) creates org. Bob and Charlie register.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	charlieReg := doRegister(t, ctx, ts, "charlie@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	charlieUserID, _ := uuid.Parse(charlieReg.UserID)
+
+	// Make Bob a second owner, Charlie an admin.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "owner"); err != nil {
+		t.Fatalf("add bob as owner: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, orgID, charlieUserID, "admin"); err != nil {
+		t.Fatalf("add charlie as admin: %v", err)
+	}
+
+	// Charlie (admin) tries to remove Bob (owner) — should be 403.
+	charlieLogin := doLogin(t, ctx, ts, "charlie@example.com", "test-password-1234")
+	defer charlieLogin.Body.Close() //nolint:errcheck,gosec // G104
+	charlieToken := cookieValue(charlieLogin, "access_token")
+
+	resp := doRemoveMember(t, ctx, ts, charlieToken, aliceReg.OrgID, bobReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("admin removing owner: got %d, want 403", resp.StatusCode)
+	}
+}
+
+// TestCreateInvitation_InvalidRole verifies that POST /invitations with an invalid role returns 400.
+func TestCreateInvitation_InvalidRole(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "superadmin")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid role: got %d, want 400", resp.StatusCode)
+	}
+}

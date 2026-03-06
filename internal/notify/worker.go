@@ -5,6 +5,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -26,8 +27,7 @@ type WorkerConfig struct {
 	BackoffBaseSeconds  int
 	MaxConcurrentPerOrg int
 	StuckThreshold      time.Duration // default 2 minutes if zero
-	AILogRetentionDays  int           // default 90 if zero
-	RetentionEnabled    bool          // gate for all retention cleanup tickers
+	RetentionEnabled    bool          // gate for retention job scheduling
 }
 
 // Worker polls notification_deliveries and executes outbound deliveries (webhook or email).
@@ -48,9 +48,6 @@ type Worker struct {
 func NewWorker(st *store.Store, client *http.Client, cfg WorkerConfig, smtpCfg SmtpConfig, externalURL string) *Worker {
 	if cfg.StuckThreshold == 0 {
 		cfg.StuckThreshold = 2 * time.Minute
-	}
-	if cfg.AILogRetentionDays == 0 {
-		cfg.AILogRetentionDays = 90
 	}
 	return &Worker{
 		store:       st,
@@ -74,12 +71,12 @@ func (w *Worker) Start(ctx context.Context) {
 	stuckTicker := time.NewTicker(60 * time.Second)
 	recoveryTicker := time.NewTicker(5 * time.Minute)
 	digestTicker := time.NewTicker(60 * time.Second)
-	aiCleanupTicker := time.NewTicker(1 * time.Hour)
+	retentionTicker := time.NewTicker(24 * time.Hour)
 	defer claimTicker.Stop()
 	defer stuckTicker.Stop()
 	defer recoveryTicker.Stop()
 	defer digestTicker.Stop()
-	defer aiCleanupTicker.Stop()
+	defer retentionTicker.Stop()
 
 	for {
 		select {
@@ -94,8 +91,8 @@ func (w *Worker) Start(ctx context.Context) {
 			w.runRecovery(ctx)
 		case <-digestTicker.C:
 			w.runDigest(ctx)
-		case <-aiCleanupTicker.C:
-			w.runAICleanup(ctx)
+		case <-retentionTicker.C:
+			w.scheduleRetention(ctx)
 		}
 	}
 }
@@ -106,12 +103,28 @@ func (w *Worker) RunOnce(ctx context.Context) {
 	w.wg.Wait()
 }
 
-// RunAICleanupOnce executes a single AI cleanup tick. Used in tests only.
-func (w *Worker) RunAICleanupOnce(ctx context.Context) {
-	w.runAICleanup(ctx)
+// RunRetentionScheduleOnce executes a single retention scheduling tick. Used in tests only.
+func (w *Worker) RunRetentionScheduleOnce(ctx context.Context) {
+	w.scheduleRetention(ctx)
+}
+
+// RunStuckResetOnce executes a single stuck-delivery reset tick. Used in tests only.
+func (w *Worker) RunStuckResetOnce(ctx context.Context) {
+	w.runStuckReset(ctx)
+}
+
+// RunRecoveryOnce executes a single orphaned-event recovery tick. Used in tests only.
+func (w *Worker) RunRecoveryOnce(ctx context.Context) {
+	w.runRecovery(ctx)
+}
+
+// RunDigestOnce executes a single digest tick. Used in tests only.
+func (w *Worker) RunDigestOnce(ctx context.Context) {
+	w.runDigest(ctx)
 }
 
 func (w *Worker) runClaim(ctx context.Context) {
+	// ClaimPendingDeliveries atomically claims and marks rows as processing.
 	rows, err := w.store.ClaimPendingDeliveries(ctx, w.cfg.ClaimBatchSize)
 	if err != nil {
 		w.log.Error("claim pending deliveries", "err", err)
@@ -121,14 +134,9 @@ func (w *Worker) runClaim(ctx context.Context) {
 		return
 	}
 
-	ids := make([]uuid.UUID, len(rows))
-	for i, r := range rows {
-		ids[i] = r.ID
-	}
-	if err := w.store.MarkDeliveriesProcessing(ctx, ids); err != nil {
-		w.log.Error("mark deliveries processing", "err", err)
-		return
-	}
+	// Detach from parent context so in-flight deliveries survive shutdown.
+	// The worker's wg.Wait() in Start() ensures graceful completion.
+	detached := context.WithoutCancel(ctx)
 
 	for _, row := range rows {
 		row := row
@@ -138,7 +146,7 @@ func (w *Worker) runClaim(ctx context.Context) {
 		go func() {
 			defer func() { <-sem }()
 			defer w.wg.Done()
-			w.deliver(ctx, row)
+			w.deliver(detached, row)
 		}()
 	}
 }
@@ -173,9 +181,9 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
-	// For email, permanent SMTP errors (5xx) should exhaust immediately.
-	if ch.Type == "email" && isPermanentSMTPError(sendErr) {
-		w.log.Warn("permanent SMTP failure", "id", row.ID, "err", sendErr)
+	// Permanent errors should exhaust immediately — retrying will never help.
+	if isPermanentDeliveryError(sendErr) {
+		w.log.Warn("permanent delivery failure", "id", row.ID, "type", ch.Type, "err", sendErr)
 		w.exhaust(ctx, row.ID, sendErr.Error())
 		return
 	}
@@ -209,15 +217,16 @@ func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, 
 }
 
 func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
-	// Parse channel config for recipients.
+	// Parse channel config for recipients. Config errors are permanent — the
+	// channel data won't change between retries.
 	var emailCfg struct {
 		Recipients []string `json:"recipients"`
 	}
 	if err := json.Unmarshal(ch.Config, &emailCfg); err != nil {
-		return fmt.Errorf("parse email config: %w", err)
+		return &permanentDeliveryError{err: fmt.Errorf("parse email config: %w", err)}
 	}
 	if len(emailCfg.Recipients) == 0 {
-		return fmt.Errorf("email channel has no recipients")
+		return &permanentDeliveryError{err: fmt.Errorf("email channel has no recipients")}
 	}
 
 	// Deserialize payload into CVE snapshots.
@@ -239,9 +248,13 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 				ruleName = name
 			}
 		}
+		ruleID := ""
+		if row.RuleID.Valid {
+			ruleID = row.RuleID.UUID.String()
+		}
 		subject, htmlBody, textBody, renderErr = RenderAlert(AlertTemplateData{
 			RuleName:    ruleName,
-			RuleID:      row.RuleID.UUID.String(),
+			RuleID:      ruleID,
 			CVEs:        summaries,
 			CVErtOpsURL: w.externalURL,
 		})
@@ -272,7 +285,7 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 			CVErtOpsURL: w.externalURL,
 		})
 	default:
-		return fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)
+		return &permanentDeliveryError{err: fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)}
 	}
 	if renderErr != nil {
 		return fmt.Errorf("render email template: %w", renderErr)
@@ -281,14 +294,28 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 	return EmailSend(ctx, w.smtpCfg, emailCfg.Recipients, subject, htmlBody, textBody)
 }
 
-// isPermanentSMTPError checks if the error message indicates a permanent SMTP failure (5xx).
-// Permanent failures should not be retried.
-func isPermanentSMTPError(err error) bool {
+// permanentDeliveryError wraps errors that should never be retried (config
+// parse failures, missing recipients, SMTP 5xx, etc.).
+type permanentDeliveryError struct {
+	err error
+}
+
+func (e *permanentDeliveryError) Error() string { return e.err.Error() }
+func (e *permanentDeliveryError) Unwrap() error { return e.err }
+
+// isPermanentDeliveryError returns true if the error is known to be permanent
+// and retrying will never succeed. Covers both Go-level config errors (wrapped
+// with permanentDeliveryError) and SMTP 5xx responses.
+func isPermanentDeliveryError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	var pe *permanentDeliveryError
+	if errors.As(err, &pe) {
+		return true
+	}
 	// SMTP 5xx codes indicate permanent failures (mailbox doesn't exist, relay denied, etc.).
+	msg := err.Error()
 	for _, code := range []string{"550 ", "551 ", "552 ", "553 ", "554 ", "555 "} {
 		if strings.Contains(msg, code) {
 			return true
@@ -341,22 +368,26 @@ func (w *Worker) runRecovery(ctx context.Context) {
 	}
 }
 
-func (w *Worker) runAICleanup(ctx context.Context) {
+func (w *Worker) scheduleRetention(ctx context.Context) {
 	if !w.cfg.RetentionEnabled {
 		return
 	}
 
-	n, err := w.store.CleanupExpiredAICache(ctx)
+	has, err := w.store.HasPendingOrRunningJob(ctx, "cleanup:retention")
 	if err != nil {
-		w.log.Error("cleanup expired AI cache", "err", err)
-	} else if n > 0 {
-		w.log.Info("cleaned up expired AI cache entries", "count", n)
+		w.log.Error("check pending retention job", "err", err)
+		return
+	}
+	if has {
+		w.log.Debug("retention job already pending/running, skipping")
+		return
 	}
 
-	m, err := w.store.CleanupOldAIRequestLogs(ctx, w.cfg.AILogRetentionDays)
+	lockKey := "cleanup:retention"
+	_, err = w.store.EnqueueJob(ctx, "retention_cleanup", 0, json.RawMessage(`{}`), &lockKey, 1, nil)
 	if err != nil {
-		w.log.Error("cleanup old AI request logs", "err", err)
-	} else if m > 0 {
-		w.log.Info("cleaned up old AI request logs", "count", m)
+		w.log.Error("enqueue retention job", "err", err)
+		return
 	}
+	w.log.Info("enqueued retention cleanup job")
 }

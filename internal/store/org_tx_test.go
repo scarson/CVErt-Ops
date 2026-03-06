@@ -288,3 +288,177 @@ func TestListInvitations_AppStoreRLS(t *testing.T) {
 		t.Errorf("ListOrgInvitations: got %d invitations, want 1 — withOrgTx not set", len(invs))
 	}
 }
+
+// ── api_keys RLS fail-closed tests ────────────────────────────────────────────
+
+// TestAPIKey_RLSFailClosed verifies that a raw query on AppStore with no
+// app.org_id set returns 0 api_keys rows — the RLS fail-closed guarantee.
+// CRITICAL: if this fails, API keys from other orgs could be exposed.
+func TestAPIKey_RLSFailClosed(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "APIKeyRLS1")
+	user, _ := s.CreateUser(ctx, "apikeyrlsuser@example.com", "APIKeyRLSUser", "", 0)
+	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
+	_, err := s.CreateAPIKey(ctx, org.ID, user.ID, "apikeyrlshash1", "rls-key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	// Raw query on AppStore connection — no SET LOCAL app.org_id, must return 0 rows.
+	conn, err := s.AppStore.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire app pool conn: %v", err)
+	}
+	defer conn.Release()
+
+	var count int
+	if err := conn.QueryRow(ctx, "SELECT COUNT(*) FROM api_keys").Scan(&count); err != nil {
+		t.Fatalf("fail-closed query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("fail-closed: expected 0 api_keys rows with no app.org_id, got %d — RLS missing", count)
+	}
+}
+
+// TestListOrgAPIKeys_AppStoreRLS verifies that ListOrgAPIKeys via AppStore
+// returns only keys for the specified org (RLS enforced via withOrgTx).
+func TestListOrgAPIKeys_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "APIKeyRLS2a")
+	org2, _ := s.CreateOrg(ctx, "APIKeyRLS2b")
+	user, _ := s.CreateUser(ctx, "apikeyrlsuser2@example.com", "APIKeyRLSUser2", "", 0)
+	_ = s.CreateOrgMember(ctx, org1.ID, user.ID, "admin")
+	_ = s.CreateOrgMember(ctx, org2.ID, user.ID, "admin")
+	_, _ = s.CreateAPIKey(ctx, org1.ID, user.ID, "rlskeyhash2a", "org1-key", "member", sql.NullTime{})
+	_, _ = s.CreateAPIKey(ctx, org2.ID, user.ID, "rlskeyhash2b", "org2-key", "member", sql.NullTime{})
+
+	keys, err := s.AppStore.ListOrgAPIKeys(ctx, org1.ID)
+	if err != nil {
+		t.Fatalf("ListOrgAPIKeys: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 key for org1, got %d", len(keys))
+	}
+	if keys[0].Name != "org1-key" {
+		t.Errorf("Name = %q, want org1-key", keys[0].Name)
+	}
+}
+
+// ── groups RLS fail-closed tests ──────────────────────────────────────────────
+
+// TestGroup_RLSFailClosed verifies that a raw query on AppStore with no
+// app.org_id set returns 0 groups rows — the RLS fail-closed guarantee.
+// CRITICAL: if this fails, groups from other orgs could be exposed.
+func TestGroup_RLSFailClosed(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GroupRLS1")
+	_, err := s.CreateGroup(ctx, org.ID, "rls-group", "")
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+
+	conn, err := s.AppStore.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire app pool conn: %v", err)
+	}
+	defer conn.Release()
+
+	var count int
+	if err := conn.QueryRow(ctx, "SELECT COUNT(*) FROM groups").Scan(&count); err != nil {
+		t.Fatalf("fail-closed query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("fail-closed: expected 0 groups rows with no app.org_id, got %d — RLS missing", count)
+	}
+}
+
+// TestListOrgGroups_AppStoreRLS verifies that ListOrgGroups via AppStore
+// returns only groups for the specified org.
+func TestListOrgGroups_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "GroupRLS2a")
+	org2, _ := s.CreateOrg(ctx, "GroupRLS2b")
+	_, _ = s.CreateGroup(ctx, org1.ID, "org1-group", "")
+	_, _ = s.CreateGroup(ctx, org2.ID, "org2-group", "")
+
+	groups, err := s.AppStore.ListOrgGroups(ctx, org1.ID)
+	if err != nil {
+		t.Fatalf("ListOrgGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group for org1, got %d", len(groups))
+	}
+	if groups[0].Name != "org1-group" {
+		t.Errorf("Name = %q, want org1-group", groups[0].Name)
+	}
+}
+
+// ── group_members RLS fail-closed tests ───────────────────────────────────────
+
+// TestGroupMember_RLSFailClosed verifies that a raw query on AppStore with no
+// app.org_id set returns 0 group_members rows — the RLS fail-closed guarantee.
+// CRITICAL: group_members has denormalized org_id with its own RLS policy.
+func TestGroupMember_RLSFailClosed(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "GMemberRLS1")
+	grp, _ := s.CreateGroup(ctx, org.ID, "rls-gm-group", "")
+	user, _ := s.CreateUser(ctx, "gmrlsuser@example.com", "GMRLSUser", "", 0)
+	_ = s.AddGroupMember(ctx, org.ID, grp.ID, user.ID)
+
+	conn, err := s.AppStore.Pool().Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire app pool conn: %v", err)
+	}
+	defer conn.Release()
+
+	var count int
+	if err := conn.QueryRow(ctx, "SELECT COUNT(*) FROM group_members").Scan(&count); err != nil {
+		t.Fatalf("fail-closed query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("fail-closed: expected 0 group_members rows with no app.org_id, got %d — RLS missing", count)
+	}
+}
+
+// TestListGroupMembers_AppStoreRLS verifies that ListGroupMembers via AppStore
+// returns only members for the correct org (RLS enforced via withOrgTx).
+func TestListGroupMembers_AppStoreRLS(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "GMemberRLS2a")
+	org2, _ := s.CreateOrg(ctx, "GMemberRLS2b")
+	grp1, _ := s.CreateGroup(ctx, org1.ID, "team-a", "")
+	grp2, _ := s.CreateGroup(ctx, org2.ID, "team-b", "")
+	user1, _ := s.CreateUser(ctx, "gmrlsuser2a@example.com", "GMRLSUser2a", "", 0)
+	user2, _ := s.CreateUser(ctx, "gmrlsuser2b@example.com", "GMRLSUser2b", "", 0)
+	_ = s.AddGroupMember(ctx, org1.ID, grp1.ID, user1.ID)
+	_ = s.AddGroupMember(ctx, org2.ID, grp2.ID, user2.ID)
+
+	members, err := s.AppStore.ListGroupMembers(ctx, org1.ID, grp1.ID)
+	if err != nil {
+		t.Fatalf("ListGroupMembers: %v", err)
+	}
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member for org1 group, got %d", len(members))
+	}
+	if members[0].UserID != user1.ID {
+		t.Errorf("unexpected member: got %v, want %v", members[0].UserID, user1.ID)
+	}
+}

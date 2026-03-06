@@ -374,9 +374,9 @@ func applyCVSS(patch *feed.CanonicalPatch, metrics []cve5MetricEntry) {
 		if patch.CVSSv3Score == nil {
 			var v3 *cve5CVSSv3
 			switch {
-			case m.CVSSV31 != nil && m.CVSSV31.BaseScore > 0:
+			case m.CVSSV31 != nil && m.CVSSV31.BaseScore >= 0:
 				v3 = m.CVSSV31
-			case m.CVSSV30 != nil && m.CVSSV30.BaseScore > 0:
+			case m.CVSSV30 != nil && m.CVSSV30.BaseScore >= 0:
 				v3 = m.CVSSV30
 			}
 			if v3 != nil {
@@ -390,7 +390,7 @@ func applyCVSS(patch *feed.CanonicalPatch, metrics []cve5MetricEntry) {
 				}
 			}
 		}
-		if patch.CVSSv4Score == nil && m.CVSSV40 != nil && m.CVSSV40.BaseScore > 0 {
+		if patch.CVSSv4Score == nil && m.CVSSV40 != nil && m.CVSSV40.BaseScore >= 0 {
 			score := m.CVSSV40.BaseScore
 			vec := strings.Clone(m.CVSSV40.VectorString)
 			sev := strings.ToUpper(strings.Clone(m.CVSSV40.BaseSeverity))

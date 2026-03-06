@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -297,14 +298,6 @@ func (s *Store) AcceptOrgInvitation(ctx context.Context, orgID, userID uuid.UUID
 	})
 }
 
-// AcceptInvitation marks the invitation as accepted by setting accepted_at = now().
-func (s *Store) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
-	if err := s.q.AcceptInvitation(ctx, id); err != nil {
-		return fmt.Errorf("accept invitation: %w", err)
-	}
-	return nil
-}
-
 // ListOrgInvitations returns all pending, unexpired invitations for an org.
 func (s *Store) ListOrgInvitations(ctx context.Context, orgID uuid.UUID) ([]generated.OrgInvitation, error) {
 	var rows []generated.OrgInvitation
@@ -330,4 +323,127 @@ func (s *Store) CancelInvitation(ctx context.Context, orgID, id uuid.UUID) error
 		}
 		return nil
 	})
+}
+
+// OrgTierRow holds org identification and tier info for cross-org tier queries.
+type OrgTierRow struct {
+	ID        uuid.UUID
+	Tier      string
+	Overrides map[string]any
+}
+
+// GetOrgTier returns the tier name and overrides for an org.
+// Uses RLS bypass — called from tier middleware before org context is set.
+func (s *Store) GetOrgTier(ctx context.Context, orgID uuid.UUID) (string, map[string]any, error) {
+	var tier string
+	var overrides map[string]any
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetOrgTier(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("get org tier: %w", err)
+		}
+		tier = row.Tier
+		if len(row.TierOverrides) > 0 {
+			if err := json.Unmarshal(row.TierOverrides, &overrides); err != nil {
+				return fmt.Errorf("unmarshal tier_overrides: %w", err)
+			}
+		}
+		return nil
+	})
+	return tier, overrides, err
+}
+
+// UpdateOrgTier sets the tier for an org.
+// Uses RLS bypass — called from admin endpoints and background operations.
+// NOTE: callers must invalidate Server.tierCache after calling this method.
+func (s *Store) UpdateOrgTier(ctx context.Context, orgID uuid.UUID, tier string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.UpdateOrgTier(ctx, generated.UpdateOrgTierParams{
+			ID:   orgID,
+			Tier: tier,
+		})
+	})
+}
+
+// ListAllOrgs returns all orgs with their tier info.
+// Uses RLS bypass — cross-org query for retention and batch operations.
+func (s *Store) ListAllOrgs(ctx context.Context) ([]OrgTierRow, error) {
+	var rows []OrgTierRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		dbRows, err := q.ListAllOrgs(ctx)
+		if err != nil {
+			return fmt.Errorf("list all orgs: %w", err)
+		}
+		rows = make([]OrgTierRow, len(dbRows))
+		for i, r := range dbRows {
+			rows[i] = OrgTierRow{ID: r.ID, Tier: r.Tier}
+			if len(r.TierOverrides) > 0 {
+				if err := json.Unmarshal(r.TierOverrides, &rows[i].Overrides); err != nil {
+					return fmt.Errorf("unmarshal tier_overrides for org %s: %w", r.ID, err)
+				}
+			}
+		}
+		return nil
+	})
+	return rows, err
+}
+
+// CountAlertRulesByOrg returns the count of active (non-deleted) alert rules for an org.
+// Uses org-scoped transaction (RLS active).
+func (s *Store) CountAlertRulesByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountAlertRulesByOrg(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count alert rules: %w", err)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// CountWatchlistsByOrg returns the count of active (non-deleted) watchlists for an org.
+// Uses org-scoped transaction (RLS active).
+func (s *Store) CountWatchlistsByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountWatchlistsByOrg(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count watchlists: %w", err)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// CountMembersByOrg returns the total count of members in an org.
+// Uses org-scoped transaction (RLS active).
+func (s *Store) CountMembersByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountMembersByOrg(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count members: %w", err)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// CountMemberSlotsUsedByOrg returns members + pending (unexpired, unaccepted) invitations.
+// Uses org-scoped transaction (RLS active).
+func (s *Store) CountMemberSlotsUsedByOrg(ctx context.Context, orgID uuid.UUID) (int64, error) {
+	var n int64
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountMemberSlotsUsedByOrg(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count member slots: %w", err)
+		}
+		return nil
+	})
+	return n, err
 }

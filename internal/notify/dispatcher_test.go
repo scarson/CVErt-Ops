@@ -172,3 +172,120 @@ func TestFanout_Debounce_AppendsToExistingRow(t *testing.T) {
 		t.Errorf("debounced row should not be claimable immediately, claimed %d", claimedForRule)
 	}
 }
+
+func TestFanout_MultiChannel(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "FanoutMultiOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutMultiRule")
+	chan1, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutMultiCh1")
+	chan2, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutMultiCh2")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chan1, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule(ch1): %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chan2, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule(ch2): %v", err)
+	}
+
+	d := notify.NewDispatcher(s.Store, 0)
+	if err := d.Fanout(ctx, org.ID, rule.ID, "CVE-2025-MC01"); err != nil {
+		t.Fatalf("Fanout: %v", err)
+	}
+
+	// Each channel must get its own delivery row.
+	c1 := countPendingDeliveries(t, s, ctx, rule.ID, chan1)
+	c2 := countPendingDeliveries(t, s, ctx, rule.ID, chan2)
+	if c1 != 1 {
+		t.Errorf("channel 1 pending deliveries = %d, want 1", c1)
+	}
+	if c2 != 1 {
+		t.Errorf("channel 2 pending deliveries = %d, want 1", c2)
+	}
+}
+
+func TestFanout_BuildSnapshot_FullCVEData(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "FanoutSnapOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutSnapRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutSnapChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// Insert a CVE with all nullable fields populated.
+	cveID := "CVE-2025-SNAP01"
+	_, err := s.DB().ExecContext(ctx, `
+		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, cvss_v4_score, epss_score, exploit_available, in_cisa_kev, material_hash)
+		VALUES ($1, 'published', 'critical', 'A critical vulnerability in example software', 9.8, 8.5, 0.97, true, true, $2)
+		ON CONFLICT (cve_id) DO UPDATE SET
+			severity = EXCLUDED.severity,
+			description_primary = EXCLUDED.description_primary,
+			cvss_v3_score = EXCLUDED.cvss_v3_score,
+			cvss_v4_score = EXCLUDED.cvss_v4_score,
+			epss_score = EXCLUDED.epss_score,
+			exploit_available = EXCLUDED.exploit_available,
+			in_cisa_kev = EXCLUDED.in_cisa_kev`,
+		cveID, uuid.New().String())
+	if err != nil {
+		t.Fatalf("insert CVE: %v", err)
+	}
+
+	d := notify.NewDispatcher(s.Store, 0)
+	if err := d.Fanout(ctx, org.ID, rule.ID, cveID); err != nil {
+		t.Fatalf("Fanout: %v", err)
+	}
+
+	// Extract and validate the full snapshot payload.
+	var raw []byte
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT payload FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2 AND status='pending'`,
+		rule.ID, chanID)
+	if err := row.Scan(&raw); err != nil {
+		t.Fatalf("scan payload: %v", err)
+	}
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		t.Fatalf("unmarshal payload array: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("payload items = %d, want 1", len(items))
+	}
+
+	var snap map[string]interface{}
+	if err := json.Unmarshal(items[0], &snap); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+
+	if snap["cve_id"] != cveID {
+		t.Errorf("cve_id = %v, want %s", snap["cve_id"], cveID)
+	}
+	if snap["severity"] != "critical" {
+		t.Errorf("severity = %v, want critical", snap["severity"])
+	}
+	if snap["description_primary"] != "A critical vulnerability in example software" {
+		t.Errorf("description = %v", snap["description_primary"])
+	}
+	if v, ok := snap["cvss_v3_score"].(float64); !ok || v != 9.8 {
+		t.Errorf("cvss_v3_score = %v, want 9.8", snap["cvss_v3_score"])
+	}
+	if v, ok := snap["cvss_v4_score"].(float64); !ok || v != 8.5 {
+		t.Errorf("cvss_v4_score = %v, want 8.5", snap["cvss_v4_score"])
+	}
+	if v, ok := snap["epss_score"].(float64); !ok || v != 0.97 {
+		t.Errorf("epss_score = %v, want 0.97", snap["epss_score"])
+	}
+	if snap["exploit_available"] != true {
+		t.Errorf("exploit_available = %v, want true", snap["exploit_available"])
+	}
+	if snap["in_cisa_kev"] != true {
+		t.Errorf("in_cisa_kev = %v, want true", snap["in_cisa_kev"])
+	}
+}

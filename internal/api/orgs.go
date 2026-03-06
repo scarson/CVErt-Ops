@@ -12,6 +12,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // createOrgBody is the JSON request body for POST /api/v1/orgs.
@@ -264,6 +267,15 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 		UserID: targetID.String(),
 		Role:   req.Role,
 	})
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "member",
+		EntityID:   targetID.String(),
+		Success:    true,
+		OldState:   map[string]any{"role": *currentRole},
+		NewState:   map[string]any{"role": req.Role},
+	})
 }
 
 // removeMemberHandler handles DELETE /api/v1/orgs/{org_id}/members/{user_id}.
@@ -294,8 +306,13 @@ func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent removing the sole owner.
+	// Only owners can remove other owners; prevent removing the sole owner.
 	if *currentRole == "owner" {
+		callerRole, ok := r.Context().Value(ctxRole).(Role)
+		if !ok || callerRole < RoleOwner {
+			http.Error(w, "only owners can remove other owners", http.StatusForbidden)
+			return
+		}
 		ownerCount, err := srv.store.GetOrgOwnerCount(r.Context(), orgID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "get owner count", "error", err)
@@ -314,6 +331,14 @@ func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "member",
+		EntityID:   targetID.String(),
+		Success:    true,
+		OldState:   map[string]any{"role": *currentRole},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -364,6 +389,27 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	if req.Role != "admin" && req.Role != "member" && req.Role != "viewer" {
 		http.Error(w, "invalid role: must be admin, member, or viewer", http.StatusBadRequest)
 		return
+	}
+
+	// Tier gating: check member count limit.
+	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
+	if !ok {
+		slog.ErrorContext(r.Context(), "tier resolver missing from context")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	limit := resolver.ResolveInt(tier.LimitMembers)
+	if limit >= 0 {
+		count, err := srv.store.CountMemberSlotsUsedByOrg(r.Context(), orgID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "count member slots for tier check", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if count >= int64(limit) {
+			http.Error(w, "tier limit: max members reached", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Caller cannot invite with a role higher than their own effective role.

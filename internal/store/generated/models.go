@@ -163,6 +163,22 @@ type ApiKey struct {
 	RevokedAt       sql.NullTime
 }
 
+type AuditLog struct {
+	ID         uuid.UUID
+	OrgID      uuid.UUID
+	ActorID    uuid.NullUUID
+	ActorEmail sql.NullString
+	Action     string
+	EntityType string
+	EntityID   string
+	EntityName sql.NullString
+	Success    bool
+	OldState   pqtype.NullRawMessage
+	NewState   pqtype.NullRawMessage
+	Metadata   pqtype.NullRawMessage
+	CreatedAt  time.Time
+}
+
 type Cfe struct {
 	CveID                 string
 	Status                sql.NullString
@@ -360,10 +376,12 @@ type OrgMember struct {
 }
 
 type Organization struct {
-	ID        uuid.UUID
-	Name      string
-	CreatedAt time.Time
-	DeletedAt sql.NullTime
+	ID            uuid.UUID
+	Name          string
+	CreatedAt     time.Time
+	DeletedAt     sql.NullTime
+	Tier          string
+	TierOverrides json.RawMessage
 }
 
 type RefreshToken struct {
@@ -412,6 +430,25 @@ type ScheduledReport struct {
 	DeletedAt         sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type SsoConnection struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	DisplayName     string
+	IssuerUrl       string
+	ClientID        string
+	ClientSecretEnc []byte
+	Scopes          []string
+	Enabled         bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type SsoEmailDomain struct {
+	Domain          string
+	SsoConnectionID uuid.UUID
+	OrgID           uuid.UUID
 }
 
 type SystemJobsLog struct {

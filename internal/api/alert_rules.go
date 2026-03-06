@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -13,7 +14,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -140,15 +143,20 @@ func hasBlockingErrors(errs []dsl.ValidationError) bool {
 	return false
 }
 
-// parseWatchlistUUIDs converts string UUIDs to uuid.UUID slice.
+// parseWatchlistUUIDs converts string UUIDs to a deduplicated uuid.UUID slice,
+// preserving first-occurrence order.
 func parseWatchlistUUIDs(ids []string) ([]uuid.UUID, error) {
-	result := make([]uuid.UUID, len(ids))
-	for i, s := range ids {
+	seen := make(map[uuid.UUID]bool, len(ids))
+	result := make([]uuid.UUID, 0, len(ids))
+	for _, s := range ids {
 		id, err := uuid.Parse(s)
 		if err != nil {
 			return nil, err
 		}
-		result[i] = id
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
 	}
 	return result, nil
 }
@@ -162,6 +170,34 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	if !ok {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+
+	// Tier gating: check alert rule count limit.
+	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
+	if !ok {
+		slog.ErrorContext(r.Context(), "tier resolver missing from context")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	limit := resolver.ResolveInt(tier.LimitAlertRules)
+	if limit >= 0 {
+		count, err := srv.store.CountAlertRulesByOrg(r.Context(), orgID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "count alert rules for tier check", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if count >= int64(limit) {
+			srv.auditLog(r, audit.Entry{
+				OrgID:      orgID,
+				Action:     "create",
+				EntityType: "alert_rule",
+				Success:    false,
+				Metadata:   map[string]any{"reason": "tier_limit"},
+			})
+			http.Error(w, "tier limit: max alert rules reached", http.StatusForbidden)
+			return
+		}
 	}
 
 	var req createAlertRuleBody
@@ -228,7 +264,24 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, alertRuleToEntry(*row))
+	entry := alertRuleToEntry(*row)
+
+	if status == "activating" {
+		srv.enqueueActivation(r.Context(), orgID, row.ID)
+		writeJSON(w, http.StatusAccepted, entry)
+	} else {
+		writeJSON(w, http.StatusCreated, entry)
+	}
+
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "alert_rule",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   entry,
+	})
 }
 
 // getAlertRuleHandler handles GET /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -333,6 +386,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	oldState := alertRuleToEntry(*current)
 
 	var req patchAlertRuleBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -436,6 +490,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	case "error", "draft", "disabled":
 		if req.Enabled != nil && *req.Enabled {
 			newStatus = "activating"
+			needsCacheEvict = true
 		}
 	}
 
@@ -462,8 +517,22 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	if needsCacheEvict && srv.alertCache != nil {
 		srv.alertCache.Evict(id)
 	}
+	if newStatus == "activating" {
+		srv.enqueueActivation(r.Context(), orgID, id)
+	}
 
-	writeJSON(w, http.StatusOK, alertRuleToEntry(*row))
+	newEntry := alertRuleToEntry(*row)
+	writeJSON(w, http.StatusOK, newEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "alert_rule",
+		EntityID:   id.String(),
+		EntityName: row.Name,
+		Success:    true,
+		OldState:   oldState,
+		NewState:   newEntry,
+	})
 }
 
 // deleteAlertRuleHandler handles DELETE /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -478,6 +547,19 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
+
+	// Fetch before delete for audit log.
+	current, err := srv.store.GetAlertRule(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get alert rule for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if current == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	if err := srv.store.SoftDeleteAlertRule(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "delete alert rule", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -486,6 +568,15 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	if srv.alertCache != nil {
 		srv.alertCache.Evict(id)
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "alert_rule",
+		EntityID:   id.String(),
+		EntityName: current.Name,
+		Success:    true,
+		OldState:   alertRuleToEntry(*current),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -694,6 +785,20 @@ func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// enqueueActivation enqueues an alert_activation job for the given rule.
+// Errors are logged but not propagated — the rule is already persisted and
+// the sweep zombie mechanism will recover stuck activations.
+func (srv *Server) enqueueActivation(ctx context.Context, orgID, ruleID uuid.UUID) {
+	payload, _ := json.Marshal(map[string]string{
+		"rule_id": ruleID.String(),
+		"org_id":  orgID.String(),
+	})
+	lockKey := "activation:" + ruleID.String()
+	if _, err := srv.store.EnqueueJob(ctx, "alert_activation", 10, payload, &lockKey, 3, nil); err != nil {
+		slog.ErrorContext(ctx, "enqueue activation job", "rule_id", ruleID, "error", err)
+	}
 }
 
 // valErrsToEntries converts DSL ValidationErrors to API-level entries.

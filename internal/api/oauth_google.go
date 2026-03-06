@@ -3,6 +3,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"time"
@@ -107,7 +108,7 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid nonce: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if storedNonce != claims.Nonce {
+	if subtle.ConstantTimeCompare([]byte(storedNonce), []byte(claims.Nonce)) != 1 {
 		http.Error(w, "nonce mismatch", http.StatusBadRequest)
 		return
 	}
@@ -121,6 +122,12 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	if user == nil {
+		// Enforce registration mode — only allow auto-creation when registration is open.
+		if srv.cfg.RegistrationMode != "open" {
+			http.Error(w, "registration is not open", http.StatusForbidden)
+			return
+		}
+
 		// New user — create account (no password; Google-only auth).
 		displayName := claims.Name
 		if displayName == "" {
@@ -128,6 +135,10 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 		}
 		user, err = srv.store.CreateUser(ctx, claims.Email, displayName, "", 0)
 		if err != nil {
+			if pgErrCode(err) == "23505" {
+				http.Error(w, "email already registered via another method", http.StatusConflict)
+				return
+			}
 			slog.ErrorContext(ctx, "google oidc: create user", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -168,7 +179,10 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 9. Set auth cookies and respond.
+	// 9. Update last login timestamp (non-fatal — informational only).
+	_ = srv.store.UpdateLastLogin(ctx, user.ID)
+
+	// 10. Set auth cookies and respond.
 	for _, cookieStr := range authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure) {
 		w.Header().Add("Set-Cookie", cookieStr)
 	}

@@ -1,14 +1,27 @@
+// ABOUTME: Worker pool that claims and executes jobs from the job_queue table.
+// ABOUTME: Per-queue concurrency semaphores, panic recovery, and stale-job reclamation.
 package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
 )
+
+// JobStore is the subset of store.Store that the worker pool needs to claim,
+// complete, fail, and recover jobs.
+type JobStore interface {
+	ClaimJob(ctx context.Context, queue, workerID string) (*store.Job, error)
+	CompleteJob(ctx context.Context, id uuid.UUID) error
+	FailJob(ctx context.Context, id uuid.UUID, errMsg string) error
+	RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) (int, error)
+}
 
 const (
 	// pollInterval is how often each queue goroutine checks for new jobs.
@@ -23,29 +36,43 @@ const (
 
 // Pool manages a set of goroutine workers that claim and execute jobs from
 // the job_queue table. One polling goroutine runs per registered queue; a
-// shared stale-lock recovery goroutine resets stuck jobs.
+// shared stale-lock recovery goroutine resets stuck jobs. Per-queue concurrency
+// limits control how many jobs execute simultaneously within each queue.
 type Pool struct {
-	store    *store.Store
-	workerID string
-	mu       sync.RWMutex
-	handlers map[string]Handler
+	store       JobStore
+	workerID    string
+	mu          sync.RWMutex
+	handlers    map[string]Handler
+	concurrency map[string]int
 }
 
 // New creates a Pool backed by s. A random workerID is generated at construction
 // time to distinguish this process in the locked_by column.
-func New(s *store.Store) *Pool {
+func New(s JobStore) *Pool {
 	return &Pool{
-		store:    s,
-		workerID: uuid.New().String(),
-		handlers: make(map[string]Handler),
+		store:       s,
+		workerID:    uuid.New().String(),
+		handlers:    make(map[string]Handler),
+		concurrency: make(map[string]int),
 	}
 }
 
-// Register associates h with the named queue. Must be called before Start.
+// Register associates h with the named queue with concurrency 1 (sequential).
+// Must be called before Start.
 func (p *Pool) Register(queue string, h Handler) {
+	p.RegisterWithConcurrency(queue, h, 1)
+}
+
+// RegisterWithConcurrency associates h with the named queue and allows up to
+// concurrency jobs to execute simultaneously. Must be called before Start.
+func (p *Pool) RegisterWithConcurrency(queue string, h Handler, concurrency int) {
+	if concurrency < 1 {
+		concurrency = 1
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.handlers[queue] = h
+	p.concurrency[queue] = concurrency
 }
 
 // Start launches one polling goroutine per registered queue plus the stale-lock
@@ -80,27 +107,50 @@ func (p *Pool) Start(ctx context.Context) {
 	slog.Info("worker pool stopped", "worker_id", p.workerID)
 }
 
-// runQueue polls queue for jobs until ctx is cancelled. Uses time.NewTicker
-// (not time.After) to avoid timer leaks.
+// runQueue polls queue for jobs until ctx is cancelled. A per-queue semaphore
+// limits how many jobs execute concurrently. Uses time.NewTicker (not
+// time.After) to avoid timer leaks.
 func (p *Pool) runQueue(ctx context.Context, queue string) {
+	p.mu.RLock()
+	maxConc := p.concurrency[queue]
+	p.mu.RUnlock()
+	if maxConc < 1 {
+		maxConc = 1
+	}
+
+	sem := make(chan struct{}, maxConc)
+	var inflight sync.WaitGroup
+
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	slog.Info("worker queue started", "queue", queue, "worker_id", p.workerID)
+	slog.Info("worker queue started", "queue", queue, "worker_id", p.workerID, "concurrency", maxConc)
 
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("worker queue stopping", "queue", queue)
+			inflight.Wait()
 			return
 		case <-ticker.C:
-			p.processOne(ctx, queue)
+			select {
+			case sem <- struct{}{}:
+				inflight.Add(1)
+				go func() {
+					defer inflight.Done()
+					defer func() { <-sem }()
+					p.processOne(ctx, queue)
+				}()
+			default:
+				// all concurrency slots occupied, skip this tick
+			}
 		}
 	}
 }
 
 // processOne claims one job from queue and executes it. Errors are logged but
 // do not stop the polling loop — the goroutine continues to the next tick.
+// Panics in handlers are recovered and the job is marked as failed.
 func (p *Pool) processOne(ctx context.Context, queue string) {
 	job, err := p.store.ClaimJob(ctx, queue, p.workerID)
 	if err != nil {
@@ -124,7 +174,7 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 	slog.Info("executing job",
 		"queue", queue, "job_id", job.ID, "attempts", job.Attempts)
 
-	if err := h(ctx, job.Payload); err != nil {
+	if err := p.safeExecute(ctx, h, job.Payload); err != nil {
 		slog.Error("job handler failed",
 			"queue", queue, "job_id", job.ID, "error", err)
 		if failErr := p.store.FailJob(ctx, job.ID, err.Error()); failErr != nil {
@@ -138,6 +188,19 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 		return
 	}
 	slog.Info("job completed", "queue", queue, "job_id", job.ID)
+}
+
+// safeExecute runs a handler with panic recovery. If the handler panics,
+// the panic is caught and returned as an error with a stack trace.
+func (p *Pool) safeExecute(ctx context.Context, h Handler, payload []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("worker panic recovered",
+				"error", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	return h(ctx, payload)
 }
 
 // runStaleRecovery periodically resets jobs stuck in 'running' state. Uses

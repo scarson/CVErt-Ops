@@ -33,8 +33,9 @@ func (q *Queries) CountOwnedWatchlistsByIDs(ctx context.Context, arg CountOwnedW
 }
 
 const countWatchlistItems = `-- name: CountWatchlistItems :one
-SELECT COUNT(*) FROM watchlist_items
-WHERE watchlist_id = $1 AND deleted_at IS NULL
+SELECT COUNT(*) FROM watchlist_items wi
+JOIN watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL
+WHERE wi.watchlist_id = $1 AND wi.deleted_at IS NULL
 `
 
 func (q *Queries) CountWatchlistItems(ctx context.Context, watchlistID uuid.UUID) (int64, error) {
@@ -151,8 +152,9 @@ func (q *Queries) GetWatchlist(ctx context.Context, arg GetWatchlistParams) (Wat
 }
 
 const getWatchlistItem = `-- name: GetWatchlistItem :one
-SELECT id, watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, created_at, deleted_at FROM watchlist_items
-WHERE id = $1 AND watchlist_id = $2 AND org_id = $3 AND deleted_at IS NULL
+SELECT wi.id, wi.watchlist_id, wi.org_id, wi.item_type, wi.ecosystem, wi.package_name, wi.namespace, wi.cpe_normalized, wi.created_at, wi.deleted_at FROM watchlist_items wi
+JOIN watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL
+WHERE wi.id = $1 AND wi.watchlist_id = $2 AND wi.org_id = $3 AND wi.deleted_at IS NULL
 LIMIT 1
 `
 
@@ -196,7 +198,7 @@ func (q *Queries) SoftDeleteWatchlist(ctx context.Context, arg SoftDeleteWatchli
 	return err
 }
 
-const softDeleteWatchlistItem = `-- name: SoftDeleteWatchlistItem :exec
+const softDeleteWatchlistItem = `-- name: SoftDeleteWatchlistItem :execrows
 UPDATE watchlist_items
 SET deleted_at = now()
 WHERE id = $1 AND watchlist_id = $2 AND org_id = $3 AND deleted_at IS NULL
@@ -208,9 +210,12 @@ type SoftDeleteWatchlistItemParams struct {
 	OrgID       uuid.UUID
 }
 
-func (q *Queries) SoftDeleteWatchlistItem(ctx context.Context, arg SoftDeleteWatchlistItemParams) error {
-	_, err := q.db.ExecContext(ctx, softDeleteWatchlistItem, arg.ID, arg.WatchlistID, arg.OrgID)
-	return err
+func (q *Queries) SoftDeleteWatchlistItem(ctx context.Context, arg SoftDeleteWatchlistItemParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, softDeleteWatchlistItem, arg.ID, arg.WatchlistID, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateWatchlist = `-- name: UpdateWatchlist :one

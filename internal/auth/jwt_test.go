@@ -73,6 +73,44 @@ func TestJWTRejectsWrongAlgorithm(t *testing.T) {
 	}
 }
 
+func TestJWTRejectsAlgNone(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	tokenStr, err := auth.IssueAccessToken(secret, userID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// Replace header with alg:none — a classic JWT bypass attack.
+	parts := strings.SplitN(tokenStr, ".", 3)
+	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	tampered := fakeHeader + "." + parts[1] + "."
+
+	_, err = auth.ParseAccessToken(tampered, secret)
+	if err == nil {
+		t.Error("expected error for alg:none token, got nil")
+	}
+}
+
+func TestJWTRejectsWrongSecret(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	wrongSecret := []byte("wrong-secret-32-bytes-minimum-bb")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	tokenStr, err := auth.IssueAccessToken(secret, userID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	_, err = auth.ParseAccessToken(tokenStr, wrongSecret)
+	if err == nil {
+		t.Error("expected error for wrong secret, got nil")
+	}
+}
+
 func TestRefreshTokenRoundTrip(t *testing.T) {
 	t.Parallel()
 	secret := []byte("test-secret-32-bytes-minimum-aaaa")
@@ -97,5 +135,82 @@ func TestRefreshTokenRoundTrip(t *testing.T) {
 	}
 	if claims.TokenVersion != 1 {
 		t.Errorf("TokenVersion = %d, want 1", claims.TokenVersion)
+	}
+}
+
+func TestRefreshTokenRejectsExpired(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	jti := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	tokenStr, err := auth.IssueRefreshToken(secret, userID, 1, jti, -1*time.Second)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	_, err = auth.ParseRefreshToken(tokenStr, secret)
+	if err == nil {
+		t.Error("expected error for expired refresh token, got nil")
+	}
+}
+
+func TestRefreshTokenRejectsWrongAlgorithm(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	jti := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	tokenStr, err := auth.IssueRefreshToken(secret, userID, 1, jti, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	parts := strings.SplitN(tokenStr, ".", 3)
+	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	tampered := fakeHeader + "." + parts[1] + "." + parts[2]
+
+	_, err = auth.ParseRefreshToken(tampered, secret)
+	if err == nil {
+		t.Error("expected error for RS256 algorithm on refresh token, got nil")
+	}
+}
+
+func TestRefreshTokenRejectsAlgNone(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	jti := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	tokenStr, err := auth.IssueRefreshToken(secret, userID, 1, jti, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	parts := strings.SplitN(tokenStr, ".", 3)
+	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	tampered := fakeHeader + "." + parts[1] + "."
+
+	_, err = auth.ParseRefreshToken(tampered, secret)
+	if err == nil {
+		t.Error("expected error for alg:none refresh token, got nil")
+	}
+}
+
+func TestRefreshTokenRejectsWrongSecret(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	wrongSecret := []byte("wrong-secret-32-bytes-minimum-bb")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	jti := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	tokenStr, err := auth.IssueRefreshToken(secret, userID, 1, jti, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	_, err = auth.ParseRefreshToken(tokenStr, wrongSecret)
+	if err == nil {
+		t.Error("expected error for wrong secret on refresh token, got nil")
 	}
 }

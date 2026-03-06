@@ -295,10 +295,8 @@ func parseAdvisory(r io.Reader) (*feed.CanonicalPatch, error) {
 			continue
 		}
 		for _, rng := range aff.Ranges {
-			p := extractPackageRange(eco, pkg, rng)
-			if p != nil {
-				patch.AffectedPackages = append(patch.AffectedPackages, *p)
-			}
+			pkgs := extractPackageRanges(eco, pkg, rng)
+			patch.AffectedPackages = append(patch.AffectedPackages, pkgs...)
 		}
 	}
 
@@ -340,43 +338,77 @@ func parseAdvisory(r io.Reader) (*feed.CanonicalPatch, error) {
 	return patch, nil
 }
 
-// extractPackageRange converts an OSV range to an AffectedPackage.
-// Returns nil for range types that don't map to package version ranges
-// (e.g., GIT ranges with commit hashes only).
-func extractPackageRange(ecosystem, pkgName string, rng osvRange) *feed.AffectedPackage {
+// extractPackageRanges converts an OSV range to one or more AffectedPackage entries.
+// Each introduced/fixed or introduced/last_affected event pair produces a separate entry.
+// Returns nil for ranges with no parseable events.
+func extractPackageRanges(ecosystem, pkgName string, rng osvRange) []feed.AffectedPackage {
 	rangeType := strings.Clone(feed.StripNullBytes(rng.Type))
+
+	if len(rng.Events) == 0 {
+		return nil
+	}
 
 	// Parse the events array. Each element is a single-key object:
 	// {"introduced": "1.0.0"}, {"fixed": "1.2.3"}, or {"last_affected": "1.2.2"}
-	var introduced, fixed, lastAffected string
-	if len(rng.Events) > 0 {
-		var events []json.RawMessage
-		if err := json.Unmarshal(rng.Events, &events); err == nil {
-			for _, ev := range events {
-				var obj map[string]string
-				if err := json.Unmarshal(ev, &obj); err != nil {
-					continue
-				}
-				if v, ok := obj["introduced"]; ok {
-					introduced = strings.Clone(feed.StripNullBytes(v))
-				}
-				if v, ok := obj["fixed"]; ok {
-					fixed = strings.Clone(feed.StripNullBytes(v))
-				}
-				if v, ok := obj["last_affected"]; ok {
-					lastAffected = strings.Clone(feed.StripNullBytes(v))
-				}
-			}
-		}
+	var events []json.RawMessage
+	if err := json.Unmarshal(rng.Events, &events); err != nil {
+		return nil
 	}
 
-	return &feed.AffectedPackage{
-		Ecosystem:    ecosystem,
-		PackageName:  pkgName,
-		RangeType:    rangeType,
-		Introduced:   introduced,
-		Fixed:        fixed,
-		LastAffected: lastAffected,
-		Events:       rng.Events, // preserve raw events for completeness
+	// Walk through events collecting introduced/fixed pairs. Each "introduced"
+	// starts a new range; subsequent "fixed" or "last_affected" closes it.
+	var result []feed.AffectedPackage
+	var introduced string
+	for _, ev := range events {
+		var obj map[string]string
+		if err := json.Unmarshal(ev, &obj); err != nil {
+			continue
+		}
+		if v, ok := obj["introduced"]; ok {
+			// If there's a pending introduced without a closing event, flush it.
+			if introduced != "" {
+				result = append(result, feed.AffectedPackage{
+					Ecosystem:   ecosystem,
+					PackageName: pkgName,
+					RangeType:   rangeType,
+					Introduced:  introduced,
+					Events:      rng.Events,
+				})
+			}
+			introduced = strings.Clone(feed.StripNullBytes(v))
+		}
+		if v, ok := obj["fixed"]; ok {
+			result = append(result, feed.AffectedPackage{
+				Ecosystem:   ecosystem,
+				PackageName: pkgName,
+				RangeType:   rangeType,
+				Introduced:  introduced,
+				Fixed:       strings.Clone(feed.StripNullBytes(v)),
+				Events:      rng.Events,
+			})
+			introduced = ""
+		}
+		if v, ok := obj["last_affected"]; ok {
+			result = append(result, feed.AffectedPackage{
+				Ecosystem:    ecosystem,
+				PackageName:  pkgName,
+				RangeType:    rangeType,
+				Introduced:   introduced,
+				LastAffected: strings.Clone(feed.StripNullBytes(v)),
+				Events:       rng.Events,
+			})
+			introduced = ""
+		}
 	}
+	// Flush trailing introduced with no closing event.
+	if introduced != "" {
+		result = append(result, feed.AffectedPackage{
+			Ecosystem:   ecosystem,
+			PackageName: pkgName,
+			RangeType:   rangeType,
+			Introduced:  introduced,
+			Events:      rng.Events,
+		})
+	}
+	return result
 }

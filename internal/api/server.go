@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/google/uuid"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
 )
@@ -37,9 +40,13 @@ type Server struct {
 	ghAPIBaseURL   string           // GitHub REST API base URL; overridable in tests
 	googleOIDC     *oidc.Provider   // nil when Google OIDC is not configured
 	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
-	alertCache     *alert.RuleCache // nil until SetAlertDeps is called
-	alertEvaluator *alert.Evaluator // nil until SetAlertDeps is called
-	llm            ai.LLMClient    // nil until SetAIDeps is called
+	orgRL          *orgRateLimiter  // per-org API rate limiter
+	tierCache      *tierCache       // short-lived cache for org tier + overrides
+	oidcProviders  sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
+	alertCache     *alert.RuleCache  // nil until SetAlertDeps is called
+	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
+	llm            ai.LLMClient     // nil until SetAIDeps is called
+	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -52,11 +59,15 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	}
 	// 10 requests per minute, burst of 10.
 	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
+	orgRL := newOrgRateLimiter(time.Now, evictTTL)
+	tc := newTierCache(time.Now, 30*time.Second, 5*time.Minute)
 	srv := &Server{
 		store:        s,
 		cfg:          cfg,
 		argon2Sem:    sem,
 		rateLimiter:  rl,
+		orgRL:        orgRL,
+		tierCache:    tc,
 		ghAPIBaseURL: "https://api.github.com",
 	}
 
@@ -107,6 +118,12 @@ func (srv *Server) Close() {
 	if srv.rateLimiter != nil {
 		srv.rateLimiter.Stop()
 	}
+	if srv.orgRL != nil {
+		srv.orgRL.Stop()
+	}
+	if srv.tierCache != nil {
+		srv.tierCache.Stop()
+	}
 }
 
 // Handler builds and returns the http.Handler.
@@ -130,6 +147,14 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── Standard chi middleware ───────────────────────────────────────────────
 	r.Use(middleware.RequestID)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if reqID := middleware.GetReqID(r.Context()); reqID != "" {
+				w.Header().Set(middleware.RequestIDHeader, reqID)
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
 	r.Use(middleware.RealIP)
 	r.Use(clientIPMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies
@@ -152,11 +177,19 @@ func (srv *Server) Handler() http.Handler {
 	registerAuthRoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
+	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
+	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)
+
 	// ── OAuth routes (chi, not huma — these are redirects, not JSON API calls) ─
 	apiRouter.Get("/auth/oauth/github", srv.githubInitHandler)
 	apiRouter.Get("/auth/oauth/github/callback", srv.githubCallbackHandler)
 	apiRouter.Get("/auth/oauth/google", srv.googleInitHandler)
 	apiRouter.Get("/auth/oauth/google/callback", srv.googleCallbackHandler)
+
+	// ── Generic OIDC SSO routes ─────────────────────────────────────────────
+	apiRouter.Get("/auth/oidc/{connection_id}/login", srv.oidcLoginHandler)
+	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
+	apiRouter.Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
@@ -165,7 +198,10 @@ func (srv *Server) Handler() http.Handler {
 
 		r.Route("/{org_id}", func(r chi.Router) {
 			r.Use(srv.RequireOrgRole(RoleViewer))
+			r.Use(srv.tierMiddleware)
+			r.Use(srv.orgRateLimitMiddleware)
 			r.Get("/", srv.getOrgHandler)
+			r.Get("/tier", srv.getOrgTierHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
 
 			// Member management
@@ -220,6 +256,19 @@ func (srv *Server) Handler() http.Handler {
 
 			// Alert event listing
 			r.With(srv.RequireOrgRole(RoleViewer)).Get("/alert-events", srv.listAlertEventsHandler)
+
+			// SSO connection management (enterprise only, owner only)
+			r.Route("/sso", func(r chi.Router) {
+				r.With(srv.RequireOrgRole(RoleOwner)).Post("/", srv.createSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Get("/", srv.getSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Patch("/", srv.patchSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSSOHandler)
+				r.With(srv.RequireOrgRole(RoleOwner)).Put("/domains", srv.putSSODomainsHandler)
+				r.With(srv.RequireOrgRole(RoleMember)).Get("/link", srv.oidcLinkInitHandler)
+			})
+
+			// Audit log (enterprise only, admin+)
+			r.With(srv.RequireOrgRole(RoleAdmin)).Get("/audit-log", srv.listAuditLogHandler)
 
 			// Delivery history
 			r.Route("/deliveries", func(r chi.Router) {
@@ -314,6 +363,25 @@ func (srv *Server) SetAlertDeps(cache *alert.RuleCache, evaluator *alert.Evaluat
 // Must be called before Handler() if AI endpoints are registered.
 func (srv *Server) SetAIDeps(llm ai.LLMClient) {
 	srv.llm = llm
+}
+
+// SetAuditDeps wires the audit writer into the server.
+func (srv *Server) SetAuditDeps(w *audit.Writer) {
+	srv.auditWriter = w
+}
+
+// auditLog records an audit entry if the audit writer is configured.
+// Extracts actor context from the request. Nil-safe: no-op if writer is nil.
+func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
+	if srv.auditWriter == nil {
+		return
+	}
+	if entry.ActorID == nil {
+		if uid, ok := r.Context().Value(ctxUserID).(uuid.UUID); ok {
+			entry.ActorID = &uid
+		}
+	}
+	srv.auditWriter.Log(r.Context(), entry)
 }
 
 // acquireArgon2 tries to acquire the argon2 semaphore. Returns false if all

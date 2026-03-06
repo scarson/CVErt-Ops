@@ -41,3 +41,6 @@ chats/
 
 # Private journal (personal MCP server data, never shared)
 .private-journal/
+
+# Git worktrees
+.worktrees/

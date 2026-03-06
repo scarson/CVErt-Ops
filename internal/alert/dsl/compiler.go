@@ -44,7 +44,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 			if err != nil {
 				return nil, fmt.Errorf("compile: regex compile: %w", err)
 			}
-			postFilters = append(postFilters, PostFilter{Negate: false, Pattern: re})
+			postFilters = append(postFilters, PostFilter{Field: c.Field, Negate: false, Pattern: re})
 			continue
 		}
 
@@ -99,13 +99,15 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 
 	isEPSSOnly := hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	return &CompiledRule{
-		RuleID:      ruleID,
-		DSLVersion:  dslVersion,
-		SQL:         combined,
-		Joins:       joins,
-		PostFilters: postFilters,
-		IsEPSSOnly:  isEPSSOnly,
-		HasEPSS:     hasEPSSCond,
+		RuleID:       ruleID,
+		DSLVersion:   dslVersion,
+		SQL:          combined,
+		Joins:        joins,
+		PostFilters:  postFilters,
+		Logic:        r.Logic,
+		IsEPSSOnly:   isEPSSOnly,
+		HasEPSS:      hasEPSSCond,
+		HasWatchlist: len(watchlistIDs) > 0,
 	}, nil
 }
 
@@ -141,7 +143,10 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 	case kindFloat:
 		return numericSQL(spec.sqlExpr, c.Op, c.Value, func(raw json.RawMessage) (interface{}, error) {
 			var v float64
-			return v, json.Unmarshal(raw, &v)
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return nil, err
+			}
+			return v, nil
 		})
 	case kindTime:
 		return numericSQL(spec.sqlExpr, c.Op, c.Value, func(raw json.RawMessage) (interface{}, error) {

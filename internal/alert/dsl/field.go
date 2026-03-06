@@ -39,7 +39,7 @@ var ftsOps         = []string{"matches"}
 
 // fields is the authoritative registry of all supported DSL fields.
 var fields = map[string]fieldSpec{
-	"cve_id":                   {kindString,   "cves.cve_id",                   setOps,        false, nil},
+	"cve_id":                   {kindString,   "cves.cve_id",                   append(setOps, "regex"), false, nil},
 	"severity":                 {kindEnum,     "cves.severity",                 setOps,        false, severityEnum},
 	"cvss_v3_score":            {kindFloat,    "cves.cvss_v3_score",            numericOps,    true,  nil},
 	"cvss_v4_score":            {kindFloat,    "cves.cvss_v4_score",            numericOps,    true,  nil},

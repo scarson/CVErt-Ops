@@ -136,7 +136,7 @@ func TestAdvanceNextRunAt_SkipForward(t *testing.T) {
 	}
 }
 
-func TestIsPermanentSMTPError(t *testing.T) {
+func TestIsPermanentDeliveryError(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
@@ -154,14 +154,49 @@ func TestIsPermanentSMTPError(t *testing.T) {
 		{"555 syntax error", fmt.Errorf("555 MAIL FROM/RCPT TO parameters not recognized"), true},
 		{"550 embedded in message", fmt.Errorf("email send: 550 mailbox unavailable"), true},
 		{"random error", fmt.Errorf("something went wrong"), false},
+		{"permanent config error", &permanentDeliveryError{err: fmt.Errorf("parse email config")}, true},
+		{"wrapped permanent", fmt.Errorf("outer: %w", &permanentDeliveryError{err: fmt.Errorf("no recipients")}), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isPermanentSMTPError(tc.err)
+			got := isPermanentDeliveryError(tc.err)
 			if got != tc.want {
-				t.Errorf("isPermanentSMTPError(%v) = %v, want %v", tc.err, got, tc.want)
+				t.Errorf("isPermanentDeliveryError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExpandSeverityThreshold_CaseSensitive(t *testing.T) {
+	t.Parallel()
+	// expandSeverityThreshold uses lowercase keys. Uppercase input returns nil.
+	got := expandSeverityThreshold("CRITICAL")
+	if got != nil {
+		t.Errorf("expandSeverityThreshold(\"CRITICAL\") = %v, want nil (case-sensitive)", got)
+	}
+	got2 := expandSeverityThreshold("High")
+	if got2 != nil {
+		t.Errorf("expandSeverityThreshold(\"High\") = %v, want nil (case-sensitive)", got2)
+	}
+}
+
+func TestAdvanceNextRunAt_DSTFallBack(t *testing.T) {
+	t.Parallel()
+	// Test the November DST fall-back (clock goes back 1 hour: EDT→EST).
+	// Nov 2, 2025 is when clocks fall back in the US at 02:00 AM.
+	// A 14:00 EDT (UTC-4) time on Nov 1 should advance to 14:00 EST (UTC-5) on Nov 2.
+	loc, _ := time.LoadLocation("America/New_York")
+	// Nov 1, 2025 14:00 EDT = 18:00 UTC
+	base := time.Date(2025, 11, 1, 14, 0, 0, 0, loc).UTC()
+
+	next, err := advanceNextRunAt(base, "America/New_York")
+	if err != nil {
+		t.Fatalf("advanceNextRunAt: %v", err)
+	}
+	// Nov 2, 2025 14:00 EST = 19:00 UTC (EST = UTC-5, one hour more than EDT)
+	expected := time.Date(2025, 11, 2, 19, 0, 0, 0, time.UTC)
+	if !next.Equal(expected) {
+		t.Errorf("advanceNextRunAt DST fall-back = %v, want %v", next, expected)
 	}
 }
 

@@ -163,3 +163,118 @@ func TestNormalizeCVSSVectorIdempotent(t *testing.T) {
 		t.Error("normalizeCVSSVector should be idempotent")
 	}
 }
+
+// ── CVSSv4 vector normalization ──────────────────────────────────────────────
+
+func TestComputeMaterialHashCVSSv4VectorNormalized(t *testing.T) {
+	t.Parallel()
+
+	// Same CVSS v4 metrics in different order should produce the same hash.
+	score := 9.3
+	f1 := MaterialFields{
+		CVSSv4Score:  &score,
+		CVSSv4Vector: "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+	}
+	f2 := MaterialFields{
+		CVSSv4Score:  &score,
+		CVSSv4Vector: "CVSS:4.0/VC:H/VI:H/VA:H/AV:N/AC:L/AT:N/PR:N/UI:N/SC:N/SI:N/SA:N",
+	}
+	if ComputeMaterialHash(f1) != ComputeMaterialHash(f2) {
+		t.Error("CVSS v4 vectors with same metrics in different order should produce the same hash")
+	}
+}
+
+// ── Status field sensitivity ─────────────────────────────────────────────────
+
+func TestComputeMaterialHashStatusSensitivity(t *testing.T) {
+	t.Parallel()
+
+	f1 := MaterialFields{Status: "published"}
+	f2 := MaterialFields{Status: "rejected"}
+	if ComputeMaterialHash(f1) == ComputeMaterialHash(f2) {
+		t.Error("different Status values should produce different hashes")
+	}
+}
+
+// ── CVSSv3Score nil vs 0.0 ───────────────────────────────────────────────────
+
+func TestComputeMaterialHashCVSSv3ScoreNilVsZero(t *testing.T) {
+	t.Parallel()
+
+	fNil := MaterialFields{Status: "published"}
+	fZero := MaterialFields{Status: "published", CVSSv3Score: func() *float64 { v := 0.0; return &v }()}
+	if ComputeMaterialHash(fNil) == ComputeMaterialHash(fZero) {
+		t.Error("nil CVSSv3Score vs zero CVSSv3Score should produce different hashes")
+	}
+}
+
+// ── CVSSv4Score nil vs 0.0 ───────────────────────────────────────────────────
+
+func TestComputeMaterialHashCVSSv4ScoreNilVsZero(t *testing.T) {
+	t.Parallel()
+
+	fNil := MaterialFields{Status: "published"}
+	fZero := MaterialFields{Status: "published", CVSSv4Score: func() *float64 { v := 0.0; return &v }()}
+	if ComputeMaterialHash(fNil) == ComputeMaterialHash(fZero) {
+		t.Error("nil CVSSv4Score vs zero CVSSv4Score should produce different hashes")
+	}
+}
+
+// ── ExploitAvailable sensitivity ─────────────────────────────────────────────
+
+func TestComputeMaterialHashExploitAvailableSensitivity(t *testing.T) {
+	t.Parallel()
+
+	f1 := MaterialFields{ExploitAvail: false}
+	f2 := MaterialFields{ExploitAvail: true}
+	if ComputeMaterialHash(f1) == ComputeMaterialHash(f2) {
+		t.Error("different ExploitAvailable values should produce different hashes")
+	}
+}
+
+// ── AffectedPkgs content sensitivity ─────────────────────────────────────────
+
+func TestComputeMaterialHashAffectedPkgsContentSensitivity(t *testing.T) {
+	t.Parallel()
+
+	f1 := MaterialFields{
+		AffectedPkgs: []affectedPkgKey{
+			{Ecosystem: "npm", PackageName: "lodash", Introduced: "4.0.0", Fixed: "4.17.21"},
+		},
+	}
+	f2 := MaterialFields{
+		AffectedPkgs: []affectedPkgKey{
+			{Ecosystem: "npm", PackageName: "lodash", Introduced: "4.0.0", Fixed: "4.18.0"},
+		},
+	}
+	if ComputeMaterialHash(f1) == ComputeMaterialHash(f2) {
+		t.Error("different AffectedPkgs content (Fixed version) should produce different hashes")
+	}
+}
+
+// ── AffectedPkgs sort tiebreak ───────────────────────────────────────────────
+
+func TestComputeMaterialHashAffectedPkgsSortTiebreak(t *testing.T) {
+	t.Parallel()
+
+	// Same ecosystem, different package names — sorted by PackageName.
+	// Same ecosystem + package, different introduced — sorted by Introduced.
+	f1 := MaterialFields{
+		AffectedPkgs: []affectedPkgKey{
+			{Ecosystem: "npm", PackageName: "axios", Introduced: "0.2.0"},
+			{Ecosystem: "npm", PackageName: "axios", Introduced: "0.1.0"},
+			{Ecosystem: "npm", PackageName: "lodash", Introduced: "1.0.0"},
+		},
+	}
+	// Reversed insertion order — should hash identically after sort.
+	f2 := MaterialFields{
+		AffectedPkgs: []affectedPkgKey{
+			{Ecosystem: "npm", PackageName: "lodash", Introduced: "1.0.0"},
+			{Ecosystem: "npm", PackageName: "axios", Introduced: "0.1.0"},
+			{Ecosystem: "npm", PackageName: "axios", Introduced: "0.2.0"},
+		},
+	}
+	if ComputeMaterialHash(f1) != ComputeMaterialHash(f2) {
+		t.Error("AffectedPkgs with same content in different order should produce the same hash (sort by ecosystem, package_name, introduced)")
+	}
+}

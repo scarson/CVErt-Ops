@@ -95,9 +95,20 @@ type Config struct {
 	TrustedProxies    string        `env:"TRUSTED_PROXIES"`
 	RateLimitEvictTTL time.Duration `env:"RATE_LIMIT_EVICT_TTL" envDefault:"15m"`
 
+	// ── SSO ─────────────────────────────────────────────────────────────────────
+	SSOEncryptionKey string `env:"SSO_ENCRYPTION_KEY"` // 32-byte hex key; required if SSO is used
+
 	// ── Data retention ───────────────────────────────────────────────────────────
 	RetentionCleanupEnabled   bool `env:"RETENTION_CLEANUP_ENABLED"    envDefault:"true"`
 	RetentionCleanupBatchSize int  `env:"RETENTION_CLEANUP_BATCH_SIZE" envDefault:"10000"`
+	// Per-table retention windows.
+	RetentionRawPayloadDays      int `env:"RETENTION_RAW_PAYLOAD_DAYS"              envDefault:"90"`
+	RetentionFeedFetchLogDays    int `env:"RETENTION_FEED_FETCH_LOG_DAYS"           envDefault:"90"`
+	RetentionAlertEventsDays     int `env:"RETENTION_ALERT_EVENTS_DAYS"             envDefault:"365"`
+	RetentionNotifDeliveriesDays int `env:"RETENTION_NOTIFICATION_DELIVERIES_DAYS"  envDefault:"90"`
+	RetentionAuditLogDays        int `env:"RETENTION_AUDIT_LOG_DAYS"                envDefault:"365"`
+	RetentionJobQueueHours       int `env:"RETENTION_JOB_QUEUE_HOURS"               envDefault:"24"`
+	RetentionMaxRuntimeSeconds   int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
 
 	// ── Logging ──────────────────────────────────────────────────────────────────
 	LogLevel  string `env:"LOG_LEVEL"  envDefault:"info"`
@@ -139,6 +150,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Duration("gemini_timeout", c.GeminiTimeout),
 		slog.Bool("gemini_mock", c.GeminiMock),
 		slog.String("nvd_api_key", masked(c.NVDAPIKey)),
+		slog.String("sso_encryption_key", masked(c.SSOEncryptionKey)),
 	)
 }
 

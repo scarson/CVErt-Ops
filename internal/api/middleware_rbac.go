@@ -31,6 +31,14 @@ func (srv *Server) RequireOrgRole(minRole Role) func(http.Handler) http.Handler 
 				return
 			}
 
+			// API keys are scoped to their org — reject if the request targets a different org.
+			if apiKeyOrgID, ok := r.Context().Value(ctxAPIKeyOrgID).(uuid.UUID); ok {
+				if apiKeyOrgID != orgID {
+					http.Error(w, "api key not valid for this organization", http.StatusForbidden)
+					return
+				}
+			}
+
 			roleStr, err := srv.store.GetOrgMemberRole(r.Context(), orgID, userID)
 			if err != nil || roleStr == nil {
 				http.Error(w, "forbidden", http.StatusForbidden)

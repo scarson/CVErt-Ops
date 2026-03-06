@@ -1,6 +1,8 @@
 package epss
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -131,6 +133,38 @@ func TestAdapterRateLimiterNonNil(t *testing.T) {
 	}
 	if a.client == nil {
 		t.Fatal("client is nil — adapter would panic on Apply")
+	}
+}
+
+// TestApply_SameDayCursorSkips verifies that Apply short-circuits when the
+// cursor's ScoreDate has the same UTC date as today. No HTTP request or DB
+// interaction should occur — the same cursor JSON is returned unchanged.
+func TestApply_SameDayCursorSkips(t *testing.T) {
+	t.Parallel()
+
+	// Build a cursor with today's date as ScoreDate.
+	today := time.Now().UTC()
+	scoreDate := today.Format(time.RFC3339)
+	cur := Cursor{
+		ScoreDate:    scoreDate,
+		ModelVersion: "v2025.03.14",
+	}
+	cursorJSON, err := json.Marshal(cur)
+	if err != nil {
+		t.Fatalf("marshal cursor: %v", err)
+	}
+
+	adapter := New(nil)
+
+	// Pass nil store — the short-circuit path never touches the store or HTTP client.
+	result, err := adapter.Apply(context.Background(), nil, cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The returned cursor should be identical to the input (no work done).
+	if string(result) != string(cursorJSON) {
+		t.Errorf("Apply returned cursor %s, want unchanged %s", string(result), string(cursorJSON))
 	}
 }
 

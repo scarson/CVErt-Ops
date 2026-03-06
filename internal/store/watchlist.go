@@ -225,18 +225,19 @@ func (s *Store) CreateWatchlistItem(ctx context.Context, orgID, watchlistID uuid
 // Caller passes Limit+1 to detect whether a next page exists.
 func (s *Store) ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID, itemType *WatchlistItemType, afterID *uuid.UUID, limit int) ([]generated.WatchlistItem, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	sb := psql.Select("id, watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, created_at, deleted_at").
-		From("watchlist_items").
-		Where(sq.Eq{"watchlist_id": watchlistID, "org_id": orgID}).
-		Where("deleted_at IS NULL").
-		OrderBy("id ASC").
+	sb := psql.Select("wi.id, wi.watchlist_id, wi.org_id, wi.item_type, wi.ecosystem, wi.package_name, wi.namespace, wi.cpe_normalized, wi.created_at, wi.deleted_at").
+		From("watchlist_items wi").
+		Join("watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL").
+		Where(sq.Eq{"wi.watchlist_id": watchlistID, "wi.org_id": orgID}).
+		Where("wi.deleted_at IS NULL").
+		OrderBy("wi.id ASC").
 		Limit(uint64(limit)) //nolint:gosec // G115: limit validated by caller
 
 	if itemType != nil {
-		sb = sb.Where(sq.Eq{"item_type": string(*itemType)})
+		sb = sb.Where(sq.Eq{"wi.item_type": string(*itemType)})
 	}
 	if afterID != nil {
-		sb = sb.Where(sq.Gt{"id": *afterID})
+		sb = sb.Where(sq.Gt{"wi.id": *afterID})
 	}
 
 	query, args, err := sb.ToSql()
@@ -269,17 +270,21 @@ func (s *Store) ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.
 }
 
 // DeleteWatchlistItem soft-deletes an item from a watchlist.
-func (s *Store) DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) error {
-	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
-		if err := q.SoftDeleteWatchlistItem(ctx, generated.SoftDeleteWatchlistItemParams{
+func (s *Store) DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) (bool, error) {
+	var deleted bool
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		n, err := q.SoftDeleteWatchlistItem(ctx, generated.SoftDeleteWatchlistItemParams{
 			ID:          itemID,
 			WatchlistID: watchlistID,
 			OrgID:       orgID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("delete watchlist item: %w", err)
 		}
+		deleted = n > 0
 		return nil
 	})
+	return deleted, err
 }
 
 // ValidateWatchlistsOwnership returns true if all given watchlist IDs belong to orgID

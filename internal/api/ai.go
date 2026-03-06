@@ -22,6 +22,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // ── Request / response types ────────────────────────────────────────────────────
@@ -372,8 +373,11 @@ func (srv *Server) resolveAIQuotaLimit(ctx context.Context, orgID uuid.UUID, fea
 		slog.ErrorContext(ctx, "ai: get quota override", "error", err)
 		// Fall through to tier default.
 	}
-	// No org tier column yet — all orgs default to "free".
-	return ai.ResolveLimit(override, hasOverride, tierLimits, "free")
+	orgTier := "free"
+	if resolver, ok := ctx.Value(ctxTierResolver).(*tier.Resolver); ok {
+		orgTier = resolver.Tier
+	}
+	return ai.ResolveLimit(override, hasOverride, tierLimits, orgTier)
 }
 
 // logAIRequest records an AI request to the request log table.

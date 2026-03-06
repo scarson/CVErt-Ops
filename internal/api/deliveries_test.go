@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -341,4 +342,311 @@ func TestReplayDelivery_RateLimited(t *testing.T) {
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("11th replay: got %d, want 429", resp.StatusCode)
 	}
+}
+
+// TestListDeliveries_LimitClamping verifies limit < 1 returns 400 and limit > 200 is clamped.
+func TestListDeliveries_LimitClamping(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// limit=0 → 400
+	q := url.Values{}
+	q.Set("limit", "0")
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("limit=0: got %d, want 400", resp.StatusCode)
+	}
+
+	// limit=-1 → 400
+	q2 := url.Values{}
+	q2.Set("limit", "-1")
+	resp2 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q2)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("limit=-1: got %d, want 400", resp2.StatusCode)
+	}
+
+	// limit=999 → 200 OK (clamped to 200, not rejected).
+	q3 := url.Values{}
+	q3.Set("limit", "999")
+	resp3 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q3)
+	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("limit=999: got %d, want 200 (clamped)", resp3.StatusCode)
+	}
+}
+
+// TestListDeliveries_FilterByRuleAndChannel verifies that rule_id and channel_id query params filter results.
+func TestListDeliveries_FilterByRuleAndChannel(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	chanID1 := createTestDelivery(t, ctx, db, orgID, "F1")
+	chanID2 := createTestDelivery(t, ctx, db, orgID, "F2")
+
+	// Filter by channel_id=chanID1 → expect 1.
+	q := url.Values{}
+	q.Set("channel_id", chanID1.String())
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("filter by channel_id: got %d, want 200", resp.StatusCode)
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Errorf("channel_id filter: got %d items, want 1", len(list.Items))
+	}
+
+	// Filter by channel_id=chanID2 → expect 1.
+	q2 := url.Values{}
+	q2.Set("channel_id", chanID2.String())
+	resp2 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q2)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("filter by channel_id2: got %d, want 200", resp2.StatusCode)
+	}
+	var list2 struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&list2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list2.Items) != 1 {
+		t.Errorf("channel_id2 filter: got %d items, want 1", len(list2.Items))
+	}
+
+	// Invalid rule_id → 400.
+	q3 := url.Values{}
+	q3.Set("rule_id", "not-a-uuid")
+	resp3 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q3)
+	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid rule_id: got %d, want 400", resp3.StatusCode)
+	}
+
+	// Invalid channel_id → 400.
+	q4 := url.Values{}
+	q4.Set("channel_id", "not-a-uuid")
+	resp4 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q4)
+	defer resp4.Body.Close() //nolint:errcheck,gosec // G104
+	if resp4.StatusCode != http.StatusBadRequest {
+		t.Errorf("invalid channel_id: got %d, want 400", resp4.StatusCode)
+	}
+}
+
+// TestReplayDelivery_NonExistentID verifies replaying a non-existent delivery ID.
+// ReplayDelivery uses a SQL WHERE guard (status IN ('failed','cancelled')),
+// so a non-existent ID is a no-op → 204.
+func TestReplayDelivery_NonExistentID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doReplayDelivery(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String())
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	// Non-existent ID → handler checks existence first → 404.
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("replay non-existent: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestDeliveries_CrossOrgIsolation verifies that org B cannot list, get, or
+// replay org A's deliveries.
+func TestDeliveries_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A.
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	aliceOrgID := mustParseUUID(t, aliceReg.OrgID)
+
+	// Create a delivery in Alice's org.
+	chanID := createTestDelivery(t, ctx, db, aliceOrgID, "")
+	delID := getDeliveryIDByChannel(t, ctx, db, aliceOrgID, chanID)
+	setDeliveryStatus(t, ctx, db, delID, "failed")
+
+	// Alice can see her delivery.
+	aliceGet := doGetDelivery(t, ctx, ts, aliceToken, aliceReg.OrgID, delID.String())
+	defer aliceGet.Body.Close() //nolint:errcheck,gosec // G104
+	if aliceGet.StatusCode != http.StatusOK {
+		t.Fatalf("alice get own delivery: got %d, want 200", aliceGet.StatusCode)
+	}
+
+	// Bob owns org B.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+	bobOrgReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs", bytes.NewBufferString(`{"name":"Bob Org"}`))
+	bobOrgReq.Header.Set("Content-Type", "application/json")
+	bobOrgReq.Header.Set("Cookie", "access_token="+bobToken)
+	bobOrgReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	bobOrgResp, err := ts.Client().Do(bobOrgReq) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create bob org: %v", err)
+	}
+	defer bobOrgResp.Body.Close() //nolint:errcheck,gosec // G104
+	var bobOrg struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(bobOrgResp.Body).Decode(&bobOrg); err != nil {
+		t.Fatalf("decode bob org: %v", err)
+	}
+
+	// Bob cannot get Alice's delivery by querying his own org.
+	t.Run("get delivery in wrong org", func(t *testing.T) {
+		resp := doGetDelivery(t, ctx, ts, bobToken, bobOrg.OrgID, delID.String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("bob get alice's delivery in bob's org: got %d, want 404", resp.StatusCode)
+		}
+	})
+
+	// Bob's delivery list is empty.
+	t.Run("list deliveries in wrong org", func(t *testing.T) {
+		resp := doListDeliveries(t, ctx, ts, bobToken, bobOrg.OrgID, nil)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("bob list deliveries: got %d, want 200", resp.StatusCode)
+		}
+		var list struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		if len(list.Items) != 0 {
+			t.Errorf("bob's delivery list should be empty, got %d", len(list.Items))
+		}
+	})
+
+	// Bob cannot access Alice's org at all — 403.
+	t.Run("cross-org access forbidden", func(t *testing.T) {
+		resp := doGetDelivery(t, ctx, ts, bobToken, aliceReg.OrgID, delID.String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("bob accessing alice's org: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	// Bob cannot replay Alice's delivery via his own org.
+	t.Run("replay delivery in wrong org", func(t *testing.T) {
+		resp := doReplayDelivery(t, ctx, ts, bobToken, bobOrg.OrgID, delID.String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		// No-op (delivery not in Bob's org) → 204, but not actually replayed.
+		// Verify Alice's delivery is still failed.
+		aliceGet2 := doGetDelivery(t, ctx, ts, aliceToken, aliceReg.OrgID, delID.String())
+		defer aliceGet2.Body.Close() //nolint:errcheck,gosec // G104
+		var got map[string]any
+		if err := json.NewDecoder(aliceGet2.Body).Decode(&got); err != nil {
+			t.Fatalf("decode alice delivery: %v", err)
+		}
+		if got["status"] != "failed" {
+			t.Errorf("alice's delivery should still be failed, got %v", got["status"])
+		}
+	})
+}
+
+// TestReplayDelivery_RBAC_ViewerMemberForbidden verifies that replay requires
+// admin+ role. Viewers and members should get 403.
+func TestReplayDelivery_RBAC_ViewerMemberForbidden(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceOrgID, _ := uuid.Parse(aliceReg.OrgID)
+
+	// Create a delivery and set to failed.
+	chanID := createTestDelivery(t, ctx, db, aliceOrgID, "")
+	delID := getDeliveryIDByChannel(t, ctx, db, aliceOrgID, chanID)
+	setDeliveryStatus(t, ctx, db, delID, "failed")
+
+	// Bob is a viewer.
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-5678")
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, aliceOrgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add Bob as viewer: %v", err)
+	}
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-5678")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	// Carol is a member.
+	carolReg := doRegister(t, ctx, ts, "carol@example.com", "test-password-9012")
+	carolUserID, _ := uuid.Parse(carolReg.UserID)
+	if err := db.CreateOrgMember(ctx, aliceOrgID, carolUserID, "member"); err != nil {
+		t.Fatalf("add Carol as member: %v", err)
+	}
+	carolLogin := doLogin(t, ctx, ts, "carol@example.com", "test-password-9012")
+	defer carolLogin.Body.Close() //nolint:errcheck,gosec // G104
+	carolToken := cookieValue(carolLogin, "access_token")
+
+	t.Run("viewer cannot replay", func(t *testing.T) {
+		resp := doReplayDelivery(t, ctx, ts, bobToken, aliceReg.OrgID, delID.String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("viewer replay: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("member cannot replay", func(t *testing.T) {
+		resp := doReplayDelivery(t, ctx, ts, carolToken, aliceReg.OrgID, delID.String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("member replay: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	// Viewers and members CAN read deliveries.
+	t.Run("viewer can list", func(t *testing.T) {
+		resp := doListDeliveries(t, ctx, ts, bobToken, aliceReg.OrgID, nil)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("viewer list: got %d, want 200", resp.StatusCode)
+		}
+	})
+
+	t.Run("member can get", func(t *testing.T) {
+		resp := doGetDelivery(t, ctx, ts, carolToken, aliceReg.OrgID, delID.String())
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("member get: got %d, want 200", resp.StatusCode)
+		}
+	})
 }

@@ -167,6 +167,66 @@ func TestSanitizeSubject(t *testing.T) {
 	}
 }
 
+// TestRenderAlert_XSSEscaping verifies that adversarial input containing HTML/JS
+// is auto-escaped by html/template, preventing XSS in rendered email output.
+func TestRenderAlert_XSSEscaping(t *testing.T) {
+	xssPayload := `<script>alert('xss')</script>`
+	data := AlertTemplateData{
+		RuleName: xssPayload,
+		RuleID:   "rule-xss",
+		CVEs: []CVESummary{
+			{
+				CVEID:       "CVE-2024-XSS",
+				Severity:    xssPayload,
+				Description: xssPayload,
+			},
+		},
+		CVErtOpsURL: "https://app.example.com",
+	}
+
+	_, html, _, err := RenderAlert(data)
+	if err != nil {
+		t.Fatalf("RenderAlert: %v", err)
+	}
+
+	// The HTML output must NOT contain the raw script tag.
+	if strings.Contains(html, "<script>") {
+		t.Error("HTML output contains unescaped <script> tag — XSS vulnerability")
+	}
+	// html/template escapes < as &lt;
+	if !strings.Contains(html, "&lt;script&gt;") {
+		t.Error("HTML output should contain escaped form of <script>")
+	}
+}
+
+// TestRenderDigest_XSSEscaping verifies XSS escaping in digest email templates.
+func TestRenderDigest_XSSEscaping(t *testing.T) {
+	xssPayload := `<img src=x onerror=alert(1)>`
+	data := DigestTemplateData{
+		OrgName:    xssPayload,
+		ReportName: xssPayload,
+		Date:       "2026-03-01",
+		CVEs: []CVESummary{
+			{
+				CVEID:       "CVE-2024-XSS2",
+				Severity:    "critical",
+				Description: xssPayload,
+			},
+		},
+		TotalCount:  1,
+		CVErtOpsURL: "https://app.example.com",
+	}
+
+	_, html, _, err := RenderDigest(data)
+	if err != nil {
+		t.Fatalf("RenderDigest: %v", err)
+	}
+
+	if strings.Contains(html, "<img src=x") {
+		t.Error("HTML output contains unescaped <img> tag — XSS vulnerability")
+	}
+}
+
 func TestSnapshotsToCVESummaries(t *testing.T) {
 	sev := "critical"
 	snaps := []cveSnapshot{
@@ -198,4 +258,62 @@ func TestSnapshotsToCVESummaries(t *testing.T) {
 	if s.DetailURL != "https://app.example.com/cves/CVE-2024-1111" {
 		t.Errorf("DetailURL = %q", s.DetailURL)
 	}
+}
+
+func TestSnapshotsToCVESummaries_EdgeCases(t *testing.T) {
+	t.Run("nil severity", func(t *testing.T) {
+		snaps := []cveSnapshot{{CVEID: "CVE-2024-NIL", Severity: nil}}
+		out := snapshotsToCVESummaries(snaps, "https://app.example.com")
+		if out[0].Severity != "" {
+			t.Errorf("nil severity should produce empty string, got %q", out[0].Severity)
+		}
+	})
+
+	t.Run("empty baseURL", func(t *testing.T) {
+		snaps := []cveSnapshot{{CVEID: "CVE-2024-NOURL"}}
+		out := snapshotsToCVESummaries(snaps, "")
+		if out[0].DetailURL != "" {
+			t.Errorf("empty baseURL should produce empty DetailURL, got %q", out[0].DetailURL)
+		}
+	})
+
+	t.Run("short description not truncated", func(t *testing.T) {
+		desc := "Short description under 280 chars."
+		snaps := []cveSnapshot{{CVEID: "CVE-2024-SHORT", Description: desc}}
+		out := snapshotsToCVESummaries(snaps, "")
+		if out[0].Description != desc {
+			t.Errorf("short description should pass through unchanged, got %q", out[0].Description)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		out := snapshotsToCVESummaries(nil, "https://app.example.com")
+		if len(out) != 0 {
+			t.Errorf("nil input should produce empty output, got %d items", len(out))
+		}
+	})
+
+	t.Run("all score fields populated", func(t *testing.T) {
+		snaps := []cveSnapshot{{
+			CVEID:       "CVE-2024-SCORES",
+			CVSSV3Score: ptr(8.5),
+			CVSSV4Score: ptr(7.2),
+			EPSSScore:   ptr(0.95),
+			InCISAKEV:   true,
+		}}
+		out := snapshotsToCVESummaries(snaps, "")
+		s := out[0]
+		if s.CVSSV3Score == nil || *s.CVSSV3Score != 8.5 {
+			t.Error("CVSSV3Score not passed through")
+		}
+		if s.CVSSV4Score == nil || *s.CVSSV4Score != 7.2 {
+			t.Error("CVSSV4Score not passed through")
+		}
+		if s.EPSSScore == nil || *s.EPSSScore != 0.95 {
+			t.Error("EPSSScore not passed through")
+		}
+		if !s.InCISAKEV {
+			t.Error("InCISAKEV not passed through")
+		}
+	})
 }

@@ -15,6 +15,7 @@ import (
 func TestIPRateLimiter_Allow(t *testing.T) {
 	t.Parallel()
 	rl := newIPRateLimiter(rate.Limit(100), 3, time.Minute)
+	t.Cleanup(rl.Stop)
 	for i := 1; i <= 3; i++ {
 		if !rl.Allow("127.0.0.1") {
 			t.Errorf("request %d: should be allowed (within burst of 3)", i)
@@ -60,6 +61,7 @@ func TestAuthRateLimit_Returns429AfterBurst(t *testing.T) {
 	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 2, time.Minute),
 	}
+	t.Cleanup(srv.Close)
 	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -92,6 +94,7 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
 	}
+	t.Cleanup(srv.Close)
 	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -117,5 +120,154 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 	}
 	if ra := resp2.Header.Get("Retry-After"); ra == "" {
 		t.Error("rate-limited response missing Retry-After header")
+	}
+}
+
+// TestClientIPMiddleware_SetsContextIP verifies that clientIPMiddleware
+// extracts the IP from RemoteAddr and injects it into the context.
+func TestClientIPMiddleware_SetsContextIP(t *testing.T) {
+	t.Parallel()
+	var gotIP string
+	handler := clientIPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIP, _ = r.Context().Value(ctxClientIP).(string)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "192.168.1.100:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200", rec.Code)
+	}
+	if gotIP != "192.168.1.100" {
+		t.Errorf("ctxClientIP = %q, want %q", gotIP, "192.168.1.100")
+	}
+}
+
+// TestClientIPMiddleware_NoPort verifies that clientIPMiddleware handles
+// RemoteAddr without a port (net.SplitHostPort fails, falls back to raw value).
+func TestClientIPMiddleware_NoPort(t *testing.T) {
+	t.Parallel()
+	var gotIP string
+	handler := clientIPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIP, _ = r.Context().Value(ctxClientIP).(string)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "10.0.0.1"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotIP != "10.0.0.1" {
+		t.Errorf("ctxClientIP = %q, want %q", gotIP, "10.0.0.1")
+	}
+}
+
+// TestClientIPMiddleware_IPv6 verifies that clientIPMiddleware correctly
+// parses an IPv6 address with port from RemoteAddr.
+func TestClientIPMiddleware_IPv6(t *testing.T) {
+	t.Parallel()
+	var gotIP string
+	handler := clientIPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIP, _ = r.Context().Value(ctxClientIP).(string)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.RemoteAddr = "[::1]:8080"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if gotIP != "::1" {
+		t.Errorf("ctxClientIP = %q, want %q", gotIP, "::1")
+	}
+}
+
+// TestCheckAuthRateLimit_AllowsWithinBurst verifies that checkAuthRateLimit
+// returns nil when requests are within the burst limit.
+func TestCheckAuthRateLimit_AllowsWithinBurst(t *testing.T) {
+	t.Parallel()
+	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
+		rateLimiter: newIPRateLimiter(rate.Limit(100), 3, time.Minute),
+	}
+
+	ctx := context.WithValue(context.Background(), ctxClientIP, "10.0.0.1")
+	for i := 1; i <= 3; i++ {
+		if err := srv.checkAuthRateLimit(ctx); err != nil {
+			t.Errorf("request %d: checkAuthRateLimit returned error within burst: %v", i, err)
+		}
+	}
+}
+
+// TestCheckAuthRateLimit_ReturnsErrorAfterBurst verifies that checkAuthRateLimit
+// returns a huma 429 error after the burst is exhausted.
+func TestCheckAuthRateLimit_ReturnsErrorAfterBurst(t *testing.T) {
+	t.Parallel()
+	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
+		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
+	}
+
+	ctx := context.WithValue(context.Background(), ctxClientIP, "10.0.0.2")
+	// First request: within burst.
+	if err := srv.checkAuthRateLimit(ctx); err != nil {
+		t.Fatalf("first request: unexpected error: %v", err)
+	}
+	// Second request: exceeds burst.
+	err := srv.checkAuthRateLimit(ctx)
+	if err == nil {
+		t.Fatal("second request: expected error after burst exhausted, got nil")
+	}
+}
+
+// TestCheckAuthRateLimit_MissingIPUsesUnknown verifies that when ctxClientIP
+// is not set in context, checkAuthRateLimit falls back to "unknown" as the IP.
+func TestCheckAuthRateLimit_MissingIPUsesUnknown(t *testing.T) {
+	t.Parallel()
+	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
+		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
+	}
+
+	// No ctxClientIP in context — should use "unknown" as the IP key.
+	ctx := context.Background()
+	if err := srv.checkAuthRateLimit(ctx); err != nil {
+		t.Fatalf("first request with missing IP: unexpected error: %v", err)
+	}
+	// Second request to "unknown" bucket should be rate limited.
+	err := srv.checkAuthRateLimit(ctx)
+	if err == nil {
+		t.Error("second request with missing IP: expected rate limit error, got nil")
+	}
+}
+
+// TestAuthRateLimit_ExtractsIPFromHostPort verifies that authRateLimit
+// correctly strips the port from RemoteAddr before rate limiting.
+func TestAuthRateLimit_ExtractsIPFromHostPort(t *testing.T) {
+	t.Parallel()
+	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
+		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
+	}
+
+	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Request from same IP but different ports should share the same bucket.
+	req1 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req1.RemoteAddr = "172.16.0.1:11111"
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request: got %d, want 200", rec1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req2.RemoteAddr = "172.16.0.1:22222"
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Errorf("second request (same IP, different port): got %d, want 429", rec2.Code)
 	}
 }

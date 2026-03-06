@@ -39,13 +39,16 @@ type CompiledRule struct {
 	SQL         sq.Sqlizer   // WHERE predicate only; no LIMIT, no FROM
 	Joins       []string     // optional JOINs (e.g., FTS cve_search_index)
 	PostFilters []PostFilter // Go-side regex filters (description_primary only, MVP)
-	IsEPSSOnly  bool         // all conditions reference epss_score
-	HasEPSS     bool         // any condition references epss_score
+	Logic        Logic        // and/or — controls PostFilter combination semantics
+	IsEPSSOnly   bool         // all conditions reference epss_score
+	HasEPSS      bool         // any condition references epss_score
+	HasWatchlist bool         // compiled SQL includes watchlist subquery (needs RLS bypass)
 }
 
 // PostFilter is an in-process regex filter applied to SQL result set candidates.
-// Field is always description_primary in MVP.
+// Field identifies which candidate field to match against (e.g., "description_primary", "cve_id").
 type PostFilter struct {
+	Field   string // DSL field name (e.g., "description_primary", "cve_id")
 	Negate  bool
 	Pattern *regexp.Regexp
 }

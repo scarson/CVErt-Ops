@@ -17,7 +17,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/internal/tier"
 )
 
 // validEcosystems is the whitelist of supported package ecosystems.
@@ -87,12 +89,12 @@ type watchlistItemsResponse struct {
 // encodeTimeCursor encodes a (time, uuid) pair as a base64 cursor string.
 func encodeTimeCursor(t time.Time, id uuid.UUID) string {
 	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id.String()
-	return base64.StdEncoding.EncodeToString([]byte(raw))
+	return base64.URLEncoding.EncodeToString([]byte(raw))
 }
 
 // decodeTimeCursor decodes a base64 cursor into a (time, uuid) pair.
 func decodeTimeCursor(s string) (time.Time, uuid.UUID, error) {
-	raw, err := base64.StdEncoding.DecodeString(s)
+	raw, err := base64.URLEncoding.DecodeString(s)
 	if err != nil {
 		return time.Time{}, uuid.Nil, fmt.Errorf("decode cursor: %w", err)
 	}
@@ -169,6 +171,34 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Tier gating: check watchlist count limit.
+	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
+	if !ok {
+		slog.ErrorContext(r.Context(), "tier resolver missing from context")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	limit := resolver.ResolveInt(tier.LimitWatchlists)
+	if limit >= 0 {
+		count, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "count watchlists for tier check", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if count >= int64(limit) {
+			srv.auditLog(r, audit.Entry{
+				OrgID:      orgID,
+				Action:     "create",
+				EntityType: "watchlist",
+				Success:    false,
+				Metadata:   map[string]any{"reason": "tier_limit"},
+			})
+			http.Error(w, "tier limit: max watchlists reached", http.StatusForbidden)
+			return
+		}
+	}
+
 	var req createWatchlistBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -205,7 +235,17 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, watchlistToEntry(*row))
+	wlEntry := watchlistToEntry(*row)
+	writeJSON(w, http.StatusCreated, wlEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "watchlist",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   wlEntry,
+	})
 }
 
 // getWatchlistHandler handles GET /api/v1/orgs/{org_id}/watchlists/{id}.
@@ -305,6 +345,7 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	oldState := watchlistToEntry(*current)
 
 	var req patchWatchlistBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -363,7 +404,18 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, watchlistToEntry(*row))
+	newEntry := watchlistToEntry(*row)
+	writeJSON(w, http.StatusOK, newEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "watchlist",
+		EntityID:   id.String(),
+		EntityName: row.Name,
+		Success:    true,
+		OldState:   oldState,
+		NewState:   newEntry,
+	})
 }
 
 // deleteWatchlistHandler handles DELETE /api/v1/orgs/{org_id}/watchlists/{id}.
@@ -381,11 +433,32 @@ func (srv *Server) deleteWatchlistHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Fetch before delete for audit log.
+	current, err := srv.store.GetWatchlist(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get watchlist for delete", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if current == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
 	if err := srv.store.DeleteWatchlist(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "watchlist",
+		EntityID:   id.String(),
+		EntityName: current.Name,
+		Success:    true,
+		OldState:   watchlistToEntry(*current),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -532,9 +605,14 @@ func (srv *Server) deleteWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID); err != nil {
+	deleted, err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID)
+	if err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist item", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

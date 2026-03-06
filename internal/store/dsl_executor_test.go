@@ -4,8 +4,10 @@ package store_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"testing"
 	"time"
 
@@ -189,5 +191,223 @@ func TestExecuteDSLQuery_ExcludesRejectedWithdrawn(t *testing.T) {
 	}
 	if !found {
 		t.Error("published CVE-2024-S001 should be in results")
+	}
+}
+
+// ── Cursor & Limit edge cases ──────────────────────────────────────────────
+
+// compileHighSeverity returns a compiled DSL rule matching severity=critical|high.
+func compileHighSeverity(t *testing.T) *dsl.CompiledRule {
+	t.Helper()
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "in", Value: json.RawMessage(`["critical","high"]`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	return compiled
+}
+
+func TestExecuteDSLQuery_InvalidBase64Cursor(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	s.SeedTestCVE(t, "CVE-2024-C001", "critical", nil)
+
+	compiled := compileHighSeverity(t)
+	_, _, err := s.ExecuteDSLQuery(ctx, compiled, "!!!not-base64!!!", 25)
+	if err == nil {
+		t.Fatal("expected error for invalid base64 cursor, got nil")
+	}
+}
+
+func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	s.SeedTestCVE(t, "CVE-2024-C002", "critical", nil)
+
+	compiled := compileHighSeverity(t)
+	badCursor := base64.URLEncoding.EncodeToString([]byte("not-json"))
+	_, _, err := s.ExecuteDSLQuery(ctx, compiled, badCursor, 25)
+	if err == nil {
+		t.Fatal("expected error for valid base64 but invalid JSON cursor, got nil")
+	}
+}
+
+func TestExecuteDSLQuery_CraftedCursor(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	base := time.Now()
+	for i := 0; i < 3; i++ {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-K%03d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+		})
+	}
+
+	compiled := compileHighSeverity(t)
+
+	// Craft a cursor that skips all CVEs (far future date).
+	farFuture := time.Now().Add(24 * time.Hour)
+	crafted, _ := json.Marshal(map[string]interface{}{
+		"s": farFuture.Format(time.RFC3339Nano),
+		"c": "CVE-9999-9999",
+	})
+	cursor := base64.URLEncoding.EncodeToString(crafted)
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted cursor: %v", err)
+	}
+	// Crafted cursor with far-future date: keyset WHERE (date, id) < (far_future, ...)
+	// should still return all CVEs since they are all before the far-future date.
+	if len(results) != 3 {
+		t.Errorf("crafted far-future cursor: got %d results, want 3", len(results))
+	}
+}
+
+func TestExecuteDSLQuery_LimitZeroClamped(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 30 CVEs to exceed the clamped default of 25.
+	base := time.Now()
+	for i := 0; i < 30; i++ {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-L%03d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+		})
+	}
+
+	compiled := compileHighSeverity(t)
+	results, cursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 0)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery limit=0: %v", err)
+	}
+	// limit=0 → clamped to 25. With 30 CVEs, first page should return 25.
+	if len(results) != 25 {
+		t.Errorf("limit=0 clamped: got %d results, want 25", len(results))
+	}
+	if cursor == "" {
+		t.Error("expected non-empty cursor (more results exist)")
+	}
+}
+
+func TestExecuteDSLQuery_LimitOverMaxClamped(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	base := time.Now()
+	for i := 0; i < 30; i++ {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-M%03d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+		})
+	}
+
+	compiled := compileHighSeverity(t)
+	results, cursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 999)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery limit=999: %v", err)
+	}
+	// limit=999 > 100 → clamped to 25. With 30 CVEs, first page returns 25.
+	if len(results) != 25 {
+		t.Errorf("limit=999 clamped: got %d results, want 25", len(results))
+	}
+	if cursor == "" {
+		t.Error("expected non-empty cursor (more results exist)")
+	}
+}
+
+func TestExecuteDSLQuery_NegativeLimitClamped(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	s.SeedTestCVE(t, "CVE-2024-N001", "critical", nil)
+
+	compiled := compileHighSeverity(t)
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", -5)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery limit=-5: %v", err)
+	}
+	// limit=-5 → clamped to 25. With 1 CVE, returns 1.
+	if len(results) != 1 {
+		t.Errorf("limit=-5 clamped: got %d results, want 1", len(results))
+	}
+}
+
+func TestExecuteDSLQuery_NilSQL(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	s.SeedTestCVE(t, "CVE-2024-X001", "critical", &testutil.SeedCVEOpts{Status: "published"})
+	s.SeedTestCVE(t, "CVE-2024-X002", "low", &testutil.SeedCVEOpts{Status: "published"})
+	s.SeedTestCVE(t, "CVE-2024-X003", "medium", &testutil.SeedCVEOpts{Status: "rejected"})
+
+	// Nil SQL: no WHERE predicate beyond status filtering.
+	compiled := &dsl.CompiledRule{} //nolint:exhaustruct // testing nil SQL path
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery nil SQL: %v", err)
+	}
+	// Should return the 2 non-rejected CVEs.
+	if len(results) != 2 {
+		t.Errorf("nil SQL: got %d results, want 2 (excluded rejected)", len(results))
+	}
+}
+
+func TestExecuteDSLQuery_AppliesPostFilters(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 3 CVEs: two with "apache" in description, one without.
+	s.SeedTestCVE(t, "CVE-2024-PF01", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "apache http server remote code execution",
+	})
+	s.SeedTestCVE(t, "CVE-2024-PF02", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "windows kernel privilege escalation",
+	})
+	s.SeedTestCVE(t, "CVE-2024-PF03", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "apache tomcat denial of service",
+	})
+
+	// Compile a rule with severity=high, then attach a regex PostFilter manually.
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, compileErr := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if compileErr != nil {
+		t.Fatalf("Compile: %v", compileErr)
+	}
+	compiled.PostFilters = []dsl.PostFilter{
+		{Negate: false, Pattern: regexp.MustCompile("apache")},
+	}
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+	// PostFilter should reduce 3 high-severity CVEs to 2 matching "apache".
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (PostFilter 'apache')", len(results))
+	}
+	for _, r := range results {
+		if r.CveID == "CVE-2024-PF02" {
+			t.Error("CVE-2024-PF02 (windows) should be excluded by PostFilter")
+		}
 	}
 }

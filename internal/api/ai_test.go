@@ -8,14 +8,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"fmt"
-
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/config"
+	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -44,6 +45,7 @@ func newAITestServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Serv
 	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 
@@ -172,24 +174,27 @@ func TestNLSearchHandler_QuotaDenied(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	_, ts := newAITestServer(t, db)
+	srv, ts := newAITestServer(t, db)
+	// Use a small AI quota so we exhaust it well before the org rate limiter's
+	// burst window (free tier = 10 burst). With quota=3 we only need 4 requests.
+	srv.cfg.AINLSearchLimitFree = 3
 	reg := doRegister(t, ctx, ts, "nlquota@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "nlquota@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
 	token := cookieValue(loginResp, "access_token")
 
-	// Seed a CVE so the DSL query returns something for the first 10 calls.
+	// Seed a CVE so the DSL query returns something.
 	db.SeedTestCVE(t, "CVE-2024-0010", "critical", nil)
 
-	// Exhaust the quota (limit is 10 for free tier).
+	// Exhaust the quota (limit is 3 for this test).
 	// Each query must be unique to avoid cache hits (cache hits are free).
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 3; i++ {
 		body := fmt.Sprintf(`{"query":"quota test query %d"}`, i)
 		resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
 		resp.Body.Close() //nolint:errcheck,gosec
 	}
 
-	// The 11th request should be denied.
+	// The 4th request should be denied.
 	body := `{"query":"quota test query overflow"}`
 	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
@@ -497,6 +502,7 @@ func newAITestServerWithLLM(t *testing.T, db *testutil.TestDB, llm ai.LLMClient)
 	srv.SetAIDeps(llm)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 
@@ -738,5 +744,330 @@ func TestSummarizeHandler_CacheHit(t *testing.T) {
 	json.NewDecoder(resp2.Body).Decode(&result2) //nolint:errcheck,gosec
 	if !result2.Cached {
 		t.Error("second request should be cached")
+	}
+}
+
+// ── Malformed JSON + nil LLM + quota-disabled tests ─────────────────────────
+
+func TestNLSearchHandler_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nlbadjson@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlbadjson@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, `{invalid json`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestNLSearchHandler_NilLLM(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create server WITHOUT calling SetAIDeps — llm remains nil.
+	_, ts := newAITestServerWithLLM(t, db, nil)
+	reg := doRegister(t, ctx, ts, "nlnilllm@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlnilllm@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, `{"query":"test"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil LLM: got %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestSummarizeHandler_NilLLM(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-8001", "critical", nil)
+
+	_, ts := newAITestServerWithLLM(t, db, nil)
+	reg := doRegister(t, ctx, ts, "summnilllm@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "summnilllm@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-8001")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("nil LLM summarize: got %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestNLSearchHandler_QuotaDisabled(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-8002", "critical", nil)
+
+	// Create server with quota disabled.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "aitestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		AIQuotaEnabled:      false,
+		GeminiModel:         "gemini-2.0-flash",
+		AICacheNLSearchTTL:  1 * time.Hour,
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetAIDeps(ai.NewMockClient())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	reg := doRegister(t, ctx, ts, "nlnoquota@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlnoquota@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, `{"query":"critical CVEs"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("quota disabled: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestSummarizeHandler_QuotaDisabled(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-8003", "high", nil)
+
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:            "aitestsecret",
+		RegistrationMode:     "open",
+		Argon2MaxConcurrent:  5,
+		AIQuotaEnabled:       false,
+		GeminiModel:          "gemini-2.0-flash",
+		AICacheSummarizeTTL:  24 * time.Hour,
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	srv.SetAIDeps(ai.NewMockClient())
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	reg := doRegister(t, ctx, ts, "summnoquota@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "summnoquota@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doSummarize(t, ctx, ts, token, reg.OrgID, "CVE-2024-8003")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("summarize quota disabled: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// ── orgID fail-closed: non-UUID org_id in URL → 400 ─────────────────────────
+
+func TestAIHandlers_InvalidOrgID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "ai-badorgid@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ai-badorgid@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	_ = reg // only needed for registration side effect
+
+	t.Run("NLSearch", func(t *testing.T) {
+		resp := doNLSearch(t, ctx, ts, token, "not-a-uuid", `{"query":"test"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("nl-search invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+
+	t.Run("Summarize", func(t *testing.T) {
+		resp := doSummarize(t, ctx, ts, token, "not-a-uuid", "CVE-2024-0001")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("summarize invalid org_id: got %d, want 400", resp.StatusCode)
+		}
+	})
+}
+
+// ── Cross-org tenant isolation: user in org A cannot access org B's AI ───────
+
+func TestAIHandlers_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-9901", "critical", nil)
+
+	_, ts := newAITestServer(t, db)
+
+	// User A: first registered user gets auto-created org.
+	regA := doRegister(t, ctx, ts, "ai-orgA@example.com", "test-password-1234")
+
+	loginA := doLogin(t, ctx, ts, "ai-orgA@example.com", "test-password-1234")
+	defer loginA.Body.Close() //nolint:errcheck,gosec
+	tokenA := cookieValue(loginA, "access_token")
+
+	// User B: second user must create their own org explicitly
+	// (BootstrapFirstUserOrg only fires for the first registration).
+	doRegister(t, ctx, ts, "ai-orgB@example.com", "test-password-1234")
+	loginB := doLogin(t, ctx, ts, "ai-orgB@example.com", "test-password-1234")
+	defer loginB.Body.Close() //nolint:errcheck,gosec
+	tokenB := cookieValue(loginB, "access_token")
+
+	orgBResp := doCreateOrg(t, ctx, ts, tokenB, "AI Org B")
+	defer orgBResp.Body.Close() //nolint:errcheck,gosec
+	if orgBResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create org B: got %d, want 201", orgBResp.StatusCode)
+	}
+	var orgB struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(orgBResp.Body).Decode(&orgB); err != nil {
+		t.Fatalf("decode org B: %v", err)
+	}
+
+	// User A tries to access org B's AI endpoints → 403.
+	t.Run("NLSearch", func(t *testing.T) {
+		resp := doNLSearch(t, ctx, ts, tokenA, orgB.OrgID, `{"query":"test"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org nl-search: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("Summarize", func(t *testing.T) {
+		resp := doSummarize(t, ctx, ts, tokenA, orgB.OrgID, "CVE-2024-9901")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org summarize: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	// Sanity: User A accessing own org works.
+	t.Run("OwnOrgWorks", func(t *testing.T) {
+		resp := doNLSearch(t, ctx, ts, tokenA, regA.OrgID, `{"query":"test"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode == http.StatusForbidden {
+			t.Error("own-org nl-search should not be 403")
+		}
+	})
+
+	_ = tokenB // used only for org creation
+}
+
+// ── buildSummaryInput sanitizes description ──────────────────────────────────
+
+func TestBuildSummaryInput_SanitizesDescription(t *testing.T) {
+	t.Parallel()
+	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+		CveID: "CVE-2024-0001",
+	}
+	cve.DescriptionPrimary.Valid = true
+	cve.DescriptionPrimary.String = "Vuln in [lib](https://evil.com/exfil) <script>alert(1)</script>"
+
+	input := buildSummaryInput(cve)
+
+	// Markdown link URL and HTML tags should be stripped by Sanitize().
+	if strings.Contains(input.Description, "evil.com") {
+		t.Errorf("description should have markdown URLs stripped, got: %s", input.Description)
+	}
+	if strings.Contains(input.Description, "<script>") {
+		t.Errorf("description should have HTML tags stripped, got: %s", input.Description)
+	}
+	// Preserved text content.
+	if !strings.Contains(input.Description, "Vuln in lib") {
+		t.Errorf("description should preserve text, got: %s", input.Description)
+	}
+}
+
+func TestBuildSummaryInput_NullFields(t *testing.T) {
+	t.Parallel()
+	// All NullXxx fields are zero-valued (not valid).
+	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+		CveID: "CVE-2024-0002",
+	}
+
+	input := buildSummaryInput(cve)
+
+	if input.CVEID != "CVE-2024-0002" {
+		t.Errorf("CVEID = %q, want CVE-2024-0002", input.CVEID)
+	}
+	if input.Description != "" {
+		t.Errorf("Description should be empty for null, got %q", input.Description)
+	}
+	if input.Severity != "" {
+		t.Errorf("Severity should be empty for null, got %q", input.Severity)
+	}
+	if input.CVSSV3Score != nil {
+		t.Errorf("CVSSV3Score should be nil for null, got %v", input.CVSSV3Score)
+	}
+	if input.CVSSV4Score != nil {
+		t.Errorf("CVSSV4Score should be nil for null, got %v", input.CVSSV4Score)
+	}
+	if input.EPSSScore != nil {
+		t.Errorf("EPSSScore should be nil for null, got %v", input.EPSSScore)
+	}
+	if input.CWEIDs != nil {
+		t.Errorf("CWEIDs should be nil for null, got %v", input.CWEIDs)
+	}
+}
+
+func TestNLSearchHandler_ProTierQuota(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2024-0099", "critical", nil)
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "aipro@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "aipro@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Upgrade to pro tier — NL search limit should be 100, not 10.
+	orgID, _ := uuid.Parse(reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	// Send 11 requests (exceeds free=10, within pro=100). All should succeed.
+	for i := 0; i < 11; i++ {
+		body := fmt.Sprintf(`{"query":"pro tier query %d"}`, i)
+		resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+		resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode == http.StatusTooManyRequests {
+			t.Fatalf("request %d returned 429 — pro tier should allow 100 requests/day", i)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200", i, resp.StatusCode)
+		}
 	}
 }

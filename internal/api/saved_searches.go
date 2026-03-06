@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -129,7 +130,17 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, savedSearchToEntry(row))
+	ssEntry := savedSearchToEntry(row)
+	writeJSON(w, http.StatusCreated, ssEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "saved_search",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   ssEntry,
+	})
 }
 
 // listSavedSearchesHandler handles GET /api/v1/orgs/{org_id}/saved-searches.
@@ -231,6 +242,8 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	oldEntry := savedSearchToEntry(existing)
+
 	// RBAC: private → only creator; shared → creator OR admin+.
 	if !canModifySavedSearch(existing, userID, role) {
 		http.Error(w, "forbidden", http.StatusForbidden)
@@ -295,7 +308,18 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, http.StatusOK, savedSearchToEntry(updated))
+	newEntry := savedSearchToEntry(updated)
+	writeJSON(w, http.StatusOK, newEntry)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "saved_search",
+		EntityID:   id.String(),
+		EntityName: updated.Name,
+		Success:    true,
+		OldState:   oldEntry,
+		NewState:   newEntry,
+	})
 }
 
 // deleteSavedSearchHandler handles DELETE /api/v1/orgs/{org_id}/saved-searches/{id}.
@@ -338,6 +362,15 @@ func (srv *Server) deleteSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "saved_search",
+		EntityID:   id.String(),
+		EntityName: existing.Name,
+		Success:    true,
+		OldState:   savedSearchToEntry(existing),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

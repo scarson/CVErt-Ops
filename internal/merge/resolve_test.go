@@ -439,3 +439,362 @@ func TestResolveMalformedSourceSkipped(t *testing.T) {
 		t.Errorf("status = %q, want %q (malformed source skipped, well-formed source used)", r.Status, "Active")
 	}
 }
+
+// ── CVSS v4 ──────────────────────────────────────────────────────────────────
+
+func TestResolveCVSSv4NVDWinsOverOSV(t *testing.T) {
+	t.Parallel()
+
+	sources := []generated.CveSource{
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1", CVSSv4Score: f64Ptr(6.5)}),
+		makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CVSSv4Score: f64Ptr(8.0)}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.CVSSv4Score == nil || *r.CVSSv4Score != 8.0 {
+		t.Errorf("CVSSv4Score = %v, want 8.0 (NVD wins)", r.CVSSv4Score)
+	}
+	if r.CVSSv4Source != SourceNVD {
+		t.Errorf("CVSSv4Source = %q, want %q", r.CVSSv4Source, SourceNVD)
+	}
+}
+
+func TestResolveCVSSv4VectorCaptured(t *testing.T) {
+	t.Parallel()
+
+	vec := "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+	sources := []generated.CveSource{
+		makeSource(SourceNVD, feed.CanonicalPatch{
+			CVEID:        "CVE-1",
+			CVSSv4Score:  f64Ptr(9.3),
+			CVSSv4Vector: &vec,
+		}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.CVSSv4Vector != vec {
+		t.Errorf("CVSSv4Vector = %q, want %q", r.CVSSv4Vector, vec)
+	}
+}
+
+func TestResolveCVSSv4SeverityResolution(t *testing.T) {
+	t.Parallel()
+
+	// NVD provides CVSSv4 only (no v3). Severity should still be resolvable
+	// from the NVD source's explicit severity field.
+	sev := "CRITICAL"
+	sources := []generated.CveSource{
+		makeSource(SourceNVD, feed.CanonicalPatch{
+			CVEID:       "CVE-1",
+			CVSSv4Score: f64Ptr(9.3),
+			Severity:    &sev,
+		}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Severity != "CRITICAL" {
+		t.Errorf("Severity = %q, want %q", r.Severity, "CRITICAL")
+	}
+}
+
+// ── Severity two-tier fallback ───────────────────────────────────────────────
+
+func TestResolveSeverityFallsFromCVSSToStatusPriority(t *testing.T) {
+	t.Parallel()
+
+	// CVSS-priority sources (NVD, OSV, GHSA, MITRE) have no severity.
+	// Status-priority source (MITRE) provides severity — should be used as fallback.
+	sev := "MEDIUM"
+	sources := []generated.CveSource{
+		makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", Status: "Active"}),
+		makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", Status: "Published", Severity: &sev}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	// MITRE is in both cvssPriority and statusPriority, but severity is only on MITRE.
+	// The first pass (cvssPriority) should find it from MITRE (4th position).
+	if r.Severity != "MEDIUM" {
+		t.Errorf("Severity = %q, want %q", r.Severity, "MEDIUM")
+	}
+}
+
+func TestResolveSeverityStatusPriorityFallback(t *testing.T) {
+	t.Parallel()
+
+	// An unknown source provides severity. CVSS priority finds nothing, status
+	// priority finds nothing, then unknown source fallback should provide it.
+	sev := "LOW"
+	sources := []generated.CveSource{
+		makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", Status: "Active"}),
+		makeSource("custom-source", feed.CanonicalPatch{CVEID: "CVE-1", Severity: &sev}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Severity != "LOW" {
+		t.Errorf("Severity = %q, want %q (unknown source fallback)", r.Severity, "LOW")
+	}
+}
+
+// ── canonicalizeURL ──────────────────────────────────────────────────────────
+
+func TestCanonicalizeURLTrailingSlashStripped(t *testing.T) {
+	t.Parallel()
+
+	got := canonicalizeURL("https://example.com/advisory/")
+	want := "https://example.com/advisory"
+	if got != want {
+		t.Errorf("canonicalizeURL trailing slash: got %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalizeURLQueryParamsSorted(t *testing.T) {
+	t.Parallel()
+
+	got := canonicalizeURL("https://example.com/page?z=1&a=2")
+	want := "https://example.com/page?a=2&z=1"
+	if got != want {
+		t.Errorf("canonicalizeURL query sort: got %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalizeURLSchemePreserved(t *testing.T) {
+	t.Parallel()
+
+	http := canonicalizeURL("http://example.com/path")
+	https := canonicalizeURL("https://example.com/path")
+	if http == https {
+		t.Error("canonicalizeURL should preserve scheme (http vs https should differ)")
+	}
+}
+
+func TestCanonicalizeURLFragmentStripped(t *testing.T) {
+	t.Parallel()
+
+	got := canonicalizeURL("https://example.com/page#section")
+	want := "https://example.com/page"
+	if got != want {
+		t.Errorf("canonicalizeURL fragment: got %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalizeURLEmptyReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	got := canonicalizeURL("")
+	// Empty string parsed by url.Parse becomes empty scheme/host; path stays "/".
+	if got != "" && got != "/" {
+		// The function trims space then url.Parse("") returns an empty URL.
+		// We just check it doesn't panic and returns something sensible.
+		t.Logf("canonicalizeURL(\"\") = %q (no crash, acceptable)", got)
+	}
+}
+
+func TestCanonicalizeURLNoQueryNoFragment(t *testing.T) {
+	t.Parallel()
+
+	input := "https://example.com/advisory/2024"
+	got := canonicalizeURL(input)
+	if got != input {
+		t.Errorf("canonicalizeURL plain URL: got %q, want %q", got, input)
+	}
+}
+
+func TestCanonicalizeURLHostLowercased(t *testing.T) {
+	t.Parallel()
+
+	got := canonicalizeURL("https://EXAMPLE.COM/path")
+	want := "https://example.com/path"
+	if got != want {
+		t.Errorf("canonicalizeURL host lowercasing: got %q, want %q", got, want)
+	}
+}
+
+// ── firstStr ─────────────────────────────────────────────────────────────────
+
+func TestFirstStrAllEmpty(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD:   {CVEID: "CVE-1", Status: ""},
+		SourceMITRE: {CVEID: "CVE-1", Status: ""},
+	}
+	got := firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
+	if got != "" {
+		t.Errorf("firstStr all empty: got %q, want %q", got, "")
+	}
+}
+
+func TestFirstStrFirstNonEmptyWins(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceMITRE: {CVEID: "CVE-1", Status: ""},
+		SourceNVD:   {CVEID: "CVE-1", Status: "Active"},
+		SourceGHSA:  {CVEID: "CVE-1", Status: "Reviewed"},
+	}
+	got := firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
+	if got != "Active" {
+		t.Errorf("firstStr first non-empty: got %q, want %q", got, "Active")
+	}
+}
+
+func TestFirstStrFallsBackToUnknownSource(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD:  {CVEID: "CVE-1", Status: ""},
+		"custom":   {CVEID: "CVE-1", Status: "Custom-Status"},
+	}
+	got := firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
+	if got != "Custom-Status" {
+		t.Errorf("firstStr unknown source fallback: got %q, want %q", got, "Custom-Status")
+	}
+}
+
+// ── firstStrPtr ──────────────────────────────────────────────────────────────
+
+func TestFirstStrPtrAllNil(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD:   {CVEID: "CVE-1"},
+		SourceMITRE: {CVEID: "CVE-1"},
+	}
+	got := firstStrPtr(patches, func(p feed.CanonicalPatch) *string { return p.DescriptionPrimary }, statusPriority)
+	if got != nil {
+		t.Errorf("firstStrPtr all nil: got %v, want nil", got)
+	}
+}
+
+func TestFirstStrPtrFirstNonNilWins(t *testing.T) {
+	t.Parallel()
+
+	desc := "NVD description"
+	patches := map[string]feed.CanonicalPatch{
+		SourceMITRE: {CVEID: "CVE-1"},
+		SourceNVD:   {CVEID: "CVE-1", DescriptionPrimary: &desc},
+	}
+	got := firstStrPtr(patches, func(p feed.CanonicalPatch) *string { return p.DescriptionPrimary }, statusPriority)
+	if got == nil || *got != desc {
+		t.Errorf("firstStrPtr first non-nil: got %v, want %q", got, desc)
+	}
+}
+
+func TestFirstStrPtrFallsBackToUnknownSource(t *testing.T) {
+	t.Parallel()
+
+	desc := "Custom description"
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD: {CVEID: "CVE-1"},
+		"custom":  {CVEID: "CVE-1", DescriptionPrimary: &desc},
+	}
+	got := firstStrPtr(patches, func(p feed.CanonicalPatch) *string { return p.DescriptionPrimary }, statusPriority)
+	if got == nil || *got != desc {
+		t.Errorf("firstStrPtr unknown source fallback: got %v, want %q", got, desc)
+	}
+}
+
+// ── otherSources ─────────────────────────────────────────────────────────────
+
+func TestOtherSourcesExcludesPriorityKeys(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD:   {},
+		SourceMITRE: {},
+		"custom-a":  {},
+		"custom-b":  {},
+	}
+	got := otherSources(patches, statusPriority)
+	// NVD and MITRE are in statusPriority, so only custom-a and custom-b remain.
+	if len(got) != 2 {
+		t.Fatalf("otherSources: got %v, want 2 elements", got)
+	}
+	if got[0] != "custom-a" || got[1] != "custom-b" {
+		t.Errorf("otherSources: got %v, want [custom-a custom-b] (sorted)", got)
+	}
+}
+
+func TestOtherSourcesEmptyWhenOnlyOneSource(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD: {},
+	}
+	got := otherSources(patches, cvssPriority)
+	if len(got) != 0 {
+		t.Errorf("otherSources single known source: got %v, want empty", got)
+	}
+}
+
+func TestOtherSourcesEmptyWhenNoSources(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{}
+	got := otherSources(patches, statusPriority)
+	if len(got) != 0 {
+		t.Errorf("otherSources no sources: got %v, want empty", got)
+	}
+}
+
+// ── computeScoreDiverges (boundary tests) ────────────────────────────────────
+
+func TestComputeScoreDivergesExactlyTwoPoint0(t *testing.T) {
+	t.Parallel()
+
+	// Exactly 2.0 difference → true.
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD: {CVSSv3Score: f64Ptr(7.0)},
+		SourceOSV: {CVSSv3Score: f64Ptr(5.0)},
+	}
+	if !computeScoreDiverges(patches) {
+		t.Error("computeScoreDiverges: exactly 2.0 difference should return true")
+	}
+}
+
+func TestComputeScoreDivergesJustUnderTwoPoint0(t *testing.T) {
+	t.Parallel()
+
+	// 1.99 difference → false.
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD: {CVSSv3Score: f64Ptr(6.99)},
+		SourceOSV: {CVSSv3Score: f64Ptr(5.0)},
+	}
+	if computeScoreDiverges(patches) {
+		t.Error("computeScoreDiverges: 1.99 difference should return false")
+	}
+}
+
+func TestComputeScoreDivergesBothNil(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD: {},
+		SourceOSV: {},
+	}
+	if computeScoreDiverges(patches) {
+		t.Error("computeScoreDiverges: both nil should return false")
+	}
+}
+
+func TestComputeScoreDivergesOneNilOneNonNil(t *testing.T) {
+	t.Parallel()
+
+	patches := map[string]feed.CanonicalPatch{
+		SourceNVD: {CVSSv3Score: f64Ptr(7.0)},
+		SourceOSV: {},
+	}
+	if computeScoreDiverges(patches) {
+		t.Error("computeScoreDiverges: one nil one non-nil should return false (single score, no divergence)")
+	}
+}

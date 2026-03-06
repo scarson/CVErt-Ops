@@ -891,3 +891,46 @@ so this CASCADE will not fire in normal operation. Event rows are retained for a
 
 Retention job (§21, 1-year policy) issues `DELETE FROM alert_events WHERE first_fired_at < $cutoff`.
 Same for `alert_rule_runs`. Both tables grant `SELECT, INSERT, UPDATE, DELETE`.
+
+---
+
+## Test coverage gap review (2026-03-02)
+
+Systematic test coverage review across all Phase 2b code using the `test-coverage-review` skill. Mapped every code path in source files and cross-referenced against test assertions.
+
+### Tests added (~90 new test functions)
+
+**`internal/alert/dsl/` (63 tests)**
+- Parser: missing logic field, nil conditions, multiple conditions
+- Validator (25 tests): every field kind × operator combination, non-string values for typed fields, affected ecosystem `in`/`not_in`/`neq` with valid + invalid enums, string `in` with non-array, text `contains`/`starts_with`/`ends_with`, multiple errors collected, unknown field sets `isEPSSOnly=false`
+- Compiler (27 tests): all 6 numeric ops (table-driven), all 6 time ops (table-driven), string `eq`/`neq`/`not_in`, enum `neq`/`not_in`, bool false, CVSS v4 score, OR logic with watchlists, regex-only with/without watchlists, affected ecosystem `neq`/`in`/`not_in` SQL generation, affected package `starts_with`/`ends_with` ILIKE patterns, FTS join dedup, backslash escaping, unknown field error, invalid regex error, EPSS-only flags, multiple post-filters, AND logic arg count
+- Security: watchlist `org_id` parameter binding verified in SQL args (tenant isolation), watchlist `deleted_at` filter in subquery
+- Types: `ValidationError.Error()` method, `ExportFieldDescriptions` completeness
+- Accessors: CVSS v4 score nil/null/valid, description primary lowercases
+
+**`internal/alert/evaluator` (26 tests)**
+- `EvaluateEPSS` (previously untested — 5 subtests): happy path, below-threshold filtering, only EPSS rules evaluated, cursor advancement, mixed EPSS+CVSS rules
+- `DryRun` (previously untested — 5 subtests): matching CVEs without writing events, rule not found, sample CVEs capped, regex post-filter applied, rejected CVEs excluded
+- `candidateCap` fail-closed (security-critical): 5100 CVEs inserted, verifies `Partial=true` with `MatchCount=0`
+- Batch: cursor advancement, skips EPSS-only rules, no-candidates cursor write
+- Activation: keyset pagination (1005 CVEs), rule not found, status transition to active
+- Zombie sweep: no zombies, recent job not swept
+- `RuleCache`: concurrent access (50 goroutines), concurrent evict, evict-only-target, evict multiple versions
+- `applyPostFilters` (new file, 7 tests): no filters, regex match, regex negate, multiple filters AND, mixed positive+negated, empty candidates, no matches
+
+**`internal/store/` (16 tests)**
+- Watchlist store: soft-delete behavior, item pagination, count after delete, get includes item count, deleted watchlist not counted in ownership validation, item with namespace
+- Alert rule store: list pagination, update not-found, list active EPSS rules, event different material hash, event filters (last_match_state, since, pagination), soft-delete exclusion, suppress delivery flag, run with error, create with watchlist_ids, default limit
+
+**`internal/api/` Phase 2b handlers (32 tests)**
+- Watchlists (10 tests): cross-org read/write isolation (6 operations), PATCH empty name, duplicate name, soft-delete behavior, list pagination, create empty name, invalid item type, get/patch/delete non-existent
+- Alert rules (17 tests): dry-run handler (previously untested — 4 tests: with evaluator, without evaluator → 503, non-existent rule, cross-org isolation), PATCH state machine (disabled→activating, activating→disabled, conditions change triggers re-activation, logic change triggers re-activation), cross-org PATCH/DELETE, invalid watchlist ID, empty name, get/delete/patch non-existent, validate with parse error, list with status filter
+- Alert events (5 tests): last_match_state filter, pagination, invalid rule_id/since filters, empty list
+
+### Notable finding
+Watchlist soft-delete does NOT cascade to items — `ListWatchlistItems` queries by `watchlist_id` with `deleted_at IS NULL` on items but doesn't check the parent watchlist's `deleted_at`. Items remain accessible after parent soft-delete. Documented for future fix.
+
+### Remaining gaps (nice-to-have, deferred)
+- Internal error wrapping consistency
+- Cache eviction edge cases in rule cache
+- Unlikely runtime failures (json.Marshal of known types)

@@ -221,3 +221,129 @@ func TestChannelRuleBindingExists(t *testing.T) {
 		t.Error("expected true after binding")
 	}
 }
+
+func TestBindChannelToRule_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "ARCIsoBindA")
+	org2, _ := s.CreateOrg(ctx, "ARCIsoBindB")
+	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoBindRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoBindChan")
+
+	// org2 must not be able to bind org1's channel to org1's rule.
+	err := s.BindChannelToRule(ctx, rule.ID, chanID, org2.ID)
+	// RLS should cause a FK violation or silently fail. Either an error or no binding is acceptable.
+	if err == nil {
+		// If no error, the binding must not exist in org1.
+		exists, checkErr := s.ChannelRuleBindingExists(ctx, rule.ID, chanID, org1.ID)
+		if checkErr != nil {
+			t.Fatalf("ChannelRuleBindingExists: %v", checkErr)
+		}
+		if exists {
+			t.Error("cross-org bind should not create a binding visible to org1")
+		}
+	}
+}
+
+func TestUnbindChannelFromRule_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "ARCIsoUnbindA")
+	org2, _ := s.CreateOrg(ctx, "ARCIsoUnbindB")
+	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoUnbindRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoUnbindChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org1.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// org2 must not be able to unbind org1's binding (silent no-op).
+	if err := s.UnbindChannelFromRule(ctx, rule.ID, chanID, org2.ID); err != nil {
+		t.Fatalf("UnbindChannelFromRule(wrong org): %v", err)
+	}
+
+	// Verify the binding still exists in org1.
+	exists, err := s.ChannelRuleBindingExists(ctx, rule.ID, chanID, org1.ID)
+	if err != nil {
+		t.Fatalf("ChannelRuleBindingExists: %v", err)
+	}
+	if !exists {
+		t.Error("binding should still exist after cross-org unbind attempt")
+	}
+}
+
+func TestListActiveChannelsForFanout_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "ARCIsoFanoutA")
+	org2, _ := s.CreateOrg(ctx, "ARCIsoFanoutB")
+	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoFanoutRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoFanoutChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org1.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// Verify org1 sees the channel.
+	rows, err := s.ListActiveChannelsForFanout(ctx, rule.ID, org1.ID)
+	if err != nil {
+		t.Fatalf("ListActiveChannelsForFanout(org1): %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("org1 should see 1 fanout channel, got %d", len(rows))
+	}
+
+	// org2 must not see org1's channels (SQL WHERE filters by orgID).
+	rows, err = s.ListActiveChannelsForFanout(ctx, rule.ID, org2.ID)
+	if err != nil {
+		t.Fatalf("ListActiveChannelsForFanout(wrong org): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 fanout channels for wrong org, got %d", len(rows))
+	}
+}
+
+func TestChannelRuleBindingExists_CrossOrgIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org1, _ := s.CreateOrg(ctx, "ARCIsoExistsA")
+	org2, _ := s.CreateOrg(ctx, "ARCIsoExistsB")
+	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoExistsRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoExistsChan")
+
+	if err := s.BindChannelToRule(ctx, rule.ID, chanID, org1.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+
+	// org2 must not see org1's binding.
+	exists, err := s.ChannelRuleBindingExists(ctx, rule.ID, chanID, org2.ID)
+	if err != nil {
+		t.Fatalf("ChannelRuleBindingExists(wrong org): %v", err)
+	}
+	if exists {
+		t.Error("ChannelRuleBindingExists with wrong org should return false")
+	}
+}
+
+func TestUnbindChannelFromRule_NoOp(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, _ := s.CreateOrg(ctx, "ARCOrgUnbindNoOp")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "UnbindNoOpRule")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UnbindNoOpChan")
+
+	// Unbinding something that was never bound should not error.
+	if err := s.UnbindChannelFromRule(ctx, rule.ID, chanID, org.ID); err != nil {
+		t.Fatalf("UnbindChannelFromRule(never bound): %v", err)
+	}
+}

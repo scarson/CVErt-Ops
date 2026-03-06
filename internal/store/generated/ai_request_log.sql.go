@@ -12,19 +12,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const cleanupOldAIRequestLogs = `-- name: CleanupOldAIRequestLogs :execrows
-DELETE FROM ai_request_log
-WHERE created_at < now() - make_interval(days => $1::int)
-`
-
-func (q *Queries) CleanupOldAIRequestLogs(ctx context.Context, dollar_1 int32) (int64, error) {
-	result, err := q.db.ExecContext(ctx, cleanupOldAIRequestLogs, dollar_1)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
 const insertAIRequestLog = `-- name: InsertAIRequestLog :exec
 
 INSERT INTO ai_request_log (
@@ -48,7 +35,7 @@ type InsertAIRequestLogParams struct {
 	ErrorType     sql.NullString
 }
 
-// ABOUTME: sqlc queries for AI request audit logging and retention cleanup.
+// ABOUTME: sqlc queries for AI request audit logging.
 // ABOUTME: Logs every AI request (cache hit or miss) for observability and billing.
 func (q *Queries) InsertAIRequestLog(ctx context.Context, arg InsertAIRequestLogParams) error {
 	_, err := q.db.ExecContext(ctx, insertAIRequestLog,

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -206,6 +207,11 @@ func TestListChannels_ReturnsCreated(t *testing.T) {
 	if len(listed.Items) != 1 {
 		t.Fatalf("list items count = %d, want 1", len(listed.Items))
 	}
+
+	// S4: LIST response must never include signing_secret.
+	if s, ok := listed.Items[0]["signing_secret"]; ok && s != nil && s != "" {
+		t.Errorf("LIST response must not include signing_secret, got %v", s)
+	}
 }
 
 // TestPatchChannel_PartialUpdate verifies that PATCHing only the name preserves the config.
@@ -237,14 +243,17 @@ func TestPatchChannel_PartialUpdate(t *testing.T) {
 	if patchResp.StatusCode != http.StatusOK {
 		t.Fatalf("patch channel: got %d, want 200", patchResp.StatusCode)
 	}
-	var patched struct {
-		Name string `json:"name"`
-	}
+	var patched map[string]any
 	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
 		t.Fatalf("decode patch: %v", err)
 	}
-	if patched.Name != "Renamed Channel" {
-		t.Errorf("patched name = %q, want %q", patched.Name, "Renamed Channel")
+	if patched["name"] != "Renamed Channel" {
+		t.Errorf("patched name = %v, want %q", patched["name"], "Renamed Channel")
+	}
+
+	// S4: PATCH response must never include signing_secret.
+	if s, ok := patched["signing_secret"]; ok && s != nil && s != "" {
+		t.Errorf("PATCH response must not include signing_secret, got %v", s)
 	}
 }
 
@@ -277,8 +286,8 @@ func TestDeleteChannel_409IfActiveRuleBound(t *testing.T) {
 	// Create an alert rule via HTTP.
 	createRuleResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
 	defer createRuleResp.Body.Close() //nolint:errcheck,gosec // G104
-	if createRuleResp.StatusCode != http.StatusCreated {
-		t.Fatalf("create alert rule: got %d, want 201", createRuleResp.StatusCode)
+	if createRuleResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create alert rule: got %d, want 202", createRuleResp.StatusCode)
 	}
 	var createdRule struct {
 		ID string `json:"id"`
@@ -518,6 +527,12 @@ func TestCreateChannel_EmailType(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
 	body := `{"name":"Email Alerts","type":"email","config":{"recipients":["ops@example.com","dev@example.com"]}}`
 	resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
@@ -548,6 +563,12 @@ func TestCreateChannel_EmailInvalidRecipients(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
+
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
 
 	cases := []struct {
 		desc string
@@ -601,6 +622,12 @@ func TestRotateSecret_EmailChannel_Rejected(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
 	// Create an email channel.
 	body := `{"name":"Email Chan","type":"email","config":{"recipients":["test@example.com"]}}`
 	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
@@ -633,6 +660,12 @@ func TestClearSecondary_EmailChannel_Rejected(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
+
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
 
 	// Create an email channel.
 	body := `{"name":"Email Chan","type":"email","config":{"recipients":["test@example.com"]}}`
@@ -720,6 +753,12 @@ func TestPatchChannel_EmailConfigValidation(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
+	// Email channels require pro tier or higher.
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
 	// Create an email channel.
 	body := `{"name":"Email Alerts","type":"email","config":{"recipients":["ops@example.com"]}}`
 	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
@@ -802,6 +841,175 @@ func TestDeleteChannel_409IfReportBound(t *testing.T) {
 	defer delResp.Body.Close() //nolint:errcheck,gosec // G104
 	if delResp.StatusCode != http.StatusConflict {
 		t.Fatalf("delete with bound report: got %d, want 409", delResp.StatusCode)
+	}
+}
+
+// TestDeleteChannel_NotFound_404 verifies that deleting a non-existent channel returns 404.
+func TestDeleteChannel_NotFound_404(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doDeleteChannel(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String())
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("delete non-existent channel: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestPatchChannel_NotFound_404 verifies that PATCHing a non-existent channel returns 404.
+func TestPatchChannel_NotFound_404(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String(), `{"name":"Ghost"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("patch non-existent channel: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestRotateSecret_NotFound_404 verifies that rotating secret of non-existent channel returns 404.
+func TestRotateSecret_NotFound_404(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doRotateSecret(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String())
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("rotate-secret non-existent: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestClearSecondary_NotFound_404 verifies that clearing secondary secret of non-existent channel returns 404.
+func TestClearSecondary_NotFound_404(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doClearSecondary(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String())
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("clear-secondary non-existent: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestCreateChannel_EmailExceed50Recipients_422 verifies that >50 email recipients is rejected.
+func TestCreateChannel_EmailExceed50Recipients_422(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	// Build a list of 51 unique email addresses.
+	recipients := make([]string, 51)
+	for i := range recipients {
+		recipients[i] = fmt.Sprintf("user%d@example.com", i)
+	}
+	recipJSON, _ := json.Marshal(recipients)
+	body := fmt.Sprintf(`{"name":"Too Many","type":"email","config":{"recipients":%s}}`, string(recipJSON))
+
+	resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("create email >50 recipients: got %d, want 422", resp.StatusCode)
+	}
+}
+
+// TestCreateChannel_EmailHeaderInjection verifies that actual CRLF bytes in
+// recipient display names are rejected by mail.ParseAddress validation,
+// preventing email header injection attacks.
+func TestCreateChannel_EmailHeaderInjection(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	// Each case uses a unique channel name to avoid duplicate key constraint.
+	// Recipients contain actual control characters (CR, LF) — not literal backslash escapes.
+	cases := []struct {
+		desc      string
+		name      string
+		recipient string
+	}{
+		{"CRLF in display name", "Inject CRLF", "\"Name\r\nBcc: evil@attacker.com\" <legit@example.com>"},
+		{"bare newline", "Inject LF", "\"Name\nBcc: evil@attacker.com\" <legit@example.com>"},
+		{"bare carriage return", "Inject CR", "\"Name\rBcc: evil@attacker.com\" <legit@example.com>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			// Build JSON with the control characters properly escaped via json.Marshal.
+			type emailConfig struct {
+				Recipients []string `json:"recipients"`
+			}
+			type createBody struct {
+				Name   string      `json:"name"`
+				Type   string      `json:"type"`
+				Config emailConfig `json:"config"`
+			}
+			payload := createBody{
+				Name: tc.name,
+				Type: "email",
+				Config: emailConfig{
+					Recipients: []string{tc.recipient},
+				},
+			}
+			bodyBytes, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			resp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, string(bodyBytes))
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode == http.StatusCreated {
+				t.Errorf("header injection (%s): should be rejected, got 201", tc.desc)
+			}
+		})
 	}
 }
 

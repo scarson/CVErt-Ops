@@ -194,3 +194,47 @@ func TestResolveCanonicalIDNativeIsAlreadyCVE(t *testing.T) {
 		t.Errorf("ResolveCanonicalID = %q, want native CVE ID", got)
 	}
 }
+
+func TestResolveCanonicalIDMalformedCVEAlias(t *testing.T) {
+	t.Parallel()
+
+	// Malformed CVE IDs should not match the cveIDPattern regex.
+	// "CVE-abc" has no year digits; "CVE-2024" has no sequence number.
+	tests := []struct {
+		name    string
+		aliases []string
+	}{
+		{"no digits in year", []string{"CVE-abc-1234"}},
+		{"missing sequence", []string{"CVE-2024"}},
+		{"extra prefix", []string{"XCVE-2024-12345"}},
+		{"lowercase cve prefix", []string{"cve-2024-12345"}},
+		{"spaces in alias", []string{"CVE -2024-12345"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := ResolveCanonicalID("GHSA-xxxx", tc.aliases)
+			if got != "GHSA-xxxx" {
+				t.Errorf("ResolveCanonicalID(%v) = %q, want native ID (malformed CVE should not match)", tc.aliases, got)
+			}
+		})
+	}
+}
+
+func TestResolveCanonicalIDWhitespaceAlias(t *testing.T) {
+	t.Parallel()
+
+	// Aliases with leading/trailing whitespace should not match the strict
+	// CVE ID regex pattern (no trimming is performed).
+	got := ResolveCanonicalID("GHSA-xxxx", []string{" CVE-2024-12345 "})
+	if got != "GHSA-xxxx" {
+		t.Errorf("ResolveCanonicalID = %q, want native ID (whitespace-padded CVE should not match regex)", got)
+	}
+
+	// But a clean CVE alias after a whitespace-padded one should match.
+	got = ResolveCanonicalID("GHSA-xxxx", []string{" CVE-2024-11111 ", "CVE-2024-22222"})
+	if got != "CVE-2024-22222" {
+		t.Errorf("ResolveCanonicalID = %q, want %q (first clean CVE alias)", got, "CVE-2024-22222")
+	}
+}

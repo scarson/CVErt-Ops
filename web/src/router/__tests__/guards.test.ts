@@ -249,7 +249,7 @@ describe('route guards', () => {
   })
 
   describe('title guard', () => {
-    it('sets document title from route name', async () => {
+    it('sets document title from meta.title', async () => {
       const auth = useAuthStore()
       auth.user = {
         user_id: 'u1',
@@ -264,7 +264,7 @@ describe('route guards', () => {
       await router.push('/cves')
       await router.isReady()
 
-      expect(document.title).toBe('Cve Search | CVErt Ops')
+      expect(document.title).toBe('CVE Search | CVErt Ops')
     })
 
     it('sets document title for multi-word route names', async () => {
@@ -297,7 +297,7 @@ describe('route guards', () => {
       await router.push('/login')
       await router.isReady()
 
-      expect(document.title).toBe('Login | CVErt Ops')
+      expect(document.title).toBe('Log In | CVErt Ops')
     })
   })
 })

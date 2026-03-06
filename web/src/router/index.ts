@@ -17,19 +17,19 @@ export const routes: RouteRecordRaw[] = [
     path: '/login',
     name: 'login',
     component: () => import('@/views/LoginView.vue'),
-    meta: { layout: 'public', requiresAuth: false },
+    meta: { layout: 'public', requiresAuth: false, title: 'Log In' },
   },
   {
     path: '/register',
     name: 'register',
     component: () => import('@/views/RegisterView.vue'),
-    meta: { layout: 'public', requiresAuth: false },
+    meta: { layout: 'public', requiresAuth: false, title: 'Register' },
   },
   {
     path: '/invitations/:token',
     name: 'invitation',
     component: () => import('@/views/InvitationView.vue'),
-    meta: { layout: 'public', requiresAuth: false },
+    meta: { layout: 'public', requiresAuth: false, title: 'Invitation' },
   },
 
   // ── Authenticated routes ───────────────────────────────────────
@@ -37,49 +37,49 @@ export const routes: RouteRecordRaw[] = [
     path: '/create-org',
     name: 'create-org',
     component: () => import('@/views/CreateOrgView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: false },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: false, title: 'Create Organization' },
   },
   {
     path: '/cves',
     name: 'cve-search',
     component: () => import('@/views/CveSearchView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'CVE Search' },
   },
   {
     path: '/cves/:cveId',
     name: 'cve-detail',
     component: () => import('@/views/CveDetailView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'CVE Detail' },
   },
   {
     path: '/watchlists',
     name: 'watchlists',
     component: () => import('@/views/WatchlistListView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Watchlists' },
   },
   {
     path: '/watchlists/:id',
     name: 'watchlist-detail',
     component: () => import('@/views/WatchlistDetailView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Watchlist' },
   },
   {
     path: '/settings/members',
     name: 'members',
     component: () => import('@/views/MembersView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Members' },
   },
   {
     path: '/settings/groups',
     name: 'groups',
     component: () => import('@/views/GroupsView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Groups' },
   },
   {
     path: '/admin/feeds',
     name: 'feed-status',
     component: () => import('@/views/FeedStatusView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true },
+    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Feed Status' },
   },
 
   // ── Redirects ──────────────────────────────────────────────────
@@ -93,7 +93,7 @@ export const routes: RouteRecordRaw[] = [
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),
-    meta: { layout: 'public', requiresAuth: false },
+    meta: { layout: 'public', requiresAuth: false, title: 'Not Found' },
   },
 ]
 
@@ -142,11 +142,11 @@ export const authGuard: NavigationGuardWithThis<undefined> = async (to) => {
 
 // Exported for test access.
 export const titleGuard: NavigationHookAfter = (to) => {
-  const name = typeof to.name === 'string' ? to.name : ''
-  const title = name
-    .split('-')
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ')
+  const title = typeof to.meta.title === 'string'
+    ? to.meta.title
+    : typeof to.name === 'string'
+      ? to.name.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+      : ''
   document.title = title ? `${title} | CVErt Ops` : 'CVErt Ops'
 }
 

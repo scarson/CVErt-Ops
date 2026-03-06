@@ -15,25 +15,27 @@ import (
 // adapter into cve_sources. They are exported so adapters can reference them
 // when composing CanonicalPatch values.
 const (
-	SourceMITRE = "mitre"
-	SourceNVD   = "nvd"
-	SourceOSV   = "osv"
-	SourceGHSA  = "ghsa"
-	SourceKEV   = "kev"
-	SourceEPSS  = "epss"
+	SourceMITRE  = "mitre"
+	SourceNVD    = "nvd"
+	SourceOSV    = "osv"
+	SourceGHSA   = "ghsa"
+	SourceKEV    = "kev"
+	SourceEPSS   = "epss"
+	SourceMSRC   = "msrc"
+	SourceRedHat = "redhat"
 )
 
 // Priority lists per field group (PLAN.md §5.1). Elements are ordered
 // highest-precedence first.
 var (
 	// statusPriority governs: Status, IsWithdrawn, and Description.
-	statusPriority = []string{SourceMITRE, SourceNVD, SourceOSV, SourceGHSA}
+	statusPriority = []string{SourceMITRE, SourceNVD, SourceOSV, SourceGHSA, SourceMSRC, SourceRedHat}
 
 	// cvssPriority governs: CVSS v3/v4 scores + vectors, and Severity.
-	cvssPriority = []string{SourceNVD, SourceOSV, SourceGHSA, SourceMITRE}
+	cvssPriority = []string{SourceNVD, SourceOSV, SourceGHSA, SourceMITRE, SourceMSRC, SourceRedHat}
 
 	// pkgPriority governs: affected package version ranges.
-	pkgPriority = []string{SourceOSV, SourceGHSA, SourceNVD, SourceMITRE}
+	pkgPriority = []string{SourceOSV, SourceGHSA, SourceNVD, SourceMITRE, SourceRedHat, SourceMSRC}
 )
 
 // ResolvedReference is a reference URL with a pre-computed canonical form

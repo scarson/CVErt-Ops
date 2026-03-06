@@ -2,7 +2,7 @@
 <!-- ABOUTME: Handles invite-only mode errors and auto-logs in after successful registration. -->
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import client from '@/lib/api/client'
@@ -23,6 +23,23 @@ const confirmPassword = ref('')
 const displayName = ref('')
 const error = ref('')
 const submitting = ref(false)
+const githubEnabled = ref(false)
+const googleEnabled = ref(false)
+const hasOAuth = ref(false)
+
+onMounted(async () => {
+  try {
+    const resp = await fetch('/api/v1/auth/providers')
+    if (resp.ok) {
+      const data = await resp.json()
+      githubEnabled.value = data.github === true
+      googleEnabled.value = data.google === true
+      hasOAuth.value = githubEnabled.value || googleEnabled.value
+    }
+  } catch {
+    // Providers endpoint unavailable — hide OAuth buttons
+  }
+})
 
 async function onSubmit() {
   error.value = ''
@@ -142,21 +159,23 @@ function registerWithGoogle() {
         </Button>
       </form>
 
-      <div class="relative my-6 flex items-center">
-        <Separator class="flex-1" />
-        <span class="px-3 text-xs text-muted-foreground">or continue with</span>
-        <Separator class="flex-1" />
-      </div>
+      <template v-if="hasOAuth">
+        <div class="relative my-6 flex items-center">
+          <Separator class="flex-1" />
+          <span class="px-3 text-xs text-muted-foreground">or continue with</span>
+          <Separator class="flex-1" />
+        </div>
 
-      <div class="grid grid-cols-2 gap-3">
-        <Button variant="outline" type="button" @click="registerWithGitHub">
-          <Github class="mr-2 size-4" aria-hidden="true" />
-          GitHub
-        </Button>
-        <Button variant="outline" type="button" @click="registerWithGoogle">
-          Google
-        </Button>
-      </div>
+        <div class="flex gap-3" :class="githubEnabled && googleEnabled ? 'grid grid-cols-2' : ''">
+          <Button v-if="githubEnabled" variant="outline" type="button" class="flex-1" @click="registerWithGitHub">
+            <Github class="mr-2 size-4" aria-hidden="true" />
+            GitHub
+          </Button>
+          <Button v-if="googleEnabled" variant="outline" type="button" class="flex-1" @click="registerWithGoogle">
+            Google
+          </Button>
+        </div>
+      </template>
 
       <p class="mt-6 text-center text-sm text-muted-foreground">
         Already have an account?

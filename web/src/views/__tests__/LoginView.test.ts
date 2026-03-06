@@ -28,6 +28,16 @@ vi.mock('@/lib/api/client', () => ({
 
 import { useAuthStore } from '@/stores/auth'
 
+const mockFetch = vi.fn()
+vi.stubGlobal('fetch', mockFetch)
+
+function mockProvidersResponse(github = true, google = true) {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    json: () => Promise.resolve({ github, google, registration_mode: 'open' }),
+  })
+}
+
 async function mountLogin() {
   const { default: LoginView } = await import('@/views/LoginView.vue')
   return mount(LoginView)
@@ -67,8 +77,10 @@ describe('LoginView', () => {
       expect(button.text()).toContain('Log in')
     })
 
-    it('renders OAuth buttons for GitHub and Google', async () => {
+    it('renders OAuth buttons when providers are configured', async () => {
+      mockProvidersResponse(true, true)
       const wrapper = await mountLogin()
+      await flushPromises()
 
       const buttons = wrapper.findAll('button')
       const buttonTexts = buttons.map((b) => b.text())
@@ -76,8 +88,22 @@ describe('LoginView', () => {
       expect(buttonTexts.some((t) => t.includes('Google'))).toBe(true)
     })
 
-    it('renders divider with "or continue with" text', async () => {
+    it('hides OAuth buttons when no providers configured', async () => {
+      mockProvidersResponse(false, false)
       const wrapper = await mountLogin()
+      await flushPromises()
+
+      const buttons = wrapper.findAll('button')
+      const buttonTexts = buttons.map((b) => b.text())
+      expect(buttonTexts.some((t) => t.includes('GitHub'))).toBe(false)
+      expect(buttonTexts.some((t) => t.includes('Google'))).toBe(false)
+      expect(wrapper.text()).not.toContain('or continue with')
+    })
+
+    it('renders divider with "or continue with" text when OAuth enabled', async () => {
+      mockProvidersResponse(true, true)
+      const wrapper = await mountLogin()
+      await flushPromises()
 
       expect(wrapper.text()).toContain('or continue with')
     })
@@ -240,6 +266,7 @@ describe('LoginView', () => {
 
   describe('OAuth buttons', () => {
     it('GitHub button redirects to OAuth endpoint', async () => {
+      mockProvidersResponse(true, false)
       const originalLocation = window.location.href
       const hrefSetter = vi.fn()
       Object.defineProperty(window, 'location', {
@@ -249,6 +276,7 @@ describe('LoginView', () => {
       })
 
       const wrapper = await mountLogin()
+      await flushPromises()
 
       const buttons = wrapper.findAll('button')
       const githubButton = buttons.find((b) => b.text().includes('GitHub'))!
@@ -258,6 +286,7 @@ describe('LoginView', () => {
     })
 
     it('Google button redirects to OAuth endpoint', async () => {
+      mockProvidersResponse(false, true)
       const originalLocation = window.location.href
       const hrefSetter = vi.fn()
       Object.defineProperty(window, 'location', {
@@ -267,6 +296,7 @@ describe('LoginView', () => {
       })
 
       const wrapper = await mountLogin()
+      await flushPromises()
 
       const buttons = wrapper.findAll('button')
       const googleButton = buttons.find((b) => b.text().includes('Google'))!

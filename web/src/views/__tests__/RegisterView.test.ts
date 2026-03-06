@@ -30,6 +30,16 @@ import { useAuthStore } from '@/stores/auth'
 
 const mockClient = vi.mocked(client)
 
+const mockFetch = vi.fn()
+vi.stubGlobal('fetch', mockFetch)
+
+function mockProvidersResponse(github = true, google = true) {
+  mockFetch.mockResolvedValueOnce({
+    ok: true,
+    json: () => Promise.resolve({ github, google, registration_mode: 'open' }),
+  })
+}
+
 async function mountRegister() {
   const { default: RegisterView } = await import('@/views/RegisterView.vue')
   return mount(RegisterView)
@@ -76,12 +86,26 @@ describe('RegisterView', () => {
       expect(button.text()).toContain('Register')
     })
 
-    it('renders OAuth buttons for GitHub and Google', async () => {
+    it('renders OAuth buttons when providers are configured', async () => {
+      mockProvidersResponse(true, true)
       const wrapper = await mountRegister()
+      await flushPromises()
+
       const buttons = wrapper.findAll('button')
       const buttonTexts = buttons.map((b) => b.text())
       expect(buttonTexts.some((t) => t.includes('GitHub'))).toBe(true)
       expect(buttonTexts.some((t) => t.includes('Google'))).toBe(true)
+    })
+
+    it('hides OAuth buttons when no providers configured', async () => {
+      mockProvidersResponse(false, false)
+      const wrapper = await mountRegister()
+      await flushPromises()
+
+      const buttons = wrapper.findAll('button')
+      const buttonTexts = buttons.map((b) => b.text())
+      expect(buttonTexts.some((t) => t.includes('GitHub'))).toBe(false)
+      expect(buttonTexts.some((t) => t.includes('Google'))).toBe(false)
     })
 
     it('renders login link pointing to /login', async () => {

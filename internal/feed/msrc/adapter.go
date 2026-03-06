@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"bytes"
 	"strings"
 	"time"
 
@@ -73,7 +74,7 @@ func parseUpdates(r io.Reader) ([]updateEntry, error) {
 
 // parseCSAFDocument parses a raw CSAF JSON byte slice into a csaf.Document.
 func parseCSAFDocument(data []byte) (*csaf.Document, error) {
-	return csaf.Parse(strings.NewReader(string(data)))
+	return csaf.Parse(bytes.NewReader(data))
 }
 
 // csafToPatches converts a parsed CSAF document into CanonicalPatch values.

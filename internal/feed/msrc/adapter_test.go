@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/feed"
@@ -467,9 +468,9 @@ func TestFetch_Success(t *testing.T) {
 func TestFetch_ShortCircuit(t *testing.T) {
 	t.Parallel()
 
-	requestCount := 0
+	var requestCount atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
+		requestCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/updates") {
 			// Return updates with the same date as cursor
@@ -505,8 +506,8 @@ func TestFetch_ShortCircuit(t *testing.T) {
 		t.Errorf("len(Patches) = %d, want 0 (short-circuit)", len(result.Patches))
 	}
 	// Should have made the /updates request but NOT any /csaf/ requests
-	if requestCount != 1 {
-		t.Errorf("requestCount = %d, want 1 (only /updates, no /csaf)", requestCount)
+	if requestCount.Load() != 1 {
+		t.Errorf("requestCount = %d, want 1 (only /updates, no /csaf)", requestCount.Load())
 	}
 }
 

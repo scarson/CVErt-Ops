@@ -238,6 +238,7 @@ watch(
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Edit group"
                 data-testid="edit-group-btn"
                 @click="openEditDialog(g)"
               >
@@ -246,6 +247,7 @@ watch(
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Manage members"
                 data-testid="manage-members-btn"
                 @click="openMembersDialog(g)"
               >
@@ -254,6 +256,7 @@ watch(
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Delete group"
                 data-testid="delete-group-btn"
                 @click="promptDelete(g)"
               >

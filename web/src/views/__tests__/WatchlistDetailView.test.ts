@@ -245,6 +245,37 @@ describe('WatchlistDetailView', () => {
     })
   })
 
+  describe('accessibility', () => {
+    it('has accessible labels on icon-only action buttons', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([makePackageItem()])
+      await mountView()
+      await flushPromises()
+
+      const editBtn = findTestId('edit-name-btn')
+      expect(editBtn!.getAttribute('aria-label')).toBe('Edit watchlist name')
+
+      const deleteItemBtn = findTestId('delete-item-btn')
+      expect(deleteItemBtn!.getAttribute('aria-label')).toBe('Remove item')
+    })
+
+    it('has accessible labels on inline edit buttons', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      await clickTestId('edit-name-btn')
+      await flushPromises()
+
+      const saveBtn = findTestId('save-name-btn')
+      expect(saveBtn!.getAttribute('aria-label')).toBe('Save name')
+
+      const cancelBtn = findTestId('cancel-name-btn')
+      expect(cancelBtn!.getAttribute('aria-label')).toBe('Cancel editing')
+    })
+  })
+
   describe('edit mode', () => {
     it('clicking name switches to edit input', async () => {
       mockWatchlistSuccess()

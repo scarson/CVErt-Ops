@@ -255,6 +255,7 @@ watch(
           <Button
             variant="ghost"
             size="sm"
+            aria-label="Edit watchlist name"
             data-testid="edit-name-btn"
             @click="startEditName"
           >
@@ -274,6 +275,7 @@ watch(
             <Button
               variant="ghost"
               size="sm"
+              aria-label="Save name"
               data-testid="save-name-btn"
               :disabled="saving"
               @click="saveName"
@@ -283,6 +285,7 @@ watch(
             <Button
               variant="ghost"
               size="sm"
+              aria-label="Cancel editing"
               data-testid="cancel-name-btn"
               :disabled="saving"
               @click="cancelEditName"
@@ -368,6 +371,7 @@ watch(
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Remove item"
                 data-testid="delete-item-btn"
                 @click="deleteItem(item.id)"
               >

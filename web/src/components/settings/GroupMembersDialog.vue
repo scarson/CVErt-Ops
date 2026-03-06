@@ -238,6 +238,7 @@ defineExpose({ addMember, availableMembers })
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="Remove member"
                 data-testid="remove-group-member-btn"
                 @click="removeMember(m.user_id)"
               >

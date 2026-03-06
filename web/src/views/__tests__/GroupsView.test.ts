@@ -228,6 +228,27 @@ describe('GroupsView', () => {
     })
   })
 
+  describe('accessibility', () => {
+    it('has accessible labels on icon-only action buttons', async () => {
+      setupAuthStore('admin')
+      mockGroupsSuccess([makeGroup()])
+      await mountView()
+      await flushPromises()
+
+      const editBtn = findTestId('edit-group-btn')
+      expect(editBtn).not.toBeNull()
+      expect(editBtn!.getAttribute('aria-label')).toBe('Edit group')
+
+      const membersBtn = findTestId('manage-members-btn')
+      expect(membersBtn).not.toBeNull()
+      expect(membersBtn!.getAttribute('aria-label')).toBe('Manage members')
+
+      const deleteBtn = findTestId('delete-group-btn')
+      expect(deleteBtn).not.toBeNull()
+      expect(deleteBtn!.getAttribute('aria-label')).toBe('Delete group')
+    })
+  })
+
   describe('RBAC: action buttons visibility', () => {
     it('shows edit/delete/members buttons for admin users', async () => {
       setupAuthStore('admin')

@@ -230,6 +230,18 @@ describe('WatchlistListView', () => {
     })
   })
 
+  describe('accessibility', () => {
+    it('has accessible labels on icon-only action buttons', async () => {
+      mockListSuccess()
+      await mountView()
+      await flushPromises()
+
+      const deleteBtn = findTestId('delete-watchlist-btn')
+      expect(deleteBtn).not.toBeNull()
+      expect(deleteBtn!.getAttribute('aria-label')).toBe('Delete watchlist')
+    })
+  })
+
   describe('delete flow', () => {
     it('shows delete button per row', async () => {
       mockListSuccess([makeWatchlist()])

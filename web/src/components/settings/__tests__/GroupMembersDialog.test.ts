@@ -159,6 +159,19 @@ describe('GroupMembersDialog', () => {
     })
   })
 
+  describe('accessibility', () => {
+    it('has accessible labels on remove member button', async () => {
+      mockGroupMembersSuccess([makeGroupMember({ user_id: 'u1' })])
+      mockOrgMembersSuccess([])
+      await mountDialog()
+      await flushPromises()
+
+      const removeBtns = findAllTestId('remove-group-member-btn')
+      expect(removeBtns.length).toBe(1)
+      expect(removeBtns[0]!.getAttribute('aria-label')).toBe('Remove member')
+    })
+  })
+
   describe('remove member', () => {
     it('shows remove button for each member', async () => {
       mockGroupMembersSuccess([

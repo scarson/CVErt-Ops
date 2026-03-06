@@ -229,6 +229,7 @@ watch(
             <Button
               variant="ghost"
               size="sm"
+              aria-label="Delete watchlist"
               data-testid="delete-watchlist-btn"
               @click="promptDelete(wl)"
             >

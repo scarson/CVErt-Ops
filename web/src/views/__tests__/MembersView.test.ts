@@ -256,6 +256,34 @@ describe('MembersView', () => {
     })
   })
 
+  describe('accessibility', () => {
+    it('has accessible labels on remove member button', async () => {
+      setupAuthStore('admin')
+      mockMembersSuccess([
+        makeMember({ user_id: 'u1', role: 'member', email: 'member@example.com' }),
+      ])
+      mockInvitationsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      const removeBtn = findTestId('remove-member-btn')
+      expect(removeBtn).not.toBeNull()
+      expect(removeBtn!.getAttribute('aria-label')).toBe('Remove member')
+    })
+
+    it('has accessible labels on cancel invitation button', async () => {
+      setupAuthStore('admin')
+      mockMembersSuccess([makeMember()])
+      mockInvitationsSuccess([makeInvitation()])
+      await mountView()
+      await flushPromises()
+
+      const cancelBtn = findTestId('cancel-invitation-btn')
+      expect(cancelBtn).not.toBeNull()
+      expect(cancelBtn!.getAttribute('aria-label')).toBe('Cancel invitation')
+    })
+  })
+
   describe('RBAC: remove button visibility', () => {
     it('shows remove button for admin on non-owner members', async () => {
       setupAuthStore('admin')

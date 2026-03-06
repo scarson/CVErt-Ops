@@ -339,6 +339,7 @@ watch(
                 v-if="canRemove(m)"
                 variant="ghost"
                 size="sm"
+                aria-label="Remove member"
                 data-testid="remove-member-btn"
                 @click="promptRemove(m)"
               >
@@ -376,6 +377,7 @@ watch(
                 <Button
                   variant="ghost"
                   size="sm"
+                  aria-label="Cancel invitation"
                   data-testid="cancel-invitation-btn"
                   @click="cancelInvitation(inv.id)"
                 >

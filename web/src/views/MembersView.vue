@@ -2,7 +2,7 @@
 <!-- ABOUTME: Admin+ can change roles, invite members, and remove members; RBAC-gated UI elements. -->
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import InviteMemberDialog from '@/components/settings/InviteMemberDialog.vue'
 import type { InvitationEntry } from '@/components/settings/InviteMemberDialog.vue'
@@ -225,6 +225,13 @@ defineExpose({ changeRole })
 onMounted(() => {
   fetchMembers()
 })
+
+watch(
+  () => auth.activeOrgId,
+  () => {
+    fetchMembers()
+  },
+)
 </script>
 
 <template>

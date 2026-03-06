@@ -2,7 +2,7 @@
 <!-- ABOUTME: Fetches via raw fetch(); supports empty, loading, and error states. -->
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import CreateWatchlistDialog from '@/components/watchlist/CreateWatchlistDialog.vue'
@@ -130,6 +130,13 @@ function truncate(text: string | undefined, max: number): string {
 onMounted(() => {
   fetchWatchlists()
 })
+
+watch(
+  () => auth.activeOrgId,
+  () => {
+    fetchWatchlists()
+  },
+)
 </script>
 
 <template>

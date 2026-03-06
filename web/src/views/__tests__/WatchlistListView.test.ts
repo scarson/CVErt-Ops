@@ -310,6 +310,28 @@ describe('WatchlistListView', () => {
     })
   })
 
+  describe('org switch re-fetch', () => {
+    it('re-fetches watchlists when activeOrgId changes', async () => {
+      const auth = useAuthStore()
+      auth.activeOrgId = TEST_ORG_ID
+      mockListSuccess([makeWatchlist({ name: 'Org A List' })])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockClear()
+      const ORG_B_ID = '00000000-0000-0000-0000-000000000002'
+      mockListSuccess([makeWatchlist({ name: 'Org B List' })])
+
+      auth.activeOrgId = ORG_B_ID
+      await flushPromises()
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${ORG_B_ID}/watchlists`,
+        expect.objectContaining({ method: 'GET' }),
+      )
+    })
+  })
+
   describe('API integration', () => {
     it('fetches watchlists with correct URL and options', async () => {
       mockListSuccess()

@@ -2,7 +2,7 @@
 <!-- ABOUTME: Admin+ can create/edit/delete groups and manage membership. -->
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import GroupDialog from '@/components/settings/GroupDialog.vue'
 import type { GroupEntry } from '@/components/settings/GroupDialog.vue'
@@ -147,6 +147,13 @@ function formatDate(dateStr: string): string {
 onMounted(() => {
   fetchGroups()
 })
+
+watch(
+  () => auth.activeOrgId,
+  () => {
+    fetchGroups()
+  },
+)
 </script>
 
 <template>

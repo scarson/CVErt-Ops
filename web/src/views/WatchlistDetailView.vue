@@ -2,8 +2,8 @@
 <!-- ABOUTME: Supports adding/removing items and editing watchlist name/description inline. -->
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import type { WatchlistEntry } from '@/components/watchlist/CreateWatchlistDialog.vue'
 import AddItemDialog from '@/components/watchlist/AddItemDialog.vue'
@@ -33,6 +33,7 @@ import {
 } from 'lucide-vue-next'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
 const watchlist = ref<WatchlistEntry | null>(null)
@@ -185,6 +186,13 @@ onMounted(async () => {
     await fetchItems()
   }
 })
+
+watch(
+  () => auth.activeOrgId,
+  () => {
+    router.push('/watchlists')
+  },
+)
 </script>
 
 <template>

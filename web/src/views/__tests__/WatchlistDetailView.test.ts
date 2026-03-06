@@ -355,6 +355,23 @@ describe('WatchlistDetailView', () => {
     })
   })
 
+  describe('org switch navigation', () => {
+    it('navigates to /watchlists when activeOrgId changes', async () => {
+      const auth = useAuthStore()
+      auth.activeOrgId = TEST_ORG_ID
+      mockWatchlistSuccess()
+      mockItemsSuccess([makePackageItem()])
+      await mountView()
+      await flushPromises()
+
+      mockPush.mockClear()
+      auth.activeOrgId = '00000000-0000-0000-0000-000000000002'
+      await flushPromises()
+
+      expect(mockPush).toHaveBeenCalledWith('/watchlists')
+    })
+  })
+
   describe('API integration', () => {
     it('fetches watchlist and items with correct URLs', async () => {
       mockWatchlistSuccess()

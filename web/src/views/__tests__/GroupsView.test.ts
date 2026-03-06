@@ -405,6 +405,27 @@ describe('GroupsView', () => {
     })
   })
 
+  describe('org switch re-fetch', () => {
+    it('re-fetches groups when activeOrgId changes', async () => {
+      const auth = setupAuthStore('admin')
+      mockGroupsSuccess([makeGroup({ name: 'Org A Group' })])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockClear()
+      const ORG_B_ID = '00000000-0000-0000-0000-000000000002'
+      mockGroupsSuccess([makeGroup({ name: 'Org B Group' })])
+
+      auth.activeOrgId = ORG_B_ID
+      await flushPromises()
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${ORG_B_ID}/groups`,
+        expect.objectContaining({ method: 'GET' }),
+      )
+    })
+  })
+
   describe('API integration', () => {
     it('fetches groups with correct URL and options', async () => {
       setupAuthStore('admin')

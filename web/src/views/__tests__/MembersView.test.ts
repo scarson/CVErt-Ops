@@ -486,6 +486,29 @@ describe('MembersView', () => {
     })
   })
 
+  describe('org switch re-fetch', () => {
+    it('re-fetches members when activeOrgId changes', async () => {
+      const auth = setupAuthStore('admin')
+      mockMembersSuccess([makeMember({ email: 'alice@example.com' })])
+      mockInvitationsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockClear()
+      const ORG_B_ID = '00000000-0000-0000-0000-000000000002'
+      mockMembersSuccess([makeMember({ email: 'bob@example.com' })])
+      mockInvitationsSuccess([])
+
+      auth.activeOrgId = ORG_B_ID
+      await flushPromises()
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `/api/v1/orgs/${ORG_B_ID}/members`,
+        expect.objectContaining({ method: 'GET' }),
+      )
+    })
+  })
+
   describe('API integration', () => {
     it('fetches members with correct URL and options', async () => {
       setupAuthStore('admin')

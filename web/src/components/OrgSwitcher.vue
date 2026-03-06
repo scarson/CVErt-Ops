@@ -26,7 +26,7 @@ const auth = useAuthStore()
         <span class="truncate">
           {{ auth.activeOrg?.name ?? 'Select org' }}
         </span>
-        <ChevronsUpDown class="ml-1 size-4 shrink-0 text-muted-foreground" />
+        <ChevronsUpDown class="ml-1 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>
     </DropdownMenuTrigger>
     <DropdownMenuContent class="w-56" align="start" side="bottom">

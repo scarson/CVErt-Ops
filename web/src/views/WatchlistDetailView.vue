@@ -334,7 +334,7 @@ watch(
       <!-- Empty items state -->
       <Card v-if="items.length === 0" class="py-12">
         <CardContent class="flex flex-col items-center text-center">
-          <Package class="text-muted-foreground mb-4 size-10" />
+          <Package class="text-muted-foreground mb-4 size-10" aria-hidden="true" />
           <p class="font-medium">No items in this watchlist</p>
           <p class="text-muted-foreground mt-1 text-sm">
             Add packages or CPE patterns to monitor

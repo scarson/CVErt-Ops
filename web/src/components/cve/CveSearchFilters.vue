@@ -35,7 +35,7 @@ function onSubmit() {
     <div class="flex-1">
       <label for="cve-search" class="sr-only">Search CVEs</label>
       <div class="relative">
-        <Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Search class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
         <Input
           id="cve-search"
           v-model="localQuery"
@@ -63,7 +63,7 @@ function onSubmit() {
     </div>
 
     <Button type="submit" size="default">
-      <Search class="mr-2 size-4" />
+      <Search class="mr-2 size-4" aria-hidden="true" />
       Search
     </Button>
   </form>

@@ -970,6 +970,20 @@ func TestFetch_ListHTTPError(t *testing.T) {
 	}
 }
 
+func TestParseDetailResponse_ErrorPrefix(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseDetailResponse(strings.NewReader(`{invalid`))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	msg := err.Error()
+	// Should NOT contain "redhat:" prefix — caller adds the prefix with CVE context
+	if strings.HasPrefix(msg, "redhat:") {
+		t.Errorf("parseDetailResponse should not prefix errors with 'redhat:', got: %s", msg)
+	}
+}
+
 func TestFetch_LastPageAdvancesCursor(t *testing.T) {
 	t.Parallel()
 

@@ -171,7 +171,7 @@ func parseListResponse(r io.Reader) ([]listEntry, error) {
 func parseDetailResponse(r io.Reader) (*detailRecord, error) {
 	var detail detailRecord
 	if err := json.NewDecoder(r).Decode(&detail); err != nil {
-		return nil, fmt.Errorf("redhat: parse detail: %w", err)
+		return nil, err
 	}
 	return &detail, nil
 }
@@ -458,7 +458,8 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}
 
 		detail, err := parseDetailResponse(io.LimitReader(resp.Body, maxDetailSize))
-		resp.Body.Close() //nolint:errcheck,gosec
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain remainder for connection reuse
+		resp.Body.Close()              //nolint:errcheck,gosec
 		if err != nil {
 			return nil, fmt.Errorf("redhat: parse detail %s: %w", cveID, err)
 		}

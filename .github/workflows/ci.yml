@@ -24,8 +24,42 @@ jobs:
       - name: Lint
         run: golangci-lint run
 
-  test:
-    name: Test
+  test-api:
+    name: "Test: API"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: vet
+        run: go vet ./internal/api/...
+
+      - name: test
+        run: go test -race -count=1 -timeout=1800s ./internal/api/...
+
+  test-store:
+    name: "Test: Store"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: vet
+        run: go vet ./internal/store/...
+
+      - name: test
+        run: go test -race -count=1 -timeout=1800s ./internal/store/...
+
+  test-other:
+    name: "Test: Other"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,10 +73,11 @@ jobs:
         run: go vet ./...
 
       - name: test
-        # -race: detect data races
-        # -count=1: disable test result caching (ensures fresh run)
-        # -timeout=900s: ~350 parallel testcontainer-backed tests need headroom on CI runners
-        run: go test -race -count=1 -timeout=900s ./...
+        # Exclude api and store (tested in dedicated jobs) to avoid
+        # contending for CPU with those heavy packages.
+        run: |
+          packages=$(go list ./... | grep -v '/internal/api$\|/internal/store$')
+          go test -race -count=1 -timeout=900s $packages
 
   govulncheck:
     name: Vulnerability scan

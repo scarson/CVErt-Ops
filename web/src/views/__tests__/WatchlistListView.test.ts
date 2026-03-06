@@ -165,12 +165,12 @@ describe('WatchlistListView', () => {
       expect(wrapper.text()).toContain('Create your first watchlist')
     })
 
-    it('shows create button in empty state', async () => {
+    it('shows header create button in empty state', async () => {
       mockListSuccess([])
       await mountView()
       await flushPromises()
 
-      const createBtn = wrapper.find('[data-testid="empty-create-btn"]')
+      const createBtn = wrapper.find('[data-testid="new-watchlist-btn"]')
       expect(createBtn.exists()).toBe(true)
     })
   })
@@ -217,7 +217,7 @@ describe('WatchlistListView', () => {
       const newEntry = makeWatchlist({ id: 'wl-new', name: 'Brand New' })
 
       // Open dialog
-      await wrapper.find('[data-testid="empty-create-btn"]').trigger('click')
+      await wrapper.find('[data-testid="new-watchlist-btn"]').trigger('click')
       await flushPromises()
 
       // Simulate the dialog emitting created

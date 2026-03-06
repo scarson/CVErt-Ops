@@ -46,7 +46,7 @@ async function onSubmit() {
 </script>
 
 <template>
-  <Card>
+  <Card class="mx-auto max-w-md">
     <CardHeader class="text-center">
       <CardTitle class="text-xl">Create your organization</CardTitle>
     </CardHeader>

@@ -179,14 +179,6 @@ watch(
           <p class="mt-1 text-sm text-muted-foreground">
             Create your first watchlist to start tracking vulnerabilities
           </p>
-          <Button
-            class="mt-4"
-            data-testid="empty-create-btn"
-            @click="createDialogOpen = true"
-          >
-            <Plus class="mr-2 size-4" aria-hidden="true" />
-            New Watchlist
-          </Button>
         </CardContent>
       </Card>
 

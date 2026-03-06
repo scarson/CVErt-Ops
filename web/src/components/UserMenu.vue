@@ -3,6 +3,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { LogOut } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -16,6 +17,12 @@ import {
 } from '@/components/ui/dropdown-menu'
 
 const auth = useAuthStore()
+const router = useRouter()
+
+async function handleLogout() {
+  await auth.logout()
+  router.push('/login')
+}
 
 const initials = computed(() => {
   const name = auth.user?.display_name ?? ''
@@ -60,7 +67,7 @@ const initials = computed(() => {
         </div>
       </DropdownMenuLabel>
       <DropdownMenuSeparator />
-      <DropdownMenuItem @click="auth.logout()">
+      <DropdownMenuItem @click="handleLogout">
         <LogOut class="mr-2 size-4" aria-hidden="true" />
         Log out
       </DropdownMenuItem>

@@ -58,7 +58,7 @@ watch(() => route.path, () => {
       </header>
 
       <!-- Main content -->
-      <main id="main-content" class="flex-1 overflow-y-auto">
+      <main id="main-content" class="flex-1 overflow-y-auto p-4 md:p-6">
         <slot />
       </main>
     </div>

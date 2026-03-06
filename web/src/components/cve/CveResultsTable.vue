@@ -113,7 +113,7 @@ function cvssDisplay(item: CVEItem): string {
                 {
                   'bg-red-600 text-white border-red-600': severityColor(item.severity) === 'critical',
                   'bg-orange-500 text-white border-orange-500': severityColor(item.severity) === 'high',
-                  'bg-yellow-500 text-black border-yellow-500': severityColor(item.severity) === 'medium',
+                  'bg-yellow-600 text-white border-yellow-600': severityColor(item.severity) === 'medium',
                   'bg-green-600 text-white border-green-600': severityColor(item.severity) === 'low',
                   'bg-muted text-muted-foreground border-muted': severityColor(item.severity) === 'unknown',
                 },

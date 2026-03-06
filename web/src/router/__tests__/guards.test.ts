@@ -2,6 +2,7 @@
 // ABOUTME: Verifies auth redirect, org check, and login redirect behavior.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
@@ -298,6 +299,37 @@ describe('route guards', () => {
       await router.isReady()
 
       expect(document.title).toBe('Log In | CVErt Ops')
+    })
+
+    it('focuses the h1 element after route change', async () => {
+      const auth = useAuthStore()
+      auth.user = {
+        user_id: 'u1',
+        email: 'test@example.com',
+        display_name: 'Test',
+        orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
+      }
+      auth.setActiveOrg('org-1')
+      vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
+
+      // Create an h1 in the DOM to simulate a page heading
+      const h1 = document.createElement('h1')
+      h1.textContent = 'Test Page'
+      document.body.appendChild(h1)
+
+      try {
+        const router = createTestRouter()
+        await router.push('/cves')
+        await router.isReady()
+
+        // Focus happens in a nextTick callback inside titleGuard
+        await nextTick()
+
+        expect(document.activeElement).toBe(h1)
+        expect(h1.getAttribute('tabindex')).toBe('-1')
+      } finally {
+        document.body.removeChild(h1)
+      }
     })
   })
 })

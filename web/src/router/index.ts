@@ -1,6 +1,7 @@
 // ABOUTME: Vue Router configuration with auth and org guards.
 // ABOUTME: Redirects unauthenticated users to login, org-less users to create-org.
 
+import { nextTick } from 'vue'
 import {
   createRouter,
   createWebHistory,
@@ -148,6 +149,15 @@ export const titleGuard: NavigationHookAfter = (to) => {
       ? to.name.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
       : ''
   document.title = title ? `${title} | CVErt Ops` : 'CVErt Ops'
+
+  // Focus the page heading for screen reader announcement
+  nextTick(() => {
+    const heading = document.querySelector('h1')
+    if (heading instanceof HTMLElement) {
+      heading.setAttribute('tabindex', '-1')
+      heading.focus()
+    }
+  })
 }
 
 const router = createRouter({

@@ -35,12 +35,8 @@ const (
 var dateTimeRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)?$`)
 
 // Cursor is the JSON-serializable sync state for the MSRC adapter.
-// Two-phase: first poll /updates for changed release IDs, then fetch CSAF
-// documents for each. PendingReleaseIDs tracks releases not yet fetched
-// in the current sync cycle.
 type Cursor struct {
-	LastReleaseDate   string   `json:"last_release_date"`
-	PendingReleaseIDs []string `json:"pending_release_ids,omitempty"`
+	LastReleaseDate string `json:"last_release_date"`
 }
 
 // Adapter implements feed.Adapter for the MSRC CSAF feed.

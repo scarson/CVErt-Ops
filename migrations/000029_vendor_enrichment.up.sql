@@ -15,12 +15,15 @@ CREATE TABLE IF NOT EXISTS cve_vendor_enrichment (
     UNIQUE(cve_id, source_name)
 );
 
+-- These columns exist as extracted scalars (rather than living only in the JSONB blob)
+-- specifically so they can be indexed and filtered across all vendors.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cve_vendor_enrichment_severity
     ON cve_vendor_enrichment (vendor_severity);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cve_vendor_enrichment_fix_state
     ON cve_vendor_enrichment (vendor_fix_state);
 
+-- GIN enables per-vendor JSONB queries (KB lookup, package search, etc).
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_cve_vendor_enrichment_enrichment
     ON cve_vendor_enrichment USING gin (enrichment);
 

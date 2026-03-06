@@ -38,12 +38,9 @@ const (
 var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 // Cursor is the JSON-serializable sync state for the Red Hat adapter.
-// Two-phase: first paginate through /cve.json for CVE IDs, then fetch
-// /cve/{CVE-ID}.json for each. DetailQueue enables mid-batch resumption.
 type Cursor struct {
-	AfterDate   string   `json:"after_date"`
-	DetailQueue []string `json:"detail_queue,omitempty"`
-	Page        int      `json:"page,omitempty"`
+	AfterDate string `json:"after_date"`
+	Page      int    `json:"page,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the Red Hat Security Data API.
@@ -369,14 +366,11 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 
 	fetchedAt := time.Now().UTC()
 
-	// If the cursor has a detail queue, resume fetching details
 	var cveIDs []string
 	fullPage := false
 
-	if len(cur.DetailQueue) > 0 {
-		cveIDs = cur.DetailQueue
-	} else {
-		// Phase 1: fetch list page
+	// Phase 1: fetch list page
+	{
 		if err := a.rateLimiter.Wait(ctx); err != nil {
 			return nil, fmt.Errorf("redhat: rate limit: %w", err)
 		}
@@ -411,6 +405,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		defer resp.Body.Close() //nolint:errcheck
 
 		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 			return nil, fmt.Errorf("redhat: list HTTP %d", resp.StatusCode)
 		}
 

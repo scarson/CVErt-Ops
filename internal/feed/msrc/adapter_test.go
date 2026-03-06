@@ -460,9 +460,6 @@ func TestFetch_Success(t *testing.T) {
 	if cur.LastReleaseDate != "2026-03-12T08:00:00Z" {
 		t.Errorf("cursor.LastReleaseDate = %q, want %q", cur.LastReleaseDate, "2026-03-12T08:00:00Z")
 	}
-	if len(cur.PendingReleaseIDs) != 0 {
-		t.Errorf("cursor.PendingReleaseIDs = %v, want empty (all fetched)", cur.PendingReleaseIDs)
-	}
 }
 
 func TestFetch_ShortCircuit(t *testing.T) {
@@ -492,10 +489,8 @@ func TestFetch_ShortCircuit(t *testing.T) {
 	}
 	adapter := New(client)
 
-	// Cursor has the same LastReleaseDate AND no pending IDs
 	cursorJSON, _ := json.Marshal(Cursor{
-		LastReleaseDate:   "2026-03-12T08:00:00Z",
-		PendingReleaseIDs: nil,
+		LastReleaseDate: "2026-03-12T08:00:00Z",
 	})
 
 	result, err := adapter.Fetch(context.Background(), cursorJSON)

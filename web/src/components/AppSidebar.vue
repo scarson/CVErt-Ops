@@ -68,7 +68,7 @@ function isActive(to: string): boolean {
               : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground'
           "
         >
-          <component :is="item.icon" class="size-4 shrink-0" />
+          <component :is="item.icon" class="size-4 shrink-0" aria-hidden="true" />
           {{ item.label }}
         </RouterLink>
       </div>
@@ -91,7 +91,7 @@ function isActive(to: string): boolean {
               : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground'
           "
         >
-          <component :is="item.icon" class="size-4 shrink-0" />
+          <component :is="item.icon" class="size-4 shrink-0" aria-hidden="true" />
           {{ item.label }}
         </RouterLink>
       </div>
@@ -114,7 +114,7 @@ function isActive(to: string): boolean {
               : 'text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground'
           "
         >
-          <component :is="item.icon" class="size-4 shrink-0" />
+          <component :is="item.icon" class="size-4 shrink-0" aria-hidden="true" />
           {{ item.label }}
         </RouterLink>
       </div>

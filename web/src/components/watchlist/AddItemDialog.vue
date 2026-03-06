@@ -170,7 +170,7 @@ function selectEcosystem(value: string) {
               type="button"
               @click="itemType = 'package'"
             >
-              <Package class="mr-1 size-4" />
+              <Package class="mr-1 size-4" aria-hidden="true" />
               Package
             </Button>
             <Button
@@ -180,7 +180,7 @@ function selectEcosystem(value: string) {
               type="button"
               @click="itemType = 'cpe'"
             >
-              <Cpu class="mr-1 size-4" />
+              <Cpu class="mr-1 size-4" aria-hidden="true" />
               CPE
             </Button>
           </div>

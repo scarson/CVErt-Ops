@@ -180,7 +180,7 @@ watch(
         data-testid="new-group-btn"
         @click="openCreateDialog"
       >
-        <Plus class="mr-2 size-4" />
+        <Plus class="mr-2 size-4" aria-hidden="true" />
         New Group
       </Button>
     </div>
@@ -200,7 +200,7 @@ watch(
       <!-- Empty state -->
       <Card v-else-if="groups.length === 0" class="py-16">
         <CardContent class="flex flex-col items-center text-center">
-          <Users class="mb-4 size-12 text-muted-foreground" />
+          <Users class="mb-4 size-12 text-muted-foreground" aria-hidden="true" />
           <h2 class="text-lg font-semibold">No groups yet</h2>
           <p class="mt-1 text-sm text-muted-foreground">
             Create your first group to organize members
@@ -211,7 +211,7 @@ watch(
             data-testid="empty-create-group-btn"
             @click="openCreateDialog"
           >
-            <Plus class="mr-2 size-4" />
+            <Plus class="mr-2 size-4" aria-hidden="true" />
             New Group
           </Button>
         </CardContent>

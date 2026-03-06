@@ -267,7 +267,7 @@ watch(
         data-testid="invite-member-btn"
         @click="inviteDialogOpen = true"
       >
-        <Plus class="mr-2 size-4" />
+        <Plus class="mr-2 size-4" aria-hidden="true" />
         Invite Member
       </Button>
     </div>

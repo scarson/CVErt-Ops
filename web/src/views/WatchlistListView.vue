@@ -162,7 +162,7 @@ watch(
         data-testid="new-watchlist-btn"
         @click="createDialogOpen = true"
       >
-        <Plus class="mr-2 size-4" />
+        <Plus class="mr-2 size-4" aria-hidden="true" />
         New Watchlist
       </Button>
     </div>
@@ -182,7 +182,7 @@ watch(
       <!-- Empty state -->
       <Card v-else-if="watchlists.length === 0" class="py-16">
         <CardContent class="flex flex-col items-center text-center">
-          <FileText class="mb-4 size-12 text-muted-foreground" />
+          <FileText class="mb-4 size-12 text-muted-foreground" aria-hidden="true" />
           <h2 class="text-lg font-semibold">No watchlists yet</h2>
           <p class="mt-1 text-sm text-muted-foreground">
             Create your first watchlist to start tracking vulnerabilities
@@ -192,7 +192,7 @@ watch(
             data-testid="empty-create-btn"
             @click="createDialogOpen = true"
           >
-            <Plus class="mr-2 size-4" />
+            <Plus class="mr-2 size-4" aria-hidden="true" />
             New Watchlist
           </Button>
         </CardContent>

@@ -97,7 +97,7 @@ function loginWithGoogle() {
 
       <div class="grid grid-cols-2 gap-3">
         <Button variant="outline" type="button" @click="loginWithGitHub">
-          <Github class="mr-2 size-4" />
+          <Github class="mr-2 size-4" aria-hidden="true" />
           GitHub
         </Button>
         <Button variant="outline" type="button" @click="loginWithGoogle">

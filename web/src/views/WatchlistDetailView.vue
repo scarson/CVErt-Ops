@@ -242,7 +242,7 @@ watch(
         to="/watchlists"
         class="text-muted-foreground hover:text-foreground inline-flex items-center text-sm"
       >
-        <ArrowLeft class="mr-1 size-4" />
+        <ArrowLeft class="mr-1 size-4" aria-hidden="true" />
         Back to Watchlists
       </RouterLink>
 
@@ -270,6 +270,7 @@ watch(
             <Input
               v-model="editName"
               data-testid="edit-name-input"
+              aria-label="Watchlist name"
               class="max-w-sm text-lg font-semibold"
               :disabled="saving"
             />
@@ -297,6 +298,7 @@ watch(
           <Input
             v-model="editDescription"
             data-testid="edit-description-input"
+            aria-label="Watchlist description"
             placeholder="Description (optional)"
             class="max-w-sm"
             :disabled="saving"
@@ -324,7 +326,7 @@ watch(
           size="sm"
           @click="addDialogOpen = true"
         >
-          <Plus class="mr-1 size-4" />
+          <Plus class="mr-1 size-4" aria-hidden="true" />
           Add Item
         </Button>
       </div>
@@ -359,8 +361,8 @@ watch(
                 :variant="item.item_type === 'package' ? 'default' : 'secondary'"
                 data-testid="item-type-badge"
               >
-                <Package v-if="item.item_type === 'package'" class="mr-1 size-3" />
-                <Cpu v-else class="mr-1 size-3" />
+                <Package v-if="item.item_type === 'package'" class="mr-1 size-3" aria-hidden="true" />
+                <Cpu v-else class="mr-1 size-3" aria-hidden="true" />
                 {{ item.item_type }}
               </Badge>
             </TableCell>

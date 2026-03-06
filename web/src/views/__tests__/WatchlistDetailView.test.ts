@@ -291,6 +291,25 @@ describe('WatchlistDetailView', () => {
       expect(input.value).toBe('Production Deps')
     })
 
+    it('provides accessible labels for inline edit inputs', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      // Enter edit mode
+      await clickTestId('edit-name-btn')
+      await flushPromises()
+
+      const nameInput = findTestId('edit-name-input')
+      expect(nameInput).not.toBeNull()
+      expect(nameInput!.getAttribute('aria-label')).toBe('Watchlist name')
+
+      const descInput = findTestId('edit-description-input')
+      expect(descInput).not.toBeNull()
+      expect(descInput!.getAttribute('aria-label')).toBe('Watchlist description')
+    })
+
     it('save calls PATCH and updates display', async () => {
       mockWatchlistSuccess()
       mockItemsSuccess([])

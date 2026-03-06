@@ -127,7 +127,7 @@ watch(cveId, () => {
       data-testid="back-link"
       class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
     >
-      <ArrowLeft class="size-4" />
+      <ArrowLeft class="size-4" aria-hidden="true" />
       Back to search
     </RouterLink>
 
@@ -280,7 +280,7 @@ watch(cveId, () => {
             :key="idx"
             class="flex items-start gap-2 text-sm"
           >
-            <ExternalLink class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+            <ExternalLink class="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
             <div>
               <a
                 :href="safeHref(ref.url)"

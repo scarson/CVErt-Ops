@@ -40,7 +40,7 @@ const mobileOpen = ref(false)
             class="-ml-2"
             @click="mobileOpen = true"
           >
-            <Menu class="size-5" />
+            <Menu class="size-5" aria-hidden="true" />
             <span class="sr-only">Open navigation</span>
           </Button>
           <SheetContent side="left" class="w-60 p-0">

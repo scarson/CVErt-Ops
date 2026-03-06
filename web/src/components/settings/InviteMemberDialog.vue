@@ -131,7 +131,7 @@ async function handleSend() {
       <div class="space-y-4 py-2">
         <div v-if="success" data-testid="invite-success" class="rounded-md bg-green-50 p-3 text-sm text-green-800 dark:bg-green-950 dark:text-green-200">
           <div class="flex items-center gap-2">
-            <UserPlus class="size-4" />
+            <UserPlus class="size-4" aria-hidden="true" />
             Invitation sent successfully
           </div>
         </div>

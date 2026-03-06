@@ -61,7 +61,7 @@ const initials = computed(() => {
       </DropdownMenuLabel>
       <DropdownMenuSeparator />
       <DropdownMenuItem @click="auth.logout()">
-        <LogOut class="mr-2 size-4" />
+        <LogOut class="mr-2 size-4" aria-hidden="true" />
         Log out
       </DropdownMenuItem>
     </DropdownMenuContent>

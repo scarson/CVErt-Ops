@@ -119,7 +119,7 @@ onMounted(() => {
         :disabled="!hasPrev"
         @click="onPrevPage"
       >
-        <ChevronLeft class="mr-1 size-4" />
+        <ChevronLeft class="mr-1 size-4" aria-hidden="true" />
         Previous
       </Button>
       <Button
@@ -130,7 +130,7 @@ onMounted(() => {
         @click="onNextPage"
       >
         Next
-        <ChevronRight class="ml-1 size-4" />
+        <ChevronRight class="ml-1 size-4" aria-hidden="true" />
       </Button>
     </div>
   </div>

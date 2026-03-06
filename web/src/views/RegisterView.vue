@@ -150,7 +150,7 @@ function registerWithGoogle() {
 
       <div class="grid grid-cols-2 gap-3">
         <Button variant="outline" type="button" @click="registerWithGitHub">
-          <Github class="mr-2 size-4" />
+          <Github class="mr-2 size-4" aria-hidden="true" />
           GitHub
         </Button>
         <Button variant="outline" type="button" @click="registerWithGoogle">

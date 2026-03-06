@@ -281,7 +281,7 @@ func recordToPatch(rec kevRecord) *feed.CanonicalPatch {
 	enrichmentData, err := json.Marshal(map[string]any{
 		"required_action": feed.StripNullBytes(rec.RequiredAction),
 		"due_date":        feed.StripNullBytes(rec.DueDate),
-		"ransomware_use":  rec.KnownRansomwareCampaignUse == "Known",
+		"ransomware_use":  feed.StripNullBytes(rec.KnownRansomwareCampaignUse) == "Known",
 		"vendor_project":  feed.StripNullBytes(rec.VendorProject),
 		"product":         feed.StripNullBytes(rec.Product),
 		"notes":           feed.StripNullBytes(rec.Notes),

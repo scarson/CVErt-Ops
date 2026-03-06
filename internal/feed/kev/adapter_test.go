@@ -504,13 +504,14 @@ func TestRecordToPatch_NullByteInEnrichment(t *testing.T) {
 	t.Parallel()
 
 	rec := kevRecord{
-		CVEID:          "CVE-2024-9999",
-		VendorProject:  "Acme\x00Corp",
-		Product:        "Widget\x00Pro",
-		DateAdded:      "2024-06-15",
-		RequiredAction: "Apply\x00update",
-		DueDate:        "2024-07-15",
-		Notes:          "Critical\x00vuln",
+		CVEID:                      "CVE-2024-9999",
+		VendorProject:              "Acme\x00Corp",
+		Product:                    "Widget\x00Pro",
+		DateAdded:                  "2024-06-15",
+		RequiredAction:             "Apply\x00update",
+		DueDate:                    "2024-\x0007-15",
+		Notes:                      "Critical\x00vuln",
+		KnownRansomwareCampaignUse: "Known\x00",
 	}
 
 	p := recordToPatch(rec)
@@ -542,6 +543,14 @@ func TestRecordToPatch_NullByteInEnrichment(t *testing.T) {
 	}
 	if got := enrichment["notes"]; got != "Criticalvuln" {
 		t.Errorf("notes = %q, want %q", got, "Criticalvuln")
+	}
+	if got := enrichment["due_date"]; got != "2024-07-15" {
+		t.Errorf("due_date = %q, want %q", got, "2024-07-15")
+	}
+	// KnownRansomwareCampaignUse had "Known\x00" — after stripping, comparison
+	// to "Known" should succeed and ransomware_use should be true.
+	if got, ok := enrichment["ransomware_use"].(bool); !ok || !got {
+		t.Errorf("ransomware_use = %v, want true (null byte in source should not break comparison)", enrichment["ransomware_use"])
 	}
 }
 

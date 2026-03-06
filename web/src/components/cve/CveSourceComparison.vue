@@ -58,7 +58,7 @@ const defaultTab = computed(() =>
 <template>
   <div>
     <div v-if="loading" class="flex items-center justify-center py-8 text-muted-foreground">
-      <Loader2 class="mr-2 size-4 animate-spin" />
+      <Loader2 class="mr-2 size-4 animate-spin" aria-hidden="true" />
       Loading sources...
     </div>
 

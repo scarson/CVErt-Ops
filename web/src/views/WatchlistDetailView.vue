@@ -212,30 +212,31 @@ watch(
 
 <template>
   <div class="space-y-6">
-    <!-- Loading state -->
-    <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
-      <Loader2 class="mr-2 size-5 animate-spin" />
-      Loading watchlist...
-    </div>
+    <div aria-live="polite">
+      <!-- Loading state -->
+      <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
+        <Loader2 class="mr-2 size-5 animate-spin" aria-hidden="true" />
+        Loading watchlist...
+      </div>
 
-    <!-- Not found state -->
-    <div v-else-if="notFound" class="py-16 text-center">
-      <h2 class="text-lg font-semibold">Watchlist not found</h2>
-      <p class="text-muted-foreground mt-2 text-sm">
-        The watchlist you're looking for doesn't exist or you don't have access.
-      </p>
-      <RouterLink to="/watchlists" class="text-primary mt-4 inline-block text-sm underline">
-        Back to Watchlists
-      </RouterLink>
-    </div>
+      <!-- Not found state -->
+      <div v-else-if="notFound" class="py-16 text-center">
+        <h2 class="text-lg font-semibold">Watchlist not found</h2>
+        <p class="text-muted-foreground mt-2 text-sm">
+          The watchlist you're looking for doesn't exist or you don't have access.
+        </p>
+        <RouterLink to="/watchlists" class="text-primary mt-4 inline-block text-sm underline">
+          Back to Watchlists
+        </RouterLink>
+      </div>
 
-    <!-- Error state -->
-    <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
-    </div>
+      <!-- Error state -->
+      <div v-else-if="error" class="py-16 text-center">
+        <p class="text-sm text-destructive" role="alert">{{ error }}</p>
+      </div>
 
-    <!-- Loaded state -->
-    <template v-else-if="watchlist">
+      <!-- Loaded state -->
+      <template v-else-if="watchlist">
       <!-- Back link -->
       <RouterLink
         to="/watchlists"
@@ -384,6 +385,7 @@ watch(
         </TableBody>
       </Table>
     </template>
+    </div>
 
     <!-- Add Item Dialog -->
     <AddItemDialog

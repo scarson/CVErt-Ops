@@ -191,10 +191,10 @@ defineExpose({ addMember, availableMembers })
         </DialogDescription>
       </DialogHeader>
 
-      <div class="space-y-4 py-2">
+      <div class="space-y-4 py-2" aria-live="polite">
         <!-- Loading state -->
         <div v-if="loading" class="flex items-center justify-center py-8 text-muted-foreground">
-          <Loader2 class="mr-2 size-5 animate-spin" />
+          <Loader2 class="mr-2 size-5 animate-spin" aria-hidden="true" />
           Loading members...
         </div>
 

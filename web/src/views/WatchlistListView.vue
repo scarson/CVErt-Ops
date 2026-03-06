@@ -167,38 +167,39 @@ watch(
       </Button>
     </div>
 
-    <!-- Loading state -->
-    <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
-      <Loader2 class="mr-2 size-5 animate-spin" />
-      Loading watchlists...
-    </div>
+    <div aria-live="polite">
+      <!-- Loading state -->
+      <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
+        <Loader2 class="mr-2 size-5 animate-spin" aria-hidden="true" />
+        Loading watchlists...
+      </div>
 
-    <!-- Error state -->
-    <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
-    </div>
+      <!-- Error state -->
+      <div v-else-if="error" class="py-16 text-center">
+        <p class="text-sm text-destructive" role="alert">{{ error }}</p>
+      </div>
 
-    <!-- Empty state -->
-    <Card v-else-if="watchlists.length === 0" class="py-16">
-      <CardContent class="flex flex-col items-center text-center">
-        <FileText class="mb-4 size-12 text-muted-foreground" />
-        <h2 class="text-lg font-semibold">No watchlists yet</h2>
-        <p class="mt-1 text-sm text-muted-foreground">
-          Create your first watchlist to start tracking vulnerabilities
-        </p>
-        <Button
-          class="mt-4"
-          data-testid="empty-create-btn"
-          @click="createDialogOpen = true"
-        >
-          <Plus class="mr-2 size-4" />
-          New Watchlist
-        </Button>
-      </CardContent>
-    </Card>
+      <!-- Empty state -->
+      <Card v-else-if="watchlists.length === 0" class="py-16">
+        <CardContent class="flex flex-col items-center text-center">
+          <FileText class="mb-4 size-12 text-muted-foreground" />
+          <h2 class="text-lg font-semibold">No watchlists yet</h2>
+          <p class="mt-1 text-sm text-muted-foreground">
+            Create your first watchlist to start tracking vulnerabilities
+          </p>
+          <Button
+            class="mt-4"
+            data-testid="empty-create-btn"
+            @click="createDialogOpen = true"
+          >
+            <Plus class="mr-2 size-4" />
+            New Watchlist
+          </Button>
+        </CardContent>
+      </Card>
 
-    <!-- Watchlists table -->
-    <Table v-else>
+      <!-- Watchlists table -->
+      <Table v-else>
       <TableHeader>
         <TableRow>
           <TableHead>Name</TableHead>
@@ -241,6 +242,7 @@ watch(
         </TableRow>
       </TableBody>
     </Table>
+    </div>
 
     <!-- Create dialog -->
     <CreateWatchlistDialog

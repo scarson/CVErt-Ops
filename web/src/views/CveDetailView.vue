@@ -131,27 +131,28 @@ watch(cveId, () => {
       Back to search
     </RouterLink>
 
-    <!-- Loading state -->
-    <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
-      <Loader2 class="mr-2 size-5 animate-spin" />
-      Loading CVE details...
-    </div>
+    <div aria-live="polite">
+      <!-- Loading state -->
+      <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
+        <Loader2 class="mr-2 size-5 animate-spin" aria-hidden="true" />
+        Loading CVE details...
+      </div>
 
-    <!-- 404 state -->
-    <div v-else-if="notFound" class="py-16 text-center">
-      <h2 class="text-xl font-semibold">CVE not found</h2>
-      <p class="mt-2 text-sm text-muted-foreground">
-        The CVE identifier "{{ cveId }}" was not found in the database.
-      </p>
-    </div>
+      <!-- 404 state -->
+      <div v-else-if="notFound" class="py-16 text-center">
+        <h2 class="text-xl font-semibold">CVE not found</h2>
+        <p class="mt-2 text-sm text-muted-foreground">
+          The CVE identifier "{{ cveId }}" was not found in the database.
+        </p>
+      </div>
 
-    <!-- Error state -->
-    <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
-    </div>
+      <!-- Error state -->
+      <div v-else-if="error" class="py-16 text-center">
+        <p class="text-sm text-destructive" role="alert">{{ error }}</p>
+      </div>
 
-    <!-- CVE detail content -->
-    <template v-else-if="cve">
+      <!-- CVE detail content -->
+      <template v-else-if="cve">
       <!-- Header -->
       <div class="space-y-2">
         <div class="flex items-center gap-3">
@@ -310,5 +311,6 @@ watch(cveId, () => {
         <CveSourceComparison :sources="sources" :loading="sourcesLoading" />
       </section>
     </template>
+    </div>
   </div>
 </template>

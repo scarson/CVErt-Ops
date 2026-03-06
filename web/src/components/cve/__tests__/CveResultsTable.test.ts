@@ -156,6 +156,14 @@ describe('CveResultsTable', () => {
 
       expect(wrapper.text()).not.toContain('No CVEs found matching your search')
     })
+
+    it('has aria-live region for loading state announcements', async () => {
+      const wrapper = await mountTable({ items: [], loading: true })
+
+      const liveRegion = wrapper.find('[aria-live]')
+      expect(liveRegion.exists()).toBe(true)
+      expect(liveRegion.attributes('aria-live')).toBe('polite')
+    })
   })
 
   describe('date formatting', () => {

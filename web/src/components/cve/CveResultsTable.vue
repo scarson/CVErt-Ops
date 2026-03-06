@@ -64,7 +64,7 @@ function cvssDisplay(item: CVEItem): string {
 </script>
 
 <template>
-  <div>
+  <div aria-live="polite">
     <Table>
       <TableHeader>
         <TableRow>
@@ -79,7 +79,7 @@ function cvssDisplay(item: CVEItem): string {
         <TableRow v-if="loading">
           <TableCell :colspan="5" class="h-32 text-center">
             <div class="flex items-center justify-center gap-2 text-muted-foreground">
-              <Loader2 class="size-4 animate-spin" />
+              <Loader2 class="size-4 animate-spin" aria-hidden="true" />
               Loading...
             </div>
           </TableCell>

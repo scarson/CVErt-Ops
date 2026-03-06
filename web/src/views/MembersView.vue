@@ -272,19 +272,20 @@ watch(
       </Button>
     </div>
 
-    <!-- Loading state -->
-    <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
-      <Loader2 class="mr-2 size-5 animate-spin" />
-      Loading members...
-    </div>
+    <div aria-live="polite">
+      <!-- Loading state -->
+      <div v-if="loading" class="flex items-center justify-center py-16 text-muted-foreground">
+        <Loader2 class="mr-2 size-5 animate-spin" aria-hidden="true" />
+        Loading members...
+      </div>
 
-    <!-- Error state -->
-    <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
-    </div>
+      <!-- Error state -->
+      <div v-else-if="error" class="py-16 text-center">
+        <p class="text-sm text-destructive" role="alert">{{ error }}</p>
+      </div>
 
-    <!-- Members table -->
-    <template v-else>
+      <!-- Members table -->
+      <template v-else>
       <!-- Role change error -->
       <p v-if="roleChangeError" class="text-sm text-destructive" role="alert">{{ roleChangeError }}</p>
 
@@ -393,6 +394,7 @@ watch(
         </Table>
       </div>
     </template>
+    </div>
 
     <!-- Invite dialog -->
     <InviteMemberDialog

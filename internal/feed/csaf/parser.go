@@ -115,8 +115,9 @@ type Remediation struct {
 
 // Threat describes impact or exploit status for a vulnerability.
 type Threat struct {
-	Category string `json:"category"`
-	Details  string `json:"details"`
+	Category   string   `json:"category"`
+	Details    string   `json:"details"`
+	ProductIDs []string `json:"product_ids,omitempty"`
 }
 
 // ProductStatus groups product IDs by their vulnerability status.
@@ -161,7 +162,7 @@ func (pt *ProductTree) Lookup() map[string]string {
 // walkBranches recursively walks a branch tree, collecting product ID to name
 // mappings from leaf nodes.
 func walkBranches(b Branch, m map[string]string) {
-	if b.Product != nil {
+	if b.Product != nil && b.Product.ProductID != "" {
 		m[b.Product.ProductID] = b.Product.Name
 	}
 	for _, child := range b.Branches {

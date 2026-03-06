@@ -137,8 +137,8 @@ func TestCSAFToPatches(t *testing.T) {
 	if p.CVEID != "CVE-2026-21001" {
 		t.Errorf("CVEID = %q, want %q", p.CVEID, "CVE-2026-21001")
 	}
-	if p.SourceID != SourceName {
-		t.Errorf("SourceID = %q, want %q", p.SourceID, SourceName)
+	if p.SourceID != p.CVEID {
+		t.Errorf("SourceID = %q, want %q (same as CVEID)", p.SourceID, p.CVEID)
 	}
 	if p.DescriptionPrimary == nil {
 		t.Fatal("DescriptionPrimary should not be nil")

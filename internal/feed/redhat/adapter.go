@@ -72,8 +72,8 @@ type detailRecord struct {
 	Details         []string          `json:"details"`
 	References      []string          `json:"references"`
 	Bugzilla        *bugzillaInfo     `json:"bugzilla"`
-	AffectedRelease []affectedRelease `json:"affected_release"`
-	PackageState    []packageState    `json:"package_state"`
+	AffectedRelease affectedReleaseList `json:"affected_release"`
+	PackageState    packageStateList   `json:"package_state"`
 	Mitigation      *mitigationInfo   `json:"mitigation"`
 	UpstreamFix     string            `json:"upstream_fix"`
 }
@@ -96,11 +96,47 @@ type affectedRelease struct {
 	Package     string `json:"package"`
 }
 
+// affectedReleaseList handles the Red Hat API quirk where affected_release
+// can be either a JSON array or a single object (when exactly one entry exists).
+type affectedReleaseList []affectedRelease
+
+func (l *affectedReleaseList) UnmarshalJSON(data []byte) error {
+	var arr []affectedRelease
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*l = arr
+		return nil
+	}
+	var single affectedRelease
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	*l = affectedReleaseList{single}
+	return nil
+}
+
 type packageState struct {
 	ProductName string `json:"product_name"`
 	FixState    string `json:"fix_state"`
 	CPE         string `json:"cpe"`
 	PackageName string `json:"package_name"`
+}
+
+// packageStateList handles the Red Hat API quirk where package_state
+// can be either a JSON array or a single object (when exactly one entry exists).
+type packageStateList []packageState
+
+func (l *packageStateList) UnmarshalJSON(data []byte) error {
+	var arr []packageState
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*l = arr
+		return nil
+	}
+	var single packageState
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	*l = packageStateList{single}
+	return nil
 }
 
 type mitigationInfo struct {
@@ -137,9 +173,10 @@ func parseDetailResponse(r io.Reader) (*detailRecord, error) {
 
 // detailToPatch converts a Red Hat detail record to a CanonicalPatch.
 func detailToPatch(d detailRecord) feed.CanonicalPatch {
+	cveID := strings.Clone(feed.StripNullBytes(d.Name))
 	p := feed.CanonicalPatch{
-		CVEID:    strings.Clone(feed.StripNullBytes(d.Name)),
-		SourceID: SourceName,
+		CVEID:    cveID,
+		SourceID: cveID,
 	}
 
 	// Description from details[0]
@@ -187,20 +224,21 @@ func detailToPatch(d detailRecord) feed.CanonicalPatch {
 		}
 	}
 
-	// Affected CPEs from affected_release[].cpe
+	// Affected CPEs from affected_release[].cpe (dedup on normalized key)
 	seen := make(map[string]struct{})
 	for _, ar := range d.AffectedRelease {
 		if ar.CPE == "" {
 			continue
 		}
-		if _, dup := seen[ar.CPE]; dup {
+		normalized := strings.ToLower(ar.CPE)
+		if _, dup := seen[normalized]; dup {
 			continue
 		}
-		seen[ar.CPE] = struct{}{}
-		normalized := strings.ToLower(ar.CPE)
+		seen[normalized] = struct{}{}
+		cleanCPE := strings.Clone(feed.StripNullBytes(ar.CPE))
 		p.AffectedCPEs = append(p.AffectedCPEs, feed.AffectedCPE{
-			CPE:           ar.CPE,
-			CPENormalized: normalized,
+			CPE:           cleanCPE,
+			CPENormalized: strings.Clone(feed.StripNullBytes(normalized)),
 		})
 	}
 
@@ -211,12 +249,21 @@ func detailToPatch(d detailRecord) feed.CanonicalPatch {
 }
 
 // buildVendorEnrichment extracts Red Hat-specific metadata.
+// Returns nil if no enrichment data is available.
 func buildVendorEnrichment(d detailRecord) *feed.VendorEnrichment {
+	hasEnrichment := d.ThreatSeverity != "" || len(d.PackageState) > 0 ||
+		d.Bugzilla != nil || len(d.AffectedRelease) > 0 ||
+		(d.Mitigation != nil && d.Mitigation.Value != "") || d.UpstreamFix != ""
+
+	if !hasEnrichment {
+		return nil
+	}
+
 	enrichment := &feed.VendorEnrichment{}
 
 	// VendorSeverity from threat_severity
 	if d.ThreatSeverity != "" {
-		sev := strings.Clone(d.ThreatSeverity)
+		sev := strings.Clone(feed.StripNullBytes(d.ThreatSeverity))
 		enrichment.VendorSeverity = &sev
 	}
 
@@ -403,7 +450,11 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			AfterDate: cur.AfterDate,
 			Page:      page + 1,
 		}
-		nextCursor, _ = json.Marshal(next)
+		var err error
+		nextCursor, err = json.Marshal(next)
+		if err != nil {
+			return nil, fmt.Errorf("redhat: marshal cursor: %w", err)
+		}
 	}
 
 	return &feed.FetchResult{

@@ -87,9 +87,10 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 			continue
 		}
 
+		cveID := strings.Clone(feed.StripNullBytes(vuln.CVE))
 		p := feed.CanonicalPatch{
-			CVEID:    strings.Clone(feed.StripNullBytes(vuln.CVE)),
-			SourceID: SourceName,
+			CVEID:    cveID,
+			SourceID: cveID,
 		}
 
 		// Description from notes[type=description]
@@ -119,12 +120,12 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 		}
 		if bestV3Score > 0 {
 			p.CVSSv3Score = &bestV3Score
-			vec := strings.Clone(bestV3Vector)
+			vec := strings.Clone(feed.StripNullBytes(bestV3Vector))
 			p.CVSSv3Vector = &vec
 		}
 		if bestV4Score > 0 {
 			p.CVSSv4Score = &bestV4Score
-			vec := strings.Clone(bestV4Vector)
+			vec := strings.Clone(feed.StripNullBytes(bestV4Vector))
 			p.CVSSv4Vector = &vec
 		}
 
@@ -142,21 +143,22 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 			})
 		}
 
-		// Affected products via product tree lookup
+		// Affected products via product tree lookup (dedup on normalized key)
 		seen := make(map[string]struct{})
 		for _, pid := range vuln.ProductStatus.KnownAffected {
 			name, ok := lookup[pid]
 			if !ok {
 				continue
 			}
-			if _, dup := seen[name]; dup {
+			normalized := strings.ToLower(name)
+			if _, dup := seen[normalized]; dup {
 				continue
 			}
-			seen[name] = struct{}{}
-			normalized := strings.ToLower(name)
+			seen[normalized] = struct{}{}
+			cleanName := strings.Clone(feed.StripNullBytes(name))
 			p.AffectedCPEs = append(p.AffectedCPEs, feed.AffectedCPE{
-				CPE:           name,
-				CPENormalized: normalized,
+				CPE:           cleanName,
+				CPENormalized: strings.Clone(feed.StripNullBytes(normalized)),
 			})
 		}
 
@@ -177,7 +179,7 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 	// VendorSeverity from threats[category=impact]
 	for _, threat := range vuln.Threats {
 		if threat.Category == "impact" && threat.Details != "" {
-			sev := strings.Clone(threat.Details)
+			sev := strings.Clone(feed.StripNullBytes(threat.Details))
 			enrichment.VendorSeverity = &sev
 			break
 		}
@@ -196,7 +198,7 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 	var exploitability string
 	for _, threat := range vuln.Threats {
 		if threat.Category == "exploit_status" && threat.Details != "" {
-			exploitability = threat.Details
+			exploitability = strings.Clone(feed.StripNullBytes(threat.Details))
 			break
 		}
 	}
@@ -208,10 +210,10 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 
 	for _, rem := range vuln.Remediations {
 		if rem.Category == "vendor_fix" && rem.Details != "" {
-			kbArticles = append(kbArticles, strings.Clone(rem.Details))
+			kbArticles = append(kbArticles, strings.Clone(feed.StripNullBytes(rem.Details)))
 		}
 		if rem.URL != "" {
-			remediationURLs = append(remediationURLs, strings.Clone(rem.URL))
+			remediationURLs = append(remediationURLs, strings.Clone(feed.StripNullBytes(rem.URL)))
 		}
 		for _, pid := range rem.ProductIDs {
 			name, ok := lookup[pid]
@@ -222,7 +224,7 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 				continue
 			}
 			productSeen[name] = struct{}{}
-			productNames = append(productNames, name)
+			productNames = append(productNames, strings.Clone(feed.StripNullBytes(name)))
 		}
 	}
 

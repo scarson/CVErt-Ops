@@ -200,8 +200,8 @@ func TestDetailToPatch(t *testing.T) {
 	if p.CVEID != "CVE-2025-0001" {
 		t.Errorf("CVEID = %q, want %q", p.CVEID, "CVE-2025-0001")
 	}
-	if p.SourceID != SourceName {
-		t.Errorf("SourceID = %q, want %q", p.SourceID, SourceName)
+	if p.SourceID != p.CVEID {
+		t.Errorf("SourceID = %q, want %q (same as CVEID)", p.SourceID, p.CVEID)
 	}
 	if p.DescriptionPrimary == nil {
 		t.Fatal("DescriptionPrimary should not be nil")
@@ -516,8 +516,8 @@ func TestDetailToPatch_MissingFields(t *testing.T) {
 	if p.CVEID != "CVE-2025-0001" {
 		t.Errorf("CVEID = %q, want %q", p.CVEID, "CVE-2025-0001")
 	}
-	if p.SourceID != SourceName {
-		t.Errorf("SourceID = %q, want %q", p.SourceID, SourceName)
+	if p.SourceID != p.CVEID {
+		t.Errorf("SourceID = %q, want %q (same as CVEID)", p.SourceID, p.CVEID)
 	}
 	if p.DescriptionPrimary != nil {
 		t.Errorf("DescriptionPrimary should be nil for missing details, got %q", *p.DescriptionPrimary)

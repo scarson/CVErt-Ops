@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -1045,7 +1046,7 @@ func TestIngest_VendorEnrichment(t *testing.T) {
 	var got, want map[string]interface{}
 	_ = json.Unmarshal(ve.Enrichment, &got)
 	_ = json.Unmarshal(enrichmentData, &want)
-	if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("enrichment JSON mismatch:\n  got:  %s\n  want: %s", ve.Enrichment, enrichmentData)
 	}
 }

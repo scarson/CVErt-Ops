@@ -20,6 +20,8 @@
 # Network topology:
 #   cvert-public-net  — Caddy ↔ App           (external internet access; feed APIs, ACME)
 #   cvert-data-net    — App ↔ Postgres/Mailpit (internal=true; no outbound internet)
+#   cvert-host-net    — Postgres/Mailpit host port mapping (Docker Desktop for Windows
+#                       silently drops port mappings on internal-only networks)
 #   Caddy cannot reach Postgres or Mailpit. Migrate cannot be reached by Caddy.
 
 # Internet ──► Caddy (cvert-public-net only)
@@ -28,7 +30,7 @@
 #               App  (cvert-public-net + cvert-data-net)
 #              ╱   ╲
 #   Postgres ◄─     ─► Mailpit
-#   (data only)         (data only)
+#   (data + host)       (data + host)
 
 # Migrate ◄──► Postgres  (data only, one-shot)
 
@@ -46,13 +48,29 @@ services:
       POSTGRES_DB:       ${POSTGRES_DB:-cvert_ops}
       POSTGRES_USER:     ${POSTGRES_USER:-cvert_ops}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    # TLS setup: wrapper script copies bind-mounted cert files with correct
+    # permissions (Docker Desktop on Windows mounts everything as 0755, which
+    # postgres rejects). Generate cert: bash docker/postgres-tls/generate-cert.sh
+    entrypoint: ["/usr/local/bin/tls-entrypoint.sh"]
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/tls/server.key
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./postgres-tls/server.crt:/var/lib/postgresql/tls-src/server.crt:ro
+      - ./postgres-tls/server.key:/var/lib/postgresql/tls-src/server.key:ro
+      - ./postgres-tls/docker-entrypoint-wrapper.sh:/usr/local/bin/tls-entrypoint.sh:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     networks:
       - cvert-data-net
+      - cvert-host-net
     healthcheck:
       # pg_isready is included in the postgres:18-alpine image.
       # PLAN.md §18.3 requires service_healthy before app starts.
@@ -74,6 +92,7 @@ services:
       - "${MAILPIT_UI_PORT:-8025}:8025"     # Web UI: http://localhost:8025
     networks:
       - cvert-data-net
+      - cvert-host-net
     environment:
       MP_SMTP_AUTH_ACCEPT_ANY:      1
       MP_SMTP_AUTH_ALLOW_INSECURE:  1
@@ -195,3 +214,8 @@ networks:
   cvert-data-net:
     driver: bridge
     internal: true
+  # Host-access network: allows Docker Desktop (especially Windows) to map container ports
+  # to the host. internal=true networks silently drop port mappings on Docker Desktop.
+  # Only postgres and mailpit are attached — no outbound internet, no Caddy access.
+  cvert-host-net:
+    driver: bridge

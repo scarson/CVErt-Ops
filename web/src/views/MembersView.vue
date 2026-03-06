@@ -170,6 +170,7 @@ async function changeRole(userId: string, newRole: string) {
 
 function promptRemove(member: MemberEntry) {
   removeTarget.value = member
+  removeError.value = ''
   removeDialogOpen.value = true
 }
 
@@ -282,11 +283,11 @@ watch(
       <p class="text-sm text-destructive">{{ error }}</p>
     </div>
 
-    <!-- Role change error -->
-    <p v-if="roleChangeError" class="text-sm text-destructive">{{ roleChangeError }}</p>
-
     <!-- Members table -->
     <template v-else>
+      <!-- Role change error -->
+      <p v-if="roleChangeError" class="text-sm text-destructive">{{ roleChangeError }}</p>
+
       <Table>
         <TableHeader>
           <TableRow>

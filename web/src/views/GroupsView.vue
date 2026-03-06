@@ -104,6 +104,7 @@ function onGroupSaved(entry: GroupEntry) {
 
 function promptDelete(group: GroupEntry) {
   deleteTarget.value = group
+  deleteError.value = ''
   deleteDialogOpen.value = true
 }
 

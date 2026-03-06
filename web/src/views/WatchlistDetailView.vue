@@ -103,6 +103,7 @@ function startEditName() {
   editingName.value = true
   editName.value = watchlist.value.name
   editDescription.value = watchlist.value.description ?? ''
+  saveError.value = ''
 }
 
 function cancelEditName() {

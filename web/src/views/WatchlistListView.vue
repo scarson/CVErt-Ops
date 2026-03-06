@@ -75,6 +75,7 @@ function onWatchlistCreated(entry: WatchlistEntry) {
 
 function promptDelete(wl: WatchlistEntry) {
   deleteTarget.value = wl
+  deleteError.value = ''
   deleteDialogOpen.value = true
 }
 
@@ -255,8 +256,8 @@ watch(
             This will permanently delete the watchlist and all its items.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <p v-if="deleteError" class="text-sm text-destructive">{{ deleteError }}</p>
         <AlertDialogFooter>
-          <p v-if="deleteError" class="mr-auto text-sm text-destructive">{{ deleteError }}</p>
           <AlertDialogCancel :disabled="deleting" @click="deleteDialogOpen = false">Cancel</AlertDialogCancel>
           <Button
             data-testid="confirm-delete-btn"

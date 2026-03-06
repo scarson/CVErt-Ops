@@ -107,6 +107,21 @@ function setupAuthStore(role: string) {
   return auth
 }
 
+// Open a reka-ui Select trigger and return the rendered option texts.
+// JSDOM lacks pointer capture APIs that reka-ui needs, so we polyfill them.
+async function openRoleSelectAndGetOptions(): Promise<string[]> {
+  const trigger = findTestId('role-select-trigger')
+  if (!trigger) throw new Error('role-select-trigger not found')
+  if (!trigger.hasPointerCapture) {
+    trigger.hasPointerCapture = () => false
+    trigger.releasePointerCapture = () => {}
+  }
+  trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }))
+  await flushPromises()
+  const options = document.querySelectorAll('[role="option"]')
+  return Array.from(options).map((el) => el.textContent?.trim() ?? '')
+}
+
 let wrapper: VueWrapper
 
 async function mountView() {
@@ -377,15 +392,31 @@ describe('MembersView', () => {
   })
 
   describe('role change', () => {
-    it('rolesAssignableBy includes current role for peer-level display', async () => {
+    it('admin role Select dropdown includes admin, member, and viewer options', async () => {
       setupAuthStore('admin')
-      mockMembersSuccess([])
+      mockMembersSuccess([
+        makeMember({ user_id: 'u1', role: 'member', email: 'target@example.com' }),
+      ])
       mockInvitationsSuccess([])
       await mountView()
       await flushPromises()
 
-      const vm = wrapper.vm as any
-      expect(vm.rolesAssignableBy('admin')).toEqual(['admin', 'member', 'viewer'])
+      const optionTexts = await openRoleSelectAndGetOptions()
+      expect(optionTexts).toEqual(['Admin', 'Member', 'Viewer'])
+    })
+
+    it('role Select trigger displays the member current role', async () => {
+      setupAuthStore('admin')
+      mockMembersSuccess([
+        makeMember({ user_id: 'u1', role: 'viewer', email: 'target@example.com' }),
+      ])
+      mockInvitationsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      const trigger = findTestId('role-select-trigger')
+      expect(trigger).not.toBeNull()
+      expect(trigger!.textContent?.trim()).toContain('Viewer')
     })
 
     it('shows role select for admin on non-owner members', async () => {

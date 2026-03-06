@@ -197,10 +197,10 @@ func TestSecurityHeaders_Healthz(t *testing.T) {
 	assertSecurityHeaders(t, resp)
 }
 
-// TestSecurityHeaders_404 verifies that security headers are present on a
-// 404 response (the middleware runs before routing, so even unmatched paths
-// must include them).
-func TestSecurityHeaders_404(t *testing.T) {
+// TestSecurityHeaders_SPAFallback verifies that security headers are present
+// on SPA fallback responses (the middleware runs before routing, so even
+// paths handled by the SPA catch-all must include them).
+func TestSecurityHeaders_SPAFallback(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -216,8 +216,9 @@ func TestSecurityHeaders_404(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404, got %d", resp.StatusCode)
+	// The SPA handler serves index.html for unknown paths (client-side routing).
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 (SPA fallback), got %d", resp.StatusCode)
 	}
 
 	assertSecurityHeaders(t, resp)

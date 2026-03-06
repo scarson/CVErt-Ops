@@ -181,7 +181,22 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 }
 
 // buildVendorEnrichment extracts MSRC-specific metadata from the vulnerability.
+// Returns nil if no enrichment data is available.
 func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *feed.VendorEnrichment {
+	// Check if any enrichment data exists before allocating.
+	hasThreats := false
+	for _, threat := range vuln.Threats {
+		if (threat.Category == "impact" || threat.Category == "exploit_status") && threat.Details != "" {
+			hasThreats = true
+			break
+		}
+	}
+	hasRemediations := len(vuln.Remediations) > 0
+
+	if !hasThreats && !hasRemediations {
+		return nil
+	}
+
 	enrichment := &feed.VendorEnrichment{}
 
 	// VendorSeverity from threats[category=impact]
@@ -203,10 +218,12 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 	}
 
 	// Enrichment data: exploitability, kb_articles, remediation_urls, product_statuses
-	var exploitability string
+	// Only include keys with actual data to avoid junk JSONB.
+	dataMap := make(map[string]any)
+
 	for _, threat := range vuln.Threats {
 		if threat.Category == "exploit_status" && threat.Details != "" {
-			exploitability = strings.Clone(feed.StripNullBytes(threat.Details))
+			dataMap["exploitability"] = strings.Clone(feed.StripNullBytes(threat.Details))
 			break
 		}
 	}
@@ -236,16 +253,21 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 		}
 	}
 
-	dataMap := map[string]any{
-		"exploitability":   exploitability,
-		"kb_articles":      kbArticles,
-		"remediation_urls": remediationURLs,
-		"product_statuses": productNames,
+	if len(kbArticles) > 0 {
+		dataMap["kb_articles"] = kbArticles
+	}
+	if len(remediationURLs) > 0 {
+		dataMap["remediation_urls"] = remediationURLs
+	}
+	if len(productNames) > 0 {
+		dataMap["product_statuses"] = productNames
 	}
 
-	data, err := json.Marshal(dataMap)
-	if err == nil {
-		enrichment.Data = data
+	if len(dataMap) > 0 {
+		data, err := json.Marshal(dataMap)
+		if err == nil {
+			enrichment.Data = data
+		}
 	}
 
 	return enrichment

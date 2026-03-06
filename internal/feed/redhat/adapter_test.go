@@ -822,6 +822,147 @@ func itoa(n int) string {
 	return digits
 }
 
+func TestFetch_InvalidCursorDate(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("should not make HTTP request with invalid cursor date")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := newTestAdapter(client)
+
+	cursorJSON, _ := json.Marshal(Cursor{
+		AfterDate: "'; DROP TABLE cves; --",
+	})
+
+	_, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err == nil {
+		t.Fatal("expected error for invalid cursor date, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid cursor date format") {
+		t.Errorf("error = %q, want 'invalid cursor date format'", err.Error())
+	}
+}
+
+func TestFetch_DetailHTTPError(t *testing.T) {
+	t.Parallel()
+
+	listResp := `[{"CVE": "CVE-2025-0001"}]`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cve.json"):
+			_, _ = w.Write([]byte(listResp))
+		case strings.Contains(r.URL.Path, "/cve/CVE-"):
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := newTestAdapter(client)
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for HTTP 500 on detail, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want 'HTTP 500'", err.Error())
+	}
+}
+
+func TestParseDetailResponse_PolymorphicSingleObject(t *testing.T) {
+	t.Parallel()
+
+	// Red Hat API returns single object instead of array when exactly one entry exists.
+	body := `{
+		"name": "CVE-2025-9999",
+		"threat_severity": "Moderate",
+		"affected_release": {
+			"product_name": "RHEL 9",
+			"advisory": "RHSA-2025:9999",
+			"cpe": "cpe:/a:redhat:enterprise_linux:9",
+			"package": "widget-2.0-1.el9"
+		},
+		"package_state": {
+			"product_name": "RHEL 8",
+			"fix_state": "Not affected",
+			"cpe": "cpe:/a:redhat:enterprise_linux:8",
+			"package_name": "widget"
+		}
+	}`
+
+	detail, err := parseDetailResponse(strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("parseDetailResponse: %v", err)
+	}
+	if len(detail.AffectedRelease) != 1 {
+		t.Fatalf("len(AffectedRelease) = %d, want 1", len(detail.AffectedRelease))
+	}
+	if detail.AffectedRelease[0].Advisory != "RHSA-2025:9999" {
+		t.Errorf("AffectedRelease[0].Advisory = %q, want %q", detail.AffectedRelease[0].Advisory, "RHSA-2025:9999")
+	}
+	if len(detail.PackageState) != 1 {
+		t.Fatalf("len(PackageState) = %d, want 1", len(detail.PackageState))
+	}
+	if detail.PackageState[0].FixState != "Not affected" {
+		t.Errorf("PackageState[0].FixState = %q, want %q", detail.PackageState[0].FixState, "Not affected")
+	}
+}
+
+func TestDetailToPatch_NilVendorEnrichment(t *testing.T) {
+	t.Parallel()
+
+	// A detail with no enrichment data should return nil VendorEnrichment.
+	detail := detailRecord{
+		Name: "CVE-2025-0001",
+	}
+
+	p := detailToPatch(detail)
+	if p.VendorEnrichment != nil {
+		t.Error("VendorEnrichment should be nil when no enrichment data exists")
+	}
+}
+
+func TestFetch_ListHTTPError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := newTestAdapter(client)
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for HTTP 500 on list, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want 'HTTP 500'", err.Error())
+	}
+}
+
 // --- test helpers ---
 
 // newTestAdapter creates an adapter with an unlimited rate limiter for fast tests.

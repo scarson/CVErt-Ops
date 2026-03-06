@@ -168,6 +168,72 @@ func TestParse_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestProductTree_Lookup_DepthLimit(t *testing.T) {
+	t.Parallel()
+
+	// Build a chain of branches deeper than maxBranchDepth (64).
+	// Only the product at depth < 64 should appear in the lookup.
+	shallowJSON := `{
+		"document": {"title": "T", "tracking": {"id": "T"}},
+		"product_tree": {
+			"branches": [{
+				"category": "vendor",
+				"name": "V",
+				"product": {"product_id": "SHALLOW", "name": "Shallow Product"},
+				"branches": [` + deepBranchJSON(70, "DEEP") + `]
+			}]
+		}
+	}`
+
+	doc, err := Parse(strings.NewReader(shallowJSON))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	lookup := doc.ProductTree.Lookup()
+
+	// Shallow product (depth 0) should be found.
+	if _, ok := lookup["SHALLOW"]; !ok {
+		t.Error("expected SHALLOW product in lookup")
+	}
+
+	// Deep product (depth 70) should NOT be found due to maxBranchDepth=64.
+	if _, ok := lookup["DEEP"]; ok {
+		t.Error("expected DEEP product to be excluded by depth limit")
+	}
+}
+
+// deepBranchJSON builds a chain of nested branches, placing a product at the innermost level.
+func deepBranchJSON(depth int, productID string) string {
+	if depth <= 0 {
+		return `{"category":"product_version","name":"v1","product":{"product_id":"` + productID + `","name":"Deep Product"}}`
+	}
+	return `{"category":"product_family","name":"level","branches":[` + deepBranchJSON(depth-1, productID) + `]}`
+}
+
+func TestProductTree_Lookup_EmptyProductID(t *testing.T) {
+	t.Parallel()
+
+	doc, err := Parse(strings.NewReader(`{
+		"document": {"title": "T", "tracking": {"id": "T"}},
+		"product_tree": {
+			"branches": [{
+				"category": "vendor",
+				"name": "V",
+				"product": {"product_id": "", "name": "Empty ID Product"}
+			}]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	lookup := doc.ProductTree.Lookup()
+	if len(lookup) != 0 {
+		t.Errorf("expected empty lookup for product with empty ProductID, got %v", lookup)
+	}
+}
+
 func TestProductTree_NestedBranches(t *testing.T) {
 	t.Parallel()
 

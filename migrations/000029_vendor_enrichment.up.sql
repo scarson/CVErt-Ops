@@ -30,8 +30,12 @@ ALTER TABLE cve_vendor_enrichment SET (
     fillfactor                     = 80
 );
 
-GRANT SELECT, INSERT, UPDATE ON cve_vendor_enrichment TO cvert_ops_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON cve_vendor_enrichment TO cvert_ops_app;
 
 -- Add CHECK constraint to existing cve_sources table (validates existing source names).
+-- DROP + ADD for idempotency (golang-migrate doesn't support DO $$ blocks).
+ALTER TABLE cve_sources DROP CONSTRAINT IF EXISTS cve_sources_source_name_check;
 ALTER TABLE cve_sources ADD CONSTRAINT cve_sources_source_name_check
-    CHECK (source_name IN ('mitre', 'nvd', 'osv', 'ghsa', 'kev', 'epss', 'msrc', 'redhat'));
+    CHECK (source_name IN ('mitre', 'nvd', 'osv', 'ghsa', 'kev', 'epss', 'msrc', 'redhat'))
+    NOT VALID;
+ALTER TABLE cve_sources VALIDATE CONSTRAINT cve_sources_source_name_check;

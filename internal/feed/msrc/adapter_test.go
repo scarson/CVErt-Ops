@@ -536,6 +536,186 @@ func TestFetch_HTTPError(t *testing.T) {
 	}
 }
 
+func TestFetch_InvalidCursorDate(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("should not make HTTP request with invalid cursor date")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	// Cursor with OData injection attempt
+	cursorJSON, _ := json.Marshal(Cursor{
+		LastReleaseDate: "'; DROP TABLE cves; --",
+	})
+
+	_, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err == nil {
+		t.Fatal("expected error for invalid cursor date, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid cursor date format") {
+		t.Errorf("error = %q, want 'invalid cursor date format'", err.Error())
+	}
+}
+
+func TestFetch_CSAFHTTPError(t *testing.T) {
+	t.Parallel()
+
+	// /updates succeeds but /csaf/ returns 500
+	updatesResp := `{"value": [{"ID": "2026-Apr", "CurrentReleaseDate": "2026-04-01T00:00:00Z"}]}`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/updates"):
+			_, _ = w.Write([]byte(updatesResp))
+		case strings.Contains(r.URL.Path, "/csaf/"):
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	_, err := adapter.Fetch(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error when CSAF returns 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 500") {
+		t.Errorf("error = %q, want 'HTTP 500'", err.Error())
+	}
+}
+
+func TestCSAFToPatches_CVSSv4(t *testing.T) {
+	t.Parallel()
+
+	doc := `{
+  "document": {
+    "title": "Test CVSSv4",
+    "type": "csaf_security_advisory",
+    "publisher": {"name": "Microsoft", "namespace": "https://msrc.microsoft.com"},
+    "tracking": {"id": "2026-Test", "status": "final", "version": "1.0",
+      "initial_release_date": "2026-01-01T00:00:00Z", "current_release_date": "2026-01-02T00:00:00Z"}
+  },
+  "product_tree": {"branches": [{"category": "vendor", "name": "Microsoft",
+    "branches": [{"category": "product_name", "name": "Win11",
+      "product": {"product_id": "W11", "name": "Windows 11"}}]}]},
+  "vulnerabilities": [{
+    "cve": "CVE-2026-40001",
+    "title": "CVSSv4 test vuln",
+    "scores": [{
+      "cvss_v4": {"version": "4.0", "baseScore": 8.2, "vectorString": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N"},
+      "products": ["W11"]
+    }],
+    "product_status": {"known_affected": ["W11"]},
+    "threats": [{"category": "impact", "details": "Important"}]
+  }]
+}`
+
+	patches, err := csafToPatchesFromJSON([]byte(doc))
+	if err != nil {
+		t.Fatalf("csafToPatches: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1", len(patches))
+	}
+
+	p := patches[0]
+	if p.CVSSv4Score == nil {
+		t.Fatal("CVSSv4Score should not be nil")
+	}
+	if *p.CVSSv4Score != 8.2 {
+		t.Errorf("CVSSv4Score = %v, want 8.2", *p.CVSSv4Score)
+	}
+	if p.CVSSv4Vector == nil {
+		t.Fatal("CVSSv4Vector should not be nil")
+	}
+	if *p.CVSSv4Vector != "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:L/VA:N/SC:N/SI:N/SA:N" {
+		t.Errorf("CVSSv4Vector = %q", *p.CVSSv4Vector)
+	}
+	// Should not have CVSSv3
+	if p.CVSSv3Score != nil {
+		t.Errorf("CVSSv3Score should be nil when only CVSSv4 present, got %v", *p.CVSSv3Score)
+	}
+}
+
+func TestCSAFToPatches_EmptyCVESkipped(t *testing.T) {
+	t.Parallel()
+
+	doc := `{
+  "document": {
+    "title": "Test",
+    "type": "csaf_security_advisory",
+    "publisher": {"name": "Microsoft", "namespace": "https://msrc.microsoft.com"},
+    "tracking": {"id": "2026-Test", "status": "final", "version": "1.0",
+      "initial_release_date": "2026-01-01T00:00:00Z", "current_release_date": "2026-01-02T00:00:00Z"}
+  },
+  "product_tree": {"branches": []},
+  "vulnerabilities": [
+    {"cve": "", "title": "No CVE ID"},
+    {"cve": "CVE-2026-50001", "title": "Real vuln"}
+  ]
+}`
+
+	patches, err := csafToPatchesFromJSON([]byte(doc))
+	if err != nil {
+		t.Fatalf("csafToPatches: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1 (empty CVE skipped)", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2026-50001" {
+		t.Errorf("CVEID = %q, want CVE-2026-50001", patches[0].CVEID)
+	}
+}
+
+func TestCSAFToPatches_NoEnrichmentReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	doc := `{
+  "document": {
+    "title": "Test",
+    "type": "csaf_security_advisory",
+    "publisher": {"name": "Microsoft", "namespace": "https://msrc.microsoft.com"},
+    "tracking": {"id": "2026-Test", "status": "final", "version": "1.0",
+      "initial_release_date": "2026-01-01T00:00:00Z", "current_release_date": "2026-01-02T00:00:00Z"}
+  },
+  "product_tree": {"branches": []},
+  "vulnerabilities": [{
+    "cve": "CVE-2026-60001",
+    "title": "No threats or remediations",
+    "scores": [{"cvss_v3": {"version": "3.1", "baseScore": 5.0, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L"}, "products": []}],
+    "product_status": {"known_affected": []}
+  }]
+}`
+
+	patches, err := csafToPatchesFromJSON([]byte(doc))
+	if err != nil {
+		t.Fatalf("csafToPatches: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1", len(patches))
+	}
+	if patches[0].VendorEnrichment != nil {
+		t.Error("VendorEnrichment should be nil when no threats or remediations exist")
+	}
+}
+
 // --- helper: parse CSAF JSON and convert to patches ---
 
 func csafToPatchesFromJSON(data []byte) ([]feed.CanonicalPatch, error) {

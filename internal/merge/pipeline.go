@@ -1,3 +1,5 @@
+// ABOUTME: CVE merge pipeline that combines data from multiple feed sources.
+// ABOUTME: Resolves field conflicts by source priority, computes material hashes, and persists canonical CVE rows.
 package merge
 
 import (

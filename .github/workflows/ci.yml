@@ -96,6 +96,33 @@ jobs:
       - name: govulncheck
         run: govulncheck ./...
 
+  test-web:
+    name: "Test: Web"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: install
+        run: npm ci
+
+      - name: type-check
+        run: npx vue-tsc --build
+
+      - name: lint
+        run: npm run lint
+
+      - name: test
+        run: npx vitest run
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -109,3 +136,24 @@ jobs:
 
       - name: build
         run: go build ./cmd/cvert-ops
+
+  build-web:
+    name: "Build: Web"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: install
+        run: npm ci
+
+      - name: build
+        run: npm run build

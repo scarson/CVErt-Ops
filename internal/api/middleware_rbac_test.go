@@ -43,6 +43,7 @@ func newRBACServer(t *testing.T, db *testutil.TestDB, jwtSecret string) *Server 
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+	t.Cleanup(srv.Close)
 	return srv
 }
 

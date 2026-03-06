@@ -137,6 +137,7 @@ func newGoogleTestServer(t *testing.T, db *testutil.TestDB, googleMock *googleMo
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 
@@ -153,6 +154,7 @@ func TestGoogleInit_NotConfigured(t *testing.T) {
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 
 	client := ts.Client()
 	client.CheckRedirect = noRedirect
@@ -405,6 +407,7 @@ func TestGoogleCallback_InviteOnlyRejectsNewUser(t *testing.T) {
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 
 	// Step 1: Init to capture state + nonce cookies.
 	client := ts.Client()

@@ -34,6 +34,7 @@ func newSavedSearchTestServer(t *testing.T, db *testutil.TestDB) (*Server, *http
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 

@@ -76,6 +76,7 @@ func newGitHubTestServer(t *testing.T, db *testutil.TestDB, ghMock *httptest.Ser
 	srv.ghAPIBaseURL = ghMock.URL
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 
@@ -95,6 +96,7 @@ func TestGitHubInit_NotConfigured(t *testing.T) {
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 
 	client := ts.Client()
 	client.CheckRedirect = noRedirect
@@ -322,6 +324,7 @@ func TestGitHubCallback_InviteOnlyRejectsNewUser(t *testing.T) {
 	srv.ghAPIBaseURL = ghMock.URL
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 
 	// Step 1: Init to capture state cookie.
 	client := ts.Client()

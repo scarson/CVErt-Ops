@@ -45,6 +45,7 @@ func newAITestServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Serv
 	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 
@@ -501,6 +502,7 @@ func newAITestServerWithLLM(t *testing.T, db *testutil.TestDB, llm ai.LLMClient)
 	srv.SetAIDeps(llm)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 
@@ -830,6 +832,7 @@ func TestNLSearchHandler_QuotaDisabled(t *testing.T) {
 	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 
 	reg := doRegister(t, ctx, ts, "nlnoquota@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "nlnoquota@example.com", "test-password-1234")
@@ -866,6 +869,7 @@ func TestSummarizeHandler_QuotaDisabled(t *testing.T) {
 	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 
 	reg := doRegister(t, ctx, ts, "summnoquota@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "summnoquota@example.com", "test-password-1234")

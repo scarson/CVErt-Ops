@@ -15,6 +15,7 @@ import (
 func TestIPRateLimiter_Allow(t *testing.T) {
 	t.Parallel()
 	rl := newIPRateLimiter(rate.Limit(100), 3, time.Minute)
+	t.Cleanup(rl.Stop)
 	for i := 1; i <= 3; i++ {
 		if !rl.Allow("127.0.0.1") {
 			t.Errorf("request %d: should be allowed (within burst of 3)", i)
@@ -60,6 +61,7 @@ func TestAuthRateLimit_Returns429AfterBurst(t *testing.T) {
 	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 2, time.Minute),
 	}
+	t.Cleanup(srv.Close)
 	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -92,6 +94,7 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 	srv := &Server{ //nolint:exhaustruct // test: only rateLimiter needed
 		rateLimiter: newIPRateLimiter(rate.Limit(100), 1, time.Minute),
 	}
+	t.Cleanup(srv.Close)
 	handler := srv.authRateLimit()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

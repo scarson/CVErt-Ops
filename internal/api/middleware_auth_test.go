@@ -18,7 +18,8 @@ import (
 )
 
 // newAuthTestServer builds a minimal Server with the given JWTSecret and optional store.
-func newAuthTestServer(jwtSecret string, db *testutil.TestDB) *Server {
+func newAuthTestServer(t *testing.T, jwtSecret string, db *testutil.TestDB) *Server {
+	t.Helper()
 	cfg := &config.Config{JWTSecret: jwtSecret} //nolint:exhaustruct // test: only JWT secret needed
 	var srv *Server
 	if db != nil {
@@ -26,12 +27,13 @@ func newAuthTestServer(jwtSecret string, db *testutil.TestDB) *Server {
 	} else {
 		srv, _ = NewServer(nil, cfg)
 	}
+	t.Cleanup(srv.Close)
 	return srv
 }
 
 func TestRequireAuthenticated_NoCredentials_401(t *testing.T) {
 	t.Parallel()
-	srv := newAuthTestServer("testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", nil)
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -58,7 +60,7 @@ func TestRequireAuthenticated_JWT_Valid(t *testing.T) {
 		t.Fatalf("issue token: %v", err)
 	}
 
-	srv := newAuthTestServer("testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", nil)
 	var gotUserID uuid.UUID
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID, _ = r.Context().Value(ctxUserID).(uuid.UUID)
@@ -89,7 +91,7 @@ func TestRequireAuthenticated_JWT_Expired_401(t *testing.T) {
 	// Issue token with TTL in the past — already expired when parsed.
 	token, _ := auth.IssueAccessToken(secret, userID, 1, -1*time.Minute)
 
-	srv := newAuthTestServer("testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", nil)
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -132,7 +134,7 @@ func TestRequireAuthenticated_APIKey_Valid(t *testing.T) {
 		t.Fatalf("create api key: %v", err)
 	}
 
-	srv := newAuthTestServer("testsecret", db)
+	srv := newAuthTestServer(t, "testsecret", db)
 	var gotUserID uuid.UUID
 	var gotAPIKeyRole string
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -165,7 +167,7 @@ func TestRequireAuthenticated_APIKey_Invalid_401(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 
-	srv := newAuthTestServer("testsecret", db)
+	srv := newAuthTestServer(t, "testsecret", db)
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -189,7 +191,7 @@ func TestRequireAuthenticated_APIKey_Invalid_401(t *testing.T) {
 // cookie path and returns 401 when no cookie is present.
 func TestRequireAuthenticated_AuthHeaderNoBearerPrefix(t *testing.T) {
 	t.Parallel()
-	srv := newAuthTestServer("testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", nil)
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -212,7 +214,7 @@ func TestRequireAuthenticated_AuthHeaderNoBearerPrefix(t *testing.T) {
 // cookie value (not a valid JWT at all) returns 401.
 func TestRequireAuthenticated_MalformedJWT_401(t *testing.T) {
 	t.Parallel()
-	srv := newAuthTestServer("testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", nil)
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -242,7 +244,7 @@ func TestRequireAuthenticated_JWT_WrongSecret_401(t *testing.T) {
 		t.Fatalf("issue token: %v", err)
 	}
 
-	srv := newAuthTestServer("testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", nil)
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -287,7 +289,7 @@ func TestRequireAuthenticated_APIKey_ContextValues(t *testing.T) {
 		t.Fatalf("create api key: %v", err)
 	}
 
-	srv := newAuthTestServer("testsecret", db)
+	srv := newAuthTestServer(t, "testsecret", db)
 	var gotUserID uuid.UUID
 	var gotAPIKeyRole string
 	var gotAPIKeyOrgID uuid.UUID

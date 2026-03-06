@@ -86,6 +86,7 @@ func newRegisterServer(t *testing.T, db *testutil.TestDB, regMode string) (*Serv
 	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
 	return srv, ts
 }
 

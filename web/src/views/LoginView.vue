@@ -78,7 +78,7 @@ function loginWithGoogle() {
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+        <p v-if="error" class="text-sm text-destructive" role="alert">{{ error }}</p>
 
         <Button type="submit" class="w-full" :disabled="submitting">
           {{ submitting ? 'Logging in...' : 'Log in' }}

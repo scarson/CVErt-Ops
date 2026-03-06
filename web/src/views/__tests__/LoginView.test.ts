@@ -176,6 +176,25 @@ describe('LoginView', () => {
       expect(mockPush).toHaveBeenCalledWith('/watchlists')
     })
 
+    it('displays error message with role="alert" for screen readers', async () => {
+      const auth = useAuthStore()
+      vi.spyOn(auth, 'login').mockResolvedValue({
+        success: false,
+        error: 'Invalid email or password',
+      })
+
+      const wrapper = await mountLogin()
+
+      await wrapper.find('input[type="email"]').setValue('test@example.com')
+      await wrapper.find('input[type="password"]').setValue('password')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+
+      const errorEl = wrapper.find('.text-destructive')
+      expect(errorEl.exists()).toBe(true)
+      expect(errorEl.attributes('role')).toBe('alert')
+    })
+
     it('does not navigate on failed login', async () => {
       const auth = useAuthStore()
       vi.spyOn(auth, 'login').mockResolvedValue({

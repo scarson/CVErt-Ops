@@ -147,7 +147,7 @@ watch(cveId, () => {
 
     <!-- Error state -->
     <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive">{{ error }}</p>
+      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
     </div>
 
     <!-- CVE detail content -->

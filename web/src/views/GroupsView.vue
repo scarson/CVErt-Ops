@@ -193,7 +193,7 @@ watch(
 
     <!-- Error state -->
     <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive">{{ error }}</p>
+      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
     </div>
 
     <!-- Empty state -->
@@ -296,7 +296,7 @@ watch(
             This will permanently delete the group. Members will not be removed from the organization.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <p v-if="deleteError" class="text-sm text-destructive">{{ deleteError }}</p>
+        <p v-if="deleteError" class="text-sm text-destructive" role="alert">{{ deleteError }}</p>
         <AlertDialogFooter>
           <AlertDialogCancel :disabled="deleting" @click="deleteDialogOpen = false">Cancel</AlertDialogCancel>
           <Button

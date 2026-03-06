@@ -259,7 +259,7 @@ function selectEcosystem(value: string) {
           </div>
         </template>
 
-        <p v-if="error" class="text-destructive text-sm" data-testid="add-item-error">
+        <p v-if="error" class="text-destructive text-sm" role="alert" data-testid="add-item-error">
           {{ error }}
         </p>
       </div>

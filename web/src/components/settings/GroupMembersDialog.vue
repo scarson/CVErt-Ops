@@ -200,7 +200,7 @@ defineExpose({ addMember, availableMembers })
 
         <template v-else>
           <!-- Action error display -->
-          <p v-if="actionError" class="text-sm text-destructive">{{ actionError }}</p>
+          <p v-if="actionError" class="text-sm text-destructive" role="alert">{{ actionError }}</p>
 
           <!-- Add member section -->
           <div v-if="availableMembers.length > 0" class="flex items-center gap-2">

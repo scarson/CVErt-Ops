@@ -154,7 +154,7 @@ async function handleSubmit() {
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive" data-testid="group-error">
+        <p v-if="error" class="text-sm text-destructive" role="alert" data-testid="group-error">
           {{ error }}
         </p>
       </div>

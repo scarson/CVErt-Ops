@@ -168,7 +168,7 @@ async function handleSend() {
             </Select>
           </div>
 
-          <p v-if="error" class="text-sm text-destructive" data-testid="invite-error">
+          <p v-if="error" class="text-sm text-destructive" role="alert" data-testid="invite-error">
             {{ error }}
           </p>
         </template>

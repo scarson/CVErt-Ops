@@ -231,7 +231,7 @@ watch(
 
     <!-- Error state -->
     <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive">{{ error }}</p>
+      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
     </div>
 
     <!-- Loaded state -->
@@ -303,7 +303,7 @@ watch(
         </div>
 
         <!-- Save error display -->
-        <p v-if="saveError" class="text-sm text-destructive">{{ saveError }}</p>
+        <p v-if="saveError" class="text-sm text-destructive" role="alert">{{ saveError }}</p>
 
         <!-- Description display -->
         <p

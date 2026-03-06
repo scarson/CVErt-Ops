@@ -92,7 +92,7 @@ async function acceptInvitation() {
 
       <!-- Error state -->
       <div v-else-if="error" data-testid="error">
-        <p class="text-center text-sm text-destructive">{{ error }}</p>
+        <p class="text-center text-sm text-destructive" role="alert">{{ error }}</p>
       </div>
 
       <!-- Invitation loaded -->
@@ -106,7 +106,7 @@ async function acceptInvitation() {
         </div>
 
         <!-- Accept error -->
-        <p v-if="acceptError" class="text-sm text-destructive text-center">{{ acceptError }}</p>
+        <p v-if="acceptError" class="text-sm text-destructive text-center" role="alert">{{ acceptError }}</p>
 
         <!-- Unauthenticated: show login link -->
         <template v-if="!auth.isAuthenticated">

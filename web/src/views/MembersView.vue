@@ -280,13 +280,13 @@ watch(
 
     <!-- Error state -->
     <div v-else-if="error" class="py-16 text-center">
-      <p class="text-sm text-destructive">{{ error }}</p>
+      <p class="text-sm text-destructive" role="alert">{{ error }}</p>
     </div>
 
     <!-- Members table -->
     <template v-else>
       <!-- Role change error -->
-      <p v-if="roleChangeError" class="text-sm text-destructive">{{ roleChangeError }}</p>
+      <p v-if="roleChangeError" class="text-sm text-destructive" role="alert">{{ roleChangeError }}</p>
 
       <Table>
         <TableHeader>
@@ -411,7 +411,7 @@ watch(
             They will lose access to this organization. This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <p v-if="removeError" class="text-sm text-destructive">{{ removeError }}</p>
+        <p v-if="removeError" class="text-sm text-destructive" role="alert">{{ removeError }}</p>
         <AlertDialogFooter>
           <AlertDialogCancel :disabled="removing" @click="removeDialogOpen = false">Cancel</AlertDialogCancel>
           <Button

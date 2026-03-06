@@ -107,7 +107,7 @@ onMounted(() => {
       @search="onSearch"
     />
 
-    <p v-if="error" class="text-sm text-destructive">{{ error }}</p>
+    <p v-if="error" class="text-sm text-destructive" role="alert">{{ error }}</p>
 
     <CveResultsTable :items="items" :loading="loading" />
 

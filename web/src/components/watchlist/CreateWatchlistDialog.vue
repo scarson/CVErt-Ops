@@ -134,7 +134,7 @@ async function handleCreate() {
           />
         </div>
 
-        <p v-if="error" class="text-sm text-destructive" data-testid="create-error">
+        <p v-if="error" class="text-sm text-destructive" role="alert" data-testid="create-error">
           {{ error }}
         </p>
       </div>

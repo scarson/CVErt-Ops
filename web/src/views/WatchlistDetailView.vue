@@ -327,7 +327,7 @@ watch(
       <p v-if="itemsError" class="text-sm text-destructive" role="alert">{{ itemsError }}</p>
 
       <!-- Empty items state -->
-      <Card v-else-if="items.length === 0" class="py-12">
+      <Card v-if="!itemsError && items.length === 0" class="py-12">
         <CardContent class="flex flex-col items-center text-center">
           <Package class="text-muted-foreground mb-4 size-10" aria-hidden="true" />
           <p class="font-medium">No items in this watchlist</p>
@@ -338,7 +338,7 @@ watch(
       </Card>
 
       <!-- Items table -->
-      <Table v-else>
+      <Table v-if="items.length > 0">
         <TableHeader>
           <TableRow>
             <TableHead class="w-24">Type</TableHead>

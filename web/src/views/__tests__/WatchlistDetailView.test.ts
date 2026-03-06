@@ -414,6 +414,27 @@ describe('WatchlistDetailView', () => {
       expect(wrapper.text()).toContain('kept-pkg')
       expect(wrapper.text()).not.toContain('deleted-pkg')
     })
+
+    it('shows error and keeps item when DELETE fails', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([makePackageItem({ id: 'item-1', package_name: 'survivor-pkg' })])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockClear()
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Server error' }),
+      })
+
+      const deleteBtn = wrapper.find('[data-testid="delete-item-btn"]')
+      await deleteBtn.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to delete item')
+      expect(wrapper.text()).toContain('survivor-pkg')
+    })
   })
 
   describe('add item flow', () => {

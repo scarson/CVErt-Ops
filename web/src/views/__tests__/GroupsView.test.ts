@@ -386,10 +386,6 @@ describe('GroupsView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups/g2`,
         expect.objectContaining({
           method: 'DELETE',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
 
@@ -486,10 +482,6 @@ describe('GroupsView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-          }),
         }),
       )
     })

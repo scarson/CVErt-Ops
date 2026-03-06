@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import InviteMemberDialog from '@/components/settings/InviteMemberDialog.vue'
 import type { InvitationEntry } from '@/components/settings/InviteMemberDialog.vue'
 import { Button } from '@/components/ui/button'
@@ -97,11 +98,7 @@ async function fetchMembers() {
   invitations.value = []
 
   try {
-    const resp = await fetch(`${apiBase()}/members`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const resp = await orgFetch(`${apiBase()}/members`)
 
     if (!resp.ok) {
       error.value = 'Failed to load members. Please try again.'
@@ -124,11 +121,7 @@ async function fetchMembers() {
 
 async function fetchInvitations() {
   try {
-    const resp = await fetch(`${apiBase()}/invitations`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const resp = await orgFetch(`${apiBase()}/invitations`)
 
     if (resp.ok) {
       invitations.value = await resp.json() as InvitationEntry[]
@@ -142,13 +135,8 @@ async function changeRole(userId: string, newRole: string) {
   roleChangeError.value = ''
 
   try {
-    const resp = await fetch(`${apiBase()}/members/${userId}`, {
+    const resp = await orgFetch(`${apiBase()}/members/${userId}`, {
       method: 'PATCH',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
       body: JSON.stringify({ role: newRole }),
     })
 
@@ -182,13 +170,8 @@ async function confirmRemove() {
   const userId = removeTarget.value.user_id
 
   try {
-    const resp = await fetch(`${apiBase()}/members/${userId}`, {
+    const resp = await orgFetch(`${apiBase()}/members/${userId}`, {
       method: 'DELETE',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
     })
 
     if (resp.ok) {
@@ -207,13 +190,8 @@ async function confirmRemove() {
 
 async function cancelInvitation(invitationId: string) {
   try {
-    const resp = await fetch(`${apiBase()}/invitations/${invitationId}`, {
+    const resp = await orgFetch(`${apiBase()}/invitations/${invitationId}`, {
       method: 'DELETE',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
     })
 
     if (resp.ok) {

@@ -1,11 +1,9 @@
 // ABOUTME: Shared fetch wrapper for org-scoped API calls not in the OpenAPI schema.
 // ABOUTME: Applies credentials, CSRF headers, and 401 refresh+retry — matching the typed client's middleware.
 
-import { refreshTokens } from './client'
+import { coalescedRefresh } from './client'
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
-
-let refreshPromise: Promise<boolean> | null = null
 
 /**
  * Fetch wrapper for org-scoped endpoints that aren't in the OpenAPI schema.
@@ -39,12 +37,8 @@ export async function orgFetch(
     return resp
   }
 
-  // Attempt token refresh (coalesced).
-  if (!refreshPromise) {
-    refreshPromise = refreshTokens()
-  }
-  const refreshed = await refreshPromise
-  refreshPromise = null
+  // Attempt token refresh (coalesced with typed client).
+  const refreshed = await coalescedRefresh()
 
   if (!refreshed) {
     return resp

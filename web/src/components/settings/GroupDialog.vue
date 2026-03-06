@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import {
   Dialog,
   DialogContent,
@@ -90,13 +91,8 @@ async function handleSubmit() {
   const method = isEdit.value ? 'PATCH' : 'POST'
 
   try {
-    const resp = await fetch(url, {
+    const resp = await orgFetch(url, {
       method,
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
       body: JSON.stringify(body),
     })
 

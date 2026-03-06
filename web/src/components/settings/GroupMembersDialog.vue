@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import {
   Dialog,
   DialogContent,
@@ -67,16 +68,8 @@ async function fetchData() {
 
   try {
     const [groupResp, orgResp] = await Promise.all([
-      fetch(`${apiBase()}/groups/${props.groupId}/members`, {
-        method: 'GET',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-      }),
-      fetch(`${apiBase()}/members`, {
-        method: 'GET',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      orgFetch(`${apiBase()}/groups/${props.groupId}/members`),
+      orgFetch(`${apiBase()}/members`),
     ])
 
     if (groupResp.ok) {
@@ -98,13 +91,8 @@ async function addMember(userId: string) {
   actionError.value = ''
 
   try {
-    const resp = await fetch(`${apiBase()}/groups/${props.groupId}/members`, {
+    const resp = await orgFetch(`${apiBase()}/groups/${props.groupId}/members`, {
       method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
       body: JSON.stringify({ user_id: userId }),
     })
 
@@ -135,12 +123,8 @@ async function removeMember(userId: string) {
   actionError.value = ''
 
   try {
-    const resp = await fetch(`${apiBase()}/groups/${props.groupId}/members/${userId}`, {
+    const resp = await orgFetch(`${apiBase()}/groups/${props.groupId}/members/${userId}`, {
       method: 'DELETE',
-      credentials: 'include',
-      headers: {
-        'X-Requested-By': 'CVErt-Ops',
-      },
     })
 
     if (resp.ok) {

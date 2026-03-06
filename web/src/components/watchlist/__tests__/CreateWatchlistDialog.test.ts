@@ -156,11 +156,6 @@ describe('CreateWatchlistDialog', () => {
       `/api/v1/orgs/${TEST_ORG_ID}/watchlists`,
       expect.objectContaining({
         method: 'POST',
-        credentials: 'include',
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          'X-Requested-By': 'CVErt-Ops',
-        }),
         body: JSON.stringify({ name: 'Test WL', description: 'Desc' }),
       }),
     )

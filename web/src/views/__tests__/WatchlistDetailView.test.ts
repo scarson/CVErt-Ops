@@ -335,11 +335,6 @@ describe('WatchlistDetailView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123`,
         expect.objectContaining({
           method: 'PATCH',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
 
@@ -403,10 +398,6 @@ describe('WatchlistDetailView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123/items/item-del`,
         expect.objectContaining({
           method: 'DELETE',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
 
@@ -480,7 +471,6 @@ describe('WatchlistDetailView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
         }),
       )
 
@@ -489,7 +479,6 @@ describe('WatchlistDetailView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123/items`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
         }),
       )
     })

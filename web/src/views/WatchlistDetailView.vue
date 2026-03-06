@@ -5,6 +5,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import type { WatchlistEntry } from '@/components/watchlist/CreateWatchlistDialog.vue'
 import AddItemDialog from '@/components/watchlist/AddItemDialog.vue'
 import type { WatchlistItemEntry } from '@/components/watchlist/AddItemDialog.vue'
@@ -58,11 +59,7 @@ async function fetchWatchlist() {
   error.value = ''
 
   try {
-    const resp = await fetch(apiBase(), {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const resp = await orgFetch(apiBase())
 
     if (!resp.ok) {
       if (resp.status === 404) {
@@ -83,11 +80,7 @@ async function fetchWatchlist() {
 
 async function fetchItems() {
   try {
-    const resp = await fetch(`${apiBase()}/items`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const resp = await orgFetch(`${apiBase()}/items`)
 
     if (resp.ok) {
       const data = await resp.json() as { items?: WatchlistItemEntry[] }
@@ -132,13 +125,8 @@ async function saveName() {
   }
 
   try {
-    const resp = await fetch(apiBase(), {
+    const resp = await orgFetch(apiBase(), {
       method: 'PATCH',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
       body: JSON.stringify(body),
     })
 
@@ -159,13 +147,8 @@ async function saveName() {
 
 async function deleteItem(itemId: string) {
   try {
-    const resp = await fetch(`${apiBase()}/items/${itemId}`, {
+    const resp = await orgFetch(`${apiBase()}/items/${itemId}`, {
       method: 'DELETE',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
     })
 
     if (resp.ok) {

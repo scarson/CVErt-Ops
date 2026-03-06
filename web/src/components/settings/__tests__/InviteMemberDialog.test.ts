@@ -155,11 +155,6 @@ describe('InviteMemberDialog', () => {
       `/api/v1/orgs/${TEST_ORG_ID}/invitations`,
       expect.objectContaining({
         method: 'POST',
-        credentials: 'include',
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          'X-Requested-By': 'CVErt-Ops',
-        }),
         body: JSON.stringify({ email: 'test@example.com', role: 'member' }),
       }),
     )

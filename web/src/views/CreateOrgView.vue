@@ -1,10 +1,11 @@
 <!-- ABOUTME: Create organization page -- shown when an authenticated user has no orgs. -->
-<!-- ABOUTME: Posts to the chi-registered /api/v1/orgs endpoint via raw fetch. -->
+<!-- ABOUTME: Posts to the chi-registered /api/v1/orgs endpoint via orgFetch. -->
 
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,13 +23,8 @@ async function onSubmit() {
   submitting.value = true
 
   try {
-    const response = await fetch('/api/v1/orgs', {
+    const response = await orgFetch('/api/v1/orgs', {
       method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
       body: JSON.stringify({ name: orgName.value }),
     })
 

@@ -17,11 +17,7 @@ export const csrfMiddleware: Middleware = {
   },
 }
 
-// Prevents multiple concurrent refresh calls when several API requests
-// receive 401 simultaneously.
-let refreshPromise: Promise<boolean> | null = null
-
-export async function refreshTokens(): Promise<boolean> {
+async function refreshTokens(): Promise<boolean> {
   try {
     const res = await fetch('/api/v1/auth/refresh', {
       method: 'POST',
@@ -32,6 +28,19 @@ export async function refreshTokens(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+// Prevents multiple concurrent refresh calls when several API requests
+// receive 401 simultaneously. Shared by the typed client middleware and orgFetch.
+let refreshPromise: Promise<boolean> | null = null
+
+export function coalescedRefresh(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = refreshTokens().finally(() => {
+      refreshPromise = null
+    })
+  }
+  return refreshPromise
 }
 
 // Attempts token refresh on 401 responses, then retries the original request.
@@ -46,13 +55,7 @@ export const refreshMiddleware: Middleware = {
       return response
     }
 
-    // Coalesce concurrent refresh attempts.
-    if (!refreshPromise) {
-      refreshPromise = refreshTokens()
-    }
-
-    const success = await refreshPromise
-    refreshPromise = null
+    const success = await coalescedRefresh()
 
     if (!success) {
       return response

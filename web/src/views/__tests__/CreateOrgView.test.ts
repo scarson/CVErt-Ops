@@ -105,15 +105,12 @@ describe('CreateOrgView', () => {
       await wrapper.find('form').trigger('submit')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/v1/orgs', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Requested-By': 'CVErt-Ops',
-        },
-        body: JSON.stringify({ name: 'My Org' }),
-      })
+      expect(mockFetch).toHaveBeenCalledWith('/api/v1/orgs',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ name: 'My Org' }),
+        }),
+      )
 
       expect(auth.fetchMe).toHaveBeenCalled()
       expect(auth.setActiveOrg).toHaveBeenCalledWith('org-1')

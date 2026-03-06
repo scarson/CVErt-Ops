@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import GroupDialog from '@/components/settings/GroupDialog.vue'
 import type { GroupEntry } from '@/components/settings/GroupDialog.vue'
 import GroupMembersDialog from '@/components/settings/GroupMembersDialog.vue'
@@ -62,11 +63,7 @@ async function fetchGroups() {
   error.value = ''
 
   try {
-    const resp = await fetch(apiBase(), {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const resp = await orgFetch(apiBase())
 
     if (!resp.ok) {
       error.value = 'Failed to load groups. Please try again.'
@@ -116,13 +113,8 @@ async function confirmDelete() {
   const id = deleteTarget.value.id
 
   try {
-    const resp = await fetch(`${apiBase()}/${id}`, {
+    const resp = await orgFetch(`${apiBase()}/${id}`, {
       method: 'DELETE',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
     })
 
     if (resp.ok) {

@@ -192,11 +192,6 @@ describe('AddItemDialog', () => {
       `/api/v1/orgs/${TEST_ORG_ID}/watchlists/${TEST_WATCHLIST_ID}/items`,
       expect.objectContaining({
         method: 'POST',
-        credentials: 'include',
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          'X-Requested-By': 'CVErt-Ops',
-        }),
         body: JSON.stringify({
           item_type: 'package',
           ecosystem: 'npm',
@@ -228,11 +223,6 @@ describe('AddItemDialog', () => {
       `/api/v1/orgs/${TEST_ORG_ID}/watchlists/${TEST_WATCHLIST_ID}/items`,
       expect.objectContaining({
         method: 'POST',
-        credentials: 'include',
-        headers: expect.objectContaining({
-          'Content-Type': 'application/json',
-          'X-Requested-By': 'CVErt-Ops',
-        }),
         body: JSON.stringify({
           item_type: 'cpe',
           cpe_normalized: 'cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*',

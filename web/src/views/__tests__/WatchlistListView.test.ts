@@ -297,10 +297,6 @@ describe('WatchlistListView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-del`,
         expect.objectContaining({
           method: 'DELETE',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
     })
@@ -392,10 +388,6 @@ describe('WatchlistListView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/watchlists`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-          }),
         }),
       )
     })

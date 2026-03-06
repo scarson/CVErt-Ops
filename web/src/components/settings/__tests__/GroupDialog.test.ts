@@ -157,11 +157,6 @@ describe('GroupDialog', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups`,
         expect.objectContaining({
           method: 'POST',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Requested-By': 'CVErt-Ops',
-          }),
           body: JSON.stringify({ name: 'New Group', description: 'A new group' }),
         }),
       )
@@ -224,11 +219,6 @@ describe('GroupDialog', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups/grp-edit`,
         expect.objectContaining({
           method: 'PATCH',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Requested-By': 'CVErt-Ops',
-          }),
           body: JSON.stringify({ name: 'Updated Name', description: 'Updated desc' }),
         }),
       )

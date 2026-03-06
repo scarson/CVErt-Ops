@@ -210,10 +210,6 @@ describe('GroupMembersDialog', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups/${TEST_GROUP_ID}/members/u2`,
         expect.objectContaining({
           method: 'DELETE',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
 
@@ -262,11 +258,6 @@ describe('GroupMembersDialog', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups/${TEST_GROUP_ID}/members`,
         expect.objectContaining({
           method: 'POST',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Requested-By': 'CVErt-Ops',
-          }),
           body: JSON.stringify({ user_id: 'u1' }),
         }),
       )
@@ -287,7 +278,6 @@ describe('GroupMembersDialog', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/groups/${TEST_GROUP_ID}/members`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
         }),
       )
     })
@@ -302,7 +292,6 @@ describe('GroupMembersDialog', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/members`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
         }),
       )
     })

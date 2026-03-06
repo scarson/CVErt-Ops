@@ -368,10 +368,6 @@ describe('MembersView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/members/u2`,
         expect.objectContaining({
           method: 'DELETE',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
 
@@ -432,11 +428,6 @@ describe('MembersView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/members/u1`,
         expect.objectContaining({
           method: 'PATCH',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Requested-By': 'CVErt-Ops',
-          }),
           body: JSON.stringify({ role: 'viewer' }),
         }),
       )
@@ -502,10 +493,6 @@ describe('MembersView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/invitations/inv-2`,
         expect.objectContaining({
           method: 'DELETE',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'X-Requested-By': 'CVErt-Ops',
-          }),
         }),
       )
 
@@ -607,10 +594,6 @@ describe('MembersView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/members`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-          }),
         }),
       )
     })
@@ -626,7 +609,6 @@ describe('MembersView', () => {
         `/api/v1/orgs/${TEST_ORG_ID}/invitations`,
         expect.objectContaining({
           method: 'GET',
-          credentials: 'include',
         }),
       )
     })

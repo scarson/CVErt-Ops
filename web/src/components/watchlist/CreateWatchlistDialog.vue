@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import {
   Dialog,
   DialogContent,
@@ -69,13 +70,8 @@ async function handleCreate() {
   }
 
   try {
-    const resp = await fetch(`/api/v1/orgs/${auth.activeOrgId}/watchlists`, {
+    const resp = await orgFetch(`/api/v1/orgs/${auth.activeOrgId}/watchlists`, {
       method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
       body: JSON.stringify(body),
     })
 

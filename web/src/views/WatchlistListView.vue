@@ -1,10 +1,11 @@
 <!-- ABOUTME: Watchlist listing page — shows all org watchlists with create and delete. -->
-<!-- ABOUTME: Fetches via raw fetch(); supports empty, loading, and error states. -->
+<!-- ABOUTME: Fetches via orgFetch(); supports empty, loading, and error states. -->
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { orgFetch } from '@/lib/api/orgFetch'
 import CreateWatchlistDialog from '@/components/watchlist/CreateWatchlistDialog.vue'
 import type { WatchlistEntry } from '@/components/watchlist/CreateWatchlistDialog.vue'
 import { Button } from '@/components/ui/button'
@@ -48,11 +49,7 @@ async function fetchWatchlists() {
   error.value = ''
 
   try {
-    const resp = await fetch(apiBase(), {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-    })
+    const resp = await orgFetch(apiBase())
 
     if (!resp.ok) {
       error.value = 'Failed to load watchlists. Please try again.'
@@ -87,13 +84,8 @@ async function confirmDelete() {
   const id = deleteTarget.value.id
 
   try {
-    const resp = await fetch(`${apiBase()}/${id}`, {
+    const resp = await orgFetch(`${apiBase()}/${id}`, {
       method: 'DELETE',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-By': 'CVErt-Ops',
-      },
     })
 
     if (resp.ok) {

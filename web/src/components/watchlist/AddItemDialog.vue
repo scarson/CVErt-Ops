@@ -16,6 +16,13 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Package, Cpu } from 'lucide-vue-next'
 
 export interface WatchlistItemEntry {
@@ -138,6 +145,8 @@ async function handleAdd() {
 function selectEcosystem(value: string) {
   ecosystem.value = value
 }
+
+defineExpose({ selectEcosystem })
 </script>
 
 <template>
@@ -186,33 +195,24 @@ function selectEcosystem(value: string) {
         <template v-if="itemType === 'package'">
           <div class="space-y-2">
             <Label for="add-item-ecosystem">Ecosystem</Label>
-            <div class="relative">
-              <button
-                data-testid="ecosystem-select"
-                type="button"
-                class="border-input bg-background flex h-9 w-full items-center justify-between rounded-md border px-3 py-2 text-sm shadow-xs"
-                @click.stop
-              >
-                {{ ecosystem || 'Select ecosystem...' }}
-              </button>
-              <select
-                id="add-item-ecosystem"
-                data-testid="ecosystem-native-select"
-                class="absolute inset-0 cursor-pointer opacity-0"
-                :value="ecosystem"
-                @change="selectEcosystem(($event.target as HTMLSelectElement).value)"
-              >
-                <option value="" disabled>Select ecosystem...</option>
-                <option
+            <Select
+              :model-value="ecosystem"
+              @update:model-value="selectEcosystem"
+            >
+              <SelectTrigger id="add-item-ecosystem" data-testid="ecosystem-select-trigger">
+                <SelectValue placeholder="Select ecosystem..." />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem
                   v-for="eco in ECOSYSTEMS"
                   :key="eco"
                   :value="eco"
                   :data-testid="`ecosystem-option-${eco}`"
                 >
                   {{ eco }}
-                </option>
-              </select>
-            </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <div class="space-y-2">

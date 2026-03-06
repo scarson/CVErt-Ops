@@ -92,10 +92,12 @@ async function setInputValue(testId: string, value: string) {
   input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-async function selectNativeOption(testId: string, value: string) {
-  const select = findTestId(testId) as HTMLSelectElement
-  select.value = value
-  select.dispatchEvent(new Event('change', { bubbles: true }))
+// reka-ui Select is hard to interact with in JSDOM, so we call the
+// exposed selectEcosystem method directly (same pattern as MembersView tests).
+async function selectEcosystem(value: string) {
+  const vm = wrapper.vm as any
+  vm.selectEcosystem(value)
+  await flushPromises()
 }
 
 async function clickTestId(testId: string) {
@@ -144,7 +146,7 @@ describe('AddItemDialog', () => {
     await mountDialog()
     await flushPromises()
 
-    expect(findTestId('ecosystem-select')).not.toBeNull()
+    expect(findTestId('ecosystem-select-trigger')).not.toBeNull()
     expect(findTestId('package-name-input')).not.toBeNull()
     expect(findTestId('namespace-input')).not.toBeNull()
   })
@@ -178,7 +180,7 @@ describe('AddItemDialog', () => {
     await flushPromises()
 
     // Select ecosystem via native select
-    await selectNativeOption('ecosystem-native-select', 'npm')
+    await selectEcosystem('npm')
     await flushPromises()
 
     // Fill package name
@@ -237,7 +239,7 @@ describe('AddItemDialog', () => {
     await mountDialog()
     await flushPromises()
 
-    await selectNativeOption('ecosystem-native-select', 'npm')
+    await selectEcosystem('npm')
     await flushPromises()
 
     await setInputValue('package-name-input', 'lodash')
@@ -257,7 +259,7 @@ describe('AddItemDialog', () => {
     await mountDialog()
     await flushPromises()
 
-    await selectNativeOption('ecosystem-native-select', 'npm')
+    await selectEcosystem('npm')
     await flushPromises()
 
     await setInputValue('package-name-input', 'something')
@@ -278,7 +280,7 @@ describe('AddItemDialog', () => {
     await mountDialog()
     await flushPromises()
 
-    await selectNativeOption('ecosystem-native-select', 'npm')
+    await selectEcosystem('npm')
     await flushPromises()
 
     await setInputValue('package-name-input', 'lodash')
@@ -298,7 +300,7 @@ describe('AddItemDialog', () => {
     await mountDialog()
     await flushPromises()
 
-    await selectNativeOption('ecosystem-native-select', 'npm')
+    await selectEcosystem('npm')
     await flushPromises()
 
     await setInputValue('package-name-input', 'lodash')

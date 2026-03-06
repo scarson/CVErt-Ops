@@ -172,6 +172,20 @@ describe('WatchlistDetailView', () => {
     })
   })
 
+  describe('error state', () => {
+    it('shows error message when API returns 500', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Internal Server Error' }),
+      })
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to load watchlist')
+    })
+  })
+
   describe('rendering with data', () => {
     it('renders watchlist name and description', async () => {
       mockWatchlistSuccess()

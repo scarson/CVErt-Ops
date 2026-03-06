@@ -40,6 +40,7 @@ const watchlist = ref<WatchlistEntry | null>(null)
 const items = ref<WatchlistItemEntry[]>([])
 const loading = ref(true)
 const notFound = ref(false)
+const error = ref('')
 const addDialogOpen = ref(false)
 
 // Inline edit state
@@ -53,6 +54,8 @@ function apiBase() {
 }
 
 async function fetchWatchlist() {
+  error.value = ''
+
   try {
     const resp = await fetch(apiBase(), {
       method: 'GET',
@@ -63,6 +66,8 @@ async function fetchWatchlist() {
     if (!resp.ok) {
       if (resp.status === 404) {
         notFound.value = true
+      } else {
+        error.value = 'Failed to load watchlist. Please try again.'
       }
       loading.value = false
       return
@@ -70,6 +75,7 @@ async function fetchWatchlist() {
 
     watchlist.value = await resp.json() as WatchlistEntry
   } catch {
+    error.value = 'Failed to load watchlist. Please try again.'
     loading.value = false
   }
 }
@@ -212,6 +218,11 @@ watch(
       <RouterLink to="/watchlists" class="text-primary mt-4 inline-block text-sm underline">
         Back to Watchlists
       </RouterLink>
+    </div>
+
+    <!-- Error state -->
+    <div v-else-if="error" class="py-16 text-center">
+      <p class="text-sm text-destructive">{{ error }}</p>
     </div>
 
     <!-- Loaded state -->

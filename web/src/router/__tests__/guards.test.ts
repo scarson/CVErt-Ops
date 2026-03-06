@@ -120,6 +120,23 @@ describe('route guards', () => {
       expect(router.currentRoute.value.name).toBe('create-org')
     })
 
+    it('redirects to /create-org when user has null orgs (Go nil slice)', async () => {
+      const auth = useAuthStore()
+      auth.user = {
+        user_id: 'u1',
+        email: 'test@example.com',
+        display_name: 'Test',
+        orgs: null as unknown as [],
+      }
+      vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
+
+      const router = createTestRouter()
+      await router.push('/cves')
+      await router.isReady()
+
+      expect(router.currentRoute.value.name).toBe('create-org')
+    })
+
     it('allows access when authenticated with active org', async () => {
       const auth = useAuthStore()
       auth.user = {

@@ -125,7 +125,7 @@ export const authGuard: NavigationGuardWithThis<undefined> = async (to) => {
   }
 
   // Redirect to create-org if user has no orgs.
-  if (requiresOrg && auth.isAuthenticated && auth.user?.orgs?.length === 0) {
+  if (requiresOrg && auth.isAuthenticated && !auth.user?.orgs?.length) {
     return { name: 'create-org' }
   }
 

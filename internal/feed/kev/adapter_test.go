@@ -364,6 +364,58 @@ func TestRecordToPatch(t *testing.T) {
 			},
 		},
 		{
+			name: "vendor enrichment populated",
+			rec: kevRecord{
+				CVEID:                      "CVE-2024-5555",
+				VendorProject:              "Acme",
+				Product:                    "Widget",
+				DateAdded:                  "2024-06-15",
+				ShortDescription:           "RCE in Widget",
+				RequiredAction:             "Apply update per vendor instructions",
+				DueDate:                    "2024-07-15",
+				KnownRansomwareCampaignUse: "Known",
+				Notes:                      "Patch available from vendor",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.VendorEnrichment == nil {
+					t.Fatal("VendorEnrichment should not be nil")
+				}
+				if p.VendorEnrichment.VendorSeverity != nil {
+					t.Error("KEV does not set VendorSeverity")
+				}
+				if p.VendorEnrichment.VendorFixState != nil {
+					t.Error("KEV does not set VendorFixState")
+				}
+
+				var data map[string]any
+				if err := json.Unmarshal(p.VendorEnrichment.Data, &data); err != nil {
+					t.Fatalf("unmarshal enrichment data: %v", err)
+				}
+				if data["required_action"] != "Apply update per vendor instructions" {
+					t.Errorf("required_action = %v, want %q", data["required_action"], "Apply update per vendor instructions")
+				}
+				if data["due_date"] != "2024-07-15" {
+					t.Errorf("due_date = %v, want %q", data["due_date"], "2024-07-15")
+				}
+				if data["ransomware_use"] != true {
+					t.Errorf("ransomware_use = %v, want true", data["ransomware_use"])
+				}
+				if data["vendor_project"] != "Acme" {
+					t.Errorf("vendor_project = %v, want %q", data["vendor_project"], "Acme")
+				}
+				if data["product"] != "Widget" {
+					t.Errorf("product = %v, want %q", data["product"], "Widget")
+				}
+				if data["notes"] != "Patch available from vendor" {
+					t.Errorf("notes = %v, want %q", data["notes"], "Patch available from vendor")
+				}
+			},
+		},
+		{
 			name: "InCISAKEV and ExploitAvailable always true",
 			rec: kevRecord{
 				CVEID:     "CVE-2024-7777",

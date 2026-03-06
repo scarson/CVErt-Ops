@@ -277,6 +277,21 @@ func recordToPatch(rec kevRecord) *feed.CanonicalPatch {
 	// CWE IDs from the cwes field (absent on pre-2023 entries, null-safe).
 	patch.CWEIDs = extractCWEs(rec.CWEs)
 
+	// Vendor enrichment — preserve KEV-specific fields that don't map to CanonicalPatch.
+	enrichmentData, err := json.Marshal(map[string]any{
+		"required_action": rec.RequiredAction,
+		"due_date":        rec.DueDate,
+		"ransomware_use":  rec.KnownRansomwareCampaignUse == "Known",
+		"vendor_project":  rec.VendorProject,
+		"product":         rec.Product,
+		"notes":           rec.Notes,
+	})
+	if err == nil {
+		patch.VendorEnrichment = &feed.VendorEnrichment{
+			Data: enrichmentData,
+		}
+	}
+
 	return patch
 }
 

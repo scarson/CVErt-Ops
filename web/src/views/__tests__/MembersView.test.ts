@@ -377,6 +377,17 @@ describe('MembersView', () => {
   })
 
   describe('role change', () => {
+    it('rolesAssignableBy includes current role for peer-level display', async () => {
+      setupAuthStore('admin')
+      mockMembersSuccess([])
+      mockInvitationsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      const vm = wrapper.vm as any
+      expect(vm.rolesAssignableBy('admin')).toEqual(['admin', 'member', 'viewer'])
+    })
+
     it('shows role select for admin on non-owner members', async () => {
       setupAuthStore('admin')
       mockMembersSuccess([

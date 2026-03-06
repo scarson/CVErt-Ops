@@ -71,7 +71,7 @@ const isAdmin = computed(() => ROLE_HIERARCHY[userRole.value]! >= ROLE_HIERARCHY
 
 function rolesAssignableBy(callerRole: string): string[] {
   const callerLevel = ROLE_HIERARCHY[callerRole] ?? 0
-  return ASSIGNABLE_ROLES.filter((r) => ROLE_HIERARCHY[r]! < callerLevel)
+  return ASSIGNABLE_ROLES.filter((r) => ROLE_HIERARCHY[r]! <= callerLevel)
 }
 
 function canChangeRole(member: MemberEntry): boolean {
@@ -220,8 +220,8 @@ function formatDate(dateStr: string): string {
   })
 }
 
-// Expose changeRole for test access (reka-ui Select is hard to trigger in JSDOM)
-defineExpose({ changeRole })
+// Expose methods for test access (reka-ui Select is hard to trigger in JSDOM)
+defineExpose({ changeRole, rolesAssignableBy })
 
 onMounted(() => {
   fetchMembers()

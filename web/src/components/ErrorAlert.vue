@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 defineProps<{
   title?: string
   message: string
+  retryable?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -20,7 +21,7 @@ const emit = defineEmits<{
     <AlertTitle>{{ title ?? 'Error' }}</AlertTitle>
     <AlertDescription class="flex items-center justify-between">
       <span>{{ message }}</span>
-      <Button v-if="$attrs.onRetry" variant="outline" size="sm" @click="emit('retry')">
+      <Button v-if="retryable" variant="outline" size="sm" @click="emit('retry')">
         Retry
       </Button>
     </AlertDescription>

@@ -3,12 +3,14 @@
 package msrc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"bytes"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -24,7 +26,13 @@ const (
 
 	// baseURL is the MSRC CSAF API base endpoint.
 	baseURL = "https://api.msrc.microsoft.com/cvrf/v3.0/"
+
+	// maxCSAFDocSize caps the CSAF response body to prevent OOM from malformed responses.
+	maxCSAFDocSize = 50 << 20 // 50 MB
 )
+
+// dateTimeRe validates OData datetime literal format to prevent injection.
+var dateTimeRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)?$`)
 
 // Cursor is the JSON-serializable sync state for the MSRC adapter.
 // Two-phase: first poll /updates for changed release IDs, then fetch CSAF
@@ -265,6 +273,9 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, fmt.Errorf("msrc: build updates request: %w", err)
 	}
 	if cur.LastReleaseDate != "" {
+		if !dateTimeRe.MatchString(cur.LastReleaseDate) {
+			return nil, fmt.Errorf("msrc: invalid cursor date format: %q", cur.LastReleaseDate)
+		}
 		q := req.URL.Query()
 		q.Set("$filter", "CurrentReleaseDate gt datetime'"+cur.LastReleaseDate+"'")
 		req.URL.RawQuery = q.Encode()
@@ -328,7 +339,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			return nil, fmt.Errorf("msrc: rate limit: %w", err)
 		}
 
-		csafURL := baseURL + "csaf/" + releaseID
+		csafURL := baseURL + "csaf/" + url.PathEscape(releaseID)
 		csafReq, err := http.NewRequestWithContext(ctx, http.MethodGet, csafURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("msrc: build csaf request for %s: %w", releaseID, err)
@@ -342,11 +353,12 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}
 
 		if csafResp.StatusCode != http.StatusOK {
-			csafResp.Body.Close() //nolint:errcheck,gosec // read-only response body close
+			io.Copy(io.Discard, csafResp.Body) //nolint:errcheck,gosec // drain for connection reuse
+			csafResp.Body.Close()              //nolint:errcheck,gosec // read-only response body close
 			return nil, fmt.Errorf("msrc: csaf %s HTTP %d", releaseID, csafResp.StatusCode)
 		}
 
-		body, err := io.ReadAll(csafResp.Body)
+		body, err := io.ReadAll(io.LimitReader(csafResp.Body, maxCSAFDocSize))
 		csafResp.Body.Close() //nolint:errcheck,gosec // read-only response body close
 		if err != nil {
 			return nil, fmt.Errorf("msrc: read csaf %s: %w", releaseID, err)

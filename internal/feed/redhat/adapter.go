@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +29,13 @@ const (
 
 	// listPageSize is the number of CVEs per list page.
 	listPageSize = 100
+
+	// maxDetailSize caps the detail response body to prevent OOM from malformed responses.
+	maxDetailSize = 10 << 20 // 10 MB
 )
+
+// dateRe validates ISO date format for cursor AfterDate to prevent injection.
+var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
 // Cursor is the JSON-serializable sync state for the Red Hat adapter.
 // Two-phase: first paginate through /cve.json for CVE IDs, then fetch
@@ -274,30 +282,49 @@ func buildVendorEnrichment(d detailRecord) *feed.VendorEnrichment {
 	}
 
 	// Enrichment data: bugzilla, affected_release, package_state, mitigation, upstream_fix
+	// All string fields are sanitized to prevent null byte insertion into JSONB.
 	dataMap := make(map[string]any)
 
 	if d.Bugzilla != nil {
 		dataMap["bugzilla"] = map[string]any{
-			"id":          d.Bugzilla.ID,
-			"url":         d.Bugzilla.URL,
-			"description": d.Bugzilla.Description,
+			"id":          feed.StripNullBytes(d.Bugzilla.ID),
+			"url":         feed.StripNullBytes(d.Bugzilla.URL),
+			"description": feed.StripNullBytes(d.Bugzilla.Description),
 		}
 	}
 
 	if len(d.AffectedRelease) > 0 {
-		dataMap["affected_release"] = d.AffectedRelease
+		sanitized := make([]map[string]string, len(d.AffectedRelease))
+		for i, ar := range d.AffectedRelease {
+			sanitized[i] = map[string]string{
+				"product_name": feed.StripNullBytes(ar.ProductName),
+				"advisory":     feed.StripNullBytes(ar.Advisory),
+				"cpe":          feed.StripNullBytes(ar.CPE),
+				"package":      feed.StripNullBytes(ar.Package),
+			}
+		}
+		dataMap["affected_release"] = sanitized
 	}
 
 	if len(d.PackageState) > 0 {
-		dataMap["package_state"] = d.PackageState
+		sanitized := make([]map[string]string, len(d.PackageState))
+		for i, ps := range d.PackageState {
+			sanitized[i] = map[string]string{
+				"product_name": feed.StripNullBytes(ps.ProductName),
+				"fix_state":    feed.StripNullBytes(ps.FixState),
+				"cpe":          feed.StripNullBytes(ps.CPE),
+				"package_name": feed.StripNullBytes(ps.PackageName),
+			}
+		}
+		dataMap["package_state"] = sanitized
 	}
 
 	if d.Mitigation != nil && d.Mitigation.Value != "" {
-		dataMap["mitigation"] = d.Mitigation.Value
+		dataMap["mitigation"] = feed.StripNullBytes(d.Mitigation.Value)
 	}
 
 	if d.UpstreamFix != "" {
-		dataMap["upstream_fix"] = d.UpstreamFix
+		dataMap["upstream_fix"] = feed.StripNullBytes(d.UpstreamFix)
 	}
 
 	data, err := json.Marshal(dataMap)
@@ -368,6 +395,9 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		q.Set("per_page", strconv.Itoa(listPageSize))
 		q.Set("page", strconv.Itoa(page))
 		if cur.AfterDate != "" {
+			if !dateRe.MatchString(cur.AfterDate) {
+				return nil, fmt.Errorf("redhat: invalid cursor date format: %q", cur.AfterDate)
+			}
 			q.Set("after", cur.AfterDate)
 		}
 		req.URL.RawQuery = q.Encode()
@@ -405,7 +435,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			return nil, fmt.Errorf("redhat: rate limit: %w", err)
 		}
 
-		detailURL := baseURL + "cve/" + cveID + ".json"
+		detailURL := baseURL + "cve/" + url.PathEscape(cveID) + ".json"
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("redhat: build detail request for %s: %w", cveID, err)
@@ -419,18 +449,20 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}
 
 		if resp.StatusCode == http.StatusNotFound {
-			resp.Body.Close() //nolint:errcheck,gosec
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
+			resp.Body.Close()              //nolint:errcheck,gosec
 			a.log.WarnContext(ctx, "redhat: detail 404, skipping CVE",
 				slog.String("cve_id", cveID))
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close() //nolint:errcheck,gosec
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
+			resp.Body.Close()              //nolint:errcheck,gosec
 			return nil, fmt.Errorf("redhat: detail %s HTTP %d", cveID, resp.StatusCode)
 		}
 
-		detail, err := parseDetailResponse(resp.Body)
+		detail, err := parseDetailResponse(io.LimitReader(resp.Body, maxDetailSize))
 		resp.Body.Close() //nolint:errcheck,gosec
 		if err != nil {
 			return nil, fmt.Errorf("redhat: parse detail %s: %w", cveID, err)

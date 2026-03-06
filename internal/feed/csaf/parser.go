@@ -148,24 +148,31 @@ func Parse(r io.Reader) (*Document, error) {
 	return &doc, nil
 }
 
+// maxBranchDepth caps the recursion depth when walking the product tree
+// to prevent stack overflow from maliciously deep CSAF documents.
+const maxBranchDepth = 64
+
 // Lookup builds a map from ProductID to product Name by walking the recursive
 // branch tree. Call once after parsing to resolve product IDs referenced in
 // vulnerability sections.
 func (pt *ProductTree) Lookup() map[string]string {
 	m := make(map[string]string)
 	for _, b := range pt.Branches {
-		walkBranches(b, m)
+		walkBranches(b, m, 0)
 	}
 	return m
 }
 
 // walkBranches recursively walks a branch tree, collecting product ID to name
-// mappings from leaf nodes.
-func walkBranches(b Branch, m map[string]string) {
+// mappings from leaf nodes. Stops at maxBranchDepth to prevent stack overflow.
+func walkBranches(b Branch, m map[string]string, depth int) {
+	if depth >= maxBranchDepth {
+		return
+	}
 	if b.Product != nil && b.Product.ProductID != "" {
 		m[b.Product.ProductID] = b.Product.Name
 	}
 	for _, child := range b.Branches {
-		walkBranches(child, m)
+		walkBranches(child, m, depth+1)
 	}
 }

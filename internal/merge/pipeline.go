@@ -1,3 +1,5 @@
+// ABOUTME: CVE merge pipeline that combines data from multiple feed sources.
+// ABOUTME: Resolves field conflicts by source priority, computes material hashes, and persists canonical CVE rows.
 package merge
 
 import (
@@ -30,6 +32,7 @@ import (
 //  6. Upsert cves — update canonical row (IS DISTINCT FROM guard on hash)
 //  7. Tombstone — NULL out CVSS/EPSS/KEV if status is rejected/withdrawn
 //  8. Delete + re-insert child tables — references, packages, CPEs
+//  8.5. Upsert vendor enrichment — optional, only vendor-specific adapters
 //  9. Apply staged EPSS — drain epss_staging for this CVE (always delete)
 //  10. Upsert FTS index — update cve_search_index (IS DISTINCT FROM guard)
 func Ingest(
@@ -79,8 +82,10 @@ func Ingest(
 		}
 		if err == nil && oldCVEID != patch.CVEID {
 			// Lock the old CVE ID too — prevents concurrent writers for the old
-			// ID from racing with the migration. Lock order is deterministic
-			// (lower key first) to prevent deadlocks.
+			// ID from racing with the migration. Lock order: new ID (held from
+			// step 1), then old ID. Deadlock is theoretically possible if two
+			// concurrent PK migrations cross-reference each other's CVE IDs,
+			// but Postgres's deadlock detector handles this rare case.
 			oldKey := CVEAdvisoryKey(oldCVEID)
 			newKey := CVEAdvisoryKey(patch.CVEID)
 			if oldKey != newKey {
@@ -234,6 +239,23 @@ func Ingest(
 			CpeNormalized: cpe.CPENormalized,
 		}); err != nil {
 			return fmt.Errorf("merge: insert affected CPE: %w", err)
+		}
+	}
+
+	// Step 8.5: upsert vendor enrichment (optional — only vendor-specific adapters populate this).
+	if patch.VendorEnrichment != nil {
+		enrichmentJSON := patch.VendorEnrichment.Data
+		if enrichmentJSON == nil {
+			enrichmentJSON = json.RawMessage(`{}`)
+		}
+		if err := q.UpsertVendorEnrichment(ctx, generated.UpsertVendorEnrichmentParams{
+			CveID:          patch.CVEID,
+			SourceName:     sourceName,
+			VendorSeverity: toNullString(derefString(patch.VendorEnrichment.VendorSeverity)),
+			VendorFixState: toNullString(derefString(patch.VendorEnrichment.VendorFixState)),
+			Enrichment:     enrichmentJSON,
+		}); err != nil {
+			return fmt.Errorf("merge: upsert vendor enrichment: %w", err)
 		}
 	}
 
@@ -396,6 +418,7 @@ func migrateCVEPKRename(ctx context.Context, tx *sql.Tx, oldID, newID string) er
 		{"update references", "UPDATE cve_references SET cve_id = $2 WHERE cve_id = $1"},
 		{"update packages", "UPDATE cve_affected_packages SET cve_id = $2 WHERE cve_id = $1"},
 		{"update CPEs", "UPDATE cve_affected_cpes SET cve_id = $2 WHERE cve_id = $1"},
+		{"update vendor enrichment", "UPDATE cve_vendor_enrichment SET cve_id = $2 WHERE cve_id = $1"},
 		{"update raw payloads", "UPDATE cve_raw_payloads SET cve_id = $2 WHERE cve_id = $1"},
 		{"update EPSS staging", "UPDATE epss_staging SET cve_id = $2 WHERE cve_id = $1"},
 		{"update cves PK", "UPDATE cves SET cve_id = $2 WHERE cve_id = $1"},
@@ -436,6 +459,7 @@ func migrateCVEPKMerge(ctx context.Context, tx *sql.Tx, oldID, newID string) err
 		{"delete old references", "DELETE FROM cve_references WHERE cve_id = $1"},
 		{"delete old packages", "DELETE FROM cve_affected_packages WHERE cve_id = $1"},
 		{"delete old CPEs", "DELETE FROM cve_affected_cpes WHERE cve_id = $1"},
+		{"delete old vendor enrichment", "DELETE FROM cve_vendor_enrichment WHERE cve_id = $1"},
 		{"delete old raw payloads", "DELETE FROM cve_raw_payloads WHERE cve_id = $1"},
 		{"delete old EPSS staging", "DELETE FROM epss_staging WHERE cve_id = $1"},
 		{"delete old cves row", "DELETE FROM cves WHERE cve_id = $1"},

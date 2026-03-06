@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -991,5 +992,135 @@ func TestIngest_NonMaterialFieldUpdateNotDropped(t *testing.T) {
 	if !cve2.DescriptionPrimary.Valid || cve2.DescriptionPrimary.String != nvdDesc {
 		t.Errorf("description = %q, want %q — non-material field update was dropped",
 			cve2.DescriptionPrimary.String, nvdDesc)
+	}
+}
+
+// TestIngest_VendorEnrichment verifies that when a CanonicalPatch has
+// VendorEnrichment populated, the merge pipeline writes the data to the
+// cve_vendor_enrichment table. Vendor enrichment is optional — only
+// vendor-specific adapters (KEV, MSRC, Red Hat) populate it.
+func TestIngest_VendorEnrichment(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2025-9999"
+	sev := "Critical"
+	fixState := "Available"
+	enrichmentData := json.RawMessage(`{"kb_articles":["KB12345"],"product":"Windows Server 2022"}`)
+
+	patch := feed.CanonicalPatch{
+		CVEID:    cveID,
+		SourceID: cveID,
+		Status:   "published",
+		VendorEnrichment: &feed.VendorEnrichment{
+			VendorSeverity: &sev,
+			VendorFixState: &fixState,
+			Data:           enrichmentData,
+		},
+	}
+
+	err := merge.Ingest(ctx, s.Store, patch, "msrc", nil)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// Query vendor enrichment directly via sqlc.
+	q := generated.New(s.DB())
+	ve, err := q.GetVendorEnrichment(ctx, generated.GetVendorEnrichmentParams{
+		CveID:      cveID,
+		SourceName: "msrc",
+	})
+	if err != nil {
+		t.Fatalf("GetVendorEnrichment: %v", err)
+	}
+
+	if !ve.VendorSeverity.Valid || ve.VendorSeverity.String != sev {
+		t.Errorf("vendor_severity = %q, want %q", ve.VendorSeverity.String, sev)
+	}
+	if !ve.VendorFixState.Valid || ve.VendorFixState.String != fixState {
+		t.Errorf("vendor_fix_state = %q, want %q", ve.VendorFixState.String, fixState)
+	}
+
+	// Verify enrichment JSON round-trips correctly.
+	var got, want map[string]interface{}
+	_ = json.Unmarshal(ve.Enrichment, &got)
+	_ = json.Unmarshal(enrichmentData, &want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("enrichment JSON mismatch:\n  got:  %s\n  want: %s", ve.Enrichment, enrichmentData)
+	}
+}
+
+// TestIngest_VendorEnrichmentNilSkipsUpsert verifies that when VendorEnrichment
+// is nil (normal case for non-vendor adapters), the pipeline does not write to
+// cve_vendor_enrichment.
+func TestIngest_VendorEnrichmentNilSkipsUpsert(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2025-9998"
+
+	patch := feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+	}
+
+	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// Verify no vendor enrichment row exists.
+	q := generated.New(s.DB())
+	rows, err := q.ListVendorEnrichmentByCVE(ctx, cveID)
+	if err != nil {
+		t.Fatalf("ListVendorEnrichmentByCVE: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("expected 0 vendor enrichment rows for non-vendor adapter, got %d", len(rows))
+	}
+}
+
+// TestIngest_VendorEnrichmentNilData verifies that when VendorEnrichment is
+// populated but Data is nil, the pipeline defaults to an empty JSON object.
+func TestIngest_VendorEnrichmentNilData(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2025-9997"
+	sev := "Important"
+
+	patch := feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+		VendorEnrichment: &feed.VendorEnrichment{
+			VendorSeverity: &sev,
+			Data:           nil, // no extra data
+		},
+	}
+
+	err := merge.Ingest(ctx, s.Store, patch, "kev", nil)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	q := generated.New(s.DB())
+	ve, err := q.GetVendorEnrichment(ctx, generated.GetVendorEnrichmentParams{
+		CveID:      cveID,
+		SourceName: "kev",
+	})
+	if err != nil {
+		t.Fatalf("GetVendorEnrichment: %v", err)
+	}
+
+	if !ve.VendorSeverity.Valid || ve.VendorSeverity.String != sev {
+		t.Errorf("vendor_severity = %q, want %q", ve.VendorSeverity.String, sev)
+	}
+
+	// enrichment should default to empty JSON object.
+	if string(ve.Enrichment) != "{}" {
+		t.Errorf("enrichment = %s, want {}", ve.Enrichment)
 	}
 }

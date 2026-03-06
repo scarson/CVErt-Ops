@@ -1,6 +1,8 @@
 package feed
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -237,4 +239,48 @@ func TestResolveCanonicalIDWhitespaceAlias(t *testing.T) {
 	if got != "CVE-2024-22222" {
 		t.Errorf("ResolveCanonicalID = %q, want %q (first clean CVE alias)", got, "CVE-2024-22222")
 	}
+}
+
+// ── CanonicalPatch VendorEnrichment ──────────────────────────────────────────
+
+func TestCanonicalPatch_VendorEnrichmentRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil vendor enrichment omitted from JSON", func(t *testing.T) {
+		t.Parallel()
+		p := CanonicalPatch{CVEID: "CVE-2025-0001"}
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), "vendor_enrichment") {
+			t.Errorf("nil VendorEnrichment should be omitted, got %s", data)
+		}
+	})
+
+	t.Run("populated vendor enrichment round-trips", func(t *testing.T) {
+		t.Parallel()
+		sev := "Critical"
+		p := CanonicalPatch{
+			CVEID: "CVE-2025-0002",
+			VendorEnrichment: &VendorEnrichment{
+				VendorSeverity: &sev,
+				Data:           json.RawMessage(`{"kb":"KB12345"}`),
+			},
+		}
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded CanonicalPatch
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if decoded.VendorEnrichment == nil {
+			t.Fatal("VendorEnrichment should not be nil after round-trip")
+		}
+		if decoded.VendorEnrichment.VendorSeverity == nil || *decoded.VendorEnrichment.VendorSeverity != "Critical" {
+			t.Errorf("VendorSeverity = %v, want Critical", decoded.VendorEnrichment.VendorSeverity)
+		}
+	})
 }

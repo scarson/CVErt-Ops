@@ -926,5 +926,75 @@ func TestAcceptInvitation_NoCookie(t *testing.T) {
 	}
 }
 
+// ── Auth providers endpoint tests ─────────────────────────────────────────────
+
+func TestAuthProvidersNoOAuth(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "open")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/providers", nil)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104: body close in test
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		GitHub           bool   `json:"github"`
+		Google           bool   `json:"google"`
+		RegistrationMode string `json:"registration_mode"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if body.GitHub {
+		t.Error("github should be false when not configured")
+	}
+	if body.Google {
+		t.Error("google should be false when not configured")
+	}
+	if body.RegistrationMode != "open" {
+		t.Errorf("registration_mode: got %q, want %q", body.RegistrationMode, "open")
+	}
+}
+
+func TestAuthProvidersInviteOnly(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newRegisterServer(t, db, "invite-only")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/providers", nil)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104: body close in test
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		RegistrationMode string `json:"registration_mode"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if body.RegistrationMode != "invite-only" {
+		t.Errorf("registration_mode: got %q, want %q", body.RegistrationMode, "invite-only")
+	}
+}
+
 // Suppress unused import warning for time (used in tests above).
 var _ = time.Now

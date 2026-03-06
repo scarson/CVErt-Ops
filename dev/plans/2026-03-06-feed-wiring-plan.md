@@ -2,9 +2,9 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Use superpowers:test-driven-development for every task that creates new code.
 
-**Goal:** Wire the existing 6 feed adapters (NVD, MITRE, KEV, EPSS, GHSA, OSV) into the worker pool so they actually fetch data, run through the merge pipeline, and persist sync state — then expose feed health via an admin API and dashboard UI.
+**Goal:** Wire the existing 8 feed adapters (NVD, MITRE, KEV, EPSS, GHSA, OSV, MSRC, Red Hat) into the worker pool so they actually fetch data, run through the merge pipeline, and persist sync state — then expose feed health via an admin API and dashboard UI.
 
-**Architecture:** The worker pool already polls the `feed_ingest` queue. We replace the stub `feedIngestHandler` with a real handler that deserializes the job payload to identify the feed, constructs the appropriate adapter, calls `Fetch()` in a pagination loop, pipes each `CanonicalPatch` through `merge.Ingest()`, and persists cursor/sync state. A scheduler goroutine periodically enqueues `feed_ingest` jobs respecting per-feed intervals and backoff. EPSS is special — it doesn't implement `feed.Adapter`, so it gets its own dedicated handler and queue. Two admin API endpoints expose feed health. The frontend `FeedStatusView.vue` replaces its "Coming Soon" placeholder with a real dashboard.
+**Architecture:** The worker pool already polls the `feed_ingest` queue. We replace the stub `feedIngestHandler` with a real handler that deserializes the job payload to identify the feed, constructs the appropriate adapter, calls `Fetch()` in a loop (breaking on nil NextCursor or empty patches), pipes each `CanonicalPatch` through `merge.Ingest()`, and persists cursor/sync state. A scheduler goroutine periodically enqueues `feed_ingest` jobs respecting per-feed intervals and backoff. EPSS is special — it doesn't implement `feed.Adapter`, so it gets its own dedicated handler and queue. Two admin API endpoints expose feed health. The frontend `FeedStatusView.vue` replaces its "Coming Soon" placeholder with a real dashboard.
 
 **Tech Stack:** Go 1.26, sqlc, huma/chi, Vue 3 + shadcn-vue, existing `internal/feed/*` adapters, `internal/merge` pipeline, `internal/worker` pool, `internal/store` (sqlc queries for `feed_sync_state` / `feed_fetch_log`)
 
@@ -94,7 +94,7 @@ feat: add feed state sqlc queries and store wrapper methods
 Replace the stub in `cmd/cvert-ops/main.go` with a real handler that:
 1. Unmarshals the job payload to get the feed name
 2. Reads the current cursor from `feed_sync_state`
-3. Constructs the right adapter (NVD, MITRE, KEV, GHSA, OSV — **not** EPSS)
+3. Constructs the right adapter (NVD, MITRE, KEV, GHSA, OSV, MSRC, Red Hat — **not** EPSS)
 4. Calls `Fetch()` in a loop (paginating via `NextCursor`)
 5. For each patch, calls `merge.Ingest()`
 6. On success: persists new cursor + success state to `feed_sync_state`, logs to `feed_fetch_log`
@@ -150,17 +150,24 @@ package ingest
 ```go
 // KnownFeeds is the canonical set of feed names. Used for validation in both
 // the ingest handler and admin API.
-var KnownFeeds = []string{"nvd", "mitre", "kev", "ghsa", "osv", "epss"}
+var KnownFeeds = []string{"nvd", "mitre", "kev", "ghsa", "osv", "epss", "msrc", "redhat"}
 
 // IsKnownFeed returns true if feedName is a recognized feed.
 func IsKnownFeed(feedName string) bool
+
+// QueueForFeed returns "epss_ingest" for EPSS, "feed_ingest" for all others.
+func QueueForFeed(feedName string) string
 ```
 
 **Adapter factory function** — returns the right `feed.Adapter` given a feed name:
 ```go
 func NewAdapter(feedName string, client *http.Client) (feed.Adapter, error)
 ```
-Maps: `"nvd"` → `nvd.New(client)`, `"mitre"` → `mitre.New(client)`, `"kev"` → `kev.New(client)`, `"ghsa"` → `ghsa.New(client)`, `"osv"` → `osv.New(client)`. Returns error for unknown feed name or `"epss"` (EPSS has a separate handler — Task 3).
+Maps: `"nvd"` → `nvd.New(client)`, `"mitre"` → `mitre.New(client)`, `"kev"` → `kev.New(client)`, `"ghsa"` → `ghsa.New(client)`, `"osv"` → `osv.New(client)`, `"msrc"` → `msrc.New(client)`, `"redhat"` → `redhat.New(client)`. Returns error for unknown feed name or `"epss"` (EPSS has a separate handler — Task 3).
+
+**Note:** `cmd/cvert-ops/main.go` already has a `buildFeedAdapters()` function (from the vendor feed adapter branch) that does similar work. When implementing Task 2, **replace** `buildFeedAdapters` with the `NewAdapter` factory in `internal/ingest/feeds.go` and remove the per-adapter imports from main.go — they move to `internal/ingest/`. Also remove the existing `feedIngestHandler` closure from main.go.
+
+**Per-call adapter construction is intentional:** `NewAdapter` creates a fresh adapter per job invocation. Each adapter's internal rate limiter lives for the duration of the handler (covering all pagination within one run). Between runs, the scheduler enforces the configured interval (2h–24h) so cross-job rate limiting is not needed.
 
 Then create `internal/ingest/handler.go`:
 
@@ -178,6 +185,8 @@ type IngestPayload struct {
     FeedName string `json:"feed_name"`
 }
 ```
+
+**Note:** The existing stub handler in main.go uses `"source"` as the JSON field name. We're replacing that handler entirely, so `"feed_name"` is the canonical field going forward. Make sure the scheduler (Task 4) and admin API trigger (Task 5) both use `"feed_name"` in the payload they enqueue.
 
 **MergeFunc type** — used for testability (allows injecting a mock in tests):
 ```go
@@ -197,9 +206,17 @@ The returned handler function:
 2. Call `NewAdapter(payload.FeedName, client)` to get the right adapter
 3. Read current cursor: `st.GetFeedSyncState(ctx, payload.FeedName)` — if nil (not found), treat as first run with nil cursor and `consecutiveFailures = 0`
 4. Record `cursorBefore` for fetch log
-5. **Pagination loop:** call `adapter.Fetch(ctx, cursor)`, iterate `result.Patches`, call `mergeFn(ctx, st, patch, result.SourceMeta.SourceName, result.RawPayload)` for each patch. Track `itemsFetched` and `itemsUpserted` counters. After each successful page, save `lastSuccessfulCursor = result.NextCursor`. Set `cursor = result.NextCursor`. Break when `NextCursor` is nil.
+5. **Pagination loop:** call `adapter.Fetch(ctx, cursor)`, iterate `result.Patches`, call `mergeFn(ctx, st, patch, result.SourceMeta.SourceName, result.RawPayload)` for each patch. Track `itemsFetched` and `itemsUpserted` counters. After each successful page, save `lastSuccessfulCursor` = the cursor to persist (see below). Set `cursor = result.NextCursor`.
+
+   **Loop termination (important — two conditions):**
+   - Break if `result.NextCursor == nil` — explicit "no more pages" signal (used by NVD)
+   - Break if `len(result.Patches) == 0` — adapter returned no data, nothing left to paginate
+
+   **Why two conditions:** Several adapters (KEV, MITRE, GHSA, OSV, MSRC) do all work in a single Fetch call but return non-nil NextCursor (the cursor to persist for the next scheduled run, not a pagination marker). The `len(Patches) == 0` guard prevents infinite looping on these adapters — on a second call the adapter returns 0 patches since the cursor is already current. This costs one extra HTTP request per single-page feed per run, which is acceptable.
+
+   **Cursor to persist:** After each successful page, set `lastSuccessfulCursor` to `result.NextCursor` if non-nil, otherwise keep the current `cursor` value. This ensures single-page adapters (which return non-nil NextCursor) have their cursor saved, and NVD (which returns nil on the last page) retains the last page's cursor.
 6. On success: `st.UpsertFeedSyncState` with final cursor, `last_success_at = now`, `consecutive_failures = 0`, `last_error = ""`, `backoff_until = zero`. `st.InsertFeedFetchLog` with status `"success"`.
-7. On error (from Fetch or merge): persist `lastSuccessfulCursor` (the cursor from the last fully-processed page, NOT the original pre-run cursor — this avoids re-fetching already-merged pages on retry). `st.UpsertFeedSyncState` with `lastSuccessfulCursor`, `last_attempt_at = now`, `consecutive_failures = prevFailures + 1`, `last_error = err.Error()`, `backoff_until = now + backoffDuration(prevFailures+1)`. `st.InsertFeedFetchLog` with status `"error"`. Return the error so the worker pool marks the job as failed. If `lastSuccessfulCursor` is nil (failed on the first page), fall back to the original cursor.
+7. On error (from Fetch or merge): persist `lastSuccessfulCursor` (the cursor from the last fully-processed page, NOT the original pre-run cursor — this avoids re-fetching already-merged pages on retry). `st.UpsertFeedSyncState` with `lastSuccessfulCursor`, `last_attempt_at = now`, `consecutive_failures = prevFailures + 1`, `last_error = err.Error()`, `backoff_until = now + backoffDuration(prevFailures+1)`. `st.InsertFeedFetchLog` with status `"error"`. Return the error so the worker pool marks the job as failed. If no pages succeeded (`lastSuccessfulCursor` was never set), fall back to the original cursor from step 3.
 
 **Important:** `FetchResult.RawPayload` is the raw upstream response for the entire page/batch, not per-patch. Passing the full page payload to `merge.Ingest` for every patch on that page is correct — `cve_raw_payloads` stores the full source response associated with each CVE for audit purposes. This may result in the same payload being stored multiple times (once per CVE on the page), which is acceptable for audit traceability.
 
@@ -225,21 +242,25 @@ Record `start := time.Now()` at handler entry for duration logging.
 
 **Step 4: Wire into main.go**
 
-In `cmd/cvert-ops/main.go`, replace the stub:
+In `cmd/cvert-ops/main.go`, replace the existing adapter registry and handler:
 ```go
-// Before (delete this):
-func feedIngestHandler(_ context.Context, payload json.RawMessage) error { ... }
+// DELETE these (added by vendor feed adapter branch):
+// - buildFeedAdapters() function
+// - feedIngestHandler() function
+// - All individual feed sub-package imports (ghsa, kev, mitre, msrc, nvd, osv, redhat)
+//   — these move to internal/ingest/feeds.go
+// - feedAdapters := buildFeedAdapters(...) calls in runServe() and runWorker()
 
-// After — in both runServe() and runWorker(), create a shared feed HTTP client
-// and register the handler. merge.Ingest is passed directly (no circular dependency
-// since internal/ingest/ is a separate package from internal/feed/):
+// REPLACE with — in both runServe() and runWorker():
 feedClient := &http.Client{Timeout: 5 * time.Minute}
 workerPool.Register("feed_ingest", ingest.IngestHandler(st, feedClient, merge.Ingest))
 ```
 
-Add import: `ingest "github.com/scarson/cvert-ops/internal/ingest"`
+Add import: `"github.com/scarson/cvert-ops/internal/ingest"` (and `"github.com/scarson/cvert-ops/internal/merge"` if not already imported).
 
-Create `feedClient` in both `runServe()` and `runWorker()` — each function builds its own dependency tree independently. Each adapter manages its own rate limiter internally. The 5-minute timeout is generous because MITRE and OSV adapters download bulk ZIP archives that can take time on slow connections.
+Remove imports: `feed`, `ghsa`, `kev`, `mitre`, `msrc`, `nvd`, `osv`, `redhat` — all moved to `internal/ingest/`.
+
+The 5-minute timeout is generous because MITRE and OSV adapters download bulk ZIP archives that can take time on slow connections. Each adapter manages its own rate limiter internally.
 
 **Step 5: Run test to verify it passes**
 
@@ -367,7 +388,7 @@ Add to `internal/config/config.go` in the `Config` struct:
 FeedSchedulerEnabled bool `env:"FEED_SCHEDULER_ENABLED" envDefault:"true"`
 ```
 
-No per-feed interval config for now — use the intervals from PLAN.md §3.1 as hardcoded defaults (NVD: 2h, MITRE: 24h, KEV: 24h, GHSA: 6h, OSV: 24h, EPSS: 24h). Per-feed config can be added later if needed (YAGNI).
+No per-feed interval config for now — use hardcoded defaults (NVD: 2h, MITRE: 24h, KEV: 24h, GHSA: 6h, OSV: 24h, MSRC: 24h, Red Hat: 12h, EPSS: 24h). Per-feed config can be added later if needed (YAGNI).
 
 **Step 2: Write the failing test**
 
@@ -403,6 +424,8 @@ var defaultSchedule = []feedScheduleEntry{
     {FeedName: "kev", Queue: "feed_ingest", Interval: 24 * time.Hour},
     {FeedName: "ghsa", Queue: "feed_ingest", Interval: 6 * time.Hour},
     {FeedName: "osv", Queue: "feed_ingest", Interval: 24 * time.Hour},
+    {FeedName: "msrc", Queue: "feed_ingest", Interval: 24 * time.Hour},
+    {FeedName: "redhat", Queue: "feed_ingest", Interval: 12 * time.Hour},
     {FeedName: "epss", Queue: "epss_ingest", Interval: 24 * time.Hour},
 }
 ```
@@ -544,7 +567,7 @@ package api
 **Trigger feed handler:**
 - Input: feed name from URL path
 - Validate feed name using `ingest.IsKnownFeed(feedName)` (shared constant from `internal/ingest/feeds.go`)
-- Determine the queue: `"epss_ingest"` for EPSS, `"feed_ingest"` for all others
+- Determine the queue using `ingest.QueueForFeed(feedName)` (shared helper from `internal/ingest/feeds.go`)
 - Use lock_key `"feed:" + feedName` for deduplication
 - Check `HasPendingOrRunningJob` — if true, return 409 Conflict with "feed job already pending"
 - Enqueue the job, return 202 Accepted with the job ID
@@ -703,6 +726,8 @@ cmd/cvert-ops/main.go
   │     ├── internal/feed/kev/
   │     ├── internal/feed/ghsa/
   │     ├── internal/feed/osv/
+  │     ├── internal/feed/msrc/
+  │     ├── internal/feed/redhat/
   │     ├── internal/feed/epss/
   │     ├── internal/merge/         (for merge.Ingest)
   │     └── internal/store/
@@ -720,6 +745,8 @@ When implementing, read these files for patterns and conventions:
 - `internal/feed/interface.go` — `Adapter` interface, `FetchResult`, `CanonicalPatch`
 - `internal/feed/epss/adapter.go` — EPSS `Apply()` method (does NOT implement `Adapter`)
 - `internal/feed/nvd/adapter.go` — example adapter constructor `New(*http.Client)`
+- `internal/feed/msrc/adapter.go` — MSRC adapter (CSAF 2.0, vendor enrichment)
+- `internal/feed/redhat/adapter.go` — Red Hat adapter (two-phase: list then detail)
 - `internal/merge/pipeline.go` — `merge.Ingest()` signature and behavior
 - `internal/worker/pool.go` — `Handler` type, `Register()`, `RegisterWithConcurrency()`
 - `internal/store/jobs.go` — `EnqueueJob()`, `HasPendingOrRunningJob()` signatures

@@ -3,6 +3,7 @@ package merge
 import (
 	"encoding/json"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -136,7 +137,7 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 	}
 
 	// --- CVSS v3 (NVD > OSV > GHSA > MITRE, then unknown sources) ---
-	for _, src := range append(cvssPriority, otherSources(patches, cvssPriority)...) {
+	for _, src := range slices.Concat(cvssPriority, otherSources(patches, cvssPriority)) {
 		p, ok := patches[src]
 		if !ok || p.CVSSv3Score == nil {
 			continue
@@ -150,7 +151,7 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 	}
 
 	// --- CVSS v4 (same priority as v3) ---
-	for _, src := range append(cvssPriority, otherSources(patches, cvssPriority)...) {
+	for _, src := range slices.Concat(cvssPriority, otherSources(patches, cvssPriority)) {
 		p, ok := patches[src]
 		if !ok || p.CVSSv4Score == nil {
 			continue
@@ -233,7 +234,7 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 	// --- Affected packages: union, deduped by (ecosystem, package_name, introduced),
 	//     iterated in pkgPriority order so higher-precedence source wins collisions ---
 	pkgSeen := make(map[string]struct{})
-	for _, src := range append(pkgPriority, otherSources(patches, pkgPriority)...) {
+	for _, src := range slices.Concat(pkgPriority, otherSources(patches, pkgPriority)) {
 		p, ok := patches[src]
 		if !ok {
 			continue

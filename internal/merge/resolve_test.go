@@ -863,3 +863,57 @@ func TestResolvePkgRedHatWinsOverMSRC(t *testing.T) {
 		t.Errorf("AffectedPackages[0].Fixed = %q, want %q (Red Hat wins over MSRC for packages)", r.AffectedPackages[0].Fixed, "1.1.1k")
 	}
 }
+
+func TestResolve_PrioritySlicesNotCorrupted(t *testing.T) {
+	// Verify that calling resolve with an unknown source doesn't corrupt
+	// the global priority slices via append's backing-array mutation.
+	// The unknown source triggers otherSources, which appends to priority slices.
+	score := 7.5
+	vec := "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+
+	unknownPatch := feed.CanonicalPatch{
+		CVEID:       "CVE-2025-7777",
+		CVSSv3Score: &score,
+		CVSSv3Vector: &vec,
+	}
+
+	// Snapshot global slices before.
+	cvssLen := len(cvssPriority)
+	pkgLen := len(pkgPriority)
+	cvssCopy := make([]string, cvssLen)
+	pkgCopy := make([]string, pkgLen)
+	copy(cvssCopy, cvssPriority)
+	copy(pkgCopy, pkgPriority)
+
+	// Call resolve twice with an unknown source name.
+	for i := 0; i < 2; i++ {
+		sources := []generated.CveSource{
+			makeSource("exotic_vendor", unknownPatch),
+		}
+		r, err := resolve(sources)
+		if err != nil {
+			t.Fatalf("resolve call %d: %v", i+1, err)
+		}
+		if r.CVSSv3Score == nil || *r.CVSSv3Score != score {
+			t.Errorf("call %d: CVSSv3Score = %v, want %v", i+1, r.CVSSv3Score, score)
+		}
+	}
+
+	// Verify globals were not mutated.
+	if len(cvssPriority) != cvssLen {
+		t.Errorf("cvssPriority length changed: %d → %d", cvssLen, len(cvssPriority))
+	}
+	if len(pkgPriority) != pkgLen {
+		t.Errorf("pkgPriority length changed: %d → %d", pkgLen, len(pkgPriority))
+	}
+	for i, v := range cvssPriority {
+		if v != cvssCopy[i] {
+			t.Errorf("cvssPriority[%d] = %q, was %q", i, v, cvssCopy[i])
+		}
+	}
+	for i, v := range pkgPriority {
+		if v != pkgCopy[i] {
+			t.Errorf("pkgPriority[%d] = %q, was %q", i, v, pkgCopy[i])
+		}
+	}
+}

@@ -26,6 +26,7 @@ const loading = ref(true)
 const sourcesLoading = ref(true)
 const notFound = ref(false)
 const error = ref('')
+let fetchId = 0
 
 function formatDate(dateStr: string | undefined): string {
   if (!dateStr) return '\u2014'
@@ -75,6 +76,7 @@ const hasReferences = computed(() => {
 })
 
 async function fetchCve() {
+  const currentFetchId = ++fetchId
   loading.value = true
   error.value = ''
   notFound.value = false
@@ -82,6 +84,8 @@ async function fetchCve() {
   const { data, error: apiError } = await client.GET('/cves/{cve_id}', {
     params: { path: { cve_id: cveId.value } },
   })
+
+  if (currentFetchId !== fetchId) return
 
   if (apiError || !data) {
     loading.value = false
@@ -98,11 +102,14 @@ async function fetchCve() {
 }
 
 async function fetchSources() {
+  const currentFetchId = fetchId
   sourcesLoading.value = true
 
   const { data } = await client.GET('/cves/{cve_id}/sources', {
     params: { path: { cve_id: cveId.value } },
   })
+
+  if (currentFetchId !== fetchId) return
 
   sources.value = data?.sources ?? []
   sourcesLoading.value = false
@@ -117,6 +124,8 @@ watch(cveId, () => {
   fetchCve()
   fetchSources()
 })
+
+defineExpose({ fetchCve })
 </script>
 
 <template>

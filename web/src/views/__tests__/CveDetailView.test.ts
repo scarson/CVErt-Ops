@@ -356,6 +356,49 @@ describe('CveDetailView', () => {
     })
   })
 
+  describe('stale response protection', () => {
+    it('discards stale response when fetchCve is called again before previous resolves', async () => {
+      // Mount with initial data
+      mockGET.mockResolvedValueOnce({ data: makeCVEDetail({ cve_id: 'CVE-2024-12345' }) })
+      mockGET.mockResolvedValueOnce({ data: { sources: makeSources() }, error: undefined })
+
+      const { default: CveDetailView } = await import('@/views/CveDetailView.vue')
+      const wrapper = mount(CveDetailView)
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('CVE-2024-12345')
+
+      // Set up a slow response (will become stale)
+      let resolveStale: (v: unknown) => void
+      const stalePromise = new Promise((resolve) => { resolveStale = resolve })
+      mockGET.mockReturnValueOnce(stalePromise)
+
+      // Trigger first refetch — increments fetchId
+      const vm = wrapper.vm as any
+      vm.fetchCve()
+
+      // Before it resolves, trigger another refetch — increments fetchId again
+      mockGET.mockResolvedValueOnce({
+        data: makeCVEDetail({ cve_id: 'CVE-2024-12345', description_primary: 'Fresh data' }),
+      })
+      vm.fetchCve()
+      await flushPromises()
+
+      // Fresh data should be showing
+      expect(wrapper.text()).toContain('Fresh data')
+
+      // Now resolve the stale promise
+      resolveStale!({
+        data: makeCVEDetail({ cve_id: 'CVE-2024-12345', description_primary: 'Stale data' }),
+      })
+      await flushPromises()
+
+      // Should still show fresh data, not stale
+      expect(wrapper.text()).toContain('Fresh data')
+      expect(wrapper.text()).not.toContain('Stale data')
+    })
+  })
+
   describe('back navigation', () => {
     it('renders a back link to search results', async () => {
       const wrapper = await mountView()

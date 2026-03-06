@@ -314,6 +314,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("msrc: updates HTTP %d", resp.StatusCode)
 	}
 
@@ -344,7 +345,10 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			effectiveDate = latestDate
 		}
 		nextCursor := Cursor{LastReleaseDate: effectiveDate}
-		nextCursorJSON, _ := json.Marshal(nextCursor)
+		nextCursorJSON, err := json.Marshal(nextCursor)
+		if err != nil {
+			return nil, fmt.Errorf("msrc: marshal cursor: %w", err)
+		}
 		return &feed.FetchResult{
 			SourceMeta: feed.SourceMeta{
 				SourceName: SourceName,

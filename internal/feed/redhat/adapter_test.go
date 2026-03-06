@@ -645,9 +645,9 @@ func TestFetch_Success(t *testing.T) {
 		t.Errorf("requestCount = %d, want 3", requestCount.Load())
 	}
 
-	// NextCursor should be nil (no more pages when list < 100)
-	if result.NextCursor != nil {
-		t.Errorf("NextCursor should be nil when list page is not full, got %s", result.NextCursor)
+	// NextCursor should advance AfterDate even on partial page
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor should not be nil — AfterDate must advance on last page")
 	}
 }
 
@@ -790,9 +790,16 @@ func TestFetch_Pagination(t *testing.T) {
 	if len(result2.Patches) != 1 {
 		t.Fatalf("len(Patches) page 2 = %d, want 1", len(result2.Patches))
 	}
-	// Page 2 has fewer than 100, so NextCursor should be nil
-	if result2.NextCursor != nil {
-		t.Errorf("NextCursor should be nil for partial page, got %s", result2.NextCursor)
+	// Page 2 has fewer than 100, so NextCursor should advance AfterDate
+	if result2.NextCursor == nil {
+		t.Fatal("NextCursor should not be nil — AfterDate must advance on last page")
+	}
+	var lastCur Cursor
+	if err := json.Unmarshal(result2.NextCursor, &lastCur); err != nil {
+		t.Fatalf("unmarshal last-page cursor: %v", err)
+	}
+	if lastCur.Page != 0 {
+		t.Errorf("Page should be 0 (reset) on last page, got %d", lastCur.Page)
 	}
 }
 
@@ -960,6 +967,53 @@ func TestFetch_ListHTTPError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 500") {
 		t.Errorf("error = %q, want 'HTTP 500'", err.Error())
+	}
+}
+
+func TestFetch_LastPageAdvancesCursor(t *testing.T) {
+	t.Parallel()
+
+	// A partial page (< 100 items) signals end of pagination.
+	// The adapter must still return a non-nil NextCursor with today's date
+	// so the next sync starts from where we left off.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cve.json"):
+			_, _ = w.Write([]byte(`[{"CVE":"CVE-2025-0001"}]`))
+		case strings.Contains(r.URL.Path, "/cve/CVE-"):
+			_, _ = w.Write([]byte(`{"name":"CVE-2025-0001","details":["test"]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{targetURL: ts.URL, inner: http.DefaultTransport},
+	}
+	adapter := newTestAdapter(client)
+
+	cursorJSON, _ := json.Marshal(Cursor{AfterDate: "2025-01-01"})
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor must not be nil on last page — AfterDate must advance")
+	}
+	var cur Cursor
+	if err := json.Unmarshal(result.NextCursor, &cur); err != nil {
+		t.Fatalf("unmarshal cursor: %v", err)
+	}
+	if cur.AfterDate == "2025-01-01" {
+		t.Error("AfterDate was not advanced from the original cursor value")
+	}
+	if cur.AfterDate == "" {
+		t.Error("AfterDate is empty — should be today's date")
+	}
+	if cur.Page != 0 {
+		t.Errorf("Page should be 0 (reset) on last page, got %d", cur.Page)
 	}
 }
 

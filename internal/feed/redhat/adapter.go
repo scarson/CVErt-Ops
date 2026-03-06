@@ -466,22 +466,28 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		patches = append(patches, detailToPatch(*detail))
 	}
 
-	// Determine next cursor for pagination
-	var nextCursor json.RawMessage
+	// Determine next cursor for pagination.
+	// When fullPage: advance to the next page with same AfterDate.
+	// When !fullPage (last page): advance AfterDate to today, reset Page.
+	// Always return non-nil NextCursor so the caller persists the new position.
+	var next Cursor
 	if fullPage {
 		page := cur.Page
 		if page == 0 {
 			page = 1
 		}
-		next := Cursor{
+		next = Cursor{
 			AfterDate: cur.AfterDate,
 			Page:      page + 1,
 		}
-		var err error
-		nextCursor, err = json.Marshal(next)
-		if err != nil {
-			return nil, fmt.Errorf("redhat: marshal cursor: %w", err)
+	} else {
+		next = Cursor{
+			AfterDate: fetchedAt.Format("2006-01-02"),
 		}
+	}
+	nextCursor, err := json.Marshal(next)
+	if err != nil {
+		return nil, fmt.Errorf("redhat: marshal cursor: %w", err)
 	}
 
 	return &feed.FetchResult{

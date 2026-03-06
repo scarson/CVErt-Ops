@@ -205,7 +205,9 @@ watch(
           <TableHead>Description</TableHead>
           <TableHead class="w-24 text-right">Items</TableHead>
           <TableHead class="w-40">Last Updated</TableHead>
-          <TableHead class="w-16" />
+          <TableHead class="w-16">
+            <span class="sr-only">Actions</span>
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>

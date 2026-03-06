@@ -240,6 +240,17 @@ describe('WatchlistListView', () => {
       expect(deleteBtn).not.toBeNull()
       expect(deleteBtn!.getAttribute('aria-label')).toBe('Delete watchlist')
     })
+
+    it('renders sr-only text in action column header', async () => {
+      mockListSuccess()
+      await mountView()
+      await flushPromises()
+
+      const tableHeaders = wrapper.findAll('th')
+      const lastHeader = tableHeaders[tableHeaders.length - 1]
+      expect(lastHeader?.text()).toBe('Actions')
+      expect(lastHeader?.find('.sr-only').exists()).toBe(true)
+    })
   })
 
   describe('delete flow', () => {

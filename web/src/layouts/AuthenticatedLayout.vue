@@ -17,6 +17,13 @@ const mobileOpen = ref(false)
 
 <template>
   <div class="flex h-screen overflow-hidden bg-background">
+    <a
+      href="#main-content"
+      class="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-background focus:px-4 focus:py-2 focus:text-foreground focus:shadow-lg"
+    >
+      Skip to main content
+    </a>
+
     <!-- Desktop sidebar (hidden on small screens) -->
     <div class="hidden md:flex">
       <AppSidebar />
@@ -45,7 +52,7 @@ const mobileOpen = ref(false)
       </header>
 
       <!-- Main content -->
-      <main class="flex-1 overflow-y-auto">
+      <main id="main-content" class="flex-1 overflow-y-auto">
         <slot />
       </main>
     </div>

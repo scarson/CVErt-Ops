@@ -346,7 +346,9 @@ watch(
             <TableHead class="w-24">Type</TableHead>
             <TableHead>Identifier</TableHead>
             <TableHead class="w-36">Added</TableHead>
-            <TableHead class="w-16" />
+            <TableHead class="w-16">
+              <span class="sr-only">Actions</span>
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>

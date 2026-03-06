@@ -223,7 +223,9 @@ watch(
           <TableHead>Name</TableHead>
           <TableHead>Description</TableHead>
           <TableHead class="w-36">Created</TableHead>
-          <TableHead v-if="isAdmin" class="w-32" />
+          <TableHead v-if="isAdmin" class="w-32">
+            <span class="sr-only">Actions</span>
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>

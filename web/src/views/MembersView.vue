@@ -295,7 +295,9 @@ watch(
             <TableHead>Name</TableHead>
             <TableHead class="w-36">Role</TableHead>
             <TableHead class="w-36">Joined</TableHead>
-            <TableHead v-if="isAdmin" class="w-16" />
+            <TableHead v-if="isAdmin" class="w-16">
+              <span class="sr-only">Actions</span>
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -359,7 +361,9 @@ watch(
               <TableHead>Email</TableHead>
               <TableHead class="w-28">Role</TableHead>
               <TableHead class="w-36">Expires</TableHead>
-              <TableHead class="w-16" />
+              <TableHead class="w-16">
+                <span class="sr-only">Actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

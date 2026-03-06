@@ -22,6 +22,7 @@ const acceptError = ref('')
 const accepting = ref(false)
 
 watch(token, async () => {
+  const currentToken = token.value
   loading.value = true
   error.value = ''
   invitation.value = null
@@ -30,6 +31,8 @@ watch(token, async () => {
   const { data, error: apiError, response } = await client.GET('/auth/invitations/{token}', {
     params: { path: { token: token.value } },
   })
+
+  if (currentToken !== token.value) return
 
   loading.value = false
 

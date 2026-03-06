@@ -134,8 +134,21 @@ describe('GroupMembersDialog', () => {
   })
 
   describe('error state', () => {
-    it('shows error when fetching group members fails', async () => {
+    it('shows error when fetching group members fails (network)', async () => {
       mockFetch.mockRejectedValueOnce(new Error('Network error'))
+      await mountDialog()
+      await flushPromises()
+
+      expect(bodyText()).toContain('Failed to load')
+    })
+
+    it('shows error when group members API returns non-ok', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Server error' }),
+      })
+      mockOrgMembersSuccess([])
       await mountDialog()
       await flushPromises()
 

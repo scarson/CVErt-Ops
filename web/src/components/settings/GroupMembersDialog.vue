@@ -74,10 +74,10 @@ async function fetchData() {
       orgFetch(`${apiBase()}/members`),
     ])
 
-    if (groupResp.ok) {
+    if (!groupResp.ok || !orgResp.ok) {
+      fetchError.value = 'Failed to load group members. Please try again.'
+    } else {
       groupMembers.value = await groupResp.json()
-    }
-    if (orgResp.ok) {
       orgMembers.value = await orgResp.json()
     }
   } catch {

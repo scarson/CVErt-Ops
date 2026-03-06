@@ -57,10 +57,18 @@ CVErt Ops is a data-heavy application: tables, forms, dialogs, search, and alert
 </Button>
 ```
 
+**Icon decision tree:**
+
+1. **Icon-only button** → `aria-label` on the `<Button>`, `aria-hidden="true"` on the icon (defense-in-depth)
+2. **Icon + visible text** → `aria-hidden="true"` on the icon (prevents double-announcement)
+3. **Standalone decorative icon** (e.g., empty state illustration) → `aria-hidden="true"`
+4. **Standalone meaningful icon** (no adjacent text) → `aria-label` on the icon or wrap in a `<span>` with `aria-label`
+
 **Checklist:**
 - [ ] Every `<img>` has an `alt` attribute (descriptive or empty)
 - [ ] Every icon-only button has `aria-label` describing the action
 - [ ] Icons next to visible text have `aria-hidden="true"`
+- [ ] Icon-only buttons also have `aria-hidden="true"` on the icon SVG
 
 #### Adaptable (WCAG 1.3)
 
@@ -170,7 +178,7 @@ router.afterEach((to) => {
   <Input
     :id="fieldId"
     v-model="email"
-    :aria-invalid="!!emailError"
+    :aria-invalid="!!emailError || undefined"
     :aria-describedby="emailError ? `${fieldId}-error` : undefined"
   />
   <p v-if="emailError" :id="`${fieldId}-error`" class="text-sm text-destructive" role="alert">
@@ -178,6 +186,8 @@ router.afterEach((to) => {
   </p>
 </div>
 ```
+
+**Vue binding note:** The `|| undefined` on `:aria-invalid` is intentional. Without it, Vue renders `aria-invalid="false"` in the DOM when there's no error — technically valid but noisy. With `|| undefined`, the attribute is omitted entirely when not needed.
 
 - **Error prevention:** Destructive actions (delete watchlist, remove member, delete group) MUST use confirmation dialogs. Already implemented via AlertDialog.
 
@@ -232,8 +242,8 @@ Data tables are the primary UI pattern in CVErt Ops. Ensure:
 
 ### 5.3. Route Changes
 
-- On route change, focus SHOULD move to the new page's `<h1>` or to `<main>`. This helps screen reader users understand they've navigated.
-- Use a route-change announcer for screen readers:
+- On route change, focus MUST move to the new page's `<h1>` or to `<main>`. Without this, screen reader users get no indication that an SPA navigation occurred.
+- Implement route-change focus management in the router's `afterEach` hook:
 
 ```ts
 // In router setup or App.vue
@@ -270,6 +280,26 @@ router.afterEach((to) => {
 - Inline error messages SHOULD use `role="alert"` to announce immediately to screen readers.
 - Error messages in forms MUST be associated with their field via `aria-describedby`.
 
+**`role="alert"` vs `aria-live` — when to use which:**
+
+- **`role="alert"`** — For error messages that appear after user action (form validation, API errors). Announces immediately and assertively. Use on the `<p>` element that contains the error text.
+- **`aria-live="polite"`** — For content regions that update asynchronously (search results loading, member list after invite). Announces at the next pause in speech. Use as a wrapper `<div>` around the dynamic region.
+- Do not combine both on the same element — `role="alert"` implies `aria-live="assertive"`, so adding `aria-live="polite"` creates conflicting semantics.
+
+### 5.6. New Component/View Checklist
+
+When adding a new view or form component, verify all of the following before considering it complete:
+
+- [ ] All form inputs have `<Label>` with matching `for`/`id`
+- [ ] Error messages have a unique `id`, `role="alert"`, and are linked to the invalid field via `aria-describedby`
+- [ ] Invalid inputs have `:aria-invalid="!!error || undefined"`
+- [ ] All decorative icons (next to visible text) have `aria-hidden="true"`
+- [ ] All icon-only buttons have `aria-label` describing the action
+- [ ] Page has exactly one `<h1>`
+- [ ] Route entry in `router/index.ts` has `meta.title`
+- [ ] Dynamic content regions (search results, lists that change after mutations) have `aria-live="polite"` wrapper
+- [ ] Loading states have visible text ("Loading...") or `aria-label="Loading"` on the spinner
+
 ## 6. Testing & Validation
 
 ### 6.1. Automated
@@ -277,6 +307,28 @@ router.afterEach((to) => {
 - **axe-core:** Add `vitest-axe` for component-level a11y assertions in unit tests. Run `axe` checks on rendered components.
 - **Lighthouse:** Run accessibility audits in CI via Lighthouse CI.
 - **eslint-plugin-vuejs-accessibility:** Add to ESLint config for static analysis of Vue templates.
+
+#### 6.1.1. Manual ARIA Assertions (Current Pattern)
+
+Until `vitest-axe` is integrated, test ARIA attributes directly in Vitest:
+
+```ts
+it('associates error message with form via aria-describedby', async () => {
+  // Trigger the error state (e.g., submit with bad credentials)
+  await wrapper.find('form').trigger('submit')
+  await flushPromises()
+
+  const input = wrapper.find('#email')
+  expect(input.attributes('aria-invalid')).toBe('true')
+  expect(input.attributes('aria-describedby')).toBe('login-error')
+
+  const errorEl = wrapper.find('#login-error')
+  expect(errorEl.attributes('role')).toBe('alert')
+  expect(errorEl.text()).toContain('Invalid credentials')
+})
+```
+
+Test the relationship between elements, not just that attributes exist — verify the `aria-describedby` value matches the error element's `id`.
 
 ### 6.2. Manual
 
@@ -296,21 +348,22 @@ router.afterEach((to) => {
 
 ## 7. Implementation Priority
 
-| Priority | Item | Effort |
+| Priority | Item | Status |
 |----------|------|--------|
-| P0 | `aria-label` on all icon-only buttons | Low — audit and add |
-| P0 | `lang="en"` on `<html>` | Trivial |
-| P0 | `document.title` per route | Low — router afterEach hook |
-| P1 | Skip-to-main-content link | Low |
-| P1 | `sr-only` text on action column headers | Low |
-| P1 | `role="alert"` on error messages | Low |
-| P1 | `aria-live="polite"` on loading regions | Low |
-| P1 | `aria-invalid` + `aria-describedby` on form errors | Medium |
-| P2 | Route-change focus management | Medium |
-| P2 | `vitest-axe` integration | Medium |
-| P2 | `eslint-plugin-vuejs-accessibility` | Low |
+| P0 | `aria-label` on all icon-only buttons | Done |
+| P0 | `lang="en"` on `<html>` | Done |
+| P0 | `document.title` per route | Done |
+| P1 | Skip-to-main-content link | Done |
+| P1 | `sr-only` text on action column headers | Done |
+| P1 | `role="alert"` on error messages | Done |
+| P1 | `aria-live="polite"` on dynamic content regions | Done |
+| P1 | `aria-invalid` + `aria-describedby` on form errors | Done |
+| P1 | `aria-hidden="true"` on decorative icons | Done |
+| P2 | Route-change focus management (`nextTick` + `h1.focus()`) | Done |
+| P2 | `vitest-axe` integration | Not started |
+| P2 | `eslint-plugin-vuejs-accessibility` | Not started |
 | P3 | Screen reader testing on all key flows | Ongoing |
-| P3 | Lighthouse CI integration | Medium |
+| P3 | Lighthouse CI integration | Not started |
 
 ## 8. Continuous Improvement
 

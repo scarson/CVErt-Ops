@@ -500,6 +500,51 @@ func TestRecordToPatch_NullByteStripping(t *testing.T) {
 	}
 }
 
+func TestRecordToPatch_NullByteInEnrichment(t *testing.T) {
+	t.Parallel()
+
+	rec := kevRecord{
+		CVEID:          "CVE-2024-9999",
+		VendorProject:  "Acme\x00Corp",
+		Product:        "Widget\x00Pro",
+		DateAdded:      "2024-06-15",
+		RequiredAction: "Apply\x00update",
+		DueDate:        "2024-07-15",
+		Notes:          "Critical\x00vuln",
+	}
+
+	p := recordToPatch(rec)
+	if p == nil {
+		t.Fatal("expected non-nil patch")
+	}
+	if p.VendorEnrichment == nil {
+		t.Fatal("expected non-nil VendorEnrichment")
+	}
+
+	enrichmentJSON := string(p.VendorEnrichment.Data)
+	if strings.Contains(enrichmentJSON, "\x00") {
+		t.Errorf("VendorEnrichment.Data contains null byte: %q", enrichmentJSON)
+	}
+
+	// Verify specific fields were stripped correctly.
+	var enrichment map[string]any
+	if err := json.Unmarshal(p.VendorEnrichment.Data, &enrichment); err != nil {
+		t.Fatalf("unmarshal enrichment: %v", err)
+	}
+	if got := enrichment["required_action"]; got != "Applyupdate" {
+		t.Errorf("required_action = %q, want %q", got, "Applyupdate")
+	}
+	if got := enrichment["vendor_project"]; got != "AcmeCorp" {
+		t.Errorf("vendor_project = %q, want %q", got, "AcmeCorp")
+	}
+	if got := enrichment["product"]; got != "WidgetPro" {
+		t.Errorf("product = %q, want %q", got, "WidgetPro")
+	}
+	if got := enrichment["notes"]; got != "Criticalvuln" {
+		t.Errorf("notes = %q, want %q", got, "Criticalvuln")
+	}
+}
+
 func TestExtractCWEs(t *testing.T) {
 	t.Parallel()
 

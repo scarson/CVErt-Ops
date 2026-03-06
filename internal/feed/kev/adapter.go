@@ -279,12 +279,12 @@ func recordToPatch(rec kevRecord) *feed.CanonicalPatch {
 
 	// Vendor enrichment — preserve KEV-specific fields that don't map to CanonicalPatch.
 	enrichmentData, err := json.Marshal(map[string]any{
-		"required_action": rec.RequiredAction,
-		"due_date":        rec.DueDate,
+		"required_action": feed.StripNullBytes(rec.RequiredAction),
+		"due_date":        feed.StripNullBytes(rec.DueDate),
 		"ransomware_use":  rec.KnownRansomwareCampaignUse == "Known",
-		"vendor_project":  rec.VendorProject,
-		"product":         rec.Product,
-		"notes":           rec.Notes,
+		"vendor_project":  feed.StripNullBytes(rec.VendorProject),
+		"product":         feed.StripNullBytes(rec.Product),
+		"notes":           feed.StripNullBytes(rec.Notes),
 	})
 	if err == nil {
 		patch.VendorEnrichment = &feed.VendorEnrichment{

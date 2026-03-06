@@ -82,8 +82,10 @@ func Ingest(
 		}
 		if err == nil && oldCVEID != patch.CVEID {
 			// Lock the old CVE ID too — prevents concurrent writers for the old
-			// ID from racing with the migration. Lock order is deterministic
-			// (lower key first) to prevent deadlocks.
+			// ID from racing with the migration. Lock order: new ID (held from
+			// step 1), then old ID. Deadlock is theoretically possible if two
+			// concurrent PK migrations cross-reference each other's CVE IDs,
+			// but Postgres's deadlock detector handles this rare case.
 			oldKey := CVEAdvisoryKey(oldCVEID)
 			newKey := CVEAdvisoryKey(patch.CVEID)
 			if oldKey != newKey {

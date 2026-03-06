@@ -499,6 +499,27 @@ describe('MembersView', () => {
       expect(wrapper.text()).toContain('stay@example.com')
       expect(wrapper.text()).not.toContain('cancel@example.com')
     })
+
+    it('shows error when cancelling invitation fails', async () => {
+      setupAuthStore('admin')
+      mockMembersSuccess([makeMember()])
+      mockInvitationsSuccess([
+        makeInvitation({ id: 'inv-1', email: 'fail@example.com' }),
+      ])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockReset()
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, json: () => Promise.resolve({}) })
+
+      const cancelBtns = wrapper.findAll('[data-testid="cancel-invitation-btn"]')
+      await cancelBtns[0]!.trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to cancel invitation')
+      // Invitation should still be in the list
+      expect(wrapper.text()).toContain('fail@example.com')
+    })
   })
 
   describe('role change error handling', () => {

@@ -133,6 +133,16 @@ describe('GroupMembersDialog', () => {
     })
   })
 
+  describe('error state', () => {
+    it('shows error when fetching group members fails', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('Network error'))
+      await mountDialog()
+      await flushPromises()
+
+      expect(bodyText()).toContain('Failed to load')
+    })
+  })
+
   describe('rendering members', () => {
     it('renders group members list', async () => {
       mockGroupMembersSuccess([

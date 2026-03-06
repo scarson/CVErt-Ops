@@ -42,6 +42,7 @@ const items = ref<WatchlistItemEntry[]>([])
 const loading = ref(true)
 const notFound = ref(false)
 const error = ref('')
+const itemsError = ref('')
 const addDialogOpen = ref(false)
 
 // Inline edit state
@@ -79,13 +80,19 @@ async function fetchWatchlist() {
 }
 
 async function fetchItems() {
+  itemsError.value = ''
+
   try {
     const resp = await orgFetch(`${apiBase()}/items`)
 
     if (resp.ok) {
       const data = await resp.json() as { items?: WatchlistItemEntry[] }
       items.value = data.items ?? []
+    } else {
+      itemsError.value = 'Failed to load items. Please try again.'
     }
+  } catch {
+    itemsError.value = 'Failed to load items. Please try again.'
   } finally {
     loading.value = false
   }
@@ -153,9 +160,11 @@ async function deleteItem(itemId: string) {
 
     if (resp.ok) {
       items.value = items.value.filter((i) => i.id !== itemId)
+    } else {
+      itemsError.value = 'Failed to delete item. Please try again.'
     }
   } catch {
-    // Silently fail — item stays in the list
+    itemsError.value = 'Failed to delete item. Please try again.'
   }
 }
 
@@ -314,8 +323,11 @@ watch(
         </Button>
       </div>
 
+      <!-- Items error -->
+      <p v-if="itemsError" class="text-sm text-destructive" role="alert">{{ itemsError }}</p>
+
       <!-- Empty items state -->
-      <Card v-if="items.length === 0" class="py-12">
+      <Card v-else-if="items.length === 0" class="py-12">
         <CardContent class="flex flex-col items-center text-center">
           <Package class="text-muted-foreground mb-4 size-10" aria-hidden="true" />
           <p class="font-medium">No items in this watchlist</p>

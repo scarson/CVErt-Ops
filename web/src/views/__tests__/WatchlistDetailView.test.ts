@@ -184,6 +184,16 @@ describe('WatchlistDetailView', () => {
 
       expect(wrapper.text()).toContain('Failed to load watchlist')
     })
+
+    it('shows error when fetching items fails (network error)', async () => {
+      mockWatchlistSuccess()
+      mockFetch.mockRejectedValueOnce(new Error('Network error'))
+
+      await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to load items')
+    })
   })
 
   describe('rendering with data', () => {

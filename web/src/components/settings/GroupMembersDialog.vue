@@ -53,6 +53,7 @@ const orgMembers = ref<OrgMemberEntry[]>([])
 const loading = ref(true)
 const selectedUserId = ref('')
 const actionError = ref('')
+const fetchError = ref('')
 
 const availableMembers = computed(() => {
   const memberIds = new Set(groupMembers.value.map((m) => m.user_id))
@@ -65,6 +66,7 @@ function apiBase() {
 
 async function fetchData() {
   loading.value = true
+  fetchError.value = ''
 
   try {
     const [groupResp, orgResp] = await Promise.all([
@@ -79,7 +81,7 @@ async function fetchData() {
       orgMembers.value = await orgResp.json()
     }
   } catch {
-    // Silently fail
+    fetchError.value = 'Failed to load group members. Please try again.'
   } finally {
     loading.value = false
   }
@@ -152,6 +154,7 @@ watch(
       orgMembers.value = []
       selectedUserId.value = ''
       actionError.value = ''
+      fetchError.value = ''
       fetchData()
     }
   },
@@ -180,6 +183,10 @@ defineExpose({ addMember, availableMembers })
         <div v-if="loading" class="flex items-center justify-center py-8 text-muted-foreground">
           <Loader2 class="mr-2 size-5 animate-spin" aria-hidden="true" />
           Loading members...
+        </div>
+
+        <div v-else-if="fetchError" class="py-6 text-center text-sm text-destructive" role="alert">
+          {{ fetchError }}
         </div>
 
         <template v-else>

@@ -64,6 +64,7 @@ const removeDialogOpen = ref(false)
 const removing = ref(false)
 const removeError = ref('')
 const roleChangeError = ref('')
+const cancelError = ref('')
 
 const userRole = computed(() => auth.activeOrg?.role ?? 'viewer')
 const isAdmin = computed(() => ROLE_HIERARCHY[userRole.value]! >= ROLE_HIERARCHY['admin']!)
@@ -189,6 +190,8 @@ async function confirmRemove() {
 }
 
 async function cancelInvitation(invitationId: string) {
+  cancelError.value = ''
+
   try {
     const resp = await orgFetch(`${apiBase()}/invitations/${invitationId}`, {
       method: 'DELETE',
@@ -196,9 +199,11 @@ async function cancelInvitation(invitationId: string) {
 
     if (resp.ok) {
       invitations.value = invitations.value.filter((i) => i.id !== invitationId)
+    } else {
+      cancelError.value = 'Failed to cancel invitation. Please try again.'
     }
   } catch {
-    // Silently fail
+    cancelError.value = 'Failed to cancel invitation. Please try again.'
   }
 }
 
@@ -334,6 +339,7 @@ watch(
       <!-- Pending Invitations -->
       <div v-if="invitations.length > 0" class="space-y-4">
         <h2 class="text-lg font-semibold tracking-tight">Pending Invitations</h2>
+        <p v-if="cancelError" class="text-sm text-destructive" role="alert">{{ cancelError }}</p>
         <Table>
           <TableHeader>
             <TableRow>

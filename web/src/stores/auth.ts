@@ -14,6 +14,7 @@ const ACTIVE_ORG_KEY = 'activeOrgId'
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const activeOrgId = ref<string | null>(null)
+  const sessionChecked = ref(false)
 
   const isAuthenticated = computed(() => user.value !== null)
 
@@ -36,6 +37,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function fetchMe(): Promise<boolean> {
     const { data, error } = await client.GET('/auth/me')
+    sessionChecked.value = true
     if (error || !data) {
       return false
     }
@@ -81,6 +83,7 @@ export const useAuthStore = defineStore('auth', () => {
   function clearAuth() {
     user.value = null
     activeOrgId.value = null
+    sessionChecked.value = false
     localStorage.removeItem(ACTIVE_ORG_KEY)
   }
 
@@ -89,6 +92,7 @@ export const useAuthStore = defineStore('auth', () => {
     activeOrgId,
     activeOrg,
     isAuthenticated,
+    sessionChecked,
     setActiveOrg,
     loadPersistedOrg,
     fetchMe,

@@ -208,6 +208,48 @@ describe('auth store', () => {
     })
   })
 
+  describe('sessionChecked', () => {
+    it('starts as false', () => {
+      const auth = useAuthStore()
+      expect(auth.sessionChecked).toBe(false)
+    })
+
+    it('is set to true after successful fetchMe', async () => {
+      const meData = {
+        user_id: 'u1',
+        email: 'test@example.com',
+        display_name: 'Test',
+        orgs: [],
+      }
+      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+
+      const auth = useAuthStore()
+      await auth.fetchMe()
+
+      expect(auth.sessionChecked).toBe(true)
+    })
+
+    it('is set to true after failed fetchMe', async () => {
+      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { detail: 'unauthorized' }, response: {} as Response })
+
+      const auth = useAuthStore()
+      await auth.fetchMe()
+
+      expect(auth.sessionChecked).toBe(true)
+    })
+
+    it('is reset to false on clearAuth', async () => {
+      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: undefined, response: {} as Response })
+
+      const auth = useAuthStore()
+      auth.sessionChecked = true
+
+      await auth.logout()
+
+      expect(auth.sessionChecked).toBe(false)
+    })
+  })
+
   describe('login', () => {
     it('returns success and fetches user on successful login', async () => {
       const meData = {

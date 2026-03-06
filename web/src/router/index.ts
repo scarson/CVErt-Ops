@@ -103,7 +103,7 @@ export const authGuard: NavigationGuardWithThis<undefined> = async (to) => {
   const auth = useAuthStore()
 
   // Try to restore session on first navigation.
-  if (!auth.isAuthenticated) {
+  if (!auth.isAuthenticated && !auth.sessionChecked) {
     await auth.fetchMe()
   }
 

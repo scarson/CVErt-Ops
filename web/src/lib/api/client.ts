@@ -41,8 +41,8 @@ export const refreshMiddleware: Middleware = {
       return response
     }
 
-    // Don't try to refresh the refresh or login endpoints themselves.
-    if (request.url.includes('/auth/refresh') || request.url.includes('/auth/login')) {
+    // Don't try to refresh any auth endpoints — they're the auth system itself.
+    if (request.url.includes('/auth/')) {
       return response
     }
 
@@ -55,7 +55,6 @@ export const refreshMiddleware: Middleware = {
     refreshPromise = null
 
     if (!success) {
-      window.location.href = '/login'
       return response
     }
 

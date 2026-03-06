@@ -178,6 +178,19 @@ describe('route guards', () => {
       expect(fetchSpy).not.toHaveBeenCalled()
     })
 
+    it('does not call fetchMe when session was already checked and failed', async () => {
+      const auth = useAuthStore()
+      auth.sessionChecked = true
+      const fetchSpy = vi.spyOn(auth, 'fetchMe').mockResolvedValue(false)
+
+      const router = createTestRouter()
+      await router.push('/login')
+      await router.isReady()
+
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(router.currentRoute.value.name).toBe('login')
+    })
+
     it('allows unauthenticated access to public routes', async () => {
       const auth = useAuthStore()
       vi.spyOn(auth, 'fetchMe').mockResolvedValue(false)

@@ -94,7 +94,7 @@ describe('orgFetch', () => {
     expect(fetchMock.mock.calls[1]![0]).toBe('/api/v1/auth/refresh')
   })
 
-  it('redirects to /login when refresh fails', async () => {
+  it('returns 401 response when refresh fails', async () => {
     const fetchMock = vi.fn()
     fetchMock.mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
     fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }))
@@ -104,7 +104,6 @@ describe('orgFetch', () => {
     const resp = await orgFetch('/api/v1/orgs/123/members')
 
     expect(resp.status).toBe(401)
-    expect(window.location.href).toBe('/login')
   })
 
   it('preserves body on POST retry after 401 refresh (B4 fix)', async () => {

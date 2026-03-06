@@ -47,7 +47,6 @@ export async function orgFetch(
   refreshPromise = null
 
   if (!refreshed) {
-    window.location.href = '/login'
     return resp
   }
 

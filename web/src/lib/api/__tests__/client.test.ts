@@ -134,6 +134,23 @@ describe('refresh middleware', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('does not attempt refresh for auth/me endpoint', async () => {
+    const { refreshMiddleware } = await import('../client')
+    const fetchMock = vi.fn()
+    globalThis.fetch = fetchMock
+
+    const meRequest = new Request('http://localhost/api/v1/auth/me')
+    const meResponse = new Response('unauthorized', { status: 401 })
+
+    const result = await refreshMiddleware.onResponse!({
+      ...middlewareParams(meRequest),
+      response: meResponse,
+    })
+
+    expect((result as Response).status).toBe(401)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('does not attempt refresh for the refresh endpoint itself', async () => {
     const { refreshMiddleware } = await import('../client')
     const fetchMock = vi.fn()
@@ -178,7 +195,7 @@ describe('refresh middleware', () => {
     expect((result as Response).status).toBe(200)
   })
 
-  it('redirects to /login when refresh fails', async () => {
+  it('returns original 401 response when refresh fails', async () => {
     const { refreshMiddleware } = await import('../client')
 
     const fetchMock = vi.fn()
@@ -189,11 +206,11 @@ describe('refresh middleware', () => {
     const request = new Request('http://localhost/api/v1/cves')
     const response = new Response('unauthorized', { status: 401 })
 
-    await refreshMiddleware.onResponse!({
+    const result = await refreshMiddleware.onResponse!({
       ...middlewareParams(request),
       response,
     })
 
-    expect(window.location.href).toBe('/login')
+    expect((result as Response).status).toBe(401)
   })
 })

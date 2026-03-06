@@ -2,7 +2,7 @@
 <!-- ABOUTME: Fetches invitation details by token, handles login redirect and accept flow. -->
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import client from '@/lib/api/client'
@@ -13,7 +13,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-const token = route.params.token as string
+const token = computed(() => route.params.token as string)
 
 const loading = ref(true)
 const invitation = ref<{ org_name: string; role: string; expires_at: string } | null>(null)
@@ -21,9 +21,14 @@ const error = ref('')
 const acceptError = ref('')
 const accepting = ref(false)
 
-onMounted(async () => {
+watch(token, async () => {
+  loading.value = true
+  error.value = ''
+  invitation.value = null
+  acceptError.value = ''
+
   const { data, error: apiError, response } = await client.GET('/auth/invitations/{token}', {
-    params: { path: { token } },
+    params: { path: { token: token.value } },
   })
 
   loading.value = false
@@ -41,7 +46,7 @@ onMounted(async () => {
   }
 
   invitation.value = data
-})
+}, { immediate: true })
 
 async function acceptInvitation() {
   acceptError.value = ''
@@ -49,7 +54,7 @@ async function acceptInvitation() {
 
   try {
     const { error: apiError, response } = await client.POST('/auth/invitations/{token}/accept', {
-      params: { path: { token } },
+      params: { path: { token: token.value } },
     })
 
     if (apiError) {
@@ -67,7 +72,8 @@ async function acceptInvitation() {
     }
 
     await auth.fetchMe()
-    // Activate the org the user just joined.
+    // Match by name since the invitation API doesn't return org_id.
+    // Name collision is theoretically possible but unlikely in practice.
     const joinedOrg = auth.user?.orgs?.find((o) => o.name === invitation.value?.org_name)
     if (joinedOrg) {
       auth.setActiveOrg(joinedOrg.org_id)

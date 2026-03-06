@@ -389,6 +389,46 @@ func TestCSAFToPatches_HighestCVSSAcrossProducts(t *testing.T) {
 	}
 }
 
+func TestCSAFToPatches_CVSSZeroIsValid(t *testing.T) {
+	t.Parallel()
+
+	// CVSS 0.0 is a valid score meaning "NONE" severity / informational.
+	// It must not be discarded as "no score."
+	csafJSON := `{
+    "document": {
+      "tracking": {"id": "CVSSZero", "initial_release_date": "2025-01-01T00:00:00Z", "current_release_date": "2025-01-01T00:00:00Z"},
+      "title": "Test CVSS Zero"
+    },
+    "vulnerabilities": [{
+      "cve": "CVE-2025-0000",
+      "title": "CVSS zero test vuln",
+      "scores": [{"cvss_v3": {"version": "3.1", "baseScore": 0.0, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"}, "products": ["win11"]}],
+      "notes": [{"type": "description", "text": "informational"}]
+    }]
+  }`
+
+	patches, err := csafToPatchesFromJSON([]byte(csafJSON))
+	if err != nil {
+		t.Fatalf("csafToPatches: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("len(patches) = %d, want 1", len(patches))
+	}
+	p := patches[0]
+	if p.CVSSv3Score == nil {
+		t.Fatal("CVSSv3Score should not be nil — 0.0 is a valid CVSS score")
+	}
+	if *p.CVSSv3Score != 0.0 {
+		t.Errorf("CVSSv3Score = %v, want 0.0", *p.CVSSv3Score)
+	}
+	if p.CVSSv3Vector == nil {
+		t.Fatal("CVSSv3Vector should not be nil when score is 0.0")
+	}
+	if *p.CVSSv3Vector != "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N" {
+		t.Errorf("CVSSv3Vector = %q", *p.CVSSv3Vector)
+	}
+}
+
 // --- Fetch tests ---
 
 // redirectTransport intercepts outbound requests and rewrites their scheme/host

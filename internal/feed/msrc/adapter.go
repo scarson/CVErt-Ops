@@ -106,28 +106,34 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 			}
 		}
 
-		// CVSS: take the highest v3 score across all product score entries
+		// CVSS: take the highest v3/v4 score across all product score entries.
+		// A score of 0.0 is valid (CVSS "NONE" severity), so we track presence
+		// with a bool rather than checking > 0.
 		var bestV3Score float64
 		var bestV3Vector string
+		var hasV3 bool
 		var bestV4Score float64
 		var bestV4Vector string
+		var hasV4 bool
 
 		for _, score := range vuln.Scores {
-			if score.CVSSv3 != nil && score.CVSSv3.BaseScore > bestV3Score {
+			if score.CVSSv3 != nil && (!hasV3 || score.CVSSv3.BaseScore > bestV3Score) {
 				bestV3Score = score.CVSSv3.BaseScore
 				bestV3Vector = score.CVSSv3.VectorString
+				hasV3 = true
 			}
-			if score.CVSSv4 != nil && score.CVSSv4.BaseScore > bestV4Score {
+			if score.CVSSv4 != nil && (!hasV4 || score.CVSSv4.BaseScore > bestV4Score) {
 				bestV4Score = score.CVSSv4.BaseScore
 				bestV4Vector = score.CVSSv4.VectorString
+				hasV4 = true
 			}
 		}
-		if bestV3Score > 0 {
+		if hasV3 {
 			p.CVSSv3Score = &bestV3Score
 			vec := strings.Clone(feed.StripNullBytes(bestV3Vector))
 			p.CVSSv3Vector = &vec
 		}
-		if bestV4Score > 0 {
+		if hasV4 {
 			p.CVSSv4Score = &bestV4Score
 			vec := strings.Clone(feed.StripNullBytes(bestV4Vector))
 			p.CVSSv4Vector = &vec

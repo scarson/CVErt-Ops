@@ -21,7 +21,7 @@ export const csrfMiddleware: Middleware = {
 // receive 401 simultaneously.
 let refreshPromise: Promise<boolean> | null = null
 
-async function refreshTokens(): Promise<boolean> {
+export async function refreshTokens(): Promise<boolean> {
   try {
     const res = await fetch('/api/v1/auth/refresh', {
       method: 'POST',
@@ -60,7 +60,8 @@ export const refreshMiddleware: Middleware = {
     }
 
     // Retry the original request with fresh cookies.
-    return fetch(request, { credentials: 'include' })
+    // Clone the request before retrying — the original body stream was consumed by the first fetch.
+    return fetch(request.clone(), { credentials: 'include' })
   },
 }
 

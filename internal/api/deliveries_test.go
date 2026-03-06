@@ -471,9 +471,9 @@ func TestReplayDelivery_NonExistentID(t *testing.T) {
 
 	resp := doReplayDelivery(t, ctx, ts, token, aliceReg.OrgID, uuid.New().String())
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	// Non-existent ID → SQL no-op → 204 (no error from store).
-	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("replay non-existent: got %d, want 204", resp.StatusCode)
+	// Non-existent ID → handler checks existence first → 404.
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("replay non-existent: got %d, want 404", resp.StatusCode)
 	}
 }
 

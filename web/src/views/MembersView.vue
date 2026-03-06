@@ -25,7 +25,6 @@ import {
 } from '@/components/ui/select'
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -61,6 +60,9 @@ const error = ref('')
 const inviteDialogOpen = ref(false)
 const removeTarget = ref<MemberEntry | null>(null)
 const removeDialogOpen = ref(false)
+const removing = ref(false)
+const removeError = ref('')
+const roleChangeError = ref('')
 
 const userRole = computed(() => auth.activeOrg?.role ?? 'viewer')
 const isAdmin = computed(() => ROLE_HIERARCHY[userRole.value]! >= ROLE_HIERARCHY['admin']!)
@@ -137,6 +139,8 @@ async function fetchInvitations() {
 }
 
 async function changeRole(userId: string, newRole: string) {
+  roleChangeError.value = ''
+
   try {
     const resp = await fetch(`${apiBase()}/members/${userId}`, {
       method: 'PATCH',
@@ -153,9 +157,14 @@ async function changeRole(userId: string, newRole: string) {
       members.value = members.value.map((m) =>
         m.user_id === userId ? { ...m, role: updated.role } : m,
       )
+    } else {
+      roleChangeError.value = 'Failed to change role. Please try again.'
+      // Force re-render to snap Select back to actual role value.
+      members.value = [...members.value]
     }
   } catch {
-    // Silently fail — could add error toast later
+    roleChangeError.value = 'Failed to change role. Please try again.'
+    members.value = [...members.value]
   }
 }
 
@@ -165,7 +174,9 @@ function promptRemove(member: MemberEntry) {
 }
 
 async function confirmRemove() {
-  if (!removeTarget.value) return
+  if (!removeTarget.value || removing.value) return
+  removing.value = true
+  removeError.value = ''
 
   const userId = removeTarget.value.user_id
 
@@ -181,10 +192,15 @@ async function confirmRemove() {
 
     if (resp.ok) {
       members.value = members.value.filter((m) => m.user_id !== userId)
+      removeDialogOpen.value = false
+      removeTarget.value = null
+    } else {
+      removeError.value = 'Failed to remove member. Please try again.'
     }
+  } catch {
+    removeError.value = 'Failed to remove member. Please try again.'
   } finally {
-    removeDialogOpen.value = false
-    removeTarget.value = null
+    removing.value = false
   }
 }
 
@@ -265,6 +281,9 @@ watch(
     <div v-else-if="error" class="py-16 text-center">
       <p class="text-sm text-destructive">{{ error }}</p>
     </div>
+
+    <!-- Role change error -->
+    <p v-if="roleChangeError" class="text-sm text-destructive">{{ roleChangeError }}</p>
 
     <!-- Members table -->
     <template v-else>
@@ -385,15 +404,17 @@ watch(
             They will lose access to this organization. This action cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <p v-if="removeError" class="text-sm text-destructive">{{ removeError }}</p>
         <AlertDialogFooter>
-          <AlertDialogCancel @click="removeDialogOpen = false">Cancel</AlertDialogCancel>
-          <AlertDialogAction
+          <AlertDialogCancel :disabled="removing" @click="removeDialogOpen = false">Cancel</AlertDialogCancel>
+          <Button
             data-testid="confirm-remove-btn"
-            class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            variant="destructive"
+            :disabled="removing"
             @click="confirmRemove"
           >
-            Remove
-          </AlertDialogAction>
+            {{ removing ? 'Removing...' : 'Remove' }}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

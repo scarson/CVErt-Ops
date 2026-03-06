@@ -310,6 +310,33 @@ describe('WatchlistListView', () => {
     })
   })
 
+  describe('delete error handling', () => {
+    it('keeps watchlist in list and shows error when DELETE fails', async () => {
+      mockListSuccess([makeWatchlist({ id: 'wl-1', name: 'Survivor' })])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockClear()
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Server error' }),
+      })
+
+      await wrapper.find('[data-testid="delete-watchlist-btn"]').trigger('click')
+      await flushPromises()
+
+      const confirmBtn = findTestId('confirm-delete-btn')
+      confirmBtn!.click()
+      await flushPromises()
+
+      // Watchlist should still be in the list
+      expect(wrapper.text()).toContain('Survivor')
+      // Error should appear in the dialog
+      expect(bodyText()).toContain('Failed to delete watchlist')
+    })
+  })
+
   describe('org switch re-fetch', () => {
     it('re-fetches watchlists when activeOrgId changes', async () => {
       const auth = useAuthStore()

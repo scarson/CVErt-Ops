@@ -19,7 +19,6 @@ import {
 } from '@/components/ui/table'
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -37,6 +36,8 @@ const error = ref('')
 const createDialogOpen = ref(false)
 const deleteTarget = ref<WatchlistEntry | null>(null)
 const deleteDialogOpen = ref(false)
+const deleting = ref(false)
+const deleteError = ref('')
 
 function apiBase() {
   return `/api/v1/orgs/${auth.activeOrgId}/watchlists`
@@ -78,8 +79,10 @@ function promptDelete(wl: WatchlistEntry) {
 }
 
 async function confirmDelete() {
-  if (!deleteTarget.value) return
+  if (!deleteTarget.value || deleting.value) return
 
+  deleting.value = true
+  deleteError.value = ''
   const id = deleteTarget.value.id
 
   try {
@@ -94,10 +97,15 @@ async function confirmDelete() {
 
     if (resp.ok) {
       watchlists.value = watchlists.value.filter((w) => w.id !== id)
+      deleteDialogOpen.value = false
+      deleteTarget.value = null
+    } else {
+      deleteError.value = 'Failed to delete watchlist. Please try again.'
     }
+  } catch {
+    deleteError.value = 'Failed to delete watchlist. Please try again.'
   } finally {
-    deleteDialogOpen.value = false
-    deleteTarget.value = null
+    deleting.value = false
   }
 }
 
@@ -248,14 +256,16 @@ watch(
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel @click="deleteDialogOpen = false">Cancel</AlertDialogCancel>
-          <AlertDialogAction
+          <p v-if="deleteError" class="mr-auto text-sm text-destructive">{{ deleteError }}</p>
+          <AlertDialogCancel :disabled="deleting" @click="deleteDialogOpen = false">Cancel</AlertDialogCancel>
+          <Button
             data-testid="confirm-delete-btn"
-            class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            variant="destructive"
+            :disabled="deleting"
             @click="confirmDelete"
           >
-            Delete
-          </AlertDialogAction>
+            {{ deleting ? 'Deleting...' : 'Delete' }}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

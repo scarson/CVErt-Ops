@@ -51,6 +51,7 @@ const groupMembers = ref<GroupMemberEntry[]>([])
 const orgMembers = ref<OrgMemberEntry[]>([])
 const loading = ref(true)
 const selectedUserId = ref('')
+const actionError = ref('')
 
 const availableMembers = computed(() => {
   const memberIds = new Set(groupMembers.value.map((m) => m.user_id))
@@ -94,6 +95,8 @@ async function fetchData() {
 async function addMember(userId: string) {
   if (!userId) return
 
+  actionError.value = ''
+
   try {
     const resp = await fetch(`${apiBase()}/groups/${props.groupId}/members`, {
       method: 'POST',
@@ -120,13 +123,17 @@ async function addMember(userId: string) {
         ]
       }
       selectedUserId.value = ''
+    } else {
+      actionError.value = 'Failed to add member. Please try again.'
     }
   } catch {
-    // Silently fail
+    actionError.value = 'Failed to add member. Please try again.'
   }
 }
 
 async function removeMember(userId: string) {
+  actionError.value = ''
+
   try {
     const resp = await fetch(`${apiBase()}/groups/${props.groupId}/members/${userId}`, {
       method: 'DELETE',
@@ -138,9 +145,11 @@ async function removeMember(userId: string) {
 
     if (resp.ok) {
       groupMembers.value = groupMembers.value.filter((m) => m.user_id !== userId)
+    } else {
+      actionError.value = 'Failed to remove member. Please try again.'
     }
   } catch {
-    // Silently fail
+    actionError.value = 'Failed to remove member. Please try again.'
   }
 }
 
@@ -158,6 +167,7 @@ watch(
       groupMembers.value = []
       orgMembers.value = []
       selectedUserId.value = ''
+      actionError.value = ''
       fetchData()
     }
   },
@@ -189,6 +199,9 @@ defineExpose({ addMember, availableMembers })
         </div>
 
         <template v-else>
+          <!-- Action error display -->
+          <p v-if="actionError" class="text-sm text-destructive">{{ actionError }}</p>
+
           <!-- Add member section -->
           <div v-if="availableMembers.length > 0" class="flex items-center gap-2">
             <Select :model-value="selectedUserId" @update:model-value="handleSelectAdd">

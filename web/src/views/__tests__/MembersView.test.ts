@@ -486,6 +486,64 @@ describe('MembersView', () => {
     })
   })
 
+  describe('role change error handling', () => {
+    it('reverts role display and shows error when PATCH fails', async () => {
+      setupAuthStore('owner')
+      mockMembersSuccess([
+        makeMember({ user_id: 'u1', role: 'admin', email: 'admin@example.com' }),
+      ])
+      mockInvitationsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockReset()
+      // Mock failed PATCH
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: () => Promise.resolve({ detail: 'Forbidden' }),
+      })
+
+      const view = wrapper.vm as any
+      await view.changeRole('u1', 'member')
+      await flushPromises()
+
+      // Error should be displayed
+      expect(wrapper.text()).toContain('Failed to change role')
+    })
+  })
+
+  describe('remove member error handling', () => {
+    it('shows error and keeps dialog open when DELETE fails', async () => {
+      setupAuthStore('admin')
+      mockMembersSuccess([
+        makeMember({ user_id: 'u1', role: 'member', email: 'target@example.com' }),
+      ])
+      mockInvitationsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      await wrapper.find('[data-testid="remove-member-btn"]').trigger('click')
+      await flushPromises()
+
+      mockFetch.mockReset()
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Server error' }),
+      })
+
+      const confirmBtn = findTestId('confirm-remove-btn')
+      confirmBtn!.click()
+      await flushPromises()
+
+      // Member should still be in the list
+      expect(wrapper.text()).toContain('target@example.com')
+      // Error should appear in the dialog
+      expect(bodyText()).toContain('Failed to remove member')
+    })
+  })
+
   describe('org switch re-fetch', () => {
     it('re-fetches members when activeOrgId changes', async () => {
       const auth = setupAuthStore('admin')

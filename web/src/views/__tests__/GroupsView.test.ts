@@ -377,6 +377,34 @@ describe('GroupsView', () => {
     })
   })
 
+  describe('delete error handling', () => {
+    it('keeps group in list and shows error when DELETE fails', async () => {
+      setupAuthStore('admin')
+      mockGroupsSuccess([makeGroup({ id: 'g1', name: 'Survivor' })])
+      await mountView()
+      await flushPromises()
+
+      mockFetch.mockReset()
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Server error' }),
+      })
+
+      await wrapper.find('[data-testid="delete-group-btn"]').trigger('click')
+      await flushPromises()
+
+      const confirmBtn = findTestId('confirm-delete-group-btn')
+      confirmBtn!.click()
+      await flushPromises()
+
+      // Group should still be in the list
+      expect(wrapper.text()).toContain('Survivor')
+      // Error should appear in the dialog
+      expect(bodyText()).toContain('Failed to delete group')
+    })
+  })
+
   describe('manage members flow', () => {
     it('opens members dialog when manage members is clicked', async () => {
       setupAuthStore('admin')

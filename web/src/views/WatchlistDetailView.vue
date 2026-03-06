@@ -48,6 +48,7 @@ const editingName = ref(false)
 const editName = ref('')
 const editDescription = ref('')
 const saving = ref(false)
+const saveError = ref('')
 
 function apiBase() {
   return `/api/v1/orgs/${auth.activeOrgId}/watchlists/${route.params.id}`
@@ -112,6 +113,7 @@ async function saveName() {
   if (!watchlist.value || saving.value) return
 
   saving.value = true
+  saveError.value = ''
 
   const body: Record<string, string> = {}
   if (editName.value.trim() !== watchlist.value.name) {
@@ -141,9 +143,15 @@ async function saveName() {
 
     if (resp.ok) {
       watchlist.value = await resp.json() as WatchlistEntry
+      editingName.value = false
+    } else {
+      saveError.value = 'Failed to save. Please try again.'
+      editingName.value = false
     }
-  } finally {
+  } catch {
+    saveError.value = 'Failed to save. Please try again.'
     editingName.value = false
+  } finally {
     saving.value = false
   }
 }
@@ -289,6 +297,9 @@ watch(
             :disabled="saving"
           />
         </div>
+
+        <!-- Save error display -->
+        <p v-if="saveError" class="text-sm text-destructive">{{ saveError }}</p>
 
         <!-- Description display -->
         <p

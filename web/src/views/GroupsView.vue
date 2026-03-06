@@ -19,7 +19,6 @@ import {
 } from '@/components/ui/table'
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -46,6 +45,8 @@ const groupDialogOpen = ref(false)
 const editTarget = ref<GroupEntry | null>(null)
 const deleteTarget = ref<GroupEntry | null>(null)
 const deleteDialogOpen = ref(false)
+const deleting = ref(false)
+const deleteError = ref('')
 const membersDialogOpen = ref(false)
 const membersTarget = ref<GroupEntry | null>(null)
 
@@ -107,7 +108,9 @@ function promptDelete(group: GroupEntry) {
 }
 
 async function confirmDelete() {
-  if (!deleteTarget.value) return
+  if (!deleteTarget.value || deleting.value) return
+  deleting.value = true
+  deleteError.value = ''
 
   const id = deleteTarget.value.id
 
@@ -123,10 +126,15 @@ async function confirmDelete() {
 
     if (resp.ok) {
       groups.value = groups.value.filter((g) => g.id !== id)
+      deleteDialogOpen.value = false
+      deleteTarget.value = null
+    } else {
+      deleteError.value = 'Failed to delete group. Please try again.'
     }
+  } catch {
+    deleteError.value = 'Failed to delete group. Please try again.'
   } finally {
-    deleteDialogOpen.value = false
-    deleteTarget.value = null
+    deleting.value = false
   }
 }
 
@@ -282,15 +290,17 @@ watch(
             This will permanently delete the group. Members will not be removed from the organization.
           </AlertDialogDescription>
         </AlertDialogHeader>
+        <p v-if="deleteError" class="text-sm text-destructive">{{ deleteError }}</p>
         <AlertDialogFooter>
-          <AlertDialogCancel @click="deleteDialogOpen = false">Cancel</AlertDialogCancel>
-          <AlertDialogAction
+          <AlertDialogCancel :disabled="deleting" @click="deleteDialogOpen = false">Cancel</AlertDialogCancel>
+          <Button
             data-testid="confirm-delete-group-btn"
-            class="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            variant="destructive"
+            :disabled="deleting"
             @click="confirmDelete"
           >
-            Delete
-          </AlertDialogAction>
+            {{ deleting ? 'Deleting...' : 'Delete' }}
+          </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

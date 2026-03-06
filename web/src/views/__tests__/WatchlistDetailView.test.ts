@@ -298,6 +298,38 @@ describe('WatchlistDetailView', () => {
     })
   })
 
+  describe('edit mode error handling', () => {
+    it('shows error and keeps original name when save PATCH fails', async () => {
+      mockWatchlistSuccess()
+      mockItemsSuccess([])
+      await mountView()
+      await flushPromises()
+
+      // Enter edit mode
+      await clickTestId('edit-name-btn')
+      await flushPromises()
+
+      // Change name
+      await setInputValue('edit-name-input', 'New Name')
+      await flushPromises()
+
+      // Mock failed PATCH
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ detail: 'Server error' }),
+      })
+
+      await clickTestId('save-name-btn')
+      await flushPromises()
+
+      // Should show error
+      expect(wrapper.text()).toContain('Failed to save')
+      // Original name should still be displayed after exiting edit mode
+      expect(wrapper.text()).toContain('Production Deps')
+    })
+  })
+
   describe('delete item', () => {
     it('calls DELETE endpoint and removes item from list', async () => {
       mockWatchlistSuccess()

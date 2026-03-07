@@ -452,6 +452,101 @@ func TestFeedHandler_SyncStateFailOnError_LogsButReturnsOriginal(t *testing.T) {
 	}
 }
 
+// recordingSyncStore wraps a real store and records UpsertFeedSyncState calls.
+type recordingSyncStore struct {
+	HandlerStore
+	mu     sync.Mutex
+	states []store.FeedSyncState
+}
+
+func (r *recordingSyncStore) UpsertFeedSyncState(ctx context.Context, state store.FeedSyncState) error {
+	r.mu.Lock()
+	r.states = append(r.states, state)
+	r.mu.Unlock()
+	return r.HandlerStore.UpsertFeedSyncState(ctx, state)
+}
+
+func (r *recordingSyncStore) States() []store.FeedSyncState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]store.FeedSyncState(nil), r.states...)
+}
+
+func TestFeedHandler_MidPageCursorPersist(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	page1Cursor := json.RawMessage(`{"page":2}`)
+	page2Cursor := json.RawMessage(`{"page":3}`)
+	var callCount int
+	adapter := &mockAdapter{
+		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return &feed.FetchResult{
+					Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
+					SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
+					NextCursor: page1Cursor,
+				}, nil
+			case 2:
+				return &feed.FetchResult{
+					Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0002", SourceID: "CVE-2025-0002"}},
+					SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
+					NextCursor: page2Cursor,
+					LastPage:   true,
+				}, nil
+			default:
+				t.Fatal("unexpected third Fetch call")
+				return nil, nil
+			}
+		},
+	}
+
+	merge := &mockMerge{}
+	recStore := &recordingSyncStore{HandlerStore: db.Store}
+	handler := handlerWithStore(recStore, db.Store, nil, merge.fn)
+	withMockFactory(t, adapter)
+
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	if err := handler(ctx, payload); err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+
+	// Should have at least 3 UpsertFeedSyncState calls:
+	// mid-page after page 1, mid-page after page 2, final success.
+	states := recStore.States()
+	if len(states) < 3 {
+		t.Fatalf("expected at least 3 UpsertFeedSyncState calls (mid-page + final), got %d", len(states))
+	}
+
+	// The first mid-page persist should have page1's cursor.
+	var midPageCursor map[string]any
+	if err := json.Unmarshal(states[0].CursorJSON, &midPageCursor); err != nil {
+		t.Fatalf("unmarshal mid-page cursor: %v", err)
+	}
+	if midPageCursor["page"] != float64(2) {
+		t.Errorf("mid-page cursor page = %v, want 2", midPageCursor["page"])
+	}
+	// Mid-page persist should NOT update LastSuccessAt (only final success does).
+	if states[0].LastSuccessAt != nil {
+		t.Error("mid-page persist should not set LastSuccessAt")
+	}
+
+	// Final state should have page2's cursor and LastSuccessAt set.
+	finalState := states[len(states)-1]
+	var finalCursor map[string]any
+	if err := json.Unmarshal(finalState.CursorJSON, &finalCursor); err != nil {
+		t.Fatalf("unmarshal final cursor: %v", err)
+	}
+	if finalCursor["page"] != float64(3) {
+		t.Errorf("final cursor page = %v, want 3", finalCursor["page"])
+	}
+	if finalState.LastSuccessAt == nil {
+		t.Error("final state should have LastSuccessAt set")
+	}
+}
+
 func TestFeedHandler_UnknownFeed(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()

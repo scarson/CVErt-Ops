@@ -117,6 +117,18 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 			}
 			cursor = result.NextCursor
 
+			// Persist cursor progress after each page for crash recovery.
+			pageNow := time.Now()
+			if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
+				FeedName:      p.FeedName,
+				CursorJSON:    lastSuccessfulCursor,
+				LastSuccessAt: prevLastSuccess,
+				LastAttemptAt: &pageNow,
+			}); syncErr != nil {
+				slog.Error("mid-pagination cursor persist failed",
+					"feed", p.FeedName, "error", syncErr)
+			}
+
 			// Three-layer loop termination:
 			// 1. LastPage — adapter explicitly signals final page
 			if result.LastPage {

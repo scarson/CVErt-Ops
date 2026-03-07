@@ -55,23 +55,24 @@ linters:
         - "-ST1000" # Package comment not required on every package in Phase 0
         - "-ST1003" # Allow ALL_CAPS constants (uuid, etc.)
 
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-
-  exclude-rules:
+  exclusions:
     # Test files: relax exhaustruct (test structs rarely need all fields set),
     # allow unhandled errors in test assertions.
     # NOTE: gosec and noctx are NOT listed here — golangci-lint v2 path-based
-    # exclude-rules do not reliably suppress gosec/noctx rules. Use inline
+    # exclusion rules do not reliably suppress gosec/noctx rules. Use inline
     # //nolint:gosec or //nolint:noctx comments at specific call sites instead,
     # with a comment explaining why the suppression is a confirmed false positive.
-    - path: "_test\\.go"
-      linters:
-        - exhaustruct
-        - errcheck
+    rules:
+      - path: "_test\\.go"
+        linters:
+          - exhaustruct
+          - errcheck
 
-    # Generated code produced by sqlc — do not lint.
-    - path: "internal/store/generated/"
-      linters:
-        - all
+      # Generated code produced by sqlc — do not lint.
+      - path: "internal/store/generated/"
+        linters:
+          - all
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -19,12 +19,18 @@ type ApplyFunc func(ctx context.Context, s *store.Store, cursor json.RawMessage)
 // EPSSHandler returns a worker.Handler that runs the EPSS adapter and persists sync state.
 // In production, pass epssAdapter.Apply as applyFn.
 func EPSSHandler(st *store.Store, applyFn ApplyFunc) worker.Handler {
+	return epssHandlerWithStore(st, st, applyFn)
+}
+
+// epssHandlerWithStore is the internal implementation that accepts a separate HandlerStore
+// for sync state operations. This enables testing error paths without mocking the full store.
+func epssHandlerWithStore(syncSt HandlerStore, mergeSt *store.Store, applyFn ApplyFunc) worker.Handler {
 	return func(ctx context.Context, _ json.RawMessage) error {
 		start := time.Now()
 		slog.Info("epss ingest started")
 
 		// Read current cursor from sync state.
-		state, err := st.GetFeedSyncState(ctx, "epss")
+		state, err := syncSt.GetFeedSyncState(ctx, "epss")
 		if err != nil {
 			return fmt.Errorf("get feed sync state: %w", err)
 		}
@@ -40,14 +46,14 @@ func EPSSHandler(st *store.Store, applyFn ApplyFunc) worker.Handler {
 		cursorBefore := cursor
 
 		// Run the EPSS adapter.
-		newCursor, applyErr := applyFn(ctx, st, cursor)
+		newCursor, applyErr := applyFn(ctx, mergeSt, cursor)
 
 		now := time.Now()
 
 		if applyErr != nil {
 			failures := prevFailures + 1
 			backoff := now.Add(backoffDuration(failures))
-			_ = st.UpsertFeedSyncState(ctx, store.FeedSyncState{
+			if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
 				FeedName:            "epss",
 				CursorJSON:          cursor,
 				LastSuccessAt:       prevLastSuccess,
@@ -55,8 +61,10 @@ func EPSSHandler(st *store.Store, applyFn ApplyFunc) worker.Handler {
 				ConsecutiveFailures: failures,
 				LastError:           applyErr.Error(),
 				BackoffUntil:        &backoff,
-			})
-			_, _ = st.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+			}); syncErr != nil {
+				slog.Error("epss sync state write failed on error path", "error", syncErr)
+			}
+			if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
 				FeedName:     "epss",
 				StartedAt:    start,
 				EndedAt:      &now,
@@ -64,28 +72,35 @@ func EPSSHandler(st *store.Store, applyFn ApplyFunc) worker.Handler {
 				CursorBefore: cursorBefore,
 				CursorAfter:  cursor,
 				ErrorSummary: applyErr.Error(),
-			})
+			}); logErr != nil {
+				slog.Error("epss fetch log write failed", "error", logErr)
+			}
 			slog.Error("epss ingest failed", "error", applyErr, "duration", time.Since(start))
 			return applyErr
 		}
 
 		// Success: persist new cursor and reset failure counters.
-		_ = st.UpsertFeedSyncState(ctx, store.FeedSyncState{
+		if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
 			FeedName:            "epss",
 			CursorJSON:          newCursor,
 			LastSuccessAt:       &now,
 			LastAttemptAt:       &now,
 			ConsecutiveFailures: 0,
 			LastError:           "",
-		})
-		_, _ = st.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+		}); syncErr != nil {
+			slog.Error("epss sync state write failed on success path", "error", syncErr)
+			return fmt.Errorf("persist sync state for epss: %w", syncErr)
+		}
+		if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
 			FeedName:     "epss",
 			StartedAt:    start,
 			EndedAt:      &now,
 			Status:       "success",
 			CursorBefore: cursorBefore,
 			CursorAfter:  newCursor,
-		})
+		}); logErr != nil {
+			slog.Error("epss fetch log write failed", "error", logErr)
+		}
 		slog.Info("epss ingest completed", "duration", time.Since(start))
 		return nil
 	}

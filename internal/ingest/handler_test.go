@@ -3,10 +3,13 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -360,6 +363,92 @@ func TestFeedHandler_MidPaginationError(t *testing.T) {
 	}
 	if logs[0].ItemsFetched != 1 {
 		t.Errorf("ItemsFetched = %d, want 1 (page 1 had 1 item)", logs[0].ItemsFetched)
+	}
+}
+
+// failSyncStateStore wraps a real store but fails UpsertFeedSyncState.
+// This tests error propagation logic — the wrapper is a one-line override, not a full mock.
+type failSyncStateStore struct {
+	HandlerStore
+}
+
+func (f *failSyncStateStore) UpsertFeedSyncState(_ context.Context, _ store.FeedSyncState) error {
+	return fmt.Errorf("simulated sync state failure")
+}
+
+// captureLogs redirects slog to a buffer for pristine test output, restoring on cleanup.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+	return &buf
+}
+
+func TestFeedHandler_SyncStateFailOnSuccess_ReturnsError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	logBuf := captureLogs(t)
+
+	adapter := &mockAdapter{
+		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+			return &feed.FetchResult{
+				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
+				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
+				LastPage:   true,
+			}, nil
+		},
+	}
+
+	merge := &mockMerge{}
+	failStore := &failSyncStateStore{HandlerStore: db.Store}
+	handler := handlerWithStore(failStore, db.Store, nil, merge.fn)
+	withMockFactory(t, adapter)
+
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	err := handler(ctx, payload)
+
+	// Success-path sync state failure must propagate as an error.
+	if err == nil {
+		t.Fatal("expected error when sync state write fails on success path")
+	}
+	if !strings.Contains(err.Error(), "persist sync state") {
+		t.Errorf("error = %q, want to contain 'persist sync state'", err.Error())
+	}
+	if !strings.Contains(logBuf.String(), "sync state write failed on success path") {
+		t.Errorf("expected log message about sync state failure, got: %s", logBuf.String())
+	}
+}
+
+func TestFeedHandler_SyncStateFailOnError_LogsButReturnsOriginal(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	logBuf := captureLogs(t)
+
+	adapter := &mockAdapter{
+		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+			return nil, fmt.Errorf("upstream 503")
+		},
+	}
+
+	merge := &mockMerge{}
+	failStore := &failSyncStateStore{HandlerStore: db.Store}
+	handler := handlerWithStore(failStore, db.Store, nil, merge.fn)
+	withMockFactory(t, adapter)
+
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	err := handler(ctx, payload)
+
+	// Error-path sync state failure should be logged, but original error returned.
+	if err == nil {
+		t.Fatal("expected error from handler")
+	}
+	if !strings.Contains(err.Error(), "upstream 503") {
+		t.Errorf("error = %q, want original fetch error containing 'upstream 503'", err.Error())
+	}
+	if !strings.Contains(logBuf.String(), "sync state write failed on error path") {
+		t.Errorf("expected log message about sync state failure on error path, got: %s", logBuf.String())
 	}
 }
 

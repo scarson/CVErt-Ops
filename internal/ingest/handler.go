@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
@@ -20,12 +21,26 @@ type Payload struct {
 	FeedName string `json:"feed_name"`
 }
 
+// HandlerStore defines the store operations needed by feed ingest handlers.
+type HandlerStore interface {
+	GetFeedSyncState(ctx context.Context, feedName string) (*store.FeedSyncState, error)
+	UpsertFeedSyncState(ctx context.Context, state store.FeedSyncState) error
+	InsertFeedFetchLog(ctx context.Context, log store.FeedFetchLog) (uuid.UUID, error)
+	ListRecentFeedFetchLogs(ctx context.Context, feedName string, limit int) ([]store.FeedFetchLog, error)
+}
+
 // MergeFunc matches the signature of merge.Ingest. Defined as a type for test injection.
 type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
 
 // Handler returns a worker.Handler that fetches from the named feed adapter,
 // merges each patch into the CVE corpus, and persists cursor/sync state.
 func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
+	return handlerWithStore(st, st, client, mergeFn)
+}
+
+// handlerWithStore is the internal implementation that accepts a separate HandlerStore
+// for sync state operations. This enables testing error paths without mocking the full store.
+func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
 	return func(ctx context.Context, payload json.RawMessage) error {
 		var p Payload
 		if err := json.Unmarshal(payload, &p); err != nil {
@@ -41,7 +56,7 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 		}
 
 		// Read current cursor from sync state.
-		state, err := st.GetFeedSyncState(ctx, p.FeedName)
+		state, err := syncSt.GetFeedSyncState(ctx, p.FeedName)
 		if err != nil {
 			return fmt.Errorf("get feed sync state: %w", err)
 		}
@@ -82,7 +97,7 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 
 			// Merge each patch.
 			for _, patch := range result.Patches {
-				if mergeErr := mergeFn(ctx, st, patch, result.SourceMeta.SourceName); mergeErr != nil {
+				if mergeErr := mergeFn(ctx, mergeSt, patch, result.SourceMeta.SourceName); mergeErr != nil {
 					slog.Error("feed merge failed",
 						"feed", p.FeedName,
 						"cve_id", patch.CVEID,
@@ -124,7 +139,7 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 			// Persist failure state with last successful cursor.
 			failures := prevFailures + 1
 			backoff := now.Add(backoffDuration(failures))
-			_ = st.UpsertFeedSyncState(ctx, store.FeedSyncState{
+			if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
 				FeedName:            p.FeedName,
 				CursorJSON:          lastSuccessfulCursor,
 				LastSuccessAt:       prevLastSuccess,
@@ -132,8 +147,11 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 				ConsecutiveFailures: failures,
 				LastError:           fetchErr.Error(),
 				BackoffUntil:        &backoff,
-			})
-			_, _ = st.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+			}); syncErr != nil {
+				slog.Error("feed sync state write failed on error path",
+					"feed", p.FeedName, "error", syncErr)
+			}
+			if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
 				FeedName:      p.FeedName,
 				StartedAt:     start,
 				EndedAt:       &now,
@@ -143,7 +161,10 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 				CursorBefore:  cursorBefore,
 				CursorAfter:   lastSuccessfulCursor,
 				ErrorSummary:  fetchErr.Error(),
-			})
+			}); logErr != nil {
+				slog.Error("feed fetch log write failed",
+					"feed", p.FeedName, "error", logErr)
+			}
 			slog.Error("feed ingest failed",
 				"feed", p.FeedName,
 				"items_fetched", itemsFetched,
@@ -154,15 +175,19 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 		}
 
 		// Success: persist final cursor and reset failure counters.
-		_ = st.UpsertFeedSyncState(ctx, store.FeedSyncState{
+		if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
 			FeedName:            p.FeedName,
 			CursorJSON:          lastSuccessfulCursor,
 			LastSuccessAt:       &now,
 			LastAttemptAt:       &now,
 			ConsecutiveFailures: 0,
 			LastError:           "",
-		})
-		_, _ = st.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+		}); syncErr != nil {
+			slog.Error("feed sync state write failed on success path",
+				"feed", p.FeedName, "error", syncErr)
+			return fmt.Errorf("persist sync state for %s: %w", p.FeedName, syncErr)
+		}
+		if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
 			FeedName:      p.FeedName,
 			StartedAt:     start,
 			EndedAt:       &now,
@@ -171,7 +196,10 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 			ItemsUpserted: itemsUpserted,
 			CursorBefore:  cursorBefore,
 			CursorAfter:   lastSuccessfulCursor,
-		})
+		}); logErr != nil {
+			slog.Error("feed fetch log write failed",
+				"feed", p.FeedName, "error", logErr)
+		}
 		slog.Info("feed ingest completed",
 			"feed", p.FeedName,
 			"items_fetched", itemsFetched,

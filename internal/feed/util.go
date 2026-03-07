@@ -1,3 +1,5 @@
+// ABOUTME: Shared utility functions for CVE feed adapters.
+// ABOUTME: Provides HTTP helpers (User-Agent transport, body drain), string/time parsing, and temp file downloads.
 package feed
 
 import (
@@ -64,14 +66,6 @@ func StripNullBytesJSON(b []byte) []byte {
 // cveIDPattern matches CVE IDs in the canonical format CVE-YYYY-NNNNN+.
 var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d+$`)
 
-// ResolveCanonicalID returns a CVE ID from the aliases slice if one is present,
-// otherwise returns nativeID unchanged. This is required for OSV and GHSA records
-// where the native ID (GHSA-*, PYSEC-*, etc.) is an alias and the CVE ID should
-// be used as the canonical primary key to prevent split-brain records.
-//
-// The nativeID is returned as-is when no CVE alias is found (the record will be
-// stored under its own ID and merged if a CVE alias is discovered later via
-// late-binding PK migration).
 // DefaultUserAgent is the standard User-Agent string for all feed HTTP requests.
 const DefaultUserAgent = "CVErt-Ops/1.0 vulnerability intelligence platform"
 
@@ -151,6 +145,7 @@ func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern s
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("feed: download %s: HTTP %d", url, resp.StatusCode)
 	}
 
@@ -174,6 +169,14 @@ func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern s
 	return f, nil
 }
 
+// ResolveCanonicalID returns a CVE ID from the aliases slice if one is present,
+// otherwise returns nativeID unchanged. This is required for OSV and GHSA records
+// where the native ID (GHSA-*, PYSEC-*, etc.) is an alias and the CVE ID should
+// be used as the canonical primary key to prevent split-brain records.
+//
+// The nativeID is returned as-is when no CVE alias is found (the record will be
+// stored under its own ID and merged if a CVE alias is discovered later via
+// late-binding PK migration).
 func ResolveCanonicalID(nativeID string, aliases []string) string {
 	// Sort aliases so the result is deterministic when multiple CVE IDs exist.
 	sorted := make([]string, len(aliases))

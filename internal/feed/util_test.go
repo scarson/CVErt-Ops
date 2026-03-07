@@ -1,3 +1,5 @@
+// ABOUTME: Tests for shared feed utility functions.
+// ABOUTME: Covers HTTP helpers, string/time parsing, temp file downloads, and canonical ID resolution.
 package feed
 
 import (
@@ -545,4 +547,32 @@ func TestCanonicalPatch_VendorEnrichmentRoundTrip(t *testing.T) {
 			t.Errorf("VendorSeverity = %v, want Critical", decoded.VendorEnrichment.VendorSeverity)
 		}
 	})
+}
+
+// ── RawPayload json:"-" tag ─────────────────────────────────────────────────
+
+func TestCanonicalPatch_RawPayloadExcludedFromJSON(t *testing.T) {
+	t.Parallel()
+
+	patch := CanonicalPatch{
+		CVEID:      "CVE-2024-0001",
+		SourceID:   "CVE-2024-0001",
+		RawPayload: json.RawMessage(`{"secret":"upstream-data","cveID":"CVE-2024-0001"}`),
+	}
+
+	data, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	serialized := string(data)
+	if strings.Contains(serialized, "secret") {
+		t.Error("RawPayload content leaked into JSON serialization")
+	}
+	if strings.Contains(serialized, "RawPayload") || strings.Contains(serialized, "raw_payload") {
+		t.Error("RawPayload field name appeared in JSON serialization")
+	}
+	if !strings.Contains(serialized, "CVE-2024-0001") {
+		t.Error("CVEID should still be present in serialized output")
+	}
 }

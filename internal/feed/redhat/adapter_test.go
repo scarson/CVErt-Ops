@@ -786,6 +786,9 @@ func TestFetch_Pagination(t *testing.T) {
 	if result.NextCursor == nil {
 		t.Fatal("NextCursor should not be nil for a full page (100 items)")
 	}
+	if result.LastPage {
+		t.Error("LastPage should be false when a full page of entries is returned")
+	}
 
 	// Verify cursor has page 2
 	var cur Cursor

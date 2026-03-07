@@ -51,7 +51,7 @@ func TestIngest_MaterialHashDeterministic(t *testing.T) {
 		},
 	}
 
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", json.RawMessage(`{"raw":"payload"}`))
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (first): %v", err)
 	}
@@ -69,7 +69,7 @@ func TestIngest_MaterialHashDeterministic(t *testing.T) {
 	hash1 := cve1.MaterialHash.String
 
 	// Re-ingest the same patch — hash must be identical.
-	err = merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err = merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (second): %v", err)
 	}
@@ -96,7 +96,7 @@ func TestIngest_MaterialHashChangesOnMaterialChange(t *testing.T) {
 		Status:   "published",
 		Severity: &sev1,
 	}
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (HIGH): %v", err)
 	}
@@ -107,7 +107,7 @@ func TestIngest_MaterialHashChangesOnMaterialChange(t *testing.T) {
 	// Change severity (material field) — hash must change.
 	sev2 := "CRITICAL"
 	patch.Severity = &sev2
-	err = merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err = merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (CRITICAL): %v", err)
 	}
@@ -131,7 +131,7 @@ func TestIngest_EPSSExcludedFromMaterialHash(t *testing.T) {
 	}
 
 	// First ingest — establishes the CVE and material_hash.
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (initial): %v", err)
 	}
@@ -153,7 +153,7 @@ func TestIngest_EPSSExcludedFromMaterialHash(t *testing.T) {
 	}
 
 	// Re-ingest the same patch — material_hash should not change.
-	err = merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err = merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (re-ingest after EPSS): %v", err)
 	}
@@ -202,7 +202,7 @@ func TestIngest_MigrateCVEPK(t *testing.T) {
 		},
 	}
 
-	err := merge.Ingest(ctx, s.Store, patch1, "ghsa", json.RawMessage(`{"ghsa":"data"}`))
+	err := merge.Ingest(ctx, s.Store, patch1, "ghsa")
 	if err != nil {
 		t.Fatalf("Ingest (old ID): %v", err)
 	}
@@ -229,7 +229,7 @@ func TestIngest_MigrateCVEPK(t *testing.T) {
 		},
 	}
 
-	err = merge.Ingest(ctx, s.Store, patch2, "ghsa", json.RawMessage(`{"ghsa":"data2"}`))
+	err = merge.Ingest(ctx, s.Store, patch2, "ghsa")
 	if err != nil {
 		t.Fatalf("Ingest (new ID with migration): %v", err)
 	}
@@ -306,7 +306,7 @@ func TestIngest_StagedEPSSApplied(t *testing.T) {
 		CVEID:  cveID,
 		Status: "published",
 	}
-	err = merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err = merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestIngest_TombstoneRejectedCVE(t *testing.T) {
 		CVSSv3Score:  &v3score,
 		CVSSv3Vector: &v3vec,
 	}
-	err := merge.Ingest(ctx, s.Store, patch1, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch1, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (published): %v", err)
 	}
@@ -371,7 +371,7 @@ func TestIngest_TombstoneRejectedCVE(t *testing.T) {
 		Status:      "rejected",
 		IsWithdrawn: true,
 	}
-	err = merge.Ingest(ctx, s.Store, patch2, "mitre", nil)
+	err = merge.Ingest(ctx, s.Store, patch2, "mitre")
 	if err != nil {
 		t.Fatalf("Ingest (rejected): %v", err)
 	}
@@ -408,7 +408,7 @@ func TestIngest_MultiSourceResolution(t *testing.T) {
 		DescriptionPrimary: &nvdDesc,
 		DatePublished:      &now,
 	}
-	err := merge.Ingest(ctx, s.Store, nvdPatch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, nvdPatch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (nvd): %v", err)
 	}
@@ -419,7 +419,7 @@ func TestIngest_MultiSourceResolution(t *testing.T) {
 		Status:   "published",
 		Severity: &mitreSev,
 	}
-	err = merge.Ingest(ctx, s.Store, mitrePatch, "mitre", nil)
+	err = merge.Ingest(ctx, s.Store, mitrePatch, "mitre")
 	if err != nil {
 		t.Fatalf("Ingest (mitre): %v", err)
 	}
@@ -463,7 +463,7 @@ func TestIngest_ChildTableRewrite(t *testing.T) {
 			{URL: "https://example.com/ref2"},
 		},
 	}
-	err := merge.Ingest(ctx, s.Store, patch1, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch1, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (2 refs): %v", err)
 	}
@@ -483,7 +483,7 @@ func TestIngest_ChildTableRewrite(t *testing.T) {
 			{URL: "https://example.com/ref3"},
 		},
 	}
-	err = merge.Ingest(ctx, s.Store, patch2, "nvd", nil)
+	err = merge.Ingest(ctx, s.Store, patch2, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (1 ref): %v", err)
 	}
@@ -513,7 +513,7 @@ func TestIngest_FTSIndexUpdated(t *testing.T) {
 			{Ecosystem: "pip", PackageName: "proto-parser"},
 		},
 	}
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestIngest_AdvisoryLockAcquired(t *testing.T) {
 		CVEID:  cveID,
 		Status: "published",
 	}
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -593,10 +593,11 @@ func TestIngest_RawPayloadStored(t *testing.T) {
 	rawPayload := json.RawMessage(`{"upstream":"data","nested":{"key":"value"}}`)
 
 	patch := feed.CanonicalPatch{
-		CVEID:  cveID,
-		Status: "published",
+		CVEID:      cveID,
+		Status:     "published",
+		RawPayload: rawPayload,
 	}
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", rawPayload)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -633,7 +634,7 @@ func TestIngest_NilRawPayloadSkipsInsert(t *testing.T) {
 		CVEID:  cveID,
 		Status: "published",
 	}
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -704,12 +705,12 @@ func TestIngest_ConcurrentWriteSerializesCorrectly(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-gate
-				errs[0] = merge.Ingest(ctx, s.Store, nvdPatch, "nvd", nil)
+				errs[0] = merge.Ingest(ctx, s.Store, nvdPatch, "nvd")
 			}()
 			go func() {
 				defer wg.Done()
 				<-gate
-				errs[1] = merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa", nil)
+				errs[1] = merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa")
 			}()
 
 			close(gate)
@@ -781,7 +782,7 @@ func TestIngest_MigrateCVEPK_TargetExists(t *testing.T) {
 			{Ecosystem: "npm", PackageName: "collision-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
 		},
 	}
-	err := merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa", json.RawMessage(`{"ghsa":"v1"}`))
+	err := merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa")
 	if err != nil {
 		t.Fatalf("Ingest (GHSA native): %v", err)
 	}
@@ -795,7 +796,7 @@ func TestIngest_MigrateCVEPK_TargetExists(t *testing.T) {
 		DescriptionPrimary: &nvdDesc,
 		Severity:           &nvdSev,
 	}
-	err = merge.Ingest(ctx, s.Store, nvdPatch, "nvd", json.RawMessage(`{"nvd":"data"}`))
+	err = merge.Ingest(ctx, s.Store, nvdPatch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (NVD): %v", err)
 	}
@@ -820,7 +821,7 @@ func TestIngest_MigrateCVEPK_TargetExists(t *testing.T) {
 			{Ecosystem: "npm", PackageName: "collision-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
 		},
 	}
-	err = merge.Ingest(ctx, s.Store, ghsaPatch2, "ghsa", json.RawMessage(`{"ghsa":"v2"}`))
+	err = merge.Ingest(ctx, s.Store, ghsaPatch2, "ghsa")
 	if err != nil {
 		t.Fatalf("Ingest (GHSA with alias, target exists): %v", err)
 	}
@@ -877,7 +878,7 @@ func TestIngest_MigrateCVEPK_AdvisoryLocksBothIDs(t *testing.T) {
 		SourceID: oldID,
 		Status:   "published",
 	}
-	err := merge.Ingest(ctx, s.Store, patch1, "ghsa", nil)
+	err := merge.Ingest(ctx, s.Store, patch1, "ghsa")
 	if err != nil {
 		t.Fatalf("Ingest (old): %v", err)
 	}
@@ -897,7 +898,7 @@ func TestIngest_MigrateCVEPK_AdvisoryLocksBothIDs(t *testing.T) {
 			CVEID:    newID,
 			SourceID: oldID,
 			Status:   "published",
-		}, "ghsa", nil)
+		}, "ghsa")
 	}()
 
 	// Goroutine 2: updates the old ID from a different source.
@@ -908,7 +909,7 @@ func TestIngest_MigrateCVEPK_AdvisoryLocksBothIDs(t *testing.T) {
 		errs[1] = merge.Ingest(ctx, s.Store, feed.CanonicalPatch{
 			CVEID:  oldID,
 			Status: "published",
-		}, "nvd", nil)
+		}, "nvd")
 	}()
 
 	close(gate)
@@ -949,7 +950,7 @@ func TestIngest_NonMaterialFieldUpdateNotDropped(t *testing.T) {
 			{Ecosystem: "npm", PackageName: "nonmat-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
 		},
 	}
-	err := merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa", nil)
+	err := merge.Ingest(ctx, s.Store, ghsaPatch, "ghsa")
 	if err != nil {
 		t.Fatalf("Ingest (ghsa): %v", err)
 	}
@@ -972,7 +973,7 @@ func TestIngest_NonMaterialFieldUpdateNotDropped(t *testing.T) {
 		Status:             "published",
 		DescriptionPrimary: &nvdDesc,
 	}
-	err = merge.Ingest(ctx, s.Store, nvdPatch, "nvd", nil)
+	err = merge.Ingest(ctx, s.Store, nvdPatch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest (nvd): %v", err)
 	}
@@ -1020,7 +1021,7 @@ func TestIngest_VendorEnrichment(t *testing.T) {
 		},
 	}
 
-	err := merge.Ingest(ctx, s.Store, patch, "msrc", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "msrc")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -1066,7 +1067,7 @@ func TestIngest_VendorEnrichmentNilSkipsUpsert(t *testing.T) {
 		Status: "published",
 	}
 
-	err := merge.Ingest(ctx, s.Store, patch, "nvd", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "nvd")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
@@ -1101,7 +1102,7 @@ func TestIngest_VendorEnrichmentNilData(t *testing.T) {
 		},
 	}
 
-	err := merge.Ingest(ctx, s.Store, patch, "kev", nil)
+	err := merge.Ingest(ctx, s.Store, patch, "kev")
 	if err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}

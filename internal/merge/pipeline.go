@@ -40,7 +40,6 @@ func Ingest(
 	s *store.Store,
 	patch feed.CanonicalPatch,
 	sourceName string,
-	rawPayload json.RawMessage,
 ) error {
 	// Serialize and sanitize normalized patch for cve_sources.normalized_json.
 	normalizedJSON, err := json.Marshal(patch)
@@ -49,9 +48,6 @@ func Ingest(
 	}
 	// Strip null bytes — Postgres TEXT/JSONB rejects \x00 (pitfall §2.10).
 	normalizedJSON = bytes.ReplaceAll(normalizedJSON, []byte{0}, []byte{})
-	if rawPayload != nil {
-		rawPayload = bytes.ReplaceAll(rawPayload, []byte{0}, []byte{})
-	}
 
 	tx, err := s.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -115,7 +111,8 @@ func Ingest(
 	}
 
 	// Step 3: insert raw payload for audit / debugging (best-effort; skip if nil).
-	if rawPayload != nil {
+	if patch.RawPayload != nil {
+		rawPayload := bytes.ReplaceAll(patch.RawPayload, []byte{0}, []byte{})
 		if err := q.InsertCVERawPayload(ctx, generated.InsertCVERawPayloadParams{
 			CveID:      patch.CVEID,
 			SourceName: sourceName,

@@ -45,14 +45,8 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
-	"github.com/scarson/cvert-ops/internal/feed"
-	"github.com/scarson/cvert-ops/internal/feed/ghsa"
-	"github.com/scarson/cvert-ops/internal/feed/kev"
-	"github.com/scarson/cvert-ops/internal/feed/mitre"
-	"github.com/scarson/cvert-ops/internal/feed/msrc"
-	"github.com/scarson/cvert-ops/internal/feed/nvd"
-	"github.com/scarson/cvert-ops/internal/feed/osv"
-	"github.com/scarson/cvert-ops/internal/feed/redhat"
+	"github.com/scarson/cvert-ops/internal/ingest"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -120,9 +114,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// in-flight jobs complete and the goroutines exit. The goroutine is
 	// intentionally fire-and-forget here; the pool drains on ctx cancellation
 	// which happens before or alongside HTTP server shutdown.
-	feedAdapters := buildFeedAdapters(&http.Client{Timeout: 30 * time.Second})
+	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", feedIngestHandler(feedAdapters))
+	workerPool.Register("feed_ingest", ingest.IngestHandler(st, feedClient, merge.Ingest))
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
 	// development and testing; GeminiClient for production.
@@ -263,9 +257,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	alertCache := alert.NewRuleCache()
 	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
 
-	feedAdapters := buildFeedAdapters(&http.Client{Timeout: 30 * time.Second})
+	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", feedIngestHandler(feedAdapters))
+	workerPool.Register("feed_ingest", ingest.IngestHandler(st, feedClient, merge.Ingest))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
@@ -297,40 +291,6 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
 	return nil
-}
-
-// buildFeedAdapters constructs and returns the registry of all feed adapters
-// keyed by source name. The worker dispatches to the correct adapter based on
-// the "source" field in the job payload.
-func buildFeedAdapters(client *http.Client) map[string]feed.Adapter {
-	return map[string]feed.Adapter{
-		"ghsa":   ghsa.New(client),
-		"kev":    kev.New(client),
-		"mitre":  mitre.New(client),
-		"msrc":   msrc.New(client),
-		"nvd":    nvd.New(client),
-		"osv":    osv.New(client),
-		"redhat": redhat.New(client),
-	}
-}
-
-// feedIngestHandler returns a worker.Handler that dispatches feed ingestion
-// jobs to the appropriate adapter based on the "source" field in the payload.
-func feedIngestHandler(adapters map[string]feed.Adapter) worker.Handler {
-	return func(_ context.Context, payload json.RawMessage) error {
-		var p struct {
-			Source string `json:"source"`
-		}
-		if err := json.Unmarshal(payload, &p); err != nil {
-			return fmt.Errorf("unmarshal feed ingest payload: %w", err)
-		}
-		if _, ok := adapters[p.Source]; !ok {
-			return fmt.Errorf("unknown feed source: %q", p.Source)
-		}
-		slog.Info("feed ingest job received", "source", p.Source,
-			"payload_len", len(payload))
-		return nil
-	}
 }
 
 // activationHandler returns a worker.Handler that runs the activation scan for

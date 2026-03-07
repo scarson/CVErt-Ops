@@ -67,14 +67,11 @@ func (m *mockMerge) Calls() []mergeCall {
 	return append([]mergeCall(nil), m.calls...)
 }
 
-// withMockFactory overrides adapterFactory for the duration of a test and restores it on cleanup.
-func withMockFactory(t *testing.T, adapter feed.Adapter) {
-	t.Helper()
-	origFactory := adapterFactory
-	adapterFactory = func(_ string, _ *http.Client) (feed.Adapter, error) {
+// mockFactory returns an AdapterFactory that always returns the given adapter.
+func mockFactory(adapter feed.Adapter) AdapterFactory {
+	return func(_ string, _ *http.Client) (feed.Adapter, error) {
 		return adapter, nil
 	}
-	t.Cleanup(func() { adapterFactory = origFactory })
 }
 
 func TestFeedHandler_Success(t *testing.T) {
@@ -97,8 +94,7 @@ func TestFeedHandler_Success(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := Handler(db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(db.Store, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	if err := handler(ctx, payload); err != nil {
@@ -174,8 +170,7 @@ func TestFeedHandler_LastPageStopsFetching(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := Handler(db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(db.Store, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	if err := handler(ctx, payload); err != nil {
@@ -199,8 +194,7 @@ func TestFeedHandler_FetchError(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := Handler(db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(db.Store, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	err := handler(ctx, payload)
@@ -258,8 +252,7 @@ func TestFeedHandler_FailurePreservesLastSuccess(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := Handler(db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(db.Store, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	// First run succeeds.
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
@@ -321,8 +314,7 @@ func TestFeedHandler_MidPaginationError(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := Handler(db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(db.Store, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	err := handler(ctx, payload)
@@ -403,8 +395,7 @@ func TestFeedHandler_SyncStateFailOnSuccess_ReturnsError(t *testing.T) {
 
 	merge := &mockMerge{}
 	failStore := &failSyncStateStore{HandlerStore: db.Store}
-	handler := handlerWithStore(failStore, db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(failStore, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	err := handler(ctx, payload)
@@ -434,8 +425,7 @@ func TestFeedHandler_SyncStateFailOnError_LogsButReturnsOriginal(t *testing.T) {
 
 	merge := &mockMerge{}
 	failStore := &failSyncStateStore{HandlerStore: db.Store}
-	handler := handlerWithStore(failStore, db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(failStore, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	err := handler(ctx, payload)
@@ -505,8 +495,7 @@ func TestFeedHandler_MidPageCursorPersist(t *testing.T) {
 
 	merge := &mockMerge{}
 	recStore := &recordingSyncStore{HandlerStore: db.Store}
-	handler := handlerWithStore(recStore, db.Store, nil, merge.fn)
-	withMockFactory(t, adapter)
+	handler := handlerWithStore(recStore, db.Store, nil, merge.fn, mockFactory(adapter))
 
 	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	if err := handler(ctx, payload); err != nil {
@@ -544,6 +533,76 @@ func TestFeedHandler_MidPageCursorPersist(t *testing.T) {
 	}
 	if finalState.LastSuccessAt == nil {
 		t.Error("final state should have LastSuccessAt set")
+	}
+}
+
+func TestFeedHandler_MidPageCursorPersist_PreservesFailureTracking(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed sync state with existing failure tracking (simulates prior failures).
+	now := time.Now().UTC()
+	backoff := now.Add(10 * time.Minute)
+	if err := db.UpsertFeedSyncState(ctx, store.FeedSyncState{
+		FeedName:            "test-feed",
+		ConsecutiveFailures: 3,
+		LastError:           "previous failure",
+		BackoffUntil:        &backoff,
+		LastAttemptAt:       &now,
+	}); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+
+	page1Cursor := json.RawMessage(`{"page":2}`)
+	var callCount int
+	adapter := &mockAdapter{
+		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+			callCount++
+			return &feed.FetchResult{
+				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
+				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
+				NextCursor: page1Cursor,
+				LastPage:   true,
+			}, nil
+		},
+	}
+
+	merge := &mockMerge{}
+	recStore := &recordingSyncStore{HandlerStore: db.Store}
+	handler := handlerWithStore(recStore, db.Store, nil, merge.fn, mockFactory(adapter))
+
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	if err := handler(ctx, payload); err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+
+	// Should have at least 2 UpsertFeedSyncState calls: mid-page + final success.
+	states := recStore.States()
+	if len(states) < 2 {
+		t.Fatalf("expected at least 2 UpsertFeedSyncState calls, got %d", len(states))
+	}
+
+	// The mid-page persist (first call) must preserve ConsecutiveFailures from the
+	// prior state. If a process crash occurs between mid-page and final persist,
+	// the failure tracking must not be lost.
+	midPage := states[0]
+	if midPage.ConsecutiveFailures != 3 {
+		t.Errorf("mid-page ConsecutiveFailures = %d, want 3 (preserved from seed)", midPage.ConsecutiveFailures)
+	}
+	if midPage.BackoffUntil == nil {
+		t.Error("mid-page BackoffUntil should be preserved from seed, got nil")
+	}
+	if midPage.LastError != "previous failure" {
+		t.Errorf("mid-page LastError = %q, want %q", midPage.LastError, "previous failure")
+	}
+
+	// Final success persist should reset failure tracking.
+	finalState := states[len(states)-1]
+	if finalState.ConsecutiveFailures != 0 {
+		t.Errorf("final ConsecutiveFailures = %d, want 0", finalState.ConsecutiveFailures)
+	}
+	if finalState.LastError != "" {
+		t.Errorf("final LastError = %q, want empty", finalState.LastError)
 	}
 }
 

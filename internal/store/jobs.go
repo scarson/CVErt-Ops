@@ -1,5 +1,10 @@
 // ABOUTME: Store methods for the job queue — claim, complete, fail, recover stale, and enqueue.
 // ABOUTME: Wraps sqlc-generated queries with domain types and error formatting.
+//
+// All methods use s.q (bound to the raw pool) rather than a transaction helper.
+// The jobs table is not org-scoped and has no RLS policies, so withOrgTx provides
+// no safety benefit. Each method executes a single atomic SQL statement, so
+// withBypassTx would add transaction overhead with no correctness gain.
 package store
 
 import (

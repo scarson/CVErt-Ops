@@ -34,12 +34,12 @@ type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPat
 // Handler returns a worker.Handler that fetches from the named feed adapter,
 // merges each patch into the CVE corpus, and persists cursor/sync state.
 func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
-	return handlerWithStore(st, st, client, mergeFn)
+	return handlerWithStore(st, st, client, mergeFn, NewAdapter)
 }
 
 // handlerWithStore is the internal implementation that accepts a separate HandlerStore
 // for sync state operations. This enables testing error paths without mocking the full store.
-func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
+func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory) worker.Handler {
 	return func(ctx context.Context, payload json.RawMessage) error {
 		var p Payload
 		if err := json.Unmarshal(payload, &p); err != nil {
@@ -49,7 +49,7 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 		start := time.Now()
 		slog.Info("feed ingest started", "feed", p.FeedName)
 
-		adapter, err := adapterFactory(p.FeedName, client)
+		adapter, err := factory(p.FeedName, client)
 		if err != nil {
 			return fmt.Errorf("create adapter for %q: %w", p.FeedName, err)
 		}
@@ -63,10 +63,14 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 		var cursor json.RawMessage
 		var prevFailures int32
 		var prevLastSuccess *time.Time
+		var prevLastError string
+		var prevBackoffUntil *time.Time
 		if state != nil {
 			cursor = state.CursorJSON
 			prevFailures = state.ConsecutiveFailures
 			prevLastSuccess = state.LastSuccessAt
+			prevLastError = state.LastError
+			prevBackoffUntil = state.BackoffUntil
 		}
 		cursorBefore := cursor
 
@@ -111,19 +115,23 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 				break
 			}
 
-			// Update last successful cursor after a fully-processed page.
-			if result.NextCursor != nil {
-				lastSuccessfulCursor = result.NextCursor
-			}
+			// Update cursor checkpoint. Adapters are required to return a non-nil
+			// NextCursor on every page (including the last); see feed.Adapter doc.
+			lastSuccessfulCursor = result.NextCursor
 			cursor = result.NextCursor
 
 			// Persist cursor progress after each page for crash recovery.
+			// Carry forward existing failure tracking so a crash between here
+			// and the final success/error persist doesn't reset backoff state.
 			pageNow := time.Now()
 			if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
-				FeedName:      p.FeedName,
-				CursorJSON:    lastSuccessfulCursor,
-				LastSuccessAt: prevLastSuccess,
-				LastAttemptAt: &pageNow,
+				FeedName:            p.FeedName,
+				CursorJSON:          lastSuccessfulCursor,
+				LastSuccessAt:       prevLastSuccess,
+				LastAttemptAt:       &pageNow,
+				ConsecutiveFailures: prevFailures,
+				LastError:           prevLastError,
+				BackoffUntil:        prevBackoffUntil,
 			}); syncErr != nil {
 				slog.Error("mid-pagination cursor persist failed",
 					"feed", p.FeedName, "error", syncErr)

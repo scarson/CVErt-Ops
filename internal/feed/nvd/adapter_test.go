@@ -116,9 +116,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   baseTime,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 5000, baseTime.Add(time.Hour))
+		next, lastPage := computeNextCursor(cur, 5000, baseTime.Add(time.Hour))
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false for mid-window pagination")
 		}
 		if next.StartIndex != resultsPerPage {
 			t.Fatalf("StartIndex = %d, want %d", next.StartIndex, resultsPerPage)
@@ -142,9 +145,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   windowEnd,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 100, effectiveNow)
+		next, lastPage := computeNextCursor(cur, 100, effectiveNow)
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false when more windows available")
 		}
 		if next.StartIndex != 0 {
 			t.Fatalf("StartIndex = %d, want 0 for new window", next.StartIndex)
@@ -156,7 +162,7 @@ func TestComputeNextCursor(t *testing.T) {
 		}
 	})
 
-	t.Run("window exhausted reached effectiveNow returns nil", func(t *testing.T) {
+	t.Run("window exhausted reached effectiveNow returns caught-up cursor", func(t *testing.T) {
 		t.Parallel()
 		cur := Cursor{
 			WindowStart: baseTime.Add(-48 * time.Hour),
@@ -164,9 +170,24 @@ func TestComputeNextCursor(t *testing.T) {
 			StartIndex:  0,
 		}
 		// effectiveNow is at or before the window end — no more windows.
-		next := computeNextCursor(cur, 100, baseTime)
-		if next != nil {
-			t.Fatalf("expected nil cursor when at effectiveNow, got %+v", next)
+		// Should still return a non-nil "caught up" cursor for persistence.
+		next, lastPage := computeNextCursor(cur, 100, baseTime)
+		if next == nil {
+			t.Fatal("expected non-nil caught-up cursor")
+		}
+		if !lastPage {
+			t.Error("expected lastPage=true when all windows exhausted")
+		}
+		// Caught-up cursor starts from WindowEnd minus overlap.
+		wantStart := baseTime.Add(-overlapDuration)
+		if !next.WindowStart.Equal(wantStart) {
+			t.Errorf("WindowStart = %v, want %v", next.WindowStart, wantStart)
+		}
+		if !next.WindowEnd.Equal(baseTime) {
+			t.Errorf("WindowEnd = %v, want %v", next.WindowEnd, baseTime)
+		}
+		if next.StartIndex != 0 {
+			t.Errorf("StartIndex = %d, want 0", next.StartIndex)
 		}
 	})
 
@@ -180,9 +201,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   windowEnd,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 0, effectiveNow)
+		next, lastPage := computeNextCursor(cur, 0, effectiveNow)
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false when more windows available")
 		}
 		wantStart := windowEnd.Add(-overlapDuration)
 		if !next.WindowStart.Equal(wantStart) {
@@ -202,9 +226,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   windowEnd,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 0, effectiveNow)
+		next, lastPage := computeNextCursor(cur, 0, effectiveNow)
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false when more windows available")
 		}
 		if !next.WindowEnd.Equal(effectiveNow) {
 			t.Fatalf("WindowEnd = %v, want %v (capped to effectiveNow)", next.WindowEnd, effectiveNow)
@@ -1235,7 +1262,7 @@ func TestFetch_LastPage(t *testing.T) {
 	}
 
 	// Set the cursor's WindowEnd equal to effectiveNow (the response timestamp).
-	// This means all windows are exhausted — computeNextCursor returns nil.
+	// This means all windows are exhausted — computeNextCursor returns a caught-up cursor.
 	windowStart := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
 	windowEnd := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
 	cursorJSON, _ := json.Marshal(Cursor{
@@ -1252,8 +1279,16 @@ func TestFetch_LastPage(t *testing.T) {
 	if !result.LastPage {
 		t.Error("LastPage should be true when window end reaches effectiveNow")
 	}
-	if result.NextCursor != nil {
-		t.Errorf("NextCursor should be nil on last page, got %s", string(result.NextCursor))
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor should be non-nil (caught-up cursor) on last page")
+	}
+	// Verify the caught-up cursor is valid JSON with expected shape.
+	var caughtUp Cursor
+	if err := json.Unmarshal(result.NextCursor, &caughtUp); err != nil {
+		t.Fatalf("unmarshal caught-up cursor: %v", err)
+	}
+	if caughtUp.StartIndex != 0 {
+		t.Errorf("caught-up cursor StartIndex = %d, want 0", caughtUp.StartIndex)
 	}
 	if len(result.Patches) != 2 {
 		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))

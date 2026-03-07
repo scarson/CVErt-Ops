@@ -171,7 +171,7 @@ func TestScheduler_SkipsAlreadyPendingFeeds(t *testing.T) {
 }
 
 func TestScheduler_MetricsEnqueued(t *testing.T) {
-	// Not parallel: uses shared Prometheus default registry.
+	t.Parallel()
 	reg := prometheus.NewRegistry()
 	ms := newMockSchedulerStore()
 	s := NewSchedulerWithRegistry(ms, reg)
@@ -180,15 +180,15 @@ func TestScheduler_MetricsEnqueued(t *testing.T) {
 
 	// All feeds should be enqueued (never synced).
 	for _, entry := range defaultSchedule {
-		val := testutil.ToFloat64(feedJobsEnqueued.WithLabelValues(entry.FeedName))
+		val := testutil.ToFloat64(s.jobsEnqueued.WithLabelValues(entry.FeedName))
 		if val != 1 {
-			t.Errorf("feedJobsEnqueued{feed=%q} = %v, want 1", entry.FeedName, val)
+			t.Errorf("jobsEnqueued{feed=%q} = %v, want 1", entry.FeedName, val)
 		}
 	}
 }
 
 func TestScheduler_MetricsSkipped(t *testing.T) {
-	// Not parallel: uses shared Prometheus default registry.
+	t.Parallel()
 	reg := prometheus.NewRegistry()
 	ms := newMockSchedulerStore()
 	recent := time.Now().UTC().Add(-30 * time.Minute)
@@ -209,16 +209,16 @@ func TestScheduler_MetricsSkipped(t *testing.T) {
 	s.tick(context.Background())
 
 	// NVD skipped: not_due.
-	if val := testutil.ToFloat64(feedJobsSkipped.WithLabelValues("nvd", "not_due")); val != 1 {
-		t.Errorf("feedJobsSkipped{feed=nvd, reason=not_due} = %v, want 1", val)
+	if val := testutil.ToFloat64(s.jobsSkipped.WithLabelValues("nvd", "not_due")); val != 1 {
+		t.Errorf("jobsSkipped{feed=nvd, reason=not_due} = %v, want 1", val)
 	}
 	// KEV skipped: backoff.
-	if val := testutil.ToFloat64(feedJobsSkipped.WithLabelValues("kev", "backoff")); val != 1 {
-		t.Errorf("feedJobsSkipped{feed=kev, reason=backoff} = %v, want 1", val)
+	if val := testutil.ToFloat64(s.jobsSkipped.WithLabelValues("kev", "backoff")); val != 1 {
+		t.Errorf("jobsSkipped{feed=kev, reason=backoff} = %v, want 1", val)
 	}
 	// GHSA skipped: already_pending.
-	if val := testutil.ToFloat64(feedJobsSkipped.WithLabelValues("ghsa", "already_pending")); val != 1 {
-		t.Errorf("feedJobsSkipped{feed=ghsa, reason=already_pending} = %v, want 1", val)
+	if val := testutil.ToFloat64(s.jobsSkipped.WithLabelValues("ghsa", "already_pending")); val != 1 {
+		t.Errorf("jobsSkipped{feed=ghsa, reason=already_pending} = %v, want 1", val)
 	}
 }
 

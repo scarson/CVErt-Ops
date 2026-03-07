@@ -11,7 +11,11 @@ import (
 // Adapter is the interface implemented by every CVE feed adapter.
 // Fetch returns one page of canonical patches and a cursor for the next page.
 // Set LastPage = true on FetchResult to signal no more pages remain.
-// A nil NextCursor also terminates pagination (used by NVD when all windows are exhausted).
+//
+// Adapters MUST return a non-nil NextCursor on every successful Fetch call,
+// including the final page. The handler persists NextCursor as the sync
+// checkpoint; returning nil causes the cursor to regress to the previous
+// page's value, resulting in redundant API calls on subsequent runs.
 //
 // The type name is Adapter (not FeedAdapter) to avoid the feed.FeedAdapter stutter.
 type Adapter interface {
@@ -25,8 +29,10 @@ type FetchResult struct {
 	// SourceMeta contains metadata about the fetch operation.
 	SourceMeta SourceMeta
 	// NextCursor is the opaque cursor for the next Fetch call.
-	// Nil means no additional pages; the caller should persist the cursor
-	// as the new sync state.
+	// Adapters MUST always return a non-nil NextCursor, even on the final page,
+	// so the handler can persist a valid sync checkpoint. On the final page,
+	// return a cursor representing the "caught up" state (e.g., for the NVD
+	// adapter, the window covering effectiveNow).
 	NextCursor json.RawMessage
 	// LastPage signals that this is the final page of results for this run.
 	// The caller should persist NextCursor but not call Fetch again.

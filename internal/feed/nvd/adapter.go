@@ -139,13 +139,10 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	}
 
 	// Determine NextCursor.
-	nextCursor := computeNextCursor(cur, totalResults, effectiveNow)
-	var nextCursorJSON json.RawMessage
-	if nextCursor != nil {
-		nextCursorJSON, err = json.Marshal(nextCursor)
-		if err != nil {
-			return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
-		}
+	nextCursor, lastPage := computeNextCursor(cur, totalResults, effectiveNow)
+	nextCursorJSON, err := json.Marshal(nextCursor)
+	if err != nil {
+		return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
 	}
 
 	return &feed.FetchResult{
@@ -155,7 +152,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  time.Now().UTC(),
 		},
 		NextCursor: nextCursorJSON,
-		LastPage:   nextCursorJSON == nil,
+		LastPage:   lastPage,
 	}, nil
 }
 
@@ -235,8 +232,9 @@ func zeroValueCursor() Cursor {
 }
 
 // computeNextCursor determines the cursor for the next Fetch call.
-// Returns nil when all windows up to effectiveNow have been processed.
-func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) *Cursor {
+// Returns a "caught up" cursor (not nil) when all windows up to effectiveNow
+// have been processed, so the handler always has a valid cursor to persist.
+func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*Cursor, bool) {
 	nextStartIndex := cur.StartIndex + resultsPerPage
 
 	if nextStartIndex < totalResults {
@@ -245,15 +243,20 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) *Cu
 			WindowStart: cur.WindowStart,
 			WindowEnd:   cur.WindowEnd,
 			StartIndex:  nextStartIndex,
-		}
+		}, false
 	}
 
 	// Current window exhausted — compute the next window.
 	// Apply 15-minute overlap to catch eventual-consistency stragglers.
 	nextWindowStart := cur.WindowEnd.Add(-overlapDuration)
 	if nextWindowStart.After(effectiveNow) || !effectiveNow.After(cur.WindowEnd) {
-		// Already at or past the effective "now" — done.
-		return nil
+		// All windows processed. Return a "caught up" cursor so the handler
+		// persists a valid checkpoint instead of regressing to the previous page.
+		return &Cursor{
+			WindowStart: cur.WindowEnd.Add(-overlapDuration),
+			WindowEnd:   effectiveNow,
+			StartIndex:  0,
+		}, true
 	}
 
 	nextWindowEnd := nextWindowStart.Add(windowMax)
@@ -265,7 +268,7 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) *Cu
 		WindowStart: nextWindowStart,
 		WindowEnd:   nextWindowEnd,
 		StartIndex:  0,
-	}
+	}, false
 }
 
 // --- NVD response JSON types ---

@@ -198,18 +198,8 @@ func makeEPSSGzip(t *testing.T, rows []string) []byte {
 }
 
 func TestApply_SkipsPoisonRows(t *testing.T) {
-	// Not parallel: mutates package-level applyRowFn and slog.Default.
-	origFn := applyRowFn
-	t.Cleanup(func() { applyRowFn = origFn })
-
+	// Not parallel: mutates slog.Default.
 	var applied []string
-	applyRowFn = func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
-		if cveID == "CVE-2024-0002" {
-			return fmt.Errorf("simulated DB error")
-		}
-		applied = append(applied, cveID)
-		return nil
-	}
 
 	body := makeEPSSGzip(t, []string{
 		"CVE-2024-0001,0.5,0.9",
@@ -233,6 +223,13 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 	adapter := &Adapter{
 		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
 		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+			if cveID == "CVE-2024-0002" {
+				return fmt.Errorf("simulated DB error")
+			}
+			applied = append(applied, cveID)
+			return nil
+		},
 	}
 
 	result, err := adapter.Apply(context.Background(), nil, nil)

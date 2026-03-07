@@ -38,13 +38,12 @@ func QueueForFeed(feedName string) string {
 	return "feed_ingest"
 }
 
-// adapterFactory creates a feed.Adapter for the given feed name. It is a
-// package-level variable so tests can override it with a mock.
-var adapterFactory = newAdapter
+// AdapterFactory creates a feed.Adapter for a given feed name and HTTP client.
+type AdapterFactory func(feedName string, client *http.Client) (feed.Adapter, error)
 
-// newAdapter returns the right feed.Adapter for a given feed name.
+// NewAdapter returns the right feed.Adapter for a given feed name.
 // Returns an error for unknown feeds or "epss" (which has a separate handler).
-func newAdapter(feedName string, client *http.Client) (feed.Adapter, error) {
+func NewAdapter(feedName string, client *http.Client) (feed.Adapter, error) {
 	switch feedName {
 	case "nvd":
 		return nvd.New(client), nil

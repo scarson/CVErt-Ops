@@ -14,12 +14,15 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
-var feedJobsEnqueued = promauto.NewCounterVec(prometheus.CounterOpts{
+// defaultJobsEnqueued and defaultJobsSkipped are registered with the default
+// Prometheus registry. Used by NewScheduler; NewSchedulerWithRegistry creates
+// isolated counters per Scheduler instance for test-safe metrics.
+var defaultJobsEnqueued = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cvert_feed_jobs_enqueued_total",
 	Help: "Total feed ingestion jobs enqueued by the scheduler.",
 }, []string{"feed"})
 
-var feedJobsSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+var defaultJobsSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "cvert_feed_jobs_skipped_total",
 	Help: "Total feed ingestion jobs skipped by the scheduler.",
 }, []string{"feed", "reason"})
@@ -49,32 +52,37 @@ var defaultSchedule = []feedScheduleEntry{
 
 // Scheduler periodically enqueues feed ingestion jobs.
 type Scheduler struct {
-	store    SchedulerStore
-	schedule []feedScheduleEntry
+	store        SchedulerStore
+	schedule     []feedScheduleEntry
+	jobsEnqueued *prometheus.CounterVec
+	jobsSkipped  *prometheus.CounterVec
 }
 
-// NewScheduler creates a scheduler that uses the default feed schedule.
+// NewScheduler creates a scheduler that uses the default feed schedule
+// and the default Prometheus registry.
 func NewScheduler(st SchedulerStore) *Scheduler {
 	return &Scheduler{
-		store:    st,
-		schedule: defaultSchedule,
+		store:        st,
+		schedule:     defaultSchedule,
+		jobsEnqueued: defaultJobsEnqueued,
+		jobsSkipped:  defaultJobsSkipped,
 	}
 }
 
-// NewSchedulerWithRegistry creates a scheduler and registers its metrics with
-// the given Prometheus registry. Useful for testing with isolated registries.
+// NewSchedulerWithRegistry creates a scheduler with metrics registered in the
+// given Prometheus registry. Useful for testing with isolated registries.
 func NewSchedulerWithRegistry(st SchedulerStore, reg prometheus.Registerer) *Scheduler {
-	feedJobsEnqueued = promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
-		Name: "cvert_feed_jobs_enqueued_total",
-		Help: "Total feed ingestion jobs enqueued by the scheduler.",
-	}, []string{"feed"})
-	feedJobsSkipped = promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
-		Name: "cvert_feed_jobs_skipped_total",
-		Help: "Total feed ingestion jobs skipped by the scheduler.",
-	}, []string{"feed", "reason"})
 	return &Scheduler{
 		store:    st,
 		schedule: defaultSchedule,
+		jobsEnqueued: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "cvert_feed_jobs_enqueued_total",
+			Help: "Total feed ingestion jobs enqueued by the scheduler.",
+		}, []string{"feed"}),
+		jobsSkipped: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "cvert_feed_jobs_skipped_total",
+			Help: "Total feed ingestion jobs skipped by the scheduler.",
+		}, []string{"feed", "reason"}),
 	}
 }
 
@@ -114,14 +122,14 @@ func (s *Scheduler) maybeEnqueue(ctx context.Context, entry feedScheduleEntry) {
 	if state != nil {
 		// Skip if in backoff.
 		if state.BackoffUntil != nil && state.BackoffUntil.After(time.Now()) {
-			feedJobsSkipped.WithLabelValues(entry.FeedName, "backoff").Inc()
+			s.jobsSkipped.WithLabelValues(entry.FeedName, "backoff").Inc()
 			slog.Debug("feed in backoff", "feed", entry.FeedName, "until", *state.BackoffUntil)
 			return
 		}
 
 		// Skip if not yet due.
 		if state.LastSuccessAt != nil && state.LastSuccessAt.Add(entry.Interval).After(time.Now()) {
-			feedJobsSkipped.WithLabelValues(entry.FeedName, "not_due").Inc()
+			s.jobsSkipped.WithLabelValues(entry.FeedName, "not_due").Inc()
 			slog.Debug("feed not yet due", "feed", entry.FeedName,
 				"next_due", state.LastSuccessAt.Add(entry.Interval))
 			return
@@ -136,10 +144,10 @@ func (s *Scheduler) maybeEnqueue(ctx context.Context, entry feedScheduleEntry) {
 		return
 	}
 	if id == uuid.Nil {
-		feedJobsSkipped.WithLabelValues(entry.FeedName, "already_pending").Inc()
+		s.jobsSkipped.WithLabelValues(entry.FeedName, "already_pending").Inc()
 		slog.Debug("feed job already pending", "feed", entry.FeedName)
 		return
 	}
-	feedJobsEnqueued.WithLabelValues(entry.FeedName).Inc()
+	s.jobsEnqueued.WithLabelValues(entry.FeedName).Inc()
 	slog.Info("feed job enqueued", "feed", entry.FeedName, "queue", entry.Queue)
 }

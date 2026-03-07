@@ -70,11 +70,15 @@ type Cursor struct {
 	ModelVersion string `json:"model_version,omitempty"`
 }
 
+// applyRowFunc is the signature for the per-row DB write function.
+type applyRowFunc func(ctx context.Context, db *sql.DB, cveID string, score float64, asOfDate time.Time) error
+
 // Adapter downloads and applies EPSS scores to the canonical CVE corpus.
 // It does NOT implement feed.Adapter — call Apply for each sync cycle.
 type Adapter struct {
 	client      *http.Client
 	rateLimiter *rate.Limiter
+	applyRowFn  applyRowFunc
 }
 
 // New creates an EPSS adapter. Pass nil to use http.DefaultClient.
@@ -88,6 +92,7 @@ func New(client *http.Client) *Adapter {
 	return &Adapter{
 		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(24*time.Hour), 1),
+		applyRowFn:  applyRow,
 	}
 }
 
@@ -123,7 +128,12 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		}
 	}
 
-	if err := a.rateLimiter.Wait(ctx); err != nil {
+	// Safety net: the 24h rate limiter can block a worker goroutine for the full
+	// reservation period if the cursor-based skip (above) fails to short-circuit.
+	// Cap the wait so a corrupted cursor or early scheduler fire fails fast.
+	rlCtx, rlCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer rlCancel()
+	if err := a.rateLimiter.Wait(rlCtx); err != nil {
 		return nil, fmt.Errorf("epss: rate limit: %w", err)
 	}
 
@@ -214,7 +224,7 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 			continue
 		}
 
-		if err := applyRowFn(ctx, db, cveID, score, asOfDate); err != nil {
+		if err := a.applyRowFn(ctx, db, cveID, score, asOfDate); err != nil {
 			slog.WarnContext(ctx, "epss: skipping row with DB error",
 				"cve_id", cveID, "error", err)
 			continue
@@ -229,8 +239,6 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 	return nextCursorJSON, nil
 }
 
-// applyRowFn is the function called for each CSV row. Package-level var for testability.
-var applyRowFn = applyRow
 
 // applyRow executes the two-statement EPSS pattern for a single CVE inside an
 // advisory-locked transaction. Both statements run unconditionally — do NOT

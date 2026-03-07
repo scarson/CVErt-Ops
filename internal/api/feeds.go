@@ -5,6 +5,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -46,6 +47,7 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 
 	states, err := srv.store.ListFeedSyncStates(ctx)
 	if err != nil {
+		slog.Error("list feed sync states", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -54,6 +56,7 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 	for i, s := range states {
 		logs, err := srv.store.ListRecentFeedFetchLogs(ctx, s.FeedName, 5)
 		if err != nil {
+			slog.Error("list feed fetch logs", "feed", s.FeedName, "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
@@ -77,6 +80,7 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	lockKey := "feed:" + feedName
 	has, err := srv.store.HasPendingOrRunningJob(ctx, lockKey)
 	if err != nil {
+		slog.Error("check pending feed job", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -89,6 +93,7 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	payload, _ := json.Marshal(ingest.Payload{FeedName: feedName})
 	jobID, err := srv.store.EnqueueJob(ctx, queue, 0, payload, &lockKey, 3, nil)
 	if err != nil {
+		slog.Error("enqueue feed job", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

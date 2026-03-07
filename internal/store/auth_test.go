@@ -380,6 +380,63 @@ func TestDeleteExpiredRefreshTokens(t *testing.T) {
 	}
 }
 
+func TestSetFirstSiteAdmin(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user1, err := s.CreateUser(ctx, "admin1@example.com", "Admin1", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser (first): %v", err)
+	}
+	user2, err := s.CreateUser(ctx, "admin2@example.com", "Admin2", "", 0)
+	if err != nil {
+		t.Fatalf("CreateUser (second): %v", err)
+	}
+
+	// Neither user is admin initially.
+	isAdmin, err := s.IsSiteAdmin(ctx, user1.ID)
+	if err != nil {
+		t.Fatalf("IsSiteAdmin: %v", err)
+	}
+	if isAdmin {
+		t.Error("user1 should not be site admin initially")
+	}
+
+	// Promote first user.
+	if err := s.SetFirstSiteAdmin(ctx, user1.ID); err != nil {
+		t.Fatalf("SetFirstSiteAdmin (user1): %v", err)
+	}
+	isAdmin, err = s.IsSiteAdmin(ctx, user1.ID)
+	if err != nil {
+		t.Fatalf("IsSiteAdmin after promotion: %v", err)
+	}
+	if !isAdmin {
+		t.Error("user1 should be site admin after SetFirstSiteAdmin")
+	}
+
+	// Second call for a different user is a no-op (admin already exists).
+	if err := s.SetFirstSiteAdmin(ctx, user2.ID); err != nil {
+		t.Fatalf("SetFirstSiteAdmin (user2): %v", err)
+	}
+	isAdmin2, err := s.IsSiteAdmin(ctx, user2.ID)
+	if err != nil {
+		t.Fatalf("IsSiteAdmin (user2): %v", err)
+	}
+	if isAdmin2 {
+		t.Error("user2 should NOT be site admin — first admin already exists")
+	}
+
+	// user1 should still be admin.
+	isAdmin, err = s.IsSiteAdmin(ctx, user1.ID)
+	if err != nil {
+		t.Fatalf("IsSiteAdmin (user1 recheck): %v", err)
+	}
+	if !isAdmin {
+		t.Error("user1 should still be site admin")
+	}
+}
+
 func TestCreateUser_DuplicateEmail(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

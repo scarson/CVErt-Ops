@@ -480,6 +480,13 @@ func TestBackoffDuration_Zero(t *testing.T) {
 	}
 }
 
+func TestBackoffDuration_One(t *testing.T) {
+	d := backoffDuration(1)
+	if d != 60*time.Second {
+		t.Errorf("backoffDuration(1) = %v, want 1m0s", d)
+	}
+}
+
 func TestBackoffDuration_Capped(t *testing.T) {
 	// At failures=10, should be 30s * 1024 = 30720s. Beyond 10 should not increase.
 	d10 := backoffDuration(10)

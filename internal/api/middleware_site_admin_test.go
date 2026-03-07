@@ -124,16 +124,10 @@ func TestRequireSiteAdmin_UnknownUser_500(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
 
-	secret := "testsecret"
-	// Create a token with a user ID that doesn't exist in the DB.
 	fakeUserID := uuid.New()
-	token, err := auth.IssueAccessToken([]byte(secret), fakeUserID, 1, 15*time.Minute)
-	if err != nil {
-		t.Fatalf("issue token: %v", err)
-	}
 
-	srv := newAuthTestServer(t, secret, db)
-	// Manually set up the chain: inject ctxUserID, then RequireSiteAdmin.
+	srv := newAuthTestServer(t, "testsecret", db)
+	// Manually inject ctxUserID with a non-existent user, then RequireSiteAdmin.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), ctxUserID, fakeUserID)
 		srv.RequireSiteAdmin()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -144,7 +138,6 @@ func TestRequireSiteAdmin_UnknownUser_500(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("request: %v", err)

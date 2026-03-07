@@ -28,8 +28,10 @@ package ghsa
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -61,6 +63,9 @@ type Cursor struct {
 	// Since is the lower bound for the `updated>=` filter on the next sync,
 	// stored as RFC3339. Applied with a 15-minute lookback overlap on use.
 	Since string `json:"since,omitempty"`
+	// After is the Link header pagination cursor for multi-page syncs.
+	// Non-empty means more pages remain in the current sync window.
+	After string `json:"after,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the GHSA REST API.
@@ -84,12 +89,12 @@ func New(client *http.Client) *Adapter {
 	}
 }
 
-// Fetch pages through all GHSA reviewed advisories updated since the cursor.
-// All pages are fetched in a single call; the rate limiter enforces ≤1 req/sec.
+// Fetch returns one page of GHSA reviewed advisories updated since the cursor.
+// The handler calls Fetch repeatedly until LastPage is true.
 //
-// On the first run (nil/zero cursor) all reviewed advisories are fetched
-// (full backfill). Subsequent runs use a 15-minute lookback overlap on the
-// stored since timestamp to catch eventual-consistency stragglers.
+// On the first run (nil/zero cursor) the first page of all reviewed advisories
+// is fetched (full backfill begins). Subsequent runs use a 15-minute lookback
+// overlap on the stored since timestamp to catch eventual-consistency stragglers.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
 	var cur Cursor
 	if len(cursorJSON) > 0 {
@@ -108,40 +113,42 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		sinceStr = t.Add(-overlap).UTC().Format(time.RFC3339)
 	}
 
-	fetchedAt := time.Now().UTC()
-	var patches []feed.CanonicalPatch
-	after := "" // Link header cursor; empty = start from first page
-
-	for {
-		if err := a.rateLimiter.Wait(ctx); err != nil {
-			return nil, fmt.Errorf("ghsa: rate limit: %w", err)
-		}
-
-		page, nextAfter, err := a.fetchPage(ctx, sinceStr, after)
-		if err != nil {
-			return nil, err
-		}
-		patches = append(patches, page...)
-
-		if nextAfter == "" {
-			break // no more pages
-		}
-		after = nextAfter
+	if err := a.rateLimiter.Wait(ctx); err != nil {
+		return nil, fmt.Errorf("ghsa: rate limit: %w", err)
 	}
 
-	newCursorJSON, err := json.Marshal(Cursor{Since: fetchedAt.Format(time.RFC3339)})
+	page, nextAfter, err := a.fetchPage(ctx, sinceStr, cur.After)
+	if err != nil {
+		return nil, err
+	}
+
+	fetchedAt := time.Now().UTC()
+	var nextCursor Cursor
+	var lastPage bool
+
+	if nextAfter != "" {
+		// More pages remain — carry the after cursor and the original since.
+		nextCursor = Cursor{Since: cur.Since, After: nextAfter}
+		lastPage = false
+	} else {
+		// Final page — advance since to fetchedAt, clear after.
+		nextCursor = Cursor{Since: fetchedAt.Format(time.RFC3339)}
+		lastPage = true
+	}
+
+	nextCursorJSON, err := json.Marshal(nextCursor)
 	if err != nil {
 		return nil, fmt.Errorf("ghsa: marshal cursor: %w", err)
 	}
 
 	return &feed.FetchResult{
-		Patches: patches,
+		Patches: page,
 		SourceMeta: feed.SourceMeta{
 			SourceName: SourceName,
 			FetchedAt:  fetchedAt,
 		},
-		NextCursor: newCursorJSON,
-		LastPage:   true,
+		NextCursor: nextCursorJSON,
+		LastPage:   lastPage,
 	}, nil
 }
 
@@ -203,7 +210,14 @@ func (a *Adapter) fetchPage(ctx context.Context, since, after string) ([]feed.Ca
 	for dec.More() {
 		var rec ghsaAdvisory
 		if err := dec.Decode(&rec); err != nil {
-			// Skip malformed individual records; do not abort the whole page.
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) {
+				slog.Warn("JSON syntax error in feed stream, stopping parse",
+					"feed", SourceName, "error", err)
+				return patches, nextAfter, nil
+			}
+			slog.Warn("skipping malformed record in feed stream",
+				"feed", SourceName, "error", err)
 			continue
 		}
 		patch := parseAdvisory(rec)

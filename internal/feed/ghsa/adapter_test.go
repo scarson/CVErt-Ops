@@ -996,7 +996,7 @@ func TestFetch_Success(t *testing.T) {
 	}
 
 	if !result.LastPage {
-		t.Error("LastPage should be true — GHSA fetches all pages in a single Fetch call")
+		t.Error("LastPage should be true — single page response has no Link next header")
 	}
 	for i, p := range result.Patches {
 		if p.RawPayload == nil {
@@ -1009,7 +1009,7 @@ func TestFetch_Success(t *testing.T) {
 	}
 }
 
-func TestFetch_Pagination(t *testing.T) {
+func TestFetch_OnePagePerCall(t *testing.T) {
 	t.Parallel()
 
 	page1 := `[{
@@ -1040,9 +1040,7 @@ func TestFetch_Pagination(t *testing.T) {
 		"html_url": ""
 	}]`
 
-	requestCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
 		w.Header().Set("Content-Type", "application/json")
 
 		switch afterParam := r.URL.Query().Get("after"); afterParam {
@@ -1072,19 +1070,55 @@ func TestFetch_Pagination(t *testing.T) {
 	}
 	adapter := New(client)
 
-	result, err := adapter.Fetch(context.Background(), nil)
+	// First call: should return only page 1 with LastPage=false.
+	result1, err := adapter.Fetch(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Fetch page 1: %v", err)
+	}
+	if len(result1.Patches) != 1 {
+		t.Fatalf("page 1: len(Patches) = %d, want 1", len(result1.Patches))
+	}
+	if result1.Patches[0].CVEID != "CVE-2025-20001" {
+		t.Errorf("page 1: CVEID = %q, want CVE-2025-20001", result1.Patches[0].CVEID)
+	}
+	if result1.LastPage {
+		t.Error("page 1: LastPage should be false (more pages remain)")
 	}
 
-	if len(result.Patches) != 2 {
-		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	// Verify cursor contains After for next page.
+	var cur1 Cursor
+	if err := json.Unmarshal(result1.NextCursor, &cur1); err != nil {
+		t.Fatalf("unmarshal cursor 1: %v", err)
 	}
-	if result.Patches[0].CVEID != "CVE-2025-20001" {
-		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-20001", result.Patches[0].CVEID)
+	if cur1.After != "cursor2" {
+		t.Errorf("cursor.After = %q, want %q", cur1.After, "cursor2")
 	}
-	if result.Patches[1].CVEID != "CVE-2025-20002" {
-		t.Errorf("Patches[1].CVEID = %q, want CVE-2025-20002", result.Patches[1].CVEID)
+
+	// Second call with returned cursor: should return page 2 with LastPage=true.
+	result2, err := adapter.Fetch(context.Background(), result1.NextCursor)
+	if err != nil {
+		t.Fatalf("Fetch page 2: %v", err)
+	}
+	if len(result2.Patches) != 1 {
+		t.Fatalf("page 2: len(Patches) = %d, want 1", len(result2.Patches))
+	}
+	if result2.Patches[0].CVEID != "CVE-2025-20002" {
+		t.Errorf("page 2: CVEID = %q, want CVE-2025-20002", result2.Patches[0].CVEID)
+	}
+	if !result2.LastPage {
+		t.Error("page 2: LastPage should be true (no more pages)")
+	}
+
+	// Verify cursor has updated Since and no After.
+	var cur2 Cursor
+	if err := json.Unmarshal(result2.NextCursor, &cur2); err != nil {
+		t.Fatalf("unmarshal cursor 2: %v", err)
+	}
+	if cur2.After != "" {
+		t.Errorf("final cursor.After = %q, want empty", cur2.After)
+	}
+	if cur2.Since == "" {
+		t.Error("final cursor.Since should be non-empty")
 	}
 }
 

@@ -380,10 +380,9 @@ func TestMiddleware_RequestID_404(t *testing.T) {
 	}
 }
 
-// TestMiddleware_Recoverer_CVEPanic verifies that the Recoverer middleware
-// catches panics from nil-store handler calls and returns 500 instead of
-// crashing the server. The nil-store server causes a nil pointer dereference
-// when CVE handlers try to access the store.
+// TestMiddleware_Recoverer_CVEPanic verifies that a nil-store server returns
+// 503 Service Unavailable via the handler's nil-store guard, and that the
+// server remains alive afterward.
 func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	t.Parallel()
 
@@ -402,8 +401,8 @@ func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("nil-store panic: got status %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 
 	// Verify the server is still alive after the panic (not crashed).

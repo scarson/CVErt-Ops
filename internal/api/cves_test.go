@@ -956,8 +956,8 @@ func TestListCVEs_InvalidCursor(t *testing.T) {
 	}
 }
 
-// TestListCVEs_NilStore verifies that CVE list returns 500 (not a crash) when
-// the store is nil, exercising the Recoverer middleware.
+// TestListCVEs_NilStore verifies that CVE list returns 503 when the store is
+// nil, via the handler's nil-store guard.
 func TestListCVEs_NilStore(t *testing.T) {
 	t.Parallel()
 	ts := newCVETestServer(t, nil)
@@ -973,13 +973,13 @@ func TestListCVEs_NilStore(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }
 
-// TestGetCVE_NilStore verifies that CVE detail returns 500 (not a crash) when
-// the store is nil.
+// TestGetCVE_NilStore verifies that CVE detail returns 503 when the store is
+// nil, via the handler's nil-store guard.
 func TestGetCVE_NilStore(t *testing.T) {
 	t.Parallel()
 	ts := newCVETestServer(t, nil)
@@ -995,7 +995,7 @@ func TestGetCVE_NilStore(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 }

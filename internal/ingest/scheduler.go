@@ -9,8 +9,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/scarson/cvert-ops/internal/store"
 )
+
+var feedJobsEnqueued = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cvert_feed_jobs_enqueued_total",
+	Help: "Total feed ingestion jobs enqueued by the scheduler.",
+}, []string{"feed"})
+
+var feedJobsSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "cvert_feed_jobs_skipped_total",
+	Help: "Total feed ingestion jobs skipped by the scheduler.",
+}, []string{"feed", "reason"})
 
 // SchedulerStore is the subset of store.Store the scheduler needs.
 type SchedulerStore interface {
@@ -43,6 +55,23 @@ type Scheduler struct {
 
 // NewScheduler creates a scheduler that uses the default feed schedule.
 func NewScheduler(st SchedulerStore) *Scheduler {
+	return &Scheduler{
+		store:    st,
+		schedule: defaultSchedule,
+	}
+}
+
+// NewSchedulerWithRegistry creates a scheduler and registers its metrics with
+// the given Prometheus registry. Useful for testing with isolated registries.
+func NewSchedulerWithRegistry(st SchedulerStore, reg prometheus.Registerer) *Scheduler {
+	feedJobsEnqueued = promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "cvert_feed_jobs_enqueued_total",
+		Help: "Total feed ingestion jobs enqueued by the scheduler.",
+	}, []string{"feed"})
+	feedJobsSkipped = promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "cvert_feed_jobs_skipped_total",
+		Help: "Total feed ingestion jobs skipped by the scheduler.",
+	}, []string{"feed", "reason"})
 	return &Scheduler{
 		store:    st,
 		schedule: defaultSchedule,
@@ -85,12 +114,14 @@ func (s *Scheduler) maybeEnqueue(ctx context.Context, entry feedScheduleEntry) {
 	if state != nil {
 		// Skip if in backoff.
 		if state.BackoffUntil != nil && state.BackoffUntil.After(time.Now()) {
+			feedJobsSkipped.WithLabelValues(entry.FeedName, "backoff").Inc()
 			slog.Debug("feed in backoff", "feed", entry.FeedName, "until", *state.BackoffUntil)
 			return
 		}
 
 		// Skip if not yet due.
 		if state.LastSuccessAt != nil && state.LastSuccessAt.Add(entry.Interval).After(time.Now()) {
+			feedJobsSkipped.WithLabelValues(entry.FeedName, "not_due").Inc()
 			slog.Debug("feed not yet due", "feed", entry.FeedName,
 				"next_due", state.LastSuccessAt.Add(entry.Interval))
 			return
@@ -105,8 +136,10 @@ func (s *Scheduler) maybeEnqueue(ctx context.Context, entry feedScheduleEntry) {
 		return
 	}
 	if id == uuid.Nil {
+		feedJobsSkipped.WithLabelValues(entry.FeedName, "already_pending").Inc()
 		slog.Debug("feed job already pending", "feed", entry.FeedName)
 		return
 	}
+	feedJobsEnqueued.WithLabelValues(entry.FeedName).Inc()
 	slog.Info("feed job enqueued", "feed", entry.FeedName, "queue", entry.Queue)
 }

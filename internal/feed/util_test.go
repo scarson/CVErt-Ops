@@ -323,6 +323,28 @@ func TestDownloadToTemp_Success(t *testing.T) {
 	}
 }
 
+func TestDownloadToTemp_SizeLimit(t *testing.T) {
+	// Not parallel: mutates package-level MaxDownloadSize.
+	orig := MaxDownloadSize
+	MaxDownloadSize = 1024 // 1 KiB for testing
+	t.Cleanup(func() { MaxDownloadSize = orig })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, 2048)) //nolint:errcheck // test helper
+	}))
+	defer srv.Close()
+
+	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
+	if err == nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		t.Fatal("expected error for oversized response")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("expected 'exceeds' in error, got: %v", err)
+	}
+}
+
 func TestDownloadToTemp_HTTPError(t *testing.T) {
 	t.Parallel()
 

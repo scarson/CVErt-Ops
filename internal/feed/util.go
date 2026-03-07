@@ -66,6 +66,9 @@ func StripNullBytesJSON(b []byte) []byte {
 // cveIDPattern matches CVE IDs in the canonical format CVE-YYYY-NNNNN+.
 var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d+$`)
 
+// MaxDownloadSize is the upper bound for DownloadToTemp. Package-level var for testability.
+var MaxDownloadSize int64 = 5 << 30 // 5 GiB
+
 // DefaultUserAgent is the standard User-Agent string for all feed HTTP requests.
 const DefaultUserAgent = "CVErt-Ops/1.0 vulnerability intelligence platform"
 
@@ -154,10 +157,16 @@ func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern s
 		return nil, err
 	}
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	n, err := io.Copy(f, io.LimitReader(resp.Body, MaxDownloadSize))
+	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
 		return nil, fmt.Errorf("feed: copy to temp: %w", err)
+	}
+	if n >= MaxDownloadSize {
+		_ = f.Close()
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		return nil, fmt.Errorf("feed: download %s: response exceeds %d byte limit", url, MaxDownloadSize)
 	}
 
 	// Rewind for zip.NewReader.

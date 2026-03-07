@@ -649,6 +649,20 @@ func TestFetch_Success(t *testing.T) {
 	if result.NextCursor == nil {
 		t.Fatal("NextCursor should not be nil — AfterDate must advance on last page")
 	}
+
+	// 2 entries < listPageSize, so this is the last page.
+	if !result.LastPage {
+		t.Error("LastPage should be true — fewer entries than page size")
+	}
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
+	}
 }
 
 func TestFetch_DetailNotFound(t *testing.T) {

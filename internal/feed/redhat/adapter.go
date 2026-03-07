@@ -3,6 +3,7 @@
 package redhat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -455,14 +456,21 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			return nil, fmt.Errorf("redhat: detail %s HTTP %d", cveID, resp.StatusCode)
 		}
 
-		detail, err := parseDetailResponse(io.LimitReader(resp.Body, maxDetailSize))
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxDetailSize))
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain remainder for connection reuse
 		resp.Body.Close()              //nolint:errcheck,gosec
+		if err != nil {
+			return nil, fmt.Errorf("redhat: read detail %s: %w", cveID, err)
+		}
+
+		detail, err := parseDetailResponse(bytes.NewReader(raw))
 		if err != nil {
 			return nil, fmt.Errorf("redhat: parse detail %s: %w", cveID, err)
 		}
 
-		patches = append(patches, detailToPatch(*detail))
+		patch := detailToPatch(*detail)
+		patch.RawPayload = raw
+		patches = append(patches, patch)
 	}
 
 	// Determine next cursor for pagination.
@@ -496,5 +504,6 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  fetchedAt,
 		},
 		NextCursor: nextCursor,
+		LastPage:   !fullPage,
 	}, nil
 }

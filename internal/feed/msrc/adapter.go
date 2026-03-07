@@ -176,6 +176,9 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 		enrichment := buildVendorEnrichment(vuln, lookup)
 		p.VendorEnrichment = enrichment
 
+		if rawBytes, err := json.Marshal(vuln); err == nil {
+			p.RawPayload = rawBytes
+		}
 		patches = append(patches, p)
 	}
 
@@ -354,6 +357,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 				FetchedAt:  time.Now().UTC(),
 			},
 			NextCursor: nextCursorJSON,
+			LastPage:   true,
 		}, nil
 	}
 
@@ -417,5 +421,6 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  fetchedAt,
 		},
 		NextCursor: nextCursorJSON,
+		LastPage:   true,
 	}, nil
 }

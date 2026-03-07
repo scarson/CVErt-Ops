@@ -16,6 +16,7 @@ package osv
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -129,6 +130,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  fetchedAt,
 		},
 		NextCursor: newCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -145,9 +147,17 @@ func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	patch, err := parseAdvisory(rc)
+	raw, err := io.ReadAll(rc)
 	_ = rc.Close() // explicit close per iteration — NEVER defer inside loop
-	return patch, err
+	if err != nil {
+		return nil, err
+	}
+	patch, err := parseAdvisory(bytes.NewReader(raw))
+	if err != nil || patch == nil {
+		return patch, err
+	}
+	patch.RawPayload = raw
+	return patch, nil
 }
 
 // --- OSV advisory JSON types ---

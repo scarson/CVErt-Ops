@@ -153,6 +153,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  time.Now().UTC(),
 		},
 		NextCursor: nextCursorJSON,
+		LastPage:   nextCursorJSON == nil,
 	}, nil
 }
 
@@ -395,6 +396,9 @@ func parseNVDResponse(body interface{ Read([]byte) (int, error) }) (
 					continue
 				}
 				if p := cveToCanonical(wrapper.CVE); p != nil {
+					if rawBytes, err := json.Marshal(wrapper); err == nil {
+						p.RawPayload = rawBytes
+					}
 					patches = append(patches, *p)
 				}
 			}

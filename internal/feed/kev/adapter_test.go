@@ -3,6 +3,7 @@
 package kev
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -792,6 +793,20 @@ func TestFetch_Success(t *testing.T) {
 	}
 	if cursor.DateReleased != "2025-01-15" {
 		t.Errorf("cursor.DateReleased = %q, want %q", cursor.DateReleased, "2025-01-15")
+	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true for single-file feed")
+	}
+
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
 	}
 }
 

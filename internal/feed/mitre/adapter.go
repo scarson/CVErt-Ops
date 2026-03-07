@@ -11,6 +11,7 @@ package mitre
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -136,6 +137,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		// last-modified timestamp for the handler to persist as the next-run cursor.
 		// The handler MUST NOT call Fetch again in a tight loop.
 		NextCursor: newCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -156,9 +158,17 @@ func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	patch, err := parseCVE5(rc)
+	raw, err := io.ReadAll(rc)
 	_ = rc.Close() // explicit close per iteration — NEVER defer inside loop
-	return patch, err
+	if err != nil {
+		return nil, err
+	}
+	patch, err := parseCVE5(bytes.NewReader(raw))
+	if err != nil || patch == nil {
+		return patch, err
+	}
+	patch.RawPayload = raw
+	return patch, nil
 }
 
 // --- CVE 5.0 JSON types ---

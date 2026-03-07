@@ -141,6 +141,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  fetchedAt,
 		},
 		NextCursor: newCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -207,6 +208,9 @@ func (a *Adapter) fetchPage(ctx context.Context, since, after string) ([]feed.Ca
 		}
 		patch := parseAdvisory(rec)
 		if patch != nil {
+			if rawBytes, err := json.Marshal(rec); err == nil {
+				patch.RawPayload = rawBytes
+			}
 			patches = append(patches, *patch)
 		}
 	}

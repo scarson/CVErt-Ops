@@ -119,6 +119,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		// version for the handler to persist as the next-run cursor. The handler
 		// MUST NOT call Fetch again in a tight loop; re-invocation is via scheduling.
 		NextCursor: nextCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -222,6 +223,9 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 						return nil, "", "", fmt.Errorf("decode record: %w", err)
 					}
 					if p := recordToPatch(rec); p != nil {
+						if rawBytes, err := json.Marshal(rec); err == nil {
+							p.RawPayload = rawBytes
+						}
 						patches = append(patches, *p)
 					}
 				}

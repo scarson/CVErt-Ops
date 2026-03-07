@@ -3,6 +3,7 @@
 package ghsa
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -992,6 +993,19 @@ func TestFetch_Success(t *testing.T) {
 	// The since timestamp should be parseable as RFC3339.
 	if _, err := time.Parse(time.RFC3339, cursor.Since); err != nil {
 		t.Errorf("cursor.Since %q is not valid RFC3339: %v", cursor.Since, err)
+	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true — GHSA fetches all pages in a single Fetch call")
+	}
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
 	}
 }
 

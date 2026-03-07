@@ -3,6 +3,7 @@
 package nvd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -1081,6 +1082,20 @@ func TestFetch_Success(t *testing.T) {
 	}
 	if capturedQuery.Get("startIndex") == "" {
 		t.Error("expected startIndex query param")
+	}
+
+	// NVD is paginated with sliding windows — first fetch is not the last page.
+	if result.LastPage {
+		t.Error("LastPage should be false — NVD has more windows to fetch")
+	}
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
 	}
 }
 

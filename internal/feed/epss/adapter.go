@@ -43,7 +43,6 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/merge"
-	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -105,7 +104,7 @@ func New(client *http.Client) *Adapter {
 // PLAN.md §5.3 for the full explanation.
 //
 // Returns the updated cursor JSON for the caller to persist in feed_sync_state.
-func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.RawMessage) (json.RawMessage, error) {
+func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMessage) (json.RawMessage, error) {
 	var cur Cursor
 	if len(cursorJSON) > 0 {
 		if err := json.Unmarshal(cursorJSON, &cur); err != nil {
@@ -190,7 +189,6 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 		return nil, fmt.Errorf("epss: read csv header: %w", err)
 	}
 
-	db := s.DB()
 	for {
 		record, err := cr.Read()
 		if err == io.EOF {
@@ -216,8 +214,10 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 			continue
 		}
 
-		if err := applyRow(ctx, db, cveID, score, asOfDate); err != nil {
-			return nil, fmt.Errorf("epss: apply row %q: %w", cveID, err)
+		if err := applyRowFn(ctx, db, cveID, score, asOfDate); err != nil {
+			slog.WarnContext(ctx, "epss: skipping row with DB error",
+				"cve_id", cveID, "error", err)
+			continue
 		}
 	}
 
@@ -228,6 +228,9 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 
 	return nextCursorJSON, nil
 }
+
+// applyRowFn is the function called for each CSV row. Package-level var for testability.
+var applyRowFn = applyRow
 
 // applyRow executes the two-statement EPSS pattern for a single CVE inside an
 // advisory-locked transaction. Both statements run unconditionally — do NOT

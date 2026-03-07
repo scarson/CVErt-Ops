@@ -167,6 +167,38 @@ describe('FeedStatusView', () => {
     expect(wrapper.text()).toContain('Loading')
   })
 
+  it('expands log rows when chevron is clicked', async () => {
+    const wrapper = await mountFeedStatus()
+    // Log details should not be visible initially
+    expect(wrapper.text()).not.toContain('150 fetched')
+
+    // Click the expand button for the first feed (nvd has logs)
+    const expandButtons = wrapper.findAll('button[aria-label^="Toggle logs"]')
+    expect(expandButtons.length).toBeGreaterThan(0)
+
+    await expandButtons[0].trigger('click')
+    await flushPromises()
+
+    // Log details should now be visible
+    expect(wrapper.text()).toContain('150 fetched')
+    expect(wrapper.text()).toContain('42 upserted')
+  })
+
+  it('collapses log rows when chevron is clicked again', async () => {
+    const wrapper = await mountFeedStatus()
+
+    const expandButtons = wrapper.findAll('button[aria-label^="Toggle logs"]')
+    // Expand
+    await expandButtons[0].trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('150 fetched')
+
+    // Collapse
+    await expandButtons[0].trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('150 fetched')
+  })
+
   it('shows error state on fetch failure', async () => {
     const failFetch = vi.fn(() =>
       Promise.resolve({

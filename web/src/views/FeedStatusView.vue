@@ -239,12 +239,12 @@ onUnmounted(() => {
             </TableRow>
 
             <!-- Expanded log rows -->
-            <TableRow
-              v-if="expandedFeed === feed.feed_name"
-              v-for="log in feed.recent_logs"
-              :key="log.id"
-              class="bg-muted/30"
-            >
+            <template v-if="expandedFeed === feed.feed_name">
+              <TableRow
+                v-for="log in feed.recent_logs"
+                :key="log.id"
+                class="bg-muted/30"
+              >
               <TableCell></TableCell>
               <TableCell colspan="6" class="text-sm">
                 <div class="flex items-center gap-4">
@@ -266,6 +266,7 @@ onUnmounted(() => {
                 </div>
               </TableCell>
             </TableRow>
+            </template>
           </template>
         </TableBody>
       </Table>

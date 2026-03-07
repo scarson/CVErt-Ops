@@ -4,7 +4,7 @@
 
 **Goal:** Standardize the 8 feed adapters for consistency (shared HTTP helpers, per-CVE raw payload capture), then wire them into the worker pool so they actually fetch data, run through the merge pipeline, and persist sync state — then expose feed health via an admin API and dashboard UI.
 
-**Architecture:** First, we fix adapter inconsistencies: extract duplicated code (`downloadToTemp`, `cloneStrings`) to shared utilities, standardize HTTP patterns (User-Agent via transport wrapper, body drain on errors, response size limits), and move `RawPayload` from `FetchResult` (per-page, wrong granularity) to `CanonicalPatch` (per-CVE, correct granularity) so each adapter captures the raw upstream record for audit storage. Then we wire: replace the stub `feedIngestHandler` with a real handler that deserializes the job payload to identify the feed, constructs the appropriate adapter, calls `Fetch()` in a loop (breaking on nil NextCursor or empty patches), pipes each `CanonicalPatch` through `merge.Ingest()`, and persists cursor/sync state. A scheduler goroutine periodically enqueues `feed_ingest` jobs respecting per-feed intervals and backoff. EPSS is special — it doesn't implement `feed.Adapter`, so it gets its own dedicated handler and queue. Two admin API endpoints expose feed health. The frontend `FeedStatusView.vue` replaces its "Coming Soon" placeholder with a real dashboard.
+**Architecture:** First, we fix adapter inconsistencies: extract duplicated code (`downloadToTemp`, `cloneStrings`) to shared utilities, standardize HTTP patterns (User-Agent via transport wrapper, body drain on errors, response size limits), and move `RawPayload` from `FetchResult` (per-page, wrong granularity) to `CanonicalPatch` (per-CVE, correct granularity) so each adapter captures the raw upstream record for audit storage. Then we wire: replace the stub `feedIngestHandler` with a real handler that deserializes the job payload to identify the feed, constructs the appropriate adapter, calls `Fetch()` in a loop (breaking on `LastPage`, nil `NextCursor`, or empty patches — three layers of loop termination), pipes each `CanonicalPatch` through `merge.Ingest()`, and persists cursor/sync state. A scheduler goroutine periodically enqueues `feed_ingest` jobs respecting per-feed intervals and backoff. EPSS is special — it doesn't implement `feed.Adapter`, so it gets its own dedicated handler and queue. Two admin API endpoints expose feed health. The frontend `FeedStatusView.vue` replaces its "Coming Soon" placeholder with a real dashboard.
 
 **Tech Stack:** Go 1.26, sqlc, huma/chi, Vue 3 + shadcn-vue, existing `internal/feed/*` adapters, `internal/merge` pipeline, `internal/worker` pool, `internal/store` (sqlc queries for `feed_sync_state` / `feed_fetch_log`)
 
@@ -215,16 +215,33 @@ RawPayload json.RawMessage `json:"-"` // excluded from JSON serialization and ma
 
 The `json:"-"` tag is critical — `RawPayload` must NOT be included when `CanonicalPatch` is serialized for `cve_sources.normalized_json` or `material_hash` computation. Both use `json.Marshal(patch)`.
 
-Remove `RawPayload` from `FetchResult`:
+Update `FetchResult` — remove `RawPayload`, add `LastPage`:
 ```go
 type FetchResult struct {
     Patches    []CanonicalPatch
     SourceMeta SourceMeta
     NextCursor json.RawMessage
+    // LastPage signals that this is the final page of results for this run.
+    // The caller should persist NextCursor but not call Fetch again.
+    // Single-Fetch adapters (KEV, MITRE, GHSA, OSV, MSRC) always set this to true.
+    // True paginators (NVD, Red Hat) set it on their final page.
+    // The zero value (false) is safe — it means "keep paginating," so forgetting
+    // to set it produces correct-but-wasteful behavior, never data loss.
+    LastPage bool
 }
 ```
 
 Remove the comment `// RawPayload is the unmodified upstream response for audit/debugging.` and the `RawPayload json.RawMessage` field from `FetchResult`.
+
+Also update the interface doc comment on `Adapter` (line 14 of `interface.go`). Change:
+```
+// A nil NextCursor in FetchResult signals no more pages.
+```
+To:
+```
+// Set LastPage = true on FetchResult to signal no more pages remain.
+// A nil NextCursor also terminates pagination (used by NVD when all windows are exhausted).
+```
 
 **Step 4: Update `merge.Ingest` signature**
 
@@ -289,12 +306,19 @@ refactor: move RawPayload from FetchResult to CanonicalPatch for per-CVE granula
 
 ## Task 4: Capture per-CVE raw payloads in each adapter
 
-Now that `CanonicalPatch.RawPayload` exists, populate it in each adapter. The capture strategy differs by adapter type:
+Now that `CanonicalPatch.RawPayload` exists, populate it in each adapter. Also set `LastPage: true` on the `FetchResult` for single-Fetch adapters so the pagination loop terminates without a wasteful extra call (see Task 6 loop termination design).
+
+The capture strategy differs by adapter type:
 
 - **Streaming JSON adapters** (NVD, KEV, GHSA): `json.Marshal(parsedRecord)` after decode, before conversion
 - **ZIP-based adapters** (MITRE, OSV): read ZIP entry bytes into buffer, decode from buffer, save buffer
 - **Two-phase adapters** (Red Hat): buffer the per-CVE detail response body before decoding
 - **CSAF adapter** (MSRC): `json.Marshal(vuln)` on each `csaf.Vulnerability` struct
+
+**`LastPage` settings by adapter:**
+- **KEV, MITRE, OSV, GHSA, MSRC**: Always set `LastPage: true` — these complete all work in a single Fetch call
+- **NVD**: Set `LastPage: true` only when `computeNextCursor` returns nil (all windows exhausted). When returning a non-nil NextCursor (more pages/windows remain), leave `LastPage` as false
+- **Red Hat**: Set `LastPage: true` when `!fullPage` (fewer than 100 entries returned, meaning this is the last page of the current date range). Leave false when `fullPage` (more pages exist)
 
 **Files:**
 - Modify: `internal/feed/nvd/adapter.go`
@@ -528,12 +552,17 @@ Create `internal/ingest/handler_test.go`. Since `internal/ingest/` can import `i
 
 **Unit test approach (preferred for the handler logic):**
 - Define a local `mergeFunc` variable in the test that records `(patch, sourceName)` pairs and returns nil
-- Create a mock adapter implementing `feed.Adapter` that returns a fixed `FetchResult` with one `CanonicalPatch` and `NextCursor: nil` (single page)
+- Create a mock adapter implementing `feed.Adapter` that returns a fixed `FetchResult` with one `CanonicalPatch`, `LastPage: true`, and a non-nil `NextCursor` (the cursor to persist)
 - Use a real test DB for the store (feed_sync_state/feed_fetch_log persistence)
 - Call the handler directly (pass the mock merge function — see Step 3 for how the handler accepts it)
 - Assert the mock merge function was called with the correct patch
 - Assert `feed_sync_state` is updated with the new cursor (query the DB)
 - Assert `feed_fetch_log` gets a success entry
+
+Also test that `LastPage: true` prevents extra Fetch calls:
+- Mock adapter that returns 5 patches, `LastPage: true`, and non-nil NextCursor on the first call. Track call count.
+- Assert the mock adapter's Fetch was called exactly once (not twice)
+- Assert `feed_sync_state` cursor matches the returned NextCursor
 
 Also test the error path:
 - Mock adapter that returns an error from Fetch
@@ -541,7 +570,7 @@ Also test the error path:
 - Assert `feed_fetch_log` has status `"error"`
 
 Also test multi-page cursor persistence on mid-pagination error:
-- Mock adapter that succeeds on page 1 (returns NextCursor="page2"), then errors on page 2
+- Mock adapter that succeeds on page 1 (returns NextCursor="page2", `LastPage: false`), then errors on page 2
 - Assert `feed_sync_state` cursor is set to the page 1 cursor (last successful NextCursor), NOT the original cursor
 
 Follow the existing test patterns in `internal/feed/nvd/adapter_test.go` or `internal/store/jobs_test.go` for test DB setup. Check how other integration tests set up their database and match that pattern exactly.
@@ -625,11 +654,12 @@ The returned handler function:
 4. Record `cursorBefore` for fetch log
 5. **Pagination loop:** call `adapter.Fetch(ctx, cursor)`, iterate `result.Patches`, call `mergeFn(ctx, st, patch, result.SourceMeta.SourceName)` for each patch. Each patch already has `RawPayload` set by the adapter (Task 4) — the merge pipeline reads it from the patch directly. Track `itemsFetched` and `itemsUpserted` counters. After each successful page, save `lastSuccessfulCursor` = the cursor to persist (see below). Set `cursor = result.NextCursor`.
 
-   **Loop termination (important — two conditions):**
-   - Break if `result.NextCursor == nil` — explicit "no more pages" signal (used by NVD)
-   - Break if `len(result.Patches) == 0` — adapter returned no data, nothing left to paginate
+   **Loop termination (three layers, checked in order):**
+   1. Break if `result.LastPage` — adapter explicitly signals this is the final page. Used by all single-Fetch adapters (KEV, MITRE, GHSA, OSV, MSRC) and by true paginators (NVD, Red Hat) on their final page. This is the primary termination signal.
+   2. Break if `result.NextCursor == nil` — legacy/fallback signal (NVD returns nil when all windows are exhausted). Retained as defense-in-depth.
+   3. Break if `len(result.Patches) == 0` — safety net against infinite loops if an adapter returns non-nil NextCursor, `LastPage: false`, and no data.
 
-   **Why two conditions:** Several adapters (KEV, MITRE, GHSA, OSV, MSRC) do all work in a single Fetch call but return non-nil NextCursor (the cursor to persist for the next scheduled run, not a pagination marker). The `len(Patches) == 0` guard prevents infinite looping on these adapters — on a second call the adapter returns 0 patches since the cursor is already current. This costs one extra HTTP request per single-page feed per run, which is acceptable.
+   **Why three layers:** `LastPage` is the clean signal — it lets single-Fetch adapters (MITRE, OSV) return a non-nil NextCursor (the cursor to persist for the next *scheduled* run) without triggering a wasteful extra Fetch call that would re-download their entire ZIP archive. The nil-cursor and empty-patches checks remain as defense-in-depth. All three are fail-safe: a missing `LastPage` (zero value = false) falls through to the other checks and produces at worst one extra HTTP call, never data loss.
 
    **Cursor to persist:** After each successful page, set `lastSuccessfulCursor` to `result.NextCursor` if non-nil, otherwise keep the current `cursor` value. This ensures single-page adapters (which return non-nil NextCursor) have their cursor saved, and NVD (which returns nil on the last page) retains the last page's cursor.
 6. On success: `st.UpsertFeedSyncState` with final cursor, `last_success_at = now`, `consecutive_failures = 0`, `last_error = ""`, `backoff_until = zero`. `st.InsertFeedFetchLog` with status `"success"`.
@@ -648,7 +678,7 @@ func backoffDuration(failures int32) time.Duration {
 
 **Logging requirements (use `slog`):**
 - On handler entry: `slog.Info("feed ingest started", "feed", feedName)`
-- After each page: `slog.Info("feed page fetched", "feed", feedName, "page_items", len(result.Patches), "total_fetched", itemsFetched, "has_next", result.NextCursor != nil)`
+- After each page: `slog.Info("feed page fetched", "feed", feedName, "page_items", len(result.Patches), "total_fetched", itemsFetched, "last_page", result.LastPage)`
 - On merge error for a single patch: `slog.Error("feed merge failed", "feed", feedName, "cve_id", patch.CVEID, "error", err)` — then fail the whole job (don't skip individual patches)
 - On success: `slog.Info("feed ingest completed", "feed", feedName, "items_fetched", itemsFetched, "items_upserted", itemsUpserted, "duration", time.Since(start))`
 - On error: `slog.Error("feed ingest failed", "feed", feedName, "items_fetched", itemsFetched, "error", err, "duration", time.Since(start))`

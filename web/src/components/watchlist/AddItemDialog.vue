@@ -142,7 +142,7 @@ async function handleAdd() {
   }
 }
 
-function selectEcosystem(value: string | number | bigint | Record<string, any> | null) {
+function selectEcosystem(value: string | number | bigint | Record<string, unknown> | null) {
   if (typeof value === 'string') {
     ecosystem.value = value
   }

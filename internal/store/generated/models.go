@@ -481,6 +481,7 @@ type User struct {
 	TokenVersion        int32
 	CreatedAt           time.Time
 	LastLoginAt         sql.NullTime
+	IsSiteAdmin         bool
 }
 
 type UserIdentity struct {

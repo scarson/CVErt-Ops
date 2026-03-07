@@ -157,6 +157,12 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Promote first user to site admin (atomic — no-op if one already exists).
+	if err := srv.store.SetFirstSiteAdmin(ctx, user.ID); err != nil {
+		slog.ErrorContext(ctx, "register: set first site admin", "error", err)
+		// Non-fatal — user is created, they just won't be admin.
+	}
+
 	out := &registerOutput{}
 	out.Status = http.StatusCreated
 	out.Body.UserID = user.ID.String()

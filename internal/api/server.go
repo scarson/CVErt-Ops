@@ -192,9 +192,10 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
 	apiRouter.Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
-	// ── Admin routes (authenticated, not org-scoped) ────────────────────────
+	// ── Admin routes (authenticated + site admin, not org-scoped) ───────────
 	apiRouter.Route("/admin", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())
+		r.Use(srv.RequireSiteAdmin())
 		r.Get("/feeds", srv.listFeedsHandler)
 		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
 	})

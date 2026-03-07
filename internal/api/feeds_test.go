@@ -255,3 +255,35 @@ func TestAdminFeeds_RequiresAuth(t *testing.T) {
 		t.Fatalf("GET /admin/feeds without auth: got %d, want 401", resp.StatusCode)
 	}
 }
+
+func TestAdminFeeds_NonSiteAdmin_403(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "open")
+	ctx := context.Background()
+
+	// First user becomes site admin automatically.
+	doRegister(t, ctx, ts, "admin@test.com", "TestPassword1234!")
+
+	// Second user is NOT site admin.
+	doRegister(t, ctx, ts, "regular@test.com", "TestPassword1234!")
+	loginResp := doLogin(t, ctx, ts, "regular@test.com", "TestPassword1234!")
+	defer loginResp.Body.Close() //nolint:errcheck
+	accessToken := cookieValue(loginResp, "access_token")
+	if accessToken == "" {
+		t.Fatal("no access_token cookie after login")
+	}
+
+	// GET /admin/feeds as non-admin → 403.
+	resp := doGetFeeds(t, ctx, ts, accessToken)
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /admin/feeds as non-admin: got %d, want 403", resp.StatusCode)
+	}
+
+	// POST /admin/feeds/nvd/run as non-admin → 403.
+	resp2 := doTriggerFeed(t, ctx, ts, accessToken, "nvd")
+	defer resp2.Body.Close() //nolint:errcheck
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("POST /admin/feeds/nvd/run as non-admin: got %d, want 403", resp2.StatusCode)
+	}
+}

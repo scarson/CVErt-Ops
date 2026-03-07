@@ -50,7 +50,7 @@ const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (email, display_name, password_hash, password_hash_version)
 VALUES ($1, $2, $3, $4)
-RETURNING id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at
+RETURNING id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin
 `
 
 type CreateUserParams struct {
@@ -79,6 +79,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.TokenVersion,
 		&i.CreatedAt,
 		&i.LastLoginAt,
+		&i.IsSiteAdmin,
 	)
 	return i, err
 }
@@ -116,7 +117,7 @@ func (q *Queries) GetRefreshToken(ctx context.Context, jti uuid.UUID) (RefreshTo
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at FROM users WHERE email = $1 LIMIT 1
+SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin FROM users WHERE email = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -131,12 +132,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.TokenVersion,
 		&i.CreatedAt,
 		&i.LastLoginAt,
+		&i.IsSiteAdmin,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at FROM users WHERE id = $1 LIMIT 1
+SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin FROM users WHERE id = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -151,12 +153,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.TokenVersion,
 		&i.CreatedAt,
 		&i.LastLoginAt,
+		&i.IsSiteAdmin,
 	)
 	return i, err
 }
 
 const getUserByProviderID = `-- name: GetUserByProviderID :one
-SELECT u.id, u.email, u.display_name, u.password_hash, u.password_hash_version, u.token_version, u.created_at, u.last_login_at FROM users u
+SELECT u.id, u.email, u.display_name, u.password_hash, u.password_hash_version, u.token_version, u.created_at, u.last_login_at, u.is_site_admin FROM users u
 JOIN user_identities ui ON ui.user_id = u.id
 WHERE ui.provider = $1 AND ui.provider_user_id = $2
 LIMIT 1
@@ -179,6 +182,7 @@ func (q *Queries) GetUserByProviderID(ctx context.Context, arg GetUserByProvider
 		&i.TokenVersion,
 		&i.CreatedAt,
 		&i.LastLoginAt,
+		&i.IsSiteAdmin,
 	)
 	return i, err
 }
@@ -195,6 +199,17 @@ func (q *Queries) IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int3
 	return token_version, err
 }
 
+const isSiteAdmin = `-- name: IsSiteAdmin :one
+SELECT is_site_admin FROM users WHERE id = $1
+`
+
+func (q *Queries) IsSiteAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isSiteAdmin, id)
+	var is_site_admin bool
+	err := row.Scan(&is_site_admin)
+	return is_site_admin, err
+}
+
 const markRefreshTokenUsed = `-- name: MarkRefreshTokenUsed :exec
 UPDATE refresh_tokens
 SET used_at = now(), replaced_by_jti = $2
@@ -208,6 +223,18 @@ type MarkRefreshTokenUsedParams struct {
 
 func (q *Queries) MarkRefreshTokenUsed(ctx context.Context, arg MarkRefreshTokenUsedParams) error {
 	_, err := q.db.ExecContext(ctx, markRefreshTokenUsed, arg.Jti, arg.ReplacedByJti)
+	return err
+}
+
+const setFirstSiteAdmin = `-- name: SetFirstSiteAdmin :exec
+UPDATE users SET is_site_admin = true
+WHERE users.id = $1
+  AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.is_site_admin = true)
+`
+
+// Atomically promotes a user to site admin only if no admin exists yet.
+func (q *Queries) SetFirstSiteAdmin(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, setFirstSiteAdmin, id)
 	return err
 }
 

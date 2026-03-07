@@ -52,15 +52,27 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries := make([]FeedStatusEntry, len(states))
-	for i, s := range states {
-		logs, err := srv.store.ListRecentFeedFetchLogs(ctx, s.FeedName, 5)
-		if err != nil {
-			slog.Error("list feed fetch logs", "feed", s.FeedName, "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+	stateMap := make(map[string]store.FeedSyncState, len(states))
+	for _, s := range states {
+		stateMap[s.FeedName] = s
+	}
+
+	entries := make([]FeedStatusEntry, 0, len(ingest.KnownFeeds))
+	for _, feedName := range ingest.KnownFeeds {
+		if s, ok := stateMap[feedName]; ok {
+			logs, err := srv.store.ListRecentFeedFetchLogs(ctx, feedName, 5)
+			if err != nil {
+				slog.Error("list feed fetch logs", "feed", feedName, "error", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			entries = append(entries, feedStatusFromState(s, logs))
+		} else {
+			entries = append(entries, FeedStatusEntry{
+				FeedName:   feedName,
+				RecentLogs: []FeedLogEntry{},
+			})
 		}
-		entries[i] = feedStatusFromState(s, logs)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"feeds": entries})

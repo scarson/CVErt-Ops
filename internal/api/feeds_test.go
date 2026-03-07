@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -145,6 +146,48 @@ func TestAdminFeeds_ListWithSeededData(t *testing.T) {
 	}
 	if !foundKEV {
 		t.Error("kev not found in feeds response")
+	}
+}
+
+func TestAdminFeeds_ListEmptyDB(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "open")
+	ctx := context.Background()
+
+	doRegister(t, ctx, ts, "empty@test.com", "TestPassword1234!")
+	loginResp := doLogin(t, ctx, ts, "empty@test.com", "TestPassword1234!")
+	defer loginResp.Body.Close() //nolint:errcheck
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doGetFeeds(t, ctx, ts, accessToken)
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin/feeds: got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Feeds []struct {
+			FeedName string `json:"feed_name"`
+		} `json:"feeds"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// All known feeds should appear even with no sync state rows.
+	if len(body.Feeds) != len(ingest.KnownFeeds) {
+		t.Fatalf("expected %d feeds, got %d", len(ingest.KnownFeeds), len(body.Feeds))
+	}
+
+	feedSet := make(map[string]bool)
+	for _, f := range body.Feeds {
+		feedSet[f.FeedName] = true
+	}
+	for _, name := range ingest.KnownFeeds {
+		if !feedSet[name] {
+			t.Errorf("missing feed %q in response", name)
+		}
 	}
 }
 

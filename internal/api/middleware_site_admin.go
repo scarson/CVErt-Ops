@@ -21,7 +21,7 @@ func (srv *Server) RequireSiteAdmin() func(http.Handler) http.Handler {
 			}
 			isAdmin, err := srv.store.IsSiteAdmin(r.Context(), userID)
 			if err != nil {
-				slog.Error("check site admin", "user_id", userID, "error", err)
+				slog.Error("check site admin", "user_id", userID, "error", err) //nolint:gosec // G706: userID is JWT-extracted UUID; slog structured fields escape values
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}

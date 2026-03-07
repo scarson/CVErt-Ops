@@ -69,7 +69,7 @@ func TestOpenAPISpec(t *testing.T) {
 			t.Fatalf("marshal indent: %v", err)
 		}
 		outPath := filepath.Join("..", "..", "openapi.json")
-		if err := os.WriteFile(outPath, append(pretty, '\n'), 0644); err != nil {
+		if err := os.WriteFile(outPath, append(pretty, '\n'), 0644); err != nil { //nolint:gosec // G306: OpenAPI spec is a repo artifact meant to be world-readable
 			t.Fatalf("write %s: %v", outPath, err)
 		}
 		t.Logf("wrote %s (%d bytes)", outPath, len(pretty))

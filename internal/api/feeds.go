@@ -94,7 +94,7 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	payload, _ := json.Marshal(ingest.Payload{FeedName: feedName})
 	jobID, err := srv.store.EnqueueJob(ctx, queue, 0, payload, &lockKey, 3, nil)
 	if err != nil {
-		slog.Error("enqueue feed job", "feed", feedName, "error", err)
+		slog.Error("enqueue feed job", "feed", feedName, "error", err) //nolint:gosec // G706: feedName is validated by IsKnownFeed; slog structured fields escape values
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

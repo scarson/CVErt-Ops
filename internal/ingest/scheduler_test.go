@@ -40,18 +40,16 @@ func (m *mockSchedulerStore) GetFeedSyncState(_ context.Context, feedName string
 	return m.syncStates[feedName], nil
 }
 
-func (m *mockSchedulerStore) HasPendingOrRunningJob(_ context.Context, lockKey string) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.pending[lockKey], nil
-}
-
 func (m *mockSchedulerStore) EnqueueJob(_ context.Context, queue string, _ int32, payload json.RawMessage, lockKey *string, _ int32, _ *time.Time) (uuid.UUID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	lk := ""
 	if lockKey != nil {
 		lk = *lockKey
+	}
+	// Simulate dedup: return uuid.Nil if lock_key is already pending.
+	if m.pending[lk] {
+		return uuid.Nil, nil
 	}
 	m.enqueued = append(m.enqueued, enqueuedJob{Queue: queue, LockKey: lk, Payload: payload})
 	return uuid.New(), nil

@@ -16,7 +16,6 @@ import (
 type SchedulerStore interface {
 	GetFeedSyncState(ctx context.Context, feedName string) (*store.FeedSyncState, error)
 	EnqueueJob(ctx context.Context, queue string, priority int32, payload json.RawMessage, lockKey *string, maxAttempts int32, runAfter *time.Time) (uuid.UUID, error)
-	HasPendingOrRunningJob(ctx context.Context, lockKey string) (bool, error)
 }
 
 type feedScheduleEntry struct {
@@ -99,19 +98,14 @@ func (s *Scheduler) maybeEnqueue(ctx context.Context, entry feedScheduleEntry) {
 	}
 
 	lockKey := "feed:" + entry.FeedName
-	has, err := s.store.HasPendingOrRunningJob(ctx, lockKey)
+	payload, _ := json.Marshal(Payload{FeedName: entry.FeedName})
+	id, err := s.store.EnqueueJob(ctx, entry.Queue, 0, payload, &lockKey, 3, nil)
 	if err != nil {
 		slog.Error("scheduler error", "feed", entry.FeedName, "error", err)
 		return
 	}
-	if has {
+	if id == uuid.Nil {
 		slog.Debug("feed job already pending", "feed", entry.FeedName)
-		return
-	}
-
-	payload, _ := json.Marshal(Payload{FeedName: entry.FeedName})
-	if _, err := s.store.EnqueueJob(ctx, entry.Queue, 0, payload, &lockKey, 3, nil); err != nil {
-		slog.Error("scheduler error", "feed", entry.FeedName, "error", err)
 		return
 	}
 	slog.Info("feed job enqueued", "feed", entry.FeedName, "queue", entry.Queue)

@@ -78,23 +78,16 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lockKey := "feed:" + feedName
-	has, err := srv.store.HasPendingOrRunningJob(ctx, lockKey)
-	if err != nil {
-		slog.Error("check pending feed job", "feed", feedName, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if has {
-		http.Error(w, "feed job already pending", http.StatusConflict)
-		return
-	}
-
 	queue := ingest.QueueForFeed(feedName)
 	payload, _ := json.Marshal(ingest.Payload{FeedName: feedName})
 	jobID, err := srv.store.EnqueueJob(ctx, queue, 0, payload, &lockKey, 3, nil)
 	if err != nil {
 		slog.Error("enqueue feed job", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if jobID == uuid.Nil {
+		http.Error(w, "feed job already pending", http.StatusConflict)
 		return
 	}
 

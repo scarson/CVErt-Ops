@@ -77,6 +77,8 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) 
 // EnqueueJob inserts a new job into the named queue and returns its ID.
 // lockKey prevents concurrent execution of jobs with the same key.
 // runAfter defaults to now() when nil.
+// Returns (uuid.Nil, nil) when a pending/running job with the same lock_key
+// already exists (ON CONFLICT DO NOTHING).
 func (s *Store) EnqueueJob(
 	ctx context.Context,
 	queue string,
@@ -104,6 +106,9 @@ func (s *Store) EnqueueJob(
 		MaxAttempts: maxAttempts,
 		Column6:     ra,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, nil // dedup: job with same lock_key already pending/running
+	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("enqueue job: %w", err)
 	}

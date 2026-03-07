@@ -213,5 +213,5 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 // capping at ~8.5 hours.
 func backoffDuration(failures int32) time.Duration {
 	base := 30 * time.Second
-	return base * time.Duration(1<<min(failures, 10))
+	return base * time.Duration(1<<min(max(failures, 0), 10))
 }

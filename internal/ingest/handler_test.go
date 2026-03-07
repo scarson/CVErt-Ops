@@ -464,3 +464,27 @@ func TestFeedHandler_UnknownFeed(t *testing.T) {
 		t.Fatal("expected error for unknown feed")
 	}
 }
+
+func TestBackoffDuration_NegativeInput(t *testing.T) {
+	// Should not panic on negative input (e.g., from DB corruption).
+	d := backoffDuration(-1)
+	if d < 0 {
+		t.Errorf("backoffDuration(-1) = %v, want non-negative", d)
+	}
+}
+
+func TestBackoffDuration_Zero(t *testing.T) {
+	d := backoffDuration(0)
+	if d != 30*time.Second {
+		t.Errorf("backoffDuration(0) = %v, want 30s", d)
+	}
+}
+
+func TestBackoffDuration_Capped(t *testing.T) {
+	// At failures=10, should be 30s * 1024 = 30720s. Beyond 10 should not increase.
+	d10 := backoffDuration(10)
+	d20 := backoffDuration(20)
+	if d10 != d20 {
+		t.Errorf("backoffDuration(20) = %v, want same as backoffDuration(10) = %v", d20, d10)
+	}
+}

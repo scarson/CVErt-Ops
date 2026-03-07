@@ -27,11 +27,10 @@ jobs:
       - name: Build frontend (required for embed.go)
         run: cd web && npm ci && npm run build-only
 
-      - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-
       - name: Lint
-        run: golangci-lint run
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
 
   test-api:
     name: "Test: API"

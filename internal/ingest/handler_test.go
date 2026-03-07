@@ -74,8 +74,7 @@ func withMockFactory(t *testing.T, adapter feed.Adapter) {
 	t.Cleanup(func() { adapterFactory = origFactory })
 }
 
-func TestFeedIngestHandler_Success(t *testing.T) {
-	t.Parallel()
+func TestFeedHandler_Success(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
@@ -95,10 +94,10 @@ func TestFeedIngestHandler_Success(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := IngestHandler(db.Store, nil, merge.fn)
+	handler := Handler(db.Store, nil, merge.fn)
 	withMockFactory(t, adapter)
 
-	payload, _ := json.Marshal(IngestPayload{FeedName: "test-feed"})
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	if err := handler(ctx, payload); err != nil {
 		t.Fatalf("handler returned error: %v", err)
 	}
@@ -113,6 +112,11 @@ func TestFeedIngestHandler_Success(t *testing.T) {
 	}
 	if calls[1].CVEID != "CVE-2025-0002" {
 		t.Errorf("calls[1].CVEID = %q, want CVE-2025-0002", calls[1].CVEID)
+	}
+	for i, c := range calls {
+		if c.SourceName != "test-feed" {
+			t.Errorf("calls[%d].SourceName = %q, want test-feed", i, c.SourceName)
+		}
 	}
 
 	// Verify sync state was persisted.
@@ -149,8 +153,7 @@ func TestFeedIngestHandler_Success(t *testing.T) {
 	}
 }
 
-func TestFeedIngestHandler_LastPageStopsFetching(t *testing.T) {
-	t.Parallel()
+func TestFeedHandler_LastPageStopsFetching(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
@@ -168,10 +171,10 @@ func TestFeedIngestHandler_LastPageStopsFetching(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := IngestHandler(db.Store, nil, merge.fn)
+	handler := Handler(db.Store, nil, merge.fn)
 	withMockFactory(t, adapter)
 
-	payload, _ := json.Marshal(IngestPayload{FeedName: "test-feed"})
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	if err := handler(ctx, payload); err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
@@ -182,8 +185,7 @@ func TestFeedIngestHandler_LastPageStopsFetching(t *testing.T) {
 	}
 }
 
-func TestFeedIngestHandler_FetchError(t *testing.T) {
-	t.Parallel()
+func TestFeedHandler_FetchError(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
@@ -194,10 +196,10 @@ func TestFeedIngestHandler_FetchError(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := IngestHandler(db.Store, nil, merge.fn)
+	handler := Handler(db.Store, nil, merge.fn)
 	withMockFactory(t, adapter)
 
-	payload, _ := json.Marshal(IngestPayload{FeedName: "test-feed"})
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	err := handler(ctx, payload)
 	if err == nil {
 		t.Fatal("expected error from handler when Fetch fails")
@@ -234,8 +236,65 @@ func TestFeedIngestHandler_FetchError(t *testing.T) {
 	}
 }
 
-func TestFeedIngestHandler_MidPaginationError(t *testing.T) {
-	t.Parallel()
+func TestFeedHandler_FailurePreservesLastSuccess(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	var shouldFail bool
+	adapter := &mockAdapter{
+		fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+			if shouldFail {
+				return nil, fmt.Errorf("upstream 503")
+			}
+			return &feed.FetchResult{
+				Patches:    []feed.CanonicalPatch{{CVEID: "CVE-2025-0001", SourceID: "CVE-2025-0001"}},
+				SourceMeta: feed.SourceMeta{SourceName: "test-feed", FetchedAt: time.Now().UTC()},
+				LastPage:   true,
+			}, nil
+		},
+	}
+
+	merge := &mockMerge{}
+	handler := Handler(db.Store, nil, merge.fn)
+	withMockFactory(t, adapter)
+
+	// First run succeeds.
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	if err := handler(ctx, payload); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	state, err := db.GetFeedSyncState(ctx, "test-feed")
+	if err != nil {
+		t.Fatalf("GetFeedSyncState: %v", err)
+	}
+	if state.LastSuccessAt == nil {
+		t.Fatal("LastSuccessAt should be set after success")
+	}
+	savedSuccess := *state.LastSuccessAt
+
+	// Second run fails.
+	shouldFail = true
+	if err := handler(ctx, payload); err == nil {
+		t.Fatal("expected error on second run")
+	}
+
+	state2, err := db.GetFeedSyncState(ctx, "test-feed")
+	if err != nil {
+		t.Fatalf("GetFeedSyncState after failure: %v", err)
+	}
+	if state2.LastSuccessAt == nil {
+		t.Fatal("LastSuccessAt should be preserved after failure")
+	}
+	if !state2.LastSuccessAt.Equal(savedSuccess) {
+		t.Errorf("LastSuccessAt changed from %v to %v (should be preserved)", savedSuccess, *state2.LastSuccessAt)
+	}
+	if state2.ConsecutiveFailures != 1 {
+		t.Errorf("ConsecutiveFailures = %d, want 1", state2.ConsecutiveFailures)
+	}
+}
+
+func TestFeedHandler_MidPaginationError(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
@@ -259,10 +318,10 @@ func TestFeedIngestHandler_MidPaginationError(t *testing.T) {
 	}
 
 	merge := &mockMerge{}
-	handler := IngestHandler(db.Store, nil, merge.fn)
+	handler := Handler(db.Store, nil, merge.fn)
 	withMockFactory(t, adapter)
 
-	payload, _ := json.Marshal(IngestPayload{FeedName: "test-feed"})
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
 	err := handler(ctx, payload)
 	if err == nil {
 		t.Fatal("expected error from handler on page 2 failure")
@@ -290,16 +349,27 @@ func TestFeedIngestHandler_MidPaginationError(t *testing.T) {
 	if state.ConsecutiveFailures != 1 {
 		t.Errorf("ConsecutiveFailures = %d, want 1", state.ConsecutiveFailures)
 	}
+
+	// Verify fetch log counts items from the successful page.
+	logs, err := db.ListRecentFeedFetchLogs(ctx, "test-feed", 10)
+	if err != nil {
+		t.Fatalf("ListRecentFeedFetchLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs) = %d, want 1", len(logs))
+	}
+	if logs[0].ItemsFetched != 1 {
+		t.Errorf("ItemsFetched = %d, want 1 (page 1 had 1 item)", logs[0].ItemsFetched)
+	}
 }
 
-func TestFeedIngestHandler_UnknownFeed(t *testing.T) {
-	t.Parallel()
+func TestFeedHandler_UnknownFeed(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	handler := IngestHandler(db.Store, nil, nil)
+	handler := Handler(db.Store, nil, nil)
 
-	payload, _ := json.Marshal(IngestPayload{FeedName: "bogus"})
+	payload, _ := json.Marshal(Payload{FeedName: "bogus"})
 	err := handler(ctx, payload)
 	if err == nil {
 		t.Fatal("expected error for unknown feed")

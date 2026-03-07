@@ -116,7 +116,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// which happens before or alongside HTTP server shutdown.
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", ingest.IngestHandler(st, feedClient, merge.Ingest))
+	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
 	// development and testing; GeminiClient for production.
@@ -259,7 +259,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", ingest.IngestHandler(st, feedClient, merge.Ingest))
+	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.

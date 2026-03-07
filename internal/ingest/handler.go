@@ -15,19 +15,19 @@ import (
 	"github.com/scarson/cvert-ops/internal/worker"
 )
 
-// IngestPayload is the JSON payload for feed_ingest jobs.
-type IngestPayload struct {
+// Payload is the JSON payload for feed_ingest jobs.
+type Payload struct {
 	FeedName string `json:"feed_name"`
 }
 
 // MergeFunc matches the signature of merge.Ingest. Defined as a type for test injection.
 type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
 
-// IngestHandler returns a worker.Handler that fetches from the named feed adapter,
+// Handler returns a worker.Handler that fetches from the named feed adapter,
 // merges each patch into the CVE corpus, and persists cursor/sync state.
-func IngestHandler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
+func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
 	return func(ctx context.Context, payload json.RawMessage) error {
-		var p IngestPayload
+		var p Payload
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("unmarshal feed ingest payload: %w", err)
 		}
@@ -48,9 +48,11 @@ func IngestHandler(st *store.Store, client *http.Client, mergeFn MergeFunc) work
 
 		var cursor json.RawMessage
 		var prevFailures int32
+		var prevLastSuccess *time.Time
 		if state != nil {
 			cursor = state.CursorJSON
 			prevFailures = state.ConsecutiveFailures
+			prevLastSuccess = state.LastSuccessAt
 		}
 		cursorBefore := cursor
 
@@ -69,10 +71,12 @@ func IngestHandler(st *store.Store, client *http.Client, mergeFn MergeFunc) work
 				break
 			}
 
+			itemsFetched += int32(len(result.Patches)) //nolint:gosec // G115: page sizes are always small
+
 			slog.Info("feed page fetched",
 				"feed", p.FeedName,
 				"page_items", len(result.Patches),
-				"total_fetched", itemsFetched+int32(len(result.Patches)),
+				"total_fetched", itemsFetched,
 				"last_page", result.LastPage,
 			)
 
@@ -92,8 +96,6 @@ func IngestHandler(st *store.Store, client *http.Client, mergeFn MergeFunc) work
 			if fetchErr != nil {
 				break
 			}
-
-			itemsFetched += int32(len(result.Patches))
 
 			// Update last successful cursor after a fully-processed page.
 			if result.NextCursor != nil {
@@ -125,6 +127,7 @@ func IngestHandler(st *store.Store, client *http.Client, mergeFn MergeFunc) work
 			_ = st.UpsertFeedSyncState(ctx, store.FeedSyncState{
 				FeedName:            p.FeedName,
 				CursorJSON:          lastSuccessfulCursor,
+				LastSuccessAt:       prevLastSuccess,
 				LastAttemptAt:       &now,
 				ConsecutiveFailures: failures,
 				LastError:           fetchErr.Error(),

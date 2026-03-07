@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1256,6 +1257,100 @@ func TestFetch_NoTokenOmitsAuthHeader(t *testing.T) {
 
 	if capturedAuth != "" {
 		t.Errorf("Authorization header = %q, want empty (no token configured)", capturedAuth)
+	}
+}
+
+func TestFetchPage_TypeErrorSkipsRecord(t *testing.T) {
+	// Not parallel: captures global slog.Default.
+
+	// A type error (wrong JSON type for a field) is recoverable — the decoder
+	// consumed the token, so we can continue to the next record.
+	body := `[
+		{"ghsa_id": "GHSA-good-0001-aaaa", "cve_id": "CVE-2025-30001", "summary": "ok", "severity": "low", "published_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z", "cwes": [], "vulnerabilities": [], "references": [], "identifiers": [], "html_url": ""},
+		"this is not a valid JSON object for a ghsaAdvisory",
+		{"ghsa_id": "GHSA-good-0003-cccc", "cve_id": "CVE-2025-30003", "summary": "ok", "severity": "low", "published_at": "2025-01-03T00:00:00Z", "updated_at": "2025-01-04T00:00:00Z", "cwes": [], "vulnerabilities": [], "references": [], "identifiers": [], "html_url": ""}
+	]`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected no error (type errors are skippable), got: %v", err)
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("got %d patches, want 2 (malformed record should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-30001" || result.Patches[1].CVEID != "CVE-2025-30003" {
+		t.Errorf("wrong patches: %v, %v", result.Patches[0].CVEID, result.Patches[1].CVEID)
+	}
+	if !strings.Contains(buf.String(), "skipping malformed record") {
+		t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+	}
+}
+
+func TestFetchPage_SyntaxErrorStopsStream(t *testing.T) {
+	// Not parallel: captures global slog.Default.
+
+	// A JSON syntax error corrupts the stream — remaining tokens are unreliable.
+	// The parser should return records parsed so far and stop.
+	body := `[
+		{"ghsa_id": "GHSA-good-0001-aaaa", "cve_id": "CVE-2025-40001", "summary": "ok", "severity": "low", "published_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z", "cwes": [], "vulnerabilities": [], "references": [], "identifiers": [], "html_url": ""},
+		{INVALID_JSON},
+		{"ghsa_id": "GHSA-good-0003-cccc", "cve_id": "CVE-2025-40003", "summary": "ok"}
+	]`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected no error (syntax error returns partial), got: %v", err)
+	}
+	if len(result.Patches) != 1 {
+		t.Fatalf("got %d patches, want 1 (only first record before syntax error)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-40001" {
+		t.Errorf("patch CVEID = %q, want CVE-2025-40001", result.Patches[0].CVEID)
+	}
+	if !strings.Contains(buf.String(), "syntax error") {
+		t.Errorf("expected warning log about syntax error, got: %s", buf.String())
 	}
 }
 

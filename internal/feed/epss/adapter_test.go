@@ -225,23 +225,15 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 
 	// Capture slog output to verify warning is logged.
 	var logBuf bytes.Buffer
+	origHandler := slog.Default().Handler()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(slog.Default()) })
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
 
-	// Override feedURL by pointing adapter's client at our test server.
+	// Route all requests to the test server (Apply uses a hardcoded feedURL constant).
 	adapter := &Adapter{
-		client:      feed.WrapClientWithUA(srv.Client()),
+		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
 		rateLimiter: rate.NewLimiter(rate.Inf, 1),
 	}
-
-	// We can't call Apply directly because it uses the hardcoded feedURL.
-	// Instead, test the processing logic by calling applyCSV which we'll need
-	// to extract... Actually, let's use a redirect transport approach.
-
-	// Use a custom transport that routes all requests to the test server.
-	adapter.client = feed.WrapClientWithUA(&http.Client{
-		Transport: &redirectTransport{target: srv.URL},
-	})
 
 	result, err := adapter.Apply(context.Background(), nil, nil)
 	if err != nil {

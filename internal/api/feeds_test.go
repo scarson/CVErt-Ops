@@ -115,8 +115,8 @@ func TestAdminFeeds_ListWithSeededData(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(body.Feeds) < 2 {
-		t.Fatalf("expected at least 2 feeds, got %d", len(body.Feeds))
+	if len(body.Feeds) != len(ingest.KnownFeeds) {
+		t.Fatalf("expected %d feeds (all known), got %d", len(ingest.KnownFeeds), len(body.Feeds))
 	}
 
 	// Find nvd and kev entries.

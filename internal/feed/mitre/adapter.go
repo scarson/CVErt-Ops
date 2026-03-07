@@ -81,7 +81,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	}
 
 	// Stream the ZIP to a temp file — archive/zip.NewReader requires io.ReaderAt.
-	tmpFile, err := downloadToTemp(ctx, a.client, bulkZIPURL)
+	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("mitre: download zip: %w", err)
 	}
@@ -147,44 +147,6 @@ func isCVEEntry(name string) bool {
 	return strings.HasSuffix(name, ".json") &&
 		strings.Contains(name, "/cves/") &&
 		strings.Contains(name, "CVE-")
-}
-
-// downloadToTemp streams the HTTP response body to a temp file for ZIP reading.
-// The caller must defer os.Remove(f.Name()) and f.Close().
-func downloadToTemp(ctx context.Context, client *http.Client, url string) (*os.File, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	f, err := os.CreateTemp("", "cvert-mitre-*.zip")
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("copy to temp: %w", err)
-	}
-
-	// Rewind for zip.NewReader.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("seek temp file: %w", err)
-	}
-	return f, nil
 }
 
 // parseEntry opens a ZIP entry, decodes the CVE 5.0 JSON, and returns a patch.
@@ -333,7 +295,7 @@ func parseCVE5(r io.Reader) (*feed.CanonicalPatch, error) {
 		}
 		patch.References = append(patch.References, feed.ReferenceEntry{
 			URL:  strings.Clone(feed.StripNullBytes(ref.URL)),
-			Tags: cloneStrings(ref.Tags),
+			Tags: feed.CloneStrings(ref.Tags),
 		})
 	}
 
@@ -406,14 +368,3 @@ func applyCVSS(patch *feed.CanonicalPatch, metrics []cve5MetricEntry) {
 	}
 }
 
-// cloneStrings returns a new slice with all strings cloned.
-func cloneStrings(ss []string) []string {
-	if ss == nil {
-		return nil
-	}
-	out := make([]string, len(ss))
-	for i, s := range ss {
-		out[i] = strings.Clone(s)
-	}
-	return out
-}

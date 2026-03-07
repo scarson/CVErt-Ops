@@ -462,7 +462,7 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		}
 		patch.References = append(patch.References, feed.ReferenceEntry{
 			URL:  strings.Clone(feed.StripNullBytes(ref.URL)),
-			Tags: cloneStrings(ref.Tags),
+			Tags: feed.CloneStrings(ref.Tags),
 		})
 	}
 
@@ -555,14 +555,3 @@ func pickPreferred(entries []nvdCVSSMetric) *nvdCVSSMetric {
 	return nil
 }
 
-// cloneStrings returns a new slice with all strings cloned.
-func cloneStrings(ss []string) []string {
-	if ss == nil {
-		return nil
-	}
-	out := make([]string, len(ss))
-	for i, s := range ss {
-		out[i] = strings.Clone(s)
-	}
-	return out
-}

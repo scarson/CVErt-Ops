@@ -2,6 +2,11 @@ package feed
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -67,6 +72,58 @@ var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d+$`)
 // The nativeID is returned as-is when no CVE alias is found (the record will be
 // stored under its own ID and merged if a CVE alias is discovered later via
 // late-binding PK migration).
+// CloneStrings returns a new slice with all strings copied via strings.Clone.
+// Returns nil for nil input.
+func CloneStrings(ss []string) []string {
+	if ss == nil {
+		return nil
+	}
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = strings.Clone(s)
+	}
+	return out
+}
+
+// DownloadToTemp streams an HTTP response body to a temp file for ZIP reading.
+// The caller must defer os.Remove(f.Name()) and f.Close().
+// The tempPattern parameter is passed directly to os.CreateTemp (e.g., "cvert-mitre-*.zip").
+func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern string) (*os.File, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req) //nolint:gosec // G704: URL comes from hardcoded adapter constants
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("feed: download %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	f, err := os.CreateTemp("", tempPattern)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		return nil, fmt.Errorf("feed: copy to temp: %w", err)
+	}
+
+	// Rewind for zip.NewReader.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
+		return nil, fmt.Errorf("feed: seek temp file: %w", err)
+	}
+	return f, nil
+}
+
 func ResolveCanonicalID(nativeID string, aliases []string) string {
 	// Sort aliases so the result is deterministic when multiple CVE IDs exist.
 	sorted := make([]string, len(aliases))

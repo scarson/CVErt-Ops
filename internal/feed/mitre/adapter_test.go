@@ -933,53 +933,6 @@ func TestApplyCVSS(t *testing.T) {
 	})
 }
 
-func TestCloneStrings(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil input returns nil", func(t *testing.T) {
-		t.Parallel()
-
-		result := cloneStrings(nil)
-		if result != nil {
-			t.Errorf("cloneStrings(nil) = %v, want nil", result)
-		}
-	})
-
-	t.Run("empty slice returns empty slice", func(t *testing.T) {
-		t.Parallel()
-
-		result := cloneStrings([]string{})
-		if result == nil {
-			t.Fatal("cloneStrings([]string{}) = nil, want non-nil empty slice")
-		}
-		if len(result) != 0 {
-			t.Errorf("len(cloneStrings([]string{})) = %d, want 0", len(result))
-		}
-	})
-
-	t.Run("normal slice cloned", func(t *testing.T) {
-		t.Parallel()
-
-		input := []string{"alpha", "beta", "gamma"}
-		result := cloneStrings(input)
-
-		if len(result) != 3 {
-			t.Fatalf("len = %d, want 3", len(result))
-		}
-		for i, want := range input {
-			if result[i] != want {
-				t.Errorf("result[%d] = %q, want %q", i, result[i], want)
-			}
-		}
-
-		// Verify it's a true copy: mutating input doesn't affect result.
-		input[0] = "mutated"
-		if result[0] == "mutated" {
-			t.Error("cloneStrings did not create independent copy; mutating input affected result")
-		}
-	})
-}
-
 // --- Fetch integration tests ---
 
 // redirectTransport rewrites all request URLs to point at the test server,

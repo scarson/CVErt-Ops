@@ -2,6 +2,10 @@ package feed
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -242,6 +246,98 @@ func TestResolveCanonicalIDWhitespaceAlias(t *testing.T) {
 }
 
 // ── CanonicalPatch VendorEnrichment ──────────────────────────────────────────
+
+// ── CloneStrings ──────────────────────────────────────────────────────────────
+
+func TestCloneStrings_NilReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	result := CloneStrings(nil)
+	if result != nil {
+		t.Errorf("CloneStrings(nil) = %v, want nil", result)
+	}
+}
+
+func TestCloneStrings_EmptyReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	result := CloneStrings([]string{})
+	if result == nil {
+		t.Fatal("CloneStrings([]string{}) = nil, want non-nil empty slice")
+	}
+	if len(result) != 0 {
+		t.Errorf("len(CloneStrings([]string{})) = %d, want 0", len(result))
+	}
+}
+
+func TestCloneStrings_IndependentCopy(t *testing.T) {
+	t.Parallel()
+
+	input := []string{"alpha", "beta", "gamma"}
+	result := CloneStrings(input)
+
+	if len(result) != 3 {
+		t.Fatalf("len = %d, want 3", len(result))
+	}
+	for i, want := range []string{"alpha", "beta", "gamma"} {
+		if result[i] != want {
+			t.Errorf("result[%d] = %q, want %q", i, result[i], want)
+		}
+	}
+
+	// Verify it's a true copy: mutating input doesn't affect result.
+	input[0] = "mutated"
+	if result[0] == "mutated" {
+		t.Error("CloneStrings did not create independent copy; mutating input affected result")
+	}
+}
+
+// ── DownloadToTemp ────────────────────────────────────────────────────────────
+
+func TestDownloadToTemp_Success(t *testing.T) {
+	t.Parallel()
+
+	payload := "hello from test server"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, payload)
+	}))
+	defer srv.Close()
+
+	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
+	if err != nil {
+		t.Fatalf("DownloadToTemp error: %v", err)
+	}
+	defer os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp
+	defer f.Close()           //nolint:errcheck
+
+	// File should be seeked to start — read should give us the full payload.
+	got, err := os.ReadFile(f.Name()) //nolint:gosec // G304: path from os.CreateTemp
+	if err != nil {
+		t.Fatalf("ReadFile error: %v", err)
+	}
+	if string(got) != payload {
+		t.Errorf("file content = %q, want %q", got, payload)
+	}
+}
+
+func TestDownloadToTemp_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
+	if err == nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		t.Fatal("expected error for HTTP 500, got nil")
+	}
+	if f != nil {
+		t.Error("expected nil file on error")
+	}
+}
 
 func TestCanonicalPatch_VendorEnrichmentRoundTrip(t *testing.T) {
 	t.Parallel()

@@ -185,11 +185,11 @@ func makeEPSSGzip(t *testing.T, rows []string) []byte {
 	gz := gzip.NewWriter(&buf)
 	// Line 1: comment with model_version and score_date (yesterday to avoid same-day skip).
 	yesterday := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	fmt.Fprintf(gz, "#model_version:v2025.03.14,score_date:%s\n", yesterday)
+	fmt.Fprintf(gz, "#model_version:v2025.03.14,score_date:%s\n", yesterday) //nolint:errcheck // test helper
 	// Line 2: header.
-	fmt.Fprintln(gz, "cve,epss,percentile")
+	fmt.Fprintln(gz, "cve,epss,percentile") //nolint:errcheck // test helper
 	for _, r := range rows {
-		fmt.Fprintln(gz, r)
+		fmt.Fprintln(gz, r) //nolint:errcheck // test helper
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatalf("gzip close: %v", err)
@@ -217,9 +217,9 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 		"CVE-2024-0003,0.8,0.95",
 	})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
-		w.Write(body) //nolint:errcheck // test helper
+		w.Write(body) //nolint:errcheck,gosec // test helper
 	}))
 	defer srv.Close()
 

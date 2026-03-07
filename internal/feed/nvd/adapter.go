@@ -1,5 +1,5 @@
-// Package nvd implements the FeedAdapter for the NVD (National Vulnerability
-// Database) API 2.0.
+// ABOUTME: Feed adapter for the NVD (National Vulnerability Database) API 2.0.
+// ABOUTME: Fetches CVEs via sliding time windows with streaming JSON parse, converts to CanonicalPatch.
 //
 // TODO(attribution): NVD notice required in UI per NVD ToU —
 // "This product uses the NVD API but is not endorsed or certified by the NVD."

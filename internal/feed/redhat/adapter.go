@@ -31,6 +31,9 @@ const (
 	// listPageSize is the number of CVEs per list page.
 	listPageSize = 100
 
+	// maxListSize caps the CVE list response body to prevent OOM from malformed responses.
+	maxListSize = 5 << 20 // 5 MB
+
 	// maxDetailSize caps the detail response body to prevent OOM from malformed responses.
 	maxDetailSize = 10 << 20 // 10 MB
 )
@@ -409,7 +412,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			return nil, fmt.Errorf("redhat: list HTTP %d", resp.StatusCode)
 		}
 
-		entries, err := parseListResponse(resp.Body)
+		entries, err := parseListResponse(io.LimitReader(resp.Body, maxListSize))
 		if err != nil {
 			return nil, err
 		}

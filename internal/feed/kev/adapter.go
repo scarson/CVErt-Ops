@@ -1,5 +1,5 @@
-// Package kev implements the FeedAdapter for the CISA Known Exploited
-// Vulnerabilities (KEV) catalog.
+// ABOUTME: Feed adapter for the CISA Known Exploited Vulnerabilities (KEV) catalog.
+// ABOUTME: Downloads the full JSON catalog, short-circuits on unchanged version, converts to CanonicalPatch.
 //
 // KEV is a flag-setter: its primary write is in_cisa_kev = true on the canonical
 // cves row. Per PLAN.md §5.1, CISA KEV is the authoritative source for the

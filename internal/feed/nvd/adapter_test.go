@@ -1157,6 +1157,55 @@ func TestFetch_WithCursor(t *testing.T) {
 	}
 }
 
+func TestFetch_LastPage(t *testing.T) {
+	t.Parallel()
+
+	// Serve the standard response with timestamp "2025-06-01T12:00:00.000".
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	// Set the cursor's WindowEnd equal to effectiveNow (the response timestamp).
+	// This means all windows are exhausted — computeNextCursor returns nil.
+	windowStart := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: windowStart,
+		WindowEnd:   windowEnd,
+		StartIndex:  0,
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true when window end reaches effectiveNow")
+	}
+	if result.NextCursor != nil {
+		t.Errorf("NextCursor should be nil on last page, got %s", string(result.NextCursor))
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+}
+
 func TestFetch_HTTPError(t *testing.T) {
 	t.Parallel()
 

@@ -27,6 +27,9 @@ const (
 	// baseURL is the MSRC CSAF API base endpoint.
 	baseURL = "https://api.msrc.microsoft.com/cvrf/v3.0/"
 
+	// maxUpdatesSize caps the /updates response body to prevent OOM from malformed responses.
+	maxUpdatesSize = 5 << 20 // 5 MB
+
 	// maxCSAFDocSize caps the CSAF response body to prevent OOM from malformed responses.
 	maxCSAFDocSize = 50 << 20 // 50 MB
 )
@@ -320,7 +323,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, fmt.Errorf("msrc: updates HTTP %d", resp.StatusCode)
 	}
 
-	updates, err := parseUpdates(resp.Body)
+	updates, err := parseUpdates(io.LimitReader(resp.Body, maxUpdatesSize))
 	if err != nil {
 		return nil, err
 	}

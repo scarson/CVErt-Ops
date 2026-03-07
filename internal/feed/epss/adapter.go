@@ -1,5 +1,7 @@
-// Package epss implements the EPSS (Exploit Prediction Scoring System) enrichment
-// adapter. Unlike CVE feed adapters, this package does NOT implement feed.Adapter —
+// ABOUTME: EPSS (Exploit Prediction Scoring System) enrichment adapter.
+// ABOUTME: Downloads daily EPSS CSV scores and applies them via advisory-locked per-row DB writes.
+//
+// Unlike CVE feed adapters, this package does NOT implement feed.Adapter —
 // it writes directly to the database via the two-statement IS DISTINCT FROM pattern
 // described in PLAN.md §5.3.
 //

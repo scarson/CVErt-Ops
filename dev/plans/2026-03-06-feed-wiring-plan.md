@@ -559,6 +559,8 @@ feat: add feed state sqlc queries and store wrapper methods
 
 ## Task 6: Wire the real `feedIngestHandler` for standard adapters
 
+> **Quality gate:** The overarching purpose of this plan is to get the adapters right. If you see anything out of place while working on this task — missing safety patterns, inconsistent error handling, absent ABOUTME headers, missing test coverage, missing LimitReaders, or any other issue no matter how small — fix it or raise it with Sam immediately. The only things that should be deferred are those that genuinely cannot be addressed right now, and those must be documented as deferred items with a clear reason.
+
 Replace the stub in `cmd/cvert-ops/main.go` with a real handler that:
 1. Unmarshals the job payload to get the feed name
 2. Reads the current cursor from `feed_sync_state`
@@ -756,6 +758,8 @@ feat: wire feed ingest handler to worker pool with merge pipeline integration
 
 ## Task 7: Wire the EPSS handler
 
+> **Quality gate:** The overarching purpose of this plan is to get the adapters right. If you see anything out of place while working on this task — missing safety patterns, inconsistent error handling, absent ABOUTME headers, missing test coverage, missing LimitReaders, or any other issue no matter how small — fix it or raise it with Sam immediately. The only things that should be deferred are those that genuinely cannot be addressed right now, and those must be documented as deferred items with a clear reason.
+
 EPSS does not implement `feed.Adapter`. It has its own `Apply(ctx, store, cursor) -> (newCursor, error)` method that handles DB writes directly (two-statement pattern with advisory locks). It needs a dedicated worker handler.
 
 **Files:**
@@ -861,6 +865,8 @@ feat: wire EPSS ingest handler to worker pool
 ---
 
 ## Task 8: Feed scheduler
+
+> **Quality gate:** The overarching purpose of this plan is to get the adapters right. If you see anything out of place while working on this task — missing safety patterns, inconsistent error handling, absent ABOUTME headers, missing test coverage, missing LimitReaders, or any other issue no matter how small — fix it or raise it with Sam immediately. The only things that should be deferred are those that genuinely cannot be addressed right now, and those must be documented as deferred items with a clear reason.
 
 Add a goroutine that periodically checks whether each feed is due for a sync and enqueues `feed_ingest` / `epss_ingest` jobs accordingly. A feed is "due" when `last_success_at + interval <= now` (or when it has never synced). The scheduler also skips feeds with a pending/running job to avoid double-scheduling.
 
@@ -994,6 +1000,8 @@ feat: add feed scheduler for periodic ingestion job enqueueing
 
 ## Task 9: Admin feeds API
 
+> **Quality gate:** The overarching purpose of this plan is to get the adapters right. If you see anything out of place while working on this task — missing safety patterns, inconsistent error handling, absent ABOUTME headers, missing test coverage, missing LimitReaders, or any other issue no matter how small — fix it or raise it with Sam immediately. The only things that should be deferred are those that genuinely cannot be addressed right now, and those must be documented as deferred items with a clear reason.
+
 Two endpoints per PLAN.md Appendix B:
 - `GET /api/v1/admin/feeds` — list all feed sync states + recent fetch logs
 - `POST /api/v1/admin/feeds/{feed}/run` — manually trigger a feed re-run
@@ -1098,6 +1106,8 @@ feat: add admin feeds API for status monitoring and manual triggering
 
 ## Task 10: Feed status dashboard UI
 
+> **Quality gate:** The overarching purpose of this plan is to get the adapters right. If you see anything out of place while working on this task — missing safety patterns, inconsistent error handling, absent ABOUTME headers, missing test coverage, missing LimitReaders, or any other issue no matter how small — fix it or raise it with Sam immediately. The only things that should be deferred are those that genuinely cannot be addressed right now, and those must be documented as deferred items with a clear reason.
+
 Replace the "Coming Soon" placeholder in `FeedStatusView.vue` with a real dashboard showing feed health.
 
 **Files:**
@@ -1156,6 +1166,8 @@ feat: replace feed status placeholder with live dashboard
 ---
 
 ## Task 11: Lint, full test suite, and final commit
+
+> **Quality gate:** The overarching purpose of this plan is to get the adapters right. If you see anything out of place while working on this task — missing safety patterns, inconsistent error handling, absent ABOUTME headers, missing test coverage, missing LimitReaders, or any other issue no matter how small — fix it or raise it with Sam immediately. The only things that should be deferred are those that genuinely cannot be addressed right now, and those must be documented as deferred items with a clear reason.
 
 **Step 1: Run Go linter**
 

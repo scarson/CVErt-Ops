@@ -1,6 +1,5 @@
-// Package mitre implements the FeedAdapter for the MITRE CVE 5.0 bulk feed.
-// The adapter downloads the cvelistV5 ZIP archive from GitHub, streams it to a
-// temporary file, and parses each CVE JSON entry.
+// ABOUTME: Feed adapter for the MITRE CVE 5.0 bulk feed (cvelistV5 ZIP from GitHub).
+// ABOUTME: Downloads ZIP archive, pre-filters by modified time, parses CVE 5.0 JSON entries.
 //
 // Cursor format: {"last_modified": "2024-01-15T10:00:00Z"}
 // The feed handler persists SourceMeta.FetchedAt as the new cursor value after

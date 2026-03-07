@@ -1,5 +1,5 @@
-// Package osv implements the FeedAdapter for the OSV (Open Source
-// Vulnerabilities) bulk feed from the Google Cloud Storage bucket.
+// ABOUTME: Feed adapter for the OSV (Open Source Vulnerabilities) bulk feed.
+// ABOUTME: Downloads all.zip from GCS, pre-filters by modified time, resolves CVE aliases.
 //
 // OSV publishes a single all.zip archive containing all advisories across all
 // ecosystems. Each advisory is a JSON file conforming to the OSV schema v1:

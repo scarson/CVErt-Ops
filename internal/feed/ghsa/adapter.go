@@ -1,5 +1,5 @@
-// Package ghsa implements the FeedAdapter for the GitHub Security Advisory
-// (GHSA) REST API.
+// ABOUTME: Feed adapter for the GitHub Security Advisory (GHSA) REST API.
+// ABOUTME: Paginates through advisories, resolves CVE aliases, converts to CanonicalPatch.
 //
 // GHSA exposes public security advisories at GET https://api.github.com/advisories.
 // The adapter uses cursor-based pagination via the Link response header and

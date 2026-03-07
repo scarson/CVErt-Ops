@@ -1,6 +1,5 @@
-// Package feed defines shared canonical types used by all CVE feed adapters
-// and the merge pipeline. Concrete adapter implementations live in
-// subdirectories (mitre, nvd, osv, ghsa, kev, epss).
+// ABOUTME: Shared canonical types and interfaces for CVE feed adapters.
+// ABOUTME: Defines FeedAdapter, CanonicalPatch, FetchResult, and SourceMeta used by all adapters and the merge pipeline.
 package feed
 
 import (

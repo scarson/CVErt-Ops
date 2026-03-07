@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -135,9 +136,13 @@ func TestInsertAndListFeedFetchLogs(t *testing.T) {
 
 	cursor := json.RawMessage(`{"page":1}`)
 
+	t1 := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+
 	// Insert two logs for the same feed.
 	id1, err := db.InsertFeedFetchLog(ctx, store.FeedFetchLog{
 		FeedName:      "kev",
+		StartedAt:     t1,
 		Status:        "success",
 		ItemsFetched:  100,
 		ItemsUpserted: 95,
@@ -148,11 +153,9 @@ func TestInsertAndListFeedFetchLogs(t *testing.T) {
 		t.Fatalf("InsertFeedFetchLog 1: %v", err)
 	}
 
-	// Small delay so started_at ordering is deterministic.
-	time.Sleep(10 * time.Millisecond)
-
 	id2, err := db.InsertFeedFetchLog(ctx, store.FeedFetchLog{
 		FeedName:      "kev",
+		StartedAt:     t2,
 		Status:        "error",
 		ItemsFetched:  50,
 		ItemsUpserted: 0,
@@ -210,5 +213,55 @@ func TestInsertAndListFeedFetchLogs(t *testing.T) {
 	}
 	if len(other) != 0 {
 		t.Errorf("len = %d, want 0 for feed with no logs", len(other))
+	}
+}
+
+func TestInsertFeedFetchLog_PersistsTimestamps(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	startTime := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	endTime := time.Date(2026, 1, 1, 10, 5, 30, 0, time.UTC)
+
+	id, err := db.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+		FeedName:      "nvd",
+		StartedAt:     startTime,
+		EndedAt:       &endTime,
+		Status:        "success",
+		ItemsFetched:  100,
+		ItemsUpserted: 42,
+	})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if id == (uuid.UUID{}) {
+		t.Fatal("expected non-nil ID")
+	}
+
+	// Read back the row and verify timestamps are persisted correctly.
+	logs, err := db.ListRecentFeedFetchLogs(ctx, "nvd", 1)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log, got %d", len(logs))
+	}
+
+	log := logs[0]
+	// started_at must match what we passed, not "now()"
+	if !log.StartedAt.Equal(startTime) {
+		t.Errorf("started_at = %v, want %v", log.StartedAt, startTime)
+	}
+	// ended_at must match what we passed, not "now()"
+	if log.EndedAt == nil || !log.EndedAt.Equal(endTime) {
+		t.Errorf("ended_at = %v, want %v", log.EndedAt, endTime)
+	}
+	// Sanity: duration should be ~5.5 minutes, not zero.
+	if log.EndedAt != nil {
+		duration := log.EndedAt.Sub(log.StartedAt)
+		if duration < 5*time.Minute {
+			t.Errorf("duration = %v, want >= 5m (started_at and ended_at are probably both now())", duration)
+		}
 	}
 }

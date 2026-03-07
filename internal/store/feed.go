@@ -79,6 +79,8 @@ func (s *Store) InsertFeedFetchLog(ctx context.Context, log FeedFetchLog) (uuid.
 		var err error
 		id, err = q.InsertFeedFetchLog(ctx, generated.InsertFeedFetchLogParams{
 			FeedName:      log.FeedName,
+			StartedAt:     log.StartedAt,
+			EndedAt:       toNullTime(log.EndedAt),
 			Status:        log.Status,
 			ItemsFetched:  log.ItemsFetched,
 			ItemsUpserted: log.ItemsUpserted,

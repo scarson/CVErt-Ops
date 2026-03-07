@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
@@ -34,15 +35,17 @@ func (q *Queries) GetFeedSyncState(ctx context.Context, feedName string) (FeedSy
 
 const insertFeedFetchLog = `-- name: InsertFeedFetchLog :one
 INSERT INTO feed_fetch_log (
-    feed_name, status, items_fetched, items_upserted,
-    cursor_before, cursor_after, error_summary, ended_at
+    feed_name, started_at, ended_at, status, items_fetched, items_upserted,
+    cursor_before, cursor_after, error_summary
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING id
 `
 
 type InsertFeedFetchLogParams struct {
 	FeedName      string
+	StartedAt     time.Time
+	EndedAt       sql.NullTime
 	Status        string
 	ItemsFetched  int32
 	ItemsUpserted int32
@@ -54,6 +57,8 @@ type InsertFeedFetchLogParams struct {
 func (q *Queries) InsertFeedFetchLog(ctx context.Context, arg InsertFeedFetchLogParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, insertFeedFetchLog,
 		arg.FeedName,
+		arg.StartedAt,
+		arg.EndedAt,
 		arg.Status,
 		arg.ItemsFetched,
 		arg.ItemsUpserted,

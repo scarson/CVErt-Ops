@@ -22,3 +22,12 @@ INSERT INTO feed_fetch_log (
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 RETURNING id;
+
+-- name: ListFeedSyncStates :many
+SELECT * FROM feed_sync_state ORDER BY feed_name;
+
+-- name: ListRecentFeedFetchLogs :many
+SELECT * FROM feed_fetch_log
+WHERE feed_name = $1
+ORDER BY started_at DESC
+LIMIT $2;

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +162,59 @@ func TestEPSSHandler_FailurePreservesLastSuccess(t *testing.T) {
 	}
 	if state2.ConsecutiveFailures != 1 {
 		t.Errorf("ConsecutiveFailures = %d, want 1", state2.ConsecutiveFailures)
+	}
+}
+
+func TestEPSSHandler_SyncStateFailOnSuccess_ReturnsError(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	logBuf := captureLogs(t)
+
+	newCursor := json.RawMessage(`{"score_date":"2026-03-07T12:00:00Z"}`)
+	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+		return newCursor, nil
+	}
+
+	failStore := &failSyncStateStore{HandlerStore: db.Store}
+	handler := epssHandlerWithStore(failStore, db.Store, applyFn)
+
+	err := handler(ctx, nil)
+
+	// Success-path sync state failure must propagate as an error.
+	if err == nil {
+		t.Fatal("expected error when sync state write fails on success path")
+	}
+	if !strings.Contains(err.Error(), "persist sync state") {
+		t.Errorf("error = %q, want to contain 'persist sync state'", err.Error())
+	}
+	if !strings.Contains(logBuf.String(), "sync state write failed on success path") {
+		t.Errorf("expected log message about sync state failure, got: %s", logBuf.String())
+	}
+}
+
+func TestEPSSHandler_SyncStateFailOnError_LogsButReturnsOriginal(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	logBuf := captureLogs(t)
+
+	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, fmt.Errorf("download failed")
+	}
+
+	failStore := &failSyncStateStore{HandlerStore: db.Store}
+	handler := epssHandlerWithStore(failStore, db.Store, applyFn)
+
+	err := handler(ctx, nil)
+
+	// Error-path sync state failure should be logged, but original error returned.
+	if err == nil {
+		t.Fatal("expected error from handler")
+	}
+	if !strings.Contains(err.Error(), "download failed") {
+		t.Errorf("error = %q, want original error containing 'download failed'", err.Error())
+	}
+	if !strings.Contains(logBuf.String(), "sync state write failed on error path") {
+		t.Errorf("expected log message about sync state failure on error path, got: %s", logBuf.String())
 	}
 }
 

@@ -26,7 +26,6 @@ type HandlerStore interface {
 	GetFeedSyncState(ctx context.Context, feedName string) (*store.FeedSyncState, error)
 	UpsertFeedSyncState(ctx context.Context, state store.FeedSyncState) error
 	InsertFeedFetchLog(ctx context.Context, log store.FeedFetchLog) (uuid.UUID, error)
-	ListRecentFeedFetchLogs(ctx context.Context, feedName string, limit int) ([]store.FeedFetchLog, error)
 }
 
 // MergeFunc matches the signature of merge.Ingest. Defined as a type for test injection.

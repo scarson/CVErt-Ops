@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"time"
 
+	"database/sql"
+
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 )
 
 // ApplyFunc matches the signature of epss.Adapter.Apply. Defined as a type for test injection.
-type ApplyFunc func(ctx context.Context, s *store.Store, cursor json.RawMessage) (json.RawMessage, error)
+type ApplyFunc func(ctx context.Context, db *sql.DB, cursor json.RawMessage) (json.RawMessage, error)
 
 // EPSSHandler returns a worker.Handler that runs the EPSS adapter and persists sync state.
 // In production, pass epssAdapter.Apply as applyFn.
@@ -46,7 +48,7 @@ func epssHandlerWithStore(syncSt HandlerStore, mergeSt *store.Store, applyFn App
 		cursorBefore := cursor
 
 		// Run the EPSS adapter.
-		newCursor, applyErr := applyFn(ctx, mergeSt, cursor)
+		newCursor, applyErr := applyFn(ctx, mergeSt.DB(), cursor)
 
 		now := time.Now()
 

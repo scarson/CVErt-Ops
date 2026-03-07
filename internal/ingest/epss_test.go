@@ -4,6 +4,7 @@ package ingest
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,7 +20,7 @@ func TestEPSSHandler_Success(t *testing.T) {
 	ctx := context.Background()
 
 	newCursor := json.RawMessage(`{"score_date":"2026-03-07T12:00:00Z","model_version":"v2025.03.14"}`)
-	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+	applyFn := func(_ context.Context, _ *sql.DB, _ json.RawMessage) (json.RawMessage, error) {
 		return newCursor, nil
 	}
 
@@ -73,7 +74,7 @@ func TestEPSSHandler_Error(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+	applyFn := func(_ context.Context, _ *sql.DB, _ json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("download failed")
 	}
 
@@ -121,7 +122,7 @@ func TestEPSSHandler_FailurePreservesLastSuccess(t *testing.T) {
 
 	var shouldFail bool
 	newCursor := json.RawMessage(`{"score_date":"2026-03-07T12:00:00Z"}`)
-	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+	applyFn := func(_ context.Context, _ *sql.DB, _ json.RawMessage) (json.RawMessage, error) {
 		if shouldFail {
 			return nil, fmt.Errorf("download failed")
 		}
@@ -171,7 +172,7 @@ func TestEPSSHandler_SyncStateFailOnSuccess_ReturnsError(t *testing.T) {
 	logBuf := captureLogs(t)
 
 	newCursor := json.RawMessage(`{"score_date":"2026-03-07T12:00:00Z"}`)
-	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+	applyFn := func(_ context.Context, _ *sql.DB, _ json.RawMessage) (json.RawMessage, error) {
 		return newCursor, nil
 	}
 
@@ -197,7 +198,7 @@ func TestEPSSHandler_SyncStateFailOnError_LogsButReturnsOriginal(t *testing.T) {
 	ctx := context.Background()
 	logBuf := captureLogs(t)
 
-	applyFn := func(_ context.Context, _ *store.Store, _ json.RawMessage) (json.RawMessage, error) {
+	applyFn := func(_ context.Context, _ *sql.DB, _ json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("download failed")
 	}
 
@@ -236,7 +237,7 @@ func TestEPSSHandler_PassesCursorToApply(t *testing.T) {
 
 	var receivedCursor json.RawMessage
 	newCursor := json.RawMessage(`{"score_date":"2026-03-07T12:00:00Z"}`)
-	applyFn := func(_ context.Context, _ *store.Store, cursor json.RawMessage) (json.RawMessage, error) {
+	applyFn := func(_ context.Context, _ *sql.DB, cursor json.RawMessage) (json.RawMessage, error) {
 		receivedCursor = cursor
 		return newCursor, nil
 	}

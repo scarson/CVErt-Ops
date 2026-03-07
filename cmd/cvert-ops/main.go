@@ -45,6 +45,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/feed/epss"
 	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/notify"
@@ -117,6 +118,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
 	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
+	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
 	// development and testing; GeminiClient for production.
@@ -260,6 +263,8 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
 	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	epssClient := &http.Client{Timeout: 300 * time.Second}
+	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.

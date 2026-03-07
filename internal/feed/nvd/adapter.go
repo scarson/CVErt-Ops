@@ -19,8 +19,10 @@ package nvd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -392,7 +394,14 @@ func parseNVDResponse(body interface{ Read([]byte) (int, error) }) (
 			for dec.More() {
 				var wrapper nvdVulnWrapper
 				if err := dec.Decode(&wrapper); err != nil {
-					// Skip malformed records; do not abort the page.
+					var syntaxErr *json.SyntaxError
+					if errors.As(err, &syntaxErr) {
+						slog.Warn("JSON syntax error in feed stream, stopping parse",
+							"feed", SourceName, "error", err)
+						return patches, totalResults, responseTimestamp, nil
+					}
+					slog.Warn("skipping malformed record in feed stream",
+						"feed", SourceName, "error", err)
 					continue
 				}
 				if p := cveToCanonical(wrapper.CVE); p != nil {

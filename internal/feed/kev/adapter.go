@@ -13,8 +13,10 @@ package kev
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -165,9 +167,10 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 	}
 
 	var (
-		inVulnArray bool
-		gotVersion  bool
-		gotReleased bool
+		inVulnArray  bool
+		gotVersion   bool
+		gotReleased  bool
+		syntaxBroken bool
 	)
 
 	for dec.More() {
@@ -220,7 +223,16 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 				for dec.More() {
 					var rec kevRecord
 					if err := dec.Decode(&rec); err != nil {
-						return nil, "", "", fmt.Errorf("decode record: %w", err)
+						var syntaxErr *json.SyntaxError
+						if errors.As(err, &syntaxErr) {
+							slog.Warn("JSON syntax error in feed stream, stopping parse",
+								"feed", SourceName, "error", err)
+							syntaxBroken = true
+							break
+						}
+						slog.Warn("skipping malformed record in feed stream",
+							"feed", SourceName, "error", err)
+						continue
 					}
 					if p := recordToPatch(rec); p != nil {
 						if rawBytes, err := json.Marshal(rec); err == nil {
@@ -229,6 +241,9 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 						patches = append(patches, *p)
 					}
 				}
+			}
+			if syntaxBroken {
+				return patches, catalogVersion, dateReleased, nil
 			}
 
 			// Consume closing ']'.

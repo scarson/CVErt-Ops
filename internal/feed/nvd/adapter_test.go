@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -344,7 +345,13 @@ func TestParseNVDResponse(t *testing.T) {
 	})
 
 	t.Run("malformed individual records skipped", func(t *testing.T) {
-		t.Parallel()
+		// Not parallel: captures global slog.Default.
+
+		var buf bytes.Buffer
+		origHandler := slog.Default().Handler()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
 		body := `{
 			"totalResults": 3,
 			"timestamp": "2024-06-01T12:00:00.000",
@@ -382,6 +389,53 @@ func TestParseNVDResponse(t *testing.T) {
 		}
 		if patches[1].CVEID != "CVE-2024-0003" {
 			t.Fatalf("patches[1].CVEID = %q, want CVE-2024-0003", patches[1].CVEID)
+		}
+		if !strings.Contains(buf.String(), "skipping malformed record") {
+			t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+		}
+	})
+
+	t.Run("syntax error stops stream with partial results", func(t *testing.T) {
+		// Not parallel: captures global slog.Default.
+
+		var buf bytes.Buffer
+		origHandler := slog.Default().Handler()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+		body := `{
+			"totalResults": 3,
+			"timestamp": "2024-06-01T12:00:00.000",
+			"vulnerabilities": [
+				{
+					"cve": {
+						"id": "CVE-2024-0001",
+						"vulnStatus": "Analyzed",
+						"descriptions": [{"lang": "en", "value": "Good record"}]
+					}
+				},
+				{INVALID_JSON},
+				{
+					"cve": {
+						"id": "CVE-2024-0003",
+						"vulnStatus": "Modified",
+						"descriptions": [{"lang": "en", "value": "After bad record"}]
+					}
+				}
+			]
+		}`
+		patches, _, _, err := parseNVDResponse(strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("expected no error (syntax error breaks loop, returns partial), got: %v", err)
+		}
+		if len(patches) != 1 {
+			t.Fatalf("len(patches) = %d, want 1 (only first record before syntax error)", len(patches))
+		}
+		if patches[0].CVEID != "CVE-2024-0001" {
+			t.Errorf("patches[0].CVEID = %q, want CVE-2024-0001", patches[0].CVEID)
+		}
+		if !strings.Contains(buf.String(), "syntax error") {
+			t.Errorf("expected warning log about syntax error, got: %s", buf.String())
 		}
 	})
 }

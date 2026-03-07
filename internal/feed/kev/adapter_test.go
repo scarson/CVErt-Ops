@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -644,26 +645,76 @@ func TestExtractCWEs(t *testing.T) {
 	}
 }
 
-func TestParseKEV_RecordDecodeErrorIsFatal(t *testing.T) {
-	t.Parallel()
+func TestParseKEV_TypeErrorSkipsRecord(t *testing.T) {
+	// Not parallel: captures global slog.Default.
 
-	// KEV records that fail to decode are fatal (unlike NVD which skips them).
-	// Inject a non-object value in the vulnerabilities array to trigger a
-	// decode error on the record struct.
+	// A type error (wrong JSON type for a field) is recoverable — the decoder
+	// consumed the token, so we can continue to the next record.
 	body := `{
 		"catalogVersion": "2024.09.03",
 		"dateReleased": "2024-09-03",
 		"vulnerabilities": [
-			"this is not a valid JSON object for a kevRecord"
+			{"cveID": "CVE-2024-0001", "vendorProject": "Good", "product": "App", "vulnerabilityName": "A", "dateAdded": "2024-01-01", "shortDescription": "ok", "requiredAction": "patch", "dueDate": "2024-02-01"},
+			"this is not a valid JSON object for a kevRecord",
+			{"cveID": "CVE-2024-0003", "vendorProject": "Good", "product": "App2", "vulnerabilityName": "B", "dateAdded": "2024-03-01", "shortDescription": "ok", "requiredAction": "patch", "dueDate": "2024-04-01"}
 		]
 	}`
 
-	_, _, _, err := parseKEV(strings.NewReader(body), "")
-	if err == nil {
-		t.Fatal("expected error for malformed record in vulnerabilities array, got nil")
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	patches, ver, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("expected no error (type errors are skippable), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "decode record") {
-		t.Errorf("error = %q, want it to contain 'decode record'", err.Error())
+	if ver != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want 2024.09.03", ver)
+	}
+	if len(patches) != 2 {
+		t.Fatalf("got %d patches, want 2 (record 2 should be skipped)", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-0001" || patches[1].CVEID != "CVE-2024-0003" {
+		t.Errorf("wrong patches: %v, %v", patches[0].CVEID, patches[1].CVEID)
+	}
+	if !strings.Contains(buf.String(), "skipping malformed record") {
+		t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+	}
+}
+
+func TestParseKEV_SyntaxErrorStopsStream(t *testing.T) {
+	// Not parallel: captures global slog.Default.
+
+	// A JSON syntax error corrupts the stream — remaining tokens are unreliable.
+	// The parser should return records parsed so far and stop.
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": [
+			{"cveID": "CVE-2024-0001", "vendorProject": "Good", "product": "App", "vulnerabilityName": "A", "dateAdded": "2024-01-01", "shortDescription": "ok", "requiredAction": "patch", "dueDate": "2024-02-01"},
+			{INVALID_JSON},
+			{"cveID": "CVE-2024-0003", "vendorProject": "Good", "product": "App2"}
+		]
+	}`
+
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	patches, _, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("expected no error (syntax error breaks loop, returns partial), got: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("got %d patches, want 1 (only first record before syntax error)", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-0001" {
+		t.Errorf("patch CVEID = %q, want CVE-2024-0001", patches[0].CVEID)
+	}
+	if !strings.Contains(buf.String(), "syntax error") {
+		t.Errorf("expected warning log about syntax error, got: %s", buf.String())
 	}
 }
 

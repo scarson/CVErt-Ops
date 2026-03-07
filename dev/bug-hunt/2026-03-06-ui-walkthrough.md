@@ -17,7 +17,7 @@ First visual walkthrough of the frontend after feature/frontend merge.
 ## Open Issues
 
 ### Functional
-- [ ] `/admin/feeds` — "Coming soon" placeholder; blocked until feed adapters are configured
+- [x] `/admin/feeds` — replaced placeholder with live feed status dashboard
 
 ### UX / Design
 

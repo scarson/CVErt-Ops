@@ -99,6 +99,9 @@ type Config struct {
 	// ── SSO ─────────────────────────────────────────────────────────────────────
 	SSOEncryptionKey string `env:"SSO_ENCRYPTION_KEY"` // 32-byte hex key; required if SSO is used
 
+	// ── Feed scheduler ──────────────────────────────────────────────────────────
+	FeedSchedulerEnabled bool `env:"FEED_SCHEDULER_ENABLED" envDefault:"true"`
+
 	// ── Data retention ───────────────────────────────────────────────────────────
 	RetentionCleanupEnabled   bool `env:"RETENTION_CLEANUP_ENABLED"    envDefault:"true"`
 	RetentionCleanupBatchSize int  `env:"RETENTION_CLEANUP_BATCH_SIZE" envDefault:"10000"`

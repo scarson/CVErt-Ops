@@ -179,6 +179,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	if cfg.FeedSchedulerEnabled {
+		feedScheduler := ingest.NewScheduler(st)
+		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	}
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	handler := apiSrv.Handler()
@@ -292,6 +296,10 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	if cfg.FeedSchedulerEnabled {
+		feedScheduler := ingest.NewScheduler(st)
+		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	}
 
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs

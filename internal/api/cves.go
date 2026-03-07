@@ -283,6 +283,9 @@ type ListCVEsBody struct {
 
 func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*ListCVEsOutput, error) {
 	return func(ctx context.Context, input *ListCVEsInput) (*ListCVEsOutput, error) {
+		if s == nil {
+			return nil, huma.Error503ServiceUnavailable("database unavailable")
+		}
 		// Parse optional cursor.
 		cur, err := decodeCursor(input.Cursor)
 		if err != nil {
@@ -376,6 +379,9 @@ type GetCVEOutput struct {
 
 func getCVEHandler(s *store.Store) func(context.Context, *GetCVEInput) (*GetCVEOutput, error) {
 	return func(ctx context.Context, input *GetCVEInput) (*GetCVEOutput, error) {
+		if s == nil {
+			return nil, huma.Error503ServiceUnavailable("database unavailable")
+		}
 		cve, refs, pkgs, cpes, err := s.GetCVEDetail(ctx, input.CVEID)
 		if err != nil {
 			return nil, fmt.Errorf("get cve detail: %w", err)
@@ -459,6 +465,9 @@ type GetCVESourcesBody struct {
 
 func getCVESourcesHandler(s *store.Store) func(context.Context, *GetCVESourcesInput) (*GetCVESourcesOutput, error) {
 	return func(ctx context.Context, input *GetCVESourcesInput) (*GetCVESourcesOutput, error) {
+		if s == nil {
+			return nil, huma.Error503ServiceUnavailable("database unavailable")
+		}
 		// Verify the CVE exists first so we can return 404 vs empty list.
 		cve, err := s.GetCVE(ctx, input.CVEID)
 		if err != nil {

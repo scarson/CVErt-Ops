@@ -496,8 +496,8 @@ func TestGitHubCallback_UpdatesLastLogin(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (redirect to frontend)", resp.StatusCode)
 	}
 
 	// Verify last_login_at is now set.

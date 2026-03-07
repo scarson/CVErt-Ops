@@ -72,6 +72,56 @@ var cveIDPattern = regexp.MustCompile(`^CVE-\d{4}-\d+$`)
 // The nativeID is returned as-is when no CVE alias is found (the record will be
 // stored under its own ID and merged if a CVE alias is discovered later via
 // late-binding PK migration).
+// DefaultUserAgent is the standard User-Agent string for all feed HTTP requests.
+const DefaultUserAgent = "CVErt-Ops/1.0 vulnerability intelligence platform"
+
+// UserAgentTransport wraps an http.RoundTripper to set the User-Agent header
+// on every request that doesn't already have one.
+type UserAgentTransport struct {
+	Base      http.RoundTripper
+	UserAgent string
+}
+
+func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", t.UserAgent)
+	}
+	return t.Base.RoundTrip(req)
+}
+
+// WrapClientWithUA returns a shallow copy of client with a UserAgentTransport
+// applied. Safe to call multiple times (idempotent — checks if already wrapped).
+func WrapClientWithUA(client *http.Client) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	// Shallow copy so the original isn't mutated.
+	c := *client
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	// Idempotent: don't double-wrap.
+	if _, ok := base.(*UserAgentTransport); ok {
+		return &c
+	}
+	c.Transport = &UserAgentTransport{
+		Base:      base,
+		UserAgent: DefaultUserAgent,
+	}
+	return &c
+}
+
+// DrainAndClose drains remaining response body bytes (for HTTP connection reuse)
+// and closes the body. Safe to call on nil.
+func DrainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
+
 // CloneStrings returns a new slice with all strings copied via strings.Clone.
 // Returns nil for nil input.
 func CloneStrings(ss []string) []string {

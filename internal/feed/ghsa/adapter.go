@@ -29,6 +29,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,7 +78,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// 5,000 req/hr authenticated ≈ 1.39 req/sec; cap at 1 req/sec for safety.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
 		token:       os.Getenv("GITHUB_TOKEN"),
 	}
@@ -178,6 +179,7 @@ func (a *Adapter) fetchPage(ctx context.Context, since, after string) ([]feed.Ca
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, "", fmt.Errorf("ghsa: HTTP %d from %s", resp.StatusCode, advisoriesURL)
 	}
 
@@ -186,7 +188,8 @@ func (a *Adapter) fetchPage(ctx context.Context, since, after string) ([]feed.Ca
 
 	// Stream the top-level JSON array. The GHSA REST response is a raw array
 	// (unlike NVD which wraps in an object). Open '[' directly, then More() loop.
-	dec := json.NewDecoder(resp.Body)
+	const maxGHSAPageSize = 20 << 20 // 20 MB
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxGHSAPageSize))
 	t, err := dec.Token()
 	if err != nil {
 		return nil, "", fmt.Errorf("ghsa: read array open: %w", err)

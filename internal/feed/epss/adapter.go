@@ -85,7 +85,7 @@ func New(client *http.Client) *Adapter {
 	// One file per day; 24h limiter enforces that at the adapter level even if the
 	// scheduler fires early.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(24*time.Hour), 1),
 	}
 }
@@ -130,8 +130,6 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 	if err != nil {
 		return nil, fmt.Errorf("epss: build request: %w", err)
 	}
-	req.Header.Set("User-Agent", "CVErt-Ops/1.0 vulnerability intelligence platform")
-
 	resp, err := a.client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
 	if err != nil {
 		return nil, fmt.Errorf("epss: fetch: %w", err)
@@ -139,10 +137,12 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("epss: HTTP %d", resp.StatusCode)
 	}
 
-	gz, err := gzip.NewReader(resp.Body)
+	const maxEPSSSize = 50 << 20 // 50 MB (compressed stream limit)
+	gz, err := gzip.NewReader(io.LimitReader(resp.Body, maxEPSSSize))
 	if err != nil {
 		return nil, fmt.Errorf("epss: gzip reader: %w", err)
 	}

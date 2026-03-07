@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -83,7 +84,7 @@ func New(client *http.Client) *Adapter {
 		limiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
 	}
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: limiter,
 		apiKey:      apiKey,
 	}
@@ -110,7 +111,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("nvd: HTTP %d for window [%s, %s] startIndex=%d",
 			resp.StatusCode,
 			cur.WindowStart.Format(time.RFC3339),
@@ -119,7 +120,8 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		)
 	}
 
-	patches, totalResults, responseTimestamp, err := parseNVDResponse(resp.Body)
+	const maxNVDResponseSize = 50 << 20 // 50 MB
+	patches, totalResults, responseTimestamp, err := parseNVDResponse(io.LimitReader(resp.Body, maxNVDResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("nvd: parse response: %w", err)
 	}

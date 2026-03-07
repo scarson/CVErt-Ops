@@ -53,7 +53,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// Single-file download per run — use a generous limiter as GitHub courtesy.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
 	}
 }

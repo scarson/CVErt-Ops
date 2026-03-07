@@ -56,7 +56,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// Single bulk archive per run; 1 req/5s is a generous rate limit.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
 	}
 }

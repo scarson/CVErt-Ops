@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -50,7 +51,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// Daily fetch at most; 1 request per 5 seconds is a generous rate limit.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
 	}
 }
@@ -77,8 +78,6 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	if err != nil {
 		return nil, fmt.Errorf("kev: build request: %w", err)
 	}
-	req.Header.Set("User-Agent", "CVErt-Ops/1.0 vulnerability intelligence platform")
-
 	resp, err := a.client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
 	if err != nil {
 		return nil, fmt.Errorf("kev: fetch: %w", err)
@@ -86,12 +85,14 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("kev: HTTP %d", resp.StatusCode)
 	}
 
 	fetchedAt := time.Now().UTC()
 
-	patches, newCatalogVersion, newDateReleased, err := parseKEV(resp.Body, cur.CatalogVersion)
+	const maxKEVSize = 20 << 20 // 20 MB
+	patches, newCatalogVersion, newDateReleased, err := parseKEV(io.LimitReader(resp.Body, maxKEVSize), cur.CatalogVersion)
 	if err != nil {
 		return nil, fmt.Errorf("kev: parse feed: %w", err)
 	}

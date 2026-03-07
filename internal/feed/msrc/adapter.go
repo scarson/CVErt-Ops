@@ -51,7 +51,7 @@ func New(client *http.Client) *Adapter {
 		client = http.DefaultClient
 	}
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 	}
 }
@@ -304,7 +304,6 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		q.Set("$filter", "CurrentReleaseDate gt datetime'"+cur.LastReleaseDate+"'")
 		req.URL.RawQuery = q.Encode()
 	}
-	req.Header.Set("User-Agent", "CVErt-Ops/1.0 vulnerability intelligence platform")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := a.client.Do(req) //nolint:gosec // URL is constructed from a constant base
@@ -372,7 +371,6 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		if err != nil {
 			return nil, fmt.Errorf("msrc: build csaf request for %s: %w", releaseID, err)
 		}
-		csafReq.Header.Set("User-Agent", "CVErt-Ops/1.0 vulnerability intelligence platform")
 		csafReq.Header.Set("Accept", "application/json")
 
 		csafResp, err := a.client.Do(csafReq) //nolint:gosec // URL constructed from constant base + release ID

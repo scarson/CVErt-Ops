@@ -3,6 +3,7 @@ package feed
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -337,6 +338,171 @@ func TestDownloadToTemp_HTTPError(t *testing.T) {
 	if f != nil {
 		t.Error("expected nil file on error")
 	}
+}
+
+// ── UserAgentTransport ────────────────────────────────────────────────────────
+
+func TestUserAgentTransport_SetsUA(t *testing.T) {
+	t.Parallel()
+
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+	}))
+	defer srv.Close()
+
+	client := &http.Client{
+		Transport: &UserAgentTransport{
+			Base:      http.DefaultTransport,
+			UserAgent: "TestAgent/1.0",
+		},
+	}
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+
+	if gotUA != "TestAgent/1.0" {
+		t.Errorf("User-Agent = %q, want %q", gotUA, "TestAgent/1.0")
+	}
+}
+
+func TestUserAgentTransport_DoesNotOverride(t *testing.T) {
+	t.Parallel()
+
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+	}))
+	defer srv.Close()
+
+	client := &http.Client{
+		Transport: &UserAgentTransport{
+			Base:      http.DefaultTransport,
+			UserAgent: "TestAgent/1.0",
+		},
+	}
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
+	req.Header.Set("User-Agent", "CustomAgent/2.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+
+	if gotUA != "CustomAgent/2.0" {
+		t.Errorf("User-Agent = %q, want %q (should not be overridden)", gotUA, "CustomAgent/2.0")
+	}
+}
+
+// ── WrapClientWithUA ──────────────────────────────────────────────────────────
+
+func TestWrapClientWithUA_OriginalUnmutated(t *testing.T) {
+	t.Parallel()
+
+	original := &http.Client{Timeout: 30 * time.Second}
+	wrapped := WrapClientWithUA(original)
+
+	if wrapped == original {
+		t.Error("WrapClientWithUA returned same pointer, want shallow copy")
+	}
+	if original.Transport != nil {
+		t.Error("original client Transport was mutated")
+	}
+}
+
+func TestWrapClientWithUA_SetsUA(t *testing.T) {
+	t.Parallel()
+
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+	}))
+	defer srv.Close()
+
+	client := WrapClientWithUA(srv.Client())
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request error: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+
+	if gotUA != DefaultUserAgent {
+		t.Errorf("User-Agent = %q, want %q", gotUA, DefaultUserAgent)
+	}
+}
+
+func TestWrapClientWithUA_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{}
+	wrapped1 := WrapClientWithUA(client)
+	wrapped2 := WrapClientWithUA(wrapped1)
+
+	// Double-wrapping should not nest transports.
+	_, ok := wrapped2.Transport.(*UserAgentTransport)
+	if !ok {
+		t.Fatal("expected UserAgentTransport after double wrap")
+	}
+	inner := wrapped2.Transport.(*UserAgentTransport).Base
+	if _, nested := inner.(*UserAgentTransport); nested {
+		t.Error("double-wrapping nested UserAgentTransport — should be idempotent")
+	}
+}
+
+// ── DrainAndClose ─────────────────────────────────────────────────────────────
+
+func TestDrainAndClose_DrainsAndCloses(t *testing.T) {
+	t.Parallel()
+
+	body := &trackingReadCloser{data: []byte("remaining data")}
+	DrainAndClose(body)
+
+	if !body.closed {
+		t.Error("DrainAndClose did not close the body")
+	}
+	if !body.drained {
+		t.Error("DrainAndClose did not drain the body")
+	}
+}
+
+func TestDrainAndClose_NilSafe(t *testing.T) {
+	t.Parallel()
+
+	// Should not panic on nil.
+	DrainAndClose(nil)
+}
+
+// trackingReadCloser records whether it was read from and closed.
+type trackingReadCloser struct {
+	data    []byte
+	offset  int
+	drained bool
+	closed  bool
+}
+
+func (r *trackingReadCloser) Read(p []byte) (int, error) {
+	if r.offset >= len(r.data) {
+		r.drained = true
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.offset:])
+	r.offset += n
+	if r.offset >= len(r.data) {
+		r.drained = true
+	}
+	return n, nil
+}
+
+func (r *trackingReadCloser) Close() error {
+	r.closed = true
+	return nil
 }
 
 func TestCanonicalPatch_VendorEnrichmentRoundTrip(t *testing.T) {

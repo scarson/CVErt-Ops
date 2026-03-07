@@ -192,6 +192,13 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
 	apiRouter.Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
+	// ── Admin routes (authenticated, not org-scoped) ────────────────────────
+	apiRouter.Route("/admin", func(r chi.Router) {
+		r.Use(srv.RequireAuthenticated())
+		r.Get("/feeds", srv.listFeedsHandler)
+		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
+	})
+
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())

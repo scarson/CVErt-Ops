@@ -142,8 +142,10 @@ async function handleAdd() {
   }
 }
 
-function selectEcosystem(value: string) {
-  ecosystem.value = value
+function selectEcosystem(value: string | number | bigint | Record<string, any> | null) {
+  if (typeof value === 'string') {
+    ecosystem.value = value
+  }
 }
 
 defineExpose({ selectEcosystem })

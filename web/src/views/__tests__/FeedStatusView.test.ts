@@ -145,14 +145,15 @@ describe('FeedStatusView', () => {
         json: () => Promise.resolve(mockFeedData),
       })
 
-    const wrapper = await mountFeedStatus(fetchMock)
+    const wrapper = await mountFeedStatus(fetchMock as unknown as typeof fetch)
     const runButtons = wrapper.findAll('[data-testid="run-feed-btn"]')
-    await runButtons[0].trigger('click')
+    expect(runButtons.length).toBeGreaterThan(0)
+    await runButtons[0]!.trigger('click')
     await flushPromises()
 
     // Verify the POST was made to the correct URL
     const postCall = fetchMock.mock.calls.find(
-      (call: [string, RequestInit?]) => call[1]?.method === 'POST',
+      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'POST',
     )
     expect(postCall).toBeTruthy()
     expect(postCall![0]).toContain('/api/v1/admin/feeds/nvd/run')
@@ -176,7 +177,7 @@ describe('FeedStatusView', () => {
     const expandButtons = wrapper.findAll('button[aria-label^="Toggle logs"]')
     expect(expandButtons.length).toBeGreaterThan(0)
 
-    await expandButtons[0].trigger('click')
+    await expandButtons[0]!.trigger('click')
     await flushPromises()
 
     // Log details should now be visible
@@ -188,13 +189,14 @@ describe('FeedStatusView', () => {
     const wrapper = await mountFeedStatus()
 
     const expandButtons = wrapper.findAll('button[aria-label^="Toggle logs"]')
+    expect(expandButtons.length).toBeGreaterThan(0)
     // Expand
-    await expandButtons[0].trigger('click')
+    await expandButtons[0]!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('150 fetched')
 
     // Collapse
-    await expandButtons[0].trigger('click')
+    await expandButtons[0]!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).not.toContain('150 fetched')
   })
@@ -208,7 +210,7 @@ describe('FeedStatusView', () => {
       }),
     )
 
-    const wrapper = await mountFeedStatus(failFetch)
+    const wrapper = await mountFeedStatus(failFetch as unknown as typeof fetch)
     expect(wrapper.text()).toContain('Failed to load feed status')
   })
 })

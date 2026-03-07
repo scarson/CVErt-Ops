@@ -230,7 +230,7 @@ describe('auth store', () => {
     })
 
     it('is set to true after failed fetchMe', async () => {
-      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { detail: 'unauthorized' }, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { type: 'about:blank', detail: 'unauthorized' }, response: {} as Response })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -270,7 +270,7 @@ describe('auth store', () => {
     })
 
     it('returns error on failed login', async () => {
-      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: { detail: 'bad creds' }, response: {} as Response })
+      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: { type: 'about:blank', detail: 'bad creds' }, response: {} as Response })
 
       const auth = useAuthStore()
       const result = await auth.login('bad@example.com', 'wrong')

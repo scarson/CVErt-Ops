@@ -45,16 +45,16 @@ func CloneStrings(ss []string) []string
 
 // DownloadToTemp streams an HTTP response body to a temp file for ZIP reading.
 // The caller must defer os.Remove(f.Name()) and f.Close().
-func DownloadToTemp(ctx context.Context, client *http.Client, url string, prefix string) (*os.File, error)
+func DownloadToTemp(ctx context.Context, client *http.Client, url string, tempPattern string) (*os.File, error)
 ```
 
-`DownloadToTemp` takes a `prefix` parameter (e.g., `"cvert-mitre-"`, `"cvert-osv-"`) for the temp file name. Otherwise identical to the current implementations.
+`DownloadToTemp` takes a `tempPattern` parameter — the full `os.CreateTemp` pattern (e.g., `"cvert-mitre-*.zip"`, `"cvert-osv-*.zip"`). This matches how the local implementations already call `os.CreateTemp("", "cvert-mitre-*.zip")`. Otherwise identical to the current implementations.
 
 **Step 4: Update MITRE, OSV, NVD adapters**
 
-Replace local function calls with the shared versions:
-- `mitre/adapter.go`: `downloadToTemp(...)` → `feed.DownloadToTemp(...)`, `cloneStrings(...)` → `feed.CloneStrings(...)`
-- `osv/adapter.go`: `downloadToTemp(...)` → `feed.DownloadToTemp(...)`
+Replace local function calls with the shared versions. Note: `DownloadToTemp` gains a new `prefix` parameter that the local versions don't have — add the prefix argument at each call site:
+- `mitre/adapter.go`: `downloadToTemp(ctx, a.client, url)` → `feed.DownloadToTemp(ctx, a.client, url, "cvert-mitre-*.zip")`, `cloneStrings(...)` → `feed.CloneStrings(...)`
+- `osv/adapter.go`: `downloadToTemp(ctx, a.client, url)` → `feed.DownloadToTemp(ctx, a.client, url, "cvert-osv-*.zip")`
 - `nvd/adapter.go`: `cloneStrings(...)` → `feed.CloneStrings(...)`
 
 Delete the local function definitions from each file. Delete the moved tests from `mitre/adapter_test.go`.
@@ -332,13 +332,16 @@ The capture strategy differs by adapter type:
 
 **Step 1: Write failing tests (one per adapter)**
 
-For each adapter, add or update a test that verifies `RawPayload` is populated on returned patches. The test should:
+For each adapter, add or update a test that verifies `RawPayload` is populated on returned patches AND `LastPage` is set correctly. The test should:
 - Call `Fetch()` with a test server / test data
 - Assert `patch.RawPayload != nil` for each returned patch
 - Assert `json.Valid(patch.RawPayload)` (must be valid JSON)
 - Assert the raw payload contains the CVE ID (basic sanity — `bytes.Contains(patch.RawPayload, []byte(expectedCVEID))`)
+- Assert `result.LastPage == true` for single-Fetch adapters (KEV, MITRE, OSV, GHSA, MSRC)
+- For NVD: assert `result.LastPage == true` on the final page (when `NextCursor` is nil), and `result.LastPage == false` on non-final pages (when `NextCursor` is non-nil). This requires a test with enough data to produce multiple pages, or a test that verifies both the last-page and mid-pagination paths.
+- For Red Hat: assert `result.LastPage == true` when fewer than 100 entries are returned, `result.LastPage == false` when exactly 100 are returned
 
-Check each adapter's existing test file to find the right test to extend (most have a `TestFetch` or similar that uses `httptest.NewServer`). Add the RawPayload assertions to the existing test rather than creating a separate test — the raw payload is part of the Fetch contract.
+Check each adapter's existing test file to find the right test to extend (most have a `TestFetch` or similar that uses `httptest.NewServer`). Add the RawPayload and LastPage assertions to the existing test rather than creating a separate test — both are part of the Fetch contract.
 
 **Step 2: Run tests to confirm they fail**
 
@@ -506,7 +509,33 @@ Create `internal/store/feed.go` with domain types and wrapper methods that other
 package store
 ```
 
-Define a `FeedSyncState` domain struct (mirroring the generated model but with cleaner types) and wrapper methods:
+Define domain structs mirroring the DB tables:
+```go
+type FeedSyncState struct {
+    FeedName            string          // text PK
+    CursorJSON          json.RawMessage // jsonb, nullable
+    LastSuccessAt       *time.Time      // timestamptz, nullable
+    LastAttemptAt       *time.Time      // timestamptz, nullable
+    ConsecutiveFailures int32           // int NOT NULL DEFAULT 0
+    LastError           string          // text, nullable (use "" for nil)
+    BackoffUntil        *time.Time      // timestamptz, nullable
+}
+
+type FeedFetchLog struct {
+    ID             uuid.UUID       // uuid PK
+    FeedName       string          // text NOT NULL
+    StartedAt      time.Time       // timestamptz NOT NULL DEFAULT now()
+    EndedAt        *time.Time      // timestamptz, nullable
+    Status         string          // text NOT NULL ('success' | 'error' | 'partial')
+    ItemsFetched   int32           // int NOT NULL DEFAULT 0
+    ItemsUpserted  int32           // int NOT NULL DEFAULT 0
+    CursorBefore   json.RawMessage // jsonb, nullable
+    CursorAfter    json.RawMessage // jsonb, nullable
+    ErrorSummary   string          // text, nullable (use "" for nil)
+}
+```
+
+Wrapper methods:
 - `GetFeedSyncState(ctx, feedName) -> (*FeedSyncState, error)` — returns nil, nil when not found (wraps `sql.ErrNoRows`)
 - `UpsertFeedSyncState(ctx, state FeedSyncState) error`
 - `InsertFeedFetchLog(ctx, log FeedFetchLog) (uuid.UUID, error)`
@@ -640,7 +669,7 @@ type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPat
 
 Note: `rawPayload` is no longer a separate parameter — it's on `patch.RawPayload` (set by the adapter in Task 4). The merge pipeline reads it from the patch directly.
 
-**Handler factory** — returns a `worker.Handler` closure:
+**Handler factory** — returns a `worker.Handler` closure. `worker.Handler` is defined as `func(ctx context.Context, payload json.RawMessage) error` (see `internal/worker/job.go:17`):
 ```go
 func IngestHandler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler
 ```
@@ -739,7 +768,17 @@ Create `internal/ingest/epss_test.go`. Testing EPSS is tricky because:
 - `epss.Adapter` has a hardcoded `feedURL` constant for the EPSS download endpoint
 - `Apply()` takes a `*store.Store` and writes directly to the DB
 
-The best approach: write an integration test that uses `httptest.NewServer` to serve a minimal gzip-compressed EPSS CSV, then construct the adapter with an HTTP client whose transport redirects requests to the test server. Check how `internal/feed/epss/adapter_test.go` handles this — it likely already has a pattern for overriding the URL or using a test server. Match that pattern.
+The EPSS adapter has a hardcoded `feedURL` constant (`epss.empiricalsecurity.com`) — there's no constructor parameter to override it. The existing EPSS integration tests are all TODOs (see `apply_integration_test.go`). Two approaches:
+
+**Option A (recommended): Test only the handler wrapper, not the EPSS adapter itself.** The handler's job is cursor persistence, sync state tracking, and fetch logging — test those by injecting a mock `ApplyFunc` (same pattern as `MergeFunc` in Task 6). Define:
+```go
+type ApplyFunc func(ctx context.Context, s *store.Store, cursor json.RawMessage) (json.RawMessage, error)
+```
+Make `EPSSIngestHandler` accept an `ApplyFunc` parameter. In production, pass `epssAdapter.Apply`. In tests, pass a mock that returns a fixed cursor. This tests the handler logic without needing HTTP infrastructure.
+
+**Option B: Use a redirect transport** to intercept requests to the hardcoded URL and route them to an `httptest.NewServer`. This is more complex and tests the full adapter, which is better suited for the adapter's own test file (the existing TODOs in `apply_integration_test.go`).
+
+Go with Option A. The EPSS adapter's own integration tests can be filled in separately.
 
 Test assertions:
 - `feed_sync_state` for `"epss"` is updated with new cursor
@@ -763,18 +802,25 @@ Create `internal/ingest/epss.go`:
 package ingest
 ```
 
+**ApplyFunc type** — matches `epss.Adapter.Apply` signature, for test injection:
+```go
+// ApplyFunc matches the signature of epss.Adapter.Apply. Defined as a type for test injection.
+type ApplyFunc func(ctx context.Context, s *store.Store, cursor json.RawMessage) (json.RawMessage, error)
+```
+
 **Handler factory:**
 ```go
-func EPSSIngestHandler(st *store.Store, client *http.Client) worker.Handler
+func EPSSIngestHandler(st *store.Store, applyFn ApplyFunc) worker.Handler
 ```
+
+In production: `ingest.EPSSIngestHandler(st, epss.New(epssClient).Apply)`. In tests: pass a mock that returns a fixed cursor.
 
 `internal/ingest/` can import `internal/feed/epss` directly — no dependency cycle.
 
 The returned handler:
 1. Ignores the payload (EPSS has no configurable parameters)
 2. Reads current cursor: `st.GetFeedSyncState(ctx, "epss")` — nil means first run
-3. Constructs `epss.New(client)`
-4. Calls `adapter.Apply(ctx, st, cursorJSON)`
+3. Calls `applyFn(ctx, st, cursorJSON)`
 5. On success: `st.UpsertFeedSyncState` with new cursor, success state. `st.InsertFeedFetchLog` with status `"success"`. Note: EPSS doesn't return item counts, so set `items_fetched = 0` and `items_upserted = 0` (the adapter logs internally).
 6. On error: same failure pattern as Task 6 (increment failures, set backoff, log error). Use `st.UpsertFeedSyncState` and `st.InsertFeedFetchLog`.
 
@@ -789,12 +835,12 @@ Note: The EPSS adapter itself already logs per-row warnings (unparseable scores,
 
 In both `runServe()` and `runWorker()`, add after the existing `feed_ingest` registration:
 ```go
-workerPool.Register("epss_ingest", ingest.EPSSIngestHandler(st, &http.Client{
-    Timeout: 300 * time.Second, // EPSS downloads ~15MB gzip; allow generous timeout
-}))
+epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
+epssAdapter := epss.New(epssClient)
+workerPool.Register("epss_ingest", ingest.EPSSIngestHandler(st, epssAdapter.Apply))
 ```
 
-(Uses the same `ingest` import added in Task 6.)
+Add import: `"github.com/scarson/cvert-ops/internal/feed/epss"`. (Uses the same `ingest` import added in Task 6.)
 
 **Step 5: Run tests**
 

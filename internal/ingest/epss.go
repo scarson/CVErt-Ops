@@ -5,6 +5,7 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -25,7 +26,7 @@ func EPSSHandler(st *store.Store, applyFn ApplyFunc) worker.Handler {
 		// Read current cursor from sync state.
 		state, err := st.GetFeedSyncState(ctx, "epss")
 		if err != nil {
-			return err
+			return fmt.Errorf("get feed sync state: %w", err)
 		}
 
 		var cursor json.RawMessage

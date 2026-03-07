@@ -53,6 +53,7 @@ func NewScheduler(st SchedulerStore) *Scheduler {
 // Start runs the scheduler loop, ticking every minute. It runs the first tick
 // immediately so feeds start fetching on first boot. Blocks until ctx is cancelled.
 func (s *Scheduler) Start(ctx context.Context) {
+	slog.Info("feed scheduler started", "feeds", len(s.schedule))
 	s.tick(ctx)
 
 	ticker := time.NewTicker(1 * time.Minute)

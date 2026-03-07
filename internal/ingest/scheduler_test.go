@@ -191,4 +191,7 @@ func TestScheduler_SkipsFeedsInBackoff(t *testing.T) {
 			t.Error("nvd should not be enqueued — currently in backoff")
 		}
 	}
+	if len(enqueued) != len(defaultSchedule)-1 {
+		t.Errorf("enqueued %d jobs, want %d", len(enqueued), len(defaultSchedule)-1)
+	}
 }

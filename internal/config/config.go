@@ -46,6 +46,10 @@ type Config struct {
 	// Max simultaneous hash operations; each allocates ~19.5 MB.
 	Argon2MaxConcurrent int `env:"ARGON2_MAX_CONCURRENT" envDefault:"5"`
 
+	// ── Auth — Password Reset ────────────────────────────────────────────────
+	PasswordResetTokenTTL   time.Duration `env:"PASSWORD_RESET_TOKEN_TTL"    envDefault:"1h"`
+	PasswordResetMaxPerHour int           `env:"PASSWORD_RESET_MAX_PER_HOUR" envDefault:"3"`
+
 	// ── OAuth — GitHub ───────────────────────────────────────────────────────────
 	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
 	GitHubClientSecret string `env:"GITHUB_CLIENT_SECRET"`

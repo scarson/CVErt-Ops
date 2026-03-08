@@ -395,6 +395,15 @@ type Organization struct {
 	TierOverrides json.RawMessage
 }
 
+type PasswordResetToken struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	ExpiresAt time.Time
+	UsedAt    sql.NullTime
+	CreatedAt time.Time
+}
+
 type RefreshToken struct {
 	Jti           uuid.UUID
 	UserID        uuid.UUID

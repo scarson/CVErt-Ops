@@ -756,4 +756,23 @@ func registerAuthRoutes(api huma.API, srv *Server) {
 		Tags:        []string{"auth"},
 		Summary:     "List configured auth providers and registration mode",
 	}, srv.authProvidersHandler)
+
+	// Password reset — public, no auth required.
+	huma.Register(api, huma.Operation{
+		OperationID:   "forgot-password",
+		Method:        http.MethodPost,
+		Path:          "/auth/forgot-password",
+		Tags:          []string{"auth"},
+		Summary:       "Request a password reset email",
+		DefaultStatus: http.StatusOK,
+	}, srv.forgotPasswordHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "reset-password",
+		Method:        http.MethodPost,
+		Path:          "/auth/reset-password",
+		Tags:          []string{"auth"},
+		Summary:       "Reset password using a reset token",
+		DefaultStatus: http.StatusOK,
+	}, srv.resetPasswordHandler)
 }

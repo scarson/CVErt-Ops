@@ -129,6 +129,53 @@ func TestCORS_NoConfigNoHeaders(t *testing.T) {
 	}
 }
 
+func TestCORS_MultipleOriginsWithWhitespace(t *testing.T) {
+	t.Parallel()
+	ts := newCORSServer(t, &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "cors-test-secret",
+		CORSAllowedOrigins:  " https://a.example.com , https://b.example.com , ",
+		Argon2MaxConcurrent: 1,
+	})
+
+	ctx := context.Background()
+
+	// First origin (with leading whitespace in config) should work.
+	req1, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/healthz", nil)
+	req1.Header.Set("Origin", "https://a.example.com")
+	resp1, err := ts.Client().Do(req1) //nolint:gosec // G704 test server URL
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if got := resp1.Header.Get("Access-Control-Allow-Origin"); got != "https://a.example.com" {
+		t.Errorf("origin A: Access-Control-Allow-Origin = %q, want %q", got, "https://a.example.com")
+	}
+
+	// Second origin should also work.
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/healthz", nil)
+	req2.Header.Set("Origin", "https://b.example.com")
+	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 test server URL
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if got := resp2.Header.Get("Access-Control-Allow-Origin"); got != "https://b.example.com" {
+		t.Errorf("origin B: Access-Control-Allow-Origin = %q, want %q", got, "https://b.example.com")
+	}
+
+	// Trailing empty segment from config should not match empty origin.
+	req3, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/healthz", nil)
+	req3.Header.Set("Origin", "https://evil.example.com")
+	resp3, err := ts.Client().Do(req3) //nolint:gosec // G704 test server URL
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp3.Body.Close() //nolint:errcheck,gosec // G104
+	if got := resp3.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("evil origin: Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
 func TestCORS_DevelopmentDefaults(t *testing.T) {
 	t.Parallel()
 	ts := newCORSServer(t, &config.Config{ //nolint:exhaustruct // test: only relevant fields set

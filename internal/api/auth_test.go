@@ -308,6 +308,26 @@ func TestLoginNonexistentUser(t *testing.T) {
 	}
 }
 
+func TestLoginOAuthOnlyAccount(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Create an OAuth-only user directly in DB (no password hash).
+	_, err := db.CreateUser(ctx, "oauth-login@example.com", "OAuth User", "", 0)
+	if err != nil {
+		t.Fatalf("create oauth user: %v", err)
+	}
+
+	// Attempt login with password — should get 401 (same as wrong password, no enumeration).
+	resp := doLogin(t, ctx, ts, "oauth-login@example.com", "test-password-1234")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("login on OAuth-only account: got %d, want 401", resp.StatusCode)
+	}
+}
+
 // ── Task 27: Refresh + Logout ─────────────────────────────────────────────────
 
 func TestRefreshRotates(t *testing.T) {

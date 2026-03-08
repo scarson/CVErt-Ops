@@ -224,6 +224,26 @@ func TestResendVerification_Unauthenticated(t *testing.T) {
 	}
 }
 
+func TestResendVerification_InvalidAccessToken(t *testing.T) {
+	t.Parallel()
+	_, ts := newEmailVerificationServer(t)
+	ctx := context.Background()
+
+	// Send with a garbage access_token cookie — should get 401.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/resend-verification", nil)
+	req.Header.Set("Cookie", "access_token=not-a-valid-jwt")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid token: got %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestResendVerification_AlreadyVerified(t *testing.T) {
 	t.Parallel()
 	db, ts := newEmailVerificationServer(t)

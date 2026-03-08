@@ -82,6 +82,40 @@ func TestLockout_Expiry(t *testing.T) {
 	}
 }
 
+func TestLockout_Concurrent(t *testing.T) {
+	t.Parallel()
+	m := newLockoutManager(100, 15*time.Minute, time.Now)
+
+	// Hammer RecordFailure and Check from 10 goroutines simultaneously.
+	// This verifies no data races under concurrent access.
+	const goroutines = 10
+	const iterations = 50
+	done := make(chan struct{}, goroutines)
+
+	for g := range goroutines {
+		go func(id int) {
+			email := "concurrent@example.com"
+			for range iterations {
+				m.RecordFailure(email)
+				m.Check(email)
+				if id%2 == 0 {
+					m.RecordSuccess(email)
+				}
+			}
+			done <- struct{}{}
+		}(g)
+	}
+
+	for range goroutines {
+		<-done
+	}
+
+	// If we got here without a panic or race detector failure, the test passes.
+	// Just verify the manager is still functional.
+	allowed, _ := m.Check("concurrent@example.com")
+	_ = allowed // result depends on timing; we just care it didn't crash
+}
+
 func TestLockout_DifferentEmails(t *testing.T) {
 	t.Parallel()
 	m := newLockoutManager(5, 15*time.Minute, time.Now)

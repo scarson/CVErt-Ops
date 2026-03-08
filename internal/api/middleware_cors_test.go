@@ -101,6 +101,9 @@ func TestCORS_ActualRequestWithCredentials(t *testing.T) {
 	if got := resp.Header.Get("Access-Control-Allow-Credentials"); got != "true" {
 		t.Errorf("Access-Control-Allow-Credentials = %q, want %q", got, "true")
 	}
+	if got := resp.Header.Get("Access-Control-Expose-Headers"); got != "X-Request-Id" {
+		t.Errorf("Access-Control-Expose-Headers = %q, want %q", got, "X-Request-Id")
+	}
 }
 
 func TestCORS_NoConfigNoHeaders(t *testing.T) {

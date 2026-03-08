@@ -101,10 +101,11 @@ func TestForgotPassword_NonexistentUser(t *testing.T) {
 
 func TestForgotPassword_RateLimit(t *testing.T) {
 	t.Parallel()
-	_, ts := newPasswordResetServer(t)
+	db, ts := newPasswordResetServer(t)
 	ctx := context.Background()
 
 	doRegister(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
+	user, _ := db.GetUserByEmail(ctx, "ratelimit@example.com")
 
 	// Send 3 requests (max per hour).
 	for i := range 3 {
@@ -121,7 +122,7 @@ func TestForgotPassword_RateLimit(t *testing.T) {
 		}
 	}
 
-	// 4th request should be rate-limited.
+	// 4th request: still returns 200 (anti-enumeration), but no new token is created.
 	body := `{"email":"ratelimit@example.com"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/forgot-password", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -131,8 +132,17 @@ func TestForgotPassword_RateLimit(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("4th request: got %d, want 429", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("4th request: got %d, want 200 (silent rate limit)", resp.StatusCode)
+	}
+
+	// Verify: only 3 tokens created, not 4.
+	count, err := db.CountRecentPasswordResetTokens(ctx, user.ID, time.Now().Add(-1*time.Minute))
+	if err != nil {
+		t.Fatalf("CountRecentPasswordResetTokens: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("token count = %d, want 3 (4th request should be silently dropped)", count)
 	}
 }
 

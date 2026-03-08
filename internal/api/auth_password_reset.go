@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -15,6 +16,28 @@ import (
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/notify"
 )
+
+// formatTTL converts a duration to a human-readable string for email templates.
+func formatTTL(d time.Duration) string {
+	if h := int(d.Hours()); h >= 24 && h%24 == 0 {
+		days := h / 24
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	if h := int(d.Hours()); h > 0 {
+		if h == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", h)
+	}
+	m := int(d.Minutes())
+	if m == 1 {
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", m)
+}
 
 // ── Forgot Password ────────────────────────────────────────────────────────────
 
@@ -32,12 +55,21 @@ type forgotPasswordOutput struct {
 	}
 }
 
+// forgotPasswordResponse is the constant response for all forgot-password outcomes.
+// Every path (unknown user, rate-limited, success) returns this to prevent email enumeration.
+const forgotPasswordResponse = "If an account with that email exists, a password reset link has been sent." //nolint:gosec // G101 false positive: user-facing response message, not a credential
+
 // forgotPasswordHandler handles POST /api/v1/auth/forgot-password.
-// Always returns 200 to prevent email enumeration.
+// Always returns 200 to prevent email enumeration. Email delivery is async
+// so all paths have indistinguishable response times.
 func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPasswordInput) (*forgotPasswordOutput, error) {
 	if err := srv.checkAuthRateLimit(ctx); err != nil {
 		return nil, err
 	}
+
+	out := &forgotPasswordOutput{Body: struct {
+		Message string `json:"message"`
+	}{Message: forgotPasswordResponse}}
 
 	user, err := srv.store.GetUserByEmail(ctx, input.Body.Email)
 	if err != nil {
@@ -45,23 +77,26 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
-	// If user doesn't exist, still spend time to normalize response timing.
+	// Unknown user or OAuth-only account — return identical 200.
+	// Burn a small amount of CPU (token gen + hash) to normalize timing against
+	// the token-creation path. The significant gap (SMTP) is eliminated by
+	// making email delivery async on all paths.
 	if user == nil || !user.PasswordHash.Valid {
-		// Timing normalization: sleep ~50ms to approximate token creation + email render time.
-		time.Sleep(50 * time.Millisecond)
-		return &forgotPasswordOutput{Body: struct {
-			Message string `json:"message"`
-		}{Message: "If an account with that email exists, a password reset link has been sent."}}, nil
+		dummyBytes := make([]byte, 32)
+		_, _ = rand.Read(dummyBytes)
+		_ = sha256.Sum256(dummyBytes)
+		return out, nil
 	}
 
-	// Rate limit: max N reset emails per user per hour.
+	// Per-user rate limit: silently drop excess requests (returning 200).
+	// A distinct status code here would confirm the email is registered.
 	count, err := srv.store.CountRecentPasswordResetTokens(ctx, user.ID, time.Now().Add(-1*time.Hour))
 	if err != nil {
 		slog.ErrorContext(ctx, "forgot-password: count recent tokens", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if int(count) >= srv.cfg.PasswordResetMaxPerHour {
-		return nil, huma.Error429TooManyRequests("too many password reset requests — try again later")
+		return out, nil
 	}
 
 	// Generate 32-byte random token.
@@ -79,17 +114,22 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
-	// Build and send reset email.
-	resetURL := srv.cfg.ExternalURL + "/reset-password?token=" + tokenHex
-	subject, htmlBody, textBody, renderErr := notify.RenderPasswordReset(notify.PasswordResetData{
-		Email:     user.Email,
-		ResetURL:  resetURL,
-		ExpiresIn: "1 hour",
-	})
-	if renderErr != nil {
-		slog.ErrorContext(ctx, "forgot-password: render email", "error", renderErr)
-		// Non-fatal — token is created, user could potentially use it via URL.
-	} else {
+	// Deliver email asynchronously so response time doesn't leak user existence.
+	// context.WithoutCancel: email delivery must survive the HTTP response.
+	bgCtx := context.WithoutCancel(ctx)
+	email := user.Email
+	ttl := srv.cfg.PasswordResetTokenTTL
+	go func() {
+		resetURL := srv.cfg.ExternalURL + "/reset-password?token=" + tokenHex
+		subject, htmlBody, textBody, renderErr := notify.RenderPasswordReset(notify.PasswordResetData{
+			Email:     email,
+			ResetURL:  resetURL,
+			ExpiresIn: formatTTL(ttl),
+		})
+		if renderErr != nil {
+			slog.ErrorContext(bgCtx, "forgot-password: render email", "error", renderErr)
+			return
+		}
 		smtpCfg := notify.SmtpConfig{
 			Host:     srv.cfg.SMTPHost,
 			Port:     srv.cfg.SMTPPort,
@@ -98,14 +138,12 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 			Password: srv.cfg.SMTPPassword,
 			TLS:      srv.cfg.SMTPTLS,
 		}
-		if emailErr := notify.EmailSend(ctx, smtpCfg, []string{user.Email}, subject, htmlBody, textBody); emailErr != nil {
-			slog.WarnContext(ctx, "forgot-password: send email failed", "email", user.Email, "error", emailErr)
+		if emailErr := notify.EmailSend(bgCtx, smtpCfg, []string{email}, subject, htmlBody, textBody); emailErr != nil {
+			slog.WarnContext(bgCtx, "forgot-password: send email failed", "email", email, "error", emailErr)
 		}
-	}
+	}()
 
-	return &forgotPasswordOutput{Body: struct {
-		Message string `json:"message"`
-	}{Message: "If an account with that email exists, a password reset link has been sent."}}, nil
+	return out, nil
 }
 
 // ── Reset Password ─────────────────────────────────────────────────────────────

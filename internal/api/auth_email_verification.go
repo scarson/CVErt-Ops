@@ -146,7 +146,7 @@ func (srv *Server) sendVerificationEmail(ctx context.Context, userID uuid.UUID, 
 	subject, htmlBody, textBody, renderErr := notify.RenderEmailVerification(notify.EmailVerificationData{
 		Email:     email,
 		VerifyURL: verifyURL,
-		ExpiresIn: "24 hours",
+		ExpiresIn: formatTTL(srv.cfg.EmailVerificationTokenTTL),
 	})
 	if renderErr != nil {
 		slog.ErrorContext(ctx, "send-verification: render email", "error", renderErr)

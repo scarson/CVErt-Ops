@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 CREATE INDEX CONCURRENTLY IF NOT EXISTS password_reset_tokens_user_idx
     ON password_reset_tokens (user_id);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS password_reset_tokens_hash_idx
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS password_reset_tokens_hash_idx
     ON password_reset_tokens (token_hash);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_tokens TO cvert_ops_app;

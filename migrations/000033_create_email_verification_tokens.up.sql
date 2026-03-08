@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS email_verification_tokens (
 CREATE INDEX CONCURRENTLY IF NOT EXISTS email_verification_tokens_user_idx
     ON email_verification_tokens (user_id);
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS email_verification_tokens_hash_idx
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS email_verification_tokens_hash_idx
     ON email_verification_tokens (token_hash);
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON email_verification_tokens TO cvert_ops_app;

@@ -79,6 +79,7 @@ type UserAgentTransport struct {
 	UserAgent string
 }
 
+// RoundTrip sets the User-Agent header if not already present, then delegates.
 func (t *UserAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Header.Get("User-Agent") == "" {
 		req.Header.Set("User-Agent", t.UserAgent)

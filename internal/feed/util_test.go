@@ -301,7 +301,7 @@ func TestDownloadToTemp_Success(t *testing.T) {
 	t.Parallel()
 
 	payload := "hello from test server"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, payload)
 	}))
 	defer srv.Close()
@@ -329,15 +329,15 @@ func TestDownloadToTemp_SizeLimit(t *testing.T) {
 	MaxDownloadSize = 1024 // 1 KiB for testing
 	t.Cleanup(func() { MaxDownloadSize = orig })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(make([]byte, 2048)) //nolint:errcheck // test helper
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(make([]byte, 2048)) //nolint:errcheck,gosec // G104: test helper
 	}))
 	defer srv.Close()
 
 	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
 	if err == nil {
 		_ = f.Close()
-		_ = os.Remove(f.Name())
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
 		t.Fatal("expected error for oversized response")
 	}
 	if !strings.Contains(err.Error(), "exceeds") {
@@ -348,7 +348,7 @@ func TestDownloadToTemp_SizeLimit(t *testing.T) {
 func TestDownloadToTemp_HTTPError(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -356,7 +356,7 @@ func TestDownloadToTemp_HTTPError(t *testing.T) {
 	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
 	if err == nil {
 		_ = f.Close()
-		_ = os.Remove(f.Name())
+		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
 		t.Fatal("expected error for HTTP 500, got nil")
 	}
 	if f != nil {
@@ -370,7 +370,7 @@ func TestUserAgentTransport_SetsUA(t *testing.T) {
 	t.Parallel()
 
 	var gotUA string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		gotUA = r.Header.Get("User-Agent")
 	}))
 	defer srv.Close()
@@ -383,11 +383,11 @@ func TestUserAgentTransport_SetsUA(t *testing.T) {
 	}
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
-	resp, err := client.Do(req)
+	resp, err := client.Do(req)                                                    //nolint:gosec // G704: httptest URL
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
-	resp.Body.Close() //nolint:errcheck
+	resp.Body.Close() //nolint:errcheck,gosec // G104: test cleanup
 
 	if gotUA != "TestAgent/1.0" {
 		t.Errorf("User-Agent = %q, want %q", gotUA, "TestAgent/1.0")
@@ -398,7 +398,7 @@ func TestUserAgentTransport_DoesNotOverride(t *testing.T) {
 	t.Parallel()
 
 	var gotUA string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		gotUA = r.Header.Get("User-Agent")
 	}))
 	defer srv.Close()
@@ -412,11 +412,11 @@ func TestUserAgentTransport_DoesNotOverride(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
 	req.Header.Set("User-Agent", "CustomAgent/2.0")
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: httptest URL
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
-	resp.Body.Close() //nolint:errcheck
+	resp.Body.Close() //nolint:errcheck,gosec // G104: test cleanup
 
 	if gotUA != "CustomAgent/2.0" {
 		t.Errorf("User-Agent = %q, want %q (should not be overridden)", gotUA, "CustomAgent/2.0")
@@ -443,7 +443,7 @@ func TestWrapClientWithUA_SetsUA(t *testing.T) {
 	t.Parallel()
 
 	var gotUA string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		gotUA = r.Header.Get("User-Agent")
 	}))
 	defer srv.Close()
@@ -451,11 +451,11 @@ func TestWrapClientWithUA_SetsUA(t *testing.T) {
 	client := WrapClientWithUA(srv.Client())
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil) //nolint:gosec // G704: test URL
-	resp, err := client.Do(req)
+	resp, err := client.Do(req)                                                     //nolint:gosec // G704: httptest URL
 	if err != nil {
 		t.Fatalf("request error: %v", err)
 	}
-	resp.Body.Close() //nolint:errcheck
+	resp.Body.Close() //nolint:errcheck,gosec // G104: test cleanup
 
 	if gotUA != DefaultUserAgent {
 		t.Errorf("User-Agent = %q, want %q", gotUA, DefaultUserAgent)

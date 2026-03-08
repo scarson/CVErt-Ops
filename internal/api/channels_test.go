@@ -1115,6 +1115,90 @@ func TestChannelMutations_RequireAdmin(t *testing.T) {
 	})
 }
 
+// TestChannelMutations_AdminCanPerform verifies that an admin-role user (not owner)
+// can create, patch, rotate-secret, clear-secondary, and delete channels.
+func TestChannelMutations_AdminCanPerform(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "owner@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "owner@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	ownerToken := cookieValue(loginResp, "access_token")
+
+	// Create a second user and invite them as admin.
+	doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	adminLoginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer adminLoginResp.Body.Close() //nolint:errcheck,gosec
+	adminToken := cookieValue(adminLoginResp, "access_token")
+
+	inviteBody := `{"email":"admin@example.com","role":"admin"}`
+	invReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+reg.OrgID+"/invitations", bytes.NewBufferString(inviteBody))
+	invReq.Header.Set("Content-Type", "application/json")
+	invReq.Header.Set("Cookie", "access_token="+ownerToken)
+	invReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	invResp, err := ts.Client().Do(invReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("invite admin: %v", err)
+	}
+	invResp.Body.Close() //nolint:errcheck,gosec
+
+	invitations, _ := db.ListOrgInvitations(ctx, mustParseUUID(t, reg.OrgID)) //nolint:errcheck
+	if len(invitations) == 0 {
+		t.Fatal("no invitations found")
+	}
+	acceptReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/invitations/"+invitations[0].Token+"/accept", nil)
+	acceptReq.Header.Set("Cookie", "access_token="+adminToken)
+	acceptReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	acceptResp, err := ts.Client().Do(acceptReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("accept invitation: %v", err)
+	}
+	acceptResp.Body.Close() //nolint:errcheck,gosec
+
+	// Admin creates a channel.
+	channelBody := `{"name":"admin-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`
+	createResp := doCreateChannel(t, ctx, ts, adminToken, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("admin create channel: got %d, want 201", createResp.StatusCode)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
+
+	// Admin patches the channel.
+	patchResp := doPatchChannel(t, ctx, ts, adminToken, reg.OrgID, ch.ID, `{"name":"admin-renamed"}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin patch channel: got %d, want 200", patchResp.StatusCode)
+	}
+
+	// Admin rotates the signing secret.
+	rotateResp := doRotateSecret(t, ctx, ts, adminToken, reg.OrgID, ch.ID)
+	defer rotateResp.Body.Close() //nolint:errcheck,gosec
+	if rotateResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin rotate-secret: got %d, want 200", rotateResp.StatusCode)
+	}
+
+	// Admin clears the secondary secret.
+	clearResp := doClearSecondary(t, ctx, ts, adminToken, reg.OrgID, ch.ID)
+	defer clearResp.Body.Close() //nolint:errcheck,gosec
+	if clearResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin clear-secondary: got %d, want 204", clearResp.StatusCode)
+	}
+
+	// Admin deletes the channel.
+	deleteResp := doDeleteChannel(t, ctx, ts, adminToken, reg.OrgID, ch.ID)
+	defer deleteResp.Body.Close() //nolint:errcheck,gosec
+	if deleteResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin delete channel: got %d, want 204", deleteResp.StatusCode)
+	}
+}
+
 func mustParseUUID(t *testing.T, s string) uuid.UUID {
 	t.Helper()
 	id, err := uuid.Parse(s)

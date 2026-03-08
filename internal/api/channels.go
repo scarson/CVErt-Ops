@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
@@ -465,6 +467,120 @@ func (srv *Server) clearSecondarySecretHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type testChannelResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// testChannelHandler handles POST /api/v1/orgs/{org_id}/channels/{id}/test.
+// Sends a test notification through the channel and reports success/failure.
+// Always returns 200; delivery outcome is in the response body.
+func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// Verify channel exists and belongs to this org.
+	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get channel for test", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if ch == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	var testErr error
+	switch ch.Type {
+	case "webhook":
+		testErr = srv.testWebhookChannel(r.Context(), id)
+	case "email":
+		testErr = srv.testEmailChannel(r.Context(), ch.Config)
+	default:
+		http.Error(w, "unsupported channel type", http.StatusUnprocessableEntity)
+		return
+	}
+
+	resp := testChannelResponse{Success: testErr == nil}
+	if testErr != nil {
+		resp.Error = testErr.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) error {
+	delivery, err := srv.store.GetNotificationChannelForDelivery(ctx, channelID)
+	if err != nil {
+		return fmt.Errorf("load channel: %w", err)
+	}
+	if delivery == nil {
+		return errors.New("channel not found")
+	}
+
+	var cfg map[string]any
+	_ = json.Unmarshal(delivery.Config, &cfg)
+	urlStr, _ := cfg["url"].(string)
+
+	client, err := notify.BuildSafeClient()
+	if err != nil {
+		return fmt.Errorf("build webhook client: %w", err)
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"test":      true,
+		"message":   "Test notification from CVErt Ops",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
+
+	whCfg := notify.WebhookConfig{
+		URL:                    urlStr,
+		SigningSecret:          delivery.SigningSecret.String,
+		SigningSecretSecondary: delivery.SigningSecretSecondary.String,
+	}
+	// Apply custom headers if present.
+	if headers, ok := cfg["headers"].(map[string]any); ok {
+		whCfg.CustomHeaders = make(map[string]string, len(headers))
+		for k, v := range headers {
+			if s, ok := v.(string); ok {
+				whCfg.CustomHeaders[k] = s
+			}
+		}
+	}
+
+	return notify.Send(ctx, client, whCfg, payload)
+}
+
+func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage) error {
+	recipients, err := validateEmailConfig(config)
+	if err != nil {
+		return err
+	}
+
+	smtpCfg := notify.SmtpConfig{
+		Host:     srv.cfg.SMTPHost,
+		Port:     srv.cfg.SMTPPort,
+		From:     srv.cfg.SMTPFrom,
+		Username: srv.cfg.SMTPUsername,
+		Password: srv.cfg.SMTPPassword,
+		TLS:      srv.cfg.SMTPTLS,
+	}
+
+	subject := "CVErt Ops — Test Notification"
+	htmlBody := "<p>This is a test notification from CVErt Ops. If you received this, your email channel is configured correctly.</p>"
+	textBody := "This is a test notification from CVErt Ops. If you received this, your email channel is configured correctly."
+
+	return notify.EmailSend(ctx, smtpCfg, recipients, subject, htmlBody, textBody)
 }
 
 // channelAuditState builds a flat map for audit log state, merging config fields

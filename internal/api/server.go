@@ -260,6 +260,7 @@ func (srv *Server) Handler() http.Handler {
 					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteChannelHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Post("/rotate-secret", srv.rotateSecretHandler)
 					r.With(srv.RequireOrgRole(RoleMember)).Post("/clear-secondary", srv.clearSecondarySecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/test", srv.testChannelHandler)
 				})
 			})
 

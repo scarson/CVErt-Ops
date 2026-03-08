@@ -1016,6 +1016,57 @@ func TestCreateChannel_EmailHeaderInjection(t *testing.T) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // mustParseUUID parses a UUID string and fails the test if invalid.
+// TestChannelCreate_RequiresAdmin verifies that members cannot create channels (admin+ required).
+func TestChannelCreate_RequiresAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "owner@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "owner@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	ownerToken := cookieValue(loginResp, "access_token")
+
+	// Create a second user and invite them as member.
+	doRegister(t, ctx, ts, "member@example.com", "test-password-1234")
+	memberLoginResp := doLogin(t, ctx, ts, "member@example.com", "test-password-1234")
+	defer memberLoginResp.Body.Close() //nolint:errcheck,gosec
+	memberToken := cookieValue(memberLoginResp, "access_token")
+
+	inviteBody := `{"email":"member@example.com","role":"member"}`
+	invReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+reg.OrgID+"/invitations", bytes.NewBufferString(inviteBody))
+	invReq.Header.Set("Content-Type", "application/json")
+	invReq.Header.Set("Cookie", "access_token="+ownerToken)
+	invReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	invResp, err := ts.Client().Do(invReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("invite member: %v", err)
+	}
+	invResp.Body.Close() //nolint:errcheck,gosec
+
+	invitations, _ := db.ListOrgInvitations(ctx, mustParseUUID(t, reg.OrgID)) //nolint:errcheck
+	if len(invitations) == 0 {
+		t.Fatal("no invitations found")
+	}
+	acceptReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/invitations/"+invitations[0].Token+"/accept", nil)
+	acceptReq.Header.Set("Cookie", "access_token="+memberToken)
+	acceptReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	acceptResp, err := ts.Client().Do(acceptReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("accept invitation: %v", err)
+	}
+	acceptResp.Body.Close() //nolint:errcheck,gosec
+
+	// Member tries to create a channel — should be 403.
+	channelBody := `{"name":"member-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`
+	resp := doCreateChannel(t, ctx, ts, memberToken, reg.OrgID, channelBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member create channel: got %d, want 403", resp.StatusCode)
+	}
+}
+
 func mustParseUUID(t *testing.T, s string) uuid.UUID {
 	t.Helper()
 	id, err := uuid.Parse(s)

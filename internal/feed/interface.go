@@ -1,6 +1,5 @@
-// Package feed defines shared canonical types used by all CVE feed adapters
-// and the merge pipeline. Concrete adapter implementations live in
-// subdirectories (mitre, nvd, osv, ghsa, kev, epss).
+// ABOUTME: Shared canonical types and interfaces for CVE feed adapters.
+// ABOUTME: Defines FeedAdapter, CanonicalPatch, FetchResult, and SourceMeta used by all adapters and the merge pipeline.
 package feed
 
 import (
@@ -11,7 +10,12 @@ import (
 
 // Adapter is the interface implemented by every CVE feed adapter.
 // Fetch returns one page of canonical patches and a cursor for the next page.
-// A nil NextCursor in FetchResult signals no more pages.
+// Set LastPage = true on FetchResult to signal no more pages remain.
+//
+// Adapters MUST return a non-nil NextCursor on every successful Fetch call,
+// including the final page. The handler persists NextCursor as the sync
+// checkpoint; returning nil causes the cursor to regress to the previous
+// page's value, resulting in redundant API calls on subsequent runs.
 //
 // The type name is Adapter (not FeedAdapter) to avoid the feed.FeedAdapter stutter.
 type Adapter interface {
@@ -22,15 +26,21 @@ type Adapter interface {
 type FetchResult struct {
 	// Patches is the canonical CVE data for this page.
 	Patches []CanonicalPatch
-	// RawPayload is the unmodified upstream response for audit/debugging.
-	// May be nil if the adapter does not retain raw payloads.
-	RawPayload json.RawMessage
 	// SourceMeta contains metadata about the fetch operation.
 	SourceMeta SourceMeta
 	// NextCursor is the opaque cursor for the next Fetch call.
-	// Nil means no additional pages; the caller should persist the cursor
-	// as the new sync state.
+	// Adapters MUST always return a non-nil NextCursor, even on the final page,
+	// so the handler can persist a valid sync checkpoint. On the final page,
+	// return a cursor representing the "caught up" state (e.g., for the NVD
+	// adapter, the window covering effectiveNow).
 	NextCursor json.RawMessage
+	// LastPage signals that this is the final page of results for this run.
+	// The caller should persist NextCursor but not call Fetch again.
+	// Single-Fetch adapters (KEV, MITRE, GHSA, OSV, MSRC) always set this to true.
+	// True paginators (NVD, Red Hat) set it on their final page.
+	// The zero value (false) is safe — it means "keep paginating," so forgetting
+	// to set it produces correct-but-wasteful behavior, never data loss.
+	LastPage bool
 }
 
 // SourceMeta records metadata about a single fetch operation.
@@ -64,7 +74,22 @@ type CanonicalPatch struct {
 	References         []ReferenceEntry  `json:"references,omitempty"`
 	AffectedPackages   []AffectedPackage `json:"affected_packages,omitempty"`
 	AffectedCPEs       []AffectedCPE     `json:"affected_cpes,omitempty"`
+	VendorEnrichment   *VendorEnrichment `json:"vendor_enrichment,omitempty"`
 	IsWithdrawn        bool              `json:"is_withdrawn,omitempty"`
+	// RawPayload is the unmodified upstream JSON for this specific CVE record.
+	// Stored in cve_raw_payloads for audit/debugging. Nil means no raw payload
+	// is available (the merge pipeline skips the insert).
+	RawPayload json.RawMessage `json:"-"` // excluded from JSON serialization and material_hash
+}
+
+// VendorEnrichment holds vendor-specific metadata that doesn't map to
+// standard CanonicalPatch fields. Written to cve_vendor_enrichment by
+// the merge pipeline. Only populated by vendor-specific adapters
+// (KEV, MSRC, Red Hat).
+type VendorEnrichment struct {
+	VendorSeverity *string         `json:"vendor_severity,omitempty"`
+	VendorFixState *string         `json:"vendor_fix_state,omitempty"`
+	Data           json.RawMessage `json:"data"`
 }
 
 // ReferenceEntry is a single hyperlink reference associated with a CVE.

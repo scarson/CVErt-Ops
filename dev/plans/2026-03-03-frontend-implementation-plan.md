@@ -36,7 +36,7 @@ Read these files to understand the existing codebase:
 
 ## Phase A: Project Foundation
 
-### Task 1: Scaffold Vue 3 project
+### Task 1: Scaffold Vue 3 project ✅ `dd99764`
 
 **Files:**
 - Create: `web/` directory (entire scaffolded project)
@@ -91,7 +91,7 @@ git commit -m "feat(web): scaffold Vue 3 + TypeScript project"
 
 ---
 
-### Task 2: Add Tailwind CSS v4
+### Task 2: Add Tailwind CSS v4 ✅ `85a3923`
 
 **Files:**
 - Modify: `web/vite.config.ts`
@@ -165,7 +165,7 @@ git commit -m "feat(web): add Tailwind CSS v4"
 
 ---
 
-### Task 3: Initialize shadcn-vue
+### Task 3: Initialize shadcn-vue ✅ `d402974`
 
 **Files:**
 - Create: `web/components.json`
@@ -242,7 +242,7 @@ git commit -m "feat(web): initialize shadcn-vue with base components"
 
 ---
 
-### Task 4: Install API client tooling
+### Task 4: Install API client tooling ✅ `e136e1b`
 
 **Files:**
 - Modify: `web/package.json` (new dependencies + script)
@@ -274,7 +274,9 @@ git commit -m "feat(web): add openapi-typescript + openapi-fetch"
 
 ---
 
-### Task 5: Configure Vitest for Vue
+### Task 5: Configure Vitest for Vue ✅ `3691fba`
+
+> **Deviation:** Swapped jsdom for happy-dom (faster, lighter). Added `happy-dom` to devDependencies, removed `jsdom`. Updated `tsconfig.vitest.json` types accordingly. Extra commit `1d01817` for tsconfig fix.
 
 **Files:**
 - Modify: `web/vite.config.ts` (add test config)
@@ -373,7 +375,7 @@ git commit -m "feat(web): configure Vitest with happy-dom"
 
 ---
 
-### Task 6: Create web/embed.go
+### Task 6: Create web/embed.go ✅ `183267c`
 
 **Files:**
 - Create: `web/embed.go`
@@ -450,7 +452,7 @@ git commit -m "feat(web): add embed.go for SPA static assets"
 
 ---
 
-### Task 7: Add FRONTEND_URL config
+### Task 7: Add FRONTEND_URL config ✅ `458d970`
 
 **Files:**
 - Modify: `internal/config/config.go`
@@ -496,7 +498,7 @@ git commit -m "feat(config): add FRONTEND_URL for post-OAuth redirect"
 
 ---
 
-### Task 8: Add SPA fallback handler
+### Task 8: Add SPA fallback handler ✅ `3402730`
 
 **Files:**
 - Create: `internal/api/spa.go`
@@ -695,7 +697,7 @@ git commit -m "feat(api): add SPA fallback handler for embedded frontend"
 
 ---
 
-### Task 9: OAuth callback redirect
+### Task 9: OAuth callback redirect ✅ `d681984`
 
 **Files:**
 - Modify: `internal/api/auth.go` (GitHub + Google callback handlers)
@@ -736,7 +738,9 @@ git commit -m "feat(auth): OAuth callbacks redirect to FRONTEND_URL instead of r
 
 ---
 
-### Task 10: Verify end-to-end dev workflow
+### Task 10: Verify end-to-end dev workflow ⏳ DEFERRED
+
+> **Deferred:** Requires running Go server + Postgres + Vite dev server simultaneously. Will verify manually once all frontend code is in place.
 
 **Not a code task — manual verification.**
 
@@ -776,7 +780,9 @@ Open `http://localhost:8080`. Verify the Vue app is served from the Go binary.
 
 ## Phase B: API Client + Auth Infrastructure
 
-### Task 11: Generate API types from OpenAPI spec
+### Task 11: Generate API types from OpenAPI spec ✅ `2d0e20b`, `f34050d`
+
+> **Deviation:** Instead of curling the spec from a running server, created `internal/api/openapi_test.go` (`TestOpenAPISpec`) that generates the spec from huma route registrations without a database. Run `GENERATE_OPENAPI=1 go test -run TestOpenAPISpec ./internal/api/` to regenerate. `openapi.json` is committed (not gitignored) to document the API contract.
 
 **Files:**
 - Create: `web/src/lib/api/schema.d.ts` (generated)
@@ -825,7 +831,9 @@ git commit -m "feat(web): generate TypeScript API types from OpenAPI spec"
 
 ---
 
-### Task 12: Create API client with CSRF + refresh interceptor
+### Task 12: Create API client with CSRF + refresh interceptor ✅ `aea2ecf`
+
+> **Note:** Tests expanded from 3 (plan) to 12 — added coverage for PUT, DELETE, HEAD, OPTIONS methods and refresh middleware behavior (non-401 passthrough, login/refresh endpoint exclusion, retry on success, redirect on failure).
 
 **Files:**
 - Create: `web/src/lib/api/client.ts`
@@ -979,7 +987,9 @@ git commit -m "feat(web): API client with CSRF header and 401 refresh intercepto
 
 ---
 
-### Task 13: Create auth Pinia store
+### Task 13: Create auth Pinia store ✅ `53fa732`
+
+> **Note:** Used generated OpenAPI schema types (`MeOutputBody`, `OrgEntry`) instead of defining duplicate `User`/`UserOrg` interfaces. Tests expanded from 4 (plan) to 17 — added coverage for `activeOrg` computed, `fetchMe` edge cases (auto-select single org, stale org cleanup), login/logout flows.
 
 **Files:**
 - Create: `web/src/stores/auth.ts`
@@ -1173,7 +1183,7 @@ git commit -m "feat(web): auth Pinia store with org context and localStorage per
 
 ---
 
-### Task 14: Create UI store (toasts)
+### Task 14: Create UI store (toasts) ✅ `9f20ffc`
 
 **Files:**
 - Create: `web/src/stores/ui.ts`
@@ -1214,7 +1224,7 @@ git commit -m "feat(web): UI store for sidebar state"
 
 ## Phase C: Layout + Routing
 
-### Task 15: Create PublicLayout
+### Task 15: Create PublicLayout ✅ `e5c06df`
 
 **Files:**
 - Create: `web/src/layouts/PublicLayout.vue`
@@ -1250,7 +1260,9 @@ git commit -m "feat(web): PublicLayout for unauthenticated pages"
 
 ---
 
-### Task 16: Create AuthenticatedLayout (sidebar)
+### Task 16: Create AuthenticatedLayout (sidebar) ✅ `db783e2`
+
+> **Note:** Added 8 component tests for sidebar nav links, org switcher, and user menu. Uses sidebar CSS variables from main.css theme. Mobile responsive via Sheet component.
 
 **Files:**
 - Create: `web/src/layouts/AuthenticatedLayout.vue`
@@ -1300,7 +1312,9 @@ git commit -m "feat(web): AuthenticatedLayout with sidebar navigation"
 
 ---
 
-### Task 17: Create Vue Router with guards
+### Task 17: Create Vue Router with guards ✅ `f9b31a7`
+
+> **Note:** Extracted guard functions as named exports for testability. 17 tests covering auth redirect, org check, login redirect, session restore, title updates. Tests use real Pinia with `createMemoryHistory()`, mock only `fetchMe`.
 
 **Files:**
 - Modify: `web/src/router/index.ts`
@@ -1497,7 +1511,9 @@ git commit -m "feat(web): Vue Router with auth and org navigation guards"
 
 ---
 
-### Task 18: Wire up App.vue with layouts
+### Task 18: Wire up App.vue with layouts ✅ `769684a`
+
+> **Note:** Also cleaned up all Vue scaffold remnants (HelloWorld, Welcome, icons, logo, and their test). 55 tests passing.
 
 **Files:**
 - Modify: `web/src/App.vue`
@@ -1567,7 +1583,9 @@ For each page below, the implementing agent should:
 4. Implement the component following TDD
 5. Commit after each page
 
-### Task 19: Create stub views for all routes
+### Task 19: Create stub views for all routes ✅ `aa9ec20`
+
+> **Deviation:** Executed before Task 17 (not after) so router lazy imports could resolve. Also removed unused scaffold views (AboutView, HomeView).
 
 **Files:**
 - Create stub `.vue` files for every route to prevent router import errors
@@ -1623,7 +1641,7 @@ git commit -m "feat(web): stub views for all routes"
 
 ---
 
-### Task 20: Login page
+### Task 20: Login page ✅ `a97da63`
 
 **Files:**
 - Modify: `web/src/views/LoginView.vue`
@@ -1674,7 +1692,7 @@ git commit -m "feat(web): Login page with email/password and OAuth"
 
 ---
 
-### Task 21: Register page
+### Task 21: Register page ✅ `a7446a8`
 
 **Files:**
 - Modify: `web/src/views/RegisterView.vue`
@@ -1701,7 +1719,9 @@ git commit -m "feat(web): Register page with invite-only handling"
 
 ---
 
-### Task 22: Create Organization page
+### Task 22: Create Organization page ✅ `a51c578`
+
+> **Deviation:** Uses raw `fetch()` instead of typed API client because the org management endpoints are chi-registered (not in OpenAPI spec). CSRF header added manually.
 
 **Files:**
 - Modify: `web/src/views/CreateOrgView.vue`
@@ -1726,7 +1746,9 @@ git commit -m "feat(web): Create Organization page"
 
 ---
 
-### Task 23: CVE Search page
+### Task 23: CVE Search page ✅ `00ed3fc`
+
+> **Deviation:** Installed `table`, `badge`, `select` shadcn-vue components (not `pagination` or `skeleton` — keyset pagination uses custom buttons, skeletons deferred to Task 32). 45 new tests (135 total at this point).
 
 **Files:**
 - Modify: `web/src/views/CveSearchView.vue`
@@ -1767,7 +1789,9 @@ git commit -m "feat(web): CVE Search page with filters and keyset pagination"
 
 ---
 
-### Task 24: CVE Detail page
+### Task 24: CVE Detail page ✅ `d0f5078`
+
+> **Notes:** Installed `tabs` shadcn-vue component. Created CveScoreCard (reusable) and CveSourceComparison components. 43 new tests (178 total).
 
 **Files:**
 - Modify: `web/src/views/CveDetailView.vue`
@@ -1807,7 +1831,9 @@ git commit -m "feat(web): CVE Detail page with scores and source comparison"
 
 ---
 
-### Task 25: Watchlist List page
+### Task 25: Watchlist List page ✅ `b6bf3b7`
+
+> **Notes:** Installed `dialog` and `alert-dialog` shadcn-vue components. Created CreateWatchlistDialog with WatchlistEntry type export. 27 new tests (205 total).
 
 **Files:**
 - Modify: `web/src/views/WatchlistListView.vue`
@@ -1846,7 +1872,9 @@ git commit -m "feat(web): Watchlist List page with create dialog"
 
 ---
 
-### Task 26: Watchlist Detail page
+### Task 26: Watchlist Detail page ✅ `57d70c1`
+
+> **Notes:** Created AddItemDialog with package/CPE type toggle and ecosystem dropdown. Inline editing for watchlist name/description. 23 new tests (228 total).
 
 **Files:**
 - Modify: `web/src/views/WatchlistDetailView.vue`
@@ -1881,7 +1909,9 @@ git commit -m "feat(web): Watchlist Detail page with item management"
 
 ---
 
-### Task 27: Members page
+### Task 27: Members page ✅ `7e9df86`
+
+> **Notes:** Full RBAC-gated UI with role hierarchy. Pending invitations section. Role change via exposed method for testability. 33 new tests (261 total).
 
 **Files:**
 - Modify: `web/src/views/MembersView.vue`
@@ -1923,7 +1953,9 @@ git commit -m "feat(web): Members page with invitations and role management"
 
 ---
 
-### Task 28: Groups page
+### Task 28: Groups page ✅ `0aee06b`
+
+> **Notes:** Created GroupDialog (dual-mode create/edit) and GroupMembersDialog with add/remove member management. 41 new tests (302 total).
 
 **Files:**
 - Modify: `web/src/views/GroupsView.vue`
@@ -1957,7 +1989,9 @@ git commit -m "feat(web): Groups page with member management"
 
 ---
 
-### Task 29: Feed Status page
+### Task 29: Feed Status page ✅ `64acf03`
+
+> **Deviation:** Feed admin API endpoints don't exist yet. Built as a meaningful placeholder with "Coming soon" badge. 4 tests.
 
 **Files:**
 - Modify: `web/src/views/FeedStatusView.vue`
@@ -1985,7 +2019,9 @@ git commit -m "feat(web): Feed Status admin page"
 
 ---
 
-### Task 30: Invitation Acceptance page
+### Task 30: Invitation Acceptance page ✅ `3489344`
+
+> **Notes:** Uses typed API client (huma-registered endpoints in OpenAPI schema). Handles auth/unauth flows, 404/410/403 errors. 12 tests.
 
 **Files:**
 - Modify: `web/src/views/InvitationView.vue`
@@ -2011,7 +2047,9 @@ git commit -m "feat(web): Invitation acceptance page"
 
 ---
 
-### Task 31: 404 page
+### Task 31: 404 page ✅ `992fef1`
+
+> **Notes:** Simple page with 404 heading, message, and back link. 3 tests. 321 total tests at this point.
 
 **Files:**
 - Modify: `web/src/views/NotFoundView.vue`
@@ -2048,7 +2086,7 @@ git commit -m "feat(web): 404 page"
 
 ## Phase E: Polish
 
-### Task 32: Loading skeletons and empty states
+### Task 32: Loading skeletons and empty states ✅ `b732cad`
 
 **Files:**
 - Create: `web/src/components/LoadingSkeleton.vue`
@@ -2099,7 +2137,7 @@ git commit -m "feat(web): reusable loading skeleton and empty state components"
 
 ---
 
-### Task 33: Global error handler
+### Task 33: Global error handler ✅ `a344d5d`
 
 **Files:**
 - Modify: `web/src/main.ts`
@@ -2162,7 +2200,9 @@ git commit -m "feat(web): global error handler and reusable error alert"
 
 ---
 
-### Task 34: Final lint, type-check, and test run
+### Task 34: Final lint, type-check, and test run ✅ `e5008ff`
+
+> **Notes:** Fixed accumulated type/lint issues: unused imports, `Response.json()` type assertions, reka-ui `AcceptableValue` type mismatches, test tsconfig lib additions, ESLint overrides for shadcn-vue components. Build passes cleanly.
 
 **Step 1:** Run all frontend checks:
 
@@ -2196,7 +2236,9 @@ git commit -m "fix(web): lint and type-check fixes"
 
 ---
 
-### Task 35: Remove smoke test
+### Task 35: Remove smoke test ✅ `6f3a2b8`
+
+> **Final state:** 26 test files, 320 tests, all passing. Lint clean, type-check clean, production build clean.
 
 **Files:**
 - Delete: `web/src/components/__tests__/smoke.test.ts`

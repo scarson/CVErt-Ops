@@ -3,8 +3,10 @@
 package nvd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -114,9 +116,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   baseTime,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 5000, baseTime.Add(time.Hour))
+		next, lastPage := computeNextCursor(cur, 5000, baseTime.Add(time.Hour))
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false for mid-window pagination")
 		}
 		if next.StartIndex != resultsPerPage {
 			t.Fatalf("StartIndex = %d, want %d", next.StartIndex, resultsPerPage)
@@ -140,9 +145,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   windowEnd,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 100, effectiveNow)
+		next, lastPage := computeNextCursor(cur, 100, effectiveNow)
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false when more windows available")
 		}
 		if next.StartIndex != 0 {
 			t.Fatalf("StartIndex = %d, want 0 for new window", next.StartIndex)
@@ -154,7 +162,7 @@ func TestComputeNextCursor(t *testing.T) {
 		}
 	})
 
-	t.Run("window exhausted reached effectiveNow returns nil", func(t *testing.T) {
+	t.Run("window exhausted reached effectiveNow returns caught-up cursor", func(t *testing.T) {
 		t.Parallel()
 		cur := Cursor{
 			WindowStart: baseTime.Add(-48 * time.Hour),
@@ -162,9 +170,24 @@ func TestComputeNextCursor(t *testing.T) {
 			StartIndex:  0,
 		}
 		// effectiveNow is at or before the window end — no more windows.
-		next := computeNextCursor(cur, 100, baseTime)
-		if next != nil {
-			t.Fatalf("expected nil cursor when at effectiveNow, got %+v", next)
+		// Should still return a non-nil "caught up" cursor for persistence.
+		next, lastPage := computeNextCursor(cur, 100, baseTime)
+		if next == nil {
+			t.Fatal("expected non-nil caught-up cursor")
+		}
+		if !lastPage {
+			t.Error("expected lastPage=true when all windows exhausted")
+		}
+		// Caught-up cursor starts from WindowEnd minus overlap.
+		wantStart := baseTime.Add(-overlapDuration)
+		if !next.WindowStart.Equal(wantStart) {
+			t.Errorf("WindowStart = %v, want %v", next.WindowStart, wantStart)
+		}
+		if !next.WindowEnd.Equal(baseTime) {
+			t.Errorf("WindowEnd = %v, want %v", next.WindowEnd, baseTime)
+		}
+		if next.StartIndex != 0 {
+			t.Errorf("StartIndex = %d, want 0", next.StartIndex)
 		}
 	})
 
@@ -178,9 +201,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   windowEnd,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 0, effectiveNow)
+		next, lastPage := computeNextCursor(cur, 0, effectiveNow)
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false when more windows available")
 		}
 		wantStart := windowEnd.Add(-overlapDuration)
 		if !next.WindowStart.Equal(wantStart) {
@@ -200,9 +226,12 @@ func TestComputeNextCursor(t *testing.T) {
 			WindowEnd:   windowEnd,
 			StartIndex:  0,
 		}
-		next := computeNextCursor(cur, 0, effectiveNow)
+		next, lastPage := computeNextCursor(cur, 0, effectiveNow)
 		if next == nil {
 			t.Fatal("expected non-nil next cursor")
+		}
+		if lastPage {
+			t.Error("expected lastPage=false when more windows available")
 		}
 		if !next.WindowEnd.Equal(effectiveNow) {
 			t.Fatalf("WindowEnd = %v, want %v (capped to effectiveNow)", next.WindowEnd, effectiveNow)
@@ -343,7 +372,13 @@ func TestParseNVDResponse(t *testing.T) {
 	})
 
 	t.Run("malformed individual records skipped", func(t *testing.T) {
-		t.Parallel()
+		// Not parallel: captures global slog.Default.
+
+		var buf bytes.Buffer
+		origHandler := slog.Default().Handler()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
 		body := `{
 			"totalResults": 3,
 			"timestamp": "2024-06-01T12:00:00.000",
@@ -381,6 +416,53 @@ func TestParseNVDResponse(t *testing.T) {
 		}
 		if patches[1].CVEID != "CVE-2024-0003" {
 			t.Fatalf("patches[1].CVEID = %q, want CVE-2024-0003", patches[1].CVEID)
+		}
+		if !strings.Contains(buf.String(), "skipping malformed record") {
+			t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+		}
+	})
+
+	t.Run("syntax error stops stream with partial results", func(t *testing.T) {
+		// Not parallel: captures global slog.Default.
+
+		var buf bytes.Buffer
+		origHandler := slog.Default().Handler()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+		body := `{
+			"totalResults": 3,
+			"timestamp": "2024-06-01T12:00:00.000",
+			"vulnerabilities": [
+				{
+					"cve": {
+						"id": "CVE-2024-0001",
+						"vulnStatus": "Analyzed",
+						"descriptions": [{"lang": "en", "value": "Good record"}]
+					}
+				},
+				{INVALID_JSON},
+				{
+					"cve": {
+						"id": "CVE-2024-0003",
+						"vulnStatus": "Modified",
+						"descriptions": [{"lang": "en", "value": "After bad record"}]
+					}
+				}
+			]
+		}`
+		patches, _, _, err := parseNVDResponse(strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("expected no error (syntax error breaks loop, returns partial), got: %v", err)
+		}
+		if len(patches) != 1 {
+			t.Fatalf("len(patches) = %d, want 1 (only first record before syntax error)", len(patches))
+		}
+		if patches[0].CVEID != "CVE-2024-0001" {
+			t.Errorf("patches[0].CVEID = %q, want CVE-2024-0001", patches[0].CVEID)
+		}
+		if !strings.Contains(buf.String(), "syntax error") {
+			t.Errorf("expected warning log about syntax error, got: %s", buf.String())
 		}
 	})
 }
@@ -1082,6 +1164,20 @@ func TestFetch_Success(t *testing.T) {
 	if capturedQuery.Get("startIndex") == "" {
 		t.Error("expected startIndex query param")
 	}
+
+	// NVD is paginated with sliding windows — first fetch is not the last page.
+	if result.LastPage {
+		t.Error("LastPage should be false — NVD has more windows to fetch")
+	}
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
+	}
 }
 
 func TestFetch_WithCursor(t *testing.T) {
@@ -1137,6 +1233,63 @@ func TestFetch_WithCursor(t *testing.T) {
 	}
 
 	// We should still get patches from the response.
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+}
+
+func TestFetch_LastPage(t *testing.T) {
+	t.Parallel()
+
+	// Serve the standard response with timestamp "2025-06-01T12:00:00.000".
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Date", "Sun, 01 Jun 2025 12:00:00 GMT")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validNVDResponse))
+	}))
+	defer ts.Close()
+
+	client := &http.Client{
+		Transport: &redirectTransport{
+			targetURL: ts.URL,
+			inner:     http.DefaultTransport,
+		},
+	}
+	adapter := &Adapter{
+		client:      client,
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	// Set the cursor's WindowEnd equal to effectiveNow (the response timestamp).
+	// This means all windows are exhausted — computeNextCursor returns a caught-up cursor.
+	windowStart := time.Date(2025, 4, 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: windowStart,
+		WindowEnd:   windowEnd,
+		StartIndex:  0,
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true when window end reaches effectiveNow")
+	}
+	if result.NextCursor == nil {
+		t.Fatal("NextCursor should be non-nil (caught-up cursor) on last page")
+	}
+	// Verify the caught-up cursor is valid JSON with expected shape.
+	var caughtUp Cursor
+	if err := json.Unmarshal(result.NextCursor, &caughtUp); err != nil {
+		t.Fatalf("unmarshal caught-up cursor: %v", err)
+	}
+	if caughtUp.StartIndex != 0 {
+		t.Errorf("caught-up cursor StartIndex = %d, want 0", caughtUp.StartIndex)
+	}
 	if len(result.Patches) != 2 {
 		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
 	}

@@ -169,3 +169,26 @@ func (s *Store) DeleteExpiredRefreshTokens(ctx context.Context) (int64, error) {
 	}
 	return n, nil
 }
+
+// IsSiteAdmin returns whether the given user has the site admin flag set.
+// Uses withBypassTx since it runs from middleware before org context is established.
+func (s *Store) IsSiteAdmin(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var isAdmin bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		isAdmin, err = q.IsSiteAdmin(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("is site admin: %w", err)
+	}
+	return isAdmin, nil
+}
+
+// SetFirstSiteAdmin atomically promotes a user to site admin only if no admin exists yet.
+// Uses withBypassTx since it runs during registration before org context.
+func (s *Store) SetFirstSiteAdmin(ctx context.Context, userID uuid.UUID) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.SetFirstSiteAdmin(ctx, userID)
+	})
+}

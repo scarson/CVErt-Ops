@@ -1,5 +1,7 @@
-// Package epss implements the EPSS (Exploit Prediction Scoring System) enrichment
-// adapter. Unlike CVE feed adapters, this package does NOT implement feed.Adapter —
+// ABOUTME: EPSS (Exploit Prediction Scoring System) enrichment adapter.
+// ABOUTME: Downloads daily EPSS CSV scores and applies them via advisory-locked per-row DB writes.
+//
+// Unlike CVE feed adapters, this package does NOT implement feed.Adapter —
 // it writes directly to the database via the two-statement IS DISTINCT FROM pattern
 // described in PLAN.md §5.3.
 //
@@ -41,7 +43,6 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/merge"
-	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -69,11 +70,15 @@ type Cursor struct {
 	ModelVersion string `json:"model_version,omitempty"`
 }
 
+// applyRowFunc is the signature for the per-row DB write function.
+type applyRowFunc func(ctx context.Context, db *sql.DB, cveID string, score float64, asOfDate time.Time) error
+
 // Adapter downloads and applies EPSS scores to the canonical CVE corpus.
 // It does NOT implement feed.Adapter — call Apply for each sync cycle.
 type Adapter struct {
 	client      *http.Client
 	rateLimiter *rate.Limiter
+	applyRowFn  applyRowFunc
 }
 
 // New creates an EPSS adapter. Pass nil to use http.DefaultClient.
@@ -85,8 +90,9 @@ func New(client *http.Client) *Adapter {
 	// One file per day; 24h limiter enforces that at the adapter level even if the
 	// scheduler fires early.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(24*time.Hour), 1),
+		applyRowFn:  applyRow,
 	}
 }
 
@@ -103,7 +109,7 @@ func New(client *http.Client) *Adapter {
 // PLAN.md §5.3 for the full explanation.
 //
 // Returns the updated cursor JSON for the caller to persist in feed_sync_state.
-func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.RawMessage) (json.RawMessage, error) {
+func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMessage) (json.RawMessage, error) {
 	var cur Cursor
 	if len(cursorJSON) > 0 {
 		if err := json.Unmarshal(cursorJSON, &cur); err != nil {
@@ -122,7 +128,12 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 		}
 	}
 
-	if err := a.rateLimiter.Wait(ctx); err != nil {
+	// Safety net: the 24h rate limiter can block a worker goroutine for the full
+	// reservation period if the cursor-based skip (above) fails to short-circuit.
+	// Cap the wait so a corrupted cursor or early scheduler fire fails fast.
+	rlCtx, rlCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer rlCancel()
+	if err := a.rateLimiter.Wait(rlCtx); err != nil {
 		return nil, fmt.Errorf("epss: rate limit: %w", err)
 	}
 
@@ -130,8 +141,6 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 	if err != nil {
 		return nil, fmt.Errorf("epss: build request: %w", err)
 	}
-	req.Header.Set("User-Agent", "CVErt-Ops/1.0 vulnerability intelligence platform")
-
 	resp, err := a.client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
 	if err != nil {
 		return nil, fmt.Errorf("epss: fetch: %w", err)
@@ -139,10 +148,12 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("epss: HTTP %d", resp.StatusCode)
 	}
 
-	gz, err := gzip.NewReader(resp.Body)
+	const maxEPSSSize = 50 << 20 // 50 MB (compressed stream limit)
+	gz, err := gzip.NewReader(io.LimitReader(resp.Body, maxEPSSSize))
 	if err != nil {
 		return nil, fmt.Errorf("epss: gzip reader: %w", err)
 	}
@@ -188,7 +199,6 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 		return nil, fmt.Errorf("epss: read csv header: %w", err)
 	}
 
-	db := s.DB()
 	for {
 		record, err := cr.Read()
 		if err == io.EOF {
@@ -214,8 +224,10 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 			continue
 		}
 
-		if err := applyRow(ctx, db, cveID, score, asOfDate); err != nil {
-			return nil, fmt.Errorf("epss: apply row %q: %w", cveID, err)
+		if err := a.applyRowFn(ctx, db, cveID, score, asOfDate); err != nil {
+			slog.WarnContext(ctx, "epss: skipping row with DB error",
+				"cve_id", cveID, "error", err)
+			continue
 		}
 	}
 
@@ -226,6 +238,7 @@ func (a *Adapter) Apply(ctx context.Context, s *store.Store, cursorJSON json.Raw
 
 	return nextCursorJSON, nil
 }
+
 
 // applyRow executes the two-statement EPSS pattern for a single CVE inside an
 // advisory-locked transaction. Both statements run unconditionally — do NOT

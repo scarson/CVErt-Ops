@@ -1,10 +1,20 @@
 package epss
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -166,6 +176,96 @@ func TestApply_SameDayCursorSkips(t *testing.T) {
 	if string(result) != string(cursorJSON) {
 		t.Errorf("Apply returned cursor %s, want unchanged %s", string(result), string(cursorJSON))
 	}
+}
+
+// makeEPSSGzip builds a gzip-compressed EPSS CSV with the given rows.
+func makeEPSSGzip(t *testing.T, rows []string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	// Line 1: comment with model_version and score_date (yesterday to avoid same-day skip).
+	yesterday := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	fmt.Fprintf(gz, "#model_version:v2025.03.14,score_date:%s\n", yesterday) //nolint:errcheck // test helper
+	// Line 2: header.
+	fmt.Fprintln(gz, "cve,epss,percentile") //nolint:errcheck // test helper
+	for _, r := range rows {
+		fmt.Fprintln(gz, r) //nolint:errcheck // test helper
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestApply_SkipsPoisonRows(t *testing.T) {
+	// Not parallel: mutates slog.Default.
+	var applied []string
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.5,0.9",
+		"CVE-2024-0002,0.3,0.7", // poison row
+		"CVE-2024-0003,0.8,0.95",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	// Capture slog output to verify warning is logged.
+	var logBuf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	// Route all requests to the test server (Apply uses a hardcoded feedURL constant).
+	adapter := &Adapter{
+		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+			if cveID == "CVE-2024-0002" {
+				return fmt.Errorf("simulated DB error")
+			}
+			applied = append(applied, cveID)
+			return nil
+		},
+	}
+
+	result, err := adapter.Apply(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Apply should succeed despite poison row, got: %v", err)
+	}
+
+	// Verify cursor was returned.
+	if len(result) == 0 {
+		t.Fatal("expected non-empty cursor")
+	}
+
+	// Verify rows 1 and 3 were applied, but not 2.
+	if len(applied) != 2 {
+		t.Fatalf("applied %d rows, want 2", len(applied))
+	}
+	if applied[0] != "CVE-2024-0001" || applied[1] != "CVE-2024-0003" {
+		t.Errorf("applied = %v, want [CVE-2024-0001 CVE-2024-0003]", applied)
+	}
+
+	// Verify warning was logged.
+	if !strings.Contains(logBuf.String(), "skipping row with DB error") {
+		t.Errorf("expected warning log about skipping row, got: %s", logBuf.String())
+	}
+}
+
+// redirectTransport routes all requests to the given target URL.
+type redirectTransport struct {
+	target string
+}
+
+func (t *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	newReq := req.Clone(req.Context())
+	newReq.URL.Scheme = "http"
+	newReq.URL.Host = strings.TrimPrefix(t.target, "http://")
+	return http.DefaultTransport.RoundTrip(newReq) //nolint:gosec // G704: test URL
 }
 
 // TestNullByteStripping verifies that CVE IDs containing null bytes are cleaned

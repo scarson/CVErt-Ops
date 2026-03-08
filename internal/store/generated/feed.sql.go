@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
@@ -34,15 +35,17 @@ func (q *Queries) GetFeedSyncState(ctx context.Context, feedName string) (FeedSy
 
 const insertFeedFetchLog = `-- name: InsertFeedFetchLog :one
 INSERT INTO feed_fetch_log (
-    feed_name, status, items_fetched, items_upserted,
-    cursor_before, cursor_after, error_summary, ended_at
+    feed_name, started_at, ended_at, status, items_fetched, items_upserted,
+    cursor_before, cursor_after, error_summary
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING id
 `
 
 type InsertFeedFetchLogParams struct {
 	FeedName      string
+	StartedAt     time.Time
+	EndedAt       sql.NullTime
 	Status        string
 	ItemsFetched  int32
 	ItemsUpserted int32
@@ -54,6 +57,8 @@ type InsertFeedFetchLogParams struct {
 func (q *Queries) InsertFeedFetchLog(ctx context.Context, arg InsertFeedFetchLogParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, insertFeedFetchLog,
 		arg.FeedName,
+		arg.StartedAt,
+		arg.EndedAt,
 		arg.Status,
 		arg.ItemsFetched,
 		arg.ItemsUpserted,
@@ -64,6 +69,87 @@ func (q *Queries) InsertFeedFetchLog(ctx context.Context, arg InsertFeedFetchLog
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const listFeedSyncStates = `-- name: ListFeedSyncStates :many
+SELECT feed_name, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until FROM feed_sync_state ORDER BY feed_name
+`
+
+func (q *Queries) ListFeedSyncStates(ctx context.Context) ([]FeedSyncState, error) {
+	rows, err := q.db.QueryContext(ctx, listFeedSyncStates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FeedSyncState
+	for rows.Next() {
+		var i FeedSyncState
+		if err := rows.Scan(
+			&i.FeedName,
+			&i.CursorJson,
+			&i.LastSuccessAt,
+			&i.LastAttemptAt,
+			&i.ConsecutiveFailures,
+			&i.LastError,
+			&i.BackoffUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentFeedFetchLogs = `-- name: ListRecentFeedFetchLogs :many
+SELECT id, feed_name, started_at, ended_at, status, items_fetched, items_upserted, cursor_before, cursor_after, error_summary FROM feed_fetch_log
+WHERE feed_name = $1
+ORDER BY started_at DESC
+LIMIT $2
+`
+
+type ListRecentFeedFetchLogsParams struct {
+	FeedName string
+	Limit    int32
+}
+
+func (q *Queries) ListRecentFeedFetchLogs(ctx context.Context, arg ListRecentFeedFetchLogsParams) ([]FeedFetchLog, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentFeedFetchLogs, arg.FeedName, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FeedFetchLog
+	for rows.Next() {
+		var i FeedFetchLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.FeedName,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.Status,
+			&i.ItemsFetched,
+			&i.ItemsUpserted,
+			&i.CursorBefore,
+			&i.CursorAfter,
+			&i.ErrorSummary,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertFeedSyncState = `-- name: UpsertFeedSyncState :exec

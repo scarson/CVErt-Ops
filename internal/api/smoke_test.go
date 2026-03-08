@@ -197,10 +197,10 @@ func TestSecurityHeaders_Healthz(t *testing.T) {
 	assertSecurityHeaders(t, resp)
 }
 
-// TestSecurityHeaders_404 verifies that security headers are present on a
-// 404 response (the middleware runs before routing, so even unmatched paths
-// must include them).
-func TestSecurityHeaders_404(t *testing.T) {
+// TestSecurityHeaders_SPAFallback verifies that security headers are present
+// on SPA fallback responses (the middleware runs before routing, so even
+// paths handled by the SPA catch-all must include them).
+func TestSecurityHeaders_SPAFallback(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -216,8 +216,9 @@ func TestSecurityHeaders_404(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("expected 404, got %d", resp.StatusCode)
+	// The SPA handler serves index.html for unknown paths (client-side routing).
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 (SPA fallback), got %d", resp.StatusCode)
 	}
 
 	assertSecurityHeaders(t, resp)
@@ -379,10 +380,9 @@ func TestMiddleware_RequestID_404(t *testing.T) {
 	}
 }
 
-// TestMiddleware_Recoverer_CVEPanic verifies that the Recoverer middleware
-// catches panics from nil-store handler calls and returns 500 instead of
-// crashing the server. The nil-store server causes a nil pointer dereference
-// when CVE handlers try to access the store.
+// TestMiddleware_Recoverer_CVEPanic verifies that a nil-store server returns
+// 503 Service Unavailable via the handler's nil-store guard, and that the
+// server remains alive afterward.
 func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	t.Parallel()
 
@@ -401,8 +401,8 @@ func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("nil-store panic: got status %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 
 	// Verify the server is still alive after the panic (not crashed).

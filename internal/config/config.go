@@ -30,6 +30,7 @@ type Config struct {
 	ListenAddr             string `env:"LISTEN_ADDR"              envDefault:":8080"`
 	AppEnv                 string `env:"APP_ENV"                  envDefault:"development"`
 	ExternalURL            string `env:"EXTERNAL_URL"             envDefault:"http://localhost:8080"`
+	FrontendURL            string `env:"FRONTEND_URL"             envDefault:"/"`
 	ShutdownTimeoutSeconds int    `env:"SHUTDOWN_TIMEOUT_SECONDS" envDefault:"60"`
 	RegistrationMode       string `env:"REGISTRATION_MODE"        envDefault:"open"`
 
@@ -98,6 +99,9 @@ type Config struct {
 	// ── SSO ─────────────────────────────────────────────────────────────────────
 	SSOEncryptionKey string `env:"SSO_ENCRYPTION_KEY"` // 32-byte hex key; required if SSO is used
 
+	// ── Feed scheduler ──────────────────────────────────────────────────────────
+	FeedSchedulerEnabled bool `env:"FEED_SCHEDULER_ENABLED" envDefault:"true"`
+
 	// ── Data retention ───────────────────────────────────────────────────────────
 	RetentionCleanupEnabled   bool `env:"RETENTION_CLEANUP_ENABLED"    envDefault:"true"`
 	RetentionCleanupBatchSize int  `env:"RETENTION_CLEANUP_BATCH_SIZE" envDefault:"10000"`
@@ -137,6 +141,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("listen_addr", c.ListenAddr),
 		slog.String("app_env", c.AppEnv),
 		slog.String("external_url", c.ExternalURL),
+		slog.String("frontend_url", c.FrontendURL),
 		slog.Bool("cookie_secure", c.CookieSecure),
 		slog.String("registration_mode", c.RegistrationMode),
 		slog.String("jwt_secret", masked(c.JWTSecret)),

@@ -3,8 +3,10 @@
 package kev
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -364,6 +366,58 @@ func TestRecordToPatch(t *testing.T) {
 			},
 		},
 		{
+			name: "vendor enrichment populated",
+			rec: kevRecord{
+				CVEID:                      "CVE-2024-5555",
+				VendorProject:              "Acme",
+				Product:                    "Widget",
+				DateAdded:                  "2024-06-15",
+				ShortDescription:           "RCE in Widget",
+				RequiredAction:             "Apply update per vendor instructions",
+				DueDate:                    "2024-07-15",
+				KnownRansomwareCampaignUse: "Known",
+				Notes:                      "Patch available from vendor",
+			},
+			check: func(t *testing.T, p *feed.CanonicalPatch) {
+				t.Helper()
+				if p == nil {
+					t.Fatal("expected non-nil patch")
+				}
+				if p.VendorEnrichment == nil {
+					t.Fatal("VendorEnrichment should not be nil")
+				}
+				if p.VendorEnrichment.VendorSeverity != nil {
+					t.Error("KEV does not set VendorSeverity")
+				}
+				if p.VendorEnrichment.VendorFixState != nil {
+					t.Error("KEV does not set VendorFixState")
+				}
+
+				var data map[string]any
+				if err := json.Unmarshal(p.VendorEnrichment.Data, &data); err != nil {
+					t.Fatalf("unmarshal enrichment data: %v", err)
+				}
+				if data["required_action"] != "Apply update per vendor instructions" {
+					t.Errorf("required_action = %v, want %q", data["required_action"], "Apply update per vendor instructions")
+				}
+				if data["due_date"] != "2024-07-15" {
+					t.Errorf("due_date = %v, want %q", data["due_date"], "2024-07-15")
+				}
+				if data["ransomware_use"] != true {
+					t.Errorf("ransomware_use = %v, want true", data["ransomware_use"])
+				}
+				if data["vendor_project"] != "Acme" {
+					t.Errorf("vendor_project = %v, want %q", data["vendor_project"], "Acme")
+				}
+				if data["product"] != "Widget" {
+					t.Errorf("product = %v, want %q", data["product"], "Widget")
+				}
+				if data["notes"] != "Patch available from vendor" {
+					t.Errorf("notes = %v, want %q", data["notes"], "Patch available from vendor")
+				}
+			},
+		},
+		{
 			name: "InCISAKEV and ExploitAvailable always true",
 			rec: kevRecord{
 				CVEID:     "CVE-2024-7777",
@@ -445,6 +499,60 @@ func TestRecordToPatch_NullByteStripping(t *testing.T) {
 	}
 	if p.CWEIDs[0] != "CWE-78" {
 		t.Errorf("CWEIDs[0] = %q, want %q", p.CWEIDs[0], "CWE-78")
+	}
+}
+
+func TestRecordToPatch_NullByteInEnrichment(t *testing.T) {
+	t.Parallel()
+
+	rec := kevRecord{
+		CVEID:                      "CVE-2024-9999",
+		VendorProject:              "Acme\x00Corp",
+		Product:                    "Widget\x00Pro",
+		DateAdded:                  "2024-06-15",
+		RequiredAction:             "Apply\x00update",
+		DueDate:                    "2024-\x0007-15",
+		Notes:                      "Critical\x00vuln",
+		KnownRansomwareCampaignUse: "Known\x00",
+	}
+
+	p := recordToPatch(rec)
+	if p == nil {
+		t.Fatal("expected non-nil patch")
+	}
+	if p.VendorEnrichment == nil {
+		t.Fatal("expected non-nil VendorEnrichment")
+	}
+
+	enrichmentJSON := string(p.VendorEnrichment.Data)
+	if strings.Contains(enrichmentJSON, "\x00") {
+		t.Errorf("VendorEnrichment.Data contains null byte: %q", enrichmentJSON)
+	}
+
+	// Verify specific fields were stripped correctly.
+	var enrichment map[string]any
+	if err := json.Unmarshal(p.VendorEnrichment.Data, &enrichment); err != nil {
+		t.Fatalf("unmarshal enrichment: %v", err)
+	}
+	if got := enrichment["required_action"]; got != "Applyupdate" {
+		t.Errorf("required_action = %q, want %q", got, "Applyupdate")
+	}
+	if got := enrichment["vendor_project"]; got != "AcmeCorp" {
+		t.Errorf("vendor_project = %q, want %q", got, "AcmeCorp")
+	}
+	if got := enrichment["product"]; got != "WidgetPro" {
+		t.Errorf("product = %q, want %q", got, "WidgetPro")
+	}
+	if got := enrichment["notes"]; got != "Criticalvuln" {
+		t.Errorf("notes = %q, want %q", got, "Criticalvuln")
+	}
+	if got := enrichment["due_date"]; got != "2024-07-15" {
+		t.Errorf("due_date = %q, want %q", got, "2024-07-15")
+	}
+	// KnownRansomwareCampaignUse had "Known\x00" — after stripping, comparison
+	// to "Known" should succeed and ransomware_use should be true.
+	if got, ok := enrichment["ransomware_use"].(bool); !ok || !got {
+		t.Errorf("ransomware_use = %v, want true (null byte in source should not break comparison)", enrichment["ransomware_use"])
 	}
 }
 
@@ -537,26 +645,76 @@ func TestExtractCWEs(t *testing.T) {
 	}
 }
 
-func TestParseKEV_RecordDecodeErrorIsFatal(t *testing.T) {
-	t.Parallel()
+func TestParseKEV_TypeErrorSkipsRecord(t *testing.T) {
+	// Not parallel: captures global slog.Default.
 
-	// KEV records that fail to decode are fatal (unlike NVD which skips them).
-	// Inject a non-object value in the vulnerabilities array to trigger a
-	// decode error on the record struct.
+	// A type error (wrong JSON type for a field) is recoverable — the decoder
+	// consumed the token, so we can continue to the next record.
 	body := `{
 		"catalogVersion": "2024.09.03",
 		"dateReleased": "2024-09-03",
 		"vulnerabilities": [
-			"this is not a valid JSON object for a kevRecord"
+			{"cveID": "CVE-2024-0001", "vendorProject": "Good", "product": "App", "vulnerabilityName": "A", "dateAdded": "2024-01-01", "shortDescription": "ok", "requiredAction": "patch", "dueDate": "2024-02-01"},
+			"this is not a valid JSON object for a kevRecord",
+			{"cveID": "CVE-2024-0003", "vendorProject": "Good", "product": "App2", "vulnerabilityName": "B", "dateAdded": "2024-03-01", "shortDescription": "ok", "requiredAction": "patch", "dueDate": "2024-04-01"}
 		]
 	}`
 
-	_, _, _, err := parseKEV(strings.NewReader(body), "")
-	if err == nil {
-		t.Fatal("expected error for malformed record in vulnerabilities array, got nil")
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	patches, ver, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("expected no error (type errors are skippable), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "decode record") {
-		t.Errorf("error = %q, want it to contain 'decode record'", err.Error())
+	if ver != "2024.09.03" {
+		t.Errorf("catalogVersion = %q, want 2024.09.03", ver)
+	}
+	if len(patches) != 2 {
+		t.Fatalf("got %d patches, want 2 (record 2 should be skipped)", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-0001" || patches[1].CVEID != "CVE-2024-0003" {
+		t.Errorf("wrong patches: %v, %v", patches[0].CVEID, patches[1].CVEID)
+	}
+	if !strings.Contains(buf.String(), "skipping malformed record") {
+		t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+	}
+}
+
+func TestParseKEV_SyntaxErrorStopsStream(t *testing.T) {
+	// Not parallel: captures global slog.Default.
+
+	// A JSON syntax error corrupts the stream — remaining tokens are unreliable.
+	// The parser should return records parsed so far and stop.
+	body := `{
+		"catalogVersion": "2024.09.03",
+		"dateReleased": "2024-09-03",
+		"vulnerabilities": [
+			{"cveID": "CVE-2024-0001", "vendorProject": "Good", "product": "App", "vulnerabilityName": "A", "dateAdded": "2024-01-01", "shortDescription": "ok", "requiredAction": "patch", "dueDate": "2024-02-01"},
+			{INVALID_JSON},
+			{"cveID": "CVE-2024-0003", "vendorProject": "Good", "product": "App2"}
+		]
+	}`
+
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	patches, _, _, err := parseKEV(strings.NewReader(body), "")
+	if err != nil {
+		t.Fatalf("expected no error (syntax error breaks loop, returns partial), got: %v", err)
+	}
+	if len(patches) != 1 {
+		t.Fatalf("got %d patches, want 1 (only first record before syntax error)", len(patches))
+	}
+	if patches[0].CVEID != "CVE-2024-0001" {
+		t.Errorf("patch CVEID = %q, want CVE-2024-0001", patches[0].CVEID)
+	}
+	if !strings.Contains(buf.String(), "syntax error") {
+		t.Errorf("expected warning log about syntax error, got: %s", buf.String())
 	}
 }
 
@@ -686,6 +844,20 @@ func TestFetch_Success(t *testing.T) {
 	}
 	if cursor.DateReleased != "2025-01-15" {
 		t.Errorf("cursor.DateReleased = %q, want %q", cursor.DateReleased, "2025-01-15")
+	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true for single-file feed")
+	}
+
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 # Vendor Feed Adapters Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:test-driven-development for every task — write failing tests first, verify failure, implement, verify pass.
 
 **Goal:** Add MSRC and Red Hat vendor feed adapters with a shared vendor enrichment system, including a CSAF 2.0 parser, database migration, merge pipeline integration, and KEV retrofit.
 

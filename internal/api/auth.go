@@ -157,6 +157,12 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Promote first user to site admin (atomic — no-op if one already exists).
+	if err := srv.store.SetFirstSiteAdmin(ctx, user.ID); err != nil {
+		slog.ErrorContext(ctx, "register: set first site admin", "error", err)
+		// Non-fatal — user is created, they just won't be admin.
+	}
+
 	out := &registerOutput{}
 	out.Status = http.StatusCreated
 	out.Body.UserID = user.ID.String()
@@ -647,6 +653,28 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 	return &acceptInvitationOutput{}, nil
 }
 
+// ── Auth providers ────────────────────────────────────────────────────────────
+
+// authProvidersOutput is the response body for GET /auth/providers.
+type authProvidersOutput struct {
+	Body struct {
+		GitHub           bool   `json:"github"`
+		Google           bool   `json:"google"`
+		RegistrationMode string `json:"registration_mode"`
+	}
+}
+
+// authProvidersHandler handles GET /api/v1/auth/providers.
+// Returns which OAuth providers are configured so the frontend can
+// conditionally render login buttons.
+func (srv *Server) authProvidersHandler(_ context.Context, _ *struct{}) (*authProvidersOutput, error) {
+	out := &authProvidersOutput{}
+	out.Body.GitHub = srv.ghOAuth != nil
+	out.Body.Google = srv.googleOIDC != nil
+	out.Body.RegistrationMode = srv.cfg.RegistrationMode
+	return out, nil
+}
+
 // ── Route registration ────────────────────────────────────────────────────────
 
 // registerAuthRoutes registers all auth-related routes on the huma API.
@@ -720,4 +748,12 @@ func registerAuthRoutes(api huma.API, srv *Server) {
 		Summary:       "Accept an invitation and join the org",
 		DefaultStatus: http.StatusOK,
 	}, srv.acceptInvitationHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-auth-providers",
+		Method:      http.MethodGet,
+		Path:        "/auth/providers",
+		Tags:        []string{"auth"},
+		Summary:     "List configured auth providers and registration mode",
+	}, srv.authProvidersHandler)
 }

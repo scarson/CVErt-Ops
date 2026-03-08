@@ -70,6 +70,33 @@ func TestEnqueueJob_WithRunAfter(t *testing.T) {
 	}
 }
 
+func TestEnqueueJob_DedupByLockKey(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	lk := "feed:dedup-test"
+	payload := json.RawMessage(`{"feed":"dedup"}`)
+
+	// First enqueue — should succeed.
+	id1, err := db.EnqueueJob(ctx, "feed_ingest", 0, payload, &lk, 3, nil)
+	if err != nil {
+		t.Fatalf("first EnqueueJob: %v", err)
+	}
+	if id1 == uuid.Nil {
+		t.Fatal("first EnqueueJob should return a non-nil UUID")
+	}
+
+	// Second enqueue with same lock_key — should return uuid.Nil (conflict).
+	id2, err := db.EnqueueJob(ctx, "feed_ingest", 0, payload, &lk, 3, nil)
+	if err != nil {
+		t.Fatalf("second EnqueueJob: unexpected error: %v", err)
+	}
+	if id2 != uuid.Nil {
+		t.Errorf("second EnqueueJob should return uuid.Nil for dedup, got %v", id2)
+	}
+}
+
 // ── ClaimJob tests ────────────────────────────────────────────────────────────
 
 func TestClaimJob_HappyPath(t *testing.T) {

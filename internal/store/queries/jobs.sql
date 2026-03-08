@@ -68,6 +68,7 @@ RETURNING id, queue, lock_key;
 -- name: EnqueueJob :one
 INSERT INTO job_queue (queue, priority, payload, lock_key, max_attempts, run_after)
 VALUES ($1, $2, $3, $4, $5, coalesce($6, now()))
+ON CONFLICT (lock_key) WHERE status IN ('pending', 'running') DO NOTHING
 RETURNING id;
 
 -- name: HasPendingOrRunningJob :one

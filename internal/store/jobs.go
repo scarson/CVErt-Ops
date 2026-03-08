@@ -1,5 +1,10 @@
 // ABOUTME: Store methods for the job queue — claim, complete, fail, recover stale, and enqueue.
 // ABOUTME: Wraps sqlc-generated queries with domain types and error formatting.
+//
+// All methods use s.q (bound to the raw pool) rather than a transaction helper.
+// The jobs table is not org-scoped and has no RLS policies, so withOrgTx provides
+// no safety benefit. Each method executes a single atomic SQL statement, so
+// withBypassTx would add transaction overhead with no correctness gain.
 package store
 
 import (
@@ -77,6 +82,8 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) 
 // EnqueueJob inserts a new job into the named queue and returns its ID.
 // lockKey prevents concurrent execution of jobs with the same key.
 // runAfter defaults to now() when nil.
+// Returns (uuid.Nil, nil) when a pending/running job with the same lock_key
+// already exists (ON CONFLICT DO NOTHING).
 func (s *Store) EnqueueJob(
 	ctx context.Context,
 	queue string,
@@ -104,6 +111,9 @@ func (s *Store) EnqueueJob(
 		MaxAttempts: maxAttempts,
 		Column6:     ra,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, nil // dedup: job with same lock_key already pending/running
+	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("enqueue job: %w", err)
 	}

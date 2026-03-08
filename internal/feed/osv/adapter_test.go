@@ -771,6 +771,19 @@ func TestFetch_Success(t *testing.T) {
 	if result.NextCursor == nil {
 		t.Error("NextCursor is nil, want non-nil")
 	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true for single-file ZIP feed")
+	}
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
+	}
 }
 
 func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {

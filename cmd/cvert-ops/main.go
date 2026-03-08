@@ -45,6 +45,9 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/feed/epss"
+	"github.com/scarson/cvert-ops/internal/ingest"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -112,8 +115,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// in-flight jobs complete and the goroutines exit. The goroutine is
 	// intentionally fire-and-forget here; the pool drains on ctx cancellation
 	// which happens before or alongside HTTP server shutdown.
+	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", feedIngestHandler)
+	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
+	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
 	// development and testing; GeminiClient for production.
@@ -173,6 +179,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	if cfg.FeedSchedulerEnabled {
+		feedScheduler := ingest.NewScheduler(st)
+		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	}
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	handler := apiSrv.Handler()
@@ -254,8 +264,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	alertCache := alert.NewRuleCache()
 	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
 
+	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", feedIngestHandler)
+	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	epssClient := &http.Client{Timeout: 300 * time.Second}
+	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
@@ -283,18 +296,13 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	if cfg.FeedSchedulerEnabled {
+		feedScheduler := ingest.NewScheduler(st)
+		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	}
 
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
-	return nil
-}
-
-// feedIngestHandler is a stub for the feed ingestion job handler.
-// Replaced with the real implementation in Phase 1 commits 4–8 when the
-// FeedAdapter interface and individual adapters are wired in.
-func feedIngestHandler(_ context.Context, payload json.RawMessage) error {
-	slog.Info("feed ingest job received — handler wired in commits 4–8",
-		"payload_len", len(payload))
 	return nil
 }
 
@@ -518,7 +526,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 24
+const expectedSchemaVersion = 30
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

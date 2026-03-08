@@ -1,6 +1,5 @@
-// Package mitre implements the FeedAdapter for the MITRE CVE 5.0 bulk feed.
-// The adapter downloads the cvelistV5 ZIP archive from GitHub, streams it to a
-// temporary file, and parses each CVE JSON entry.
+// ABOUTME: Feed adapter for the MITRE CVE 5.0 bulk feed (cvelistV5 ZIP from GitHub).
+// ABOUTME: Downloads ZIP archive, pre-filters by modified time, parses CVE 5.0 JSON entries.
 //
 // Cursor format: {"last_modified": "2024-01-15T10:00:00Z"}
 // The feed handler persists SourceMeta.FetchedAt as the new cursor value after
@@ -11,6 +10,7 @@ package mitre
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -53,7 +53,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// Single-file download per run — use a generous limiter as GitHub courtesy.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
 	}
 }
@@ -81,7 +81,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	}
 
 	// Stream the ZIP to a temp file — archive/zip.NewReader requires io.ReaderAt.
-	tmpFile, err := downloadToTemp(ctx, a.client, bulkZIPURL)
+	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("mitre: download zip: %w", err)
 	}
@@ -136,6 +136,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		// last-modified timestamp for the handler to persist as the next-run cursor.
 		// The handler MUST NOT call Fetch again in a tight loop.
 		NextCursor: newCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -149,44 +150,6 @@ func isCVEEntry(name string) bool {
 		strings.Contains(name, "CVE-")
 }
 
-// downloadToTemp streams the HTTP response body to a temp file for ZIP reading.
-// The caller must defer os.Remove(f.Name()) and f.Close().
-func downloadToTemp(ctx context.Context, client *http.Client, url string) (*os.File, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	f, err := os.CreateTemp("", "cvert-mitre-*.zip")
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("copy to temp: %w", err)
-	}
-
-	// Rewind for zip.NewReader.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("seek temp file: %w", err)
-	}
-	return f, nil
-}
-
 // parseEntry opens a ZIP entry, decodes the CVE 5.0 JSON, and returns a patch.
 // Uses explicit rc.Close() — never defer inside a loop body (FD exhaustion).
 func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
@@ -194,9 +157,17 @@ func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	patch, err := parseCVE5(rc)
+	raw, err := io.ReadAll(rc)
 	_ = rc.Close() // explicit close per iteration — NEVER defer inside loop
-	return patch, err
+	if err != nil {
+		return nil, err
+	}
+	patch, err := parseCVE5(bytes.NewReader(raw))
+	if err != nil || patch == nil {
+		return patch, err
+	}
+	patch.RawPayload = raw
+	return patch, nil
 }
 
 // --- CVE 5.0 JSON types ---
@@ -333,7 +304,7 @@ func parseCVE5(r io.Reader) (*feed.CanonicalPatch, error) {
 		}
 		patch.References = append(patch.References, feed.ReferenceEntry{
 			URL:  strings.Clone(feed.StripNullBytes(ref.URL)),
-			Tags: cloneStrings(ref.Tags),
+			Tags: feed.CloneStrings(ref.Tags),
 		})
 	}
 
@@ -406,14 +377,3 @@ func applyCVSS(patch *feed.CanonicalPatch, metrics []cve5MetricEntry) {
 	}
 }
 
-// cloneStrings returns a new slice with all strings cloned.
-func cloneStrings(ss []string) []string {
-	if ss == nil {
-		return nil
-	}
-	out := make([]string, len(ss))
-	for i, s := range ss {
-		out[i] = strings.Clone(s)
-	}
-	return out
-}

@@ -798,3 +798,122 @@ func TestComputeScoreDivergesOneNilOneNonNil(t *testing.T) {
 		t.Error("computeScoreDiverges: one nil one non-nil should return false (single score, no divergence)")
 	}
 }
+
+// ── MSRC and Red Hat source precedence ───────────────────────────────────────
+
+func TestResolveCVSSv3NVDWinsOverMSRC(t *testing.T) {
+	t.Parallel()
+
+	// When MSRC and NVD both provide CVSSv3, NVD should win (higher priority).
+	sources := []generated.CveSource{
+		makeSource(SourceMSRC, feed.CanonicalPatch{CVEID: "CVE-2025-0001", CVSSv3Score: f64Ptr(9.8)}),
+		makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-2025-0001", CVSSv3Score: f64Ptr(8.1)}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.CVSSv3Score == nil || *r.CVSSv3Score != 8.1 {
+		t.Errorf("CVSSv3Score = %v, want 8.1 (NVD should take priority over MSRC)", r.CVSSv3Score)
+	}
+	if r.CVSSv3Source != SourceNVD {
+		t.Errorf("CVSSv3Source = %q, want %q", r.CVSSv3Source, SourceNVD)
+	}
+}
+
+func TestResolveStatusMITREWinsOverRedHat(t *testing.T) {
+	t.Parallel()
+
+	// When Red Hat and MITRE both provide status, MITRE should win.
+	sources := []generated.CveSource{
+		makeSource(SourceRedHat, feed.CanonicalPatch{CVEID: "CVE-2025-0002", Status: "Under investigation"}),
+		makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-2025-0002", Status: "Published"}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.Status != "Published" {
+		t.Errorf("Status = %q, want %q (MITRE should take priority over Red Hat)", r.Status, "Published")
+	}
+}
+
+func TestResolvePkgRedHatWinsOverMSRC(t *testing.T) {
+	t.Parallel()
+
+	// For packages, Red Hat is ahead of MSRC in pkgPriority.
+	rhPkg := feed.AffectedPackage{
+		Ecosystem: "RPM", PackageName: "openssl", Introduced: "1.0.0", Fixed: "1.1.1k",
+	}
+	msrcPkg := feed.AffectedPackage{
+		Ecosystem: "RPM", PackageName: "openssl", Introduced: "1.0.0", Fixed: "1.1.1j",
+	}
+	sources := []generated.CveSource{
+		makeSource(SourceMSRC, feed.CanonicalPatch{CVEID: "CVE-2025-0003", AffectedPackages: []feed.AffectedPackage{msrcPkg}}),
+		makeSource(SourceRedHat, feed.CanonicalPatch{CVEID: "CVE-2025-0003", AffectedPackages: []feed.AffectedPackage{rhPkg}}),
+	}
+	r, err := resolve(sources)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(r.AffectedPackages) != 1 {
+		t.Fatalf("AffectedPackages count = %d, want 1 (deduped)", len(r.AffectedPackages))
+	}
+	if r.AffectedPackages[0].Fixed != "1.1.1k" {
+		t.Errorf("AffectedPackages[0].Fixed = %q, want %q (Red Hat wins over MSRC for packages)", r.AffectedPackages[0].Fixed, "1.1.1k")
+	}
+}
+
+func TestResolve_PrioritySlicesNotCorrupted(t *testing.T) {
+	// Verify that calling resolve with an unknown source doesn't corrupt
+	// the global priority slices via append's backing-array mutation.
+	// The unknown source triggers otherSources, which appends to priority slices.
+	score := 7.5
+	vec := "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+
+	unknownPatch := feed.CanonicalPatch{
+		CVEID:       "CVE-2025-7777",
+		CVSSv3Score: &score,
+		CVSSv3Vector: &vec,
+	}
+
+	// Snapshot global slices before.
+	cvssLen := len(cvssPriority)
+	pkgLen := len(pkgPriority)
+	cvssCopy := make([]string, cvssLen)
+	pkgCopy := make([]string, pkgLen)
+	copy(cvssCopy, cvssPriority)
+	copy(pkgCopy, pkgPriority)
+
+	// Call resolve twice with an unknown source name.
+	for i := 0; i < 2; i++ {
+		sources := []generated.CveSource{
+			makeSource("exotic_vendor", unknownPatch),
+		}
+		r, err := resolve(sources)
+		if err != nil {
+			t.Fatalf("resolve call %d: %v", i+1, err)
+		}
+		if r.CVSSv3Score == nil || *r.CVSSv3Score != score {
+			t.Errorf("call %d: CVSSv3Score = %v, want %v", i+1, r.CVSSv3Score, score)
+		}
+	}
+
+	// Verify globals were not mutated.
+	if len(cvssPriority) != cvssLen {
+		t.Errorf("cvssPriority length changed: %d → %d", cvssLen, len(cvssPriority))
+	}
+	if len(pkgPriority) != pkgLen {
+		t.Errorf("pkgPriority length changed: %d → %d", pkgLen, len(pkgPriority))
+	}
+	for i, v := range cvssPriority {
+		if v != cvssCopy[i] {
+			t.Errorf("cvssPriority[%d] = %q, was %q", i, v, cvssCopy[i])
+		}
+	}
+	for i, v := range pkgPriority {
+		if v != pkgCopy[i] {
+			t.Errorf("pkgPriority[%d] = %q, was %q", i, v, pkgCopy[i])
+		}
+	}
+}

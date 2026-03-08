@@ -3,9 +3,11 @@
 package ghsa
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -993,9 +995,22 @@ func TestFetch_Success(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, cursor.Since); err != nil {
 		t.Errorf("cursor.Since %q is not valid RFC3339: %v", cursor.Since, err)
 	}
+
+	if !result.LastPage {
+		t.Error("LastPage should be true — single page response has no Link next header")
+	}
+	for i, p := range result.Patches {
+		if p.RawPayload == nil {
+			t.Errorf("Patches[%d].RawPayload is nil", i)
+		} else if !json.Valid(p.RawPayload) {
+			t.Errorf("Patches[%d].RawPayload is not valid JSON", i)
+		} else if !bytes.Contains(p.RawPayload, []byte(p.CVEID)) {
+			t.Errorf("Patches[%d].RawPayload does not contain CVE ID %q", i, p.CVEID)
+		}
+	}
 }
 
-func TestFetch_Pagination(t *testing.T) {
+func TestFetch_OnePagePerCall(t *testing.T) {
 	t.Parallel()
 
 	page1 := `[{
@@ -1026,9 +1041,7 @@ func TestFetch_Pagination(t *testing.T) {
 		"html_url": ""
 	}]`
 
-	requestCount := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
 		w.Header().Set("Content-Type", "application/json")
 
 		switch afterParam := r.URL.Query().Get("after"); afterParam {
@@ -1058,19 +1071,55 @@ func TestFetch_Pagination(t *testing.T) {
 	}
 	adapter := New(client)
 
-	result, err := adapter.Fetch(context.Background(), nil)
+	// First call: should return only page 1 with LastPage=false.
+	result1, err := adapter.Fetch(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Fetch page 1: %v", err)
+	}
+	if len(result1.Patches) != 1 {
+		t.Fatalf("page 1: len(Patches) = %d, want 1", len(result1.Patches))
+	}
+	if result1.Patches[0].CVEID != "CVE-2025-20001" {
+		t.Errorf("page 1: CVEID = %q, want CVE-2025-20001", result1.Patches[0].CVEID)
+	}
+	if result1.LastPage {
+		t.Error("page 1: LastPage should be false (more pages remain)")
 	}
 
-	if len(result.Patches) != 2 {
-		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	// Verify cursor contains After for next page.
+	var cur1 Cursor
+	if err := json.Unmarshal(result1.NextCursor, &cur1); err != nil {
+		t.Fatalf("unmarshal cursor 1: %v", err)
 	}
-	if result.Patches[0].CVEID != "CVE-2025-20001" {
-		t.Errorf("Patches[0].CVEID = %q, want CVE-2025-20001", result.Patches[0].CVEID)
+	if cur1.After != "cursor2" {
+		t.Errorf("cursor.After = %q, want %q", cur1.After, "cursor2")
 	}
-	if result.Patches[1].CVEID != "CVE-2025-20002" {
-		t.Errorf("Patches[1].CVEID = %q, want CVE-2025-20002", result.Patches[1].CVEID)
+
+	// Second call with returned cursor: should return page 2 with LastPage=true.
+	result2, err := adapter.Fetch(context.Background(), result1.NextCursor)
+	if err != nil {
+		t.Fatalf("Fetch page 2: %v", err)
+	}
+	if len(result2.Patches) != 1 {
+		t.Fatalf("page 2: len(Patches) = %d, want 1", len(result2.Patches))
+	}
+	if result2.Patches[0].CVEID != "CVE-2025-20002" {
+		t.Errorf("page 2: CVEID = %q, want CVE-2025-20002", result2.Patches[0].CVEID)
+	}
+	if !result2.LastPage {
+		t.Error("page 2: LastPage should be true (no more pages)")
+	}
+
+	// Verify cursor has updated Since and no After.
+	var cur2 Cursor
+	if err := json.Unmarshal(result2.NextCursor, &cur2); err != nil {
+		t.Fatalf("unmarshal cursor 2: %v", err)
+	}
+	if cur2.After != "" {
+		t.Errorf("final cursor.After = %q, want empty", cur2.After)
+	}
+	if cur2.Since == "" {
+		t.Error("final cursor.Since should be non-empty")
 	}
 }
 
@@ -1208,6 +1257,100 @@ func TestFetch_NoTokenOmitsAuthHeader(t *testing.T) {
 
 	if capturedAuth != "" {
 		t.Errorf("Authorization header = %q, want empty (no token configured)", capturedAuth)
+	}
+}
+
+func TestFetchPage_TypeErrorSkipsRecord(t *testing.T) {
+	// Not parallel: captures global slog.Default.
+
+	// A type error (wrong JSON type for a field) is recoverable — the decoder
+	// consumed the token, so we can continue to the next record.
+	body := `[
+		{"ghsa_id": "GHSA-good-0001-aaaa", "cve_id": "CVE-2025-30001", "summary": "ok", "severity": "low", "published_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z", "cwes": [], "vulnerabilities": [], "references": [], "identifiers": [], "html_url": ""},
+		"this is not a valid JSON object for a ghsaAdvisory",
+		{"ghsa_id": "GHSA-good-0003-cccc", "cve_id": "CVE-2025-30003", "summary": "ok", "severity": "low", "published_at": "2025-01-03T00:00:00Z", "updated_at": "2025-01-04T00:00:00Z", "cwes": [], "vulnerabilities": [], "references": [], "identifiers": [], "html_url": ""}
+	]`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected no error (type errors are skippable), got: %v", err)
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("got %d patches, want 2 (malformed record should be skipped)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-30001" || result.Patches[1].CVEID != "CVE-2025-30003" {
+		t.Errorf("wrong patches: %v, %v", result.Patches[0].CVEID, result.Patches[1].CVEID)
+	}
+	if !strings.Contains(buf.String(), "skipping malformed record") {
+		t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+	}
+}
+
+func TestFetchPage_SyntaxErrorStopsStream(t *testing.T) {
+	// Not parallel: captures global slog.Default.
+
+	// A JSON syntax error corrupts the stream — remaining tokens are unreliable.
+	// The parser should return records parsed so far and stop.
+	body := `[
+		{"ghsa_id": "GHSA-good-0001-aaaa", "cve_id": "CVE-2025-40001", "summary": "ok", "severity": "low", "published_at": "2025-01-01T00:00:00Z", "updated_at": "2025-01-02T00:00:00Z", "cwes": [], "vulnerabilities": [], "references": [], "identifiers": [], "html_url": ""},
+		{INVALID_JSON},
+		{"ghsa_id": "GHSA-good-0003-cccc", "cve_id": "CVE-2025-40003", "summary": "ok"}
+	]`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	result, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("expected no error (syntax error returns partial), got: %v", err)
+	}
+	if len(result.Patches) != 1 {
+		t.Fatalf("got %d patches, want 1 (only first record before syntax error)", len(result.Patches))
+	}
+	if result.Patches[0].CVEID != "CVE-2025-40001" {
+		t.Errorf("patch CVEID = %q, want CVE-2025-40001", result.Patches[0].CVEID)
+	}
+	if !strings.Contains(buf.String(), "syntax error") {
+		t.Errorf("expected warning log about syntax error, got: %s", buf.String())
 	}
 }
 

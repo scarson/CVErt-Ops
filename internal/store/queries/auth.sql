@@ -54,3 +54,12 @@ WHERE expires_at < now() - interval '60 seconds';
 
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users;
+
+-- name: IsSiteAdmin :one
+SELECT is_site_admin FROM users WHERE id = $1;
+
+-- name: SetFirstSiteAdmin :exec
+-- Atomically promotes a user to site admin only if no admin exists yet.
+UPDATE users SET is_site_admin = true
+WHERE users.id = $1
+  AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.is_site_admin = true);

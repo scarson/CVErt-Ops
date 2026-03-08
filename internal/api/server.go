@@ -28,6 +28,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/store"
+	"github.com/scarson/cvert-ops/web"
 )
 
 // Server holds the dependencies for the HTTP layer.
@@ -191,6 +192,14 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
 	apiRouter.Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
+	// ── Admin routes (authenticated + site admin, not org-scoped) ───────────
+	apiRouter.Route("/admin", func(r chi.Router) {
+		r.Use(srv.RequireAuthenticated())
+		r.Use(srv.RequireSiteAdmin())
+		r.Get("/feeds", srv.listFeedsHandler)
+		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
+	})
+
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())
@@ -348,6 +357,11 @@ func (srv *Server) Handler() http.Handler {
 	})
 
 	r.Mount("/api/v1", apiRouter)
+
+	// ── SPA fallback (serves embedded frontend) ─────────────────────────────
+	if frontendFS, err := web.Assets(); err == nil {
+		r.Handle("/*", newSPAHandler(frontendFS))
+	}
 
 	return r
 }

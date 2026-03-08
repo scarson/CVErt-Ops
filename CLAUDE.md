@@ -201,6 +201,31 @@ go run ./cmd/cvert-ops worker        # run standalone worker
 go run ./cmd/cvert-ops migrate       # run migrations programmatically
 ```
 
+### Dev Startup (full stack with frontend)
+
+```bash
+# 1. One-time: generate TLS cert for dev postgres (idempotent — skips if exists)
+bash docker/postgres-tls/generate-cert.sh
+
+# 2. Start Postgres + Mailpit containers
+docker compose -f docker/compose.yml --env-file .env up -d
+
+# 3. Load env vars (PowerShell — each new terminal needs this)
+Get-Content .env | ForEach-Object { if ($_ -match '^([^#]\S+?)=(.*)') { [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') } }
+
+# 4. Run migrations
+go run ./cmd/cvert-ops migrate
+
+# 5. Start Go backend (Ctrl+C to stop)
+go run ./cmd/cvert-ops serve
+
+# 6. In a separate terminal: start Vite dev server
+cd web && npm install && npm run dev
+```
+
+Frontend: http://localhost:5173 (Vite proxies API calls to Go backend on :8080)
+Mailpit UI: http://localhost:8025
+
 ## Tech Stack
 
 | Layer | Choice |

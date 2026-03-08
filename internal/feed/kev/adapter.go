@@ -1,5 +1,5 @@
-// Package kev implements the FeedAdapter for the CISA Known Exploited
-// Vulnerabilities (KEV) catalog.
+// ABOUTME: Feed adapter for the CISA Known Exploited Vulnerabilities (KEV) catalog.
+// ABOUTME: Downloads the full JSON catalog, short-circuits on unchanged version, converts to CanonicalPatch.
 //
 // KEV is a flag-setter: its primary write is in_cisa_kev = true on the canonical
 // cves row. Per PLAN.md §5.1, CISA KEV is the authoritative source for the
@@ -13,7 +13,10 @@ package kev
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -50,7 +53,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// Daily fetch at most; 1 request per 5 seconds is a generous rate limit.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
 	}
 }
@@ -77,8 +80,6 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	if err != nil {
 		return nil, fmt.Errorf("kev: build request: %w", err)
 	}
-	req.Header.Set("User-Agent", "CVErt-Ops/1.0 vulnerability intelligence platform")
-
 	resp, err := a.client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
 	if err != nil {
 		return nil, fmt.Errorf("kev: fetch: %w", err)
@@ -86,12 +87,14 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("kev: HTTP %d", resp.StatusCode)
 	}
 
 	fetchedAt := time.Now().UTC()
 
-	patches, newCatalogVersion, newDateReleased, err := parseKEV(resp.Body, cur.CatalogVersion)
+	const maxKEVSize = 20 << 20 // 20 MB
+	patches, newCatalogVersion, newDateReleased, err := parseKEV(io.LimitReader(resp.Body, maxKEVSize), cur.CatalogVersion)
 	if err != nil {
 		return nil, fmt.Errorf("kev: parse feed: %w", err)
 	}
@@ -118,6 +121,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		// version for the handler to persist as the next-run cursor. The handler
 		// MUST NOT call Fetch again in a tight loop; re-invocation is via scheduling.
 		NextCursor: nextCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -163,9 +167,10 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 	}
 
 	var (
-		inVulnArray bool
-		gotVersion  bool
-		gotReleased bool
+		inVulnArray  bool
+		gotVersion   bool
+		gotReleased  bool
+		syntaxBroken bool
 	)
 
 	for dec.More() {
@@ -218,12 +223,27 @@ func parseKEV(body interface{ Read([]byte) (int, error) }, storedVersion string)
 				for dec.More() {
 					var rec kevRecord
 					if err := dec.Decode(&rec); err != nil {
-						return nil, "", "", fmt.Errorf("decode record: %w", err)
+						var syntaxErr *json.SyntaxError
+						if errors.As(err, &syntaxErr) {
+							slog.Warn("JSON syntax error in feed stream, stopping parse",
+								"feed", SourceName, "error", err)
+							syntaxBroken = true
+							break
+						}
+						slog.Warn("skipping malformed record in feed stream",
+							"feed", SourceName, "error", err)
+						continue
 					}
 					if p := recordToPatch(rec); p != nil {
+						if rawBytes, err := json.Marshal(rec); err == nil {
+							p.RawPayload = rawBytes
+						}
 						patches = append(patches, *p)
 					}
 				}
+			}
+			if syntaxBroken {
+				return patches, catalogVersion, dateReleased, nil
 			}
 
 			// Consume closing ']'.
@@ -276,6 +296,21 @@ func recordToPatch(rec kevRecord) *feed.CanonicalPatch {
 
 	// CWE IDs from the cwes field (absent on pre-2023 entries, null-safe).
 	patch.CWEIDs = extractCWEs(rec.CWEs)
+
+	// Vendor enrichment — preserve KEV-specific fields that don't map to CanonicalPatch.
+	enrichmentData, err := json.Marshal(map[string]any{
+		"required_action": feed.StripNullBytes(rec.RequiredAction),
+		"due_date":        feed.StripNullBytes(rec.DueDate),
+		"ransomware_use":  feed.StripNullBytes(rec.KnownRansomwareCampaignUse) == "Known",
+		"vendor_project":  feed.StripNullBytes(rec.VendorProject),
+		"product":         feed.StripNullBytes(rec.Product),
+		"notes":           feed.StripNullBytes(rec.Notes),
+	})
+	if err == nil {
+		patch.VendorEnrichment = &feed.VendorEnrichment{
+			Data: enrichmentData,
+		}
+	}
 
 	return patch
 }

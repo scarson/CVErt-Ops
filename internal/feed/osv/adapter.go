@@ -1,5 +1,5 @@
-// Package osv implements the FeedAdapter for the OSV (Open Source
-// Vulnerabilities) bulk feed from the Google Cloud Storage bucket.
+// ABOUTME: Feed adapter for the OSV (Open Source Vulnerabilities) bulk feed.
+// ABOUTME: Downloads all.zip from GCS, pre-filters by modified time, resolves CVE aliases.
 //
 // OSV publishes a single all.zip archive containing all advisories across all
 // ecosystems. Each advisory is a JSON file conforming to the OSV schema v1:
@@ -16,6 +16,7 @@ package osv
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -56,7 +57,7 @@ func New(client *http.Client) *Adapter {
 	}
 	// Single bulk archive per run; 1 req/5s is a generous rate limit.
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
 	}
 }
@@ -80,7 +81,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, fmt.Errorf("osv: rate limit: %w", err)
 	}
 
-	tmpFile, err := downloadToTemp(ctx, a.client, bulkZIPURL)
+	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-osv-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("osv: download zip: %w", err)
 	}
@@ -129,6 +130,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  fetchedAt,
 		},
 		NextCursor: newCursorJSON,
+		LastPage:   true,
 	}, nil
 }
 
@@ -138,44 +140,6 @@ func isAdvisoryEntry(name string) bool {
 	return strings.HasSuffix(name, ".json")
 }
 
-// downloadToTemp streams an HTTP response body to a temp file for ZIP reading.
-// The caller must defer os.Remove(f.Name()) and f.Close().
-func downloadToTemp(ctx context.Context, client *http.Client, url string) (*os.File, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req) //nolint:gosec // G704: URL is a hardcoded constant
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-
-	f, err := os.CreateTemp("", "cvert-osv-*.zip")
-	if err != nil {
-		return nil, err
-	}
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("copy to temp: %w", err)
-	}
-
-	// Rewind for zip.NewReader.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		_ = f.Close()
-		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("seek temp file: %w", err)
-	}
-	return f, nil
-}
-
 // parseEntry opens a ZIP entry, decodes the OSV advisory JSON, and returns a
 // patch. Uses explicit rc.Close() — never defer inside a loop body (FD exhaustion).
 func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
@@ -183,9 +147,17 @@ func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	patch, err := parseAdvisory(rc)
+	raw, err := io.ReadAll(rc)
 	_ = rc.Close() // explicit close per iteration — NEVER defer inside loop
-	return patch, err
+	if err != nil {
+		return nil, err
+	}
+	patch, err := parseAdvisory(bytes.NewReader(raw))
+	if err != nil || patch == nil {
+		return patch, err
+	}
+	patch.RawPayload = raw
+	return patch, nil
 }
 
 // --- OSV advisory JSON types ---

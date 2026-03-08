@@ -1,5 +1,5 @@
-// Package nvd implements the FeedAdapter for the NVD (National Vulnerability
-// Database) API 2.0.
+// ABOUTME: Feed adapter for the NVD (National Vulnerability Database) API 2.0.
+// ABOUTME: Fetches CVEs via sliding time windows with streaming JSON parse, converts to CanonicalPatch.
 //
 // TODO(attribution): NVD notice required in UI per NVD ToU —
 // "This product uses the NVD API but is not endorsed or certified by the NVD."
@@ -19,7 +19,10 @@ package nvd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -83,7 +86,7 @@ func New(client *http.Client) *Adapter {
 		limiter = rate.NewLimiter(rate.Every(6*time.Second), 1)
 	}
 	return &Adapter{
-		client:      client,
+		client:      feed.WrapClientWithUA(client),
 		rateLimiter: limiter,
 		apiKey:      apiKey,
 	}
@@ -110,7 +113,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
 		return nil, fmt.Errorf("nvd: HTTP %d for window [%s, %s] startIndex=%d",
 			resp.StatusCode,
 			cur.WindowStart.Format(time.RFC3339),
@@ -119,7 +122,8 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		)
 	}
 
-	patches, totalResults, responseTimestamp, err := parseNVDResponse(resp.Body)
+	const maxNVDResponseSize = 50 << 20 // 50 MB
+	patches, totalResults, responseTimestamp, err := parseNVDResponse(io.LimitReader(resp.Body, maxNVDResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("nvd: parse response: %w", err)
 	}
@@ -135,13 +139,10 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	}
 
 	// Determine NextCursor.
-	nextCursor := computeNextCursor(cur, totalResults, effectiveNow)
-	var nextCursorJSON json.RawMessage
-	if nextCursor != nil {
-		nextCursorJSON, err = json.Marshal(nextCursor)
-		if err != nil {
-			return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
-		}
+	nextCursor, lastPage := computeNextCursor(cur, totalResults, effectiveNow)
+	nextCursorJSON, err := json.Marshal(nextCursor)
+	if err != nil {
+		return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
 	}
 
 	return &feed.FetchResult{
@@ -151,6 +152,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  time.Now().UTC(),
 		},
 		NextCursor: nextCursorJSON,
+		LastPage:   lastPage,
 	}, nil
 }
 
@@ -230,8 +232,9 @@ func zeroValueCursor() Cursor {
 }
 
 // computeNextCursor determines the cursor for the next Fetch call.
-// Returns nil when all windows up to effectiveNow have been processed.
-func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) *Cursor {
+// Returns a "caught up" cursor (not nil) when all windows up to effectiveNow
+// have been processed, so the handler always has a valid cursor to persist.
+func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*Cursor, bool) {
 	nextStartIndex := cur.StartIndex + resultsPerPage
 
 	if nextStartIndex < totalResults {
@@ -240,15 +243,20 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) *Cu
 			WindowStart: cur.WindowStart,
 			WindowEnd:   cur.WindowEnd,
 			StartIndex:  nextStartIndex,
-		}
+		}, false
 	}
 
 	// Current window exhausted — compute the next window.
 	// Apply 15-minute overlap to catch eventual-consistency stragglers.
 	nextWindowStart := cur.WindowEnd.Add(-overlapDuration)
 	if nextWindowStart.After(effectiveNow) || !effectiveNow.After(cur.WindowEnd) {
-		// Already at or past the effective "now" — done.
-		return nil
+		// All windows processed. Return a "caught up" cursor so the handler
+		// persists a valid checkpoint instead of regressing to the previous page.
+		return &Cursor{
+			WindowStart: cur.WindowEnd.Add(-overlapDuration),
+			WindowEnd:   effectiveNow,
+			StartIndex:  0,
+		}, true
 	}
 
 	nextWindowEnd := nextWindowStart.Add(windowMax)
@@ -260,7 +268,7 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) *Cu
 		WindowStart: nextWindowStart,
 		WindowEnd:   nextWindowEnd,
 		StartIndex:  0,
-	}
+	}, false
 }
 
 // --- NVD response JSON types ---
@@ -389,10 +397,20 @@ func parseNVDResponse(body interface{ Read([]byte) (int, error) }) (
 			for dec.More() {
 				var wrapper nvdVulnWrapper
 				if err := dec.Decode(&wrapper); err != nil {
-					// Skip malformed records; do not abort the page.
+					var syntaxErr *json.SyntaxError
+					if errors.As(err, &syntaxErr) {
+						slog.Warn("JSON syntax error in feed stream, stopping parse",
+							"feed", SourceName, "error", err)
+						return patches, totalResults, responseTimestamp, nil
+					}
+					slog.Warn("skipping malformed record in feed stream",
+						"feed", SourceName, "error", err)
 					continue
 				}
 				if p := cveToCanonical(wrapper.CVE); p != nil {
+					if rawBytes, err := json.Marshal(wrapper); err == nil {
+						p.RawPayload = rawBytes
+					}
 					patches = append(patches, *p)
 				}
 			}
@@ -462,7 +480,7 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		}
 		patch.References = append(patch.References, feed.ReferenceEntry{
 			URL:  strings.Clone(feed.StripNullBytes(ref.URL)),
-			Tags: cloneStrings(ref.Tags),
+			Tags: feed.CloneStrings(ref.Tags),
 		})
 	}
 
@@ -555,14 +573,3 @@ func pickPreferred(entries []nvdCVSSMetric) *nvdCVSSMetric {
 	return nil
 }
 
-// cloneStrings returns a new slice with all strings cloned.
-func cloneStrings(ss []string) []string {
-	if ss == nil {
-		return nil
-	}
-	out := make([]string, len(ss))
-	for i, s := range ss {
-		out[i] = strings.Clone(s)
-	}
-	return out
-}

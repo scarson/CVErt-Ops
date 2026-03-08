@@ -649,6 +649,10 @@ func TestRegisterInviteOnlyMode(t *testing.T) {
 
 	_, ts := newRegisterServer(t, db, "invite-only")
 
+	// Bootstrap first user (allowed even in invite-only mode).
+	doRegister(t, ctx, ts, "bootstrap@example.com", "test-password-1234")
+
+	// Second user registration should be blocked.
 	body := `{"email":"blocked@example.com","password":"test-password-1234"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")

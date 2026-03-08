@@ -271,6 +271,15 @@ type CweDictionary struct {
 	Description sql.NullString
 }
 
+type EmailVerificationToken struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	ExpiresAt time.Time
+	UsedAt    sql.NullTime
+	CreatedAt time.Time
+}
+
 type EpssStaging struct {
 	CveID      string
 	EpssScore  float64
@@ -491,6 +500,7 @@ type User struct {
 	CreatedAt           time.Time
 	LastLoginAt         sql.NullTime
 	IsSiteAdmin         bool
+	EmailVerified       bool
 }
 
 type UserIdentity struct {

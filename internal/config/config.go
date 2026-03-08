@@ -50,6 +50,9 @@ type Config struct {
 	PasswordResetTokenTTL   time.Duration `env:"PASSWORD_RESET_TOKEN_TTL"    envDefault:"1h"`
 	PasswordResetMaxPerHour int           `env:"PASSWORD_RESET_MAX_PER_HOUR" envDefault:"3"`
 
+	// ── Auth — Email Verification ────────────────────────────────────────────
+	EmailVerificationTokenTTL time.Duration `env:"EMAIL_VERIFICATION_TOKEN_TTL" envDefault:"24h"`
+
 	// ── OAuth — GitHub ───────────────────────────────────────────────────────────
 	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
 	GitHubClientSecret string `env:"GITHUB_CLIENT_SECRET"`

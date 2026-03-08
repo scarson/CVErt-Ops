@@ -51,14 +51,23 @@ type PasswordResetData struct {
 	ExpiresIn string // e.g., "1 hour"
 }
 
+// EmailVerificationData holds template data for email verification emails.
+type EmailVerificationData struct {
+	Email     string
+	VerifyURL string
+	ExpiresIn string // e.g., "24 hours"
+}
+
 // Parsed templates — one per file to avoid {{define}} namespace collisions.
 var (
 	alertHTML  *htmltpl.Template
 	alertText  *texttpl.Template
 	digestHTML *htmltpl.Template
 	digestText *texttpl.Template
-	resetHTML  *htmltpl.Template
-	resetText  *texttpl.Template
+	resetHTML   *htmltpl.Template
+	resetText   *texttpl.Template
+	verifyHTML  *htmltpl.Template
+	verifyText  *texttpl.Template
 )
 
 func init() {
@@ -68,6 +77,8 @@ func init() {
 	digestText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_digest.txt.tmpl"))
 	resetHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_password_reset.html.tmpl"))
 	resetText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_password_reset.txt.tmpl"))
+	verifyHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_verification.html.tmpl"))
+	verifyText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_verification.txt.tmpl"))
 }
 
 // RenderAlert renders an alert notification email. Returns subject, HTML body, and plaintext body.
@@ -83,6 +94,11 @@ func RenderDigest(data DigestTemplateData) (string, string, string, error) {
 // RenderPasswordReset renders a password reset email. Returns subject, HTML body, and plaintext body.
 func RenderPasswordReset(data PasswordResetData) (string, string, string, error) {
 	return renderPair(resetHTML, resetText, data)
+}
+
+// RenderEmailVerification renders an email verification email. Returns subject, HTML body, and plaintext body.
+func RenderEmailVerification(data EmailVerificationData) (string, string, string, error) {
+	return renderPair(verifyHTML, verifyText, data)
 }
 
 func renderPair(html *htmltpl.Template, text *texttpl.Template, data any) (string, string, string, error) {

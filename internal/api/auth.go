@@ -178,6 +178,11 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 		out.Body.OrgID = org.ID.String()
 	}
 
+	// Send email verification (non-blocking — failure doesn't prevent registration).
+	if err := srv.sendVerificationEmail(ctx, user.ID, input.Body.Email); err != nil {
+		slog.WarnContext(ctx, "register: send verification email failed", "email", input.Body.Email, "error", err)
+	}
+
 	return out, nil
 }
 
@@ -636,6 +641,14 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Auto-verify email — the invitation proves the user controls this email address.
+	if !user.EmailVerified {
+		if err := srv.store.SetEmailVerified(ctx, claims.UserID); err != nil {
+			slog.ErrorContext(ctx, "accept invitation: set email verified", "error", err)
+			// Non-fatal — membership is already created.
+		}
+	}
+
 	if srv.auditWriter != nil {
 		srv.auditWriter.Log(ctx, audit.Entry{
 			OrgID:      inv.OrgID,
@@ -775,4 +788,23 @@ func registerAuthRoutes(api huma.API, srv *Server) {
 		Summary:       "Reset password using a reset token",
 		DefaultStatus: http.StatusOK,
 	}, srv.resetPasswordHandler)
+
+	// Email verification — verify-email is public, resend-verification requires auth.
+	huma.Register(api, huma.Operation{
+		OperationID:   "verify-email",
+		Method:        http.MethodPost,
+		Path:          "/auth/verify-email",
+		Tags:          []string{"auth"},
+		Summary:       "Verify email address using a verification token",
+		DefaultStatus: http.StatusOK,
+	}, srv.verifyEmailHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "resend-verification",
+		Method:        http.MethodPost,
+		Path:          "/auth/resend-verification",
+		Tags:          []string{"auth"},
+		Summary:       "Resend email verification (requires authentication)",
+		DefaultStatus: http.StatusOK,
+	}, srv.resendVerificationHandler)
 }

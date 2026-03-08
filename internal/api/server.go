@@ -48,6 +48,7 @@ type Server struct {
 	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
 	llm            ai.LLMClient     // nil until SetAIDeps is called
 	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
+	lockout        *lockoutManager   // brute-force login protection
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -62,6 +63,14 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
 	orgRL := newOrgRateLimiter(time.Now, evictTTL)
 	tc := newTierCache(time.Now, 30*time.Second, 5*time.Minute)
+	lockoutThreshold := cfg.LockoutThreshold
+	if lockoutThreshold == 0 {
+		lockoutThreshold = 5
+	}
+	lockoutDuration := cfg.LockoutDuration
+	if lockoutDuration == 0 {
+		lockoutDuration = 15 * time.Minute
+	}
 	srv := &Server{
 		store:        s,
 		cfg:          cfg,
@@ -70,6 +79,7 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 		orgRL:        orgRL,
 		tierCache:    tc,
 		ghAPIBaseURL: "https://api.github.com",
+		lockout:      newLockoutManager(lockoutThreshold, lockoutDuration, time.Now),
 	}
 
 	// ── GitHub OAuth (optional) ───────────────────────────────────────────────

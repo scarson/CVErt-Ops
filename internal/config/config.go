@@ -53,6 +53,10 @@ type Config struct {
 	// ── Auth — Email Verification ────────────────────────────────────────────
 	EmailVerificationTokenTTL time.Duration `env:"EMAIL_VERIFICATION_TOKEN_TTL" envDefault:"24h"`
 
+	// ── Auth — Account Lockout ───────────────────────────────────────────────
+	LockoutThreshold int           `env:"LOCKOUT_THRESHOLD" envDefault:"5"`
+	LockoutDuration  time.Duration `env:"LOCKOUT_DURATION"  envDefault:"15m"`
+
 	// ── OAuth — GitHub ───────────────────────────────────────────────────────────
 	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
 	GitHubClientSecret string `env:"GITHUB_CLIENT_SECRET"`

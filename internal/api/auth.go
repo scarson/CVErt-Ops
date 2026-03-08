@@ -215,6 +215,25 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Account lockout check — before argon2 to save CPU on locked accounts.
+	// Still normalize timing for locked accounts to prevent lockout status enumeration.
+	allowed, retryAfter := srv.lockout.Check(input.Body.Email)
+	if !allowed {
+		time.Sleep(50 * time.Millisecond) // timing normalization
+		retrySeconds := int(retryAfter.Seconds())
+		if retrySeconds < 1 {
+			retrySeconds = 1
+		}
+		return nil, huma.Error429TooManyRequests(
+			"account temporarily locked due to too many failed login attempts",
+			&huma.ErrorDetail{
+				Message:  "retry_after_seconds",
+				Location: "header",
+				Value:    retrySeconds,
+			},
+		)
+	}
+
 	// Timing normalization: always spend argon2 time regardless of whether the user exists.
 	if user == nil || !user.PasswordHash.Valid {
 		if !srv.acquireArgon2() {
@@ -222,6 +241,7 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		}
 		_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
 		srv.releaseArgon2()
+		srv.lockout.RecordFailure(input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -235,8 +255,12 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !ok {
+		srv.lockout.RecordFailure(input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
+
+	// Successful login — reset lockout counter.
+	srv.lockout.RecordSuccess(input.Body.Email)
 
 	// Issue tokens.
 	jti := uuid.New()

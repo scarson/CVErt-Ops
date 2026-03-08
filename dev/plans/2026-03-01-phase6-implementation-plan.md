@@ -659,7 +659,107 @@ git commit -m "feat(auth): account lockout after repeated failed login attempts 
 
 ---
 
-### Task 4: CORS middleware
+### Task 4: Frontend — password reset & email verification pages
+
+**Depends on:** Task 1 (password reset backend), Task 2 (email verification backend)
+
+**Files:**
+- Create: `web/src/views/ForgotPasswordView.vue`
+- Create: `web/src/views/ResetPasswordView.vue`
+- Create: `web/src/views/VerifyEmailView.vue`
+- Modify: `web/src/router/index.ts` — add 3 public routes
+- Modify: `web/src/stores/auth.ts` — add API call methods
+- Modify: `web/src/views/LoginView.vue` — add "Forgot password?" link
+
+**Design decisions:**
+- All 3 pages are public routes (`requiresAuth: false`, `layout: 'public'`)
+- Follow the existing pattern from `LoginView.vue` and `RegisterView.vue` (Card + form layout, shadcn components)
+- `ForgotPasswordView` — email input, calls `POST /api/v1/auth/forgot-password`, shows success message regardless of result
+- `ResetPasswordView` — reads `token` from query param, new password + confirm inputs, calls `POST /api/v1/auth/reset-password`, redirects to login on success
+- `VerifyEmailView` — reads `token` from query param, auto-submits on mount via `POST /api/v1/auth/verify-email`, shows success/error state
+- No new UI components needed — reuse existing shadcn Card, Input, Label, Button
+
+**Step 1: Add routes to router**
+
+Add to the public routes section of `web/src/router/index.ts`:
+
+```ts
+{
+  path: '/forgot-password',
+  name: 'forgot-password',
+  component: () => import('@/views/ForgotPasswordView.vue'),
+  meta: { layout: 'public', requiresAuth: false, title: 'Forgot Password' },
+},
+{
+  path: '/reset-password',
+  name: 'reset-password',
+  component: () => import('@/views/ResetPasswordView.vue'),
+  meta: { layout: 'public', requiresAuth: false, title: 'Reset Password' },
+},
+{
+  path: '/verify-email',
+  name: 'verify-email',
+  component: () => import('@/views/VerifyEmailView.vue'),
+  meta: { layout: 'public', requiresAuth: false, title: 'Verify Email' },
+},
+```
+
+**Step 2: Add store methods**
+
+Add to `web/src/stores/auth.ts`:
+
+```ts
+async forgotPassword(email: string): Promise<{ success: boolean; error?: string }>
+async resetPassword(token: string, newPassword: string): Promise<{ success: boolean; error?: string }>
+async verifyEmail(token: string): Promise<{ success: boolean; error?: string }>
+```
+
+Each method calls the corresponding `POST /api/v1/auth/*` endpoint and returns a result object (same pattern as existing `login`/`register`).
+
+**Step 3: Build ForgotPasswordView**
+
+- Email input + submit button
+- On submit: call `auth.forgotPassword(email)`
+- Always show success message: "If an account with that email exists, a password reset link has been sent."
+- Link back to login page
+
+**Step 4: Build ResetPasswordView**
+
+- Read `token` from `route.query.token`
+- If no token in URL: show error with link to forgot-password
+- New password + confirm password inputs (min 16 chars, matching)
+- On submit: call `auth.resetPassword(token, password)`
+- On success: show message + redirect to login after 3s
+- On error: show error (expired/invalid token)
+
+**Step 5: Build VerifyEmailView**
+
+- Read `token` from `route.query.token`
+- Auto-submit on `onMounted`: call `auth.verifyEmail(token)`
+- Show loading state while verifying
+- On success: "Email verified!" with link to login/dashboard
+- On error: show error with "Resend verification" link (links to a future resend flow or dashboard)
+
+**Step 6: Add "Forgot password?" link to LoginView**
+
+Add a `RouterLink` to `/forgot-password` below the password field in `LoginView.vue`.
+
+**Step 7: Run frontend tests and lint**
+
+```bash
+cd web && npm run type-check && npm run lint
+```
+
+**Step 8: Commit**
+
+```bash
+git add web/src/views/ForgotPasswordView.vue web/src/views/ResetPasswordView.vue web/src/views/VerifyEmailView.vue web/src/router/index.ts web/src/stores/auth.ts web/src/views/LoginView.vue
+git commit -m "feat(frontend): password reset and email verification pages"
+```
+
+---
+
+### Task 5: CORS middleware
 
 **Files:**
 - Modify: `go.mod` / `go.sum` — add `github.com/go-chi/cors`
@@ -761,7 +861,7 @@ git commit -m "feat(api): CORS middleware with configurable allowed origins — 
 
 ## Phase 6B: Missing Features & Broken Workflows
 
-### Task 5: Fix invite-only first-user bootstrap
+### Task 6: Fix invite-only first-user bootstrap
 
 **Files:**
 - Modify: `internal/api/auth.go` — allow first registration regardless of mode
@@ -825,7 +925,7 @@ git commit -m "fix(auth): allow first-user bootstrap in invite-only mode"
 
 ---
 
-### Task 6: Invitation email delivery
+### Task 7: Invitation email delivery
 
 **Files:**
 - Create: `internal/notify/templates/email_invitation.html.tmpl`
@@ -932,7 +1032,7 @@ git commit -m "feat(api): send invitation emails via SMTP — TDD"
 
 ---
 
-### Task 7: Channel test notification
+### Task 8: Channel test notification
 
 **Files:**
 - Create: `internal/api/channel_test_notification_test.go`
@@ -1002,7 +1102,7 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 **Step 3: Register route**
 
-In `server.go`, inside the channels route group (after Task 8 fixes RBAC to admin):
+In `server.go`, inside the channels route group (after Task 9 fixes RBAC to admin):
 
 ```go
 r.Post("/{id}/test", srv.testChannelHandler)
@@ -1022,7 +1122,7 @@ git commit -m "feat(api): channel test notification endpoint — TDD"
 
 ---
 
-### Task 8: Fix channel RBAC
+### Task 9: Fix channel RBAC
 
 **Files:**
 - Modify: `internal/api/server.go` — change channel route auth from `RoleMember` to `RoleAdmin`
@@ -1072,7 +1172,7 @@ git commit -m "fix(api): restrict channel CRUD to admin/owner role per PLAN.md �
 
 ## Phase 6C: PLAN.md Reconciliation
 
-### Task 9: Reconcile Appendix B with implemented API
+### Task 10: Reconcile Appendix B with implemented API
 
 **Files:**
 - Modify: `PLAN.md` — Appendix B section
@@ -1168,7 +1268,7 @@ The full implemented API surface (as of Phase 6B completion) should include:
 - `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item (member+)
 ```
 
-**Notification channels (admin+ for mutations after Task 8 RBAC fix):**
+**Notification channels (admin+ for mutations after Task 9 RBAC fix):**
 ```
 - `GET /api/v1/orgs/{org_id}/channels` — list (viewer+)
 - `POST /api/v1/orgs/{org_id}/channels` — create (admin+)
@@ -1177,7 +1277,7 @@ The full implemented API surface (as of Phase 6B completion) should include:
 - `DELETE /api/v1/orgs/{org_id}/channels/{id}` — delete (admin+)
 - `POST /api/v1/orgs/{org_id}/channels/{id}/rotate-secret` — rotate webhook signing secret (admin+)
 - `POST /api/v1/orgs/{org_id}/channels/{id}/clear-secondary` — clear secondary signing secret (admin+)
-- `POST /api/v1/orgs/{org_id}/channels/{id}/test` — send test notification (Phase 6B Task 7, admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/test` — send test notification (Phase 6B Task 8, admin+)
 ```
 
 **Alert rules:**
@@ -1275,7 +1375,7 @@ Remove specced-but-deferred items (already documented in Appendix A of this plan
 
 **Step 3: Update channel permissions note**
 
-Update the channels section to note that CRUD requires admin/owner role (matching §7.3 and the Task 8 fix).
+Update the channels section to note that CRUD requires admin/owner role (matching §7.3 and the Task 9 fix).
 
 **Step 4: Verify consistency. Commit.**
 
@@ -1286,7 +1386,7 @@ git commit -m "docs: rewrite Appendix B to match implemented API — comprehensi
 
 ---
 
-### Task 10: Fix PLAN.md internal inconsistencies
+### Task 11: Fix PLAN.md internal inconsistencies
 
 **Files:**
 - Modify: `PLAN.md`

@@ -57,6 +57,11 @@ type Config struct {
 	LockoutThreshold int           `env:"LOCKOUT_THRESHOLD" envDefault:"5"`
 	LockoutDuration  time.Duration `env:"LOCKOUT_DURATION"  envDefault:"15m"`
 
+	// ── CORS ─────────────────────────────────────────────────────────────────
+	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
+	// Empty in production disables CORS. In development, defaults to localhost dev servers.
+	CORSAllowedOrigins string `env:"CORS_ALLOWED_ORIGINS"`
+
 	// ── OAuth — GitHub ───────────────────────────────────────────────────────────
 	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
 	GitHubClientSecret string `env:"GITHUB_CLIENT_SECRET"`

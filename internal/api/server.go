@@ -156,6 +156,11 @@ func (srv *Server) Handler() http.Handler {
 		})
 	})
 
+	// ── CORS (after security headers, before other middleware) ──────────────
+	if corsHandler := srv.corsMiddleware(); corsHandler != nil {
+		r.Use(corsHandler)
+	}
+
 	// ── Standard chi middleware ───────────────────────────────────────────────
 	r.Use(middleware.RequestID)
 	r.Use(func(next http.Handler) http.Handler {

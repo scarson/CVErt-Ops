@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
 
@@ -437,6 +438,43 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 		slog.ErrorContext(r.Context(), "create invitation", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// Send invitation email (best-effort — don't fail the request if SMTP is down).
+	if srv.cfg.SMTPHost != "" {
+		org, err := srv.store.GetOrgByID(r.Context(), orgID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "create invitation: get org for email", "error", err)
+		}
+		inviter, err := srv.store.GetUserByID(r.Context(), callerID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "create invitation: get inviter for email", "error", err)
+		}
+		if org != nil && inviter != nil {
+			inviteURL := srv.cfg.ExternalURL + "/invitations/" + token
+			subject, htmlBody, textBody, renderErr := notify.RenderInvitation(notify.InvitationData{
+				OrgName:     org.Name,
+				InviterName: inviter.DisplayName,
+				Role:        inv.Role,
+				InviteURL:   inviteURL,
+				ExpiresAt:   inv.ExpiresAt.Format("January 2, 2006"),
+			})
+			if renderErr != nil {
+				slog.ErrorContext(r.Context(), "create invitation: render email", "error", renderErr)
+			} else {
+				smtpCfg := notify.SmtpConfig{
+					Host:     srv.cfg.SMTPHost,
+					Port:     srv.cfg.SMTPPort,
+					From:     srv.cfg.SMTPFrom,
+					Username: srv.cfg.SMTPUsername,
+					Password: srv.cfg.SMTPPassword,
+					TLS:      srv.cfg.SMTPTLS,
+				}
+				if emailErr := notify.EmailSend(r.Context(), smtpCfg, []string{inv.Email}, subject, htmlBody, textBody); emailErr != nil {
+					slog.WarnContext(r.Context(), "invitation email failed", "email", inv.Email, "error", emailErr)
+				}
+			}
+		}
 	}
 
 	writeJSON(w, http.StatusAccepted, invitationEntry{

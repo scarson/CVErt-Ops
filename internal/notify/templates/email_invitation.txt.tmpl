@@ -1,0 +1,11 @@
+{{define "subject"}}You've been invited to join {{.OrgName}} on CVErt Ops{{end}}
+{{define "body"}}
+You're Invited
+==============
+
+{{.InviterName}} has invited you to join {{.OrgName}} on CVErt Ops as a {{.Role}}.
+
+Accept the invitation: {{.InviteURL}}
+
+This invitation expires on {{.ExpiresAt}}. If you don't have a CVErt Ops account, you'll need to create one first.
+{{end}}

@@ -7,12 +7,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -1226,5 +1229,67 @@ func TestCreateInvitation_InvalidRole(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("invalid role: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestCreateInvitation_EmailFailureDoesNotBlock verifies that the invitation is
+// created successfully even when the SMTP email send fails (best-effort delivery).
+func TestCreateInvitation_EmailFailureDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Capture expected WARN log to keep test output pristine and verify it.
+	var logBuf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	// Create server with SMTP pointing to an unreachable host.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "regtestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		SMTPHost:            "unreachable.invalid",
+		SMTPPort:            9999,
+		SMTPFrom:            "test@cvert-ops.test",
+		ExternalURL:         "https://app.cvert-ops.test",
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Create invitation — email send will fail but invitation should still succeed.
+	resp := doCreateInvitation(t, ctx, ts, token, reg.OrgID, "bob@example.com", "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation with failing SMTP: got %d, want 202", resp.StatusCode)
+	}
+
+	// Verify the invitation exists in the database.
+	invitations, err := db.ListOrgInvitations(ctx, uuid.MustParse(reg.OrgID))
+	if err != nil {
+		t.Fatalf("list invitations: %v", err)
+	}
+	if len(invitations) == 0 {
+		t.Fatal("invitation was not created despite SMTP failure")
+	}
+	if invitations[0].Email != "bob@example.com" {
+		t.Errorf("invitation email = %q, want bob@example.com", invitations[0].Email)
+	}
+
+	// Verify the warning was logged.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "invitation email failed") {
+		t.Errorf("expected 'invitation email failed' warning in logs, got: %s", logOutput)
 	}
 }

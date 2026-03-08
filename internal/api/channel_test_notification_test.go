@@ -115,9 +115,14 @@ func TestChannelTest_Email(t *testing.T) {
 		Error   string `json:"error"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result) //nolint:errcheck,gosec
-	// Email test may fail because no SMTP server is running — that's expected.
-	// We just verify the endpoint returned a valid response, not 500.
-	_ = result
+	// SMTP is not configured in tests, so delivery fails — verify the endpoint
+	// reports failure gracefully rather than returning 500.
+	if result.Success {
+		t.Error("expected success=false when SMTP is not configured")
+	}
+	if result.Error == "" {
+		t.Error("expected non-empty error message")
+	}
 }
 
 func TestChannelTest_NotFound(t *testing.T) {

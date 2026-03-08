@@ -1016,8 +1016,9 @@ func TestCreateChannel_EmailHeaderInjection(t *testing.T) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // mustParseUUID parses a UUID string and fails the test if invalid.
-// TestChannelCreate_RequiresAdmin verifies that members cannot create channels (admin+ required).
-func TestChannelCreate_RequiresAdmin(t *testing.T) {
+// TestChannelMutations_RequireAdmin verifies that members cannot create, patch, delete,
+// rotate-secret, or clear-secondary channels (admin+ required for all mutations).
+func TestChannelMutations_RequireAdmin(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -1026,6 +1027,18 @@ func TestChannelCreate_RequiresAdmin(t *testing.T) {
 	loginResp := doLogin(t, ctx, ts, "owner@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
 	ownerToken := cookieValue(loginResp, "access_token")
+
+	// Owner creates a channel for the mutation subtests to target.
+	channelBody := `{"name":"owner-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`
+	createResp := doCreateChannel(t, ctx, ts, ownerToken, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("owner create channel: got %d, want 201", createResp.StatusCode)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
 
 	// Create a second user and invite them as member.
 	doRegister(t, ctx, ts, "member@example.com", "test-password-1234")
@@ -1058,13 +1071,48 @@ func TestChannelCreate_RequiresAdmin(t *testing.T) {
 	}
 	acceptResp.Body.Close() //nolint:errcheck,gosec
 
-	// Member tries to create a channel — should be 403.
-	channelBody := `{"name":"member-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`
-	resp := doCreateChannel(t, ctx, ts, memberToken, reg.OrgID, channelBody)
-	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("member create channel: got %d, want 403", resp.StatusCode)
+	// Helper to make a member request and assert 403.
+	memberDo := func(t *testing.T, method, path string, body string) {
+		t.Helper()
+		var bodyReader *bytes.Buffer
+		if body != "" {
+			bodyReader = bytes.NewBufferString(body)
+		}
+		var reqBody interface{ Read([]byte) (int, error) }
+		if bodyReader != nil {
+			reqBody = bodyReader
+		}
+		req, _ := http.NewRequestWithContext(ctx, method,
+			ts.URL+"/api/v1/orgs/"+reg.OrgID+"/channels"+path, reqBody) //nolint:gosec // test URL
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "access_token="+memberToken)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, reqErr := ts.Client().Do(req) //nolint:gosec
+		if reqErr != nil {
+			t.Fatalf("request %s %s: %v", method, path, reqErr)
+		}
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("member %s %s: got %d, want 403", method, path, resp.StatusCode)
+		}
 	}
+
+	t.Run("create", func(t *testing.T) {
+		memberDo(t, http.MethodPost, "",
+			`{"name":"member-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`)
+	})
+	t.Run("patch", func(t *testing.T) {
+		memberDo(t, http.MethodPatch, "/"+ch.ID, `{"name":"renamed"}`)
+	})
+	t.Run("delete", func(t *testing.T) {
+		memberDo(t, http.MethodDelete, "/"+ch.ID, "")
+	})
+	t.Run("rotate-secret", func(t *testing.T) {
+		memberDo(t, http.MethodPost, "/"+ch.ID+"/rotate-secret", "")
+	})
+	t.Run("clear-secondary", func(t *testing.T) {
+		memberDo(t, http.MethodPost, "/"+ch.ID+"/clear-secondary", "")
+	})
 }
 
 func mustParseUUID(t *testing.T, s string) uuid.UUID {

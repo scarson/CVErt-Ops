@@ -47,7 +47,7 @@ func TestChannelTest_Webhook_Unreachable(t *testing.T) {
 	var ch struct {
 		ID string `json:"id"`
 	}
-	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec,gosec
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
 
 	// Test the channel — should return 200 with success=false.
 	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
@@ -99,7 +99,7 @@ func TestChannelTest_Email(t *testing.T) {
 	var ch struct {
 		ID string `json:"id"`
 	}
-	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec,gosec
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
 
 	// Test the email channel — will fail because SMTP is not configured in tests,
 	// but should return 200 with success=false (not 500).

@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/notify"
+	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
 
@@ -441,41 +443,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Send invitation email (best-effort — don't fail the request if SMTP is down).
-	if srv.cfg.SMTPHost != "" {
-		org, err := srv.store.GetOrgByID(r.Context(), orgID)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "create invitation: get org for email", "error", err)
-		}
-		inviter, err := srv.store.GetUserByID(r.Context(), callerID)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "create invitation: get inviter for email", "error", err)
-		}
-		if org != nil && inviter != nil {
-			inviteURL := srv.cfg.ExternalURL + "/invitations/" + token
-			subject, htmlBody, textBody, renderErr := notify.RenderInvitation(notify.InvitationData{
-				OrgName:     org.Name,
-				InviterName: inviter.DisplayName,
-				Role:        inv.Role,
-				InviteURL:   inviteURL,
-				ExpiresAt:   inv.ExpiresAt.Format("January 2, 2006"),
-			})
-			if renderErr != nil {
-				slog.ErrorContext(r.Context(), "create invitation: render email", "error", renderErr)
-			} else {
-				smtpCfg := notify.SmtpConfig{
-					Host:     srv.cfg.SMTPHost,
-					Port:     srv.cfg.SMTPPort,
-					From:     srv.cfg.SMTPFrom,
-					Username: srv.cfg.SMTPUsername,
-					Password: srv.cfg.SMTPPassword,
-					TLS:      srv.cfg.SMTPTLS,
-				}
-				if emailErr := notify.EmailSend(r.Context(), smtpCfg, []string{inv.Email}, subject, htmlBody, textBody); emailErr != nil {
-					slog.WarnContext(r.Context(), "invitation email failed", "email", inv.Email, "error", emailErr)
-				}
-			}
-		}
-	}
+	srv.sendInvitationEmail(r.Context(), orgID, callerID, inv)
 
 	writeJSON(w, http.StatusAccepted, invitationEntry{
 		ID:        inv.ID.String(),
@@ -538,4 +506,105 @@ func (srv *Server) cancelInvitationHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// resendInvitationHandler handles POST /api/v1/orgs/{org_id}/invitations/{id}/resend.
+// Requires admin+ (enforced by middleware). Re-sends the invitation email for a
+// pending, unexpired invitation.
+func (srv *Server) resendInvitationHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	callerID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	invID, err := uuid.Parse(idStr)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	inv, err := srv.store.GetOrgInvitationByID(r.Context(), orgID, invID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "resend invitation: get", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if inv == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// Reject if already accepted.
+	if inv.AcceptedAt.Valid {
+		http.Error(w, "invitation already accepted", http.StatusConflict)
+		return
+	}
+
+	// Reject if expired.
+	if inv.ExpiresAt.Before(time.Now().UTC()) {
+		http.Error(w, "invitation expired", http.StatusConflict)
+		return
+	}
+
+	// Send invitation email (best-effort).
+	srv.sendInvitationEmail(r.Context(), orgID, callerID, inv)
+
+	writeJSON(w, http.StatusOK, invitationEntry{
+		ID:        inv.ID.String(),
+		Email:     inv.Email,
+		Role:      inv.Role,
+		ExpiresAt: inv.ExpiresAt.Format(time.RFC3339),
+		CreatedAt: inv.CreatedAt.Format(time.RFC3339),
+	})
+}
+
+// sendInvitationEmail sends the invitation email via SMTP. Best-effort — logs
+// warnings on failure but never returns an error to the caller.
+func (srv *Server) sendInvitationEmail(ctx context.Context, orgID, callerID uuid.UUID, inv *generated.OrgInvitation) {
+	if srv.cfg.SMTPHost == "" {
+		return
+	}
+	org, err := srv.store.GetOrgByID(ctx, orgID)
+	if err != nil {
+		slog.ErrorContext(ctx, "invitation email: get org", "error", err)
+		return
+	}
+	inviter, err := srv.store.GetUserByID(ctx, callerID)
+	if err != nil {
+		slog.ErrorContext(ctx, "invitation email: get inviter", "error", err)
+		return
+	}
+	if org == nil || inviter == nil {
+		return
+	}
+	inviteURL := srv.cfg.ExternalURL + "/invitations/" + inv.Token
+	subject, htmlBody, textBody, renderErr := notify.RenderInvitation(notify.InvitationData{
+		OrgName:     org.Name,
+		InviterName: inviter.DisplayName,
+		Role:        inv.Role,
+		InviteURL:   inviteURL,
+		ExpiresAt:   inv.ExpiresAt.Format("January 2, 2006"),
+	})
+	if renderErr != nil {
+		slog.ErrorContext(ctx, "invitation email: render", "error", renderErr)
+		return
+	}
+	smtpCfg := notify.SmtpConfig{
+		Host:     srv.cfg.SMTPHost,
+		Port:     srv.cfg.SMTPPort,
+		From:     srv.cfg.SMTPFrom,
+		Username: srv.cfg.SMTPUsername,
+		Password: srv.cfg.SMTPPassword,
+		TLS:      srv.cfg.SMTPTLS,
+	}
+	if emailErr := notify.EmailSend(ctx, smtpCfg, []string{inv.Email}, subject, htmlBody, textBody); emailErr != nil {
+		slog.WarnContext(ctx, "invitation email failed", "email", inv.Email, "error", emailErr)
+	}
 }

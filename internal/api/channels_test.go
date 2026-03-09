@@ -1013,9 +1013,8 @@ func TestCreateChannel_EmailHeaderInjection(t *testing.T) {
 	}
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── RBAC ──────────────────────────────────────────────────────────────────────
 
-// mustParseUUID parses a UUID string and fails the test if invalid.
 // TestChannelMutations_RequireAdmin verifies that members cannot create, patch, delete,
 // rotate-secret, or clear-secondary channels (admin+ required for all mutations).
 func TestChannelMutations_RequireAdmin(t *testing.T) {
@@ -1199,6 +1198,7 @@ func TestChannelMutations_AdminCanPerform(t *testing.T) {
 	}
 }
 
+// mustParseUUID parses a UUID string and fails the test if invalid.
 func mustParseUUID(t *testing.T, s string) uuid.UUID {
 	t.Helper()
 	id, err := uuid.Parse(s)

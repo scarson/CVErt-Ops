@@ -264,6 +264,26 @@ func (s *Store) CreateOrgInvitation(ctx context.Context, orgID uuid.UUID, email,
 	return &row, nil
 }
 
+// GetOrgInvitationByID returns the invitation by ID within an org, or (nil, nil) if not found.
+func (s *Store) GetOrgInvitationByID(ctx context.Context, orgID, invID uuid.UUID) (*generated.OrgInvitation, error) {
+	var row generated.OrgInvitation
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		row, err = q.GetOrgInvitationByID(ctx, generated.GetOrgInvitationByIDParams{
+			ID:    invID,
+			OrgID: orgID,
+		})
+		return err
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get org invitation by id: %w", err)
+	}
+	return &row, nil
+}
+
 // GetInvitationByToken returns the invitation for the given token, or (nil, nil) if not found.
 // Uses RLS bypass — called from public and accept endpoints with no org context.
 // Callers are responsible for checking expiry and accepted_at.

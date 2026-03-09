@@ -211,6 +211,32 @@ func (q *Queries) GetOrgByID(ctx context.Context, id uuid.UUID) (Organization, e
 	return i, err
 }
 
+const getOrgInvitationByID = `-- name: GetOrgInvitationByID :one
+SELECT id, org_id, email, role, token, created_by, expires_at, accepted_at, created_at FROM org_invitations WHERE id = $1 AND org_id = $2 LIMIT 1
+`
+
+type GetOrgInvitationByIDParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) GetOrgInvitationByID(ctx context.Context, arg GetOrgInvitationByIDParams) (OrgInvitation, error) {
+	row := q.db.QueryRowContext(ctx, getOrgInvitationByID, arg.ID, arg.OrgID)
+	var i OrgInvitation
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.Role,
+		&i.Token,
+		&i.CreatedBy,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getOrgMemberRole = `-- name: GetOrgMemberRole :one
 SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1
 `

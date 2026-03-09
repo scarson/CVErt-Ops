@@ -225,6 +225,7 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createInvitationHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.listInvitationsHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{id}", srv.cancelInvitationHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{id}/resend", srv.resendInvitationHandler)
 			})
 
 			// API key management

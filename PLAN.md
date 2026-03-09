@@ -206,7 +206,7 @@ Without this migration, the database ends up with two separate rows (`GHSA-1234`
 
 **Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
 
-**NVD attribution requirement (required by NVD Terms of Use):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ This is a **frontend item** deferred to Phase 6 (UI). A `TODO(attribution): NVD notice required in UI per NVD ToU` comment must be present in `internal/feed/nvd/adapter.go` from Phase 1 onwards to ensure it is not forgotten.
+**NVD attribution requirement (required by NVD Terms of Use):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ This is a **frontend item** (see §20 — Frontend). A `TODO(attribution): NVD notice required in UI per NVD ToU` comment must be present in `internal/feed/nvd/adapter.go` from Phase 1 onwards to ensure it is not forgotten.
 
 ### 3.3 Ingestion Scheduling, Cursoring, and Idempotency
 
@@ -397,7 +397,7 @@ Within the same DB transaction:
 ### 4.3 Canonical CVE Record (`cves`)
 Fields (illustrative):
 - `cve_id` (PK)
-- `status` (`new|modified|analyzed|rejected|unknown`)
+- `status` (`new|modified|analyzed|rejected|withdrawn|unknown`)
 - `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`
 - `description_primary`
 - `severity` (`none|low|medium|high|critical`)
@@ -1534,8 +1534,19 @@ Behavior:
 - quotas + caching + metrics
 
 **Phase 5 — Hardening and SaaS readiness**
-- audit log, billing hooks, SSO (as planned)
-- data retention policy automation (section 21)
+- Org tiering with resolved limits + tier-gated middleware
+- Data retention automation (bounded-batch cleanup, tier-aware windows)
+- Audit logging with non-blocking writes + secret redaction
+- SSO/OIDC connections + email domain discovery + identity linking
+- Vendor feed enrichment (MSRC, Red Hat) + site admin role for feed management
+
+**Frontend** — Vue 3 + Vite SPA implemented alongside Phase 5 and embedded in the Go binary (same origin in production, Vite proxy in dev)
+
+**Phase 6 — Backend cleanup & production readiness**
+- Security hardening: password reset, email verification, account lockout, CORS
+- Missing workflows: invite-only bootstrap fix, invitation emails, channel test endpoint
+- RBAC fix: channel mutations restricted to admin/owner per §7.3
+- PLAN.md reconciliation: Appendix B rewrite, internal inconsistency fixes
 
 ### 18.1 Worker Architecture (Decision)
 
@@ -1633,11 +1644,6 @@ ALTER TABLE job_queue SET (
 - Separate per-queue tables (more complexity, sometimes faster polling).
 - External queue (Redis, NATS, SQS) for very high throughput.
 - Advisory locks instead of partial unique index (more flexible; harder to inspect in DB).
-
-ptz,
-    last_error  text
-);
-```
 
 **Worker goroutines:**
 - One goroutine per queue type (configurable concurrency per queue).
@@ -1826,7 +1832,7 @@ r.Use(func(next http.Handler) http.Handler {
         w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
         // HSTS — only set when the server itself terminates TLS (not behind a TLS-terminating proxy)
         // w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-        // CSP — set per-response type when frontend is added (Phase 6+)
+        // CSP — set per-response type based on content (API JSON vs SPA HTML)
         next.ServeHTTP(w, r)
     })
 })

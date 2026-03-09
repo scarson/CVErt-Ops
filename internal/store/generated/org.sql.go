@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 )
 
 const acceptInvitation = `-- name: AcceptInvitation :exec
-UPDATE org_invitations SET accepted_at = now() WHERE id = $1
+UPDATE org_invitations SET accepted_at = COALESCE(accepted_at, now()) WHERE id = $1
 `
 
 func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
@@ -131,6 +132,7 @@ func (q *Queries) CreateOrgInvitation(ctx context.Context, arg CreateOrgInvitati
 
 const createOrgMember = `-- name: CreateOrgMember :exec
 INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
+ON CONFLICT (org_id, user_id) DO NOTHING
 `
 
 type CreateOrgMemberParams struct {
@@ -144,7 +146,7 @@ func (q *Queries) CreateOrgMember(ctx context.Context, arg CreateOrgMemberParams
 	return err
 }
 
-const deleteOrgInvitation = `-- name: DeleteOrgInvitation :exec
+const deleteOrgInvitation = `-- name: DeleteOrgInvitation :execresult
 DELETE FROM org_invitations WHERE id = $1 AND org_id = $2
 `
 
@@ -153,9 +155,8 @@ type DeleteOrgInvitationParams struct {
 	OrgID uuid.UUID
 }
 
-func (q *Queries) DeleteOrgInvitation(ctx context.Context, arg DeleteOrgInvitationParams) error {
-	_, err := q.db.ExecContext(ctx, deleteOrgInvitation, arg.ID, arg.OrgID)
-	return err
+func (q *Queries) DeleteOrgInvitation(ctx context.Context, arg DeleteOrgInvitationParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, deleteOrgInvitation, arg.ID, arg.OrgID)
 }
 
 const deleteOrgMember = `-- name: DeleteOrgMember :exec
@@ -211,6 +212,32 @@ func (q *Queries) GetOrgByID(ctx context.Context, id uuid.UUID) (Organization, e
 	return i, err
 }
 
+const getOrgInvitationByID = `-- name: GetOrgInvitationByID :one
+SELECT id, org_id, email, role, token, created_by, expires_at, accepted_at, created_at FROM org_invitations WHERE id = $1 AND org_id = $2 LIMIT 1
+`
+
+type GetOrgInvitationByIDParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) GetOrgInvitationByID(ctx context.Context, arg GetOrgInvitationByIDParams) (OrgInvitation, error) {
+	row := q.db.QueryRowContext(ctx, getOrgInvitationByID, arg.ID, arg.OrgID)
+	var i OrgInvitation
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.Role,
+		&i.Token,
+		&i.CreatedBy,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getOrgMemberRole = `-- name: GetOrgMemberRole :one
 SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1
 `
@@ -254,8 +281,27 @@ func (q *Queries) GetOrgTier(ctx context.Context, id uuid.UUID) (GetOrgTierRow, 
 	return i, err
 }
 
+const getPendingInvitationByEmail = `-- name: GetPendingInvitationByEmail :one
+SELECT id FROM org_invitations
+WHERE org_id = $1 AND lower(email) = lower($2) AND accepted_at IS NULL AND expires_at > now()
+LIMIT 1
+`
+
+type GetPendingInvitationByEmailParams struct {
+	OrgID uuid.UUID
+	Email string
+}
+
+func (q *Queries) GetPendingInvitationByEmail(ctx context.Context, arg GetPendingInvitationByEmailParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, getPendingInvitationByEmail, arg.OrgID, arg.Email)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listAllOrgs = `-- name: ListAllOrgs :many
 SELECT id, tier, tier_overrides FROM organizations
+WHERE deleted_at IS NULL
 `
 
 type ListAllOrgsRow struct {

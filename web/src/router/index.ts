@@ -32,6 +32,24 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/views/InvitationView.vue'),
     meta: { layout: 'public', requiresAuth: false, title: 'Invitation' },
   },
+  {
+    path: '/forgot-password',
+    name: 'forgot-password',
+    component: () => import('@/views/ForgotPasswordView.vue'),
+    meta: { layout: 'public', requiresAuth: false, title: 'Forgot Password' },
+  },
+  {
+    path: '/reset-password',
+    name: 'reset-password',
+    component: () => import('@/views/ResetPasswordView.vue'),
+    meta: { layout: 'public', requiresAuth: false, title: 'Reset Password' },
+  },
+  {
+    path: '/verify-email',
+    name: 'verify-email',
+    component: () => import('@/views/VerifyEmailView.vue'),
+    meta: { layout: 'public', requiresAuth: false, title: 'Verify Email' },
+  },
 
   // ── Authenticated routes ───────────────────────────────────────
   {

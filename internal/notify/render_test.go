@@ -1,4 +1,4 @@
-// ABOUTME: Tests for template rendering of alert and digest emails.
+// ABOUTME: Tests for template rendering of alert, digest, and invitation emails.
 // ABOUTME: Verifies subject lines, HTML/text output, truncation, heartbeat, AI summary.
 package notify
 
@@ -316,4 +316,36 @@ func TestSnapshotsToCVESummaries_EdgeCases(t *testing.T) {
 			t.Error("InCISAKEV not passed through")
 		}
 	})
+}
+
+func TestRenderInvitation_BasicOutput(t *testing.T) {
+	data := InvitationData{
+		OrgName:     "Acme Corp",
+		InviterName: "Alice",
+		Role:        "admin",
+		InviteURL:   "https://app.example.com/invitations/abc123",
+		ExpiresAt:   "January 15, 2026",
+	}
+	subject, html, text, err := RenderInvitation(data)
+	if err != nil {
+		t.Fatalf("RenderInvitation: %v", err)
+	}
+	if !strings.Contains(subject, "Acme Corp") {
+		t.Errorf("subject missing org name: %q", subject)
+	}
+	if !strings.Contains(html, "Alice") {
+		t.Error("HTML body missing inviter name")
+	}
+	if !strings.Contains(html, "admin") {
+		t.Error("HTML body missing role")
+	}
+	if !strings.Contains(html, "https://app.example.com/invitations/abc123") {
+		t.Error("HTML body missing invite URL")
+	}
+	if !strings.Contains(text, "Alice") {
+		t.Error("text body missing inviter name")
+	}
+	if !strings.Contains(text, "https://app.example.com/invitations/abc123") {
+		t.Error("text body missing invite URL")
+	}
 }

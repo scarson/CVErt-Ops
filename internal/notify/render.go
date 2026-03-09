@@ -1,4 +1,4 @@
-// ABOUTME: Template rendering for alert and digest notification emails.
+// ABOUTME: Template rendering for notification and transactional emails.
 // ABOUTME: Templates parsed once at init from embedded FS; rendered per delivery.
 package notify
 
@@ -44,12 +44,41 @@ var funcMap = map[string]any{
 	},
 }
 
+// PasswordResetData holds template data for password reset emails.
+type PasswordResetData struct {
+	Email     string
+	ResetURL  string
+	ExpiresIn string // e.g., "1 hour"
+}
+
+// EmailVerificationData holds template data for email verification emails.
+type EmailVerificationData struct {
+	Email     string
+	VerifyURL string
+	ExpiresIn string // e.g., "24 hours"
+}
+
+// InvitationData holds template data for invitation emails.
+type InvitationData struct {
+	OrgName     string
+	InviterName string
+	Role        string
+	InviteURL   string
+	ExpiresAt   string
+}
+
 // Parsed templates — one per file to avoid {{define}} namespace collisions.
 var (
 	alertHTML  *htmltpl.Template
 	alertText  *texttpl.Template
 	digestHTML *htmltpl.Template
 	digestText *texttpl.Template
+	resetHTML   *htmltpl.Template
+	resetText   *texttpl.Template
+	verifyHTML  *htmltpl.Template
+	verifyText  *texttpl.Template
+	inviteHTML  *htmltpl.Template
+	inviteText  *texttpl.Template
 )
 
 func init() {
@@ -57,6 +86,12 @@ func init() {
 	alertText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_alert.txt.tmpl"))
 	digestHTML = htmltpl.Must(htmltpl.New("").Funcs(htmltpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_digest.html.tmpl"))
 	digestText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_digest.txt.tmpl"))
+	resetHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_password_reset.html.tmpl"))
+	resetText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_password_reset.txt.tmpl"))
+	verifyHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_verification.html.tmpl"))
+	verifyText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_verification.txt.tmpl"))
+	inviteHTML = htmltpl.Must(htmltpl.New("").Funcs(htmltpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_invitation.html.tmpl"))
+	inviteText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_invitation.txt.tmpl"))
 }
 
 // RenderAlert renders an alert notification email. Returns subject, HTML body, and plaintext body.
@@ -67,6 +102,21 @@ func RenderAlert(data AlertTemplateData) (string, string, string, error) {
 // RenderDigest renders a digest email. Returns subject, HTML body, and plaintext body.
 func RenderDigest(data DigestTemplateData) (string, string, string, error) {
 	return renderPair(digestHTML, digestText, data)
+}
+
+// RenderPasswordReset renders a password reset email. Returns subject, HTML body, and plaintext body.
+func RenderPasswordReset(data PasswordResetData) (string, string, string, error) {
+	return renderPair(resetHTML, resetText, data)
+}
+
+// RenderEmailVerification renders an email verification email. Returns subject, HTML body, and plaintext body.
+func RenderEmailVerification(data EmailVerificationData) (string, string, string, error) {
+	return renderPair(verifyHTML, verifyText, data)
+}
+
+// RenderInvitation renders an invitation email. Returns subject, HTML body, and plaintext body.
+func RenderInvitation(data InvitationData) (string, string, string, error) {
+	return renderPair(inviteHTML, inviteText, data)
 }
 
 func renderPair(html *htmltpl.Template, text *texttpl.Template, data any) (string, string, string, error) {

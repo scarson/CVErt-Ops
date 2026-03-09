@@ -16,12 +16,18 @@ import (
 
 // CreateUser inserts a new user row. Returns the created user.
 // Pass an empty passwordHash for OAuth-only accounts.
+// Uses withBypassTx — runs during registration before org context is established.
 func (s *Store) CreateUser(ctx context.Context, email, displayName, passwordHash string, hashVersion int) (*generated.User, error) {
-	row, err := s.q.CreateUser(ctx, generated.CreateUserParams{
-		Email:               email,
-		DisplayName:         displayName,
-		PasswordHash:        sql.NullString{String: passwordHash, Valid: passwordHash != ""},
-		PasswordHashVersion: int32(hashVersion), //nolint:gosec // hashVersion is a small constant (1-255)
+	var row generated.User
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		row, err = q.CreateUser(ctx, generated.CreateUserParams{
+			Email:               email,
+			DisplayName:         displayName,
+			PasswordHash:        sql.NullString{String: passwordHash, Valid: passwordHash != ""},
+			PasswordHashVersion: int32(hashVersion), //nolint:gosec // hashVersion is a small constant (1-255)
+		})
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
@@ -56,8 +62,14 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*generated.Us
 
 // CountUsers returns the total number of user rows (including soft-deleted ones).
 // Used for first-user org bootstrap detection during registration.
+// Uses withBypassTx — runs during registration before org context is established.
 func (s *Store) CountUsers(ctx context.Context) (int64, error) {
-	n, err := s.q.CountUsers(ctx)
+	var n int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountUsers(ctx)
+		return err
+	})
 	if err != nil {
 		return 0, fmt.Errorf("count users: %w", err)
 	}
@@ -84,15 +96,18 @@ func (s *Store) IncrementTokenVersion(ctx context.Context, id uuid.UUID) (int32,
 
 // UpdatePasswordHash replaces the password hash and bumps token_version to
 // invalidate all active sessions (forces re-login after password change).
+// Uses withBypassTx — runs from password reset/change flows before org context.
 func (s *Store) UpdatePasswordHash(ctx context.Context, id uuid.UUID, passwordHash string, hashVersion int) error {
-	if err := s.q.UpdatePasswordHash(ctx, generated.UpdatePasswordHashParams{
-		ID:                  id,
-		PasswordHash:        sql.NullString{String: passwordHash, Valid: passwordHash != ""},
-		PasswordHashVersion: int32(hashVersion), //nolint:gosec // hashVersion is a small constant (1-255)
-	}); err != nil {
-		return fmt.Errorf("update password hash: %w", err)
-	}
-	return nil
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.UpdatePasswordHash(ctx, generated.UpdatePasswordHashParams{
+			ID:                  id,
+			PasswordHash:        sql.NullString{String: passwordHash, Valid: passwordHash != ""},
+			PasswordHashVersion: int32(hashVersion), //nolint:gosec // hashVersion is a small constant (1-255)
+		}); err != nil {
+			return fmt.Errorf("update password hash: %w", err)
+		}
+		return nil
+	})
 }
 
 // UpsertUserIdentity creates or updates a user_identities row for the given provider.

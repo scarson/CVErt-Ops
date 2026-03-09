@@ -423,17 +423,15 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if current != nil {
-		srv.oidcProviders.Delete(current.IssuerUrl)
-		srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
-			OrgID:      orgID,
-			Action:     "delete",
-			EntityType: "sso_connection",
-			EntityID:   current.ID.String(),
-			EntityName: current.DisplayName,
-			Success:    true,
-		})
-	}
+	srv.oidcProviders.Delete(current.IssuerUrl)
+	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "sso_connection",
+		EntityID:   current.ID.String(),
+		EntityName: current.DisplayName,
+		Success:    true,
+	})
 
 	w.WriteHeader(http.StatusNoContent)
 }

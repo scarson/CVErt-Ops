@@ -12,7 +12,8 @@ RETURNING *;
 SELECT * FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
 -- name: CreateOrgMember :exec
-INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3);
+INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
+ON CONFLICT (org_id, user_id) DO NOTHING;
 
 -- name: GetOrgMemberRole :one
 SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1;
@@ -44,19 +45,27 @@ INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: GetOrgInvitationByID :one
+SELECT * FROM org_invitations WHERE id = $1 AND org_id = $2 LIMIT 1;
+
 -- name: GetInvitationByToken :one
 SELECT * FROM org_invitations WHERE token = $1 LIMIT 1;
 
 -- name: AcceptInvitation :exec
-UPDATE org_invitations SET accepted_at = now() WHERE id = $1;
+UPDATE org_invitations SET accepted_at = COALESCE(accepted_at, now()) WHERE id = $1;
 
 -- name: ListOrgInvitations :many
 SELECT * FROM org_invitations
 WHERE org_id = $1 AND accepted_at IS NULL AND expires_at > now()
 ORDER BY created_at DESC;
 
--- name: DeleteOrgInvitation :exec
+-- name: DeleteOrgInvitation :execresult
 DELETE FROM org_invitations WHERE id = $1 AND org_id = $2;
+
+-- name: GetPendingInvitationByEmail :one
+SELECT id FROM org_invitations
+WHERE org_id = $1 AND lower(email) = lower(@email) AND accepted_at IS NULL AND expires_at > now()
+LIMIT 1;
 
 -- name: GetOrgTier :one
 SELECT tier, tier_overrides FROM organizations WHERE id = $1;
@@ -80,4 +89,5 @@ SELECT CAST(
 AS bigint);
 
 -- name: ListAllOrgs :many
-SELECT id, tier, tier_overrides FROM organizations;
+SELECT id, tier, tier_overrides FROM organizations
+WHERE deleted_at IS NULL;

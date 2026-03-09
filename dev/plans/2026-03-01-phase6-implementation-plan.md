@@ -4,14 +4,14 @@
 
 **Goal:** Close security gaps, add missing specced features, fix RBAC discrepancies, and reconcile PLAN.md with reality — making the backend production-ready.
 
-**Architecture:** Phase 6 addresses findings from a systematic gap analysis (PLAN.md internal scan + API contract completeness audit). Security hardening tasks (password reset, email verification, account lockout, CORS) fill gaps that block production use. Missing specced features (channel test, admin feeds) complete the API contract. PLAN.md reconciliation brings the spec in line with the real implementation.
+**Architecture:** Phase 6 addresses findings from a systematic gap analysis (PLAN.md internal scan + API contract completeness audit). Security hardening tasks (password reset, email verification, account lockout, CORS) fill gaps that block production use. Missing specced features (channel test, invitation emails) complete the API contract. PLAN.md reconciliation brings the spec in line with the real implementation.
 
 **Tech Stack:** Go 1.26, chi, huma, sqlc, go-mail (existing), go-chi/cors (new dependency)
 
-**Prerequisites:** Phase 5 must be fully implemented before Phase 6 begins. Migration numbers in this plan use placeholders (`0000XX`) — replace with the next sequential number after Phase 5's last migration.
+**Prerequisites:** Phase 5 is fully implemented. Latest migration is `000030_add_site_admin`. Phase 6 migrations start at 000031. Frontend (Vue 3 + Vite) is implemented and embedded in the Go binary via `web/` package.
 
 **Context for subagents:**
-- Chi handlers use `http.Error(w, msg, status)` + `return`, NOT huma error returns
+- Auth routes use **huma** (`huma.Register` in `registerAuthRoutes`). Org-scoped routes use **chi** with per-route RBAC middleware. New auth endpoints (password reset, email verification) should follow the huma pattern.
 - Transaction helpers: `withBypassTx` for operations without org context, `withOrgTx` for handler-context queries
 - Integration tests use `testutil.NewTestDB(t)` with testcontainers Postgres
 - TDD is mandatory: RED → verify fail → GREEN → verify pass → refactor → commit
@@ -19,6 +19,8 @@
 - Run `golangci-lint run` before committing
 - All email templates follow the `{{define "subject"}}` / `{{define "body"}}` pattern in `internal/notify/templates/`
 - `notify.EmailSend()` (`internal/notify/email.go`) is the shared SMTP sender — use it for transactional emails too
+- Site admin auth: `RequireSiteAdmin()` middleware checks `users.is_site_admin` flag (migration 000030). Admin feed endpoints already use this.
+- Frontend dev: Vite proxies API calls to Go backend on :8080. In production, SPA is embedded (same origin). CORS is primarily for external API consumers.
 
 ---
 
@@ -27,7 +29,7 @@
 ### Task 1: Password reset flow
 
 **Files:**
-- Create: `migrations/0000XX_create_password_reset_tokens.up.sql` / `.down.sql`
+- Create: `migrations/000031_create_password_reset_tokens.up.sql` / `.down.sql`
 - Create: `internal/store/queries/password_reset.sql`
 - Modify: `internal/store/generated/` (sqlc regenerated)
 - Create: `internal/store/password_reset.go`
@@ -326,7 +328,7 @@ Expected: No new warnings.
 **Step 12: Commit**
 
 ```bash
-git add migrations/0000XX_create_password_reset_tokens.* internal/store/queries/password_reset.sql internal/store/generated/ internal/store/password_reset.go internal/store/password_reset_test.go internal/notify/templates/email_password_reset.* internal/notify/render.go internal/config/config.go internal/api/auth_password_reset.go internal/api/auth_password_reset_test.go internal/api/server.go
+git add migrations/000031_create_password_reset_tokens.* internal/store/queries/password_reset.sql internal/store/generated/ internal/store/password_reset.go internal/store/password_reset_test.go internal/notify/templates/email_password_reset.* internal/notify/render.go internal/config/config.go internal/api/auth_password_reset.go internal/api/auth_password_reset_test.go internal/api/server.go
 git commit -m "feat(auth): password reset flow with rate limiting and session invalidation — TDD"
 ```
 
@@ -335,8 +337,8 @@ git commit -m "feat(auth): password reset flow with rate limiting and session in
 ### Task 2: Email verification
 
 **Files:**
-- Create: `migrations/0000XX_add_email_verified_to_users.up.sql` / `.down.sql`
-- Create: `migrations/0000XX_create_email_verification_tokens.up.sql` / `.down.sql`
+- Create: `migrations/000032_add_email_verified_to_users.up.sql` / `.down.sql`
+- Create: `migrations/000033_create_email_verification_tokens.up.sql` / `.down.sql`
 - Create: `internal/store/queries/email_verification.sql`
 - Modify: `internal/store/generated/` (sqlc regenerated)
 - Create: `internal/store/email_verification.go`
@@ -657,13 +659,115 @@ git commit -m "feat(auth): account lockout after repeated failed login attempts 
 
 ---
 
-### Task 4: CORS middleware
+### Task 4: Frontend — password reset & email verification pages
+
+**Depends on:** Task 1 (password reset backend), Task 2 (email verification backend)
+
+**Files:**
+- Create: `web/src/views/ForgotPasswordView.vue`
+- Create: `web/src/views/ResetPasswordView.vue`
+- Create: `web/src/views/VerifyEmailView.vue`
+- Modify: `web/src/router/index.ts` — add 3 public routes
+- Modify: `web/src/stores/auth.ts` — add API call methods
+- Modify: `web/src/views/LoginView.vue` — add "Forgot password?" link
+
+**Design decisions:**
+- All 3 pages are public routes (`requiresAuth: false`, `layout: 'public'`)
+- Follow the existing pattern from `LoginView.vue` and `RegisterView.vue` (Card + form layout, shadcn components)
+- `ForgotPasswordView` — email input, calls `POST /api/v1/auth/forgot-password`, shows success message regardless of result
+- `ResetPasswordView` — reads `token` from query param, new password + confirm inputs, calls `POST /api/v1/auth/reset-password`, redirects to login on success
+- `VerifyEmailView` — reads `token` from query param, auto-submits on mount via `POST /api/v1/auth/verify-email`, shows success/error state
+- No new UI components needed — reuse existing shadcn Card, Input, Label, Button
+
+**Step 1: Add routes to router**
+
+Add to the public routes section of `web/src/router/index.ts`:
+
+```ts
+{
+  path: '/forgot-password',
+  name: 'forgot-password',
+  component: () => import('@/views/ForgotPasswordView.vue'),
+  meta: { layout: 'public', requiresAuth: false, title: 'Forgot Password' },
+},
+{
+  path: '/reset-password',
+  name: 'reset-password',
+  component: () => import('@/views/ResetPasswordView.vue'),
+  meta: { layout: 'public', requiresAuth: false, title: 'Reset Password' },
+},
+{
+  path: '/verify-email',
+  name: 'verify-email',
+  component: () => import('@/views/VerifyEmailView.vue'),
+  meta: { layout: 'public', requiresAuth: false, title: 'Verify Email' },
+},
+```
+
+**Step 2: Add store methods**
+
+Add to `web/src/stores/auth.ts`:
+
+```ts
+async forgotPassword(email: string): Promise<{ success: boolean; error?: string }>
+async resetPassword(token: string, newPassword: string): Promise<{ success: boolean; error?: string }>
+async verifyEmail(token: string): Promise<{ success: boolean; error?: string }>
+```
+
+Each method calls the corresponding `POST /api/v1/auth/*` endpoint and returns a result object (same pattern as existing `login`/`register`).
+
+**Step 3: Build ForgotPasswordView**
+
+- Email input + submit button
+- On submit: call `auth.forgotPassword(email)`
+- Always show success message: "If an account with that email exists, a password reset link has been sent."
+- Link back to login page
+
+**Step 4: Build ResetPasswordView**
+
+- Read `token` from `route.query.token`
+- If no token in URL: show error with link to forgot-password
+- New password + confirm password inputs (min 16 chars, matching)
+- On submit: call `auth.resetPassword(token, password)`
+- On success: show message + redirect to login after 3s
+- On error: show error (expired/invalid token)
+
+**Step 5: Build VerifyEmailView**
+
+- Read `token` from `route.query.token`
+- Auto-submit on `onMounted`: call `auth.verifyEmail(token)`
+- Show loading state while verifying
+- On success: "Email verified!" with link to login/dashboard
+- On error: show error with "Resend verification" link (links to a future resend flow or dashboard)
+
+**Step 6: Add "Forgot password?" link to LoginView**
+
+Add a `RouterLink` to `/forgot-password` below the password field in `LoginView.vue`.
+
+**Step 7: Run frontend tests and lint**
+
+```bash
+cd web && npm run type-check && npm run lint
+```
+
+**Step 8: Commit**
+
+```bash
+git add web/src/views/ForgotPasswordView.vue web/src/views/ResetPasswordView.vue web/src/views/VerifyEmailView.vue web/src/router/index.ts web/src/stores/auth.ts web/src/views/LoginView.vue
+git commit -m "feat(frontend): password reset and email verification pages"
+```
+
+---
+
+### Task 5: CORS middleware
 
 **Files:**
 - Modify: `go.mod` / `go.sum` — add `github.com/go-chi/cors`
 - Modify: `internal/config/config.go` — add CORS config
 - Modify: `internal/api/server.go` — add CORS middleware
 - Create: `internal/api/middleware_cors_test.go`
+
+**Context note:** The Vue 3 frontend is now implemented and embedded in the Go binary (`web/` package). In production, the SPA is served from the same origin (no CORS needed for the built-in UI). In dev, Vite proxies API calls to `:8080` (also no CORS needed). CORS is therefore primarily for external API consumers calling from browsers and non-standard deployment configurations. Still worth implementing — it's a small lift and the right default for a public API.
 
 **Design decisions:**
 - Use `github.com/go-chi/cors` — standard chi ecosystem CORS middleware
@@ -757,7 +861,7 @@ git commit -m "feat(api): CORS middleware with configurable allowed origins — 
 
 ## Phase 6B: Missing Features & Broken Workflows
 
-### Task 5: Fix invite-only first-user bootstrap
+### Task 6: Fix invite-only first-user bootstrap
 
 **Files:**
 - Modify: `internal/api/auth.go` — allow first registration regardless of mode
@@ -811,8 +915,7 @@ if srv.cfg.RegistrationMode != "open" {
 }
 ```
 
-Add sqlc query: `-- name: CountUsers :one SELECT COUNT(*) FROM users;`
-Add store wrapper: `func (s *Store) CountUsers(ctx context.Context) (int64, error)` using `withBypassTx`.
+**NOTE:** The `CountUsers` store method already exists (`internal/store/auth.go:59`) with a sqlc query. No need to create it — just call `srv.store.CountUsers(ctx)` in the registration handler.
 
 **Step 3: Run tests, verify pass. Lint. Commit.**
 
@@ -822,7 +925,7 @@ git commit -m "fix(auth): allow first-user bootstrap in invite-only mode"
 
 ---
 
-### Task 6: Invitation email delivery
+### Task 7: Invitation email delivery
 
 **Files:**
 - Create: `internal/notify/templates/email_invitation.html.tmpl`
@@ -929,7 +1032,7 @@ git commit -m "feat(api): send invitation emails via SMTP — TDD"
 
 ---
 
-### Task 7: Channel test notification
+### Task 8: Channel test notification
 
 **Files:**
 - Create: `internal/api/channel_test_notification_test.go`
@@ -999,7 +1102,7 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 **Step 3: Register route**
 
-In `server.go`, inside the channels route group (after Task 7 fixes RBAC to admin):
+In `server.go`, inside the channels route group (after Task 9 fixes RBAC to admin):
 
 ```go
 r.Post("/{id}/test", srv.testChannelHandler)
@@ -1013,137 +1116,9 @@ git commit -m "feat(api): channel test notification endpoint — TDD"
 
 ---
 
-### Task 8: Admin feed management endpoints
+### ~~Admin feed management endpoints~~ — DROPPED (already implemented)
 
-**Files:**
-- Create: `internal/api/admin_feeds.go`
-- Create: `internal/api/admin_feeds_test.go`
-- Modify: `internal/api/server.go` — register admin routes
-- Create: `internal/api/middleware_system_admin.go`
-- Create: `internal/api/middleware_system_admin_test.go`
-
-**Design decisions:**
-- **Auth model:** These are global endpoints (feeds are not org-scoped). Access requires the user to be an admin or owner in at least one org. This is a pragmatic choice for self-hosted deployments where the instance operator is typically an org admin. For future SaaS, a dedicated super-admin role would be needed — but that's YAGNI now.
-- New middleware: `requireSystemAdmin()` — checks `RequireAuthenticated()` first, then queries `org_members` for admin/owner role in any org
-- `GET /api/v1/admin/feeds` — list all rows from `feed_sync_state` table
-- `POST /api/v1/admin/feeds/{feed}/run` — enqueue a `feed_ingest` job for the specified feed via `worker.Pool`. Returns 202 Accepted. The job queue's `lock_key` prevents duplicate concurrent runs.
-- Feed names must match a known adapter name (validate against a hardcoded list)
-
-**Step 1: Write system admin middleware tests**
-
-Create `internal/api/middleware_system_admin_test.go`:
-
-```go
-func TestSystemAdmin_OwnerAllowed(t *testing.T)
-    // User is owner in an org → 200
-
-func TestSystemAdmin_AdminAllowed(t *testing.T)
-    // User is admin in an org → 200
-
-func TestSystemAdmin_MemberDenied(t *testing.T)
-    // User is only a member (no admin/owner role anywhere) → 403
-
-func TestSystemAdmin_UnauthenticatedDenied(t *testing.T)
-    // No auth → 401
-```
-
-**Step 2: Implement system admin middleware**
-
-Create `internal/api/middleware_system_admin.go`:
-
-```go
-func (srv *Server) requireSystemAdmin(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        userID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
-        if !ok {
-            http.Error(w, "unauthorized", http.StatusUnauthorized)
-            return
-        }
-        // Query: SELECT EXISTS(SELECT 1 FROM org_members WHERE user_id = $1 AND role IN ('admin', 'owner'))
-        isAdmin, err := srv.store.IsSystemAdmin(r.Context(), userID)
-        if err != nil || !isAdmin {
-            http.Error(w, "forbidden: system admin required", http.StatusForbidden)
-            return
-        }
-        next.ServeHTTP(w, r)
-    })
-}
-```
-
-Add sqlc query and store method for `IsSystemAdmin`.
-
-**Step 3: Write failing handler tests**
-
-Create `internal/api/admin_feeds_test.go`:
-
-```go
-func TestAdminListFeeds(t *testing.T)
-    // As system admin, GET /api/v1/admin/feeds
-    // Verify: returns array of feed sync states
-
-func TestAdminListFeeds_Unauthorized(t *testing.T)
-    // As member (not admin) → 403
-
-func TestAdminTriggerFeedRun(t *testing.T)
-    // As system admin, POST /api/v1/admin/feeds/nvd/run
-    // Verify: 202 Accepted, job enqueued in job_queue
-
-func TestAdminTriggerFeedRun_UnknownFeed(t *testing.T)
-    // POST /api/v1/admin/feeds/unknown/run
-    // Verify: 400 (unknown feed name)
-
-func TestAdminTriggerFeedRun_DuplicateRun(t *testing.T)
-    // Trigger twice quickly
-    // Verify: second returns 409 Conflict (already running/pending)
-```
-
-**Step 4: Implement handlers**
-
-Create `internal/api/admin_feeds.go`:
-
-```go
-// Known feed adapter names — must match what's registered in the worker.
-var knownFeeds = []string{"nvd", "mitre", "kev", "osv", "ghsa", "epss"}
-
-func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request)
-    // Query feed_sync_state table, return all rows as JSON
-
-func (srv *Server) triggerFeedRunHandler(w http.ResponseWriter, r *http.Request)
-    // 1. Extract feed name from URL path
-    // 2. Validate against knownFeeds
-    // 3. Enqueue job: srv.store.EnqueueJob(ctx, "feed_ingest", 0, payload, "feed:"+feedName, 1, time.Now())
-    //    lock_key prevents duplicate runs
-    // 4. Return 202
-```
-
-Add sqlc query for listing all feed sync states:
-```sql
--- name: ListFeedSyncStates :many
-SELECT feed_name, cursor_json, last_success_at, last_attempt_at,
-       consecutive_failures, last_error, backoff_until
-FROM feed_sync_state
-ORDER BY feed_name;
-```
-
-**Step 5: Register routes**
-
-In `server.go`, add a new admin route group:
-
-```go
-// ── Admin routes (system-admin only, not org-scoped) ─────────────────────
-apiRouter.Route("/admin", func(r chi.Router) {
-    r.Use(srv.requireAuth)
-    r.Use(srv.requireSystemAdmin)
-    r.Get("/feeds", srv.listFeedsHandler)
-    r.Post("/feeds/{feed}/run", srv.triggerFeedRunHandler)
-})
-```
-
-**Step 6: Run tests, verify pass. Lint. Commit.**
-
-```bash
-git commit -m "feat(api): admin feed management endpoints with system-admin auth — TDD"
-```
+> **Audit note (2026-03-08):** Originally planned as a task here, this was fully implemented during Phase 5f. Admin feed endpoints (`GET /admin/feeds`, `POST /admin/feeds/{feed}/run`) exist in `internal/api/feeds.go`, routes are registered in `server.go:199-200`, and auth uses `RequireSiteAdmin()` middleware backed by `users.is_site_admin` column (migration 000030). The auth model is better than what this plan originally specified ("admin in any org") — a dedicated site admin flag is more correct. Frontend feed status dashboard also exists. No action needed.
 
 ---
 
@@ -1197,104 +1172,216 @@ git commit -m "fix(api): restrict channel CRUD to admin/owner role per PLAN.md �
 
 ## Phase 6C: PLAN.md Reconciliation
 
-### Task 10: Update Appendix B
+### Task 10: Reconcile Appendix B with implemented API
 
 **Files:**
 - Modify: `PLAN.md` — Appendix B section
 
-**This task updates the endpoint specification to match reality. No code changes.**
+**This task rewrites Appendix B to match the actual implemented API. No code changes.**
 
-**Step 1: Add missing implemented endpoints to Appendix B**
+**Audit note (2026-03-08):** The original plan listed 21 missing endpoints, but 324 commits have landed since then — including SSO, audit logging, AI endpoints, delivery management, tier endpoints, and more. Four of the originally-listed endpoints (forgot-password, reset-password, verify-email, resend-verification) don't exist yet because they're from Phase 6A Tasks 1-2. This task should be done AFTER Phase 6A and 6B are complete, so it captures the final API surface.
 
-The following 21 endpoints exist in the implementation but are missing from Appendix B. Add them to the appropriate sections:
+**Approach:** Replace the current Appendix B with a comprehensive list derived from `server.go` route registrations, `auth.go` huma registrations, and `cves.go` huma registrations. The implementation is the source of truth — PLAN.md should match reality.
 
-**Auth section — add:**
+**Step 1: Rewrite Appendix B**
+
+The full implemented API surface (as of Phase 6B completion) should include:
+
+**Infrastructure (no auth):**
 ```
-- `GET /api/v1/auth/me` — current user profile + org memberships (authenticated)
-- `POST /api/v1/auth/change-password` — change password (authenticated, native auth only)
-- `GET /api/v1/auth/invitations/{token}` — public invitation detail (no auth)
+- `GET /healthz` — health check (DB ping)
+- `GET /metrics` — Prometheus metrics
+```
+
+**Public / Global (no auth, huma):**
+```
+- `GET /api/v1/cves` — paginated search with filters/facets
+- `GET /api/v1/cves/{cve_id}` — canonical CVE detail
+- `GET /api/v1/cves/{cve_id}/sources` — per-source comparison
+```
+
+**Auth (huma, rate-limited):**
+```
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me` — current user profile + org memberships
+- `POST /api/v1/auth/change-password` — change password (authenticated)
+- `GET /api/v1/auth/invitations/{token}` — public invitation detail
 - `POST /api/v1/auth/invitations/{token}/accept` — accept invitation (authenticated)
-- `POST /api/v1/auth/forgot-password` — request password reset (public)
-- `POST /api/v1/auth/reset-password` — reset password with token (public)
-- `POST /api/v1/auth/verify-email` — verify email with token (public)
-- `POST /api/v1/auth/resend-verification` — resend verification email (authenticated)
+- `GET /api/v1/auth/providers` — list available auth providers
+- `POST /api/v1/auth/forgot-password` — request password reset (Phase 6A Task 1)
+- `POST /api/v1/auth/reset-password` — reset password with token (Phase 6A Task 1)
+- `POST /api/v1/auth/verify-email` — verify email with token (Phase 6A Task 2)
+- `POST /api/v1/auth/resend-verification` — resend verification email (Phase 6A Task 2)
 ```
 
-**Org management section — add:**
+**SSO (chi, rate-limited/authenticated):**
 ```
-- `POST /api/v1/orgs/{org_id}/invitations` — create invitation (admin/owner)
-- `GET /api/v1/orgs/{org_id}/invitations` — list pending invitations (admin/owner)
-- `DELETE /api/v1/orgs/{org_id}/invitations/{id}` — cancel invitation (admin/owner)
-```
-
-**Alert rules section — add:**
-```
-- `GET /api/v1/orgs/{org_id}/alert-rules/{id}/channels` — list channels bound to rule
-- `PUT /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — bind channel to rule
-- `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — unbind channel
+- `POST /api/v1/auth/discover` — SSO email domain discovery (public, rate-limited)
+- `GET /api/v1/auth/oauth/github` — GitHub OAuth init (redirect)
+- `GET /api/v1/auth/oauth/github/callback` — GitHub OAuth callback
+- `GET /api/v1/auth/oauth/google` — Google OIDC init (redirect)
+- `GET /api/v1/auth/oauth/google/callback` — Google OIDC callback
+- `GET /api/v1/auth/oidc/{connection_id}/login` — Generic OIDC SSO login
+- `GET /api/v1/auth/oidc/callback` — Generic OIDC callback
+- `GET /api/v1/auth/oidc/link-callback` — OIDC identity link callback
 ```
 
-**Channels section — add:**
+**Admin (site-admin only, chi):**
 ```
-- `POST /api/v1/orgs/{org_id}/channels/{id}/rotate-secret` — rotate webhook signing secret (admin/owner)
-- `POST /api/v1/orgs/{org_id}/channels/{id}/clear-secondary` — clear secondary signing secret (admin/owner)
-```
-
-**Reports section — add:**
-```
-- `GET /api/v1/orgs/{org_id}/reports/{id}/channels` — list channels bound to report
-- `PUT /api/v1/orgs/{org_id}/reports/{id}/channels/{channel_id}` — bind channel to report
-- `DELETE /api/v1/orgs/{org_id}/reports/{id}/channels/{channel_id}` — unbind channel
+- `GET /api/v1/admin/feeds` — feed sync status
+- `POST /api/v1/admin/feeds/{feed}/run` — trigger feed re-run (202 Accepted)
 ```
 
-**Saved searches section — add:**
+**Org management (role-gated, chi):**
 ```
-- `POST /api/v1/orgs/{org_id}/saved-searches/{id}/execute` — execute saved search
-```
-
-**Infrastructure section — add:**
-```
-- `GET /metrics` — Prometheus metrics endpoint (no auth)
-```
-
-**Step 2: Fix structural mismatches**
-
-The implementation restructured some endpoints from the original spec. Update Appendix B to match the implementation (which is the better design):
-
-a) **Alert events:** Replace `GET /api/v1/orgs/{org_id}/alert-rules/{id}/events` with:
-```
-- `GET /api/v1/orgs/{org_id}/alert-events` — list alert events (filters: ?rule_id=, ?cve_id=, ?last_match_state=, ?since=)
-```
-Add a note: "Flat org-level endpoint with optional filters, rather than nested under individual rules, for cross-rule querying."
-
-b) **Deliveries:** Replace `GET .../channels/{id}/deliveries` and `POST .../channels/{id}/deliveries/{delivery_id}/replay` with:
-```
-- `GET /api/v1/orgs/{org_id}/deliveries` — list deliveries (filters: ?channel_id=, ?rule_id=, ?status=)
-- `GET /api/v1/orgs/{org_id}/deliveries/{id}` — delivery detail
-- `POST /api/v1/orgs/{org_id}/deliveries/{id}/replay` — re-enqueue failed delivery (admin/owner)
+- `POST /api/v1/orgs` — create org (authenticated)
+- `GET /api/v1/orgs/{org_id}` — org detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}` — update org settings (admin+)
+- `GET /api/v1/orgs/{org_id}/tier` — org tier + resolved limits (viewer+)
+- `GET /api/v1/orgs/{org_id}/members` — list members (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/members/{user_id}` — update member role (admin+)
+- `DELETE /api/v1/orgs/{org_id}/members/{user_id}` — remove member (admin+)
+- `POST /api/v1/orgs/{org_id}/invitations` — create invitation (admin+)
+- `GET /api/v1/orgs/{org_id}/invitations` — list pending invitations (admin+)
+- `DELETE /api/v1/orgs/{org_id}/invitations/{id}` — cancel invitation (admin+)
 ```
 
-c) **Member invitation:** Replace `POST /api/v1/orgs/{org_id}/members` (invite) with the invitations endpoints listed above. Keep `POST /members` only if it has a non-invitation purpose (it doesn't — remove).
+**API keys:**
+```
+- `POST /api/v1/orgs/{org_id}/api-keys` — create API key (member+)
+- `GET /api/v1/orgs/{org_id}/api-keys` — list API keys (viewer+)
+- `DELETE /api/v1/orgs/{org_id}/api-keys/{id}` — revoke API key (viewer+)
+```
 
-d) **Group member deletion:** Update spec to match implementation:
+**Watchlists:**
 ```
-- `DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` — remove member from group
+- `GET /api/v1/orgs/{org_id}/watchlists` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/watchlists` — create (member+)
+- `GET /api/v1/orgs/{org_id}/watchlists/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/watchlists/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/watchlists/{id}` — delete (member+)
+- `GET /api/v1/orgs/{org_id}/watchlists/{id}/items` — list items (viewer+)
+- `POST /api/v1/orgs/{org_id}/watchlists/{id}/items` — add item (member+)
+- `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item (member+)
 ```
 
-e) **Watchlist item deletion:** Update spec to match implementation:
+**Notification channels (admin+ for mutations after Task 9 RBAC fix):**
 ```
-- `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item
+- `GET /api/v1/orgs/{org_id}/channels` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/channels` — create (admin+)
+- `GET /api/v1/orgs/{org_id}/channels/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/channels/{id}` — update (admin+)
+- `DELETE /api/v1/orgs/{org_id}/channels/{id}` — delete (admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/rotate-secret` — rotate webhook signing secret (admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/clear-secondary` — clear secondary signing secret (admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/test` — send test notification (Phase 6B Task 8, admin+)
 ```
+
+**Alert rules:**
+```
+- `GET /api/v1/orgs/{org_id}/alert-rules` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/alert-rules` — create (member+)
+- `POST /api/v1/orgs/{org_id}/alert-rules/validate` — syntax validation (viewer+)
+- `GET /api/v1/orgs/{org_id}/alert-rules/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/alert-rules/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}` — delete (member+)
+- `POST /api/v1/orgs/{org_id}/alert-rules/{id}/dry-run` — test against current data (viewer+)
+- `GET /api/v1/orgs/{org_id}/alert-rules/{id}/channels` — list bound channels (viewer+)
+- `PUT /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — bind channel (member+)
+- `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — unbind channel (member+)
+```
+
+**Alert events (flat, not nested under rules):**
+```
+- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: ?rule_id=, ?cve_id=, ?last_match_state=, ?since=)
+```
+
+**Deliveries (flat, not nested under channels):**
+```
+- `GET /api/v1/orgs/{org_id}/deliveries` — list (viewer+, filters: ?channel_id=, ?rule_id=, ?status=)
+- `GET /api/v1/orgs/{org_id}/deliveries/{id}` — detail (viewer+)
+- `POST /api/v1/orgs/{org_id}/deliveries/{id}/replay` — re-enqueue failed delivery (admin+)
+```
+
+**Reports:**
+```
+- `GET /api/v1/orgs/{org_id}/reports` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/reports` — create (member+)
+- `GET /api/v1/orgs/{org_id}/reports/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/reports/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/reports/{id}` — delete (member+)
+- `GET /api/v1/orgs/{org_id}/reports/{id}/channels` — list bound channels (viewer+)
+- `PUT /api/v1/orgs/{org_id}/reports/{id}/channels/{channel_id}` — bind channel (member+)
+- `DELETE /api/v1/orgs/{org_id}/reports/{id}/channels/{channel_id}` — unbind channel (member+)
+```
+
+**AI (viewer+):**
+```
+- `POST /api/v1/orgs/{org_id}/ai/nl-search` — natural language → CVE search
+- `POST /api/v1/orgs/{org_id}/ai/summarize/{cve_id}` — CVE summarization
+```
+
+**Saved searches:**
+```
+- `GET /api/v1/orgs/{org_id}/saved-searches` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/saved-searches` — create (member+)
+- `GET /api/v1/orgs/{org_id}/saved-searches/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/saved-searches/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/saved-searches/{id}` — delete (member+)
+- `POST /api/v1/orgs/{org_id}/saved-searches/{id}/execute` — execute (viewer+)
+```
+
+**Groups:**
+```
+- `GET /api/v1/orgs/{org_id}/groups` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/groups` — create (admin+)
+- `GET /api/v1/orgs/{org_id}/groups/{group_id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/groups/{group_id}` — update (admin+)
+- `DELETE /api/v1/orgs/{org_id}/groups/{group_id}` — delete (admin+)
+- `GET /api/v1/orgs/{org_id}/groups/{group_id}/members` — list members (viewer+)
+- `POST /api/v1/orgs/{org_id}/groups/{group_id}/members` — add member (admin+)
+- `DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` — remove member (admin+)
+```
+
+**SSO connections (owner only, enterprise tier):**
+```
+- `POST /api/v1/orgs/{org_id}/sso` — create SSO connection (owner)
+- `GET /api/v1/orgs/{org_id}/sso` — get SSO connection (owner)
+- `PATCH /api/v1/orgs/{org_id}/sso` — update SSO connection (owner)
+- `DELETE /api/v1/orgs/{org_id}/sso` — delete SSO connection (owner)
+- `PUT /api/v1/orgs/{org_id}/sso/domains` — set email domains for SSO (owner)
+- `GET /api/v1/orgs/{org_id}/sso/link` — init identity linking (member+)
+```
+
+**Audit log (admin+, enterprise tier):**
+```
+- `GET /api/v1/orgs/{org_id}/audit-log` — list audit entries (admin+)
+```
+
+**Step 2: Remove obsolete Appendix B entries**
+
+Remove these specced-but-not-implemented entries that were replaced by better designs:
+- `GET /api/v1/orgs/{org_id}/alert-rules/{id}/events` → replaced by flat `/alert-events`
+- `GET /api/v1/orgs/{org_id}/channels/{id}/deliveries` → replaced by flat `/deliveries`
+- `POST /api/v1/orgs/{org_id}/channels/{id}/deliveries/{delivery_id}/replay` → replaced by `/deliveries/{id}/replay`
+- `GET/POST /api/v1/orgs/{org_id}/members` (invite via POST) → replaced by `/invitations` sub-resource
+
+Remove specced-but-deferred items (already documented in Appendix A of this plan):
+- `GET/PATCH /api/v1/orgs/{org_id}/cves/{cve_id}/annotations` (CVE annotations — deferred)
+- `GET /api/v1/watchlist-templates` + `POST .../from-template` (watchlist templates — deferred)
 
 **Step 3: Update channel permissions note**
 
-Update the channels section to note that CRUD requires admin/owner role (matching §7.3 and the Task 7 fix).
+Update the channels section to note that CRUD requires admin/owner role (matching §7.3 and the Task 9 fix).
 
 **Step 4: Verify consistency. Commit.**
 
 ```bash
 git add PLAN.md
-git commit -m "docs: reconcile Appendix B with implemented API — 21 endpoints added, mismatches fixed"
+git commit -m "docs: rewrite Appendix B to match implemented API — comprehensive endpoint inventory"
 ```
 
 ---
@@ -1304,39 +1391,58 @@ git commit -m "docs: reconcile Appendix B with implemented API — 21 endpoints 
 **Files:**
 - Modify: `PLAN.md`
 
+**Audit note (2026-03-08):** Two items from the original plan were false positives and have been removed:
+- ~~GAP-022 (user_identities scope)~~: Already correctly listed under "Org/Tenant scoped" in §4.2.
+- ~~GAP-019 (stale RLS note in §19)~~: The "deferred to P1" text is historical context in the resolved research backlog, not a stale requirement. §6.2 correctly documents the actual implementation.
+
 **Step 1: Fix CVE status enum (GAP-021)**
 
 In §4.3, the `cves.status` definition lists `new|modified|analyzed|rejected|unknown`. Add `withdrawn` to the enum — it's used by OSV/GHSA for retracted advisories, and the evaluator (§10.3) already filters `NOT IN ('rejected', 'withdrawn')`.
 
 Change to: `new|modified|analyzed|rejected|withdrawn|unknown`
 
-**Step 2: Fix user_identities categorization (GAP-022)**
+**Step 2: Remove corrupt job_queue fragment (GAP-023)**
 
-In §4.2, `user_identities` is listed under "Org/Tenant scoped" tables. Move it to the global/shared section — it links users to OAuth providers, not to orgs. It has no `org_id` column and no RLS.
+In §18.1 (around lines 1637-1640), there are orphaned SQL fragments after the "Alternatives (revisit later)" bullet list:
+```
+ptz,
+    last_error  text
+);
+```
+These are leftover from a document corruption — the complete `job_queue` schema is correctly defined earlier in §18.1. Delete these orphaned lines and the dangling closing ``` fence.
 
-**Step 3: Fix stale RLS note (GAP-019)**
+**Step 3: Fix "Phase 6" references (GAP-020)**
 
-In §19 research backlog, item 3 says RLS is "deferred to P1." §6.2 explicitly says RLS is implemented in Phase 2. Remove or correct the stale note in §19 to match §6.2.
+§3.2 (line 209) defers NVD attribution to "Phase 6 (UI)." The frontend is now implemented. Change the reference to: "deferred until frontend implementation" or "see §20 (frontend)". Also fix the §18.3 comment "CSP — set per-response type when frontend is added (Phase 6+)" — the frontend is added; update this note.
 
-**Step 4: Remove corrupt job_queue fragment (GAP-023)**
+**Step 4: Update §18 phase summary**
 
-In §18.1, there's a truncated sentence ending mid-word and orphaned SQL fragments. Clean up the corrupted text.
+§18 currently defines Phases 0-5 only. Add entries for Phase 6 (this plan — backend cleanup & production readiness) and note that the frontend was implemented alongside Phase 5 work. Also expand Phase 5's description to reflect what was actually built (it currently just says "audit log, billing hooks, SSO" but Phase 5 also delivered tiering, data retention, vendor feed enrichment, and site admin).
 
-**Step 5: Fix "Phase 6" references (GAP-020)**
+Update Phase 5:
+```
+**Phase 5 — Hardening and SaaS readiness**
+- Org tiering with resolved limits + tier-gated middleware
+- Data retention automation (bounded-batch cleanup, tier-aware windows)
+- Audit logging with non-blocking writes + secret redaction
+- SSO/OIDC connections + email domain discovery + identity linking
+- Vendor feed enrichment (MSRC, Red Hat) + site admin role for feed management
+```
 
-§3.2 defers NVD attribution to "Phase 6 (UI)." Since §18 only defines Phases 0-5, and this Phase 6 document exists for backend cleanup (not UI), either:
-- Change the reference to "deferred until frontend implementation"
-- Or reference §20 (frontend) instead
+Add Phase 6:
+```
+**Phase 6 — Backend cleanup & production readiness**
+- Security hardening: password reset, email verification, account lockout, CORS
+- Missing workflows: invite-only bootstrap fix, invitation emails, channel test endpoint
+- RBAC fix: channel mutations restricted to admin/owner per §7.3
+- PLAN.md reconciliation: Appendix B rewrite, internal inconsistency fixes
+```
 
-**Step 6: Update §18 phase summary**
-
-Add a Phase 6 entry to §18 summarizing what this phase covers, so the phase list is complete.
-
-**Step 7: Commit.**
+**Step 5: Commit.**
 
 ```bash
 git add PLAN.md
-git commit -m "docs: fix PLAN.md internal inconsistencies — status enum, categorization, stale notes"
+git commit -m "docs: fix PLAN.md internal inconsistencies — status enum, corrupt fragment, phase tracker"
 ```
 
 ---
@@ -1375,7 +1481,7 @@ The gap analysis identified the following items that are NOT addressed in Phase 
 |------|---------|----------|--------------|
 | CVE annotations/assignment | GAP-025 | LOW | Assign CVEs to team members, add tags/notes. Useful workflow feature but not core alerting functionality. Schema exists in PLAN.md Appendix A but needs endpoint design. |
 | Watchlist bootstrap templates | GAP-026 | LOW | Pre-built watchlist templates for common ecosystems. Nice onboarding UX but not blocking. Endpoints specced in Appendix B. |
-| Generic OIDC/SAML (beyond Phase 5 SSO) | GAP-003 | LOW | Phase 5D implements SSO with OIDC. Generic SAML support (`crewjam/saml`) is enterprise-specific and can be added when demanded. |
+| SAML SSO support | GAP-003 | LOW | Phase 5D implemented generic OIDC SSO with identity linking. SAML support (`crewjam/saml`) is enterprise-specific and can be added when demanded. |
 
 ### Operational
 
@@ -1390,14 +1496,14 @@ The gap analysis identified the following items that are NOT addressed in Phase 
 | Graceful shutdown notification draining | GAP-044 | MEDIUM | Edge case: shutdown during webhook HTTP call leaves delivery in `processing` state. Stale lock detector handles recovery. Not urgent. |
 | Migration rollback testing | GAP-045 | MEDIUM | Down migrations exist but aren't systematically tested. Important for production confidence but not a feature. |
 | Search index rebuild admin endpoint | GAP-018 | LOW | Admin action to rebuild `cve_search_index`. Useful for recovery but rarely needed. |
-| Admin feed re-run behavior details | GAP-017 | LOW | Partially addressed by Task 8. Full spec (cursor reset, full re-sync) needs design based on operator needs. |
+| Admin feed re-run behavior details | GAP-017 | LOW | Basic trigger exists (Phase 5f admin feeds). Full spec (cursor reset, full re-sync) needs design based on operator needs. |
 
 ### Billing & SaaS
 
 | Item | Gap Ref | Severity | Why Deferred |
 |------|---------|----------|--------------|
 | Billing hooks | GAP-014 | MEDIUM (SaaS) | Payment integration, billing cycles, downgrade handling. Entirely SaaS-specific — self-hosted deployments don't need this. Should be designed alongside SaaS launch. |
-| NVD attribution notice | GAP-001 | MEDIUM | NVD Terms of Use require a display notice. Depends on frontend (UI element). Backend could serve the required text via an endpoint if needed. |
+| NVD attribution notice | GAP-001 | LOW | NVD Terms of Use require a display notice. Frontend now exists — this is a small UI addition (footer text or about page). No backend work needed. |
 
 ### Org Management
 
@@ -1426,7 +1532,7 @@ The gap analysis identified the following items that are NOT addressed in Phase 
 | Account lockout in-memory, not DB-backed | Single-instance MVP. DB-backed lockout adds complexity for multi-instance deployments that don't exist yet. YAGNI. |
 | Lockout check before argon2, with timing normalization | Saves CPU (argon2 is expensive) while preventing lockout status enumeration via timing side channel. |
 | CORS defaults: localhost in dev, nothing in production | Safe default — production requires explicit configuration. Dev defaults match common frontend dev servers. |
-| System admin = admin/owner in any org | Pragmatic for self-hosted. Instance operator is typically an org admin. SaaS would need a dedicated super-admin role. |
+| Site admin via `is_site_admin` flag (supersedes original "admin in any org" design) | Phase 5f implemented a dedicated `users.is_site_admin` boolean (migration 000030) with `RequireSiteAdmin()` middleware. Cleaner than the original plan's "admin/owner in any org" approach — separates site-level privileges from org-level RBAC. |
 | Channel RBAC: admin not member | Channels affect all org members. PLAN.md §7.3 explicitly restricts channel management to admin/owner. The member-level access was a bug. |
 | Admin feed re-run via job queue (async, 202) | Feed syncs can take minutes (NVD full sync). Synchronous response would time out. Job queue's lock_key prevents duplicate concurrent runs. |
 | Invite-only bootstrap: allow first registration regardless of mode | The alternative (CLI `create-admin` command) requires shell access, which is more complex for containerized deployments. Allowing the first registration is the smallest fix, works in all deployment models, and is self-documenting (first user = admin). |

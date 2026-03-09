@@ -206,7 +206,7 @@ Without this migration, the database ends up with two separate rows (`GHSA-1234`
 
 **Exception:** The EPSS adapter returns `[]EnrichmentPatch` (just `{cve_id, epss_score}`) rather than `[]CanonicalPatch`, since it is not a CVE source.
 
-**NVD attribution requirement (required by NVD Terms of Use):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ This is a **frontend item** deferred to Phase 6 (UI). A `TODO(attribution): NVD notice required in UI per NVD ToU` comment must be present in `internal/feed/nvd/adapter.go` from Phase 1 onwards to ensure it is not forgotten.
+**NVD attribution requirement (required by NVD Terms of Use):** Any product using the NVD API must display the following notice in its user interface: _"This product uses the NVD API but is not endorsed or certified by the NVD."_ This is a **frontend item** (see §20 — Frontend). A `TODO(attribution): NVD notice required in UI per NVD ToU` comment must be present in `internal/feed/nvd/adapter.go` from Phase 1 onwards to ensure it is not forgotten.
 
 ### 3.3 Ingestion Scheduling, Cursoring, and Idempotency
 
@@ -397,7 +397,7 @@ Within the same DB transaction:
 ### 4.3 Canonical CVE Record (`cves`)
 Fields (illustrative):
 - `cve_id` (PK)
-- `status` (`new|modified|analyzed|rejected|unknown`)
+- `status` (`new|modified|analyzed|rejected|withdrawn|unknown`)
 - `date_published`, `date_modified_source_max`, `date_modified_canonical`, `date_first_seen`
 - `description_primary`
 - `severity` (`none|low|medium|high|critical`)
@@ -1534,8 +1534,20 @@ Behavior:
 - quotas + caching + metrics
 
 **Phase 5 — Hardening and SaaS readiness**
-- audit log, billing hooks, SSO (as planned)
-- data retention policy automation (section 21)
+- Org tiering with resolved limits + tier-gated middleware
+- Data retention automation (bounded-batch cleanup, tier-aware windows)
+- Audit logging with non-blocking writes + secret redaction
+- SSO/OIDC connections + email domain discovery + identity linking
+- Vendor feed enrichment (MSRC, Red Hat) + site admin role for feed management
+
+**Frontend** — Vue 3 + Vite SPA implemented alongside Phase 5 and embedded in the Go binary (same origin in production, Vite proxy in dev)
+
+**Phase 6 — Backend cleanup & production readiness**
+- Security hardening: password reset, email verification, account lockout, CORS
+- Missing workflows: invite-only bootstrap fix, invitation emails, channel test endpoint
+- RBAC fix: channel mutations restricted to admin/owner per §7.3
+- PLAN.md reconciliation: Appendix B rewrite, internal inconsistency fixes
+- Bug fix pass: 25 findings from 6 bug hunt reports — TOCTOU races, anti-enumeration, memory leaks, validation gaps, transaction helper compliance, concurrency safety
 
 ### 18.1 Worker Architecture (Decision)
 
@@ -1633,11 +1645,6 @@ ALTER TABLE job_queue SET (
 - Separate per-queue tables (more complexity, sometimes faster polling).
 - External queue (Redis, NATS, SQS) for very high throughput.
 - Advisory locks instead of partial unique index (more flexible; harder to inspect in DB).
-
-ptz,
-    last_error  text
-);
-```
 
 **Worker goroutines:**
 - One goroutine per queue type (configurable concurrency per queue).
@@ -1826,7 +1833,7 @@ r.Use(func(next http.Handler) http.Handler {
         w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
         // HSTS — only set when the server itself terminates TLS (not behind a TLS-terminating proxy)
         // w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
-        // CSP — set per-response type when frontend is added (Phase 6+)
+        // CSP — set per-response type based on content (API JSON vs SPA HTML)
         next.ServeHTTP(w, r)
     })
 })
@@ -2196,70 +2203,145 @@ See section 18.1 for full schema.
 
 ---
 
-# Appendix B — Endpoint Skeleton (API v1)
+# Appendix B — API Endpoint Reference (v1)
 
-**Public / Global:**
-- `GET /api/v1/healthz`
+> Comprehensive list of all implemented endpoints. Role requirements follow §7.3 permission matrix.
+
+**Infrastructure (no auth):**
+- `GET /healthz` — health check (DB ping)
+- `GET /metrics` — Prometheus metrics
+
+**Public CVE endpoints (no auth, huma-registered):**
 - `GET /api/v1/cves` — paginated search with filters/facets
-- `GET /api/v1/cves/{cve_id}` — canonical detail
+- `GET /api/v1/cves/{cve_id}` — canonical CVE detail
 - `GET /api/v1/cves/{cve_id}/sources` — per-source comparison
 
-**Admin (requires `admin` or `owner` role, or system-level API key):**
+**Auth (huma-registered, rate-limited):**
+- `POST /api/v1/auth/register` — create account (respects `REGISTRATION_MODE`)
+- `POST /api/v1/auth/login` — log in, receive auth cookies
+- `POST /api/v1/auth/refresh` — rotate refresh token, issue new access token
+- `POST /api/v1/auth/logout` — log out, clear auth cookies
+- `GET /api/v1/auth/me` — current user profile + org memberships
+- `POST /api/v1/auth/change-password` — change password (authenticated)
+- `GET /api/v1/auth/invitations/{token}` — public invitation detail
+- `POST /api/v1/auth/invitations/{token}/accept` — accept invitation (authenticated)
+- `GET /api/v1/auth/providers` — list configured auth providers + registration mode
+- `POST /api/v1/auth/forgot-password` — request password reset email (anti-enumeration: always 200)
+- `POST /api/v1/auth/reset-password` — reset password with token
+- `POST /api/v1/auth/verify-email` — verify email with token
+- `POST /api/v1/auth/resend-verification` — resend verification email (authenticated)
+
+**SSO (chi-registered, rate-limited/authenticated):**
+- `POST /api/v1/auth/discover` — SSO email domain discovery (public, rate-limited)
+- `GET /api/v1/auth/oauth/github` — GitHub OAuth init (redirect)
+- `GET /api/v1/auth/oauth/github/callback` — GitHub OAuth callback
+- `GET /api/v1/auth/oauth/google` — Google OIDC init (redirect)
+- `GET /api/v1/auth/oauth/google/callback` — Google OIDC callback
+- `GET /api/v1/auth/oidc/{connection_id}/login` — generic OIDC SSO login
+- `GET /api/v1/auth/oidc/callback` — generic OIDC callback
+- `GET /api/v1/auth/oidc/link-callback` — OIDC identity link callback
+
+**Admin (site-admin only, chi-registered):**
 - `GET /api/v1/admin/feeds` — feed sync status
-- `POST /api/v1/admin/feeds/{feed}/run` — trigger feed re-run
+- `POST /api/v1/admin/feeds/{feed}/run` — trigger feed re-run (202 Accepted)
 
-**Auth:**
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `POST /api/v1/auth/logout`
-- `GET /api/v1/auth/oauth/{provider}`, `GET /api/v1/auth/oauth/{provider}/callback`
+**Org management (role-gated, chi-registered):**
+- `POST /api/v1/orgs` — create org (authenticated)
+- `GET /api/v1/orgs/{org_id}` — org detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}` — update org settings (admin+)
+- `GET /api/v1/orgs/{org_id}/tier` — org tier + resolved limits (viewer+)
+- `GET /api/v1/orgs/{org_id}/members` — list members (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/members/{user_id}` — update member role (admin+)
+- `DELETE /api/v1/orgs/{org_id}/members/{user_id}` — remove member (admin+)
+- `POST /api/v1/orgs/{org_id}/invitations` — create invitation (admin+)
+- `GET /api/v1/orgs/{org_id}/invitations` — list pending invitations (admin+)
+- `DELETE /api/v1/orgs/{org_id}/invitations/{id}` — cancel invitation (admin+)
+- `POST /api/v1/orgs/{org_id}/invitations/{id}/resend` — resend invitation email (admin+)
 
-**Org management (role-gated per section 7.3):**
-- `POST /api/v1/orgs` — create org
-- `GET/PATCH /api/v1/orgs/{org_id}` — org settings
-- `GET/POST /api/v1/orgs/{org_id}/members` — list/invite members
-- `PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}` — update role / remove
-- `GET/POST /api/v1/orgs/{org_id}/groups`
-- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/groups/{group_id}`
-- `GET/POST/DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members`
+**API keys (chi-registered):**
+- `POST /api/v1/orgs/{org_id}/api-keys` — create API key (member+)
+- `GET /api/v1/orgs/{org_id}/api-keys` — list API keys (viewer+)
+- `DELETE /api/v1/orgs/{org_id}/api-keys/{id}` — revoke API key (viewer+)
 
-**Watchlists:**
-- `GET/POST /api/v1/orgs/{org_id}/watchlists`
-- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/watchlists/{id}`
-- `GET/POST/DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items`
+**Watchlists (chi-registered):**
+- `GET /api/v1/orgs/{org_id}/watchlists` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/watchlists` — create (member+)
+- `GET /api/v1/orgs/{org_id}/watchlists/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/watchlists/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/watchlists/{id}` — delete (member+)
+- `GET /api/v1/orgs/{org_id}/watchlists/{id}/items` — list items (viewer+)
+- `POST /api/v1/orgs/{org_id}/watchlists/{id}/items` — add item (member+)
+- `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item (member+)
 
-**Alert rules:**
-- `GET/POST /api/v1/orgs/{org_id}/alert-rules`
-- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/alert-rules/{id}`
-- `POST /api/v1/orgs/{org_id}/alert-rules/validate` — syntax/schema validation without saving
-- `POST /api/v1/orgs/{org_id}/alert-rules/{id}/dry-run` — run rule against current data without firing alerts
-- `GET /api/v1/orgs/{org_id}/alert-rules/{id}/events` — alert history for a rule
+**Notification channels (chi-registered, admin+ for mutations):**
+- `GET /api/v1/orgs/{org_id}/channels` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/channels` — create (admin+)
+- `GET /api/v1/orgs/{org_id}/channels/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/channels/{id}` — update (admin+)
+- `DELETE /api/v1/orgs/{org_id}/channels/{id}` — delete (admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/rotate-secret` — rotate webhook signing secret (admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/clear-secondary` — clear secondary signing secret (admin+)
+- `POST /api/v1/orgs/{org_id}/channels/{id}/test` — send test notification (admin+)
 
-**Notification channels:**
-- `GET/POST /api/v1/orgs/{org_id}/channels`
-- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/channels/{id}`
-- `POST /api/v1/orgs/{org_id}/channels/{id}/test` — send test notification
-- `GET /api/v1/orgs/{org_id}/channels/{id}/deliveries` — list delivery history (latest N, with status filter including `dead`)
-- `POST /api/v1/orgs/{org_id}/channels/{id}/deliveries/{delivery_id}/replay` — re-enqueue a dead-letter delivery (admin/owner only)
+**Alert rules (chi-registered):**
+- `GET /api/v1/orgs/{org_id}/alert-rules` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/alert-rules` — create (member+)
+- `POST /api/v1/orgs/{org_id}/alert-rules/validate` — syntax validation (viewer+)
+- `GET /api/v1/orgs/{org_id}/alert-rules/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/alert-rules/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}` — delete (member+)
+- `POST /api/v1/orgs/{org_id}/alert-rules/{id}/dry-run` — test against current data (viewer+)
+- `GET /api/v1/orgs/{org_id}/alert-rules/{id}/channels` — list bound channels (viewer+)
+- `PUT /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — bind channel (member+)
+- `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — unbind channel (member+)
 
-**Reports:**
-- `GET/POST /api/v1/orgs/{org_id}/reports`
-- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/reports/{id}`
+**Alert events (chi-registered, flat — not nested under rules):**
+- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=`)
 
-**API keys:**
-- `GET/POST /api/v1/orgs/{org_id}/api-keys`
-- `DELETE /api/v1/orgs/{org_id}/api-keys/{id}`
+**Deliveries (chi-registered, flat — not nested under channels):**
+- `GET /api/v1/orgs/{org_id}/deliveries` — list (viewer+, filters: `?channel_id=`, `?rule_id=`, `?status=`)
+- `GET /api/v1/orgs/{org_id}/deliveries/{id}` — detail (viewer+)
+- `POST /api/v1/orgs/{org_id}/deliveries/{id}/replay` — re-enqueue failed delivery (admin+)
 
-**Saved searches:**
-- `GET/POST /api/v1/orgs/{org_id}/saved-searches`
-- `GET/PATCH/DELETE /api/v1/orgs/{org_id}/saved-searches/{id}`
+**Reports (chi-registered):**
+- `GET /api/v1/orgs/{org_id}/reports` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/reports` — create (member+)
+- `GET /api/v1/orgs/{org_id}/reports/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/reports/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/reports/{id}` — delete (member+)
+- `GET /api/v1/orgs/{org_id}/reports/{id}/channels` — list bound channels (viewer+)
+- `PUT /api/v1/orgs/{org_id}/reports/{id}/channels/{channel_id}` — bind channel (member+)
+- `DELETE /api/v1/orgs/{org_id}/reports/{id}/channels/{channel_id}` — unbind channel (member+)
 
-**CVE annotations (including assignment):**
-- `GET/PATCH /api/v1/orgs/{org_id}/cves/{cve_id}/annotations` — set assignee, tags, notes, snooze state
+**Saved searches (chi-registered):**
+- `GET /api/v1/orgs/{org_id}/saved-searches` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/saved-searches` — create (member+)
+- `GET /api/v1/orgs/{org_id}/saved-searches/{id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/saved-searches/{id}` — update (member+)
+- `DELETE /api/v1/orgs/{org_id}/saved-searches/{id}` — delete (member+)
+- `POST /api/v1/orgs/{org_id}/saved-searches/{id}/execute` — execute (viewer+)
 
-**Watchlist templates:**
-- `GET /api/v1/watchlist-templates` — list available bootstrap templates (public)
-- `POST /api/v1/orgs/{org_id}/watchlists/from-template` — create watchlist from template
+**Groups (chi-registered):**
+- `GET /api/v1/orgs/{org_id}/groups` — list (viewer+)
+- `POST /api/v1/orgs/{org_id}/groups` — create (admin+)
+- `GET /api/v1/orgs/{org_id}/groups/{group_id}` — detail (viewer+)
+- `PATCH /api/v1/orgs/{org_id}/groups/{group_id}` — update (admin+)
+- `DELETE /api/v1/orgs/{org_id}/groups/{group_id}` — delete (admin+)
+- `GET /api/v1/orgs/{org_id}/groups/{group_id}/members` — list members (viewer+)
+- `POST /api/v1/orgs/{org_id}/groups/{group_id}/members` — add member (admin+)
+- `DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` — remove member (admin+)
 
-**AI:**
-- `POST /api/v1/orgs/{org_id}/ai/nl-search`
-- `POST /api/v1/orgs/{org_id}/ai/summarize/{cve_id}` (P1)
+**SSO connections (chi-registered, owner only, enterprise tier):**
+- `POST /api/v1/orgs/{org_id}/sso` — create SSO connection (owner)
+- `GET /api/v1/orgs/{org_id}/sso` — get SSO connection (owner)
+- `PATCH /api/v1/orgs/{org_id}/sso` — update SSO connection (owner)
+- `DELETE /api/v1/orgs/{org_id}/sso` — delete SSO connection (owner)
+- `PUT /api/v1/orgs/{org_id}/sso/domains` — set email domains for SSO (owner)
+- `GET /api/v1/orgs/{org_id}/sso/link` — init identity linking (member+)
+
+**Audit log (chi-registered, enterprise tier):**
+- `GET /api/v1/orgs/{org_id}/audit-log` — list audit entries (admin+)
+
+**AI (chi-registered):**
+- `POST /api/v1/orgs/{org_id}/ai/nl-search` — natural language CVE search (viewer+)
+- `POST /api/v1/orgs/{org_id}/ai/summarize/{cve_id}` — CVE summarization (viewer+)

@@ -50,7 +50,7 @@ const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (email, display_name, password_hash, password_hash_version)
 VALUES ($1, $2, $3, $4)
-RETURNING id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin
+RETURNING id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified
 `
 
 type CreateUserParams struct {
@@ -80,6 +80,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
+		&i.EmailVerified,
 	)
 	return i, err
 }
@@ -117,7 +118,7 @@ func (q *Queries) GetRefreshToken(ctx context.Context, jti uuid.UUID) (RefreshTo
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin FROM users WHERE email = $1 LIMIT 1
+SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified FROM users WHERE email = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -133,12 +134,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.CreatedAt,
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
+		&i.EmailVerified,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin FROM users WHERE id = $1 LIMIT 1
+SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified FROM users WHERE id = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -154,12 +156,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.CreatedAt,
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
+		&i.EmailVerified,
 	)
 	return i, err
 }
 
 const getUserByProviderID = `-- name: GetUserByProviderID :one
-SELECT u.id, u.email, u.display_name, u.password_hash, u.password_hash_version, u.token_version, u.created_at, u.last_login_at, u.is_site_admin FROM users u
+SELECT u.id, u.email, u.display_name, u.password_hash, u.password_hash_version, u.token_version, u.created_at, u.last_login_at, u.is_site_admin, u.email_verified FROM users u
 JOIN user_identities ui ON ui.user_id = u.id
 WHERE ui.provider = $1 AND ui.provider_user_id = $2
 LIMIT 1
@@ -183,6 +186,7 @@ func (q *Queries) GetUserByProviderID(ctx context.Context, arg GetUserByProvider
 		&i.CreatedAt,
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
+		&i.EmailVerified,
 	)
 	return i, err
 }

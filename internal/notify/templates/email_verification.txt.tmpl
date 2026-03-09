@@ -1,0 +1,11 @@
+{{define "subject"}}Verify your CVErt Ops email address{{end}}
+{{define "body"}}
+Email Verification
+==================
+
+Please verify your email address ({{.Email}}) for your CVErt Ops account.
+
+Verify your email: {{.VerifyURL}}
+
+This link expires in {{.ExpiresIn}}. If you didn't create this account, you can safely ignore this email.
+{{end}}

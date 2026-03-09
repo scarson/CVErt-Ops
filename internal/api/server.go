@@ -48,6 +48,8 @@ type Server struct {
 	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
 	llm            ai.LLMClient     // nil until SetAIDeps is called
 	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
+	lockout        *lockoutManager   // brute-force login protection
+	bootstrapMu    sync.Mutex        // serializes first-user bootstrap in invite-only mode
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -62,6 +64,14 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 	rl := newIPRateLimiter(rate.Limit(10.0/60), 10, evictTTL)
 	orgRL := newOrgRateLimiter(time.Now, evictTTL)
 	tc := newTierCache(time.Now, 30*time.Second, 5*time.Minute)
+	lockoutThreshold := cfg.LockoutThreshold
+	if lockoutThreshold == 0 {
+		lockoutThreshold = 5
+	}
+	lockoutDuration := cfg.LockoutDuration
+	if lockoutDuration == 0 {
+		lockoutDuration = 15 * time.Minute
+	}
 	srv := &Server{
 		store:        s,
 		cfg:          cfg,
@@ -70,6 +80,7 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 		orgRL:        orgRL,
 		tierCache:    tc,
 		ghAPIBaseURL: "https://api.github.com",
+		lockout:      newLockoutManager(lockoutThreshold, lockoutDuration, lockoutDuration, time.Now),
 	}
 
 	// ── GitHub OAuth (optional) ───────────────────────────────────────────────
@@ -125,6 +136,9 @@ func (srv *Server) Close() {
 	if srv.tierCache != nil {
 		srv.tierCache.Stop()
 	}
+	if srv.lockout != nil {
+		srv.lockout.Stop()
+	}
 }
 
 // Handler builds and returns the http.Handler.
@@ -145,6 +159,11 @@ func (srv *Server) Handler() http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	})
+
+	// ── CORS (after security headers, before other middleware) ──────────────
+	if corsHandler := srv.corsMiddleware(); corsHandler != nil {
+		r.Use(corsHandler)
+	}
 
 	// ── Standard chi middleware ───────────────────────────────────────────────
 	r.Use(middleware.RequestID)
@@ -225,6 +244,7 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createInvitationHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.listInvitationsHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{id}", srv.cancelInvitationHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{id}/resend", srv.resendInvitationHandler)
 			})
 
 			// API key management
@@ -253,13 +273,14 @@ func (srv *Server) Handler() http.Handler {
 			// Notification channel management
 			r.Route("/channels", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listChannelsHandler)
-				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createChannelHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createChannelHandler)
 				r.Route("/{id}", func(r chi.Router) {
 					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getChannelHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchChannelHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteChannelHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Post("/rotate-secret", srv.rotateSecretHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Post("/clear-secondary", srv.clearSecondarySecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.patchChannelHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/", srv.deleteChannelHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/rotate-secret", srv.rotateSecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/clear-secondary", srv.clearSecondarySecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/test", srv.testChannelHandler)
 				})
 			})
 

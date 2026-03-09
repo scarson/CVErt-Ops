@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -1013,7 +1014,285 @@ func TestCreateChannel_EmailHeaderInjection(t *testing.T) {
 	}
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── RBAC ──────────────────────────────────────────────────────────────────────
+
+// TestChannelMutations_RequireAdmin verifies that members cannot create, patch, delete,
+// rotate-secret, or clear-secondary channels (admin+ required for all mutations).
+func TestChannelMutations_RequireAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "owner@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "owner@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	ownerToken := cookieValue(loginResp, "access_token")
+
+	// Owner creates a channel for the mutation subtests to target.
+	channelBody := `{"name":"owner-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`
+	createResp := doCreateChannel(t, ctx, ts, ownerToken, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("owner create channel: got %d, want 201", createResp.StatusCode)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
+
+	// Create a second user and invite them as member.
+	doRegister(t, ctx, ts, "member@example.com", "test-password-1234")
+	memberLoginResp := doLogin(t, ctx, ts, "member@example.com", "test-password-1234")
+	defer memberLoginResp.Body.Close() //nolint:errcheck,gosec
+	memberToken := cookieValue(memberLoginResp, "access_token")
+
+	inviteBody := `{"email":"member@example.com","role":"member"}`
+	invReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+reg.OrgID+"/invitations", bytes.NewBufferString(inviteBody))
+	invReq.Header.Set("Content-Type", "application/json")
+	invReq.Header.Set("Cookie", "access_token="+ownerToken)
+	invReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	invResp, err := ts.Client().Do(invReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("invite member: %v", err)
+	}
+	invResp.Body.Close() //nolint:errcheck,gosec
+
+	invitations, _ := db.ListOrgInvitations(ctx, mustParseUUID(t, reg.OrgID)) //nolint:errcheck
+	if len(invitations) == 0 {
+		t.Fatal("no invitations found")
+	}
+	acceptReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/invitations/"+invitations[0].Token+"/accept", nil)
+	acceptReq.Header.Set("Cookie", "access_token="+memberToken)
+	acceptReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	acceptResp, err := ts.Client().Do(acceptReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("accept invitation: %v", err)
+	}
+	acceptResp.Body.Close() //nolint:errcheck,gosec
+
+	// Helper to make a member request and assert 403.
+	memberDo := func(t *testing.T, method, path string, body string) {
+		t.Helper()
+		var bodyReader *bytes.Buffer
+		if body != "" {
+			bodyReader = bytes.NewBufferString(body)
+		}
+		var reqBody interface{ Read([]byte) (int, error) }
+		if bodyReader != nil {
+			reqBody = bodyReader
+		}
+		req, _ := http.NewRequestWithContext(ctx, method,
+			ts.URL+"/api/v1/orgs/"+reg.OrgID+"/channels"+path, reqBody) //nolint:gosec // test URL
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "access_token="+memberToken)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, reqErr := ts.Client().Do(req) //nolint:gosec
+		if reqErr != nil {
+			t.Fatalf("request %s %s: %v", method, path, reqErr)
+		}
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("member %s %s: got %d, want 403", method, path, resp.StatusCode)
+		}
+	}
+
+	t.Run("create", func(t *testing.T) {
+		memberDo(t, http.MethodPost, "",
+			`{"name":"member-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`)
+	})
+	t.Run("patch", func(t *testing.T) {
+		memberDo(t, http.MethodPatch, "/"+ch.ID, `{"name":"renamed"}`)
+	})
+	t.Run("delete", func(t *testing.T) {
+		memberDo(t, http.MethodDelete, "/"+ch.ID, "")
+	})
+	t.Run("rotate-secret", func(t *testing.T) {
+		memberDo(t, http.MethodPost, "/"+ch.ID+"/rotate-secret", "")
+	})
+	t.Run("clear-secondary", func(t *testing.T) {
+		memberDo(t, http.MethodPost, "/"+ch.ID+"/clear-secondary", "")
+	})
+}
+
+// TestChannelMutations_AdminCanPerform verifies that an admin-role user (not owner)
+// can create, patch, rotate-secret, clear-secondary, and delete channels.
+func TestChannelMutations_AdminCanPerform(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	reg := doRegister(t, ctx, ts, "owner@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "owner@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	ownerToken := cookieValue(loginResp, "access_token")
+
+	// Create a second user and invite them as admin.
+	doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	adminLoginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer adminLoginResp.Body.Close() //nolint:errcheck,gosec
+	adminToken := cookieValue(adminLoginResp, "access_token")
+
+	inviteBody := `{"email":"admin@example.com","role":"admin"}`
+	invReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+reg.OrgID+"/invitations", bytes.NewBufferString(inviteBody))
+	invReq.Header.Set("Content-Type", "application/json")
+	invReq.Header.Set("Cookie", "access_token="+ownerToken)
+	invReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	invResp, err := ts.Client().Do(invReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("invite admin: %v", err)
+	}
+	invResp.Body.Close() //nolint:errcheck,gosec
+
+	invitations, _ := db.ListOrgInvitations(ctx, mustParseUUID(t, reg.OrgID)) //nolint:errcheck
+	if len(invitations) == 0 {
+		t.Fatal("no invitations found")
+	}
+	acceptReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/invitations/"+invitations[0].Token+"/accept", nil)
+	acceptReq.Header.Set("Cookie", "access_token="+adminToken)
+	acceptReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	acceptResp, err := ts.Client().Do(acceptReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("accept invitation: %v", err)
+	}
+	acceptResp.Body.Close() //nolint:errcheck,gosec
+
+	// Admin creates a channel.
+	channelBody := `{"name":"admin-hook","type":"webhook","config":{"url":"https://example.com/hook"}}`
+	createResp := doCreateChannel(t, ctx, ts, adminToken, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("admin create channel: got %d, want 201", createResp.StatusCode)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
+
+	// Admin patches the channel.
+	patchResp := doPatchChannel(t, ctx, ts, adminToken, reg.OrgID, ch.ID, `{"name":"admin-renamed"}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin patch channel: got %d, want 200", patchResp.StatusCode)
+	}
+
+	// Admin rotates the signing secret.
+	rotateResp := doRotateSecret(t, ctx, ts, adminToken, reg.OrgID, ch.ID)
+	defer rotateResp.Body.Close() //nolint:errcheck,gosec
+	if rotateResp.StatusCode != http.StatusOK {
+		t.Fatalf("admin rotate-secret: got %d, want 200", rotateResp.StatusCode)
+	}
+
+	// Admin clears the secondary secret.
+	clearResp := doClearSecondary(t, ctx, ts, adminToken, reg.OrgID, ch.ID)
+	defer clearResp.Body.Close() //nolint:errcheck,gosec
+	if clearResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin clear-secondary: got %d, want 204", clearResp.StatusCode)
+	}
+
+	// Admin deletes the channel.
+	deleteResp := doDeleteChannel(t, ctx, ts, adminToken, reg.OrgID, ch.ID)
+	defer deleteResp.Body.Close() //nolint:errcheck,gosec
+	if deleteResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin delete channel: got %d, want 204", deleteResp.StatusCode)
+	}
+}
+
+// ── PATCH name validation (B3) ─────────────────────────────────────────────────
+
+func TestPatchChannel_EmptyName_Rejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// PATCH with empty string name — should be rejected.
+	resp := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":""}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch empty name: got %d, want 422", resp.StatusCode)
+	}
+
+	// PATCH with whitespace-only name — should be rejected.
+	resp2 := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":"   "}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch whitespace name: got %d, want 422", resp2.StatusCode)
+	}
+}
+
+// ── Test email channel with no SMTP (B11) ───────────────────────────────────
+
+func TestTestChannel_EmailNoSMTP(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Enable email channels via tier override.
+	_, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = $1 WHERE id = $2`,
+		`{"channels_email": true}`, reg.OrgID)
+	if err != nil {
+		t.Fatalf("set tier_overrides: %v", err)
+	}
+
+	// Create an email channel.
+	channelBody := `{"name":"email-no-smtp","type":"email","config":{"recipients":["ops@example.com"]}}`
+	createResp := doCreateChannel(t, ctx, ts, token, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create email channel: got %d, want 201", createResp.StatusCode)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&ch); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// Test the email channel — SMTPHost is "" in test config, so the error
+	// should clearly mention SMTP rather than a cryptic connection failure.
+	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("test channel: got %d, want 200", resp.StatusCode)
+	}
+
+	var result testChannelResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when SMTP is not configured")
+	}
+	if !strings.Contains(strings.ToLower(result.Error), "smtp") {
+		t.Errorf("error should mention SMTP, got: %q", result.Error)
+	}
+}
 
 // mustParseUUID parses a UUID string and fails the test if invalid.
 func mustParseUUID(t *testing.T, s string) uuid.UUID {

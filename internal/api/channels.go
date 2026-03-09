@@ -566,6 +566,10 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 }
 
 func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage) error {
+	if srv.cfg.SMTPHost == "" {
+		return fmt.Errorf("SMTP not configured — set SMTP_HOST to enable email delivery")
+	}
+
 	recipients, err := validateEmailConfig(config)
 	if err != nil {
 		return err

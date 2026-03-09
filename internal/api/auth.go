@@ -115,10 +115,21 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	}
 	if srv.cfg.RegistrationMode != "open" {
 		// Allow first user to bootstrap even in invite-only mode.
+		// Mutex serializes concurrent bootstrap attempts to prevent TOCTOU races
+		// where two requests both see userCount==0 and both proceed.
+		srv.bootstrapMu.Lock()
 		userCount, err := srv.store.CountUsers(ctx)
-		if err != nil || userCount > 0 {
+		if err != nil {
+			srv.bootstrapMu.Unlock()
+			slog.ErrorContext(ctx, "register: count users", "error", err)
 			return nil, huma.Error403Forbidden("registration is disabled — use an invitation link")
 		}
+		if userCount > 0 {
+			srv.bootstrapMu.Unlock()
+			return nil, huma.Error403Forbidden("registration is disabled — use an invitation link")
+		}
+		// Hold mutex through user creation + bootstrap. Released by defer.
+		defer srv.bootstrapMu.Unlock()
 	}
 
 	// Reject duplicate email before the expensive hash.
@@ -171,12 +182,12 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	out.Status = http.StatusCreated
 	out.Body.UserID = user.ID.String()
 
-	// Atomically bootstrap a default org for the first user in open mode.
+	// Atomically bootstrap a default org for the first user.
 	orgName := displayName + "'s Organization"
 	org, err := srv.store.BootstrapFirstUserOrg(ctx, user.ID, orgName)
 	if err != nil {
+		// Non-fatal: user is created and can log in. Org can be created manually.
 		slog.ErrorContext(ctx, "register: bootstrap org", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if org != nil {
 		out.Body.OrgID = org.ID.String()

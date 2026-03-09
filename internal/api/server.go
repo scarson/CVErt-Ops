@@ -49,6 +49,7 @@ type Server struct {
 	llm            ai.LLMClient     // nil until SetAIDeps is called
 	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
 	lockout        *lockoutManager   // brute-force login protection
+	bootstrapMu    sync.Mutex        // serializes first-user bootstrap in invite-only mode
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.

@@ -1198,6 +1198,46 @@ func TestChannelMutations_AdminCanPerform(t *testing.T) {
 	}
 }
 
+// ── PATCH name validation (B3) ─────────────────────────────────────────────────
+
+func TestPatchChannel_EmptyName_Rejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// PATCH with empty string name — should be rejected.
+	resp := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":""}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch empty name: got %d, want 422", resp.StatusCode)
+	}
+
+	// PATCH with whitespace-only name — should be rejected.
+	resp2 := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":"   "}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch whitespace name: got %d, want 422", resp2.StatusCode)
+	}
+}
+
 // mustParseUUID parses a UUID string and fails the test if invalid.
 func mustParseUUID(t *testing.T, s string) uuid.UUID {
 	t.Helper()

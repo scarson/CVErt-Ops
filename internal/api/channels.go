@@ -275,6 +275,10 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		Config: current.Config,
 	}
 	if req.Name != nil {
+		if strings.TrimSpace(*req.Name) == "" {
+			http.Error(w, "name must not be empty or whitespace", http.StatusUnprocessableEntity)
+			return
+		}
 		params.Name = *req.Name
 	}
 	if req.Config != nil {

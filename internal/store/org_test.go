@@ -458,8 +458,12 @@ func TestCancelInvitation(t *testing.T) {
 		t.Fatalf("CreateOrgInvitation: %v", err)
 	}
 
-	if err := s.CancelInvitation(ctx, org.ID, inv.ID); err != nil {
+	deleted, err := s.CancelInvitation(ctx, org.ID, inv.ID)
+	if err != nil {
 		t.Fatalf("CancelInvitation: %v", err)
+	}
+	if !deleted {
+		t.Fatal("CancelInvitation: expected row to be deleted")
 	}
 
 	// After cancellation, the invitation should no longer be findable.

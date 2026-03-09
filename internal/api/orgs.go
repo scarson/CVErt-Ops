@@ -427,6 +427,18 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Reject duplicate pending invitations for the same email.
+	hasPending, err := srv.store.HasPendingInvitation(r.Context(), orgID, req.Email)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "create invitation: check pending", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if hasPending {
+		http.Error(w, "a pending invitation already exists for this email", http.StatusConflict)
+		return
+	}
+
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		slog.ErrorContext(r.Context(), "create invitation: generate token", "error", err)
@@ -446,6 +458,14 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	// Send invitation email (best-effort — don't fail the request if SMTP is down).
 	srv.sendInvitationEmail(r.Context(), orgID, callerID, inv)
 
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "invitation",
+		EntityID:   inv.ID.String(),
+		Success:    true,
+		NewState:   map[string]any{"email": inv.Email, "role": inv.Role},
+	})
 	writeJSON(w, http.StatusAccepted, invitationEntry{
 		ID:        inv.ID.String(),
 		Email:     inv.Email,
@@ -500,12 +520,24 @@ func (srv *Server) cancelInvitationHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := srv.store.CancelInvitation(r.Context(), orgID, invID); err != nil {
+	deleted, err := srv.store.CancelInvitation(r.Context(), orgID, invID)
+	if err != nil {
 		slog.ErrorContext(r.Context(), "cancel invitation", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if !deleted {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "invitation",
+		EntityID:   invID.String(),
+		Success:    true,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -557,6 +589,14 @@ func (srv *Server) resendInvitationHandler(w http.ResponseWriter, r *http.Reques
 	// Send invitation email (best-effort).
 	srv.sendInvitationEmail(r.Context(), orgID, callerID, inv)
 
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "invitation",
+		EntityID:   inv.ID.String(),
+		Success:    true,
+		Metadata:   map[string]any{"action_detail": "resend"},
+	})
 	writeJSON(w, http.StatusOK, invitationEntry{
 		ID:        inv.ID.String(),
 		Email:     inv.Email,
@@ -582,7 +622,12 @@ func (srv *Server) sendInvitationEmail(ctx context.Context, orgID, callerID uuid
 		slog.ErrorContext(ctx, "invitation email: get inviter", "error", err)
 		return
 	}
-	if org == nil || inviter == nil {
+	if org == nil {
+		slog.WarnContext(ctx, "invitation email: org not found", "org_id", orgID)
+		return
+	}
+	if inviter == nil {
+		slog.WarnContext(ctx, "invitation email: inviter not found", "user_id", callerID)
 		return
 	}
 	inviteURL := srv.cfg.ExternalURL + "/invitations/" + inv.Token

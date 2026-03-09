@@ -669,6 +669,10 @@ func TestRegisterInviteOnlyMode(t *testing.T) {
 
 	_, ts := newRegisterServer(t, db, "invite-only")
 
+	// Bootstrap first user (allowed even in invite-only mode).
+	doRegister(t, ctx, ts, "bootstrap@example.com", "test-password-1234")
+
+	// Second user registration should be blocked.
 	body := `{"email":"blocked@example.com","password":"test-password-1234"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1013,6 +1017,73 @@ func TestAuthProvidersInviteOnly(t *testing.T) {
 
 	if body.RegistrationMode != "invite-only" {
 		t.Errorf("registration_mode: got %q, want %q", body.RegistrationMode, "invite-only")
+	}
+}
+
+func TestRegister_InviteOnlyBootstrap(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "invite-only")
+	ctx := context.Background()
+
+	// First registration in invite-only mode should succeed (bootstrap).
+	body := `{"email":"first@example.com","password":"super-secret-pass-16ch"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first register in invite-only: got %d, want 201", resp.StatusCode)
+	}
+
+	var out struct {
+		UserID string `json:"user_id"`
+		OrgID  string `json:"org_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.UserID == "" {
+		t.Fatal("expected user_id in response")
+	}
+	if out.OrgID == "" {
+		t.Fatal("expected org_id in bootstrap response")
+	}
+}
+
+func TestRegister_InviteOnlyAfterBootstrap(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "invite-only")
+	ctx := context.Background()
+
+	// Bootstrap first user.
+	body := `{"email":"first@example.com","password":"super-secret-pass-16ch"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("bootstrap register: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("bootstrap: got %d, want 201", resp.StatusCode)
+	}
+
+	// Second registration should be blocked.
+	body2 := `{"email":"second@example.com","password":"super-secret-pass-16ch"}`
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	defer resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusForbidden {
+		t.Fatalf("second register in invite-only: got %d, want 403", resp2.StatusCode)
 	}
 }
 

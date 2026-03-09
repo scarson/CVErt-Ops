@@ -7,12 +7,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -1226,5 +1229,228 @@ func TestCreateInvitation_InvalidRole(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("invalid role: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestCreateInvitation_EmailFailureDoesNotBlock verifies that the invitation is
+// created successfully even when the SMTP email send fails (best-effort delivery).
+func TestCreateInvitation_EmailFailureDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Capture expected WARN log to keep test output pristine and verify it.
+	var logBuf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+
+	// Create server with SMTP pointing to an unreachable host.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "regtestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		SMTPHost:            "unreachable.invalid",
+		SMTPPort:            9999,
+		SMTPFrom:            "test@cvert-ops.test",
+		ExternalURL:         "https://app.cvert-ops.test",
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Create invitation — email send will fail but invitation should still succeed.
+	resp := doCreateInvitation(t, ctx, ts, token, reg.OrgID, "bob@example.com", "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation with failing SMTP: got %d, want 202", resp.StatusCode)
+	}
+
+	// Verify the invitation exists in the database.
+	invitations, err := db.ListOrgInvitations(ctx, uuid.MustParse(reg.OrgID))
+	if err != nil {
+		t.Fatalf("list invitations: %v", err)
+	}
+	if len(invitations) == 0 {
+		t.Fatal("invitation was not created despite SMTP failure")
+	}
+	if invitations[0].Email != "bob@example.com" {
+		t.Errorf("invitation email = %q, want bob@example.com", invitations[0].Email)
+	}
+
+	// Verify the warning was logged.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "invitation email failed") {
+		t.Errorf("expected 'invitation email failed' warning in logs, got: %s", logOutput)
+	}
+}
+
+// doResendInvitation calls POST /api/v1/orgs/{orgID}/invitations/{id}/resend.
+func doResendInvitation(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, invitationID string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs/"+orgID+"/invitations/"+invitationID+"/resend", nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("resend invitation request: %v", err)
+	}
+	return resp
+}
+
+func TestResendInvitation_Success(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Create an invitation.
+	createResp := doCreateInvitation(t, ctx, ts, token, reg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+	var inv struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&inv) //nolint:errcheck,gosec
+
+	// Resend should return 200.
+	resp := doResendInvitation(t, ctx, ts, token, reg.OrgID, inv.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusOK {
+		body, _ := json.Marshal(resp.Body)
+		t.Fatalf("resend invitation: got %d, want 200, body: %s", resp.StatusCode, body)
+	}
+
+	var resent struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	json.NewDecoder(resp.Body).Decode(&resent) //nolint:errcheck,gosec
+	if resent.ID != inv.ID {
+		t.Errorf("resent id = %q, want %q", resent.ID, inv.ID)
+	}
+	if resent.Email != "bob@example.com" {
+		t.Errorf("resent email = %q, want bob@example.com", resent.Email)
+	}
+}
+
+func TestResendInvitation_NotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	fakeID := "00000000-0000-0000-0000-000000000001"
+	resp := doResendInvitation(t, ctx, ts, token, reg.OrgID, fakeID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("resend non-existent: got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestResendInvitation_AlreadyAccepted(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	adminToken := cookieValue(loginResp, "access_token")
+
+	// Create invitation and accept it.
+	createResp := doCreateInvitation(t, ctx, ts, adminToken, reg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	var inv struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&inv) //nolint:errcheck,gosec
+
+	// Register bob and accept.
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	bobLogin := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer bobLogin.Body.Close() //nolint:errcheck,gosec
+	bobToken := cookieValue(bobLogin, "access_token")
+
+	invitations, _ := db.ListOrgInvitations(ctx, uuid.MustParse(reg.OrgID)) //nolint:errcheck
+	if len(invitations) > 0 {
+		acceptReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+			ts.URL+"/api/v1/auth/invitations/"+invitations[0].Token+"/accept", nil)
+		acceptReq.Header.Set("Cookie", "access_token="+bobToken)
+		acceptReq.Header.Set("X-Requested-By", "CVErt-Ops")
+		acceptResp, _ := ts.Client().Do(acceptReq) //nolint:gosec,errcheck
+		if acceptResp != nil {
+			acceptResp.Body.Close() //nolint:errcheck,gosec
+		}
+	}
+
+	// Resend should fail — invitation already accepted.
+	resp := doResendInvitation(t, ctx, ts, adminToken, reg.OrgID, inv.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("resend accepted invitation: got %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestResendInvitation_RequiresAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	adminToken := cookieValue(loginResp, "access_token")
+
+	// Create invitation.
+	createResp := doCreateInvitation(t, ctx, ts, adminToken, reg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	var inv struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&inv) //nolint:errcheck,gosec
+
+	// Create a viewer user in the org.
+	doRegister(t, ctx, ts, "viewer@example.com", "test-password-1234")
+	viewerLogin := doLogin(t, ctx, ts, "viewer@example.com", "test-password-1234")
+	defer viewerLogin.Body.Close() //nolint:errcheck,gosec
+	viewerToken := cookieValue(viewerLogin, "access_token")
+
+	// Add viewer to org via direct store call (simpler than invitation flow).
+	orgID := uuid.MustParse(reg.OrgID)
+	viewerUser, _ := db.GetUserByEmail(ctx, "viewer@example.com")
+	if viewerUser != nil {
+		db.CreateOrgMember(ctx, orgID, viewerUser.ID, "viewer") //nolint:errcheck,gosec
+	}
+
+	// Viewer tries to resend — should be 403.
+	resp := doResendInvitation(t, ctx, ts, viewerToken, reg.OrgID, inv.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("viewer resend: got %d, want 403", resp.StatusCode)
 	}
 }

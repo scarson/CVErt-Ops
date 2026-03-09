@@ -44,6 +44,9 @@ INSERT INTO org_invitations (org_id, email, role, token, created_by, expires_at)
 VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
+-- name: GetOrgInvitationByID :one
+SELECT * FROM org_invitations WHERE id = $1 AND org_id = $2 LIMIT 1;
+
 -- name: GetInvitationByToken :one
 SELECT * FROM org_invitations WHERE token = $1 LIMIT 1;
 

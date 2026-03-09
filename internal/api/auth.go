@@ -114,7 +114,11 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 		return nil, err
 	}
 	if srv.cfg.RegistrationMode != "open" {
-		return nil, huma.Error403Forbidden("registration is not open on this server")
+		// Allow first user to bootstrap even in invite-only mode.
+		userCount, err := srv.store.CountUsers(ctx)
+		if err != nil || userCount > 0 {
+			return nil, huma.Error403Forbidden("registration is disabled — use an invitation link")
+		}
 	}
 
 	// Reject duplicate email before the expensive hash.

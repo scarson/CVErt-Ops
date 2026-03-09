@@ -240,6 +240,7 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createInvitationHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.listInvitationsHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{id}", srv.cancelInvitationHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{id}/resend", srv.resendInvitationHandler)
 			})
 
 			// API key management
@@ -268,13 +269,14 @@ func (srv *Server) Handler() http.Handler {
 			// Notification channel management
 			r.Route("/channels", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listChannelsHandler)
-				r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createChannelHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/", srv.createChannelHandler)
 				r.Route("/{id}", func(r chi.Router) {
 					r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.getChannelHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Patch("/", srv.patchChannelHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Delete("/", srv.deleteChannelHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Post("/rotate-secret", srv.rotateSecretHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Post("/clear-secondary", srv.clearSecondarySecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.patchChannelHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/", srv.deleteChannelHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/rotate-secret", srv.rotateSecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/clear-secondary", srv.clearSecondarySecretHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Post("/test", srv.testChannelHandler)
 				})
 			})
 

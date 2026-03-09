@@ -1,0 +1,13 @@
+{{define "subject"}}You've been invited to join {{.OrgName}} on CVErt Ops{{end}}
+{{define "body"}}
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <h2 style="color: #1a1a2e;">You're Invited</h2>
+  <p>{{.InviterName}} has invited you to join <strong>{{.OrgName}}</strong> on CVErt Ops as a <strong>{{.Role}}</strong>.</p>
+  <p><a href="{{.InviteURL}}" style="display: inline-block; padding: 12px 24px; background-color: #1a1a2e; color: #ffffff; text-decoration: none; border-radius: 4px;">Accept Invitation</a></p>
+  <p style="color: #666; font-size: 14px;">This invitation expires on {{.ExpiresAt}}. If you don't have a CVErt Ops account, you'll need to create one first.</p>
+  <p style="color: #999; font-size: 12px;">If the button doesn't work, copy this URL: {{.InviteURL}}</p>
+</body>
+</html>
+{{end}}

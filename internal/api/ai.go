@@ -446,21 +446,23 @@ func truncateForLog(s string, maxLen int) string {
 }
 
 // parseIntParam parses an integer query parameter with bounds clamping.
-func parseIntParam(s string, defaultVal, min, max int) int {
+// Uses ParseInt with bitsize 32 to avoid CodeQL taint warnings on Atoi → int32 paths.
+func parseIntParam(s string, defaultVal, lo, hi int) int {
 	if s == "" {
 		return defaultVal
 	}
-	v, err := strconv.Atoi(s)
+	v, err := strconv.ParseInt(s, 10, 32)
 	if err != nil {
 		return defaultVal
 	}
-	if v < min {
-		return min
+	iv := int(v)
+	if iv < lo {
+		return lo
 	}
-	if v > max {
-		return max
+	if iv > hi {
+		return hi
 	}
-	return v
+	return iv
 }
 
 // retryAfterMidnight returns the number of seconds until the next UTC midnight

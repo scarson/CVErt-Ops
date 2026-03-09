@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -130,9 +131,17 @@ func (s *Store) OrgTx(ctx context.Context, orgID uuid.UUID, fn func(pgx.Tx) erro
 }
 
 // clampInt32 clamps v to [lo, hi] and returns it as int32.
-// lo and hi must be within int32 range.
+// lo and hi must be within int32 range. The explicit math.MaxInt32 guard
+// satisfies CodeQL's taint-tracking for strconv.Atoi → int32 conversions.
 func clampInt32(v, lo, hi int) int32 {
-	return int32(min(max(v, lo), hi)) //nolint:gosec // bounds enforced by lo/hi constants
+	v = min(max(v, lo), hi)
+	if v > math.MaxInt32 {
+		v = math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		v = math.MinInt32
+	}
+	return int32(v) //nolint:gosec // bounds checked above
 }
 
 // WorkerTx opens a pgx native transaction with RLS bypass enabled.

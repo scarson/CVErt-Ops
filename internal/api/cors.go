@@ -3,6 +3,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -34,9 +35,15 @@ func (srv *Server) corsOrigins() []string {
 		parts := strings.Split(srv.cfg.CORSAllowedOrigins, ",")
 		origins := make([]string, 0, len(parts))
 		for _, p := range parts {
-			if o := strings.TrimSpace(p); o != "" {
-				origins = append(origins, o)
+			o := strings.TrimSpace(p)
+			if o == "" {
+				continue
 			}
+			if o == "*" {
+				slog.Warn("CORS: wildcard origin '*' rejected — incompatible with AllowCredentials")
+				continue
+			}
+			origins = append(origins, o)
 		}
 		return origins
 	}

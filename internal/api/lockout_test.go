@@ -3,6 +3,7 @@
 package api
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -114,6 +115,77 @@ func TestLockout_Concurrent(t *testing.T) {
 	// Just verify the manager is still functional.
 	allowed, _ := m.Check("concurrent@example.com")
 	_ = allowed // result depends on timing; we just care it didn't crash
+}
+
+func TestLockout_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	m := newLockoutManager(3, 15*time.Minute, func() time.Time { return now })
+
+	m.RecordFailure("Victim@Example.com")
+	m.RecordFailure("victim@example.com")
+	m.RecordFailure("VICTIM@EXAMPLE.COM")
+
+	// All three should count toward the SAME email — should be locked now.
+	allowed, _ := m.Check("victim@example.com")
+	if allowed {
+		t.Fatal("lockout should trigger regardless of email casing")
+	}
+}
+
+func TestLockout_CleanupEvictsStaleEntries(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	evictTTL := 5 * time.Minute
+	m := newLockoutManager(5, 15*time.Minute, func() time.Time { return now })
+	m.evictTTL = evictTTL
+
+	// Create 100 entries with 1 failure each (below threshold).
+	for i := 0; i < 100; i++ {
+		m.RecordFailure(fmt.Sprintf("spam-%d@example.com", i))
+	}
+
+	if m.Len() != 100 {
+		t.Fatalf("expected 100 entries, got %d", m.Len())
+	}
+
+	// Advance time past evictTTL and run cleanup.
+	now = now.Add(6 * time.Minute)
+	m.evictStale()
+
+	if m.Len() != 0 {
+		t.Fatalf("expected 0 entries after cleanup, got %d", m.Len())
+	}
+}
+
+func TestLockout_CleanupPreservesActiveLockouts(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	evictTTL := 5 * time.Minute
+	m := newLockoutManager(3, 15*time.Minute, func() time.Time { return now })
+	m.evictTTL = evictTTL
+
+	// Create a locked account (above threshold).
+	for i := 0; i < 3; i++ {
+		m.RecordFailure("locked@example.com")
+	}
+	// Create a stale sub-threshold entry.
+	m.RecordFailure("stale@example.com")
+
+	// Advance time past evictTTL (stale entry > 5 min) but NOT past lockout duration (15 min).
+	now = now.Add(6 * time.Minute)
+	m.evictStale()
+
+	// Active lockout should be preserved (still within lockout duration).
+	allowed, _ := m.Check("locked@example.com")
+	if allowed {
+		t.Fatal("active lockout should survive cleanup")
+	}
+
+	// Stale sub-threshold entry should be evicted (lastActivity > evictTTL).
+	if m.Len() != 1 {
+		t.Fatalf("expected 1 entry (active lockout only), got %d", m.Len())
+	}
 }
 
 func TestLockout_DifferentEmails(t *testing.T) {

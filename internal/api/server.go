@@ -135,6 +135,9 @@ func (srv *Server) Close() {
 	if srv.tierCache != nil {
 		srv.tierCache.Stop()
 	}
+	if srv.lockout != nil {
+		srv.lockout.Stop()
+	}
 }
 
 // Handler builds and returns the http.Handler.

@@ -79,7 +79,7 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 		orgRL:        orgRL,
 		tierCache:    tc,
 		ghAPIBaseURL: "https://api.github.com",
-		lockout:      newLockoutManager(lockoutThreshold, lockoutDuration, time.Now),
+		lockout:      newLockoutManager(lockoutThreshold, lockoutDuration, lockoutDuration, time.Now),
 	}
 
 	// ── GitHub OAuth (optional) ───────────────────────────────────────────────

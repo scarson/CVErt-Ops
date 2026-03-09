@@ -243,8 +243,10 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		if !srv.acquireArgon2() {
 			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 		}
-		_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
-		srv.releaseArgon2()
+		func() {
+			defer srv.releaseArgon2()
+			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
+		}()
 		srv.lockout.RecordFailure(input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
@@ -252,8 +254,11 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	ok, err := auth.VerifyPassword(input.Body.Password, user.PasswordHash.String)
-	srv.releaseArgon2()
+	var ok bool
+	func() {
+		defer srv.releaseArgon2()
+		ok, err = auth.VerifyPassword(input.Body.Password, user.PasswordHash.String)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "login: verify password", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -532,8 +537,11 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	ok, err := auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
-	srv.releaseArgon2()
+	var ok bool
+	func() {
+		defer srv.releaseArgon2()
+		ok, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "change-password: verify", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -546,8 +554,11 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	newHash, err := auth.HashPassword(input.Body.NewPassword)
-	srv.releaseArgon2()
+	var newHash string
+	func() {
+		defer srv.releaseArgon2()
+		newHash, err = auth.HashPassword(input.Body.NewPassword)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "change-password: hash", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")

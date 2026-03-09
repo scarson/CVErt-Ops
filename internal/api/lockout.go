@@ -30,12 +30,12 @@ type lockoutManager struct {
 // newLockoutManager creates a lockout manager with the given threshold, duration,
 // and evict TTL. Starts a background cleanup goroutine that evicts stale entries.
 // The now function is used for clock injection in tests.
-func newLockoutManager(threshold int, duration time.Duration, now func() time.Time) *lockoutManager {
+func newLockoutManager(threshold int, duration, evictTTL time.Duration, now func() time.Time) *lockoutManager {
 	m := &lockoutManager{
 		attempts:  make(map[string]*loginAttempt),
 		threshold: threshold,
 		duration:  duration,
-		evictTTL:  duration, // default: entries idle longer than lockout window are safe to evict
+		evictTTL:  evictTTL,
 		now:       now,
 		done:      make(chan struct{}),
 	}

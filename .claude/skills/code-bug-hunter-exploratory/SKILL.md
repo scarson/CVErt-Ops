@@ -60,3 +60,5 @@ dangerous defaults. NOT coverage gaps. NOT style suggestions.]
 ```
 
 Every finding needs specific file:line evidence. No proof, no finding. Zero bugs is a valid and honest result — don't pad the report with coverage observations.
+
+4. **Review and Potentially Update testing-pitfalls.md.** ONLY once you've completed your bug hunt, review the dev\testing-pitfalls.md document. If you found bugs that were not related to test coverage but could have been caught by better tests, add a note about that pitfall. But only if it's directly relevant to the bugs you found — don't add general testing advice that isn't tied to specific issues you observed. Notes can be about the types of bugs you found, the risky patterns you observed, or the kinds of tests that would have caught those bugs. The goal is to make the testing-pitfalls.md document more actionable and relevant based on your real findings, not to add generic testing advice.

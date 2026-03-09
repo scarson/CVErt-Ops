@@ -16,5 +16,9 @@ UPDATE email_verification_tokens SET used_at = now() WHERE id = $1;
 -- name: SetEmailVerified :exec
 UPDATE users SET email_verified = true WHERE id = $1;
 
+-- name: CountRecentEmailVerificationTokens :one
+SELECT COUNT(*) FROM email_verification_tokens
+WHERE user_id = $1 AND created_at > $2;
+
 -- name: DeleteExpiredEmailVerificationTokens :exec
 DELETE FROM email_verification_tokens WHERE expires_at < now();

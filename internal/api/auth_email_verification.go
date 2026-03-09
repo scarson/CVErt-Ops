@@ -115,10 +115,22 @@ func (srv *Server) resendVerificationHandler(ctx context.Context, input *resendV
 		}{Message: "Email already verified."}}, nil
 	}
 
+	// Per-user rate limit: reject excess requests with 429.
+	// The resend endpoint is authenticated — no email-enumeration risk from distinct status codes.
+	count, err := srv.store.CountRecentEmailVerificationTokens(ctx, user.ID, time.Now().Add(-1*time.Hour))
+	if err != nil {
+		slog.ErrorContext(ctx, "resend-verification: count recent tokens", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if int(count) >= srv.cfg.EmailVerificationMaxPerHour {
+		return nil, huma.Error429TooManyRequests("too many verification requests, please try again later")
+	}
+
 	// Generate and send a verification email.
+	// Return the error to the caller — this endpoint is authenticated, so no timing-oracle risk.
 	if err := srv.sendVerificationEmail(ctx, user.ID, user.Email); err != nil {
 		slog.ErrorContext(ctx, "resend-verification: send email", "error", err)
-		// Non-fatal — return success to avoid leaking internal state.
+		return nil, huma.Error500InternalServerError("failed to send verification email")
 	}
 
 	return &resendVerificationOutput{Body: struct {

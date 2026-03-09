@@ -13,6 +13,23 @@ import (
 	"github.com/google/uuid"
 )
 
+const countRecentEmailVerificationTokens = `-- name: CountRecentEmailVerificationTokens :one
+SELECT COUNT(*) FROM email_verification_tokens
+WHERE user_id = $1 AND created_at > $2
+`
+
+type CountRecentEmailVerificationTokensParams struct {
+	UserID    uuid.UUID
+	CreatedAt time.Time
+}
+
+func (q *Queries) CountRecentEmailVerificationTokens(ctx context.Context, arg CountRecentEmailVerificationTokensParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRecentEmailVerificationTokens, arg.UserID, arg.CreatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createEmailVerificationToken = `-- name: CreateEmailVerificationToken :exec
 
 INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)

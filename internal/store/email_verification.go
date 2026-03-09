@@ -75,6 +75,24 @@ func (s *Store) SetEmailVerified(ctx context.Context, userID uuid.UUID) error {
 	})
 }
 
+// CountRecentEmailVerificationTokens returns the number of email verification tokens
+// created for a user since the given time.
+func (s *Store) CountRecentEmailVerificationTokens(ctx context.Context, userID uuid.UUID, since time.Time) (int64, error) {
+	var count int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		count, err = q.CountRecentEmailVerificationTokens(ctx, generated.CountRecentEmailVerificationTokensParams{
+			UserID:    userID,
+			CreatedAt: since,
+		})
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count recent email verification tokens: %w", err)
+	}
+	return count, nil
+}
+
 // DeleteExpiredEmailVerificationTokens removes all expired verification tokens.
 func (s *Store) DeleteExpiredEmailVerificationTokens(ctx context.Context) error {
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {

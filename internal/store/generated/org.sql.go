@@ -132,6 +132,7 @@ func (q *Queries) CreateOrgInvitation(ctx context.Context, arg CreateOrgInvitati
 
 const createOrgMember = `-- name: CreateOrgMember :exec
 INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
+ON CONFLICT (org_id, user_id) DO NOTHING
 `
 
 type CreateOrgMemberParams struct {

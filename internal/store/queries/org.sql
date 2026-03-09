@@ -12,7 +12,8 @@ RETURNING *;
 SELECT * FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
 -- name: CreateOrgMember :exec
-INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3);
+INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)
+ON CONFLICT (org_id, user_id) DO NOTHING;
 
 -- name: GetOrgMemberRole :one
 SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1;

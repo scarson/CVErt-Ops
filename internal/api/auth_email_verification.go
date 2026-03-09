@@ -140,6 +140,7 @@ func (srv *Server) resendVerificationHandler(ctx context.Context, input *resendV
 
 // sendVerificationEmail generates a token, stores it, and sends a verification email.
 // Used by both registration and the resend endpoint.
+// If SMTP is not configured (SMTPHost is empty), the token is still created but no email is sent.
 func (srv *Server) sendVerificationEmail(ctx context.Context, userID uuid.UUID, email string) error {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -151,6 +152,11 @@ func (srv *Server) sendVerificationEmail(ctx context.Context, userID uuid.UUID, 
 
 	if err := srv.store.CreateEmailVerificationToken(ctx, userID, tokenHash[:], expiresAt); err != nil {
 		return err
+	}
+
+	if srv.cfg.SMTPHost == "" {
+		slog.WarnContext(ctx, "send-verification: SMTP not configured, skipping email", "email", email)
+		return nil
 	}
 
 	// Build and send verification email.

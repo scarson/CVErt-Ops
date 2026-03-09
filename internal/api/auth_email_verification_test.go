@@ -19,6 +19,7 @@ import (
 )
 
 // newEmailVerificationServer creates a Server + httptest.Server for email verification tests.
+// SMTP is not configured — use newEmailVerificationServerWithSMTP for tests that send email.
 func newEmailVerificationServer(t *testing.T) (*testutil.TestDB, *httptest.Server) {
 	t.Helper()
 	db := testutil.NewTestDB(t)
@@ -28,9 +29,33 @@ func newEmailVerificationServer(t *testing.T) (*testutil.TestDB, *httptest.Serve
 		Argon2MaxConcurrent:         5,
 		EmailVerificationTokenTTL:   24 * time.Hour,
 		EmailVerificationMaxPerHour: 10,
-		SMTPHost:                    "localhost",
-		SMTPPort:                    1025,
-		SMTPFrom:                    "test@example.com",
+		ExternalURL:                 "http://localhost:8080",
+	}
+	srv, err := NewServer(db.Store, cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	return db, ts
+}
+
+// newEmailVerificationServerWithSMTP creates a Server backed by a real Inbucket SMTP container.
+// Use for tests that verify actual email delivery (resend, rate limiting).
+func newEmailVerificationServerWithSMTP(t *testing.T, maxPerHour int) (*testutil.TestDB, *httptest.Server) {
+	t.Helper()
+	db := testutil.NewTestDB(t)
+	smtp := testutil.NewTestSMTP(t)
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:                   "verifytest-secret-key",
+		RegistrationMode:            "open",
+		Argon2MaxConcurrent:         5,
+		EmailVerificationTokenTTL:   24 * time.Hour,
+		EmailVerificationMaxPerHour: maxPerHour,
+		SMTPHost:                    smtp.Host,
+		SMTPPort:                    smtp.Port,
+		SMTPFrom:                    "test@cvert-ops.test",
 		ExternalURL:                 "http://localhost:8080",
 	}
 	srv, err := NewServer(db.Store, cfg)
@@ -180,7 +205,7 @@ func TestVerifyEmail_InvalidToken(t *testing.T) {
 
 func TestResendVerification_Authenticated(t *testing.T) {
 	t.Parallel()
-	_, ts := newEmailVerificationServer(t)
+	_, ts := newEmailVerificationServerWithSMTP(t, 10)
 	ctx := context.Background()
 
 	doRegister(t, ctx, ts, "resend@example.com", "test-password-1234")
@@ -248,29 +273,9 @@ func TestResendVerification_InvalidAccessToken(t *testing.T) {
 
 func TestResendVerification_RateLimit(t *testing.T) {
 	t.Parallel()
-	db := testutil.NewTestDB(t)
+	// EmailVerificationMaxPerHour = 4: registration (1 token) + 3 resends = 4 = limit.
+	db, ts := newEmailVerificationServerWithSMTP(t, 4)
 	ctx := context.Background()
-
-	// Set EmailVerificationMaxPerHour = 4 so that registration (1 token) + 3 resends = 4
-	// hits the limit on the 4th resend attempt.
-	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
-		JWTSecret:                   "verifytest-secret-key",
-		RegistrationMode:            "open",
-		Argon2MaxConcurrent:         5,
-		EmailVerificationTokenTTL:   24 * time.Hour,
-		EmailVerificationMaxPerHour: 4,
-		SMTPHost:                    "localhost",
-		SMTPPort:                    1025,
-		SMTPFrom:                    "test@example.com",
-		ExternalURL:                 "http://localhost:8080",
-	}
-	srv, err := NewServer(db.Store, cfg)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
-	t.Cleanup(srv.Close)
 
 	// Registration creates 1 implicit token.
 	doRegister(t, ctx, ts, "resend-ratelimit@example.com", "test-password-1234")

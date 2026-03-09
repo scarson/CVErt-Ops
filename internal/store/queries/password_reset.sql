@@ -17,5 +17,17 @@ UPDATE password_reset_tokens SET used_at = now() WHERE id = $1;
 SELECT COUNT(*) FROM password_reset_tokens
 WHERE user_id = $1 AND created_at > $2;
 
+-- name: ConsumePasswordResetToken :one
+-- Atomically marks a token as used and returns it, preventing concurrent use.
+UPDATE password_reset_tokens
+SET used_at = now()
+WHERE id = (
+    SELECT prt.id FROM password_reset_tokens prt
+    WHERE prt.token_hash = @token_hash AND prt.used_at IS NULL AND prt.expires_at > now()
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, user_id, expires_at, used_at, created_at;
+
 -- name: DeleteExpiredPasswordResetTokens :exec
 DELETE FROM password_reset_tokens WHERE expires_at < now();

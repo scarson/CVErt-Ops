@@ -37,6 +37,7 @@ This boundary is critical — do not cross it:
 If a function does the right thing but has no tests, ignore it. If a function has 100% test coverage but silently drops errors, that's a bug. You judge **the code's correctness**, not **the tests' completeness**.
 
 ## Output Format
+Write your results to a markdown file in dev\bug-hunts with the following format:
 
 ```markdown
 # Bug Hunt Report

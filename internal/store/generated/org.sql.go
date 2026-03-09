@@ -301,6 +301,7 @@ func (q *Queries) GetPendingInvitationByEmail(ctx context.Context, arg GetPendin
 
 const listAllOrgs = `-- name: ListAllOrgs :many
 SELECT id, tier, tier_overrides FROM organizations
+WHERE deleted_at IS NULL
 `
 
 type ListAllOrgsRow struct {

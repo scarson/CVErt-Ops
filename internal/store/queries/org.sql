@@ -89,4 +89,5 @@ SELECT CAST(
 AS bigint);
 
 -- name: ListAllOrgs :many
-SELECT id, tier, tier_overrides FROM organizations;
+SELECT id, tier, tier_overrides FROM organizations
+WHERE deleted_at IS NULL;

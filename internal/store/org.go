@@ -123,15 +123,24 @@ func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, or
 }
 
 // GetOrgByID returns the org with the given ID, or (nil, nil) if not found or soft-deleted.
+// Uses withBypassTx — called from middleware and registration before org context is established.
 func (s *Store) GetOrgByID(ctx context.Context, id uuid.UUID) (*generated.Organization, error) {
-	row, err := s.q.GetOrgByID(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	var result *generated.Organization
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetOrgByID(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get org by id: %w", err)
 	}
-	return &row, nil
+	return result, nil
 }
 
 // CreateOrgMember adds a user to an org with the given role.

@@ -275,6 +275,10 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		Config: current.Config,
 	}
 	if req.Name != nil {
+		if strings.TrimSpace(*req.Name) == "" {
+			http.Error(w, "name must not be empty or whitespace", http.StatusUnprocessableEntity)
+			return
+		}
 		params.Name = *req.Name
 	}
 	if req.Config != nil {
@@ -562,6 +566,10 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 }
 
 func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage) error {
+	if srv.cfg.SMTPHost == "" {
+		return fmt.Errorf("SMTP not configured — set SMTP_HOST to enable email delivery")
+	}
+
 	recipients, err := validateEmailConfig(config)
 	if err != nil {
 		return err

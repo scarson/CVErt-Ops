@@ -3,13 +3,15 @@
 package api
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
 
 func TestLockout_Allow(t *testing.T) {
 	t.Parallel()
-	m := newLockoutManager(5, 15*time.Minute, time.Now)
+	m := newLockoutManager(5, 15*time.Minute, 15*time.Minute, time.Now)
+	t.Cleanup(m.Stop)
 
 	allowed, retryAfter := m.Check("test@example.com")
 	if !allowed {
@@ -22,7 +24,8 @@ func TestLockout_Allow(t *testing.T) {
 
 func TestLockout_ThresholdReached(t *testing.T) {
 	t.Parallel()
-	m := newLockoutManager(5, 15*time.Minute, time.Now)
+	m := newLockoutManager(5, 15*time.Minute, 15*time.Minute, time.Now)
+	t.Cleanup(m.Stop)
 
 	for range 5 {
 		m.RecordFailure("locked@example.com")
@@ -39,7 +42,8 @@ func TestLockout_ThresholdReached(t *testing.T) {
 
 func TestLockout_ResetOnSuccess(t *testing.T) {
 	t.Parallel()
-	m := newLockoutManager(5, 15*time.Minute, time.Now)
+	m := newLockoutManager(5, 15*time.Minute, 15*time.Minute, time.Now)
+	t.Cleanup(m.Stop)
 
 	for range 4 {
 		m.RecordFailure("reset@example.com")
@@ -58,7 +62,8 @@ func TestLockout_Expiry(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	clock := func() time.Time { return now }
-	m := newLockoutManager(5, 15*time.Minute, clock)
+	m := newLockoutManager(5, 15*time.Minute, 15*time.Minute, clock)
+	t.Cleanup(m.Stop)
 
 	for range 5 {
 		m.RecordFailure("expiry@example.com")
@@ -84,7 +89,8 @@ func TestLockout_Expiry(t *testing.T) {
 
 func TestLockout_Concurrent(t *testing.T) {
 	t.Parallel()
-	m := newLockoutManager(100, 15*time.Minute, time.Now)
+	m := newLockoutManager(100, 15*time.Minute, 15*time.Minute, time.Now)
+	t.Cleanup(m.Stop)
 
 	// Hammer RecordFailure and Check from 10 goroutines simultaneously.
 	// This verifies no data races under concurrent access.
@@ -116,9 +122,82 @@ func TestLockout_Concurrent(t *testing.T) {
 	_ = allowed // result depends on timing; we just care it didn't crash
 }
 
+func TestLockout_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	m := newLockoutManager(3, 15*time.Minute, 15*time.Minute, func() time.Time { return now })
+	t.Cleanup(m.Stop)
+
+	m.RecordFailure("Victim@Example.com")
+	m.RecordFailure("victim@example.com")
+	m.RecordFailure("VICTIM@EXAMPLE.COM")
+
+	// All three should count toward the SAME email — should be locked now.
+	allowed, _ := m.Check("victim@example.com")
+	if allowed {
+		t.Fatal("lockout should trigger regardless of email casing")
+	}
+}
+
+func TestLockout_CleanupEvictsStaleEntries(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	evictTTL := 5 * time.Minute
+	m := newLockoutManager(5, 15*time.Minute, evictTTL, func() time.Time { return now })
+	t.Cleanup(m.Stop)
+
+	// Create 100 entries with 1 failure each (below threshold).
+	for i := 0; i < 100; i++ {
+		m.RecordFailure(fmt.Sprintf("spam-%d@example.com", i))
+	}
+
+	if m.Len() != 100 {
+		t.Fatalf("expected 100 entries, got %d", m.Len())
+	}
+
+	// Advance time past evictTTL and run cleanup.
+	now = now.Add(6 * time.Minute)
+	m.evictStale()
+
+	if m.Len() != 0 {
+		t.Fatalf("expected 0 entries after cleanup, got %d", m.Len())
+	}
+}
+
+func TestLockout_CleanupPreservesActiveLockouts(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	evictTTL := 5 * time.Minute
+	m := newLockoutManager(3, 15*time.Minute, evictTTL, func() time.Time { return now })
+	t.Cleanup(m.Stop)
+
+	// Create a locked account (above threshold).
+	for i := 0; i < 3; i++ {
+		m.RecordFailure("locked@example.com")
+	}
+	// Create a stale sub-threshold entry.
+	m.RecordFailure("stale@example.com")
+
+	// Advance time past evictTTL (stale entry > 5 min) but NOT past lockout duration (15 min).
+	now = now.Add(6 * time.Minute)
+	m.evictStale()
+
+	// Active lockout should be preserved (still within lockout duration).
+	allowed, _ := m.Check("locked@example.com")
+	if allowed {
+		t.Fatal("active lockout should survive cleanup")
+	}
+
+	// Stale sub-threshold entry should be evicted (lastActivity > evictTTL).
+	if m.Len() != 1 {
+		t.Fatalf("expected 1 entry (active lockout only), got %d", m.Len())
+	}
+}
+
 func TestLockout_DifferentEmails(t *testing.T) {
 	t.Parallel()
-	m := newLockoutManager(5, 15*time.Minute, time.Now)
+	m := newLockoutManager(5, 15*time.Minute, 15*time.Minute, time.Now)
+	t.Cleanup(m.Stop)
 
 	for range 5 {
 		m.RecordFailure("locked@example.com")

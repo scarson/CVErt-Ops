@@ -315,10 +315,19 @@ func TestCreateOrgMember_Duplicate(t *testing.T) {
 		t.Fatalf("CreateOrgMember (first): %v", err)
 	}
 
-	// Adding the same user again should fail (unique constraint on org_id + user_id).
-	err := s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
-	if err == nil {
-		t.Error("expected error on duplicate org member, got nil")
+	// Adding the same user again is idempotent (ON CONFLICT DO NOTHING).
+	// The duplicate insert silently succeeds — the original role is preserved.
+	if err := s.CreateOrgMember(ctx, org.ID, user.ID, "admin"); err != nil {
+		t.Fatalf("CreateOrgMember (duplicate): %v", err)
+	}
+
+	// Role should still be "member" (not changed to "admin").
+	role, err := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMemberRole: %v", err)
+	}
+	if role == nil || *role != "member" {
+		t.Errorf("role = %v, want %q (DO NOTHING should preserve original)", role, "member")
 	}
 }
 
@@ -458,8 +467,12 @@ func TestCancelInvitation(t *testing.T) {
 		t.Fatalf("CreateOrgInvitation: %v", err)
 	}
 
-	if err := s.CancelInvitation(ctx, org.ID, inv.ID); err != nil {
+	deleted, err := s.CancelInvitation(ctx, org.ID, inv.ID)
+	if err != nil {
 		t.Fatalf("CancelInvitation: %v", err)
+	}
+	if !deleted {
+		t.Fatal("CancelInvitation: expected row to be deleted")
 	}
 
 	// After cancellation, the invitation should no longer be findable.

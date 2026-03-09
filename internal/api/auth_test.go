@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -1084,6 +1085,111 @@ func TestRegister_InviteOnlyAfterBootstrap(t *testing.T) {
 	defer resp2.Body.Close() //nolint:errcheck,gosec
 	if resp2.StatusCode != http.StatusForbidden {
 		t.Fatalf("second register in invite-only: got %d, want 403", resp2.StatusCode)
+	}
+}
+
+// ── Bootstrap race condition (B1, B4, B9) ─────────────────────────────────────
+
+func TestRegister_InviteOnly_ConcurrentBootstrap(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "invite-only")
+	ctx := context.Background()
+
+	// Two concurrent registrations on a fresh DB in invite-only mode
+	// should result in exactly one registered user (the bootstrap user).
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-ready
+			email := fmt.Sprintf("bootstrap%d@example.com", idx)
+			body := fmt.Sprintf(`{"email":%q,"password":"super-secret-pass-16ch"}`, email)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+				ts.URL+"/api/v1/auth/register", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+			if err != nil {
+				t.Errorf("register request %d: %v", idx, err)
+				return
+			}
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			results[idx] = resp.StatusCode
+		}(i)
+	}
+	close(ready)
+	wg.Wait()
+
+	// Exactly one should succeed (201), one should be rejected (403).
+	successes := 0
+	for _, code := range results {
+		if code == http.StatusCreated {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly 1 success, got %d (results: %v)", successes, results)
+	}
+}
+
+// TestAcceptInvitation_ConcurrentAccept verifies that two simultaneous accepts
+// both return 200 instead of one returning 500 (B2).
+func TestAcceptInvitation_ConcurrentAccept(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+
+	// Alice creates invitation for bob.
+	aliceLoginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create invitation: got %d, want 202", createResp.StatusCode)
+	}
+
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	invitations, err := db.ListOrgInvitations(ctx, orgID)
+	if err != nil || len(invitations) != 1 {
+		t.Fatalf("list invitations: err=%v, len=%d", err, len(invitations))
+	}
+	invToken := invitations[0].Token
+
+	bobLoginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	// Two concurrent accepts using a barrier.
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-ready
+			resp := doAcceptInvitation(t, ctx, ts, bobToken, invToken)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			results[idx] = resp.StatusCode
+		}(i)
+	}
+	close(ready)
+	wg.Wait()
+
+	// Both should return 200 (idempotent).
+	for i, code := range results {
+		if code != http.StatusOK {
+			t.Errorf("accept[%d]: got %d, want 200", i, code)
+		}
 	}
 }
 

@@ -123,15 +123,24 @@ func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, or
 }
 
 // GetOrgByID returns the org with the given ID, or (nil, nil) if not found or soft-deleted.
+// Uses withBypassTx — called from middleware and registration before org context is established.
 func (s *Store) GetOrgByID(ctx context.Context, id uuid.UUID) (*generated.Organization, error) {
-	row, err := s.q.GetOrgByID(ctx, id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	var result *generated.Organization
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetOrgByID(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("get org by id: %w", err)
 	}
-	return &row, nil
+	return result, nil
 }
 
 // CreateOrgMember adds a user to an org with the given role.
@@ -333,16 +342,49 @@ func (s *Store) ListOrgInvitations(ctx context.Context, orgID uuid.UUID) ([]gene
 }
 
 // CancelInvitation deletes an invitation by ID within an org.
-func (s *Store) CancelInvitation(ctx context.Context, orgID, id uuid.UUID) error {
-	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
-		if err := q.DeleteOrgInvitation(ctx, generated.DeleteOrgInvitationParams{
+// Returns true if a row was deleted, false if no matching invitation was found.
+func (s *Store) CancelInvitation(ctx context.Context, orgID, id uuid.UUID) (bool, error) {
+	var deleted bool
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		result, err := q.DeleteOrgInvitation(ctx, generated.DeleteOrgInvitationParams{
 			OrgID: orgID,
 			ID:    id,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("cancel invitation: %w", err)
 		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("cancel invitation rows affected: %w", err)
+		}
+		deleted = n > 0
 		return nil
 	})
+	return deleted, err
+}
+
+// HasPendingInvitation checks whether a pending (unexpired, unaccepted) invitation
+// exists for the given email in the org.
+func (s *Store) HasPendingInvitation(ctx context.Context, orgID uuid.UUID, email string) (bool, error) {
+	var exists bool
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		_, err := q.GetPendingInvitationByEmail(ctx, generated.GetPendingInvitationByEmailParams{
+			OrgID: orgID,
+			Email: email,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		exists = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("has pending invitation: %w", err)
+	}
+	return exists, nil
 }
 
 // OrgTierRow holds org identification and tier info for cross-org tier queries.

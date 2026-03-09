@@ -115,10 +115,21 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	}
 	if srv.cfg.RegistrationMode != "open" {
 		// Allow first user to bootstrap even in invite-only mode.
+		// Mutex serializes concurrent bootstrap attempts to prevent TOCTOU races
+		// where two requests both see userCount==0 and both proceed.
+		srv.bootstrapMu.Lock()
 		userCount, err := srv.store.CountUsers(ctx)
-		if err != nil || userCount > 0 {
+		if err != nil {
+			srv.bootstrapMu.Unlock()
+			slog.ErrorContext(ctx, "register: count users", "error", err)
 			return nil, huma.Error403Forbidden("registration is disabled — use an invitation link")
 		}
+		if userCount > 0 {
+			srv.bootstrapMu.Unlock()
+			return nil, huma.Error403Forbidden("registration is disabled — use an invitation link")
+		}
+		// Hold mutex through user creation + bootstrap. Released by defer.
+		defer srv.bootstrapMu.Unlock()
 	}
 
 	// Reject duplicate email before the expensive hash.
@@ -171,12 +182,12 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 	out.Status = http.StatusCreated
 	out.Body.UserID = user.ID.String()
 
-	// Atomically bootstrap a default org for the first user in open mode.
+	// Atomically bootstrap a default org for the first user.
 	orgName := displayName + "'s Organization"
 	org, err := srv.store.BootstrapFirstUserOrg(ctx, user.ID, orgName)
 	if err != nil {
+		// Non-fatal: user is created and can log in. Org can be created manually.
 		slog.ErrorContext(ctx, "register: bootstrap org", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if org != nil {
 		out.Body.OrgID = org.ID.String()
@@ -243,8 +254,10 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		if !srv.acquireArgon2() {
 			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 		}
-		_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
-		srv.releaseArgon2()
+		func() {
+			defer srv.releaseArgon2()
+			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
+		}()
 		srv.lockout.RecordFailure(input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
@@ -252,8 +265,11 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	ok, err := auth.VerifyPassword(input.Body.Password, user.PasswordHash.String)
-	srv.releaseArgon2()
+	var ok bool
+	func() {
+		defer srv.releaseArgon2()
+		ok, err = auth.VerifyPassword(input.Body.Password, user.PasswordHash.String)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "login: verify password", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -532,8 +548,11 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	ok, err := auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
-	srv.releaseArgon2()
+	var ok bool
+	func() {
+		defer srv.releaseArgon2()
+		ok, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "change-password: verify", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -546,8 +565,11 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	newHash, err := auth.HashPassword(input.Body.NewPassword)
-	srv.releaseArgon2()
+	var newHash string
+	func() {
+		defer srv.releaseArgon2()
+		newHash, err = auth.HashPassword(input.Body.NewPassword)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "change-password: hash", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")

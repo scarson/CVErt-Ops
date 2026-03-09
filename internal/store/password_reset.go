@@ -34,6 +34,33 @@ func (s *Store) CreatePasswordResetToken(ctx context.Context, userID uuid.UUID, 
 	})
 }
 
+// ConsumePasswordResetToken atomically looks up a valid token and marks it used.
+// Returns (nil, nil) if the token doesn't exist, is expired, or was already consumed.
+func (s *Store) ConsumePasswordResetToken(ctx context.Context, tokenHash []byte) (*PasswordResetToken, error) {
+	var tok *PasswordResetToken
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.ConsumePasswordResetToken(ctx, tokenHash)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		tok = &PasswordResetToken{
+			ID:        row.ID,
+			UserID:    row.UserID,
+			ExpiresAt: row.ExpiresAt,
+			UsedAt:    row.UsedAt,
+			CreatedAt: row.CreatedAt,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("consume password reset token: %w", err)
+	}
+	return tok, nil
+}
+
 // GetPasswordResetTokenByHash returns the valid (unused, unexpired) token matching the hash,
 // or (nil, nil) if not found.
 func (s *Store) GetPasswordResetTokenByHash(ctx context.Context, tokenHash []byte) (*PasswordResetToken, error) {

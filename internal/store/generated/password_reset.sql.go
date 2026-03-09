@@ -13,6 +13,40 @@ import (
 	"github.com/google/uuid"
 )
 
+const consumePasswordResetToken = `-- name: ConsumePasswordResetToken :one
+UPDATE password_reset_tokens
+SET used_at = now()
+WHERE id = (
+    SELECT prt.id FROM password_reset_tokens prt
+    WHERE prt.token_hash = $1 AND prt.used_at IS NULL AND prt.expires_at > now()
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, user_id, expires_at, used_at, created_at
+`
+
+type ConsumePasswordResetTokenRow struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	ExpiresAt time.Time
+	UsedAt    sql.NullTime
+	CreatedAt time.Time
+}
+
+// Atomically marks a token as used and returns it, preventing concurrent use.
+func (q *Queries) ConsumePasswordResetToken(ctx context.Context, tokenHash []byte) (ConsumePasswordResetTokenRow, error) {
+	row := q.db.QueryRowContext(ctx, consumePasswordResetToken, tokenHash)
+	var i ConsumePasswordResetTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const countRecentPasswordResetTokens = `-- name: CountRecentPasswordResetTokens :one
 SELECT COUNT(*) FROM password_reset_tokens
 WHERE user_id = $1 AND created_at > $2

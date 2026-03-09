@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,5 +325,62 @@ func TestResetPassword_WeakPassword(t *testing.T) {
 	// huma validates minLength:"16" and returns 422.
 	if resp.StatusCode != http.StatusUnprocessableEntity && resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("weak password: got %d, want 422 or 400", resp.StatusCode)
+	}
+}
+
+func TestResetPassword_ConcurrentUse(t *testing.T) {
+	t.Parallel()
+	db, ts := newPasswordResetServer(t)
+	ctx := context.Background()
+
+	// Register a user.
+	doRegister(t, ctx, ts, "concurrent-reset@example.com", "test-password-1234")
+	user, err := db.GetUserByEmail(ctx, "concurrent-reset@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("GetUserByEmail: %v", err)
+	}
+
+	// Insert a known token directly in DB.
+	tokenBytes := []byte("concurrent-test-token-32-bytes!!")
+	tokenHex := hex.EncodeToString(tokenBytes)
+	tokenHash := sha256.Sum256(tokenBytes)
+	expiresAt := time.Now().Add(1 * time.Hour)
+	if err := db.CreatePasswordResetToken(ctx, user.ID, tokenHash[:], expiresAt); err != nil {
+		t.Fatalf("CreatePasswordResetToken: %v", err)
+	}
+
+	// Race two reset requests using a barrier for reliable concurrency.
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-ready // wait for barrier
+			resetBody := fmt.Sprintf(`{"token":%q,"new_password":"concurrent-password-%d!"}`, tokenHex, idx)
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/reset-password", bytes.NewBufferString(resetBody))
+			req.Header.Set("Content-Type", "application/json")
+			resp, reqErr := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+			if reqErr != nil {
+				t.Errorf("request %d: %v", idx, reqErr)
+				return
+			}
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			results[idx] = resp.StatusCode
+		}(i)
+	}
+	close(ready) // release both goroutines simultaneously
+	wg.Wait()
+
+	// Exactly one should succeed (200), one should fail (400).
+	successes := 0
+	for _, code := range results {
+		if code == http.StatusOK {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("expected exactly 1 success, got %d (status codes: %v)", successes, results)
 	}
 }

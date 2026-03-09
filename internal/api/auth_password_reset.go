@@ -73,8 +73,11 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 
 	user, err := srv.store.GetUserByEmail(ctx, input.Body.Email)
 	if err != nil {
+		// Return 200 even on DB error to preserve the anti-enumeration invariant.
+		// A 500 here would reveal whether the code path reached the DB lookup
+		// (which depends on the email format being valid).
 		slog.ErrorContext(ctx, "forgot-password: lookup email", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
+		return out, nil
 	}
 
 	// Unknown user or OAuth-only account — return identical 200.
@@ -90,10 +93,15 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 
 	// Per-user rate limit: silently drop excess requests (returning 200).
 	// A distinct status code here would confirm the email is registered.
+	// Accepted risk (A10): the count-then-insert pattern has a TOCTOU race under
+	// concurrent requests, but the blast radius is bounded by the IP rate limiter
+	// (10/min) and all tokens go to the same legitimate email.
 	count, err := srv.store.CountRecentPasswordResetTokens(ctx, user.ID, time.Now().Add(-1*time.Hour))
 	if err != nil {
+		// Return 200 to preserve anti-enumeration invariant — a 500 only on this
+		// path would confirm the email is registered.
 		slog.ErrorContext(ctx, "forgot-password: count recent tokens", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
+		return out, nil
 	}
 	if int(count) >= srv.cfg.PasswordResetMaxPerHour {
 		return out, nil
@@ -103,7 +111,7 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		slog.ErrorContext(ctx, "forgot-password: generate token", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
+		return out, nil
 	}
 	tokenHex := hex.EncodeToString(tokenBytes)
 	tokenHash := sha256.Sum256(tokenBytes)
@@ -111,7 +119,7 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 
 	if err := srv.store.CreatePasswordResetToken(ctx, user.ID, tokenHash[:], expiresAt); err != nil {
 		slog.ErrorContext(ctx, "forgot-password: create token", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
+		return out, nil
 	}
 
 	// Deliver email asynchronously so response time doesn't leak user existence.
@@ -172,10 +180,12 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 	}
 	tokenHash := sha256.Sum256(tokenBytes)
 
-	// Look up the token.
-	tok, err := srv.store.GetPasswordResetTokenByHash(ctx, tokenHash[:])
+	// Atomically consume the token (mark used + return in one statement).
+	// Prevents TOCTOU race where two concurrent requests both read the token
+	// as unused and both proceed to change the password.
+	tok, err := srv.store.ConsumePasswordResetToken(ctx, tokenHash[:])
 	if err != nil {
-		slog.ErrorContext(ctx, "reset-password: lookup token", "error", err)
+		slog.ErrorContext(ctx, "reset-password: consume token", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if tok == nil {
@@ -186,8 +196,11 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 	if !srv.acquireArgon2() {
 		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
 	}
-	newHash, err := auth.HashPassword(input.Body.NewPassword)
-	srv.releaseArgon2()
+	var newHash string
+	func() {
+		defer srv.releaseArgon2()
+		newHash, err = auth.HashPassword(input.Body.NewPassword)
+	}()
 	if err != nil {
 		slog.ErrorContext(ctx, "reset-password: hash password", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -197,13 +210,6 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 	if err := srv.store.UpdatePasswordHash(ctx, tok.UserID, newHash, 1); err != nil {
 		slog.ErrorContext(ctx, "reset-password: update password", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
-	}
-
-	// Mark token as used.
-	if err := srv.store.MarkPasswordResetTokenUsed(ctx, tok.ID); err != nil {
-		slog.ErrorContext(ctx, "reset-password: mark token used", "error", err)
-		// Non-fatal — password already changed. Worst case: token could be reused
-		// (but UpdatePasswordHash incremented token_version, so it's safe).
 	}
 
 	return &resetPasswordOutput{}, nil

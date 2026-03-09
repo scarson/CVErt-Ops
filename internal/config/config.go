@@ -51,7 +51,8 @@ type Config struct {
 	PasswordResetMaxPerHour int           `env:"PASSWORD_RESET_MAX_PER_HOUR" envDefault:"3"`
 
 	// ── Auth — Email Verification ────────────────────────────────────────────
-	EmailVerificationTokenTTL time.Duration `env:"EMAIL_VERIFICATION_TOKEN_TTL" envDefault:"24h"`
+	EmailVerificationTokenTTL   time.Duration `env:"EMAIL_VERIFICATION_TOKEN_TTL"       envDefault:"24h"`
+	EmailVerificationMaxPerHour int           `env:"EMAIL_VERIFICATION_MAX_PER_HOUR" envDefault:"3"`
 
 	// ── Auth — Account Lockout ───────────────────────────────────────────────
 	LockoutThreshold int           `env:"LOCKOUT_THRESHOLD" envDefault:"5"`

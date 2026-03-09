@@ -182,8 +182,12 @@ func TestCancelInvitation_AppStoreRLS(t *testing.T) {
 	}
 
 	// CancelInvitation via AppStore must succeed — tests GRANT DELETE + withOrgTx.
-	if err := s.AppStore.CancelInvitation(ctx, org.ID, inv.ID); err != nil {
+	deleted, err := s.AppStore.CancelInvitation(ctx, org.ID, inv.ID)
+	if err != nil {
 		t.Fatalf("CancelInvitation via AppStore: %v — missing DELETE grant or withOrgTx", err)
+	}
+	if !deleted {
+		t.Fatal("CancelInvitation via AppStore: expected row to be deleted")
 	}
 }
 

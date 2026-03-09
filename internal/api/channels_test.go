@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -1195,6 +1196,101 @@ func TestChannelMutations_AdminCanPerform(t *testing.T) {
 	defer deleteResp.Body.Close() //nolint:errcheck,gosec
 	if deleteResp.StatusCode != http.StatusNoContent {
 		t.Fatalf("admin delete channel: got %d, want 204", deleteResp.StatusCode)
+	}
+}
+
+// ── PATCH name validation (B3) ─────────────────────────────────────────────────
+
+func TestPatchChannel_EmptyName_Rejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// PATCH with empty string name — should be rejected.
+	resp := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":""}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch empty name: got %d, want 422", resp.StatusCode)
+	}
+
+	// PATCH with whitespace-only name — should be rejected.
+	resp2 := doPatchChannel(t, ctx, ts, token, aliceReg.OrgID, created.ID, `{"name":"   "}`)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch whitespace name: got %d, want 422", resp2.StatusCode)
+	}
+}
+
+// ── Test email channel with no SMTP (B11) ───────────────────────────────────
+
+func TestTestChannel_EmailNoSMTP(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Enable email channels via tier override.
+	_, err := db.Pool().Exec(ctx,
+		`UPDATE organizations SET tier_overrides = $1 WHERE id = $2`,
+		`{"channels_email": true}`, reg.OrgID)
+	if err != nil {
+		t.Fatalf("set tier_overrides: %v", err)
+	}
+
+	// Create an email channel.
+	channelBody := `{"name":"email-no-smtp","type":"email","config":{"recipients":["ops@example.com"]}}`
+	createResp := doCreateChannel(t, ctx, ts, token, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create email channel: got %d, want 201", createResp.StatusCode)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&ch); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	// Test the email channel — SMTPHost is "" in test config, so the error
+	// should clearly mention SMTP rather than a cryptic connection failure.
+	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("test channel: got %d, want 200", resp.StatusCode)
+	}
+
+	var result testChannelResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode test response: %v", err)
+	}
+	if result.Success {
+		t.Error("expected success=false when SMTP is not configured")
+	}
+	if !strings.Contains(strings.ToLower(result.Error), "smtp") {
+		t.Errorf("error should mention SMTP, got: %q", result.Error)
 	}
 }
 

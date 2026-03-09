@@ -1155,6 +1155,46 @@ func TestCreateOrg_EmptyName(t *testing.T) {
 	}
 }
 
+// TestCreateOrg_WhitespaceName verifies that POST /api/v1/orgs with whitespace-only
+// name returns 400 (B6).
+func TestCreateOrg_WhitespaceName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateOrg(t, ctx, ts, accessToken, "   ")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("whitespace name create org: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestUpdateOrg_WhitespaceName verifies that PATCH /api/v1/orgs/{org_id} with
+// whitespace-only name returns 400 (B6).
+func TestUpdateOrg_WhitespaceName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doUpdateOrg(t, ctx, ts, accessToken, aliceReg.OrgID, "   ")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("whitespace name update org: got %d, want 400", resp.StatusCode)
+	}
+}
+
 // TestRemoveMember_NotFound verifies that DELETE /members/{user_id} returns 404
 // for a user who is not a member of the org.
 func TestRemoveMember_NotFound(t *testing.T) {
@@ -1412,6 +1452,55 @@ func TestResendInvitation_AlreadyAccepted(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck,gosec
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("resend accepted invitation: got %d, want 409", resp.StatusCode)
+	}
+}
+
+// TestCreateInvitation_DuplicatePending verifies that creating a second invitation
+// for the same email returns 409 when a pending invitation already exists (B7).
+func TestCreateInvitation_DuplicatePending(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// First invitation — should succeed.
+	resp1 := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "member")
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusAccepted {
+		t.Fatalf("first invitation: got %d, want 202", resp1.StatusCode)
+	}
+
+	// Second invitation for same email — should return 409.
+	resp2 := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "viewer")
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate pending invitation: got %d, want 409", resp2.StatusCode)
+	}
+}
+
+// TestCancelInvitation_NotFound verifies that canceling a non-existent invitation
+// returns 404 instead of silently returning 204 (B8).
+func TestCancelInvitation_NotFound(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	fakeInvID := uuid.New().String()
+	resp := doCancelInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, fakeInvID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("cancel non-existent invitation: got %d, want 404", resp.StatusCode)
 	}
 }
 

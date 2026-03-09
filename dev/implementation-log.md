@@ -1039,11 +1039,148 @@ Full code review of Phase 4 (`163c6a0..914540c`) identified 2 Important and 3 Mi
 
 ### Open items for Phase 5
 
-- [ ] Tier enforcement (org tiers, tier-gated quotas — currently hardcoded to "free")
-- [ ] Data retention automation (ai_request_log, ai_usage_counters integrated with §21 policies)
+- [x] Tier enforcement (org tiers, tier-gated quotas — currently hardcoded to "free") — completed in Phase 5A
+- [x] Data retention automation (ai_request_log, ai_usage_counters integrated with §21 policies) — completed in Phase 5B
 - [ ] AI summary execution in digests (field plumbed, no LLM call yet)
 - [ ] Burst/rate limiting on AI endpoints (per-minute, complementing daily quotas)
 - [ ] CVE enumeration defense (predictable sequential IDs in summarize path)
+
+---
+
+## Phase 5A — Tier System & Per-Org Rate Limiting
+
+> **Date:** 2026-03-01
+> **Commits:** `b11d356`..`9caba0b` on `dev`
+> **Plan:** `dev/plans/2026-03-01-phase5-implementation-plan.md`
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Tier migration | `migrations/000025_org_tier.{up,down}.sql` | Added `tier TEXT NOT NULL DEFAULT 'free'` with CHECK constraint and `tier_overrides JSONB` to `organizations` table |
+| Tier resolver | `internal/tier/resolver.go` | Resolves effective limits with override precedence: per-org override > tier default > free fallback. `IntLimit()` and `BoolFlag()` methods |
+| Store: org tier queries | `internal/store/org.go`, `internal/store/queries/org.sql` | `GetOrgTier`, resource count queries for alert rules, watchlists, members (+ pending invitations) via sqlc |
+| Tier resolution middleware | `internal/api/middleware_tier.go` | Loads org tier from DB (or cache), injects `*tier.Resolver` into request context |
+| Per-org rate limiter | `internal/api/org_ratelimit.go` | Token-bucket rate limiter keyed by org UUID. Background goroutine evicts idle entries. Tier-aware rates: free=60, pro=300, enterprise=1000 req/min |
+| Resource count gating | `internal/api/alert_rules.go`, `internal/api/watchlists.go`, `internal/api/orgs.go` | Tier-gated limits on alert rules, watchlists, and org members (including pending invitations) |
+| Channel type gating | `internal/api/channels.go` | Free tier restricted to webhook channel type only |
+| GET org tier endpoint | `internal/api/org_tier.go` | Returns resolved tier limits for the authenticated org |
+| AI quota wiring | `internal/api/ai.go` | Wired AI summary quota resolution to real org tier instead of hardcoded defaults |
+| Tier cache | `internal/api/tier_cache.go` | 30s TTL in-memory cache for org tier data. `maps.Clone` for copy safety on overrides. Background eviction loop |
+
+### Key implementation decisions
+
+- **Override precedence: per-org JSONB > tier defaults > free** — enables sales-driven customization without schema changes
+- **30s tier cache TTL** — avoids per-request DB query while keeping tier changes responsive. `maps.Clone` for copy safety since override values are scalars
+- **Fail-closed tier gating** — if `tier.Resolver` is missing from context (middleware ordering bug), handlers return 500 rather than silently allowing the request
+- **Pending invitations count toward member limits** — prevents circumventing limits by sending many invitations before acceptance
+
+### Tests added
+
+| Test | File | What it verifies |
+|---|---|---|
+| Tier resolver unit tests | `internal/tier/resolver_test.go` | Override precedence, tier fallback, free default |
+| Org tier store integration | `internal/store/org_tier_test.go` | GetOrgTier, resource count queries against real Postgres |
+| Tier middleware unit tests | `internal/api/middleware_tier_test.go` | Context injection, DB error handling, cache hit/miss |
+| Org rate limiter unit tests | `internal/api/org_ratelimit_test.go` | Allow/deny, burst, idle eviction, rate change handling |
+| Tier gating integration | `internal/api/tier_gating_test.go` | Resource limits, channel type gating, rate limiting, fail-closed behavior |
+| Tier cache unit tests | `internal/api/tier_cache_test.go` | TTL expiration, idle eviction, copy safety (mutation isolation) |
+
+### Quality checks
+
+- All tests pass (`go test ./...`)
+- Code review remediation applied (copy safety test for tier cache, doc comments)
+
+---
+
+## Phase 5B — Retention Cleanup with Bounded-Batch Deletes
+
+> **Date:** 2026-03-01
+> **Commits:** `80808c6`..`234df6b` on `dev`
+> **Plan:** `dev/plans/2026-03-01-phase5-implementation-plan.md`
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Retention indexes migration | `migrations/000026_retention_indexes.{up,down}.sql` | `CREATE INDEX CONCURRENTLY` on `cve_raw_payloads(ingested_at)`, `feed_fetch_log(started_at)`, `job_queue(finished_at) WHERE status IN ('succeeded','dead')` |
+| Retention config | `internal/config/config.go` | Env vars for per-table retention windows: `RETENTION_RAW_PAYLOAD_DAYS`, `RETENTION_FEED_FETCH_LOG_DAYS`, `RETENTION_JOB_QUEUE_HOURS`, etc. |
+| Retention sqlc queries | `internal/store/queries/retention.sql`, `internal/store/retention.go` | 9 bounded-batch DELETE queries using `WITH doomed AS (SELECT ... LIMIT batch_size) DELETE ... USING doomed` pattern |
+| Retention runner | `internal/retention/runner.go` | Bounded-batch delete loop per table with max runtime deadline. Two phases: global tables (no org filtering), then tier-gated tables (grouped by per-org retention window) |
+| Worker scheduling | `cmd/cvert-ops/main.go`, `internal/notify/worker.go` | Retention job registered as `retention_cleanup` handler, scheduled via `notify.Worker` ticker |
+
+### Key implementation decisions
+
+- **Bounded-batch delete pattern** — `WITH doomed AS (SELECT ... ORDER BY ts LIMIT batch_size) DELETE ... USING doomed`. Prevents long-running transactions and lock contention
+- **Max runtime deadline** — Runner checks wall-clock time between batches, stops if deadline exceeded
+- **Tier-gated retention windows** — Org-scoped tables group orgs by effective retention window via `tier.Resolver`. Orgs with unlimited retention (`days < 0`) are skipped
+- **Error isolation** — Per-table errors are logged but don't stop the run
+
+### Tests added
+
+| Test | File | What it verifies |
+|---|---|---|
+| Retention store integration | `internal/store/retention_test.go` | All 9 bounded-batch deletes against real Postgres — batch limits, cutoff filtering |
+| Runner unit tests | `internal/retention/runner_test.go` | Batch looping, max runtime, disabled skip, context cancellation, tier-gated grouping |
+| Error isolation test | `internal/retention/runner_test.go` | Failing table doesn't prevent subsequent tables from being cleaned |
+
+### Quality checks
+
+- All tests pass (`go test ./...`)
+- Code review remediation: removed dead AI cleanup code, added error isolation test, relocated `HasPendingOrRunningJob`
+
+---
+
+## Phase 5C — Audit Logging, SSO Connections, OIDC Login Flow
+
+> **Date:** 2026-03-01 to 2026-03-02
+> **Commits:** `03ca3a3`..`0feb8f2` on `dev`
+> **Plan:** `dev/plans/2026-03-01-phase5-implementation-plan.md`
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Audit log migration | `migrations/000027_audit_log.{up,down}.sql` | `audit_log` table with RLS, autovacuum tuning. No FK to `organizations` or `users` — audit records survive entity deletion |
+| Secret redaction | `internal/audit/redact.go` | Write-time redaction using keyword-based substring matching (secret, password, api_key, token, etc.) |
+| Audit writer | `internal/audit/writer.go` | Non-blocking inserts via goroutines with `context.WithoutCancel`. `sync.WaitGroup` for deterministic test flushing |
+| Audit integration in handlers | All mutation handlers | All create/update/delete handlers emit audit entries with old_state/new_state snapshots |
+| Audit log list endpoint | `internal/api/audit_log.go` | `GET /api/v1/orgs/{org_id}/audit-log` with admin+ RBAC, enterprise tier gating, keyset pagination |
+| AES-256-GCM crypto | `internal/crypto/aes.go` | Encrypt/Decrypt for OIDC client secrets at rest |
+| SSO connections migration | `migrations/000028_sso_connections.{up,down}.sql` | `sso_connections` (one per org, `client_secret_enc BYTEA`) and `sso_email_domains`. Both with RLS |
+| SSO CRUD handlers | `internal/api/sso.go` | Create/Get/Patch/Delete SSO connection + PUT domains + domain discovery. Enterprise tier gated, owner-only RBAC |
+| OIDC login flow | `internal/api/oauth_oidc.go` | SSO login initiation + callback with ID token verification. Does NOT auto-create users — requires pre-existing linked identity |
+| Mock OIDC IdP | `internal/testutil/mock_oidc.go` | Test utility serving OIDC discovery, JWKS, and token endpoints with real RSA-signed ID tokens |
+
+### Key implementation decisions
+
+- **Non-blocking audit writes** — `context.WithoutCancel` detaches from request lifecycle. Errors logged, never propagated to API callers
+- **Write-time redaction (not read-time)** — Secrets stripped before INSERT, ensuring they never reach the database
+- **Audit log intentionally FK-free** — `org_id` and `actor_id` are NOT foreign keys. Audit records must survive org/user deletion for compliance
+- **SSO: one connection per org** — UNIQUE constraint on `sso_connections.org_id`. Simple for initial implementation
+- **Client secrets encrypted at rest** — AES-256-GCM with nonce-prepended format. Masked as `"[encrypted]"` in API responses
+- **OIDC login does NOT auto-create users** — Unlike Google/GitHub OAuth, SSO login requires a pre-existing linked identity. Prevents unauthorized access through misconfigured IdP
+- **State parameter encodes connection_id** — `{random_hex}_{connection_uuid}` allows single callback endpoint to identify which SSO connection to use
+- **OIDC provider caching** — `sync.Map` caches `*oidc.Provider` instances by issuer URL
+
+### Tests added
+
+| Test | File | What it verifies |
+|---|---|---|
+| Redaction unit tests | `internal/audit/redact_test.go` | Keyword matching, URL redaction, nested map recursion |
+| Writer unit tests | `internal/audit/writer_test.go` | Non-blocking insert, Flush determinism, email resolution fallback |
+| Audit store integration | `internal/store/audit_test.go` | Insert/List with pagination, filters, RLS enforcement |
+| Audit handler tests | `internal/api/audit_log_test.go` | RBAC, enterprise tier gating, pagination, filters |
+| Audit integration tests | `internal/api/audit_integration_test.go` | All mutation handlers emit correct audit entries |
+| AES-256-GCM unit tests | `internal/crypto/aes_test.go` | Encrypt/decrypt round-trip, wrong key rejection, nonce uniqueness |
+| SSO store integration | `internal/store/sso_test.go` | CRUD, email domain management, RLS, encryption round-trip |
+| SSO handler tests | `internal/api/sso_test.go` | CRUD, domain management, tier gating, RBAC, discovery |
+| OIDC login/callback tests | `internal/api/oauth_oidc_test.go` | Full OIDC flow with mock IdP — login, callback, token exchange, nonce validation, conflict detection |
+
+### Quality checks
+
+- All tests pass (`go test ./...`)
+- Code review remediation: email resolution in audit writer, invitation audit logging, file renames
 
 ---
 
@@ -1083,6 +1220,283 @@ Full code review of Phase 4 (`163c6a0..914540c`) identified 2 Important and 3 Mi
 
 - **go test ./...:** All pass (transient testcontainer failures on `audit` and `retention` packages pass when run individually — Docker resource contention)
 - **golangci-lint:** 0 issues
+
+---
+
+## Phase 5 — Cross-Phase Test Coverage Remediation
+
+> **Date:** 2026-03-03
+> **Commits:** `b636323`..`a473b05` on `dev`
+
+### What was built
+
+Systematic test coverage review across all phases (1-5), driven by per-phase coverage gap reports. 92 new test functions and 21 subtests added across 23 test files (2,669 insertions).
+
+| Phase | Tests Added | Areas Covered |
+|---|---|---|
+| Phase 5 | ~30 | Identity linking security, SSO input validation, tier gating (enterprise unlimited), audit log input validation, retention unlimited-skip, OIDC login edge cases |
+| Phase 4 | ~69 | RLS isolation for `ai_*` and `saved_search` tables (12 gaps), RBAC for saved search access control, handler error paths, DSL executor cursor tampering and limit clamping, FTS + `escapeLike`, Gemini security config white-box tests, `validateConfig` + `IsDevelopment` + `LogValue` masking |
+| Phase 2 | ~210 | DSL compiler/evaluator, alert event/rule API handlers, watchlist API, RBAC middleware, CSRF middleware, auth handlers, rate limiting, store-layer RLS for all org-scoped tables |
+| Phase 1 | ~60 | Pure function unit tests for all 5 feed adapter parsers, merge pipeline helpers, FTS document builder, advisory lock, worker pool; Fetch-level integration tests for all adapters |
+| Cross-phase | — | Code review findings: rate limiter burst cap, SSO domain validation (RFC 1035), client_secret audit redaction, OIDC provider cache eviction, tier limit constants extracted |
+
+### Bugs found during coverage review
+
+| Bug | Commit | Severity | Description |
+|---|---|---|---|
+| Sanitizer regex bypass | `cf3e20b` | Security | `![alt](url)` markdown images passed through the LLM sanitizer. Also added stripping of Unicode format characters (bidi overrides, zero-width spaces, BOM) |
+| SearchCVEs FTS JOIN broken | `05b3a4c` | Correctness | `SearchCVEs` used `FROM "cves c"` alias but `cveColumns` references unaliased `"cves.col"`. When FTS JOIN was present, Postgres rejected the query. Never integration-tested, shipped silently |
+| Test flakiness | `3749f1b` | Test quality | Quota and rate limiter tests had timing-sensitive assertions; fixed with tolerance adjustments |
+
+### Quality checks
+
+- **golangci-lint:** 0 issues
+- Coverage review reports: `dev/test-coverage-reports/2026-03-03-phase{1,2,3a,3b,4,5}-*-review.md` (10 reports)
+
+---
+
+## Frontend — Vue 3 SPA
+
+> **Date:** 2026-03-04 through 2026-03-06
+> **Commits:** `dd99764`..`9b6d40e` on `dev` (102 commits)
+> **Plan:** `dev/plans/2026-03-03-frontend-design.md` (design), `dev/plans/2026-03-03-frontend-implementation-plan.md` (implementation)
+> **A11y spec:** `dev/specs/accessibility-spec.md`
+
+### What was built
+
+| Feature | Key files | Description |
+|---|---|---|
+| Project scaffolding | `web/` (184 source files) | Vue 3 + TypeScript, Vite, Tailwind CSS v4, shadcn-vue (reka-ui primitives), Pinia, Vue Router 4 |
+| SPA embedding in Go binary | `web/embed.go`, `internal/api/server.go` | `//go:embed all:dist` with `fs.Sub`; SPA fallback serves `index.html` for client-side routes |
+| OpenAPI-typed API client | `web/src/lib/api/client.ts`, `web/src/lib/api/orgFetch.ts` | `openapi-typescript` generates types from spec; `openapi-fetch` with CSRF middleware and 401 refresh interceptor with coalesced refresh |
+| Auth store | `web/src/stores/auth.ts` | Pinia store: login/logout, session restore, org context with localStorage persistence |
+| Router + guards | `web/src/router/index.ts` | Auth guard, org guard, title guard with h1 focus for screen readers |
+| Layouts | `web/src/layouts/` | PublicLayout (login/register) + AuthenticatedLayout (sidebar nav, org switcher, mobile sheet) |
+| All views | `web/src/views/` | Login, Register, Create Org, CVE Search, CVE Detail, Watchlist List/Detail, Members, Groups, Feed Status, Invitation acceptance, Password reset, Email verification, 404 |
+| Shared components | `ErrorAlert.vue`, `LoadingSkeleton.vue`, `EmptyState.vue` | Reusable error display (with retry prop), skeleton loading, empty state |
+| Keyset pagination | `web/src/composables/usePagination.ts` | Cursor stack for prev/next navigation; reset on filter change |
+| WCAG 2.1 AA a11y | All views/components | 10 dedicated a11y commits: `lang` attribute, skip-to-main, icon labels, `aria-live` regions, form error association, h1 focus on navigation |
+| Frontend CI | `.github/workflows/ci.yml` | `test-web` (type-check + lint + vitest), `build-web` jobs; frontend build required by all Go test jobs for `embed.go` |
+| Backend OAuth redirect | `internal/auth/`, `internal/config/` | `FRONTEND_URL` config; OAuth callbacks redirect to frontend instead of returning JSON |
+
+### Key implementation decisions
+
+- **SPA embedded in Go binary** — `//go:embed all:dist` with SPA fallback handler. Single binary deployment, no separate web server
+- **Coalesced token refresh** — When multiple API calls get 401 simultaneously, a single `refreshPromise` is shared. Prevents thundering-herd refresh calls
+- **Stale response guards** — All async fetches use an incrementing `fetchId` counter; responses discarded if a newer fetch was initiated
+- **Two Pinia stores only** — `auth` (session/org context) and `ui` (sidebar state). YAGNI applied strictly
+- **shadcn-vue for accessible primitives** — Dialog, Select, DropdownMenu come with correct ARIA roles. A11y work focused on what primitives don't cover
+- **URL sanitization** — `safeHref` utility strips non-http(s) URLs from CVE references to prevent XSS via `javascript:` URLs
+
+### Tests added
+
+32 test files across views, components, stores, composables, and API client covering login/register flows, CVE search/detail, watchlist management, member/group management, invitation acceptance, pagination, auth store, router guards, and API client CSRF/refresh behavior.
+
+### Gotchas discovered
+
+- **Go nil slice → JSON `null`** — Router guard crashed on `auth.user?.orgs?.length` when orgs was `null`
+- **Stale responses on rapid navigation** — Required incrementing counter pattern in every async view
+- **Org switch requires explicit re-fetch** — `onMounted` doesn't re-run; all org-scoped views need `watch` on `activeOrgId`
+- **Mobile sidebar Sheet stays open on navigation** — Required explicit close in router `afterEach` hook
+
+### Quality checks
+
+- **Type safety:** `vue-tsc --build` in CI
+- **Linting:** ESLint + Prettier enforced in CI
+- **Two rounds of bug hunts** identified and fixed ~20 bugs (stale responses, org-switch gaps, infinite reload loops, dialog stale state, double-submit vulnerabilities)
+
+---
+
+## Vendor Feed Adapters — MSRC + Red Hat
+
+> **Date:** 2026-03-05 to 2026-03-06
+> **Commits:** `d42674e`..`9499ef2` on `feature/vendor-feed-adapters`, merged to `dev`
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| CSAF 2.0 parser | `internal/feed/csaf/parser.go` | Shared OASIS CSAF 2.0 JSON parser — extracts CVE IDs, CVSS vectors/scores, CWEs, remediation URLs. Designed for reuse by MSRC now and CISA ICS-CERT later |
+| MSRC adapter | `internal/feed/msrc/adapter.go` | Fetches CSAF 2.0 advisories from `api.msrc.microsoft.com`. Two-phase: queries `/updates` for modified advisory IDs, then fetches each CSAF document. Rate limited (2 req/s) |
+| Red Hat adapter | `internal/feed/redhat/adapter.go` | Two-phase from Red Hat Security Data API: paginated CVE list, then individual detail requests. Rate limited (5 req/s) |
+| Vendor enrichment schema | `migrations/000029_vendor_enrichment.{up,down}.sql` | `cve_vendor_enrichment` table with `(cve_id, source_name)` unique constraint, vendor severity/fix state, JSONB enrichment blob |
+| Merge pipeline vendor step | `internal/merge/pipeline.go` | Vendor enrichment upsert when `CanonicalPatch.VendorEnrichment` is non-nil |
+| KEV vendor enrichment | `internal/feed/kev/adapter.go` | Backfilled `VendorEnrichment` population for KEV adapter |
+
+### Key implementation decisions
+
+- **Shared CSAF parser** — CSAF 2.0 is an OASIS standard used by multiple vendors. Reusable `csaf` package avoids future duplication
+- **Two-phase fetch pattern** — list modified IDs first, then fetch details. Enables per-CVE cursor granularity and crash recovery
+- **`VendorEnrichment` as separate table** — vendor data is heterogeneous across sources. JSONB blob with extracted scalar columns for common filter dimensions
+- **`slices.Concat` for priority list** — bug hunt found `append(globalPriority, ...)` was mutating the global slice's backing array
+- **OData datetime validation** via regex in MSRC adapter — prevents injection into `$filter` query parameter
+
+### Bug hunt findings (all fixed)
+
+- Red Hat adapter never advanced cursor on last page (full re-sync every run)
+- KEV enrichment fields not null-byte stripped
+- MSRC silently dropped CVSS 0.0 scores
+- Red Hat/MSRC response bodies not drained (broke connection reuse)
+- Global priority slice mutation via `append` in merge resolver
+
+### Tests added
+
+| Test file | Coverage |
+|---|---|
+| `internal/feed/csaf/parser_test.go` | Multi-vulnerability documents, missing fields, empty input |
+| `internal/feed/msrc/adapter_test.go` | Pagination, CVSS 0.0 preservation, rate limiting, cursor persistence |
+| `internal/feed/redhat/adapter_test.go` | Pagination, cursor advancement, detail fetch errors, null-byte stripping |
+| `internal/merge/resolve_test.go` (additions) | MSRC/Red Hat priority ordering, mutation protection |
+
+---
+
+## Feed Wiring — Scheduler, Admin API, Ingest Pipeline
+
+> **Date:** 2026-03-06 to 2026-03-07
+> **Commits:** `9499ef2`..`d540e85` on `dev` (PR #8)
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Feed ingest handler | `internal/ingest/handler.go` | Generic worker handler: deserializes feed name, creates adapter via factory, paginated fetch loop with merge, cursor persistence per page for crash recovery. Exponential backoff |
+| EPSS ingest handler | `internal/ingest/epss.go` | Separate handler for EPSS (uses `Apply()` not `Fetch()`). Same sync state/fetch log tracking |
+| Adapter factory | `internal/ingest/feeds.go` | `NewAdapter` factory mapping feed names to concrete adapters. `KnownFeeds` canonical list |
+| Feed scheduler | `internal/ingest/scheduler.go` | Periodic goroutine checking timing + backoff, enqueues jobs. Prometheus counters for enqueued/skipped |
+| Admin feeds API | `internal/api/feeds.go` | `GET /api/v1/admin/feeds` (status + logs), `POST /api/v1/admin/feeds/{feed}/trigger` (manual re-run) |
+| Site admin middleware | `internal/api/middleware_site_admin.go` | `RequireSiteAdmin()` — checks `is_site_admin` column. Gates admin endpoints |
+| Site admin migration | `migrations/000030_add_site_admin.{up,down}.sql` | `is_site_admin BOOLEAN DEFAULT false` with `CREATE INDEX CONCURRENTLY` |
+| Feed state store | `internal/store/feed.go` | Sync state CRUD + fetch log insertion. `withBypassTx` (no RLS for global feed state) |
+| Shared feed utilities | `internal/feed/util.go` | Extracted `DownloadToTemp` (5GB limit), `CloneStrings`, `StripNullBytes`, `DrainBody`, `DoRequest`, `ReadResponseBody` |
+| Feed status dashboard | `web/src/views/FeedStatusView.vue` | Live dashboard showing all feeds with sync state and recent fetch logs. Replaced placeholder |
+| EPSS poison row handling | `internal/feed/epss/adapter.go` | Skips unparseable rows with warning log instead of aborting entire feed |
+| GHSA pagination refactor | `internal/feed/ghsa/adapter.go` | Returns one page per `Fetch()` for crash recovery compatibility |
+
+### Key implementation decisions
+
+- **Per-page cursor persistence** — cursor state persisted after every successful page. Process crash resumes from last completed page, not the beginning. Drove the GHSA refactor
+- **Job dedup via `ON CONFLICT DO NOTHING`** — eliminates TOCTOU race between scheduler and admin trigger
+- **Site admin as boolean column** — YAGNI for now. Admin feed endpoints are the only consumer
+- **Admin dashboard shows all known feeds** — newly registered feeds appear immediately even before first run
+- **`backoffDuration` guards negative failures** — `max(failures, 0)` prevents panic from `1 << negative`
+
+### Bug hunt findings (all fixed)
+
+- `expectedSchemaVersion` stale (startup always warned)
+- `InsertFeedFetchLog` discarded actual timestamps (used `now()` default)
+- Sync state errors silently swallowed
+- NVD adapter cursor regression (data race)
+- EPSS blocked on malformed CSV rows
+- `DownloadToTemp` had no size limit (OOM risk)
+- GHSA fetched all pages internally, defeating crash recovery
+- `backoffDuration` panicked on negative failure count
+
+### Tests added
+
+| Test file | Coverage |
+|---|---|
+| `internal/ingest/handler_test.go` | Success path, merge errors, cursor persistence, backoff panic guard |
+| `internal/ingest/scheduler_test.go` | Interval scheduling, backoff skip, Prometheus counters, dedup |
+| `internal/ingest/epss_test.go` | Success/error paths, sync state error propagation |
+| `internal/api/feeds_test.go` | GET status, POST trigger, site admin gate, dedup |
+| `internal/api/middleware_site_admin_test.go` | Admin/non-admin/missing-user/DB-error scenarios |
+| `internal/store/feed_test.go` | Upsert idempotency, timestamp persistence |
+| `internal/feed/util_test.go` | `DownloadToTemp` (5GB limit), `DoRequest`, `ReadResponseBody` |
+
+### Quality checks
+
+- 3 rounds of code review + 3 bug hunt campaigns
+- CI pipeline updated: frontend test/build jobs, golangci-lint v2 config migration, version pinning
+- Lint clean (16 feed util issues resolved)
+
+---
+
+## Phase 6A — Security Hardening
+
+> **Date:** 2026-03-08 to 2026-03-09
+> **Commits:** `c9cbc62`..`67f348a` on `feature/phase6a-security-hardening` (22 commits, 60 files, +4902/-236)
+> **Plan:** `dev/plans/2026-03-01-phase6-implementation-plan.md`
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Password reset flow | `internal/api/auth_password_reset.go`, `internal/store/password_reset.go`, templates, `migrations/000031_*` | Forgot/reset endpoints. 32-byte `crypto/rand` tokens, SHA-256 hashed in DB. Rate limited (3/user/hour). Always returns 200 to prevent email enumeration. Increments `token_version` to invalidate sessions |
+| First-user bootstrap fix | `internal/api/auth.go` | In invite-only mode, allow first user to register without invitation |
+| Invitation email sending | `internal/api/orgs.go`, `internal/notify/render.go`, templates | Sends invitation emails via SMTP on `POST /invitations`. Best-effort |
+| Invitation resend endpoint | `internal/api/orgs.go` | `POST /orgs/{org_id}/invitations/{id}/resend` — new token, extended expiry. Admin+ |
+| Email verification flow | `internal/api/auth_email_verification.go`, `internal/store/email_verification.go`, templates, `migrations/000032_*`, `000033_*` | Verify + resend endpoints. `email_verified` boolean on users. Same token pattern as password reset. 24h TTL |
+| Channel test endpoint | `internal/api/channels.go` | `POST /orgs/{org_id}/channels/{id}/test` — sends test notification. Delivery outcome in response body |
+| Account lockout | `internal/api/lockout.go` | In-memory `lockoutManager` with configurable threshold/duration. Injectable clock. Background eviction goroutine |
+| RBAC for channels | `internal/api/server.go` | Channel mutations elevated from `RoleMember` to `RoleAdmin` per PLAN.md §7.3 |
+| CORS middleware | `internal/api/cors.go` | Config-driven origin allowlist. Rejects wildcard `*` (incompatible with credentials). Dev defaults |
+| Frontend views | `ForgotPasswordView.vue`, `ResetPasswordView.vue`, `VerifyEmailView.vue` | Vue pages + auth store extensions + routes |
+
+### Key implementation decisions
+
+- **Tokens SHA-256 hashed** before DB storage. Lookup by hash via index scan
+- **Email enumeration prevention** — `POST /auth/forgot-password` returns constant 200 regardless of outcome
+- **Lockout is in-memory** — acceptable for single-binary deployment; would need Redis for multi-instance
+- **Invitation resend generates new token** rather than re-sending original (which may have leaked)
+- **Channel test always returns 200** — delivery outcome in JSON body, not HTTP status
+
+### Tests added
+
+| Test | File | What it verifies |
+|---|---|---|
+| Password reset store/handlers | `password_reset_test.go`, `auth_password_reset_test.go` | Create, lookup, rate limiting, enumeration-safe response, session invalidation |
+| Email verification store/handlers | `email_verification_test.go`, `auth_email_verification_test.go` | Create, lookup, expired token, resend auth |
+| Account lockout | `lockout_test.go`, `auth_lockout_test.go` | Threshold, unlock timing, eviction, concurrent access, integration with login |
+| CORS middleware | `middleware_cors_test.go` | Allowed/blocked origins, dev defaults, wildcard rejection |
+| Channel test/RBAC | `channel_test_notification_test.go`, `channels_test.go` | Test notification, RBAC enforcement |
+| Invitation resend | `orgs_test.go` | Resend for pending, rejected for expired/accepted/cancelled |
+| Frontend views | `ForgotPasswordView.test.ts`, `ResetPasswordView.test.ts`, `VerifyEmailView.test.ts` | Form flows |
+
+### Quality checks
+
+- `golangci-lint run` passes
+- Code review remediation: `formatTTL` helper, `forgotPasswordResponse` constant, test file renames
+- RBAC corrected to match PLAN.md §7.3
+
+---
+
+## Phase 6B — Bug Hunting + Phase 6C — Plan Reconciliation
+
+> **Date:** 2026-03-08
+> **Commits:** `0926eff`..`020dc66` on `dev`
+
+### What was done
+
+Ran 6 bug hunt passes (3 for Phase 6A security code, 3 for Phase 6B missing-feature code) using exploratory, holistic, and multipass bug hunter skills. Identified 25 bugs across TOCTOU races, anti-enumeration leaks, memory growth, validation gaps, and transaction helper misuse. Consolidated findings into a 13-task bug fix implementation plan.
+
+Separately, reconciled PLAN.md with the implemented API.
+
+### Bug hunting
+
+6 reports in `dev/bug-hunts/`:
+- `2026-03-08-phase6a-holistic.md` — lockout case bypass, argon2 semaphore leak, unbounded lockout map growth, password reset TOCTOU
+- `2026-03-08-phase6a-security-holistic.md` — anti-enumeration leaks in forgot-password error paths
+- `2026-03-08-phase6a-security-multipass.md` — 5-pass deep analysis: contract violations, pattern breaks, state machine gaps, resource lifecycle, config edge cases
+- `2026-03-08-phase6b-exploratory.md` — bootstrap registration race, concurrent invitation accept 500s
+- `2026-03-08-phase6b-holistic.md` — soft-deleted orgs in `ListAllOrgs`, missing transaction wrappers
+- `2026-03-08-phase6b-multipass.md` — PATCH channel empty name validation, invitation duplicate detection, CORS wildcard+credentials
+
+Bug fix plan: `dev/plans/2026-03-08-phase6-bug-fixes.md` — 13 tasks covering all 25 findings
+
+Testing pitfalls: `dev/testing-pitfalls.md` — 8-category checklist distilled from why tests missed these bugs
+
+### PLAN.md reconciliation
+
+- Appendix B rewritten from skeletal skeleton to comprehensive API reference — 60+ endpoints organized by category with role requirements
+- Fixed `status` enum: added `withdrawn` (missing from §4.3 but present in implementation)
+- Removed corrupt SQL fragment from §18.1
+- Updated phase tracker (§18) to reflect Phases 5, Frontend, and 6 as implemented
+- Fixed stale cross-references
+
+### Other changes
+
+- `go-chi/cors` promoted from indirect to direct dependency
+- Bug hunter skills updated to output to `dev/bug-hunts/` directory
 
 ---
 

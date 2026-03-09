@@ -114,7 +114,7 @@ func (s *Store) ListSavedSearches(ctx context.Context, orgID, userID uuid.UUID, 
 			OrgID:       orgID,
 			UserID:      userID,
 			Visibility:  visibility,
-			ResultLimit: int32(min(max(limit, 1), 200)), //nolint:gosec // G115: clamped to [1,200]
+			ResultLimit: clampInt32(limit, 1, 200),
 		})
 		if err != nil {
 			return fmt.Errorf("list saved searches: %w", err)

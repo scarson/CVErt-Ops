@@ -46,6 +46,22 @@ type Config struct {
 	// Max simultaneous hash operations; each allocates ~19.5 MB.
 	Argon2MaxConcurrent int `env:"ARGON2_MAX_CONCURRENT" envDefault:"5"`
 
+	// ── Auth — Password Reset ────────────────────────────────────────────────
+	PasswordResetTokenTTL   time.Duration `env:"PASSWORD_RESET_TOKEN_TTL"    envDefault:"1h"`
+	PasswordResetMaxPerHour int           `env:"PASSWORD_RESET_MAX_PER_HOUR" envDefault:"3"`
+
+	// ── Auth — Email Verification ────────────────────────────────────────────
+	EmailVerificationTokenTTL time.Duration `env:"EMAIL_VERIFICATION_TOKEN_TTL" envDefault:"24h"`
+
+	// ── Auth — Account Lockout ───────────────────────────────────────────────
+	LockoutThreshold int           `env:"LOCKOUT_THRESHOLD" envDefault:"5"`
+	LockoutDuration  time.Duration `env:"LOCKOUT_DURATION"  envDefault:"15m"`
+
+	// ── CORS ─────────────────────────────────────────────────────────────────
+	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
+	// Empty in production disables CORS. In development, defaults to localhost dev servers.
+	CORSAllowedOrigins string `env:"CORS_ALLOWED_ORIGINS"`
+
 	// ── OAuth — GitHub ───────────────────────────────────────────────────────────
 	GitHubClientID     string `env:"GITHUB_CLIENT_ID"`
 	GitHubClientSecret string `env:"GITHUB_CLIENT_SECRET"`

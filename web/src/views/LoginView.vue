@@ -97,6 +97,11 @@ function loginWithGoogle() {
             :aria-invalid="!!error || undefined"
             :aria-describedby="error ? 'login-error' : undefined"
           />
+          <div class="text-right">
+            <RouterLink to="/forgot-password" class="text-xs text-muted-foreground underline underline-offset-4 hover:text-primary">
+              Forgot password?
+            </RouterLink>
+          </div>
         </div>
 
         <p v-if="error" id="login-error" class="text-sm text-destructive" role="alert">{{ error }}</p>

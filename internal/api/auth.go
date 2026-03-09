@@ -182,6 +182,11 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 		out.Body.OrgID = org.ID.String()
 	}
 
+	// Send email verification (non-blocking — failure doesn't prevent registration).
+	if err := srv.sendVerificationEmail(ctx, user.ID, input.Body.Email); err != nil {
+		slog.WarnContext(ctx, "register: send verification email failed", "email", input.Body.Email, "error", err)
+	}
+
 	return out, nil
 }
 
@@ -214,6 +219,25 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Account lockout check — before argon2 to save CPU on locked accounts.
+	// Still normalize timing for locked accounts to prevent lockout status enumeration.
+	allowed, retryAfter := srv.lockout.Check(input.Body.Email)
+	if !allowed {
+		time.Sleep(50 * time.Millisecond) // timing normalization
+		retrySeconds := int(retryAfter.Seconds())
+		if retrySeconds < 1 {
+			retrySeconds = 1
+		}
+		return nil, huma.Error429TooManyRequests(
+			"account temporarily locked due to too many failed login attempts",
+			&huma.ErrorDetail{
+				Message:  "retry_after_seconds",
+				Location: "header",
+				Value:    retrySeconds,
+			},
+		)
+	}
+
 	// Timing normalization: always spend argon2 time regardless of whether the user exists.
 	if user == nil || !user.PasswordHash.Valid {
 		if !srv.acquireArgon2() {
@@ -221,6 +245,7 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		}
 		_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
 		srv.releaseArgon2()
+		srv.lockout.RecordFailure(input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -234,8 +259,12 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !ok {
+		srv.lockout.RecordFailure(input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
+
+	// Successful login — reset lockout counter.
+	srv.lockout.RecordSuccess(input.Body.Email)
 
 	// Issue tokens.
 	jti := uuid.New()
@@ -640,6 +669,14 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Auto-verify email — the invitation proves the user controls this email address.
+	if !user.EmailVerified {
+		if err := srv.store.SetEmailVerified(ctx, claims.UserID); err != nil {
+			slog.ErrorContext(ctx, "accept invitation: set email verified", "error", err)
+			// Non-fatal — membership is already created.
+		}
+	}
+
 	if srv.auditWriter != nil {
 		srv.auditWriter.Log(ctx, audit.Entry{
 			OrgID:      inv.OrgID,
@@ -760,4 +797,42 @@ func registerAuthRoutes(api huma.API, srv *Server) {
 		Tags:        []string{"auth"},
 		Summary:     "List configured auth providers and registration mode",
 	}, srv.authProvidersHandler)
+
+	// Password reset — public, no auth required.
+	huma.Register(api, huma.Operation{
+		OperationID:   "forgot-password",
+		Method:        http.MethodPost,
+		Path:          "/auth/forgot-password",
+		Tags:          []string{"auth"},
+		Summary:       "Request a password reset email",
+		DefaultStatus: http.StatusOK,
+	}, srv.forgotPasswordHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "reset-password",
+		Method:        http.MethodPost,
+		Path:          "/auth/reset-password",
+		Tags:          []string{"auth"},
+		Summary:       "Reset password using a reset token",
+		DefaultStatus: http.StatusOK,
+	}, srv.resetPasswordHandler)
+
+	// Email verification — verify-email is public, resend-verification requires auth.
+	huma.Register(api, huma.Operation{
+		OperationID:   "verify-email",
+		Method:        http.MethodPost,
+		Path:          "/auth/verify-email",
+		Tags:          []string{"auth"},
+		Summary:       "Verify email address using a verification token",
+		DefaultStatus: http.StatusOK,
+	}, srv.verifyEmailHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "resend-verification",
+		Method:        http.MethodPost,
+		Path:          "/auth/resend-verification",
+		Tags:          []string{"auth"},
+		Summary:       "Resend email verification (requires authentication)",
+		DefaultStatus: http.StatusOK,
+	}, srv.resendVerificationHandler)
 }

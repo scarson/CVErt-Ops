@@ -15,7 +15,7 @@ import (
 )
 
 const acceptInvitation = `-- name: AcceptInvitation :exec
-UPDATE org_invitations SET accepted_at = now() WHERE id = $1
+UPDATE org_invitations SET accepted_at = COALESCE(accepted_at, now()) WHERE id = $1
 `
 
 func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
@@ -283,7 +283,7 @@ func (q *Queries) GetOrgTier(ctx context.Context, id uuid.UUID) (GetOrgTierRow, 
 
 const getPendingInvitationByEmail = `-- name: GetPendingInvitationByEmail :one
 SELECT id FROM org_invitations
-WHERE org_id = $1 AND email = $2 AND accepted_at IS NULL AND expires_at > now()
+WHERE org_id = $1 AND lower(email) = lower($2) AND accepted_at IS NULL AND expires_at > now()
 LIMIT 1
 `
 

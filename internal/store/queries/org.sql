@@ -52,7 +52,7 @@ SELECT * FROM org_invitations WHERE id = $1 AND org_id = $2 LIMIT 1;
 SELECT * FROM org_invitations WHERE token = $1 LIMIT 1;
 
 -- name: AcceptInvitation :exec
-UPDATE org_invitations SET accepted_at = now() WHERE id = $1;
+UPDATE org_invitations SET accepted_at = COALESCE(accepted_at, now()) WHERE id = $1;
 
 -- name: ListOrgInvitations :many
 SELECT * FROM org_invitations
@@ -64,7 +64,7 @@ DELETE FROM org_invitations WHERE id = $1 AND org_id = $2;
 
 -- name: GetPendingInvitationByEmail :one
 SELECT id FROM org_invitations
-WHERE org_id = $1 AND email = $2 AND accepted_at IS NULL AND expires_at > now()
+WHERE org_id = $1 AND lower(email) = lower(@email) AND accepted_at IS NULL AND expires_at > now()
 LIMIT 1;
 
 -- name: GetOrgTier :one

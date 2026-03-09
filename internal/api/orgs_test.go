@@ -1155,6 +1155,46 @@ func TestCreateOrg_EmptyName(t *testing.T) {
 	}
 }
 
+// TestCreateOrg_WhitespaceName verifies that POST /api/v1/orgs with whitespace-only
+// name returns 400 (B6).
+func TestCreateOrg_WhitespaceName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateOrg(t, ctx, ts, accessToken, "   ")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("whitespace name create org: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestUpdateOrg_WhitespaceName verifies that PATCH /api/v1/orgs/{org_id} with
+// whitespace-only name returns 400 (B6).
+func TestUpdateOrg_WhitespaceName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doUpdateOrg(t, ctx, ts, accessToken, aliceReg.OrgID, "   ")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("whitespace name update org: got %d, want 400", resp.StatusCode)
+	}
+}
+
 // TestRemoveMember_NotFound verifies that DELETE /members/{user_id} returns 404
 // for a user who is not a member of the org.
 func TestRemoveMember_NotFound(t *testing.T) {

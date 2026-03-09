@@ -1547,6 +1547,7 @@ Behavior:
 - Missing workflows: invite-only bootstrap fix, invitation emails, channel test endpoint
 - RBAC fix: channel mutations restricted to admin/owner per §7.3
 - PLAN.md reconciliation: Appendix B rewrite, internal inconsistency fixes
+- Bug fix pass: 25 findings from 6 bug hunt reports — TOCTOU races, anti-enumeration, memory leaks, validation gaps, transaction helper compliance, concurrency safety
 
 ### 18.1 Worker Architecture (Decision)
 

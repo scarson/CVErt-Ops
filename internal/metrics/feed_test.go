@@ -8,7 +8,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 )
 
-func TestFeedMetricsRegistered(t *testing.T) {
+func TestFeedMetricsRegistered(_ *testing.T) {
 	metrics.FeedItemsFetchedTotal.WithLabelValues("nvd").Inc()
 	metrics.FeedItemsMergedTotal.WithLabelValues("nvd").Inc()
 	metrics.FeedFetchDuration.WithLabelValues("nvd").Observe(5.0)

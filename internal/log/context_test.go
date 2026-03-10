@@ -5,7 +5,6 @@ package log_test
 import (
 	"bytes"
 	"context"
-	"io"
 	"log/slog"
 	"testing"
 
@@ -19,7 +18,7 @@ func TestFromContext_FallsBackToDefault(t *testing.T) {
 }
 
 func TestWithLogger_RoundTrip(t *testing.T) {
-	custom := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	custom := slog.New(slog.DiscardHandler)
 	ctx := logpkg.WithLogger(context.Background(), custom)
 	got := logpkg.FromContext(ctx)
 	assert.Equal(t, custom, got)

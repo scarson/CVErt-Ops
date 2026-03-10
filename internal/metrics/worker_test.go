@@ -8,7 +8,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 )
 
-func TestWorkerMetricsRegistered(t *testing.T) {
+func TestWorkerMetricsRegistered(_ *testing.T) {
 	metrics.WorkerJobsClaimedTotal.WithLabelValues("feed_sync").Inc()
 	metrics.WorkerJobsCompletedTotal.WithLabelValues("feed_sync", "success").Inc()
 	metrics.WorkerJobsCompletedTotal.WithLabelValues("alert_eval", "failure").Inc()

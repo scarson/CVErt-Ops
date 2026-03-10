@@ -8,7 +8,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 )
 
-func TestNotificationMetricsRegistered(t *testing.T) {
+func TestNotificationMetricsRegistered(_ *testing.T) {
 	metrics.NotificationDeliveriesTotal.WithLabelValues("webhook", "success").Inc()
 	metrics.NotificationDeliveriesTotal.WithLabelValues("email", "failure").Inc()
 	metrics.NotificationDeliveriesTotal.WithLabelValues("webhook", "exhausted").Inc()

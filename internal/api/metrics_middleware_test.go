@@ -38,7 +38,7 @@ func TestMetricsMiddleware_UsesRoutePattern(t *testing.T) {
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(mw)
-		r.Get("/orgs/{org_id}/cves/{cve_id}", func(w http.ResponseWriter, r *http.Request) {
+		r.Get("/orgs/{org_id}/cves/{cve_id}", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 	})
@@ -97,7 +97,7 @@ func TestMetricsMiddleware_404Route(t *testing.T) {
 	r := chi.NewRouter()
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(mw)
-		r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 	})

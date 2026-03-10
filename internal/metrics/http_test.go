@@ -8,7 +8,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 )
 
-func TestHTTPMetricsRegistered(t *testing.T) {
+func TestHTTPMetricsRegistered(_ *testing.T) {
 	metrics.HTTPRequestsTotal.WithLabelValues("GET", "/api/v1/healthz", "200").Inc()
 	metrics.HTTPRequestDuration.WithLabelValues("GET", "/api/v1/healthz").Observe(0.01)
 }

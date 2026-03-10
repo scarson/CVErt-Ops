@@ -79,6 +79,7 @@ func main() {
 		importBulkCmd(),
 		quotaCmd(),
 		validateFeedsCmd(),
+		doctorCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

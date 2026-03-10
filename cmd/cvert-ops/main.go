@@ -40,6 +40,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
+	"github.com/scarson/cvert-ops/internal/feed/generic"
 	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/notify"
@@ -109,9 +110,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// in-flight jobs complete and the goroutines exit. The goroutine is
 	// intentionally fire-and-forget here; the pool drains on ctx cancellation
 	// which happens before or alongside HTTP server shutdown.
+	// Load generic feed configs from CVERTOPS_FEEDS_DIR (if set).
+	var genericConfigs []generic.Config
+	if cfg.FeedsDir != "" {
+		configs, errs := generic.LoadDir(cfg.FeedsDir)
+		for _, e := range errs {
+			slog.Warn("invalid feed config", "error", e)
+		}
+		genericConfigs = configs
+		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
+	}
+
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	if len(genericConfigs) > 0 {
+		factory := generic.AdapterFactory(genericConfigs)
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+	} else {
+		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	}
 	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 
@@ -175,6 +192,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
+		if len(genericConfigs) > 0 {
+			feedScheduler.AddEntries(generic.ScheduleEntries(genericConfigs))
+		}
 		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 	}
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
@@ -255,12 +275,28 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 
 	st := store.New(db)
 
+	// Load generic feed configs from CVERTOPS_FEEDS_DIR (if set).
+	var genericConfigs []generic.Config
+	if cfg.FeedsDir != "" {
+		configs, errs := generic.LoadDir(cfg.FeedsDir)
+		for _, e := range errs {
+			slog.Warn("invalid feed config", "error", e)
+		}
+		genericConfigs = configs
+		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
+	}
+
 	alertCache := alert.NewRuleCache()
 	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	if len(genericConfigs) > 0 {
+		factory := generic.AdapterFactory(genericConfigs)
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+	} else {
+		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	}
 	epssClient := &http.Client{Timeout: 300 * time.Second}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
@@ -292,6 +328,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
+		if len(genericConfigs) > 0 {
+			feedScheduler.AddEntries(generic.ScheduleEntries(genericConfigs))
+		}
 		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 	}
 

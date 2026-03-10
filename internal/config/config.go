@@ -96,6 +96,7 @@ type Config struct {
 
 	// ── Feed adapters ────────────────────────────────────────────────────────────
 	NVDAPIKey string `env:"NVD_API_KEY"`
+	FeedsDir  string `env:"CVERTOPS_FEEDS_DIR"`
 
 	// ── Notifications ────────────────────────────────────────────────────────────
 	NotifyMaxConcurrentPerOrg int `env:"NOTIFY_MAX_CONCURRENT_PER_ORG" envDefault:"5"`

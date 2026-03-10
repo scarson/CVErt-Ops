@@ -20,7 +20,6 @@ interface DoctorCheck {
   name: string
   status: string
   message: string
-  duration_ms: number
 }
 
 interface DoctorResult {
@@ -81,8 +80,8 @@ async function runDoctor() {
 }
 
 function checkBadgeVariant(status: string): 'default' | 'destructive' | 'secondary' {
-  if (status === 'pass' || status === 'ok') return 'default'
-  if (status === 'fail' || status === 'error') return 'destructive'
+  if (status === 'pass' || status === 'ok' || status === 'healthy') return 'default'
+  if (status === 'fail' || status === 'error' || status === 'unhealthy') return 'destructive'
   return 'secondary'
 }
 
@@ -166,10 +165,7 @@ onMounted(fetchAll)
                   </Badge>
                   <span class="font-medium">{{ check.name }}</span>
                 </div>
-                <div class="flex items-center gap-3 text-muted-foreground">
-                  <span>{{ check.message }}</span>
-                  <span class="text-xs">{{ check.duration_ms }}ms</span>
-                </div>
+                <span class="text-muted-foreground">{{ check.message }}</span>
               </div>
             </div>
           </CardContent>

@@ -22,6 +22,13 @@ func (srv *Server) adminListDeliveriesHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	status := r.URL.Query().Get("status")
+	if status != "" {
+		valid := map[string]bool{"pending": true, "claimed": true, "delivered": true, "failed": true}
+		if !valid[status] {
+			http.Error(w, "invalid status filter (pending, claimed, delivered, failed)", http.StatusBadRequest)
+			return
+		}
+	}
 
 	deliveries, err := srv.store.AdminListDeliveries(r.Context(), status, afterTime, afterID, limit+1)
 	if err != nil {

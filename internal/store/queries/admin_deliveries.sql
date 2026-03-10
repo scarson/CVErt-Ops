@@ -8,7 +8,7 @@ FROM notification_deliveries
 WHERE id = $1;
 
 -- name: AdminRetryDelivery :execresult
--- Retry a single delivery: reset to pending only if failed or dead_letter.
+-- Retry a single delivery: reset to pending only if currently failed.
 UPDATE notification_deliveries
 SET status        = 'pending',
     attempt_count = 0,

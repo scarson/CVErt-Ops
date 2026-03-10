@@ -42,18 +42,20 @@ const statusFilter = ref('failed')
 const retrying = ref<string | null>(null)
 const bulkRetrying = ref(false)
 
-const STATUS_OPTIONS = ['failed', 'pending', 'sent', 'all'] as const
+const STATUS_OPTIONS = ['failed', 'pending', 'delivered', 'claimed', 'all'] as const
 const STATUS_LABELS: Record<string, string> = {
   failed: 'Failed',
   pending: 'Pending',
-  sent: 'Sent',
+  delivered: 'Delivered',
+  claimed: 'Claimed',
   all: 'All',
 }
 
 const statusBadgeVariant: Record<string, 'default' | 'destructive' | 'secondary'> = {
-  sent: 'default',
+  delivered: 'default',
   failed: 'destructive',
   pending: 'secondary',
+  claimed: 'secondary',
 }
 
 async function fetchDeliveries() {

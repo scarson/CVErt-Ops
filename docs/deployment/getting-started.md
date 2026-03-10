@@ -150,6 +150,7 @@ All checks should show `pass`. Any `warn` or `fail` status includes a message ex
 | `DB_MAX_CONNS` | `25` | Max pool connections |
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | Max idle connection lifetime |
 | `DB_STATEMENT_TIMEOUT_MS` | `14000` | Statement timeout in milliseconds |
+| `DB_QUERY_EXEC_MODE` | `simple_protocol` | pgx query exec mode (`simple_protocol` for PgBouncer) |
 
 ### Authentication
 

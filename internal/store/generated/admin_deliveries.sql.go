@@ -92,7 +92,7 @@ SET status        = 'pending',
 WHERE id = $1 AND status IN ('failed')
 `
 
-// Retry a single delivery: reset to pending only if failed or dead_letter.
+// Retry a single delivery: reset to pending only if currently failed.
 func (q *Queries) AdminRetryDelivery(ctx context.Context, id uuid.UUID) (sql.Result, error) {
 	return q.db.ExecContext(ctx, adminRetryDelivery, id)
 }

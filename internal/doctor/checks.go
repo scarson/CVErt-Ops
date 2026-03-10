@@ -243,7 +243,7 @@ func (c *DiskCheck) Run(_ context.Context) (string, string, error) {
 	}
 	name := f.Name()
 	_ = f.Close()
-	_ = os.Remove(name) //nolint:gosec // G703: path comes from os.CreateTemp, not user input
+	_ = os.Remove(name) //nolint:gosec // G304: path comes from os.CreateTemp, not user input
 	return StatusPass, fmt.Sprintf("writable temp directory: %s", os.TempDir()), nil
 }
 

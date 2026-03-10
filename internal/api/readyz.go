@@ -60,11 +60,6 @@ func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int) http.HandlerFunc
 
 		// ── Worker goroutines ────────────────────────────────────────────
 		goroutines := runtime.NumGoroutine()
-		workerStatus := "running"
-		if goroutines <= 0 {
-			workerStatus = "stopped"
-			ready = false
-		}
 
 		// ── Response ─────────────────────────────────────────────────────
 		status := "ready"
@@ -86,7 +81,6 @@ func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int) http.HandlerFunc
 					"version": migVersion,
 				},
 				"worker": map[string]any{
-					"status":     workerStatus,
 					"goroutines": goroutines,
 				},
 			},

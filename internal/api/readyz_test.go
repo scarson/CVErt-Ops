@@ -24,8 +24,7 @@ type readyzResponse struct {
 			Version int    `json:"version"`
 		} `json:"migrations"`
 		Worker struct {
-			Status     string `json:"status"`
-			Goroutines int    `json:"goroutines"`
+			Goroutines int `json:"goroutines"`
 		} `json:"worker"`
 	} `json:"checks"`
 }

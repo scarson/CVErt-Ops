@@ -225,6 +225,7 @@ func (srv *Server) Handler() http.Handler {
 		r.Get("/feeds", srv.listFeedsHandler)
 		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
 		r.Get("/version", srv.versionHandler)
+		r.Get("/doctor", srv.doctorHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──

@@ -175,6 +175,7 @@ func (srv *Server) Handler() http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	})
+	r.Use(contextLoggerMiddleware)
 	r.Use(middleware.RealIP)
 	r.Use(clientIPMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies

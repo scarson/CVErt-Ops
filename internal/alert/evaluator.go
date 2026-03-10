@@ -16,6 +16,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -74,11 +75,13 @@ type DryRunResult struct {
 // EvaluateRealtime evaluates all active non-EPSS-only rules against a single CVE.
 // Writes a run row only on match or error (per alert_rule_runs write policy).
 func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
+	start := time.Now()
 	rules, err := e.rules.ListActiveRulesForEvaluation(ctx)
 	if err != nil {
 		return fmt.Errorf("list rules for realtime: %w", err)
 	}
 	candidateIDs := []string{cveID}
+	var totalMatches int
 	for i := range rules {
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
@@ -90,6 +93,7 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 		if evalErr != nil {
 			e.log.Error("evaluate rule realtime", "rule_id", rule.ID, "cve_id", cveID, "err", evalErr)
 		}
+		totalMatches += matchCount
 		// Realtime: only write a run row if there was a match, partial, or error.
 		if matchCount > 0 || partial || evalErr != nil {
 			status, errMsg := runStatus(partial, evalErr)
@@ -98,12 +102,16 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 			}
 		}
 	}
+	metrics.AlertRulesEvaluatedTotal.WithLabelValues("realtime").Add(float64(len(rules)))
+	metrics.AlertMatchesTotal.WithLabelValues("realtime").Add(float64(totalMatches))
+	metrics.AlertEvaluationDuration.WithLabelValues("realtime").Observe(time.Since(start).Seconds())
 	return nil
 }
 
 // EvaluateBatch evaluates all active non-EPSS-only rules against CVEs modified since the
 // last batch cursor. Advances the cursor only after all rules have been attempted.
 func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
+	start := time.Now()
 	cursor, err := e.readCursor(ctx, batchFeedName)
 	if err != nil {
 		return fmt.Errorf("read batch cursor: %w", err)
@@ -123,6 +131,7 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 		return fmt.Errorf("list rules for batch: %w", err)
 	}
 
+	var totalMatches int
 	for i := range rules {
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
@@ -134,11 +143,16 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 		if evalErr != nil {
 			e.log.Error("evaluate rule batch", "rule_id", rule.ID, "err", evalErr)
 		}
+		totalMatches += matchCount
 		status, errMsg := runStatus(partial, evalErr)
 		if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, "batch"); runErr == nil {
 			_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
 		}
 	}
+
+	metrics.AlertRulesEvaluatedTotal.WithLabelValues("batch").Add(float64(len(rules)))
+	metrics.AlertMatchesTotal.WithLabelValues("batch").Add(float64(totalMatches))
+	metrics.AlertEvaluationDuration.WithLabelValues("batch").Observe(time.Since(start).Seconds())
 
 	return e.writeCursor(ctx, batchFeedName, batchTime)
 }
@@ -146,6 +160,7 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 // EvaluateEPSS evaluates all active rules with EPSS conditions against CVEs whose EPSS
 // score has been updated since the last EPSS cursor.
 func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
+	start := time.Now()
 	cursor, err := e.readCursor(ctx, epssFeedName)
 	if err != nil {
 		return fmt.Errorf("read epss cursor: %w", err)
@@ -165,6 +180,7 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 		return fmt.Errorf("list rules for EPSS: %w", err)
 	}
 
+	var totalMatches int
 	for i := range rules {
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
@@ -176,11 +192,16 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 		if evalErr != nil {
 			e.log.Error("evaluate rule EPSS", "rule_id", rule.ID, "err", evalErr)
 		}
+		totalMatches += matchCount
 		status, errMsg := runStatus(partial, evalErr)
 		if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, "epss"); runErr == nil {
 			_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
 		}
 	}
+
+	metrics.AlertRulesEvaluatedTotal.WithLabelValues("epss").Add(float64(len(rules)))
+	metrics.AlertMatchesTotal.WithLabelValues("epss").Add(float64(totalMatches))
+	metrics.AlertEvaluationDuration.WithLabelValues("epss").Observe(time.Since(start).Seconds())
 
 	return e.writeCursor(ctx, epssFeedName, batchTime)
 }

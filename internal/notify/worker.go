@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -152,6 +153,7 @@ func (w *Worker) runClaim(ctx context.Context) {
 }
 
 func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
+	start := time.Now()
 	ch, err := w.store.GetNotificationChannelForDelivery(ctx, row.ChannelID)
 	if err != nil || ch == nil {
 		msg := "channel lookup failed"
@@ -160,6 +162,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		}
 		w.log.Error("get channel for delivery", "channel_id", row.ChannelID, "err", err)
 		w.exhaust(ctx, row.ID, msg)
+		metrics.NotificationDeliveriesTotal.WithLabelValues("unknown", "failure").Inc()
+		metrics.NotificationDeliveryDuration.WithLabelValues("unknown").Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -171,6 +175,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		sendErr = w.deliverEmail(ctx, row, ch)
 	default:
 		w.exhaust(ctx, row.ID, fmt.Sprintf("unsupported channel type: %s", ch.Type))
+		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "failure").Inc()
+		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -178,6 +184,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		if err := w.store.CompleteDelivery(ctx, row.ID); err != nil {
 			w.log.Error("complete delivery", "id", row.ID, "err", err)
 		}
+		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "success").Inc()
+		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -185,6 +193,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	if isPermanentDeliveryError(sendErr) {
 		w.log.Warn("permanent delivery failure", "id", row.ID, "type", ch.Type, "err", sendErr)
 		w.exhaust(ctx, row.ID, sendErr.Error())
+		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "exhausted").Inc()
+		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -192,8 +202,13 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	w.log.Warn("delivery failed", "id", row.ID, "type", ch.Type, "err", sendErr, "attempt", nextAttempt)
 	if nextAttempt >= w.cfg.MaxAttempts {
 		w.exhaust(ctx, row.ID, sendErr.Error())
+		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "exhausted").Inc()
+		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
 	}
+
+	metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "failure").Inc()
+	metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 
 	backoff := w.backoffSeconds(nextAttempt)
 	if err := w.store.RetryDelivery(ctx, row.ID, backoff, sendErr.Error()); err != nil {

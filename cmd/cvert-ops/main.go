@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -478,64 +479,34 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 
 	slog.Info("running migrations")
 
-	// Source: embedded SQL files from the migrations package.
-	src, err := iofs.New(migrations.FS, ".")
+	db, err := openMigrateDB(cfg)
 	if err != nil {
-		return fmt.Errorf("migration source: %w", err)
+		return err
 	}
-
-	// golang-migrate requires a *sql.DB. Use pgx's stdlib adapter so the same
-	// driver is used project-wide. No pooling needed here — this is a one-shot
-	// migration run.
-	migrateURL := cfg.DatabaseURL
-	if cfg.DatabaseURLMigrate != "" {
-		migrateURL = cfg.DatabaseURLMigrate
-	}
-	connCfg, err := pgx.ParseConfig(migrateURL)
-	if err != nil {
-		return fmt.Errorf("parse db url: %w", err)
-	}
-	// Simple query protocol + MultiStatementEnabled: each statement in the migration
-	// file runs as its own ExecContext call in autocommit, allowing CREATE INDEX CONCURRENTLY.
-	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	db := stdlib.OpenDB(*connCfg)
 	defer db.Close() //nolint:errcheck
 
-	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
-	if err != nil {
-		return fmt.Errorf("migration driver: %w", err)
-	}
-
-	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
-	if err != nil {
-		return fmt.Errorf("migrate init: %w", err)
-	}
-
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("migrate up: %w", err)
-	}
-
-	version, _, _ := m.Version() //nolint:errcheck
-	slog.Info("migrations complete", "version", version)
-	return nil
+	return migrateUp(db)
 }
 
 // autoMigrate acquires a Postgres advisory lock and runs pending migrations.
 // The advisory lock prevents concurrent migration runs when multiple instances
 // start simultaneously (e.g., Kubernetes rolling update). The lock is released
 // on return via defer.
+//
+// The lock and migrations share the same *sql.DB connection — this is critical
+// because pg_advisory_lock is session-scoped and must protect the same session
+// that executes the DDL.
 func autoMigrate(ctx context.Context, cfg *config.Config) error {
-	migrateURL := cfg.DatabaseURL
-	if cfg.DatabaseURLMigrate != "" {
-		migrateURL = cfg.DatabaseURLMigrate
-	}
-	connCfg, err := pgx.ParseConfig(migrateURL)
+	db, err := openMigrateDB(cfg)
 	if err != nil {
-		return fmt.Errorf("parse db url: %w", err)
+		return err
 	}
-	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	db := stdlib.OpenDB(*connCfg)
 	defer db.Close() //nolint:errcheck
+
+	// Force single connection so the advisory lock and migration DDL share
+	// the same Postgres session. Without this, the pool could route the lock
+	// and the DDL to different backend connections.
+	db.SetMaxOpenConns(1)
 
 	// Verify connectivity before acquiring lock.
 	if err := db.PingContext(ctx); err != nil {
@@ -553,6 +524,29 @@ func autoMigrate(ctx context.Context, cfg *config.Config) error {
 		}
 	}()
 
+	return migrateUp(db)
+}
+
+// openMigrateDB opens a database/sql connection for running migrations.
+// golang-migrate requires *sql.DB; this uses pgx's stdlib adapter.
+// Uses DATABASE_URL_MIGRATE if set, otherwise falls back to DATABASE_URL.
+func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
+	migrateURL := cfg.DatabaseURL
+	if cfg.DatabaseURLMigrate != "" {
+		migrateURL = cfg.DatabaseURLMigrate
+	}
+	connCfg, err := pgx.ParseConfig(migrateURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse db url: %w", err)
+	}
+	// Simple query protocol + MultiStatementEnabled: each statement in the migration
+	// file runs as its own ExecContext call in autocommit, allowing CREATE INDEX CONCURRENTLY.
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	return stdlib.OpenDB(*connCfg), nil
+}
+
+// migrateUp applies all pending migrations on the given database connection.
+func migrateUp(db *sql.DB) error {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
 		return fmt.Errorf("migration source: %w", err)
@@ -573,7 +567,7 @@ func autoMigrate(ctx context.Context, cfg *config.Config) error {
 	}
 
 	ver, _, _ := m.Version() //nolint:errcheck
-	slog.Info("auto-migrate complete", "version", ver)
+	slog.Info("migrations complete", "version", ver)
 	return nil
 }
 

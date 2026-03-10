@@ -11,9 +11,9 @@ const (
 	EventAuthAccountUnlocked       = "auth.account_unlocked"
 	EventAuthPasswordResetReq      = "auth.password_reset_requested"
 	EventAuthPasswordChanged       = "auth.password_changed"
-	EventAuthTokenReuseDetected    = "auth.token_reuse_detected"
-	EventAuthAPIKeyCreated         = "auth.api_key_created"
-	EventAuthAPIKeyUsedAfterRevoke = "auth.api_key_used_after_revocation"
+	EventAuthTokenReuseDetected    = "auth.token_reuse_detected"    //nolint:gosec // G101 false positive: event type label, not a credential
+	EventAuthAPIKeyCreated         = "auth.api_key_created"         //nolint:gosec // G101 false positive: event type label, not a credential
+	EventAuthAPIKeyUsedAfterRevoke = "auth.api_key_used_after_revocation" //nolint:gosec // G101 false positive: event type label, not a credential
 	EventAdminUserDisabled         = "admin.user_disabled"
 	EventAdminConfigReloaded       = "admin.config_reloaded"
 	EventAdminBulkRetryTriggered   = "admin.bulk_retry_triggered"

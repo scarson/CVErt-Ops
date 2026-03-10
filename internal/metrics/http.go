@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// HTTPRequestsTotal counts HTTP requests, labeled by method, route, and status code.
 var HTTPRequestsTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_http_requests_total",
@@ -15,6 +16,7 @@ var HTTPRequestsTotal = promauto.NewCounterVec(
 	[]string{"method", "route", "status_code"},
 )
 
+// HTTPRequestDuration observes HTTP request latency, labeled by method and route.
 var HTTPRequestDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{
 		Name:    "cvertops_http_request_duration_seconds",

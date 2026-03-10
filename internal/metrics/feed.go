@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// FeedItemsFetchedTotal counts items fetched from feed sources.
 var FeedItemsFetchedTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_feed_items_fetched_total",
@@ -15,6 +16,7 @@ var FeedItemsFetchedTotal = promauto.NewCounterVec(
 	[]string{"feed"},
 )
 
+// FeedItemsMergedTotal counts items successfully merged into the CVE corpus.
 var FeedItemsMergedTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_feed_items_merged_total",
@@ -23,6 +25,7 @@ var FeedItemsMergedTotal = promauto.NewCounterVec(
 	[]string{"feed"},
 )
 
+// FeedFetchDuration observes feed fetch operation latency.
 var FeedFetchDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{
 		Name:    "cvertops_feed_fetch_duration_seconds",
@@ -32,6 +35,7 @@ var FeedFetchDuration = promauto.NewHistogramVec(
 	[]string{"feed"},
 )
 
+// FeedErrorsTotal counts feed fetch errors.
 var FeedErrorsTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_feed_errors_total",
@@ -40,6 +44,7 @@ var FeedErrorsTotal = promauto.NewCounterVec(
 	[]string{"feed"},
 )
 
+// FeedLastSuccessTimestamp records the last successful fetch time per feed.
 var FeedLastSuccessTimestamp = promauto.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "cvertops_feed_last_success_timestamp",
@@ -48,6 +53,7 @@ var FeedLastSuccessTimestamp = promauto.NewGaugeVec(
 	[]string{"feed"},
 )
 
+// FeedConsecutiveFailures tracks the current streak of fetch failures per feed.
 var FeedConsecutiveFailures = promauto.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Name: "cvertops_feed_consecutive_failures",

@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// NotificationDeliveriesTotal counts delivery attempts, labeled by channel and status.
 var NotificationDeliveriesTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_notification_deliveries_total",
@@ -15,6 +16,7 @@ var NotificationDeliveriesTotal = promauto.NewCounterVec(
 	[]string{"channel_type", "status"},
 )
 
+// NotificationDeliveryDuration observes delivery latency, labeled by channel type.
 var NotificationDeliveryDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{
 		Name:    "cvertops_notification_delivery_duration_seconds",

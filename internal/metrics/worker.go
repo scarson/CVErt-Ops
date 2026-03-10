@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// WorkerJobsClaimedTotal counts jobs claimed by the worker pool.
 var WorkerJobsClaimedTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_worker_jobs_claimed_total",
@@ -15,6 +16,7 @@ var WorkerJobsClaimedTotal = promauto.NewCounterVec(
 	[]string{"job_type"},
 )
 
+// WorkerJobsCompletedTotal counts completed jobs, labeled by type and status.
 var WorkerJobsCompletedTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_worker_jobs_completed_total",
@@ -23,6 +25,7 @@ var WorkerJobsCompletedTotal = promauto.NewCounterVec(
 	[]string{"job_type", "status"},
 )
 
+// WorkerJobDuration observes job execution latency, labeled by job type.
 var WorkerJobDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{
 		Name:    "cvertops_worker_job_duration_seconds",

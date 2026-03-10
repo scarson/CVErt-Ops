@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// AlertRulesEvaluatedTotal counts alert rules evaluated, labeled by path.
 var AlertRulesEvaluatedTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_alert_rules_evaluated_total",
@@ -15,6 +16,7 @@ var AlertRulesEvaluatedTotal = promauto.NewCounterVec(
 	[]string{"path"},
 )
 
+// AlertMatchesTotal counts alert matches produced, labeled by path.
 var AlertMatchesTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "cvertops_alert_matches_total",
@@ -23,6 +25,7 @@ var AlertMatchesTotal = promauto.NewCounterVec(
 	[]string{"path"},
 )
 
+// AlertEvaluationDuration observes alert evaluation latency, labeled by path.
 var AlertEvaluationDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{
 		Name:    "cvertops_alert_evaluation_duration_seconds",

@@ -275,6 +275,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
+	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
+	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
+
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -320,8 +323,29 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 	}
 
+	// Metrics endpoint so Prometheus can scrape the standalone worker.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{ //nolint:exhaustruct // minimal metrics server
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("metrics server started", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server error", "error", err)
+		}
+	}()
+
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown error", "error", err)
+	}
 	return nil
 }
 

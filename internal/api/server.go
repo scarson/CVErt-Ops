@@ -226,6 +226,18 @@ func (srv *Server) Handler() http.Handler {
 		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
 		r.Get("/version", srv.versionHandler)
 		r.Get("/doctor", srv.doctorHandler)
+
+		// Org management.
+		r.Get("/orgs", srv.adminListOrgsHandler)
+		r.Patch("/orgs/{org_id}", srv.adminPatchOrgHandler)
+		r.Get("/orgs/{org_id}/usage", srv.adminOrgUsageHandler)
+
+		// User management.
+		r.Get("/users", srv.adminListUsersHandler)
+		r.Post("/users/{user_id}/disable", srv.adminDisableUserHandler)
+		r.Post("/users/{user_id}/enable", srv.adminEnableUserHandler)
+		r.Post("/users/{user_id}/unlock", srv.adminUnlockUserHandler)
+		r.Post("/users/{user_id}/reset-password", srv.adminResetPasswordHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──

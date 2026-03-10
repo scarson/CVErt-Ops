@@ -26,8 +26,8 @@ const (
 	SeverityCritical = "critical"
 )
 
-// EventSeverity maps each event type to its default severity level.
-var EventSeverity = map[string]string{
+// eventSeverity maps each event type to its default severity level.
+var eventSeverity = map[string]string{
 	EventAuthLoginFailed:           SeverityInfo,
 	EventAuthLoginSuccess:          SeverityInfo,
 	EventAuthAccountLocked:         SeverityWarning,
@@ -40,4 +40,10 @@ var EventSeverity = map[string]string{
 	EventAdminUserDisabled:         SeverityWarning,
 	EventAdminConfigReloaded:       SeverityInfo,
 	EventAdminBulkRetryTriggered:   SeverityInfo,
+}
+
+// Severity returns the default severity level for the given event type.
+func Severity(eventType string) (string, bool) {
+	s, ok := eventSeverity[eventType]
+	return s, ok
 }

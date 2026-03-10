@@ -21,13 +21,13 @@ func TestEventSeverityMapIsExhaustive(t *testing.T) {
 		EventAdminBulkRetryTriggered,
 	}
 	for _, e := range allEvents {
-		if _, ok := EventSeverity[e]; !ok {
-			t.Errorf("EventSeverity missing entry for %q", e)
+		if _, ok := Severity(e); !ok {
+			t.Errorf("Severity() missing entry for %q", e)
 		}
 	}
 	// Verify no extra entries in the map that don't correspond to constants.
-	if len(EventSeverity) != len(allEvents) {
-		t.Errorf("EventSeverity has %d entries, but there are %d event constants", len(EventSeverity), len(allEvents))
+	if len(eventSeverity) != len(allEvents) {
+		t.Errorf("eventSeverity has %d entries, but there are %d event constants", len(eventSeverity), len(allEvents))
 	}
 }
 
@@ -38,9 +38,9 @@ func TestEventSeverityValues(t *testing.T) {
 		SeverityWarning:  true,
 		SeverityCritical: true,
 	}
-	for event, severity := range EventSeverity {
+	for event, severity := range eventSeverity {
 		if !validSeverities[severity] {
-			t.Errorf("EventSeverity[%q] = %q, not a valid severity level", event, severity)
+			t.Errorf("Severity(%q) = %q, not a valid severity level", event, severity)
 		}
 	}
 }

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,15 @@ import (
 	"github.com/scarson/cvert-ops/migrations"
 )
 
+// Build metadata — set via ldflags at compile time:
+//
+//	go build -ldflags "-X main.version=v1.0.0 -X main.commit=abc123 -X main.buildTime=2026-03-10T00:00:00Z"
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildTime = "unknown"
+)
+
 func main() {
 	root := &cobra.Command{
 		Use:   "cvert-ops",
@@ -69,6 +79,7 @@ func main() {
 		importBulkCmd(),
 		quotaCmd(),
 		validateFeedsCmd(),
+		doctorCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -80,11 +91,13 @@ func main() {
 // ── serve ─────────────────────────────────────────────────────────────────────
 
 func serveCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the HTTP server and embedded worker pool",
 		RunE:  runServe,
 	}
+	cmd.Flags().Bool("skip-auto-migrate", false, "Skip automatic database migrations on startup")
+	return cmd
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -107,6 +120,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
 	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
+
+	// Auto-migrate: run pending migrations before starting the server.
+	// Skippable for operators who run migrations via a separate init container.
+	skipMigrate, _ := cmd.Flags().GetBool("skip-auto-migrate")
+	if !skipMigrate {
+		slog.Info("auto-migrate: running pending migrations")
+		if err := autoMigrate(cmd.Context(), cfg); err != nil {
+			return fmt.Errorf("auto-migrate: %w", err)
+		}
+	} else {
+		slog.Info("auto-migrate: skipped (--skip-auto-migrate)")
+	}
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -157,6 +182,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
+	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
+	apiSrv.SetVersionInfo(api.VersionInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildTime: buildTime,
+	})
 
 	// Wire alert evaluation dependencies. The cache and evaluator are used by
 	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
@@ -449,28 +480,78 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 
 	slog.Info("running migrations")
 
-	// Source: embedded SQL files from the migrations package.
-	src, err := iofs.New(migrations.FS, ".")
+	db, err := openMigrateDB(cfg)
 	if err != nil {
-		return fmt.Errorf("migration source: %w", err)
+		return err
+	}
+	defer db.Close() //nolint:errcheck
+
+	return migrateUp(db)
+}
+
+// autoMigrate acquires a Postgres advisory lock and runs pending migrations.
+// The advisory lock prevents concurrent migration runs when multiple instances
+// start simultaneously (e.g., Kubernetes rolling update). The lock is released
+// on return via defer.
+//
+// The lock and migrations share the same *sql.DB connection — this is critical
+// because pg_advisory_lock is session-scoped and must protect the same session
+// that executes the DDL.
+func autoMigrate(ctx context.Context, cfg *config.Config) error {
+	db, err := openMigrateDB(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck
+
+	// Force single connection so the advisory lock and migration DDL share
+	// the same Postgres session. Without this, the pool could route the lock
+	// and the DDL to different backend connections.
+	db.SetMaxOpenConns(1)
+
+	// Verify connectivity before acquiring lock.
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping: %w", err)
 	}
 
-	// golang-migrate requires a *sql.DB. Use pgx's stdlib adapter so the same
-	// driver is used project-wide. No pooling needed here — this is a one-shot
-	// migration run.
+	// Acquire advisory lock — blocks until available, released on disconnect
+	// or explicit unlock. hashtext('cvertops-migrate') returns a stable int32.
+	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_lock(hashtext('cvertops-migrate'))"); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		if _, unlockErr := db.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(hashtext('cvertops-migrate'))"); unlockErr != nil {
+			slog.Error("auto-migrate: failed to release advisory lock", "error", unlockErr)
+		}
+	}()
+
+	return migrateUp(db)
+}
+
+// openMigrateDB opens a database/sql connection for running migrations.
+// golang-migrate requires *sql.DB; this uses pgx's stdlib adapter.
+// Uses DATABASE_URL_MIGRATE if set, otherwise falls back to DATABASE_URL.
+func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
 	migrateURL := cfg.DatabaseURL
 	if cfg.DatabaseURLMigrate != "" {
 		migrateURL = cfg.DatabaseURLMigrate
 	}
 	connCfg, err := pgx.ParseConfig(migrateURL)
 	if err != nil {
-		return fmt.Errorf("parse db url: %w", err)
+		return nil, fmt.Errorf("parse db url: %w", err)
 	}
 	// Simple query protocol + MultiStatementEnabled: each statement in the migration
 	// file runs as its own ExecContext call in autocommit, allowing CREATE INDEX CONCURRENTLY.
 	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	db := stdlib.OpenDB(*connCfg)
-	defer db.Close() //nolint:errcheck
+	return stdlib.OpenDB(*connCfg), nil
+}
+
+// migrateUp applies all pending migrations on the given database connection.
+func migrateUp(db *sql.DB) error {
+	src, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("migration source: %w", err)
+	}
 
 	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
 	if err != nil {
@@ -486,8 +567,8 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 
-	version, _, _ := m.Version() //nolint:errcheck
-	slog.Info("migrations complete", "version", version)
+	ver, _, _ := m.Version() //nolint:errcheck
+	slog.Info("migrations complete", "version", ver)
 	return nil
 }
 
@@ -609,7 +690,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 34
+const expectedSchemaVersion = 37
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/google/uuid"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
@@ -33,23 +34,25 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
-	store          *store.Store
-	cfg            *config.Config
-	argon2Sem      chan struct{}
-	rateLimiter    *ipRateLimiter
-	ghOAuth        *oauth2.Config   // nil when GitHub OAuth is not configured
-	ghAPIBaseURL   string           // GitHub REST API base URL; overridable in tests
-	googleOIDC     *oidc.Provider   // nil when Google OIDC is not configured
-	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
-	orgRL          *orgRateLimiter  // per-org API rate limiter
-	tierCache      *tierCache       // short-lived cache for org tier + overrides
-	oidcProviders  sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
-	alertCache     *alert.RuleCache  // nil until SetAlertDeps is called
-	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
-	llm            ai.LLMClient     // nil until SetAIDeps is called
-	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
-	lockout        *lockoutManager   // brute-force login protection
-	bootstrapMu    sync.Mutex        // serializes first-user bootstrap in invite-only mode
+	store                 *store.Store
+	cfg                   *config.Config
+	argon2Sem             chan struct{}
+	rateLimiter           *ipRateLimiter
+	ghOAuth               *oauth2.Config   // nil when GitHub OAuth is not configured
+	ghAPIBaseURL          string           // GitHub REST API base URL; overridable in tests
+	googleOIDC            *oidc.Provider   // nil when Google OIDC is not configured
+	googleOAuth           *oauth2.Config   // nil when Google OIDC is not configured
+	orgRL                 *orgRateLimiter  // per-org API rate limiter
+	tierCache             *tierCache       // short-lived cache for org tier + overrides
+	oidcProviders         sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
+	alertCache            *alert.RuleCache // nil until SetAlertDeps is called
+	alertEvaluator        *alert.Evaluator // nil until SetAlertDeps is called
+	llm                   ai.LLMClient     // nil until SetAIDeps is called
+	auditWriter           *audit.Writer    // nil until SetAuditDeps is called
+	lockout               *lockoutManager  // brute-force login protection
+	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
+	expectedSchemaVersion int              // set via SetExpectedSchemaVersion before Handler()
+	versionInfo           VersionInfo      // set via SetVersionInfo before Handler()
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -184,7 +187,9 @@ func (srv *Server) Handler() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	// ── Infrastructure endpoints ──────────────────────────────────────────────
-	r.Get("/healthz", healthzHandler(db))
+	r.Get("/healthz", healthzHandler())
+	r.Get("/readyz", readyzHandler(db, srv.expectedSchemaVersion))
+	r.Handle("/metrics", promhttp.Handler())
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()
@@ -219,6 +224,33 @@ func (srv *Server) Handler() http.Handler {
 		r.Use(srv.RequireSiteAdmin())
 		r.Get("/feeds", srv.listFeedsHandler)
 		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
+		r.Post("/feeds/{feed}/pause", srv.pauseFeedHandler)
+		r.Post("/feeds/{feed}/resume", srv.resumeFeedHandler)
+		r.Get("/feeds/{feed}/logs", srv.feedLogsHandler)
+		r.Get("/version", srv.versionHandler)
+		r.Get("/doctor", srv.doctorHandler)
+
+		// Org management.
+		r.Get("/orgs", srv.adminListOrgsHandler)
+		r.Patch("/orgs/{org_id}", srv.adminPatchOrgHandler)
+		r.Get("/orgs/{org_id}/usage", srv.adminOrgUsageHandler)
+
+		// User management.
+		r.Get("/users", srv.adminListUsersHandler)
+		r.Post("/users/{user_id}/disable", srv.adminDisableUserHandler)
+		r.Post("/users/{user_id}/enable", srv.adminEnableUserHandler)
+		r.Post("/users/{user_id}/unlock", srv.adminUnlockUserHandler)
+		r.Post("/users/{user_id}/reset-password", srv.adminResetPasswordHandler)
+
+		// Delivery management.
+		r.Get("/deliveries", srv.adminListDeliveriesHandler)
+		r.Post("/deliveries/{id}/retry", srv.adminRetryDeliveryHandler)
+		r.Post("/deliveries/retry-failed", srv.adminBulkRetryDeliveriesHandler)
+
+		// System management.
+		r.Post("/reindex", srv.adminReindexHandler)
+		r.Get("/config", srv.adminConfigHandler)
+		r.Get("/audit-log", srv.adminAuditLogHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
@@ -410,6 +442,12 @@ func (srv *Server) SetAuditDeps(w *audit.Writer) {
 	srv.auditWriter = w
 }
 
+// SetExpectedSchemaVersion sets the schema version used by /readyz to check
+// migration currency. Must be called before Handler().
+func (srv *Server) SetExpectedSchemaVersion(v int) {
+	srv.expectedSchemaVersion = v
+}
+
 // auditLog records an audit entry if the audit writer is configured.
 // Extracts actor context from the request. Nil-safe: no-op if writer is nil.
 func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
@@ -437,33 +475,14 @@ func (srv *Server) acquireArgon2() bool {
 
 func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
 
-// healthResponse is the JSON body for /healthz.
-type healthResponse struct {
-	Status string `json:"status"`
-	DB     string `json:"db,omitempty"`
-}
-
-// healthzHandler returns 200 {"status":"ok"} when the DB is reachable,
-// or 503 {"status":"degraded","db":"unavailable"} when it is not.
-func healthzHandler(db *pgxpool.Pool) http.HandlerFunc {
+// healthzHandler returns a liveness probe handler. No external dependencies
+// are checked — if the process can respond, it's alive. Kubernetes uses this
+// to decide whether to restart the pod.
+func healthzHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resp := healthResponse{Status: "ok"}
-		statusCode := http.StatusOK
-
-		if db == nil {
-			resp.Status = "degraded"
-			resp.DB = "unavailable"
-			statusCode = http.StatusServiceUnavailable
-		} else if err := db.Ping(r.Context()); err != nil {
-			slog.WarnContext(r.Context(), "healthz: db ping failed", "error", err)
-			resp.Status = "degraded"
-			resp.DB = "unavailable"
-			statusCode = http.StatusServiceUnavailable
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "alive"}); err != nil {
 			slog.ErrorContext(r.Context(), "healthz: failed to encode response", "error", err)
 		}
 	}

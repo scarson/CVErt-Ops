@@ -50,7 +50,7 @@ const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (email, display_name, password_hash, password_hash_version)
 VALUES ($1, $2, $3, $4)
-RETURNING id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified
+RETURNING id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified, disabled_at, locked_at, failed_login_count, force_password_reset
 `
 
 type CreateUserParams struct {
@@ -81,6 +81,10 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
 		&i.EmailVerified,
+		&i.DisabledAt,
+		&i.LockedAt,
+		&i.FailedLoginCount,
+		&i.ForcePasswordReset,
 	)
 	return i, err
 }
@@ -118,7 +122,7 @@ func (q *Queries) GetRefreshToken(ctx context.Context, jti uuid.UUID) (RefreshTo
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified FROM users WHERE email = $1 LIMIT 1
+SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified, disabled_at, locked_at, failed_login_count, force_password_reset FROM users WHERE email = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -135,12 +139,16 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
 		&i.EmailVerified,
+		&i.DisabledAt,
+		&i.LockedAt,
+		&i.FailedLoginCount,
+		&i.ForcePasswordReset,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified FROM users WHERE id = $1 LIMIT 1
+SELECT id, email, display_name, password_hash, password_hash_version, token_version, created_at, last_login_at, is_site_admin, email_verified, disabled_at, locked_at, failed_login_count, force_password_reset FROM users WHERE id = $1 LIMIT 1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -157,12 +165,16 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
 		&i.EmailVerified,
+		&i.DisabledAt,
+		&i.LockedAt,
+		&i.FailedLoginCount,
+		&i.ForcePasswordReset,
 	)
 	return i, err
 }
 
 const getUserByProviderID = `-- name: GetUserByProviderID :one
-SELECT u.id, u.email, u.display_name, u.password_hash, u.password_hash_version, u.token_version, u.created_at, u.last_login_at, u.is_site_admin, u.email_verified FROM users u
+SELECT u.id, u.email, u.display_name, u.password_hash, u.password_hash_version, u.token_version, u.created_at, u.last_login_at, u.is_site_admin, u.email_verified, u.disabled_at, u.locked_at, u.failed_login_count, u.force_password_reset FROM users u
 JOIN user_identities ui ON ui.user_id = u.id
 WHERE ui.provider = $1 AND ui.provider_user_id = $2
 LIMIT 1
@@ -187,6 +199,10 @@ func (q *Queries) GetUserByProviderID(ctx context.Context, arg GetUserByProvider
 		&i.LastLoginAt,
 		&i.IsSiteAdmin,
 		&i.EmailVerified,
+		&i.DisabledAt,
+		&i.LockedAt,
+		&i.FailedLoginCount,
+		&i.ForcePasswordReset,
 	)
 	return i, err
 }
@@ -212,6 +228,18 @@ func (q *Queries) IsSiteAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
 	var is_site_admin bool
 	err := row.Scan(&is_site_admin)
 	return is_site_admin, err
+}
+
+const isUserEnabled = `-- name: IsUserEnabled :one
+SELECT CAST(disabled_at IS NULL AS boolean) AS enabled FROM users WHERE id = $1
+`
+
+// Returns true if the user exists and is not disabled. Used by auth middleware.
+func (q *Queries) IsUserEnabled(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isUserEnabled, id)
+	var enabled bool
+	err := row.Scan(&enabled)
+	return enabled, err
 }
 
 const markRefreshTokenUsed = `-- name: MarkRefreshTokenUsed :exec

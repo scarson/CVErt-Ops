@@ -468,6 +468,7 @@ type meOutput struct {
 		UserID      string     `json:"user_id"`
 		Email       string     `json:"email"`
 		DisplayName string     `json:"display_name"`
+		IsSiteAdmin bool       `json:"is_site_admin"`
 		Orgs        []orgEntry `json:"orgs"`
 	}
 }
@@ -494,10 +495,17 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	isSiteAdmin, err := srv.store.IsSiteAdmin(ctx, user.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "me: check site admin", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
 	out := &meOutput{}
 	out.Body.UserID = user.ID.String()
 	out.Body.Email = user.Email
 	out.Body.DisplayName = user.DisplayName
+	out.Body.IsSiteAdmin = isSiteAdmin
 	out.Body.Orgs = make([]orgEntry, 0, len(orgRows))
 	for _, row := range orgRows {
 		out.Body.Orgs = append(out.Body.Orgs, orgEntry{

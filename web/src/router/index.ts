@@ -94,11 +94,48 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/views/GroupsView.vue'),
     meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Groups' },
   },
+  // ── Admin routes (site admin only) ───────────────────────────
+  {
+    path: '/admin/dashboard',
+    name: 'admin-dashboard',
+    component: () => import('@/views/admin/AdminDashboardView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'Admin Dashboard' },
+  },
+  {
+    path: '/admin/orgs',
+    name: 'admin-orgs',
+    component: () => import('@/views/admin/AdminOrgsView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'Organizations' },
+  },
+  {
+    path: '/admin/users',
+    name: 'admin-users',
+    component: () => import('@/views/admin/AdminUsersView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'Users' },
+  },
   {
     path: '/admin/feeds',
-    name: 'feed-status',
-    component: () => import('@/views/FeedStatusView.vue'),
-    meta: { layout: 'authenticated', requiresAuth: true, requiresOrg: true, title: 'Feed Status' },
+    name: 'admin-feeds',
+    component: () => import('@/views/admin/AdminFeedsView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'Feed Status' },
+  },
+  {
+    path: '/admin/deliveries',
+    name: 'admin-deliveries',
+    component: () => import('@/views/admin/AdminDeliveriesView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'Deliveries' },
+  },
+  {
+    path: '/admin/audit-log',
+    name: 'admin-audit-log',
+    component: () => import('@/views/admin/AdminAuditLogView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'Audit Log' },
+  },
+  {
+    path: '/admin/system',
+    name: 'admin-system',
+    component: () => import('@/views/admin/AdminSystemView.vue'),
+    meta: { layout: 'authenticated', requiresAuth: true, requiresAdmin: true, title: 'System' },
   },
 
   // ── Redirects ──────────────────────────────────────────────────
@@ -145,6 +182,11 @@ export const authGuard: NavigationGuardWithThis<undefined> = async (to) => {
   // Redirect to create-org if user has no orgs.
   if (requiresOrg && auth.isAuthenticated && !auth.user?.orgs?.length) {
     return { name: 'create-org' }
+  }
+
+  // Redirect non-admin users away from admin routes.
+  if (to.meta.requiresAdmin === true && !auth.isSiteAdmin) {
+    return { name: 'cve-search' }
   }
 
   // Auto-select first org if user has orgs but none selected.

@@ -17,7 +17,7 @@ import (
 )
 
 // TestSmokeHealthz starts a real Postgres container, builds the HTTP handler,
-// and asserts that /healthz returns 200 {"status":"ok"} and /metrics returns 200.
+// and asserts that /healthz returns 200 {"status":"alive"} and /metrics returns 200.
 //
 // This is a coarse integration test: if it passes, the router wiring, DB pool
 // creation, and Prometheus handler are all operational. It is intentionally
@@ -93,8 +93,8 @@ func TestSmokeHealthz(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode /healthz body: %v", err)
 	}
-	if body.Status != "ok" {
-		t.Errorf("GET /healthz: got status %q, want %q", body.Status, "ok")
+	if body.Status != "alive" {
+		t.Errorf("GET /healthz: got status %q, want %q", body.Status, "alive")
 	}
 
 	// ── /metrics ─────────────────────────────────────────────────────────────
@@ -113,9 +113,9 @@ func TestSmokeHealthz(t *testing.T) {
 	}
 }
 
-// TestSmokeHealthzDegraded verifies that /healthz returns 503 when the DB pool
-// is nil (simulating an unavailable database).
-func TestSmokeHealthzDegraded(t *testing.T) {
+// TestSmokeHealthzNilDB verifies that /healthz returns 200 even when the DB
+// pool is nil — liveness checks no external dependencies.
+func TestSmokeHealthzNilDB(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -138,23 +138,19 @@ func TestSmokeHealthzDegraded(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
+	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /healthz (nil db): got status %d, want %d",
-			resp.StatusCode, http.StatusServiceUnavailable)
+			resp.StatusCode, http.StatusOK)
 	}
 
 	var body struct {
 		Status string `json:"status"`
-		DB     string `json:"db"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode /healthz body: %v", err)
 	}
-	if body.Status != "degraded" {
-		t.Errorf("GET /healthz (nil db): got status %q, want %q", body.Status, "degraded")
-	}
-	if body.DB != "unavailable" {
-		t.Errorf("GET /healthz (nil db): got db %q, want %q", body.DB, "unavailable")
+	if body.Status != "alive" {
+		t.Errorf("GET /healthz (nil db): got status %q, want %q", body.Status, "alive")
 	}
 }
 
@@ -183,7 +179,7 @@ func TestSecurityHeaders_Healthz(t *testing.T) {
 	ctx := context.Background()
 	srv := newNilDBServer(t)
 
-	// /healthz returns 503 with nil DB, but security headers must still be present.
+	// Liveness probe always returns 200; security headers must be present.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/healthz", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -416,9 +412,9 @@ func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	}
 	defer resp2.Body.Close() //nolint:errcheck
 
-	// /healthz with nil DB returns 503, but the point is it responded at all.
-	if resp2.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("healthz after panic: got status %d, want %d", resp2.StatusCode, http.StatusServiceUnavailable)
+	// Liveness probe returns 200 regardless of DB state — the point is it responded.
+	if resp2.StatusCode != http.StatusOK {
+		t.Errorf("healthz after panic: got status %d, want %d", resp2.StatusCode, http.StatusOK)
 	}
 }
 

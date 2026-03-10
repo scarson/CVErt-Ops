@@ -67,6 +67,31 @@ func (s *Store) withBypassTx(ctx context.Context, fn func(*generated.Queries) er
 	return tx.Commit()
 }
 
+// withBypassRawTx runs fn inside a database/sql transaction with RLS bypass enabled.
+// Use for admin/cross-org squirrel queries that need a raw *sql.Tx rather than
+// sqlc-generated Queries.
+func (s *Store) withBypassRawTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin bypass raw tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("set bypass_rls: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
 // withOrgRawTx runs fn inside a database/sql transaction with app.org_id set
 // to orgID. Use this for squirrel/dynamic-SQL queries that need a raw *sql.Tx
 // rather than sqlc-generated Queries. SET LOCAL resets on commit or rollback —

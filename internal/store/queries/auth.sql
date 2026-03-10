@@ -58,6 +58,10 @@ SELECT COUNT(*) FROM users;
 -- name: IsSiteAdmin :one
 SELECT is_site_admin FROM users WHERE id = $1;
 
+-- name: IsUserEnabled :one
+-- Returns true if the user exists and is not disabled. Used by auth middleware.
+SELECT CAST(disabled_at IS NULL AS boolean) AS enabled FROM users WHERE id = $1;
+
 -- name: SetFirstSiteAdmin :exec
 -- Atomically promotes a user to site admin only if no admin exists yet.
 UPDATE users SET is_site_admin = true

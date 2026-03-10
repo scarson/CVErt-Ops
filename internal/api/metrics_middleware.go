@@ -22,6 +22,12 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap returns the underlying ResponseWriter so http.ResponseController
+// can discover interfaces like http.Flusher and http.Hijacker.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // httpMetricsMiddleware returns middleware that records request count and
 // duration using the provided metric vectors. It MUST be registered on a
 // sub-router (after chi route matching) so that RoutePattern() returns

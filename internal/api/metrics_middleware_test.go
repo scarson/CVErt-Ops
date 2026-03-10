@@ -110,18 +110,24 @@ func TestMetricsMiddleware_404Route(t *testing.T) {
 	mfs, err := reg.Gather()
 	require.NoError(t, err)
 
-	// For unmatched routes, the route label should be empty or a safe fallback.
+	// Chi returns the sub-router's wildcard pattern for unmatched routes (e.g.
+	// "/api/v1/*"), which is still cardinality-safe. The actual request path
+	// must NOT leak into the label.
+	var foundRoute bool
 	for _, mf := range mfs {
 		if mf.GetName() == "test_404_requests_total" {
 			for _, m := range mf.GetMetric() {
 				for _, lp := range m.GetLabel() {
 					if lp.GetName() == "route" {
-						// Unmatched routes should NOT contain the actual path
 						assert.NotEqual(t, "/api/v1/nonexistent", lp.GetValue(),
 							"unmatched route should not use actual path")
+						assert.NotContains(t, lp.GetValue(), "nonexistent",
+							"route label must not contain actual path segments")
+						foundRoute = true
 					}
 				}
 			}
 		}
 	}
+	assert.True(t, foundRoute, "expected test_404_requests_total metric to be recorded")
 }

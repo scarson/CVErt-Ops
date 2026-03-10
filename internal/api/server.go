@@ -26,6 +26,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/web"
 )
@@ -187,6 +188,8 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()
+	// HTTP metrics middleware on the sub-router so RoutePattern() is populated.
+	apiRouter.Use(httpMetricsMiddleware(metrics.HTTPRequestsTotal, metrics.HTTPRequestDuration))
 	// CSRF protection: cookie-authenticated state-changing requests must include
 	// X-Requested-By: CVErt-Ops. Bearer-token requests and safe methods are exempt.
 	apiRouter.Use(csrfProtect)

@@ -18,7 +18,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
@@ -185,7 +184,6 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── Infrastructure endpoints ──────────────────────────────────────────────
 	r.Get("/healthz", healthzHandler(db))
-	r.Handle("/metrics", promhttp.Handler())
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()

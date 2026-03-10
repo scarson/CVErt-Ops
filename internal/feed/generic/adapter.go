@@ -247,19 +247,19 @@ func (a *Adapter) nextPage(body []byte, headers http.Header, cur *cursor, patchC
 func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 	raw := record.Raw
 	p := feed.CanonicalPatch{
-		CVEID: sanitizeString(gjson.Get(raw, a.cfg.Mapping.Fields["cve_id"]).String()),
+		CVEID: feed.StripNullBytes(gjson.Get(raw, a.cfg.Mapping.Fields["cve_id"]).String()),
 	}
 
 	if path, ok := a.cfg.Mapping.Fields["description"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
-			s := sanitizeString(v.String())
+			s := feed.StripNullBytes(v.String())
 			p.DescriptionPrimary = &s
 		}
 	}
 
 	if path, ok := a.cfg.Mapping.Fields["severity"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
-			s := sanitizeString(v.String())
+			s := feed.StripNullBytes(v.String())
 			p.Severity = &s
 		}
 	}
@@ -273,7 +273,7 @@ func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 
 	if path, ok := a.cfg.Mapping.Fields["cvss_v3_vector"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
-			s := sanitizeString(v.String())
+			s := feed.StripNullBytes(v.String())
 			p.CVSSv3Vector = &s
 		}
 	}
@@ -287,14 +287,14 @@ func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 
 	if path, ok := a.cfg.Mapping.Fields["cvss_v4_vector"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
-			s := sanitizeString(v.String())
+			s := feed.StripNullBytes(v.String())
 			p.CVSSv4Vector = &s
 		}
 	}
 
 	if path, ok := a.cfg.Mapping.Fields["date_published"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
-			if t := parseTime(v.String()); t != nil {
+			if t := feed.ParseTimePtr(v.String()); t != nil {
 				p.DatePublished = t
 			}
 		}
@@ -302,7 +302,7 @@ func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 
 	if path, ok := a.cfg.Mapping.Fields["date_modified"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() {
-			if t := parseTime(v.String()); t != nil {
+			if t := feed.ParseTimePtr(v.String()); t != nil {
 				p.DateModified = t
 			}
 		}
@@ -311,7 +311,7 @@ func (a *Adapter) mapRecord(record gjson.Result) feed.CanonicalPatch {
 	if path, ok := a.cfg.Mapping.Fields["references"]; ok {
 		if v := gjson.Get(raw, path); v.Exists() && v.IsArray() {
 			v.ForEach(func(_, item gjson.Result) bool {
-				url := sanitizeString(item.String())
+				url := feed.StripNullBytes(item.String())
 				if url != "" {
 					p.References = append(p.References, feed.ReferenceEntry{URL: url})
 				}
@@ -413,41 +413,54 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 		if vuln.CVE == "" {
 			continue
 		}
-		p := feed.CanonicalPatch{CVEID: sanitizeString(vuln.CVE)}
+		p := feed.CanonicalPatch{CVEID: feed.StripNullBytes(vuln.CVE)}
 
 		// Description from notes.
 		for _, note := range vuln.Notes {
 			if note.Type == "description" || note.Type == "summary" {
-				desc := sanitizeString(note.Text)
+				desc := feed.StripNullBytes(note.Text)
 				p.DescriptionPrimary = &desc
 				break
 			}
 		}
 
-		// CVSS scores.
-		if len(vuln.Scores) > 0 {
-			s := vuln.Scores[0]
-			if s.CVSSv3 != nil {
-				score := s.CVSSv3.BaseScore
-				p.CVSSv3Score = &score
-				vec := sanitizeString(s.CVSSv3.VectorString)
-				if vec != "" {
-					p.CVSSv3Vector = &vec
-				}
+		// CVSS scores — iterate all score entries, keep the highest per version.
+		var bestV3Score float64
+		var bestV3Vector string
+		var hasV3 bool
+		var bestV4Score float64
+		var bestV4Vector string
+		var hasV4 bool
+		for _, s := range vuln.Scores {
+			if s.CVSSv3 != nil && (!hasV3 || s.CVSSv3.BaseScore > bestV3Score) {
+				bestV3Score = s.CVSSv3.BaseScore
+				bestV3Vector = s.CVSSv3.VectorString
+				hasV3 = true
 			}
-			if s.CVSSv4 != nil {
-				score := s.CVSSv4.BaseScore
-				p.CVSSv4Score = &score
-				vec := sanitizeString(s.CVSSv4.VectorString)
-				if vec != "" {
-					p.CVSSv4Vector = &vec
-				}
+			if s.CVSSv4 != nil && (!hasV4 || s.CVSSv4.BaseScore > bestV4Score) {
+				bestV4Score = s.CVSSv4.BaseScore
+				bestV4Vector = s.CVSSv4.VectorString
+				hasV4 = true
+			}
+		}
+		if hasV3 {
+			p.CVSSv3Score = &bestV3Score
+			vec := feed.StripNullBytes(bestV3Vector)
+			if vec != "" {
+				p.CVSSv3Vector = &vec
+			}
+		}
+		if hasV4 {
+			p.CVSSv4Score = &bestV4Score
+			vec := feed.StripNullBytes(bestV4Vector)
+			if vec != "" {
+				p.CVSSv4Vector = &vec
 			}
 		}
 
 		// References.
 		for _, ref := range vuln.References {
-			u := sanitizeString(ref.URL)
+			u := feed.StripNullBytes(ref.URL)
 			if u != "" {
 				p.References = append(p.References, feed.ReferenceEntry{URL: u})
 			}
@@ -455,12 +468,12 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 
 		// Dates from tracking.
 		if doc.DocumentMeta.Tracking.InitialReleaseDate != "" {
-			if t := parseTime(doc.DocumentMeta.Tracking.InitialReleaseDate); t != nil {
+			if t := feed.ParseTimePtr(doc.DocumentMeta.Tracking.InitialReleaseDate); t != nil {
 				p.DatePublished = t
 			}
 		}
 		if doc.DocumentMeta.Tracking.CurrentReleaseDate != "" {
-			if t := parseTime(doc.DocumentMeta.Tracking.CurrentReleaseDate); t != nil {
+			if t := feed.ParseTimePtr(doc.DocumentMeta.Tracking.CurrentReleaseDate); t != nil {
 				p.DateModified = t
 			}
 		}
@@ -473,35 +486,6 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 		patches = append(patches, p)
 	}
 	return patches
-}
-
-// sanitizeString removes null bytes from a string (Postgres TEXT rejects \x00).
-func sanitizeString(s string) string {
-	return strings.ReplaceAll(s, "\x00", "")
-}
-
-// parseTime attempts to parse a time string using common formats.
-func parseTime(s string) *time.Time {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	// Sanitize null bytes from timestamps too.
-	s = sanitizeString(s)
-
-	formats := []string{
-		time.RFC3339,
-		time.RFC3339Nano,
-		"2006-01-02T15:04:05-07:00",
-		"2006-01-02T15:04:05",
-		"2006-01-02",
-	}
-	for _, f := range formats {
-		if t, err := time.Parse(f, s); err == nil {
-			return &t
-		}
-	}
-	return nil
 }
 
 // ensure Adapter implements feed.Adapter.

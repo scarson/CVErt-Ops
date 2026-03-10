@@ -341,6 +341,9 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 
+			// Inbound webhook for custom feed data ingestion (member+)
+			r.With(srv.RequireOrgRole(RoleMember)).Post("/ingest", srv.ingestHandler)
+
 			// AI-powered search and summarization (viewer+ per PLAN.md §7.3)
 			r.Route("/ai", func(r chi.Router) {
 				r.With(srv.RequireOrgRole(RoleViewer)).Post("/nl-search", srv.nlSearchHandler)

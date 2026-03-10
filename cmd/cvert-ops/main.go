@@ -36,6 +36,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
@@ -43,6 +44,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/feed/epss"
 	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/merge"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -100,6 +102,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("database: %w", err)
 	}
 	defer db.Close()
+
+	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
+	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -559,4 +564,17 @@ func newLogger(cfg *config.Config) *slog.Logger {
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+// poolStatter adapts *pgxpool.Pool to the metrics.PoolStatter interface.
+type poolStatter struct{ pool *pgxpool.Pool }
+
+func (p poolStatter) PoolStats() metrics.PoolStats {
+	s := p.pool.Stat()
+	return metrics.PoolStats{
+		AcquiredConns: s.AcquiredConns(),
+		IdleConns:     s.IdleConns(),
+		MaxConns:      s.MaxConns(),
+		TotalConns:    s.TotalConns(),
+	}
 }

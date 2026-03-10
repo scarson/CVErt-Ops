@@ -57,7 +57,7 @@ func (s *Store) AdminListOrgs(ctx context.Context, afterTime *time.Time, afterID
 		return nil, fmt.Errorf("admin list orgs: build query: %w", err)
 	}
 
-	var result []AdminOrgRow
+	result := make([]AdminOrgRow, 0)
 	err = s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {

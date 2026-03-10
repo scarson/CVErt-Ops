@@ -60,7 +60,7 @@ func (s *Store) AdminListUsers(ctx context.Context, afterTime *time.Time, afterI
 		return nil, fmt.Errorf("admin list users: build query: %w", err)
 	}
 
-	var result []AdminUserRow
+	result := make([]AdminUserRow, 0)
 	err = s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {

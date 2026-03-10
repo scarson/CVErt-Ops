@@ -8,8 +8,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -17,38 +15,8 @@ import (
 
 // adminListUsersHandler handles GET /api/v1/admin/users.
 func (srv *Server) adminListUsersHandler(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	if l := r.URL.Query().Get("limit"); l != "" {
-		parsed, err := strconv.Atoi(l)
-		if err != nil || parsed < 1 || parsed > 200 {
-			http.Error(w, "invalid limit (1-200)", http.StatusBadRequest)
-			return
-		}
-		limit = parsed
-	}
-
-	var afterTime *time.Time
-	var afterID *uuid.UUID
-
-	if cursor := r.URL.Query().Get("after_time"); cursor != "" {
-		t, err := time.Parse(time.RFC3339Nano, cursor)
-		if err != nil {
-			http.Error(w, "invalid after_time (RFC3339)", http.StatusBadRequest)
-			return
-		}
-		afterTime = &t
-	}
-	if cursor := r.URL.Query().Get("after_id"); cursor != "" {
-		id, err := uuid.Parse(cursor)
-		if err != nil {
-			http.Error(w, "invalid after_id (UUID)", http.StatusBadRequest)
-			return
-		}
-		afterID = &id
-	}
-
-	if (afterTime == nil) != (afterID == nil) {
-		http.Error(w, "after_time and after_id must both be provided or both omitted", http.StatusBadRequest)
+	limit, afterTime, afterID, ok := parseKeysetParams(w, r)
+	if !ok {
 		return
 	}
 
@@ -78,6 +46,13 @@ func (srv *Server) adminDisableUserHandler(w http.ResponseWriter, r *http.Reques
 	userID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
 		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		return
+	}
+
+	// Prevent admin from disabling their own account.
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+	if callerID == userID {
+		http.Error(w, "cannot disable your own account", http.StatusBadRequest)
 		return
 	}
 
@@ -112,7 +87,9 @@ func (srv *Server) adminDisableUserHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "disabled", "user_id": user.ID.String()}) //nolint:errcheck
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "disabled", "user_id": user.ID.String()}); err != nil {
+		slog.ErrorContext(r.Context(), "admin disable user: encode", "error", err)
+	}
 }
 
 // adminEnableUserHandler handles POST /api/v1/admin/users/{user_id}/enable.
@@ -143,7 +120,9 @@ func (srv *Server) adminEnableUserHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "enabled", "user_id": userID.String()}) //nolint:errcheck
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "enabled", "user_id": userID.String()}); err != nil {
+		slog.ErrorContext(r.Context(), "admin enable user: encode", "error", err)
+	}
 }
 
 // adminUnlockUserHandler handles POST /api/v1/admin/users/{user_id}/unlock.
@@ -174,7 +153,9 @@ func (srv *Server) adminUnlockUserHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "unlocked", "user_id": userID.String()}) //nolint:errcheck
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "unlocked", "user_id": userID.String()}); err != nil {
+		slog.ErrorContext(r.Context(), "admin unlock user: encode", "error", err)
+	}
 }
 
 // adminResetPasswordHandler handles POST /api/v1/admin/users/{user_id}/reset-password.
@@ -205,5 +186,7 @@ func (srv *Server) adminResetPasswordHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "password_reset_required", "user_id": userID.String()}) //nolint:errcheck
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "password_reset_required", "user_id": userID.String()}); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset password: encode", "error", err)
+	}
 }

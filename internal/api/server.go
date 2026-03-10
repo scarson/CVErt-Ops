@@ -18,7 +18,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
@@ -27,6 +26,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/web"
 )
@@ -177,6 +177,7 @@ func (srv *Server) Handler() http.Handler {
 	})
 	r.Use(middleware.RealIP)
 	r.Use(clientIPMiddleware)
+	r.Use(contextLoggerMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies
 	// (PLAN.md §18.3 "HTTP request body size limit").
 	r.Use(middleware.RequestSize(1 << 20))
@@ -184,10 +185,11 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── Infrastructure endpoints ──────────────────────────────────────────────
 	r.Get("/healthz", healthzHandler(db))
-	r.Handle("/metrics", promhttp.Handler())
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()
+	// HTTP metrics middleware on the sub-router so RoutePattern() is populated.
+	apiRouter.Use(httpMetricsMiddleware(metrics.HTTPRequestsTotal, metrics.HTTPRequestDuration))
 	// CSRF protection: cookie-authenticated state-changing requests must include
 	// X-Requested-By: CVErt-Ops. Bearer-token requests and safe methods are exempt.
 	apiRouter.Use(csrfProtect)

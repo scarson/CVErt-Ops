@@ -33,8 +33,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
@@ -42,6 +44,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/feed/epss"
 	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/merge"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -99,6 +102,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("database: %w", err)
 	}
 	defer db.Close()
+
+	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
+	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -192,6 +198,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	// Metrics endpoint on a separate port so operators can restrict access
+	// without exposing it on the public API port.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{ //nolint:exhaustruct // minimal metrics server
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("metrics server started", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server error", "error", err)
+		}
+	}()
+
 	serverErr := make(chan error, 1)
 	go func() {
 		slog.Info("server started", "addr", cfg.ListenAddr)
@@ -215,6 +237,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	)
 	defer cancel()
 
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown error", "error", err)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
@@ -249,6 +274,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("database: %w", err)
 	}
 	defer db.Close()
+
+	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
+	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -295,8 +323,29 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 	}
 
+	// Metrics endpoint so Prometheus can scrape the standalone worker.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{ //nolint:exhaustruct // minimal metrics server
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("metrics server started", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server error", "error", err)
+		}
+	}()
+
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown error", "error", err)
+	}
 	return nil
 }
 
@@ -539,4 +588,17 @@ func newLogger(cfg *config.Config) *slog.Logger {
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+// poolStatter adapts *pgxpool.Pool to the metrics.PoolStatter interface.
+type poolStatter struct{ pool *pgxpool.Pool }
+
+func (p poolStatter) PoolStats() metrics.PoolStats {
+	s := p.pool.Stat()
+	return metrics.PoolStats{
+		AcquiredConns: s.AcquiredConns(),
+		IdleConns:     s.IdleConns(),
+		MaxConns:      s.MaxConns(),
+		TotalConns:    s.TotalConns(),
+	}
 }

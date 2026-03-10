@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -161,6 +162,9 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 		return // no job available; normal case
 	}
 
+	metrics.WorkerJobsClaimedTotal.WithLabelValues(queue).Inc()
+	start := time.Now()
+
 	p.mu.RLock()
 	h := p.handlers[queue]
 	p.mu.RUnlock()
@@ -180,6 +184,8 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 		if failErr := p.store.FailJob(ctx, job.ID, err.Error()); failErr != nil {
 			slog.Error("fail job error", "job_id", job.ID, "error", failErr)
 		}
+		metrics.WorkerJobsCompletedTotal.WithLabelValues(queue, "failure").Inc()
+		metrics.WorkerJobDuration.WithLabelValues(queue).Observe(time.Since(start).Seconds())
 		return
 	}
 
@@ -187,6 +193,8 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 		slog.Error("complete job error", "job_id", job.ID, "error", err)
 		return
 	}
+	metrics.WorkerJobsCompletedTotal.WithLabelValues(queue, "success").Inc()
+	metrics.WorkerJobDuration.WithLabelValues(queue).Observe(time.Since(start).Seconds())
 	slog.Info("job completed", "queue", queue, "job_id", job.ID)
 }
 

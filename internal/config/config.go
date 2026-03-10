@@ -25,6 +25,7 @@ type Config struct {
 
 	// ── Server ───────────────────────────────────────────────────────────────────
 	ListenAddr             string `env:"LISTEN_ADDR"              envDefault:":8080"`
+	MetricsPort            string `env:"METRICS_PORT"             envDefault:"9090"`
 	AppEnv                 string `env:"APP_ENV"                  envDefault:"development"`
 	ExternalURL            string `env:"EXTERNAL_URL"             envDefault:"http://localhost:8080"`
 	FrontendURL            string `env:"FRONTEND_URL"             envDefault:"/"`

@@ -1,0 +1,64 @@
+// Reference Grafana Alloy config for CVErt Ops.
+// Scrapes Prometheus metrics and tails JSON logs for remote-write to
+// Grafana Cloud or any Prometheus/Loki-compatible backend.
+//
+// Customize:
+//   - PROMETHEUS_REMOTE_WRITE_URL / LOKI_WRITE_URL endpoints
+//   - Basic auth credentials (or use environment variables)
+//   - Scrape targets if running multiple instances
+//   - Log file path if not using stderr
+
+// ── Prometheus metrics scrape ────────────────────────────────────────────────
+
+prometheus.scrape "cvertops" {
+  targets = [
+    {"__address__" = "localhost:9090", "job" = "cvertops", "instance" = "localhost"},
+  ]
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = env("PROMETHEUS_REMOTE_WRITE_URL")  // e.g. https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push
+
+    basic_auth {
+      username = env("PROMETHEUS_REMOTE_WRITE_USERNAME")
+      password = env("PROMETHEUS_REMOTE_WRITE_PASSWORD")
+    }
+  }
+
+  external_labels = {
+    environment = env("ENVIRONMENT"),  // e.g. "production", "staging"
+  }
+}
+
+// ── Log collection (JSON from stderr/file) ───────────────────────────────────
+
+local.file_match "cvertops_logs" {
+  path_targets = [
+    // Adjust path to match your deployment. For systemd, use the journal source
+    // instead of file_match. For Docker/Kubernetes, use the container log path.
+    {"__path__" = "/var/log/cvert-ops/*.log", "job" = "cvertops"},
+  ]
+}
+
+loki.source.file "cvertops" {
+  targets    = local.file_match.cvertops_logs.targets
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = env("LOKI_WRITE_URL")  // e.g. https://logs-prod-006.grafana.net/loki/api/v1/push
+
+    basic_auth {
+      username = env("LOKI_WRITE_USERNAME")
+      password = env("LOKI_WRITE_PASSWORD")
+    }
+  }
+
+  external_labels = {
+    environment = env("ENVIRONMENT"),
+  }
+}

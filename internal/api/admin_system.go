@@ -5,8 +5,6 @@ package api
 import (
 	"log/slog"
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -88,6 +86,7 @@ func (srv *Server) adminConfigHandler(w http.ResponseWriter, _ *http.Request) {
 		// Secrets — redacted.
 		"jwt_secret":           redactSecret(cfg.JWTSecret),
 		"database_url":         redactSecret(cfg.DatabaseURL),
+		"database_url_migrate": redactSecret(cfg.DatabaseURLMigrate),
 		"nvd_api_key":          redactSecret(cfg.NVDAPIKey),
 		"gemini_api_key":       redactSecret(cfg.GeminiAPIKey),
 		"github_client_secret": redactSecret(cfg.GitHubClientSecret),
@@ -102,22 +101,18 @@ func (srv *Server) adminConfigHandler(w http.ResponseWriter, _ *http.Request) {
 // adminAuditLogHandler handles GET /api/v1/admin/audit-log.
 // Cross-org audit log listing with optional filters and keyset pagination.
 func (srv *Server) adminAuditLogHandler(w http.ResponseWriter, r *http.Request) {
-	limit := 50
-	q := r.URL.Query()
-
-	if l := q.Get("limit"); l != "" {
-		parsed, err := strconv.Atoi(l)
-		if err != nil || parsed < 1 || parsed > 200 {
-			http.Error(w, "invalid limit (1-200)", http.StatusBadRequest)
-			return
-		}
-		limit = parsed
+	limit, afterTime, afterID, ok := parseKeysetParams(w, r)
+	if !ok {
+		return
 	}
 
+	q := r.URL.Query()
 	params := store.AdminAuditListParams{
-		EntityType: q.Get("entity_type"),
-		Action:     q.Get("action"),
-		PageSize:   limit + 1,
+		EntityType:      q.Get("entity_type"),
+		Action:          q.Get("action"),
+		CursorCreatedAt: afterTime,
+		CursorID:        afterID,
+		PageSize:        limit + 1,
 	}
 
 	if orgIDStr := q.Get("org_id"); orgIDStr != "" {
@@ -136,27 +131,6 @@ func (srv *Server) adminAuditLogHandler(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		params.ActorID = &id
-	}
-
-	if cursor := q.Get("after_time"); cursor != "" {
-		t, err := time.Parse(time.RFC3339Nano, cursor)
-		if err != nil {
-			http.Error(w, "invalid after_time (RFC3339)", http.StatusBadRequest)
-			return
-		}
-		params.CursorCreatedAt = &t
-	}
-	if cursor := q.Get("after_id"); cursor != "" {
-		id, err := uuid.Parse(cursor)
-		if err != nil {
-			http.Error(w, "invalid after_id (UUID)", http.StatusBadRequest)
-			return
-		}
-		params.CursorID = &id
-	}
-	if (params.CursorCreatedAt == nil) != (params.CursorID == nil) {
-		http.Error(w, "after_time and after_id must both be provided or both omitted", http.StatusBadRequest)
-		return
 	}
 
 	entries, err := srv.store.AdminListAuditEntries(r.Context(), params)

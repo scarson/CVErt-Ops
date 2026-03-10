@@ -48,7 +48,7 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 
 	states, err := srv.store.ListFeedSyncStates(ctx)
 	if err != nil {
-		slog.Error("list feed sync states", "error", err)
+		slog.ErrorContext(ctx, "list feed sync states", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -63,7 +63,7 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 		if s, ok := stateMap[feedName]; ok {
 			logs, err := srv.store.ListRecentFeedFetchLogs(ctx, feedName, 5)
 			if err != nil {
-				slog.Error("list feed fetch logs", "feed", feedName, "error", err)
+				slog.ErrorContext(ctx, "list feed fetch logs", "feed", feedName, "error", err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
@@ -95,7 +95,7 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	payload, _ := json.Marshal(ingest.Payload{FeedName: feedName})
 	jobID, err := srv.store.EnqueueJob(ctx, queue, 0, payload, &lockKey, 3, nil)
 	if err != nil {
-		slog.Error("enqueue feed job", "feed", feedName, "error", err) //nolint:gosec // G706: feedName is validated by IsKnownFeed; slog structured fields escape values
+		slog.ErrorContext(ctx, "enqueue feed job", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -116,7 +116,7 @@ func (srv *Server) pauseFeedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := srv.store.PauseFeed(r.Context(), feedName); err != nil {
-		slog.Error("pause feed", "feed", feedName, "error", err) //nolint:gosec // G706: feedName validated
+		slog.ErrorContext(r.Context(), "pause feed", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -130,7 +130,7 @@ func (srv *Server) resumeFeedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := srv.store.ResumeFeed(r.Context(), feedName); err != nil {
-		slog.Error("resume feed", "feed", feedName, "error", err) //nolint:gosec // G706: feedName validated
+		slog.ErrorContext(r.Context(), "resume feed", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -151,7 +151,7 @@ func (srv *Server) feedLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	logs, err := srv.store.ListFeedFetchLogsPaginated(r.Context(), feedName, afterTime, afterID, limit+1)
 	if err != nil {
-		slog.Error("feed logs", "feed", feedName, "error", err) //nolint:gosec // G706: feedName validated
+		slog.ErrorContext(r.Context(), "feed logs", "feed", feedName, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

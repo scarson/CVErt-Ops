@@ -1,8 +1,5 @@
-// Package config parses and validates all application configuration from
-// environment variables using caarlos0/env/v11.
-//
-// Call [Load] once at startup; pass the resulting [Config] to subcommands.
-// Server exits if any field tagged "required" is missing.
+// ABOUTME: Parses all application configuration from environment variables via caarlos0/env.
+// ABOUTME: Call Load() once at startup; pass the resulting Config to subcommands.
 package config
 
 import (
@@ -32,7 +29,7 @@ type Config struct {
 	ExternalURL            string `env:"EXTERNAL_URL"             envDefault:"http://localhost:8080"`
 	FrontendURL            string `env:"FRONTEND_URL"             envDefault:"/"`
 	ShutdownTimeoutSeconds int    `env:"SHUTDOWN_TIMEOUT_SECONDS" envDefault:"60"`
-	RegistrationMode       string `env:"REGISTRATION_MODE"        envDefault:"open"`
+	RegistrationMode       string `env:"REGISTRATION_MODE"        envDefault:"invite-only"`
 
 	// ── Auth — JWT ───────────────────────────────────────────────────────────────
 	JWTSecret    string `env:"JWT_SECRET,required"`

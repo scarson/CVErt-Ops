@@ -1,3 +1,6 @@
+// ABOUTME: FNV advisory lock helpers for serializing concurrent CVE merge pipeline writes.
+// ABOUTME: Shared lock key used by both merge pipeline and EPSS adapter to prevent TOCTOU races.
+//
 // Package merge implements the CVE canonical merge pipeline.
 // It reads all cve_sources rows for a CVE, resolves per-field precedence,
 // computes the material_hash, and upserts the canonical cves row plus all

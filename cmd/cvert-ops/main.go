@@ -1,11 +1,5 @@
-// Command cvert-ops is the CVErt Ops server binary.
-//
-// Subcommands:
-//
-//	serve        — HTTP server + embedded worker pool (default for production)
-//	worker       — standalone worker pool only (SaaS scaled deployments)
-//	migrate      — run pending database migrations and exit
-//	import-bulk  — import a bulk data file for a given feed source
+// ABOUTME: CVErt Ops server binary with cobra subcommands: serve, worker, migrate, import-bulk.
+// ABOUTME: Single static binary combining HTTP server, worker pool, and database migrations.
 package main
 
 import (
@@ -526,7 +520,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 30
+const expectedSchemaVersion = 34
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

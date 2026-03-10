@@ -41,7 +41,7 @@ Rule #1: If you want exception to ANY rule, YOU MUST STOP and get explicit permi
   discussion.
 
 
-# Proactiveness
+## Proactiveness
 
 When asked to do something, just do it - including obvious follow-up actions needed to complete the task properly.
   Only pause to ask for confirmation when:
@@ -56,6 +56,20 @@ When asked to do something, just do it - including obvious follow-up actions nee
 - YAGNI. The best code is no code. Don't add features we don't need right now, unless they're foundational to later planned work and refactoring to accomodate would be difficult.
 - When it doesn't conflict with YAGNI, architect for extensibility and flexibility.
 
+## Third-Party Dependencies
+
+This is a security product — supply chain risk from unmaintained dependencies is a real threat.
+
+- Before proposing ANY new dependency, YOU MUST verify its current status via web search:
+  - Is the repository archived, deprecated, or marked unmaintained?
+  - When was the last commit? Last release?
+  - Has the project been forked or migrated to a new canonical import path?
+  - Are there known unpatched CVEs or security advisories?
+- This applies to implementation plans too — dependency choices in plans MUST be verified before the plan is finalized
+- When upgrading or replacing a dependency, verify the replacement is actively maintained using the same checks
+- Claude's training data has a knowledge cutoff — library status can change after that date. Web search is the only reliable check. Do not trust your training data alone for "is this library maintained?"
+- When in doubt about a dependency's status, flag it to Sam before proceeding
+- Use the `/dependency-check` skill for systematic verification when adding or evaluating dependencies
 
 ## Test Driven Development  (TDD)
  
@@ -199,6 +213,13 @@ docker compose -f docker/compose.yml --env-file .env up -d   # start dev Postgre
 go run ./cmd/cvert-ops serve         # run server (HTTP + worker)
 go run ./cmd/cvert-ops worker        # run standalone worker
 go run ./cmd/cvert-ops migrate       # run migrations programmatically
+go run ./cmd/cvert-ops import-bulk   # bulk-import CVE data from file
+go test ./...                        # run all Go tests
+go test ./internal/store/... -count=1  # run store tests (needs test DB)
+go test -run TestFoo ./internal/...  # run a specific test
+cd web && npm run test:unit          # run frontend unit tests (vitest)
+cd web && npm run lint               # lint frontend (oxlint + eslint)
+cd web && npm run type-check         # TypeScript type checking
 ```
 
 ### Dev Startup (full stack with frontend)
@@ -239,6 +260,11 @@ Mailpit UI: http://localhost:8025
 | CLI | cobra (subcommands: serve, worker, migrate) |
 | SSRF | doyensec/safeurl for all outbound webhooks |
 | Metrics | prometheus/client_golang at /metrics |
+| Frontend | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue (reka-ui) |
+| Frontend state | Pinia + VueUse |
+| Frontend API | openapi-fetch (typed from OpenAPI schema) |
+| Frontend test | Vitest + happy-dom + @vue/test-utils |
+| Frontend lint | oxlint + eslint + prettier |
 
 ## Architecture (Key Points)
 
@@ -340,20 +366,30 @@ When suppression is necessary, prefer **inline `//nolint:linter // reason`** ove
 ## Project Layout
 
 ```
-cmd/cvert-ops/     # cobra CLI entry points
-internal/api/      # huma HTTP handlers + middleware
-internal/config/   # caarlos0/env config structs
-internal/feed/     # feed adapters (nvd, mitre, kev, osv, ghsa, epss)
-internal/merge/    # CVE merge pipeline
-internal/alert/    # alert DSL compiler + evaluator
-internal/notify/   # notification channels + delivery
-internal/auth/     # JWT, OAuth, API keys, argon2id
-internal/worker/   # job queue + goroutine pool
-internal/search/   # FTS + facets
-internal/store/    # repository layer (sqlc + squirrel)
-internal/metrics/  # Prometheus counters/histograms
-migrations/        # SQL files (embedded)
-templates/         # notification + watchlist templates (embedded)
+cmd/cvert-ops/       # cobra CLI entry points
+internal/ai/         # LLM client (Gemini) + quota + sanitization
+internal/alert/      # alert DSL compiler + evaluator
+internal/api/        # huma HTTP handlers + middleware
+internal/audit/      # audit logging
+internal/auth/       # JWT, OAuth, API keys, argon2id
+internal/config/     # caarlos0/env config structs
+internal/crypto/     # cryptographic helpers
+internal/feed/       # feed adapters (nvd, mitre, kev, osv, ghsa, epss, vendor)
+internal/ingest/     # feed ingestion orchestrator
+internal/merge/      # CVE merge pipeline
+internal/metrics/    # Prometheus counters/histograms
+internal/notify/     # notification channels + delivery
+internal/report/     # report generation
+internal/retention/  # data retention policies
+internal/search/     # FTS + facets
+internal/store/      # repository layer (sqlc + squirrel)
+internal/testutil/   # shared test helpers
+internal/tier/       # subscription tier logic
+internal/worker/     # job queue + goroutine pool
+migrations/          # SQL files (embedded)
+templates/           # notification + watchlist templates (embedded)
+web/                 # Vue 3 SPA (Vite + TypeScript + Tailwind 4)
+dev/                 # plans, research, bug hunts, test coverage reports
 ```
 
 ## Skills & Subagents
@@ -389,8 +425,10 @@ Use these proactively — don't wait to be asked.
 | `pitfall-check` | Before committing significant business logic |
 | `plan-check` | Before merging any feature — specify the PLAN.md section |
 | `security-review` | Before merging auth, webhook, tenant-isolation, or public API code |
+| `dependency-check` | Before adding any new dependency or specifying one in a plan |
+| `project-health-review` | Periodic critical review — adversarial multi-agent quality assessment |
 
-**Subagents** (invoke via `Task` tool):
+**Subagents** (invoke via `Agent` tool):
 
 | Agent | When to use |
 |-------|-------------|

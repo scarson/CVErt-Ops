@@ -1,3 +1,5 @@
+// ABOUTME: Computes the material_hash for a canonical CVE row via sha256(jcs(fields)).
+// ABOUTME: Excludes EPSS score, normalizes CVSS vectors, and sorts all slices for determinism.
 package merge
 
 import (

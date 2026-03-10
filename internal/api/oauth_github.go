@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -84,7 +85,7 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	var ghUser githubUser
-	if err := json.NewDecoder(resp.Body).Decode(&ghUser); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ghUser); err != nil {
 		slog.ErrorContext(ctx, "github oauth: decode user", "error", err)
 		http.Error(w, "authentication failed", http.StatusInternalServerError)
 		return
@@ -105,7 +106,7 @@ func (srv *Server) githubCallbackHandler(w http.ResponseWriter, r *http.Request)
 	}
 	defer resp2.Body.Close() //nolint:errcheck
 	var ghEmails []githubEmail
-	if err := json.NewDecoder(resp2.Body).Decode(&ghEmails); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp2.Body, 1<<20)).Decode(&ghEmails); err != nil {
 		slog.ErrorContext(ctx, "github oauth: decode emails", "error", err)
 		http.Error(w, "authentication failed", http.StatusInternalServerError)
 		return

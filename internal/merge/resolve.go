@@ -1,3 +1,5 @@
+// ABOUTME: Per-field precedence resolution for the CVE merge pipeline.
+// ABOUTME: Selects the best value for each CVE field from multiple source rows by source priority.
 package merge
 
 import (

@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/google/uuid"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/oauth2"
@@ -34,25 +34,25 @@ import (
 
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
-	store          *store.Store
-	cfg            *config.Config
-	argon2Sem      chan struct{}
-	rateLimiter    *ipRateLimiter
-	ghOAuth        *oauth2.Config   // nil when GitHub OAuth is not configured
-	ghAPIBaseURL   string           // GitHub REST API base URL; overridable in tests
-	googleOIDC     *oidc.Provider   // nil when Google OIDC is not configured
-	googleOAuth    *oauth2.Config   // nil when Google OIDC is not configured
-	orgRL          *orgRateLimiter  // per-org API rate limiter
-	tierCache      *tierCache       // short-lived cache for org tier + overrides
-	oidcProviders  sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
-	alertCache     *alert.RuleCache  // nil until SetAlertDeps is called
-	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
-	llm            ai.LLMClient     // nil until SetAIDeps is called
-	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
-	lockout                *lockoutManager   // brute-force login protection
-	bootstrapMu            sync.Mutex        // serializes first-user bootstrap in invite-only mode
-	expectedSchemaVersion  int               // set via SetExpectedSchemaVersion before Handler()
-	versionInfo            VersionInfo       // set via SetVersionInfo before Handler()
+	store                 *store.Store
+	cfg                   *config.Config
+	argon2Sem             chan struct{}
+	rateLimiter           *ipRateLimiter
+	ghOAuth               *oauth2.Config   // nil when GitHub OAuth is not configured
+	ghAPIBaseURL          string           // GitHub REST API base URL; overridable in tests
+	googleOIDC            *oidc.Provider   // nil when Google OIDC is not configured
+	googleOAuth           *oauth2.Config   // nil when Google OIDC is not configured
+	orgRL                 *orgRateLimiter  // per-org API rate limiter
+	tierCache             *tierCache       // short-lived cache for org tier + overrides
+	oidcProviders         sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
+	alertCache            *alert.RuleCache // nil until SetAlertDeps is called
+	alertEvaluator        *alert.Evaluator // nil until SetAlertDeps is called
+	llm                   ai.LLMClient     // nil until SetAIDeps is called
+	auditWriter           *audit.Writer    // nil until SetAuditDeps is called
+	lockout               *lockoutManager  // brute-force login protection
+	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
+	expectedSchemaVersion int              // set via SetExpectedSchemaVersion before Handler()
+	versionInfo           VersionInfo      // set via SetVersionInfo before Handler()
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.

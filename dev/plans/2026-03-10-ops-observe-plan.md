@@ -307,7 +307,7 @@ git commit -m "feat(metrics): add DB pool collector using prometheus.Collector i
 - Create: `internal/log/context.go`
 - Create: `internal/log/context_test.go`
 
-**Context:** Three helpers: `FromContext`, `WithLogger`, `Enrich`. `FromContext` falls back to `slog.Default()` if no logger in context. Phase 1 adds the middleware and helpers only — existing `slog.InfoContext` calls are NOT migrated (design doc §2).
+**Context:** Three helpers: `FromContext`, `WithLogger`, `Enrich`. `FromContext` falls back to `slog.Default()` if no logger in context. Phase 8B adds the middleware and helpers only — existing `slog.InfoContext` calls are NOT migrated (design doc §2).
 
 **Step 1: Write tests**
 
@@ -422,6 +422,8 @@ func contextLoggerMiddleware(next http.Handler) http.Handler {
 Insert `r.Use(contextLoggerMiddleware)` after line 177 (after `r.Use(clientIPMiddleware)`), before `r.Use(middleware.RequestSize(...))`.
 
 **Step 4: Run test → PASS. Step 5: Commit.**
+
+
 
 ---
 
@@ -655,7 +657,7 @@ Five panels per design doc §4. **Commit.**
 | Route label cardinality explosion (tp§13.6) | UUID appears in metric `route` label | Task 11 test explicitly asserts no UUID in labels; middleware uses `RoutePattern()` |
 | Metrics middleware on wrong router | Middleware on root router → empty route pattern | Task 11 specifies API sub-router, NOT root |
 | DB pool collector race (tp§13.6) | Tests use default registry → race with other tests | Task 6 specifies isolated `prometheus.Registry` |
-| Existing slog calls migrated | Agent migrates existing `slog.InfoContext` calls | Design doc explicitly says "Phase 1 adds middleware + helpers only. Existing slog calls NOT migrated" |
+| Existing slog calls migrated | Agent migrates existing `slog.InfoContext` calls | Design doc explicitly says "Phase 8B adds middleware + helpers only. Existing slog calls NOT migrated" |
 | Dashboard JSON invalid | Agent generates malformed Grafana JSON | Agent should generate from the exact PromQL in the design doc |
 | Feed gauge metrics at wrong point | Metrics updated before DB write succeeds | Task 10 specifies "AFTER database write succeeds" |
 | Agent touches files owned by other pillars | E.g., creates admin endpoints or modifies `feeds.go` | File ownership table in overview doc; explicit warning at top of plan |

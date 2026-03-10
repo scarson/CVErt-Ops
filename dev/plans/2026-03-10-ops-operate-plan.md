@@ -186,7 +186,7 @@ Status values: `pass`, `warn`, `fail`.
 | 8 | Disk/temp space | Writable temp directory exists |
 | 9 | Feed schedule | All configured feeds have valid schedule, not permanently failing |
 
-**Checks 3-6 are also specified in the Secure design.** The Operate pillar implements them here. If the Secure pillar adds duplicate checks, they'll be deduplicated during integration (Phase 3). Implement them as part of the doctor package now.
+**Checks 3-6 are also specified in the Secure design.** The Operate pillar implements them here. If the Secure pillar adds duplicate checks, they'll be deduplicated during integration (Phase 8F). Implement them as part of the doctor package now.
 
 **CRITICAL for Check 5 (encryption sentinel):** The sentinel is written on first `serve` startup (after auto-migrate). The doctor check decrypts it. If no sentinel exists yet, the check should `warn` ("encryption sentinel not initialized — run `serve` once") rather than `fail`.
 

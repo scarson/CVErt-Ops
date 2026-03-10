@@ -3,7 +3,7 @@
 **Date:** 2026-03-10
 **Status:** Design approved
 **Pillar:** Extend
-**Prerequisites:** Phase 0 (custom source precedence tier in merge/pipeline.go)
+**Prerequisites:** Phase 8A (custom source precedence tier in merge/pipeline.go)
 **Overview doc:** `2026-03-10-ops-maturity-overview.md`
 
 ## Current State
@@ -126,13 +126,13 @@ Config `name` must not collide with built-in feed names (`nvd`, `mitre`, `kev`, 
 
 ### Custom Source Precedence
 
-Generic feed sources get the `custom` precedence tier in `merge/pipeline.go` (Phase 0 deliverable) — below all built-in sources, above "no data." Test: generic feed patches CVE with CVSS 8.0, NVD patches same CVE with 7.5 → canonical record shows 7.5 (NVD wins).
+Generic feed sources get the `custom` precedence tier in `merge/pipeline.go` (Phase 8A deliverable) — below all built-in sources, above "no data." Test: generic feed patches CVE with CVSS 8.0, NVD patches same CVE with 7.5 → canonical record shows 7.5 (NVD wins).
 
 ### Config Loading & Lifecycle
 
 - **Startup:** Scan `CVERTOPS_FEEDS_DIR`, validate all YAML files, register valid feeds. Invalid configs logged as warnings, not fatal.
 - **Removed config:** Feed disappears from scheduler. `feed_sync_state` record preserved in DB (history). Admin UI shows only active feeds.
-- **Phase 1 only loads at startup.** The adapter exposes a `Rescan()` method for future SIGHUP integration (Secure pillar, Phase 2). SIGHUP wiring is NOT this pillar's responsibility.
+- **Loads at startup only.** The adapter exposes a `Rescan()` method for future SIGHUP integration (Secure pillar, Phase 8E). SIGHUP wiring is NOT this pillar's responsibility.
 - **URL safety:** No SSRF protection (operator-configured URLs, not user-supplied). Validation logs a warning (not error) if URL resolves to private/link-local IP, as a courtesy.
 - **Auth env var unset:** If the referenced env var doesn't exist at runtime, log a warning and send request without auth header. Don't panic or fail silently.
 
@@ -294,8 +294,8 @@ Cross-pillar touch: only `server.go` modified by both Extend (one org route) and
 | Transaction handling in webhook | Handler does NOT use `withOrgTx`. `merge.Ingest` manages its own transactions. |
 | Rate limit accounting for webhook | Count as N requests (N = patch count). Test: rate limit is 10/min, POST 15 patches → error. (testing-pitfalls §5.3) |
 | Reserved source name collision | Reject at config validation and at API request time. Test both paths. |
-| SIGHUP independence | Phase 1 is startup-only. `Rescan()` exists but not called until Secure pillar wires SIGHUP. |
-| Custom precedence placement | Phase 0 adds tier to `merge/pipeline.go`. Plan specifies which file and data structure. Test: custom CVSS vs NVD CVSS → NVD wins. |
+| SIGHUP independence | Startup-only. `Rescan()` exists but not called until Secure pillar wires SIGHUP. |
+| Custom precedence placement | Phase 8A adds tier to `merge/pipeline.go`. Plan specifies which file and data structure. Test: custom CVSS vs NVD CVSS → NVD wins. |
 | Test coverage minimum | 15 test cases enumerated above. Agent implements all 15. |
 | YAML library | `github.com/yaml/go-yaml` (official fork). Verify module path via `go get`. Fallback: `github.com/goccy/go-yaml`. |
 | gjson dependency | `github.com/tidwall/gjson`. New dependency — `go get` in setup. |

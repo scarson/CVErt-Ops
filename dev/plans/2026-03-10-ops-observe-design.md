@@ -3,7 +3,7 @@
 **Date:** 2026-03-10
 **Status:** Design approved
 **Pillar:** Observe/Instrument
-**Prerequisites:** None (Phase 1 — parallel with Operate and Extend)
+**Prerequisites:** None (Phase 8B — parallel with Operate and Extend)
 **Overview doc:** `2026-03-10-ops-maturity-overview.md`
 
 ## Current State
@@ -131,7 +131,7 @@ For org-scoped routes, the existing auth/RBAC middleware already resolves `org_i
 
 ### Migration Scope
 
-Phase 1 adds the middleware and helpers only. Existing `slog.InfoContext(ctx, ...)` calls are NOT migrated to `log.FromContext(ctx).Info(...)` in this phase. A follow-up mechanical PR can do that incrementally.
+Phase 8B adds the middleware and helpers only. Existing `slog.InfoContext(ctx, ...)` calls are NOT migrated to `log.FromContext(ctx).Info(...)` in this phase. A follow-up mechanical PR can do that incrementally.
 
 ## 3. `/metrics` Endpoint Security
 
@@ -241,6 +241,6 @@ Prometheus alerting rules format (compatible with Grafana Cloud Alerting and sel
 | Middleware ordering | HTTP metrics middleware on API v1 sub-router (after route matching). Log correlation middleware after RequestID (after line 177 in current server.go). |
 | pgxpool collector pattern | `prometheus.Collector` interface, not `promauto`. `Describe()` + `Collect()` calling `pool.Stat()`. |
 | Dashboard JSON verbosity | Exact panel titles, PromQL queries, and variables specified above. Agent generates JSON from specs. |
-| Log migration scope creep | Phase 1 adds middleware + helpers only. Existing slog calls NOT migrated. |
+| Log migration scope creep | Phase 8B adds middleware + helpers only. Existing slog calls NOT migrated. |
 | Prometheus race conditions | `-race` flag on all metric tests. `promauto` for counters/histograms (goroutine-safe). DB pool collector uses isolated registry in tests. (testing-pitfalls §13.6) |
 | Feed gauge metrics | `cvertops_feed_last_success_timestamp` and `cvertops_feed_consecutive_failures` are new gauges updated by ingest handler. Must be added alongside existing DB writes. |

@@ -3,7 +3,7 @@
 **Date:** 2026-03-10
 **Status:** Design approved
 **Pillar:** Operate
-**Prerequisites:** Phase 0 (system_settings migration, admin middleware verification)
+**Prerequisites:** Phase 8A (system_settings migration, admin middleware verification)
 **Overview doc:** `2026-03-10-ops-maturity-overview.md`
 
 ## Current State
@@ -99,7 +99,7 @@ Auto-migrate only runs `up`. Rollbacks remain manual: `cvert-ops migrate --down 
 
 New cobra subcommand + `GET /api/v1/admin/doctor` (same checks, JSON response).
 
-### system_settings Table (Phase 0)
+### system_settings Table (Phase 8A)
 
 Migration creates: `system_settings (key TEXT PRIMARY KEY, value BYTEA, created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now())`.
 
@@ -241,7 +241,7 @@ Contents:
 
 - Kubernetes manifests or Helm charts (operators adapt Docker Compose; a half-baked Helm chart is worse than none)
 - Built-in backup tooling (pg_dump is standard; we document it)
-- Multi-instance coordination (single-instance Phase 1; scaling docs come with SaaS)
+- Multi-instance coordination (single-instance for now; scaling docs come with SaaS)
 
 ## Subagent Risk Areas
 
@@ -260,5 +260,5 @@ Contents:
 | Error path testing | Every admin endpoint has explicit error-path tests — DB failure, invalid input, missing resource. (testing-pitfalls §3.2) |
 | Docker Compose prod profile | Must NOT modify existing dev compose.yml. Separate override file only. |
 | Disabled user JWT gap | Auth middleware user lookup adds `disabled_at IS NULL`. Test: disable user, next API call returns 401. |
-| system_settings migration | Phase 0 deliverable. Follows project conventions (concurrent index if applicable, ABOUTME header). |
+| system_settings migration | Phase 8A deliverable. Follows project conventions (concurrent index if applicable, ABOUTME header). |
 | Version via ldflags | Dockerfile and CI must pass `-ldflags`. Test: version endpoint returns non-empty values when built with flags, returns "dev" or similar when not. |

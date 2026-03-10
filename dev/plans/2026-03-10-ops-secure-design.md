@@ -3,7 +3,7 @@
 **Date:** 2026-03-10
 **Status:** Design approved
 **Pillar:** Secure
-**Prerequisites:** Phase 1 complete (Observe metrics, Operate doctor framework, Extend rescan method)
+**Prerequisites:** Phase 8B-8D complete (Observe metrics, Operate doctor framework, Extend rescan method)
 **Overview doc:** `2026-03-10-ops-maturity-overview.md`
 
 ## Current State
@@ -208,7 +208,7 @@ CREATE INDEX CONCURRENTLY idx_security_events_type_created ON security_events (e
 
 ### Event Type Constants
 
-Defined in `internal/secure/events.go` (Phase 0 deliverable). Central registry — no magic strings.
+Defined in `internal/secure/events.go` (Phase 8A deliverable). Central registry — no magic strings.
 
 ### actor_ip Resolution
 

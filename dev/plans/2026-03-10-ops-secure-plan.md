@@ -2,14 +2,14 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-> **⚠️ DEFERRED REVIEW NOTICE:** This plan was written alongside the Phase 1 plans (Observe, Operate, Extend) but is designed to execute AFTER Phase 1 completes. Before starting implementation, this plan MUST be reviewed and re-assessed in light of the Phase 1 implementation. Specifically:
+> **⚠️ DEFERRED REVIEW NOTICE:** This plan was written alongside the Phase 8B-8D plans (Observe, Operate, Extend) but is designed to execute AFTER Phase 8B-8D completes. Before starting implementation, this plan MUST be reviewed and re-assessed in light of the Phase 8B-8D implementation. Specifically:
 > - Verify the Operate pillar's doctor `Check` interface matches what this plan expects
 > - Verify the Observe pillar's metrics package structure for the security event counter
 > - Verify the Extend pillar's `Rescan()` method signature for SIGHUP wiring
-> - Check for any Phase 1 changes to `internal/api/server.go`, `internal/config/config.go`, or `cmd/cvert-ops/main.go` that affect this plan's modifications
+> - Check for any Phase 8B-8D changes to `internal/api/server.go`, `internal/config/config.go`, or `cmd/cvert-ops/main.go` that affect this plan's modifications
 > - Re-validate the `internal/auth/jwt.go` and `internal/crypto/aes.go` implementations haven't changed in ways that affect the dual-key approach
 >
-> **Do NOT start implementation without this review.** Phase 1 may surface design changes that require plan adjustments.
+> **Do NOT start implementation without this review.** Phase 8B-8D may surface design changes that require plan adjustments.
 
 **Goal:** Dual-key JWT rotation, dual-key encryption rotation, SIGHUP config hot-reload, security event detection/alerting pipeline, and runtime security self-checks.
 
@@ -24,7 +24,7 @@
 - AES: `internal/crypto/aes.go`
 - Config: `internal/config/config.go`
 - Main: `cmd/cvert-ops/main.go`
-- Security events: `internal/secure/events.go` (Phase 0)
+- Security events: `internal/secure/events.go` (Phase 8A)
 
 **CRITICAL — File Ownership:** This pillar creates files in `internal/secure/`, `cmd/cvert-ops/rotate.go`, and `docs/deployment/runbooks/secret-rotation.md`. It modifies `internal/auth/jwt.go`, `internal/crypto/aes.go`, `internal/config/config.go`, `cmd/cvert-ops/main.go`, and `internal/api/server.go` (one admin route). Do NOT touch `internal/metrics/*.go` (Observe), `internal/feed/generic/` (Extend), `internal/doctor/` (Operate), or `internal/api/admin_*.go` (Operate).
 
@@ -377,7 +377,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 **Context:** Wire the event writer into all handlers that produce security events (table in design doc §4). This is a systematic grep-and-wire task.
 
-**Step 1: Identify all handlers** that should emit events (12 event types from Phase 0 constants).
+**Step 1: Identify all handlers** that should emit events (12 event types from Phase 8A constants).
 
 **Step 2: Add event writer calls** to each handler.
 
@@ -425,7 +425,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 | SSRF protection | Call safeurl validation with `169.254.169.254` and `127.0.0.1:8080` |
 | CORS configuration | Warn if `*` + cookie auth (tp§5.1) |
 
-**NOTE:** Some of these overlap with Operate's doctor checks. After Phase 1 review, deduplicate — either Operate owns them all, or Secure registers additional ones. For now, implement as standalone functions that satisfy the `Check` interface.
+**NOTE:** Some of these overlap with Operate's doctor checks. After Phase 8B-8D review, deduplicate — either Operate owns them all, or Secure registers additional ones. For now, implement as standalone functions that satisfy the `Check` interface.
 
 **Step 1: Write tests** — both pass and fail path for each check.
 
@@ -438,7 +438,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 **Files:**
 - Modify: doctor registration (if Operate has landed)
 
-**Context:** If Operate's doctor framework exists, register Secure's checks. If not, this task is deferred to Phase 3 integration.
+**Context:** If Operate's doctor framework exists, register Secure's checks. If not, this task is deferred to Phase 8F integration.
 
 **Step 1: Check if doctor package exists. Step 2: Register if available. Step 3: Commit.**
 
@@ -500,4 +500,4 @@ Each procedure: prerequisites, exact commands, verification steps (run `doctor`)
 | ReloadableConfig boundary | Agent makes non-reloadable fields hot-reloadable | Task 5 lists exact fields from design doc |
 | CORS check severity | Agent fails instead of warns | Design says warn, not fail (tp§5.1) |
 | Windows SIGHUP | Agent tries SIGHUP on Windows | Task 6 uses `//go:build !windows` |
-| Phase 1 not reviewed before starting | Plan assumptions may be stale | Deferred review notice at top of document |
+| Phase 8B-8D not reviewed before starting | Plan assumptions may be stale | Deferred review notice at top of document |

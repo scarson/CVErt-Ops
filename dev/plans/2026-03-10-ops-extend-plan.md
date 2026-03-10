@@ -4,7 +4,7 @@
 
 **Goal:** Config-driven generic feed adapter (YAML + gjson), inbound webhook for custom feed ingestion, and `validate-feeds` CLI.
 
-**Architecture:** Generic adapter in `internal/feed/generic/` implements `feed.Adapter` interface. Inbound webhook in `internal/api/ingest.go` calls `merge.Ingest` directly. Both use the `custom` precedence tier from Phase 0. Config loaded from `CVERTOPS_FEEDS_DIR` at startup.
+**Architecture:** Generic adapter in `internal/feed/generic/` implements `feed.Adapter` interface. Inbound webhook in `internal/api/ingest.go` calls `merge.Ingest` directly. Both use the `custom` precedence tier from Phase 8A. Config loaded from `CVERTOPS_FEEDS_DIR` at startup.
 
 **Tech Stack:** Go, `tidwall/gjson`, `github.com/yaml/go-yaml` (verify exact module path via `go get`), chi, huma
 
@@ -15,7 +15,7 @@
 - Merge entry: `internal/merge/pipeline.go:38` (`Ingest` function)
 - Ingest handler: `internal/ingest/handler.go`
 - Scheduler: `internal/ingest/scheduler.go`
-- Known feeds: `internal/ingest/feeds.go` (`KnownFeeds`, `IsReservedSourceName` from Phase 0)
+- Known feeds: `internal/ingest/feeds.go` (`KnownFeeds`, `IsReservedSourceName` from Phase 8A)
 
 **CRITICAL — File Ownership:** This pillar creates `internal/feed/generic/`, `internal/api/ingest.go`, `cmd/cvert-ops/validate.go`. It modifies `internal/ingest/feeds.go` (generic feed detection) and `internal/ingest/scheduler.go` (schedule generic feeds). It adds ONE route to `internal/api/server.go` in the org-scoped group. Do NOT touch `internal/metrics/`, `internal/log/`, `internal/secure/`, `internal/doctor/`, or admin routes.
 
@@ -107,7 +107,7 @@ func TestValidateConfig_ReservedName(t *testing.T) {
 }
 ```
 
-Uses `ingest.IsReservedSourceName()` from Phase 0.
+Uses `ingest.IsReservedSourceName()` from Phase 8A.
 
 **Step 4: Implement config struct**
 
@@ -570,7 +570,7 @@ if cfg.FeedsDir != "" {
 **Files:**
 - Create or modify: generic feed loader to expose `Rescan()` method
 
-**Context:** Phase 1 only loads at startup. The adapter exposes a `Rescan()` method for future SIGHUP integration (Secure pillar, Phase 2). SIGHUP wiring is NOT this pillar's responsibility. Just create the method.
+**Context:** Loads at startup only. The adapter exposes a `Rescan()` method for future SIGHUP integration (Secure pillar, Phase 8E). SIGHUP wiring is NOT this pillar's responsibility. Just create the method.
 
 ```go
 func (l *Loader) Rescan() ([]Config, []error) {

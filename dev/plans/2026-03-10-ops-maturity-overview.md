@@ -24,33 +24,33 @@ CVErt Ops has a solid functional core (~95% of PLAN.md implemented). This design
 ## Phasing
 
 ```
-Phase 0 ─ Shared Foundation (sequential, ~1 session)
+Phase 8A ─ Shared Foundation (sequential, ~1 session)
   │  system_settings migration
   │  admin middleware verification
   │  security event type constants
   │  custom source precedence tier in merge pipeline
   │
-Phase 1 ─ Parallel Pillars (3 worktree agents)
+Phase 8B-8D ─ Parallel Pillars (3 worktree agents)
   │
-  ├── Observe    ── metrics, logs, dashboards, alerts
-  ├── Operate    ── health, admin, doctor, deploy
-  └── Extend     ── generic feeds, inbound webhook, validate CLI
+  ├── 8B Observe    ── metrics, logs, dashboards, alerts
+  ├── 8C Operate    ── health, admin, doctor, deploy
+  └── 8D Extend     ── generic feeds, inbound webhook, validate CLI
   │
-Phase 2 ─ Secure (sequential, builds on Phase 1)
+Phase 8E ─ Secure (sequential, builds on Phase 8B-8D)
   │  dual-key rotation (JWT + encryption)
   │  SIGHUP config reload (+ feeds.d rescan from Extend)
   │  security events table + pipeline
   │  runtime security self-checks (wired into doctor from Operate)
   │  secret rotation runbook
   │
-Phase 3 ─ Integration & Polish (sequential)
+Phase 8F ─ Integration & Polish (sequential)
      deployment guide finalization
      runbook cross-references
      SLO documentation
      end-to-end smoke test across all pillars
 ```
 
-## Phase 0 — Shared Foundation
+## Phase 8A — Shared Foundation
 
 Small, targeted changes that multiple pillars depend on. Done in a single session before spawning agents.
 
@@ -67,11 +67,11 @@ Points where one pillar produces something another pillar consumes. Each contrac
 
 | Producer | Consumer | Interface |
 |----------|----------|-----------|
-| **Observe** metrics package | **Secure** security event counter | `cvertops_security_events_total{event_type, severity}` counter. Secure imports and increments. If Observe hasn't landed yet, Secure registers the metric itself (same name, same labels). |
-| **Operate** doctor framework | **Secure** security self-checks | Doctor exposes a `Check` interface: `Run(ctx) → (status, message, error)`. Secure implements checks, Operate wires them in. If Operate hasn't landed, Secure's checks are standalone functions. |
-| **Operate** admin API routes | **Secure** security events API | Secure adds `GET /api/v1/admin/security-events` to the admin route group using the same `RequireSiteAdmin()` and `withBypassTx` patterns. |
-| **Extend** `Rescan()` method | **Secure** SIGHUP handler | SIGHUP handler calls `Rescan()` on the generic feed loader. If Extend hasn't landed, SIGHUP only reloads secrets. |
-| **Observe** metrics port config | **Operate** Docker Compose prod profile | Prod profile maps `METRICS_PORT`. Observe defines the env var; Operate's compose file references it. |
+| **Observe (8B)** metrics package | **Secure (8E)** security event counter | `cvertops_security_events_total{event_type, severity}` counter. Secure imports and increments. If Observe hasn't landed yet, Secure registers the metric itself (same name, same labels). |
+| **Operate (8C)** doctor framework | **Secure (8E)** security self-checks | Doctor exposes a `Check` interface: `Run(ctx) → (status, message, error)`. Secure implements checks, Operate wires them in. If Operate hasn't landed, Secure's checks are standalone functions. |
+| **Operate (8C)** admin API routes | **Secure (8E)** security events API | Secure adds `GET /api/v1/admin/security-events` to the admin route group using the same `RequireSiteAdmin()` and `withBypassTx` patterns. |
+| **Extend (8D)** `Rescan()` method | **Secure (8E)** SIGHUP handler | SIGHUP handler calls `Rescan()` on the generic feed loader. If Extend hasn't landed, SIGHUP only reloads secrets. |
+| **Observe (8B)** metrics port config | **Operate (8C)** Docker Compose prod profile | Prod profile maps `METRICS_PORT`. Observe defines the env var; Operate's compose file references it. |
 
 **Key principle:** Each pillar is independently testable and mergeable. Cross-pillar integrations are additive — a pillar works without its consumers.
 
@@ -86,7 +86,7 @@ Points where one pillar produces something another pillar consumes. Each contrac
 | `internal/secure/*` | — | — | — | Creates all files |
 | `internal/log/*` | Creates (context logger) | — | — | — |
 | `internal/ingest/feeds.go` | — | — | Modifies (generic detection) | — |
-| `internal/merge/pipeline.go` | — | — | — (Phase 0 only) | — |
+| `internal/merge/pipeline.go` | — | — | — (Phase 8A only) | — |
 | `cmd/cvert-ops/main.go` | — | Auto-migrate logic | — | SIGHUP handler |
 | `cmd/cvert-ops/validate.go` | — | — | Creates | — |
 | `cmd/cvert-ops/rotate.go` | — | — | — | Creates |
@@ -104,12 +104,12 @@ Points where one pillar produces something another pillar consumes. Each contrac
 
 ## Merge Order
 
-1. **Phase 0** → merge to `dev`
-2. **Observe** → merge to `dev` (no dependencies)
-3. **Operate** → merge to `dev` (no dependencies on Observe)
-4. **Extend** → merge to `dev` (depends on Phase 0 precedence tier only)
-5. **Secure** → merge to `dev` (consumes Operate doctor, Observe metrics, Extend rescan)
-6. **Phase 3** → integration PR
+1. **Phase 8A** → merge to `dev`
+2. **Observe (8B)** → merge to `dev` (no dependencies)
+3. **Operate (8C)** → merge to `dev` (no dependencies on Observe)
+4. **Extend (8D)** → merge to `dev` (depends on Phase 8A precedence tier only)
+5. **Secure (8E)** → merge to `dev` (consumes Operate doctor, Observe metrics, Extend rescan)
+6. **Phase 8F** → integration PR
 
 Observe, Operate, and Extend can merge in any order. The listed order is preference, not requirement.
 

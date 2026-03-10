@@ -1,15 +1,15 @@
-# Phase 0 — Shared Foundation Implementation Plan
+# Phase 8A — Shared Foundation Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Deliver four small, targeted changes that multiple Phase 1 pillars depend on — done sequentially before spawning parallel agents.
+**Goal:** Deliver four small, targeted changes that multiple Phase 8B-8D pillars depend on — done sequentially before spawning parallel agents.
 
-**Architecture:** Phase 0 is a prerequisite gate. Each item is independent but small enough to do in one session. All changes land on `dev` branch before Phase 1 starts.
+**Architecture:** Phase 8A is a prerequisite gate. Each item is independent but small enough to do in one session. All changes land on `dev` branch before Phase 8B-8D starts.
 
 **Tech Stack:** Go, PostgreSQL, golang-migrate, cobra
 
 **References:**
-- Design: `dev/plans/2026-03-10-ops-maturity-overview.md` §Phase 0
+- Design: `dev/plans/2026-03-10-ops-maturity-overview.md` §Phase 8A
 - Testing pitfalls: `dev/testing-pitfalls.md` (referenced as `tp§N.N`)
 
 ---
@@ -19,7 +19,7 @@
 **Files:**
 - Create: `migrations/000034_create_system_settings.up.sql`
 - Create: `migrations/000034_create_system_settings.down.sql`
-- Modify: `cmd/cvert-ops/main.go:529` — bump `expectedSchemaVersion` from 30 → 34 (after all Phase 0 migrations land)
+- Modify: `cmd/cvert-ops/main.go:529` — bump `expectedSchemaVersion` from 30 → 34 (after all Phase 8A migrations land)
 
 **Context for agent:** The `system_settings` table stores system-level key-value pairs (encryption sentinel, future system metadata). It is NOT org-scoped — no RLS, no `org_id`. Used by the Operate pillar's doctor command and the Secure pillar's encryption sentinel check.
 
@@ -104,7 +104,7 @@ git commit -m "test(api): verify RequireSiteAdmin middleware coverage"
 **Files:**
 - Create: `internal/secure/events.go`
 
-**Context for agent:** The Secure pillar's security event pipeline needs a central registry of event type constants. Creating this in Phase 0 means the Observe pillar can reference these constants for Prometheus metric labels if needed, and the Secure pillar doesn't need to create the package from scratch.
+**Context for agent:** The Secure pillar's security event pipeline needs a central registry of event type constants. Creating this in Phase 8A means the Observe pillar can reference these constants for Prometheus metric labels if needed, and the Secure pillar doesn't need to create the package from scratch.
 
 **Step 1: Create the `internal/secure/` package**
 
@@ -276,9 +276,9 @@ git commit -m "feat(merge): verify custom source precedence tier and add reserve
 **Files:**
 - Modify: `cmd/cvert-ops/main.go:529` — update `expectedSchemaVersion`
 
-**Step 1: Count total migrations after Phase 0**
+**Step 1: Count total migrations after Phase 8A**
 
-Phase 0 adds migration 34 (system_settings). The current highest is 33 (email_verification_tokens). Update:
+Phase 8A adds migration 34 (system_settings). The current highest is 33 (email_verification_tokens). Update:
 
 ```go
 const expectedSchemaVersion = 34
@@ -287,13 +287,13 @@ const expectedSchemaVersion = 34
 **Step 2: Run full test suite**
 
 Run: `go test ./... -race -count=1`
-Expected: All tests pass. No regressions from Phase 0 changes.
+Expected: All tests pass. No regressions from Phase 8A changes.
 
 **Step 3: Commit**
 
 ```bash
 git add cmd/cvert-ops/main.go
-git commit -m "chore: bump expectedSchemaVersion to 34 for Phase 0 system_settings migration"
+git commit -m "chore: bump expectedSchemaVersion to 34 for Phase 8A system_settings migration"
 ```
 
 ---
@@ -305,5 +305,5 @@ git commit -m "chore: bump expectedSchemaVersion to 34 for Phase 0 system_settin
 | Agent modifies `KnownFeeds` or `NewAdapter` | Design explicitly says NOT to modify these | Task 4 instructions are explicit: "Do NOT modify" |
 | Agent creates org-scoped system_settings | Table is system-level, no org_id, no RLS | Task 1 instructions specify "NOT org-scoped" |
 | Agent skips custom precedence tests | Tests are the primary deliverable for Task 4 | Task 4 requires specific test scenarios from design doc |
-| Agent adds too many migrations | Only one migration (000034) in Phase 0 | Task 1 explicitly names the migration number |
+| Agent adds too many migrations | Only one migration (000034) in Phase 8A | Task 1 explicitly names the migration number |
 | Agent forgets to bump expectedSchemaVersion | Causes startup warning (tp§5.4) | Task 5 is dedicated to this |

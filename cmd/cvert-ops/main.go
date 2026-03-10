@@ -89,11 +89,13 @@ func main() {
 // ── serve ─────────────────────────────────────────────────────────────────────
 
 func serveCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the HTTP server and embedded worker pool",
 		RunE:  runServe,
 	}
+	cmd.Flags().Bool("skip-auto-migrate", false, "Skip automatic database migrations on startup")
+	return cmd
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -116,6 +118,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
 	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
+
+	// Auto-migrate: run pending migrations before starting the server.
+	// Skippable for operators who run migrations via a separate init container.
+	skipMigrate, _ := cmd.Flags().GetBool("skip-auto-migrate")
+	if !skipMigrate {
+		slog.Info("auto-migrate: running pending migrations")
+		if err := autoMigrate(cmd.Context(), cfg); err != nil {
+			return fmt.Errorf("auto-migrate: %w", err)
+		}
+	} else {
+		slog.Info("auto-migrate: skipped (--skip-auto-migrate)")
+	}
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -503,6 +517,63 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 
 	version, _, _ := m.Version() //nolint:errcheck
 	slog.Info("migrations complete", "version", version)
+	return nil
+}
+
+// autoMigrate acquires a Postgres advisory lock and runs pending migrations.
+// The advisory lock prevents concurrent migration runs when multiple instances
+// start simultaneously (e.g., Kubernetes rolling update). The lock is released
+// on return via defer.
+func autoMigrate(ctx context.Context, cfg *config.Config) error {
+	migrateURL := cfg.DatabaseURL
+	if cfg.DatabaseURLMigrate != "" {
+		migrateURL = cfg.DatabaseURLMigrate
+	}
+	connCfg, err := pgx.ParseConfig(migrateURL)
+	if err != nil {
+		return fmt.Errorf("parse db url: %w", err)
+	}
+	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	db := stdlib.OpenDB(*connCfg)
+	defer db.Close() //nolint:errcheck
+
+	// Verify connectivity before acquiring lock.
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping: %w", err)
+	}
+
+	// Acquire advisory lock — blocks until available, released on disconnect
+	// or explicit unlock. hashtext('cvertops-migrate') returns a stable int32.
+	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_lock(hashtext('cvertops-migrate'))"); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		if _, unlockErr := db.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(hashtext('cvertops-migrate'))"); unlockErr != nil {
+			slog.Error("auto-migrate: failed to release advisory lock", "error", unlockErr)
+		}
+	}()
+
+	src, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("migration source: %w", err)
+	}
+
+	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
+	if err != nil {
+		return fmt.Errorf("migration driver: %w", err)
+	}
+
+	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
+	if err != nil {
+		return fmt.Errorf("migrate init: %w", err)
+	}
+
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		return fmt.Errorf("migrate up: %w", err)
+	}
+
+	ver, _, _ := m.Version() //nolint:errcheck
+	slog.Info("auto-migrate complete", "version", ver)
 	return nil
 }
 

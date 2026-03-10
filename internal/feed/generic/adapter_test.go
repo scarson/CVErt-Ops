@@ -275,6 +275,89 @@ func TestAdapter_RawPayload(t *testing.T) {
 	assert.Contains(t, string(result.Patches[0].RawPayload), "CVE-2026-0008")
 }
 
+// --- Task 8: CSAF Format (Design doc test case #4) ---
+
+func TestAdapter_CSAFFormat(t *testing.T) {
+	t.Parallel()
+
+	csafDoc := `{
+		"document": {
+			"title": "Test Advisory",
+			"type": "csaf_security_advisory",
+			"tracking": {
+				"id": "ADV-2026-001",
+				"initial_release_date": "2026-01-10T00:00:00Z",
+				"current_release_date": "2026-03-05T12:00:00Z"
+			}
+		},
+		"vulnerabilities": [
+			{
+				"cve": "CVE-2026-9001",
+				"notes": [{"type": "description", "text": "CSAF test vuln"}],
+				"scores": [{
+					"cvss_v3": {
+						"version": "3.1",
+						"baseScore": 7.8,
+						"vectorString": "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"
+					}
+				}],
+				"references": [
+					{"url": "https://example.com/advisory/1", "summary": "Advisory"}
+				]
+			},
+			{
+				"cve": "CVE-2026-9002",
+				"notes": [{"type": "summary", "text": "Second vuln"}],
+				"scores": []
+			}
+		]
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, csafDoc)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name:      "csaf-feed",
+		URL:       srv.URL,
+		Format:    "csaf",
+		RateLimit: 100,
+		Timeout:   "5s",
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	result, err := adapter.Fetch(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Patches, 2)
+	assert.True(t, result.LastPage, "CSAF is always single-document")
+	assert.Equal(t, "csaf-feed", result.SourceMeta.SourceName)
+
+	// First vulnerability: full fields.
+	p1 := result.Patches[0]
+	assert.Equal(t, "CVE-2026-9001", p1.CVEID)
+	require.NotNil(t, p1.DescriptionPrimary)
+	assert.Equal(t, "CSAF test vuln", *p1.DescriptionPrimary)
+	require.NotNil(t, p1.CVSSv3Score)
+	assert.Equal(t, 7.8, *p1.CVSSv3Score)
+	require.NotNil(t, p1.CVSSv3Vector)
+	assert.Equal(t, "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H", *p1.CVSSv3Vector)
+	assert.Len(t, p1.References, 1)
+	assert.Equal(t, "https://example.com/advisory/1", p1.References[0].URL)
+	require.NotNil(t, p1.DatePublished)
+	assert.Equal(t, 2026, p1.DatePublished.Year())
+	require.NotNil(t, p1.DateModified)
+	assert.NotNil(t, p1.RawPayload, "CSAF vulns should have raw payload")
+
+	// Second vulnerability: sparse — no CVSS, description from "summary" note type.
+	p2 := result.Patches[1]
+	assert.Equal(t, "CVE-2026-9002", p2.CVEID)
+	require.NotNil(t, p2.DescriptionPrimary)
+	assert.Equal(t, "Second vuln", *p2.DescriptionPrimary)
+	assert.Nil(t, p2.CVSSv3Score, "no scores → nil CVSS")
+	assert.Nil(t, p2.CVSSv3Vector)
+}
+
 func TestAdapter_EmptyCVEIDSkipped(t *testing.T) {
 	t.Parallel()
 

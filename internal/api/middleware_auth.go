@@ -38,6 +38,17 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			// Reject disabled users immediately.
+			enabled, err := srv.store.IsUserEnabled(r.Context(), claims.UserID)
+			if err != nil {
+				slog.ErrorContext(r.Context(), "auth: check user enabled", "user_id", claims.UserID, "error", err)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if !enabled {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
 			ctx := context.WithValue(r.Context(), ctxUserID, claims.UserID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -59,6 +70,16 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	}
 	// Defense-in-depth: constant-time compare to prevent timing attacks.
 	if subtle.ConstantTimeCompare([]byte(key.KeyHash), []byte(hash)) != 1 {
+		return false
+	}
+	// Reject disabled users.
+	enabled, err := srv.store.IsUserEnabled(r.Context(), key.CreatedByUserID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "api key auth: check user enabled", "user_id", key.CreatedByUserID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return true // response sent
+	}
+	if !enabled {
 		return false
 	}
 	// Record last-used asynchronously — do not block the request path.

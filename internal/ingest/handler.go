@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 )
@@ -35,6 +36,12 @@ type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPat
 // merges each patch into the CVE corpus, and persists cursor/sync state.
 func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
 	return handlerWithStore(st, st, client, mergeFn, NewAdapter)
+}
+
+// HandlerWithFactory returns a worker.Handler that uses the given adapter factory.
+// Used by main.go to inject a factory that also handles generic feed configs.
+func HandlerWithFactory(st *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory) worker.Handler {
+	return handlerWithStore(st, st, client, mergeFn, factory)
 }
 
 // handlerWithStore is the internal implementation that accepts a separate HandlerStore
@@ -184,6 +191,12 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 				slog.Error("feed fetch log write failed",
 					"feed", p.FeedName, "error", logErr)
 			}
+
+			// Record metrics AFTER DB writes (tp§9.6).
+			metrics.FeedErrorsTotal.WithLabelValues(p.FeedName).Inc()
+			metrics.FeedConsecutiveFailures.WithLabelValues(p.FeedName).Set(float64(failures))
+			metrics.FeedFetchDuration.WithLabelValues(p.FeedName).Observe(time.Since(start).Seconds())
+
 			slog.Error("feed ingest failed",
 				"feed", p.FeedName,
 				"items_fetched", itemsFetched,
@@ -219,6 +232,14 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 			slog.Error("feed fetch log write failed",
 				"feed", p.FeedName, "error", logErr)
 		}
+
+		// Record metrics AFTER DB writes (tp§9.6).
+		metrics.FeedItemsFetchedTotal.WithLabelValues(p.FeedName).Add(float64(itemsFetched))
+		metrics.FeedItemsMergedTotal.WithLabelValues(p.FeedName).Add(float64(itemsUpserted))
+		metrics.FeedFetchDuration.WithLabelValues(p.FeedName).Observe(time.Since(start).Seconds())
+		metrics.FeedLastSuccessTimestamp.WithLabelValues(p.FeedName).SetToCurrentTime()
+		metrics.FeedConsecutiveFailures.WithLabelValues(p.FeedName).Set(0)
+
 		slog.Info("feed ingest completed",
 			"feed", p.FeedName,
 			"items_fetched", itemsFetched,

@@ -25,6 +25,7 @@ type Config struct {
 
 	// ── Server ───────────────────────────────────────────────────────────────────
 	ListenAddr             string `env:"LISTEN_ADDR"              envDefault:":8080"`
+	MetricsPort            string `env:"METRICS_PORT"             envDefault:"9090"`
 	AppEnv                 string `env:"APP_ENV"                  envDefault:"development"`
 	ExternalURL            string `env:"EXTERNAL_URL"             envDefault:"http://localhost:8080"`
 	FrontendURL            string `env:"FRONTEND_URL"             envDefault:"/"`
@@ -96,6 +97,7 @@ type Config struct {
 
 	// ── Feed adapters ────────────────────────────────────────────────────────────
 	NVDAPIKey string `env:"NVD_API_KEY"`
+	FeedsDir  string `env:"CVERTOPS_FEEDS_DIR"`
 
 	// ── Notifications ────────────────────────────────────────────────────────────
 	NotifyMaxConcurrentPerOrg int `env:"NOTIFY_MAX_CONCURRENT_PER_ORG" envDefault:"5"`

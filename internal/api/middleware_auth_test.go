@@ -53,14 +53,21 @@ func TestRequireAuthenticated_NoCredentials_401(t *testing.T) {
 
 func TestRequireAuthenticated_JWT_Valid(t *testing.T) {
 	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "jwtvalid@example.com", "JWTValid", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
 	secret := []byte("testsecret")
-	userID := uuid.New()
-	token, err := auth.IssueAccessToken(secret, userID, 1, 15*time.Minute)
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
 	if err != nil {
 		t.Fatalf("issue token: %v", err)
 	}
 
-	srv := newAuthTestServer(t, "testsecret", nil)
+	srv := newAuthTestServer(t, "testsecret", db)
 	var gotUserID uuid.UUID
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID, _ = r.Context().Value(ctxUserID).(uuid.UUID)
@@ -69,7 +76,7 @@ func TestRequireAuthenticated_JWT_Valid(t *testing.T) {
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -79,8 +86,8 @@ func TestRequireAuthenticated_JWT_Valid(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("valid JWT: got %d, want 200", resp.StatusCode)
 	}
-	if gotUserID != userID {
-		t.Errorf("ctxUserID = %v, want %v", gotUserID, userID)
+	if gotUserID != user.ID {
+		t.Errorf("ctxUserID = %v, want %v", gotUserID, user.ID)
 	}
 }
 

@@ -308,6 +308,7 @@ type FeedSyncState struct {
 	ConsecutiveFailures int32
 	LastError           sql.NullString
 	BackoffUntil        sql.NullTime
+	PausedAt            sql.NullTime
 }
 
 type Group struct {
@@ -402,6 +403,7 @@ type Organization struct {
 	DeletedAt     sql.NullTime
 	Tier          string
 	TierOverrides json.RawMessage
+	SuspendedAt   sql.NullTime
 }
 
 type PasswordResetToken struct {
@@ -490,6 +492,13 @@ type SystemJobsLog struct {
 	ErrorSummary sql.NullString
 }
 
+type SystemSetting struct {
+	Key       string
+	Value     []byte
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type User struct {
 	ID                  uuid.UUID
 	Email               string
@@ -501,6 +510,10 @@ type User struct {
 	LastLoginAt         sql.NullTime
 	IsSiteAdmin         bool
 	EmailVerified       bool
+	DisabledAt          sql.NullTime
+	LockedAt            sql.NullTime
+	FailedLoginCount    int32
+	ForcePasswordReset  bool
 }
 
 type UserIdentity struct {

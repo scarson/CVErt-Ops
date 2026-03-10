@@ -17,6 +17,7 @@ export const useAuthStore = defineStore('auth', () => {
   const sessionChecked = ref(false)
 
   const isAuthenticated = computed(() => user.value !== null)
+  const isSiteAdmin = computed(() => user.value?.is_site_admin === true)
 
   const activeOrg = computed(() => {
     if (!user.value || !activeOrgId.value) return null
@@ -149,6 +150,7 @@ export const useAuthStore = defineStore('auth', () => {
     activeOrgId,
     activeOrg,
     isAuthenticated,
+    isSiteAdmin,
     sessionChecked,
     setActiveOrg,
     loadPersistedOrg,

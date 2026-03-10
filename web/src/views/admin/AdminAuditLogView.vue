@@ -25,7 +25,7 @@ interface AuditEntry {
   entity_type: string
   entity_id: string
   action: string
-  diff?: Record<string, unknown>
+  success: boolean
   created_at: string
 }
 

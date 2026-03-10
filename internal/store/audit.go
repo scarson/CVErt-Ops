@@ -32,19 +32,19 @@ type AuditEntry struct {
 
 // AuditRow represents a single audit log row returned from a query.
 type AuditRow struct {
-	ID         uuid.UUID
-	OrgID      uuid.UUID
-	ActorID    *uuid.UUID
-	ActorEmail string
-	Action     string
-	EntityType string
-	EntityID   string
-	EntityName string
-	Success    bool
-	OldState   json.RawMessage
-	NewState   json.RawMessage
-	Metadata   json.RawMessage
-	CreatedAt  time.Time
+	ID         uuid.UUID       `json:"id"`
+	OrgID      uuid.UUID       `json:"org_id"`
+	ActorID    *uuid.UUID      `json:"actor_id,omitempty"`
+	ActorEmail string          `json:"actor_email,omitempty"`
+	Action     string          `json:"action"`
+	EntityType string          `json:"entity_type"`
+	EntityID   string          `json:"entity_id"`
+	EntityName string          `json:"entity_name,omitempty"`
+	Success    bool            `json:"success"`
+	OldState   json.RawMessage `json:"old_state,omitempty"`
+	NewState   json.RawMessage `json:"new_state,omitempty"`
+	Metadata   json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 // AuditListParams holds the filter and pagination parameters for listing audit entries.

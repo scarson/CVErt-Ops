@@ -16,16 +16,16 @@ import (
 
 // AdminUserRow holds a single row from the admin user listing query.
 type AdminUserRow struct {
-	ID               uuid.UUID    `json:"id"`
-	Email            string       `json:"email"`
-	DisplayName      string       `json:"display_name"`
-	IsSiteAdmin      bool         `json:"is_site_admin"`
-	LastLoginAt      sql.NullTime `json:"last_login_at"`
-	CreatedAt        time.Time    `json:"created_at"`
-	DisabledAt       sql.NullTime `json:"disabled_at"`
-	LockedAt         sql.NullTime `json:"locked_at"`
-	ForcePasswdReset bool         `json:"force_password_reset"`
-	OrgCount         int64        `json:"org_count"`
+	ID               uuid.UUID  `json:"id"`
+	Email            string     `json:"email"`
+	DisplayName      string     `json:"display_name"`
+	IsSiteAdmin      bool       `json:"is_site_admin"`
+	LastLoginAt      *time.Time `json:"last_login_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	DisabledAt       *time.Time `json:"disabled_at"`
+	LockedAt         *time.Time `json:"locked_at"`
+	ForcePasswdReset bool       `json:"force_password_reset"`
+	OrgCount         int64      `json:"org_count"`
 }
 
 // AdminListUsers lists users with keyset pagination, sorted by created_at desc.
@@ -70,13 +70,19 @@ func (s *Store) AdminListUsers(ctx context.Context, afterTime *time.Time, afterI
 
 		for rows.Next() {
 			var r AdminUserRow
+			var lastLoginAt sql.NullTime
+			var disabledAt sql.NullTime
+			var lockedAt sql.NullTime
 			if err := rows.Scan(
 				&r.ID, &r.Email, &r.DisplayName, &r.IsSiteAdmin,
-				&r.LastLoginAt, &r.CreatedAt, &r.DisabledAt, &r.LockedAt,
+				&lastLoginAt, &r.CreatedAt, &disabledAt, &lockedAt,
 				&r.ForcePasswdReset, &r.OrgCount,
 			); err != nil {
 				return fmt.Errorf("admin list users: scan: %w", err)
 			}
+			r.LastLoginAt = fromNullTime(lastLoginAt)
+			r.DisabledAt = fromNullTime(disabledAt)
+			r.LockedAt = fromNullTime(lockedAt)
 			result = append(result, r)
 		}
 		return rows.Err()

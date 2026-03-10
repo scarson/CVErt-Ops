@@ -16,13 +16,13 @@ import (
 
 // AdminOrgRow holds a single row from the admin org listing query.
 type AdminOrgRow struct {
-	ID             uuid.UUID    `json:"id"`
-	Name           string       `json:"name"`
-	Tier           string       `json:"tier"`
-	MemberCount    int64        `json:"member_count"`
-	CreatedAt      time.Time    `json:"created_at"`
-	SuspendedAt    sql.NullTime `json:"suspended_at"`
-	LastActivityAt sql.NullTime `json:"last_activity_at"`
+	ID             uuid.UUID  `json:"id"`
+	Name           string     `json:"name"`
+	Tier           string     `json:"tier"`
+	MemberCount    int64      `json:"member_count"`
+	CreatedAt      time.Time  `json:"created_at"`
+	SuspendedAt    *time.Time `json:"suspended_at"`
+	LastActivityAt *time.Time `json:"last_activity_at"`
 }
 
 // AdminListOrgs lists organizations with keyset pagination, sorted by created_at desc.
@@ -67,12 +67,16 @@ func (s *Store) AdminListOrgs(ctx context.Context, afterTime *time.Time, afterID
 
 		for rows.Next() {
 			var r AdminOrgRow
+			var suspendedAt sql.NullTime
+			var lastActivityAt sql.NullTime
 			if err := rows.Scan(
 				&r.ID, &r.Name, &r.Tier, &r.MemberCount,
-				&r.CreatedAt, &r.SuspendedAt, &r.LastActivityAt,
+				&r.CreatedAt, &suspendedAt, &lastActivityAt,
 			); err != nil {
 				return fmt.Errorf("admin list orgs: scan: %w", err)
 			}
+			r.SuspendedAt = fromNullTime(suspendedAt)
+			r.LastActivityAt = fromNullTime(lastActivityAt)
 			result = append(result, r)
 		}
 		return rows.Err()

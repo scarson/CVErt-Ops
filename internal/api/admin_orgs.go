@@ -8,10 +8,36 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
+
+// adminOrgResponse is a JSON-safe representation of an organization for API responses.
+type adminOrgResponse struct {
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Tier        string     `json:"tier"`
+	SuspendedAt *time.Time `json:"suspended_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+func toAdminOrgResponse(org *generated.Organization) adminOrgResponse {
+	resp := adminOrgResponse{
+		ID:        org.ID,
+		Name:      org.Name,
+		Tier:      org.Tier,
+		CreatedAt: org.CreatedAt,
+	}
+	if org.SuspendedAt.Valid {
+		t := org.SuspendedAt.Time
+		resp.SuspendedAt = &t
+	}
+	return resp
+}
 
 // adminListOrgsHandler handles GET /api/v1/admin/orgs.
 func (srv *Server) adminListOrgsHandler(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +147,7 @@ func (srv *Server) adminPatchOrgHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(updated); err != nil {
+	if err := json.NewEncoder(w).Encode(toAdminOrgResponse(updated)); err != nil {
 		slog.ErrorContext(r.Context(), "admin patch org: encode", "error", err)
 	}
 }

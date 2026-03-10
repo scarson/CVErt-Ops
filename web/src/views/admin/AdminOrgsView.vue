@@ -27,7 +27,6 @@ import { toast } from 'vue-sonner'
 interface OrgEntry {
   id: string
   name: string
-  slug: string
   tier: string
   suspended_at?: string | null
   created_at: string
@@ -135,7 +134,6 @@ onMounted(fetchOrgs)
         <TableHeader>
           <TableRow>
             <TableHead>Name</TableHead>
-            <TableHead>Slug</TableHead>
             <TableHead class="w-36">Tier</TableHead>
             <TableHead class="w-28">Status</TableHead>
             <TableHead class="w-32">Created</TableHead>
@@ -147,7 +145,6 @@ onMounted(fetchOrgs)
         <TableBody>
           <TableRow v-for="org in orgs" :key="org.id">
             <TableCell class="font-medium">{{ org.name }}</TableCell>
-            <TableCell class="text-muted-foreground">{{ org.slug }}</TableCell>
             <TableCell>
               <Select
                 :model-value="org.tier"

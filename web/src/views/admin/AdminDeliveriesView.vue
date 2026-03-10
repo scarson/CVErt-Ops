@@ -27,9 +27,9 @@ import { toast } from 'vue-sonner'
 interface DeliveryEntry {
   id: string
   org_id: string
-  channel_type: string
+  kind: string
   status: string
-  attempts: number
+  attempt_count: number
   last_error?: string
   created_at: string
 }
@@ -42,12 +42,12 @@ const statusFilter = ref('failed')
 const retrying = ref<string | null>(null)
 const bulkRetrying = ref(false)
 
-const STATUS_OPTIONS = ['failed', 'pending', 'sent', ''] as const
+const STATUS_OPTIONS = ['failed', 'pending', 'sent', 'all'] as const
 const STATUS_LABELS: Record<string, string> = {
   failed: 'Failed',
   pending: 'Pending',
   sent: 'Sent',
-  '': 'All',
+  all: 'All',
 }
 
 const statusBadgeVariant: Record<string, 'default' | 'destructive' | 'secondary'> = {
@@ -62,7 +62,7 @@ async function fetchDeliveries() {
 
   try {
     const params = new URLSearchParams({ limit: '50' })
-    if (statusFilter.value) {
+    if (statusFilter.value && statusFilter.value !== 'all') {
       params.set('status', statusFilter.value)
     }
     const resp = await orgFetch(`/api/v1/admin/deliveries?${params}`)
@@ -204,13 +204,13 @@ onMounted(fetchDeliveries)
         </TableHeader>
         <TableBody>
           <TableRow v-for="d in deliveries" :key="d.id">
-            <TableCell class="font-medium">{{ d.channel_type }}</TableCell>
+            <TableCell class="font-medium">{{ d.kind }}</TableCell>
             <TableCell>
               <Badge :variant="statusBadgeVariant[d.status] ?? 'secondary'">
                 {{ d.status }}
               </Badge>
             </TableCell>
-            <TableCell class="text-muted-foreground">{{ d.attempts }}</TableCell>
+            <TableCell class="text-muted-foreground">{{ d.attempt_count }}</TableCell>
             <TableCell class="max-w-xs truncate text-sm text-muted-foreground">
               {{ d.last_error || '—' }}
             </TableCell>

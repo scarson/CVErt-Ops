@@ -41,8 +41,8 @@ async function fetchAll() {
 
   try {
     const [versionResp, doctorResp, configResp] = await Promise.all([
-      orgFetch('/api/v1/version'),
-      orgFetch('/api/v1/doctor'),
+      orgFetch('/api/v1/admin/version'),
+      orgFetch('/api/v1/admin/doctor'),
       orgFetch('/api/v1/admin/config'),
     ])
 
@@ -69,7 +69,7 @@ async function fetchAll() {
 async function runDoctor() {
   runningDoctor.value = true
   try {
-    const resp = await orgFetch('/api/v1/doctor')
+    const resp = await orgFetch('/api/v1/admin/doctor')
     if (resp.ok) {
       doctor.value = (await resp.json()) as DoctorResult
     }

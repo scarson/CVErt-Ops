@@ -10,10 +10,13 @@ import { RouterLink } from 'vue-router'
 
 interface DashboardData {
   orgCount: number
+  orgHasMore: boolean
   userCount: number
+  userHasMore: boolean
   healthyFeeds: number
   failingFeeds: number
-  recentFailedDeliveries: number
+  failedDeliveryCount: number
+  failedDeliveryHasMore: boolean
 }
 
 const data = ref<DashboardData | null>(null)
@@ -54,13 +57,14 @@ async function fetchDashboard() {
     const failing = feeds.filter((f) => f.consecutive_failures > 0).length
 
     data.value = {
-      // These are approximations — the list endpoints return paginated data,
-      // so we can't get exact counts. Show "1+" if has_more.
-      orgCount: orgsData.items.length + (orgsData.has_more ? 1 : 0),
-      userCount: usersData.items.length + (usersData.has_more ? 1 : 0),
+      orgCount: orgsData.items.length,
+      orgHasMore: orgsData.has_more,
+      userCount: usersData.items.length,
+      userHasMore: usersData.has_more,
       healthyFeeds: healthy,
       failingFeeds: failing,
-      recentFailedDeliveries: deliveriesData.items.length + (deliveriesData.has_more ? 1 : 0),
+      failedDeliveryCount: deliveriesData.items.length,
+      failedDeliveryHasMore: deliveriesData.has_more,
     }
   } catch {
     error.value = 'Failed to load dashboard data.'
@@ -101,7 +105,7 @@ onMounted(fetchDashboard)
             </CardHeader>
             <CardContent>
               <div class="text-2xl font-bold">
-                {{ data.orgCount }}{{ data.orgCount > 1 ? '+' : '' }}
+                {{ data.orgCount }}{{ data.orgHasMore ? '+' : '' }}
               </div>
             </CardContent>
           </Card>
@@ -115,7 +119,7 @@ onMounted(fetchDashboard)
             </CardHeader>
             <CardContent>
               <div class="text-2xl font-bold">
-                {{ data.userCount }}{{ data.userCount > 1 ? '+' : '' }}
+                {{ data.userCount }}{{ data.userHasMore ? '+' : '' }}
               </div>
             </CardContent>
           </Card>
@@ -147,16 +151,16 @@ onMounted(fetchDashboard)
             </CardHeader>
             <CardContent>
               <div class="text-2xl font-bold">
-                {{ data.recentFailedDeliveries > 0 ? data.recentFailedDeliveries + '+' : '0' }}
+                {{ data.failedDeliveryCount }}{{ data.failedDeliveryHasMore ? '+' : '' }}
               </div>
               <p
                 :class="
-                  data.recentFailedDeliveries > 0
+                  data.failedDeliveryCount > 0
                     ? 'text-xs text-destructive'
                     : 'text-xs text-muted-foreground'
                 "
               >
-                {{ data.recentFailedDeliveries > 0 ? 'Needs attention' : 'None' }}
+                {{ data.failedDeliveryCount > 0 ? 'Needs attention' : 'None' }}
               </p>
             </CardContent>
           </Card>

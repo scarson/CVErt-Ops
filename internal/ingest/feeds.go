@@ -30,6 +30,13 @@ func IsKnownFeed(feedName string) bool {
 	return false
 }
 
+// IsReservedSourceName returns true if the given name collides with a
+// built-in feed name. Used by generic feed config validation and the
+// inbound webhook handler to reject reserved names.
+func IsReservedSourceName(name string) bool {
+	return IsKnownFeed(name)
+}
+
 // QueueForFeed returns "epss_ingest" for EPSS, "feed_ingest" for all others.
 func QueueForFeed(feedName string) string {
 	if feedName == "epss" {

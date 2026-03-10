@@ -24,8 +24,10 @@ type DBConnectivityCheck struct {
 	DB *pgxpool.Pool
 }
 
+// Name implements Check.
 func (c *DBConnectivityCheck) Name() string { return "database_connectivity" }
 
+// Run implements Check.
 func (c *DBConnectivityCheck) Run(ctx context.Context) (string, string, error) {
 	if c.DB == nil {
 		return StatusFail, "database pool is nil", nil
@@ -49,8 +51,10 @@ type MigrationCheck struct {
 	ExpectedVersion int
 }
 
+// Name implements Check.
 func (c *MigrationCheck) Name() string { return "migration_currency" }
 
+// Run implements Check.
 func (c *MigrationCheck) Run(ctx context.Context) (string, string, error) {
 	if c.DB == nil {
 		return StatusFail, "database pool is nil", nil
@@ -75,8 +79,10 @@ type DBRoleCheck struct {
 	DB *pgxpool.Pool
 }
 
+// Name implements Check.
 func (c *DBRoleCheck) Name() string { return "db_role_permissions" }
 
+// Run implements Check.
 func (c *DBRoleCheck) Run(ctx context.Context) (string, string, error) {
 	if c.DB == nil {
 		return StatusFail, "database pool is nil", nil
@@ -106,8 +112,10 @@ type RLSCheck struct {
 	Tables []string
 }
 
+// Name implements Check.
 func (c *RLSCheck) Name() string { return "rls_enforcement" }
 
+// Run implements Check.
 func (c *RLSCheck) Run(ctx context.Context) (string, string, error) {
 	if c.DB == nil {
 		return StatusFail, "database pool is nil", nil
@@ -146,8 +154,10 @@ type EncryptionSentinelCheck struct {
 	Key [32]byte
 }
 
+// Name implements Check.
 func (c *EncryptionSentinelCheck) Name() string { return "encryption_sentinel" }
 
+// Run implements Check.
 func (c *EncryptionSentinelCheck) Run(ctx context.Context) (string, string, error) {
 	if c.DB == nil {
 		return StatusFail, "database pool is nil", nil
@@ -179,8 +189,10 @@ type JWTCheck struct {
 	Secret string
 }
 
+// Name implements Check.
 func (c *JWTCheck) Name() string { return "jwt_configuration" }
 
+// Run implements Check.
 func (c *JWTCheck) Run(_ context.Context) (string, string, error) {
 	if len(c.Secret) < 32 {
 		return StatusFail, fmt.Sprintf("JWT_SECRET is %d bytes, minimum 32 required", len(c.Secret)), nil
@@ -197,18 +209,21 @@ type SMTPCheck struct {
 	Port int
 }
 
+// Name implements Check.
 func (c *SMTPCheck) Name() string { return "smtp_connectivity" }
 
-func (c *SMTPCheck) Run(_ context.Context) (string, string, error) {
+// Run implements Check.
+func (c *SMTPCheck) Run(ctx context.Context) (string, string, error) {
 	if c.Host == "" {
 		return StatusPass, "SMTP not configured — skipped", nil
 	}
 	addr := net.JoinHostPort(c.Host, fmt.Sprintf("%d", c.Port))
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return StatusFail, fmt.Sprintf("SMTP dial %s failed: %v", addr, err), nil
 	}
-	conn.Close()
+	_ = conn.Close()
 	return StatusPass, fmt.Sprintf("SMTP reachable at %s", addr), nil
 }
 
@@ -217,16 +232,18 @@ func (c *SMTPCheck) Run(_ context.Context) (string, string, error) {
 // DiskCheck verifies a writable temp directory exists.
 type DiskCheck struct{}
 
+// Name implements Check.
 func (c *DiskCheck) Name() string { return "disk_temp_space" }
 
+// Run implements Check.
 func (c *DiskCheck) Run(_ context.Context) (string, string, error) {
 	f, err := os.CreateTemp("", "cvert-doctor-*")
 	if err != nil {
 		return StatusFail, fmt.Sprintf("cannot create temp file: %v", err), nil
 	}
 	name := f.Name()
-	f.Close()
-	os.Remove(name)
+	_ = f.Close()
+	_ = os.Remove(name) //nolint:gosec // G703: path comes from os.CreateTemp, not user input
 	return StatusPass, fmt.Sprintf("writable temp directory: %s", os.TempDir()), nil
 }
 
@@ -239,8 +256,10 @@ type FeedCheck struct {
 	FailureThreshold int
 }
 
+// Name implements Check.
 func (c *FeedCheck) Name() string { return "feed_schedule" }
 
+// Run implements Check.
 func (c *FeedCheck) Run(ctx context.Context) (string, string, error) {
 	if c.DB == nil {
 		return StatusFail, "database pool is nil", nil

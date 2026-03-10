@@ -368,7 +368,56 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 **Step 3: Run tests → PASS. Step 4: Commit.**
 
-### Task 10: Wire Security Events into Auth Handlers
+### Task 10: Syslog Output for SIEM Integration
+
+**Files:**
+- Create: `internal/secure/syslog.go`
+- Create: `internal/secure/syslog_test.go`
+
+**Context:** Optional structured syslog output for security events, enabling integration with Splunk, Elastic, Azure Sentinel, etc. Configured via `SIEM_SYSLOG_ADDR` (e.g., `udp://splunk-forwarder:514`). When configured, the event writer emits each event to syslog IN ADDITION TO the database write. Same async, non-blocking pattern — syslog failure is logged to slog but never affects the request or the DB write.
+
+Two format options: `json` (RFC 5424 structured data, default) and `cef` (Common Event Format for ArcSight/Splunk).
+
+Uses Go's `log/syslog` stdlib package. The writer holds an optional `*syslog.Writer` initialized at startup. If `SIEM_SYSLOG_ADDR` is empty, no syslog writer is created.
+
+Rate limiting: shares the same per-`(event_type, actor_ip)` rate limiter as the DB writer. Events dropped by rate limiting are also not sent to syslog.
+
+Hot-reloadable: `SIEM_SYSLOG_ADDR` and `SIEM_SYSLOG_FORMAT` are in `ReloadableConfig`. On SIGHUP, the syslog writer is recreated with the new address.
+
+**Step 1: Write tests**
+
+```go
+func TestSyslogWriter_SendsEvent(t *testing.T) {
+    // Start a UDP listener, configure syslog writer to target it
+    // Write a security event, verify it arrives at the listener as JSON
+}
+func TestSyslogWriter_CEFFormat(t *testing.T) {
+    // Same but with format=cef, verify CEF-formatted output
+}
+func TestSyslogWriter_Disabled(t *testing.T) {
+    // No SIEM_SYSLOG_ADDR configured → no syslog writer, no error
+}
+func TestSyslogWriter_UnreachableTarget(t *testing.T) {
+    // Unreachable syslog target → error logged to slog, event still written to DB
+}
+func TestSyslogWriter_RespectsSameRateLimit(t *testing.T) {
+    // Event dropped by rate limiter → also not sent to syslog
+}
+```
+
+**Step 2: Implement.**
+
+**Step 3: Wire into security event writer** — after DB write attempt, if syslog writer is configured and event was not rate-limited, emit to syslog.
+
+**Step 4: Add config fields** to `ReloadableConfig`:
+```go
+SIEMSyslogAddr   string // e.g., "udp://splunk:514"
+SIEMSyslogFormat string // "json" or "cef"
+```
+
+**Step 5: Run tests → PASS. Step 6: Commit.**
+
+### Task 11: Wire Security Events into Auth Handlers
 
 **Files:**
 - Modify: `internal/api/login.go` (or wherever login handler lives)
@@ -385,7 +434,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 **Step 4: Commit.**
 
-### Task 11: Security Events Admin API
+### Task 12: Security Events Admin API
 
 **Files:**
 - Create: `internal/api/admin_security_events.go`
@@ -396,7 +445,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 **Step 1: Write tests. Step 2: Implement. Step 3: Wire route. Step 4: Commit.**
 
-### Task 12: Security Events Retention
+### Task 13: Security Events Retention
 
 **Files:**
 - Modify: `internal/retention/runner.go` — add security_events cleanup (90 days default)
@@ -407,7 +456,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 ## Batch 5: Runtime Security Self-Checks
 
-### Task 13: Security Doctor Checks
+### Task 14: Security Doctor Checks
 
 **Files:**
 - Create: `internal/secure/checks.go`
@@ -433,7 +482,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 **Step 3: Run tests → PASS. Step 4: Commit.**
 
-### Task 14: Wire Security Checks into Doctor
+### Task 15: Wire Security Checks into Doctor
 
 **Files:**
 - Modify: doctor registration (if Operate has landed)
@@ -446,7 +495,7 @@ func TestSecurityEventWriter_TTLEviction(t *testing.T) {
 
 ## Batch 6: Secret Rotation Runbook & Prometheus
 
-### Task 15: Security Event Prometheus Metrics
+### Task 16: Security Event Prometheus Metrics
 
 **Files:**
 - Create or modify: `internal/secure/metrics.go` (or import from Observe's metrics package)
@@ -457,7 +506,7 @@ Also: alert rule in `deploy/grafana/alerts.yml`: `SecurityCriticalEvent` fires w
 
 **Step 1: Register or import metric. Step 2: Add alert rule. Step 3: Commit.**
 
-### Task 16: Secret Rotation Runbook
+### Task 17: Secret Rotation Runbook
 
 **Files:**
 - Create: `docs/deployment/runbooks/secret-rotation.md`
@@ -477,7 +526,7 @@ Each procedure: prerequisites, exact commands, verification steps (run `doctor`)
 
 ## Batch 7: Final Verification
 
-### Task 17: Full Test Suite
+### Task 18: Full Test Suite
 
 **Step 1:** `go test ./... -race -count=1`
 **Step 2:** `golangci-lint run`
@@ -497,7 +546,9 @@ Each procedure: prerequisites, exact commands, verification steps (run `doctor`)
 | Wrong IP in events | Uses `r.RemoteAddr` instead of resolved IP | Task 9 specifies `clientIPMiddleware` context |
 | `rotate-encryption-key` non-atomic (tp§3.3) | Partial failure leaves mixed state | Task 4 tests rollback on injected failure |
 | `rotate-encryption-key` scope creep | Agent guesses additional encrypted columns | Design enumerates ONLY `sso_connections.client_secret_enc` |
-| ReloadableConfig boundary | Agent makes non-reloadable fields hot-reloadable | Task 5 lists exact fields from design doc |
+| ReloadableConfig boundary | Agent makes non-reloadable fields hot-reloadable | Task 5 lists exact fields from design doc (including SIEM_SYSLOG_*) |
+| Syslog replaces DB write | Agent makes syslog the only output | Task 10 specifies syslog is IN ADDITION TO DB write, not a replacement |
+| Syslog blocks request | Syslog send on request path | Task 10 uses same async pattern as DB write; tests verify non-blocking |
 | CORS check severity | Agent fails instead of warns | Design says warn, not fail (tp§5.1) |
 | Windows SIGHUP | Agent tries SIGHUP on Windows | Task 6 uses `//go:build !windows` |
 | Phase 8B-8D not reviewed before starting | Plan assumptions may be stale | Deferred review notice at top of document |

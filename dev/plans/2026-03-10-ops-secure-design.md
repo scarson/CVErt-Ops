@@ -120,6 +120,7 @@ Key rotation, SMTP credential changes, and other config updates require full res
 - `SSO_ENCRYPTION_KEY` + `SSO_ENCRYPTION_KEY_PREVIOUS`
 - `LOG_LEVEL`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_TLS`
+- `SIEM_SYSLOG_ADDR`, `SIEM_SYSLOG_FORMAT`
 
 ### NOT Hot-Reloadable (require restart)
 
@@ -236,6 +237,27 @@ Rate limiter is in-memory with **TTL-based eviction** (default 5 minutes). Preve
 
 Alert rule in `deploy/grafana/alerts.yml`: `SecurityCriticalEvent` fires when `rate(cvertops_security_events_total{severity="critical"}[5m]) > 0`.
 
+### Syslog Output (SIEM Integration)
+
+Optional structured syslog output for security events, enabling integration with Splunk, Elastic, Azure Sentinel, and any SIEM with a syslog receiver.
+
+```
+SIEM_SYSLOG_ADDR=udp://splunk-forwarder:514   # or tcp://, or empty to disable
+SIEM_SYSLOG_FORMAT=json                        # json (default) or cef
+```
+
+When configured, the security event writer emits each event to the syslog destination in addition to (not instead of) the database write. Same async, non-blocking pattern — syslog failure is logged to slog but never affects the request or the DB write.
+
+Format options:
+- **JSON:** RFC 5424 structured data with the full event as a JSON payload. Universal — works with any modern SIEM log ingestion pipeline.
+- **CEF (Common Event Format):** ArcSight/Splunk-native format for environments that prefer it.
+
+Implementation: Go's `log/syslog` package (stdlib) for UDP/TCP syslog. The writer holds an optional `*syslog.Writer` initialized at startup from config. If `SIEM_SYSLOG_ADDR` is empty, no syslog writer is created.
+
+Rate limiting: shares the same per-`(event_type, actor_ip)` rate limiter as the DB writer. Events dropped by rate limiting are also not sent to syslog.
+
+Hot-reloadable: `SIEM_SYSLOG_ADDR` and `SIEM_SYSLOG_FORMAT` are added to `ReloadableConfig`. On SIGHUP, the syslog writer is recreated with the new address (old writer closed gracefully).
+
 ### Relationship to Audit Log
 
 Security events are a SEPARATE table from `audit_log`. Different purpose, different retention, different consumers:
@@ -278,6 +300,7 @@ Each procedure includes: prerequisites, exact commands, verification steps (run 
 
 `internal/secure/` — new package:
 - `events.go` — event type constants, event writer, event rate limiter
+- `syslog.go` — optional syslog output for SIEM integration
 - `checks.go` — all doctor security checks
 - `ratelimit.go` — event write rate limiter (in-memory, TTL-based eviction)
 
@@ -309,3 +332,5 @@ Each procedure includes: prerequisites, exact commands, verification steps (run 
 | Windows SIGHUP absence | `//go:build !windows` on SIGHUP goroutine. Admin API reload works on all platforms. Tests use admin API. |
 | ReloadableConfig boundary | New `ReloadableConfig` struct with ONLY hot-reloadable fields. Existing `config.Config` unchanged. All readers use `atomic.Pointer.Load()`. |
 | CORS doctor check | Warn on wildcard + credentials, not fail. (testing-pitfalls §5.1) |
+| Syslog writer blocks request | Syslog output uses same async pattern as DB write. Syslog failure logged to slog, never affects request. Test: unreachable syslog target, verify login succeeds. |
+| Syslog replaces DB write | Syslog is IN ADDITION TO database write, not a replacement. Both paths fire independently. |

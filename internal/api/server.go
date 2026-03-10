@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 	"golang.org/x/time/rate"
@@ -143,10 +144,6 @@ func (srv *Server) Close() {
 
 // Handler builds and returns the http.Handler.
 func (srv *Server) Handler() http.Handler {
-	var db *pgxpool.Pool
-	if srv.store != nil {
-		db = srv.store.Pool()
-	}
 	r := chi.NewRouter()
 
 	// ── Security headers (PLAN.md §18.3) ─────────────────────────────────────
@@ -184,7 +181,8 @@ func (srv *Server) Handler() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	// ── Infrastructure endpoints ──────────────────────────────────────────────
-	r.Get("/healthz", healthzHandler(db))
+	r.Get("/healthz", healthzHandler())
+	r.Handle("/metrics", promhttp.Handler())
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()
@@ -437,33 +435,14 @@ func (srv *Server) acquireArgon2() bool {
 
 func (srv *Server) releaseArgon2() { <-srv.argon2Sem }
 
-// healthResponse is the JSON body for /healthz.
-type healthResponse struct {
-	Status string `json:"status"`
-	DB     string `json:"db,omitempty"`
-}
-
-// healthzHandler returns 200 {"status":"ok"} when the DB is reachable,
-// or 503 {"status":"degraded","db":"unavailable"} when it is not.
-func healthzHandler(db *pgxpool.Pool) http.HandlerFunc {
+// healthzHandler returns a liveness probe handler. No external dependencies
+// are checked — if the process can respond, it's alive. Kubernetes uses this
+// to decide whether to restart the pod.
+func healthzHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resp := healthResponse{Status: "ok"}
-		statusCode := http.StatusOK
-
-		if db == nil {
-			resp.Status = "degraded"
-			resp.DB = "unavailable"
-			statusCode = http.StatusServiceUnavailable
-		} else if err := db.Ping(r.Context()); err != nil {
-			slog.WarnContext(r.Context(), "healthz: db ping failed", "error", err)
-			resp.Status = "degraded"
-			resp.DB = "unavailable"
-			statusCode = http.StatusServiceUnavailable
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "alive"}); err != nil {
 			slog.ErrorContext(r.Context(), "healthz: failed to encode response", "error", err)
 		}
 	}

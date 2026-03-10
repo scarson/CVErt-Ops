@@ -53,6 +53,15 @@ import (
 	"github.com/scarson/cvert-ops/migrations"
 )
 
+// Build metadata — set via ldflags at compile time:
+//
+//	go build -ldflags "-X main.version=v1.0.0 -X main.commit=abc123 -X main.buildTime=2026-03-10T00:00:00Z"
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildTime = "unknown"
+)
+
 func main() {
 	root := &cobra.Command{
 		Use:   "cvert-ops",
@@ -158,6 +167,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("api server init: %w", err)
 	}
 	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
+	apiSrv.SetVersionInfo(api.VersionInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildTime: buildTime,
+	})
 
 	// Wire alert evaluation dependencies. The cache and evaluator are used by
 	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.

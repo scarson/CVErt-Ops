@@ -52,6 +52,7 @@ type Server struct {
 	lockout                *lockoutManager   // brute-force login protection
 	bootstrapMu            sync.Mutex        // serializes first-user bootstrap in invite-only mode
 	expectedSchemaVersion  int               // set via SetExpectedSchemaVersion before Handler()
+	versionInfo            VersionInfo       // set via SetVersionInfo before Handler()
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -223,6 +224,7 @@ func (srv *Server) Handler() http.Handler {
 		r.Use(srv.RequireSiteAdmin())
 		r.Get("/feeds", srv.listFeedsHandler)
 		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
+		r.Get("/version", srv.versionHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──

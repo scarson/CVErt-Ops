@@ -256,17 +256,23 @@ mapping:
   fields:
     cve_id: "id"
 `
-	os.WriteFile(filepath.Join(dir, "good.yaml"), []byte(validYAML), 0o644) //nolint:gosec // G104: test setup
+	if err := os.WriteFile(filepath.Join(dir, "good.yaml"), []byte(validYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Invalid config (missing required fields)
 	invalidYAML := `
 url: "https://example.com/feed"
 format: json
 `
-	os.WriteFile(filepath.Join(dir, "bad.yml"), []byte(invalidYAML), 0o644) //nolint:gosec // G104: test setup
+	if err := os.WriteFile(filepath.Join(dir, "bad.yml"), []byte(invalidYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// Non-YAML file (should be ignored)
-	os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not yaml"), 0o644) //nolint:gosec // G104: test setup
+	if err := os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("not yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	configs, errs := LoadDir(dir)
 	assert.Len(t, configs, 1)
@@ -302,7 +308,9 @@ mapping:
   fields:
     cve_id: "id"
 `
-	os.WriteFile(filepath.Join(dir, "feed.yaml"), []byte(validYAML), 0o644) //nolint:gosec // G104: test setup
+	if err := os.WriteFile(filepath.Join(dir, "feed.yaml"), []byte(validYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	loader := NewLoader(dir)
 	configs, errs := loader.Rescan()

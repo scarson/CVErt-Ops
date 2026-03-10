@@ -206,7 +206,7 @@ func NewLoader(dir string) *Loader {
 }
 
 // Rescan re-reads and re-validates all feed configs from the directory.
-// Intended for future SIGHUP integration (Secure pillar, Phase 8E).
+// Supports live reload via SIGHUP without process restart.
 func (l *Loader) Rescan() ([]Config, []error) {
 	return LoadDir(l.dir)
 }

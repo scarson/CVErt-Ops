@@ -459,6 +459,66 @@ func TestAdapter_OffsetPagination(t *testing.T) {
 	assert.Equal(t, 3, callCount)
 }
 
+func TestAdapter_OffsetPagination_FilteredRecordsDontAffectLastPage(t *testing.T) {
+	t.Parallel()
+
+	// Page 1 returns PageSize records but some have empty CVE IDs.
+	// The adapter must NOT treat the filtered count as the raw count for
+	// last-page detection — otherwise it stops paginating prematurely.
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		switch callCount {
+		case 1:
+			// 4 records, PageSize=4, but 1 has empty CVE ID → 3 patches.
+			fmt.Fprint(w, `{"items": [
+				{"cve": "CVE-2026-0001"},
+				{"cve": "CVE-2026-0002"},
+				{"cve": ""},
+				{"cve": "CVE-2026-0003"}
+			]}`)
+		case 2:
+			// Page 2: fewer than PageSize → truly the last page.
+			fmt.Fprint(w, `{"items": [
+				{"cve": "CVE-2026-0004"}
+			]}`)
+		default:
+			t.Fatalf("unexpected call %d", callCount)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "filter-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Pagination: PaginationConfig{
+			Type:      "offset",
+			PageParam: "page",
+			SizeParam: "per_page",
+			PageSize:  4,
+		},
+		Mapping: MappingConfig{
+			Root:   "items",
+			Fields: map[string]string{"cve_id": "cve"},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	ctx := context.Background()
+
+	r1, err := adapter.Fetch(ctx, nil)
+	require.NoError(t, err)
+	assert.Len(t, r1.Patches, 3, "3 valid CVEs after filtering empty ID")
+	assert.False(t, r1.LastPage, "must NOT be last page — raw count equals PageSize")
+
+	r2, err := adapter.Fetch(ctx, r1.NextCursor)
+	require.NoError(t, err)
+	assert.Len(t, r2.Patches, 1)
+	assert.True(t, r2.LastPage, "truly the last page — raw count < PageSize")
+
+	assert.Equal(t, 2, callCount)
+}
+
 func TestAdapter_CursorPagination(t *testing.T) {
 	t.Parallel()
 

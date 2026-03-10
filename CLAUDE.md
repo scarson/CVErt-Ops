@@ -426,6 +426,7 @@ Use these proactively — don't wait to be asked.
 | `plan-check` | Before merging any feature — specify the PLAN.md section |
 | `security-review` | Before merging auth, webhook, tenant-isolation, or public API code |
 | `dependency-check` | Before adding any new dependency or specifying one in a plan |
+| `project-health-review` | Periodic critical review — adversarial multi-agent quality assessment |
 
 **Subagents** (invoke via `Agent` tool):
 

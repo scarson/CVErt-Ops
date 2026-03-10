@@ -54,7 +54,7 @@ type WatchlistStore interface {
 	CountWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID) (int64, error)
 	CreateWatchlistItem(ctx context.Context, orgID, watchlistID uuid.UUID, p CreateWatchlistItemParams) (*generated.WatchlistItem, error)
 	ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID, itemType *WatchlistItemType, afterID *uuid.UUID, limit int) ([]generated.WatchlistItem, error)
-	DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) error
+	DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) (bool, error)
 	ValidateWatchlistsOwnership(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (bool, error)
 }
 

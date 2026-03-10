@@ -201,15 +201,15 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)
 
 	// ── OAuth routes (chi, not huma — these are redirects, not JSON API calls) ─
-	apiRouter.Get("/auth/oauth/github", srv.githubInitHandler)
-	apiRouter.Get("/auth/oauth/github/callback", srv.githubCallbackHandler)
-	apiRouter.Get("/auth/oauth/google", srv.googleInitHandler)
-	apiRouter.Get("/auth/oauth/google/callback", srv.googleCallbackHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oauth/github", srv.githubInitHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oauth/github/callback", srv.githubCallbackHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oauth/google", srv.googleInitHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oauth/google/callback", srv.googleCallbackHandler)
 
 	// ── Generic OIDC SSO routes ─────────────────────────────────────────────
-	apiRouter.Get("/auth/oidc/{connection_id}/login", srv.oidcLoginHandler)
-	apiRouter.Get("/auth/oidc/callback", srv.oidcCallbackHandler)
-	apiRouter.Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/{connection_id}/login", srv.oidcLoginHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/callback", srv.oidcCallbackHandler)
+	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
 	// ── Admin routes (authenticated + site admin, not org-scoped) ───────────
 	apiRouter.Route("/admin", func(r chi.Router) {

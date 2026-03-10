@@ -1,3 +1,5 @@
+// ABOUTME: HTTP handlers for CVE listing, detail, and search endpoints.
+// ABOUTME: Supports keyset pagination, faceted search, and full-text search via FTS index.
 package api
 
 import (

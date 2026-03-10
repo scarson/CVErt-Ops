@@ -32,7 +32,7 @@ type Config struct {
 	ExternalURL            string `env:"EXTERNAL_URL"             envDefault:"http://localhost:8080"`
 	FrontendURL            string `env:"FRONTEND_URL"             envDefault:"/"`
 	ShutdownTimeoutSeconds int    `env:"SHUTDOWN_TIMEOUT_SECONDS" envDefault:"60"`
-	RegistrationMode       string `env:"REGISTRATION_MODE"        envDefault:"open"`
+	RegistrationMode       string `env:"REGISTRATION_MODE"        envDefault:"invite-only"`
 
 	// ── Auth — JWT ───────────────────────────────────────────────────────────────
 	JWTSecret    string `env:"JWT_SECRET,required"`

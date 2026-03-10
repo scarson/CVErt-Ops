@@ -31,6 +31,7 @@ function seedAuthStore() {
     user_id: 'u1',
     email: 'sam@example.com',
     display_name: 'Sam Carter',
+    is_site_admin: false,
     orgs: [
       { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
       { org_id: 'org-2', name: 'Globex Inc', role: 'member' },
@@ -67,17 +68,30 @@ describe('AppSidebar', () => {
       expect(text).toContain('Groups')
     })
 
-    it('renders admin navigation links', async () => {
-      seedAuthStore()
+    it('renders admin navigation links for site admins', async () => {
+      const auth = seedAuthStore()
+      auth.user!.is_site_admin = true
       const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
       const text = wrapper.text()
       expect(text).toContain('Feed Status')
+      expect(text).toContain('Dashboard')
+      expect(text).toContain('Audit Log')
+    })
+
+    it('hides admin navigation links for non-admins', async () => {
+      seedAuthStore()
+      const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
+      const wrapper = mount(AppSidebar)
+
+      const text = wrapper.text()
+      expect(text).not.toContain('Audit Log')
     })
 
     it('links point to correct routes', async () => {
-      seedAuthStore()
+      const auth = seedAuthStore()
+      auth.user!.is_site_admin = true
       const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
@@ -112,6 +126,7 @@ describe('OrgSwitcher', () => {
       user_id: 'u1',
       email: 'sam@example.com',
       display_name: 'Sam Carter',
+    is_site_admin: false,
       orgs: [
         { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
         { org_id: 'org-2', name: 'Globex Inc', role: 'member' },

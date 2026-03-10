@@ -75,6 +75,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
@@ -92,6 +93,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
@@ -109,6 +111,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [],
       }
       vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
@@ -126,6 +129,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: null as unknown as [],
       }
       vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
@@ -143,6 +147,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-1')
@@ -162,6 +167,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [
           { org_id: 'org-1', name: 'Org One', role: 'admin' },
           { org_id: 'org-2', name: 'Org Two', role: 'member' },
@@ -183,6 +189,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-1')
@@ -248,6 +255,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [],
       }
       vi.spyOn(auth, 'fetchMe').mockResolvedValue(true)
@@ -265,6 +273,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-1')
@@ -286,6 +295,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-1')
@@ -304,6 +314,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: true,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-1')
@@ -337,6 +348,7 @@ describe('route guards', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-1')

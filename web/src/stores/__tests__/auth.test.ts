@@ -71,6 +71,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: orgId, name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg(orgId)
@@ -83,6 +84,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-a', name: 'Org A', role: 'member' }],
       }
       auth.setActiveOrg('nonexistent-org')
@@ -97,6 +99,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [],
       }
       auth.setActiveOrg('some-org-id')
@@ -114,6 +117,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test User',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'Org One', role: 'owner' }],
       }
       vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
@@ -141,6 +145,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'only-org', name: 'Only Org', role: 'admin' }],
       }
       vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
@@ -157,6 +162,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [
           { org_id: 'org-1', name: 'Org One', role: 'admin' },
           { org_id: 'org-2', name: 'Org Two', role: 'member' },
@@ -176,6 +182,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'current-org', name: 'Current', role: 'admin' }],
       }
       vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
@@ -194,6 +201,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [
           { org_id: 'org-1', name: 'Org One', role: 'admin' },
           { org_id: 'org-2', name: 'Org Two', role: 'member' },
@@ -219,6 +227,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [],
       }
       vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
@@ -256,6 +265,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'Org One', role: 'admin' }],
       }
       vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: undefined, response: {} as Response })
@@ -290,6 +300,7 @@ describe('auth store', () => {
         user_id: 'u1',
         email: 'test@example.com',
         display_name: 'Test',
+        is_site_admin: false,
         orgs: [],
       }
       auth.setActiveOrg('some-org')

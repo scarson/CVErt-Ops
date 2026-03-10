@@ -49,8 +49,9 @@ type Server struct {
 	alertEvaluator *alert.Evaluator  // nil until SetAlertDeps is called
 	llm            ai.LLMClient     // nil until SetAIDeps is called
 	auditWriter    *audit.Writer     // nil until SetAuditDeps is called
-	lockout        *lockoutManager   // brute-force login protection
-	bootstrapMu    sync.Mutex        // serializes first-user bootstrap in invite-only mode
+	lockout                *lockoutManager   // brute-force login protection
+	bootstrapMu            sync.Mutex        // serializes first-user bootstrap in invite-only mode
+	expectedSchemaVersion  int               // set via SetExpectedSchemaVersion before Handler()
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -144,6 +145,10 @@ func (srv *Server) Close() {
 
 // Handler builds and returns the http.Handler.
 func (srv *Server) Handler() http.Handler {
+	var db *pgxpool.Pool
+	if srv.store != nil {
+		db = srv.store.Pool()
+	}
 	r := chi.NewRouter()
 
 	// ── Security headers (PLAN.md §18.3) ─────────────────────────────────────
@@ -182,6 +187,7 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── Infrastructure endpoints ──────────────────────────────────────────────
 	r.Get("/healthz", healthzHandler())
+	r.Get("/readyz", readyzHandler(db, srv.expectedSchemaVersion))
 	r.Handle("/metrics", promhttp.Handler())
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
@@ -406,6 +412,12 @@ func (srv *Server) SetAIDeps(llm ai.LLMClient) {
 // SetAuditDeps wires the audit writer into the server.
 func (srv *Server) SetAuditDeps(w *audit.Writer) {
 	srv.auditWriter = w
+}
+
+// SetExpectedSchemaVersion sets the schema version used by /readyz to check
+// migration currency. Must be called before Handler().
+func (srv *Server) SetExpectedSchemaVersion(v int) {
+	srv.expectedSchemaVersion = v
 }
 
 // auditLog records an audit entry if the audit writer is configured.

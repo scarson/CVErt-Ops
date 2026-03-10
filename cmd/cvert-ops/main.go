@@ -157,6 +157,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
+	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
 
 	// Wire alert evaluation dependencies. The cache and evaluator are used by
 	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.

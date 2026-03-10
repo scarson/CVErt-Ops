@@ -200,6 +200,22 @@ func (s *Store) IsSiteAdmin(ctx context.Context, userID uuid.UUID) (bool, error)
 	return isAdmin, nil
 }
 
+// IsUserEnabled returns true if the user exists and is not disabled.
+// Used by auth middleware to reject disabled users. Uses withBypassTx since
+// it runs from middleware before org context is established.
+func (s *Store) IsUserEnabled(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var enabled bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		enabled, err = q.IsUserEnabled(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("is user enabled: %w", err)
+	}
+	return enabled, nil
+}
+
 // SetFirstSiteAdmin atomically promotes a user to site admin only if no admin exists yet.
 // Uses withBypassTx since it runs during registration before org context.
 func (s *Store) SetFirstSiteAdmin(ctx context.Context, userID uuid.UUID) error {

@@ -207,13 +207,14 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
-	metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "failure").Inc()
-	metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
-
 	backoff := w.backoffSeconds(nextAttempt)
 	if err := w.store.RetryDelivery(ctx, row.ID, backoff, sendErr.Error()); err != nil {
 		w.log.Error("retry delivery", "id", row.ID, "err", err)
 	}
+
+	// Record metrics AFTER DB writes (tp§9.6).
+	metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "failure").Inc()
+	metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 }
 
 func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {

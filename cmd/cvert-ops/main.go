@@ -690,7 +690,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 34
+const expectedSchemaVersion = 36
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

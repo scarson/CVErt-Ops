@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -201,7 +202,7 @@ func (a *Adapter) buildURL(cur *cursor) string {
 		if strings.Contains(a.cfg.URL, "?") {
 			sep = "&"
 		}
-		return a.cfg.URL + fmt.Sprintf("%s%s=%s", sep, a.cfg.Pagination.CursorParam, cur.CursorValue)
+		return a.cfg.URL + fmt.Sprintf("%s%s=%s", sep, a.cfg.Pagination.CursorParam, url.QueryEscape(cur.CursorValue))
 
 	default:
 		return a.cfg.URL
@@ -412,7 +413,7 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 		if vuln.CVE == "" {
 			continue
 		}
-		p := feed.CanonicalPatch{CVEID: vuln.CVE}
+		p := feed.CanonicalPatch{CVEID: sanitizeString(vuln.CVE)}
 
 		// Description from notes.
 		for _, note := range vuln.Notes {
@@ -429,7 +430,7 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 			if s.CVSSv3 != nil {
 				score := s.CVSSv3.BaseScore
 				p.CVSSv3Score = &score
-				vec := s.CVSSv3.VectorString
+				vec := sanitizeString(s.CVSSv3.VectorString)
 				if vec != "" {
 					p.CVSSv3Vector = &vec
 				}
@@ -437,7 +438,7 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 			if s.CVSSv4 != nil {
 				score := s.CVSSv4.BaseScore
 				p.CVSSv4Score = &score
-				vec := s.CVSSv4.VectorString
+				vec := sanitizeString(s.CVSSv4.VectorString)
 				if vec != "" {
 					p.CVSSv4Vector = &vec
 				}
@@ -446,8 +447,9 @@ func csafToPatches(doc *csaf.Document) []feed.CanonicalPatch {
 
 		// References.
 		for _, ref := range vuln.References {
-			if ref.URL != "" {
-				p.References = append(p.References, feed.ReferenceEntry{URL: ref.URL})
+			u := sanitizeString(ref.URL)
+			if u != "" {
+				p.References = append(p.References, feed.ReferenceEntry{URL: u})
 			}
 		}
 

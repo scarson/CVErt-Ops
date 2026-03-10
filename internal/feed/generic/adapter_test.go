@@ -275,6 +275,33 @@ func TestAdapter_RawPayload(t *testing.T) {
 	assert.Contains(t, string(result.Patches[0].RawPayload), "CVE-2026-0008")
 }
 
+func TestAdapter_EmptyCVEIDSkipped(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"items": [{"cve": "", "desc": "no id"}, {"cve": "CVE-2026-0009", "desc": "has id"}]}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "skip-empty-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Mapping: MappingConfig{
+			Root: "items",
+			Fields: map[string]string{
+				"cve_id":      "cve",
+				"description": "desc",
+			},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	result, err := adapter.Fetch(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Patches, 1, "records with empty CVE ID should be filtered out")
+	assert.Equal(t, "CVE-2026-0009", result.Patches[0].CVEID)
+}
+
 // --- Task 5: Pagination (Design doc test cases #5, #6, #15) ---
 
 func TestAdapter_OffsetPagination(t *testing.T) {

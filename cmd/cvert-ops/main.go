@@ -65,6 +65,7 @@ func main() {
 		migrateCmd(),
 		importBulkCmd(),
 		quotaCmd(),
+		validateFeedsCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

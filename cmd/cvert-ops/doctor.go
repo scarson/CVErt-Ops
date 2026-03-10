@@ -4,10 +4,8 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
 	"github.com/scarson/cvert-ops/internal/config"
@@ -36,7 +34,15 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
-	checks := buildDoctorChecks(cfg, db)
+	checks := doctor.StandardChecks(doctor.StandardChecksConfig{
+		DB:                    db,
+		ExpectedSchemaVersion: expectedSchemaVersion,
+		SSOEncryptionKey:      cfg.SSOEncryptionKey,
+		JWTSecret:             cfg.JWTSecret,
+		SMTPHost:              cfg.SMTPHost,
+		SMTPPort:              cfg.SMTPPort,
+		SMTPUsername:          cfg.SMTPUsername,
+	})
 	results := doctor.Run(ctx, checks)
 
 	// Print results with colored status markers.
@@ -56,37 +62,6 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("doctor found issues (%d warnings, %d failures)", warn, fail)
 	}
 	return nil
-}
-
-// buildDoctorChecks constructs the standard set of health checks from config
-// and DB pool. Used by both CLI and API doctor endpoints.
-func buildDoctorChecks(cfg *config.Config, pool *pgxpool.Pool) []doctor.Check {
-	var encKey [32]byte
-	if cfg.SSOEncryptionKey != "" {
-		decoded, err := hex.DecodeString(cfg.SSOEncryptionKey)
-		if err == nil && len(decoded) == 32 {
-			copy(encKey[:], decoded)
-		}
-	}
-
-	smtpHost := cfg.SMTPHost
-	// Default SMTP host is "localhost" — treat as unconfigured unless explicitly
-	// set with a real hostname and non-default port or credentials.
-	if smtpHost == "localhost" && cfg.SMTPUsername == "" {
-		smtpHost = ""
-	}
-
-	return []doctor.Check{
-		&doctor.DBConnectivityCheck{DB: pool},
-		&doctor.MigrationCheck{DB: pool, ExpectedVersion: expectedSchemaVersion},
-		&doctor.DBRoleCheck{DB: pool},
-		&doctor.RLSCheck{DB: pool, Tables: doctor.OrgScopedTables()},
-		&doctor.EncryptionSentinelCheck{DB: pool, Key: encKey},
-		&doctor.JWTCheck{Secret: cfg.JWTSecret},
-		&doctor.SMTPCheck{Host: smtpHost, Port: cfg.SMTPPort},
-		&doctor.DiskCheck{},
-		&doctor.FeedCheck{DB: pool},
-	}
 }
 
 func statusMarker(status string) string {

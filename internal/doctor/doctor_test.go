@@ -130,6 +130,42 @@ func TestSMTPCheck_Unreachable_Fail(t *testing.T) {
 	}
 }
 
+// ── StandardChecks ──────────────────────────────────────────────────────────
+
+func TestStandardChecks_ReturnsAllNineChecks(t *testing.T) {
+	t.Parallel()
+	checks := StandardChecks(StandardChecksConfig{
+		DB:                    nil, // nil is fine — we just verify the slice length
+		ExpectedSchemaVersion: 34,
+		JWTSecret:             "test-secret",
+	})
+	if got := len(checks); got != 9 {
+		t.Errorf("StandardChecks returned %d checks, want 9", got)
+	}
+}
+
+func TestStandardChecks_SMTPLocalhostTreatedAsUnconfigured(t *testing.T) {
+	t.Parallel()
+	checks := StandardChecks(StandardChecksConfig{
+		SMTPHost: "localhost",
+		// No SMTPUsername → treated as unconfigured.
+	})
+	// Find the SMTP check and verify it passes (skips).
+	for _, c := range checks {
+		if c.Name() == "smtp_connectivity" {
+			status, _, err := c.Run(context.Background())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if status != StatusPass {
+				t.Errorf("SMTP check with localhost/no-user: status = %q, want %q", status, StatusPass)
+			}
+			return
+		}
+	}
+	t.Fatal("smtp_connectivity check not found in StandardChecks")
+}
+
 // ── stub helpers ─────────────────────────────────────────────────────────────
 
 type stubCheck struct {

@@ -4,11 +4,14 @@ package doctor
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/scarson/cvert-ops/internal/crypto"
@@ -155,8 +158,11 @@ func (c *EncryptionSentinelCheck) Run(ctx context.Context) (string, string, erro
 		"SELECT value FROM system_settings WHERE key = 'encryption_sentinel'",
 	).Scan(&value)
 	if err != nil {
-		// Sentinel not yet written — first serve hasn't run.
-		return StatusWarn, "encryption sentinel not initialized — run `serve` once", nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Sentinel not yet written — first serve hasn't run.
+			return StatusWarn, "encryption sentinel not initialized — run `serve` once", nil
+		}
+		return StatusFail, fmt.Sprintf("query system_settings: %v", err), nil
 	}
 
 	_, err = crypto.Decrypt(c.Key, value)
@@ -256,12 +262,17 @@ func (c *FeedCheck) Run(ctx context.Context) (string, string, error) {
 
 	var failing []string
 	for rows.Next() {
-		var name, lastErr string
+		var name string
+		var lastErr *string
 		var failures int
 		if err := rows.Scan(&name, &failures, &lastErr); err != nil {
 			return StatusFail, fmt.Sprintf("scan row: %v", err), nil
 		}
-		failing = append(failing, fmt.Sprintf("%s (%d consecutive failures)", name, failures))
+		detail := fmt.Sprintf("%s (%d consecutive failures)", name, failures)
+		if lastErr != nil && *lastErr != "" {
+			detail += fmt.Sprintf(": %s", *lastErr)
+		}
+		failing = append(failing, detail)
 	}
 	if err := rows.Err(); err != nil {
 		return StatusFail, fmt.Sprintf("rows iteration: %v", err), nil
@@ -271,6 +282,48 @@ func (c *FeedCheck) Run(ctx context.Context) (string, string, error) {
 		return StatusWarn, fmt.Sprintf("feeds with persistent failures: %v", failing), nil
 	}
 	return StatusPass, "all feeds healthy", nil
+}
+
+// StandardChecksConfig holds parameters for constructing the standard health check suite.
+type StandardChecksConfig struct {
+	DB                    *pgxpool.Pool
+	ExpectedSchemaVersion int
+	SSOEncryptionKey      string
+	JWTSecret             string
+	SMTPHost              string
+	SMTPPort              int
+	SMTPUsername          string
+}
+
+// StandardChecks returns the full suite of health checks configured from the
+// given parameters. Used by both CLI and API doctor endpoints.
+func StandardChecks(c StandardChecksConfig) []Check {
+	var encKey [32]byte
+	if c.SSOEncryptionKey != "" {
+		decoded, err := hex.DecodeString(c.SSOEncryptionKey)
+		if err == nil && len(decoded) == 32 {
+			copy(encKey[:], decoded)
+		}
+	}
+
+	smtpHost := c.SMTPHost
+	// Default SMTP host is "localhost" — treat as unconfigured unless explicitly
+	// set with a real hostname and non-default port or credentials.
+	if smtpHost == "localhost" && c.SMTPUsername == "" {
+		smtpHost = ""
+	}
+
+	return []Check{
+		&DBConnectivityCheck{DB: c.DB},
+		&MigrationCheck{DB: c.DB, ExpectedVersion: c.ExpectedSchemaVersion},
+		&DBRoleCheck{DB: c.DB},
+		&RLSCheck{DB: c.DB, Tables: OrgScopedTables()},
+		&EncryptionSentinelCheck{DB: c.DB, Key: encKey},
+		&JWTCheck{Secret: c.JWTSecret},
+		&SMTPCheck{Host: smtpHost, Port: c.SMTPPort},
+		&DiskCheck{},
+		&FeedCheck{DB: c.DB},
+	}
 }
 
 // OrgScopedTables returns the list of tables that must have RLS enabled.

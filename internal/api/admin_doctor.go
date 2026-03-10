@@ -3,7 +3,6 @@
 package api
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -13,32 +12,15 @@ import (
 
 // doctorHandler runs all doctor checks and returns results as JSON.
 func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
-	var pool = srv.store.Pool()
-
-	var encKey [32]byte
-	if srv.cfg.SSOEncryptionKey != "" {
-		decoded, err := hex.DecodeString(srv.cfg.SSOEncryptionKey)
-		if err == nil && len(decoded) == 32 {
-			copy(encKey[:], decoded)
-		}
-	}
-
-	smtpHost := srv.cfg.SMTPHost
-	if smtpHost == "localhost" && srv.cfg.SMTPUsername == "" {
-		smtpHost = ""
-	}
-
-	checks := []doctor.Check{
-		&doctor.DBConnectivityCheck{DB: pool},
-		&doctor.MigrationCheck{DB: pool, ExpectedVersion: srv.expectedSchemaVersion},
-		&doctor.DBRoleCheck{DB: pool},
-		&doctor.RLSCheck{DB: pool, Tables: doctor.OrgScopedTables()},
-		&doctor.EncryptionSentinelCheck{DB: pool, Key: encKey},
-		&doctor.JWTCheck{Secret: srv.cfg.JWTSecret},
-		&doctor.SMTPCheck{Host: smtpHost, Port: srv.cfg.SMTPPort},
-		&doctor.DiskCheck{},
-		&doctor.FeedCheck{DB: pool},
-	}
+	checks := doctor.StandardChecks(doctor.StandardChecksConfig{
+		DB:                    srv.store.Pool(),
+		ExpectedSchemaVersion: srv.expectedSchemaVersion,
+		SSOEncryptionKey:      srv.cfg.SSOEncryptionKey,
+		JWTSecret:             srv.cfg.JWTSecret,
+		SMTPHost:              srv.cfg.SMTPHost,
+		SMTPPort:              srv.cfg.SMTPPort,
+		SMTPUsername:          srv.cfg.SMTPUsername,
+	})
 
 	results := doctor.Run(r.Context(), checks)
 

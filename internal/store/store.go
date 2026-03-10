@@ -1,7 +1,5 @@
-// Package store provides the data access layer. Simple CRUD queries use
-// sqlc-generated code backed by a *sql.DB (wrapping pgxpool via stdlib).
-// Complex transactional operations (merge pipeline, SKIP LOCKED worker)
-// use *pgxpool.Pool directly for pgx native transactions and advisory locks.
+// ABOUTME: Central data access layer with dual-layer tenant isolation (orgID param + RLS).
+// ABOUTME: Provides transaction helpers: withOrgTx (API), withBypassTx (auth), WorkerTx (background).
 package store
 
 import (

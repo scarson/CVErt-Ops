@@ -1,8 +1,5 @@
-// Package config parses and validates all application configuration from
-// environment variables using caarlos0/env/v11.
-//
-// Call [Load] once at startup; pass the resulting [Config] to subcommands.
-// Server exits if any field tagged "required" is missing.
+// ABOUTME: Parses all application configuration from environment variables via caarlos0/env.
+// ABOUTME: Call Load() once at startup; pass the resulting Config to subcommands.
 package config
 
 import (

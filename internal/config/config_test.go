@@ -113,7 +113,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"AppEnv", cfg.AppEnv, "development"},
 		{"ExternalURL", cfg.ExternalURL, "http://localhost:8080"},
 		{"ShutdownTimeoutSeconds", cfg.ShutdownTimeoutSeconds, 60},
-		{"RegistrationMode", cfg.RegistrationMode, "open"},
+		{"RegistrationMode", cfg.RegistrationMode, "invite-only"},
 		// Auth
 		{"JWTAlgorithm", cfg.JWTAlgorithm, "HS256"},
 		{"CookieSecure", cfg.CookieSecure, false},

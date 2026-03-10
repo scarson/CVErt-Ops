@@ -10,28 +10,51 @@
 
 ---
 
+## Prerequisites: Phase 8 Merges First
+
+Phase 8 (Operational Maturity) worktrees merge before this plan executes. This resolves several findings outright and affects the scope of others:
+
+| Phase 8 Pillar | Findings Resolved | Impact on This Plan |
+|---|---|---|
+| 8B Observe | **#10** (no metrics) | Task 4B removed — 8B adds all needed metrics |
+| 8C Operate | **#3** (no health check), **#38** (no readiness probe) | Task 4A removed — 8C adds /healthz, /readyz, Docker HEALTHCHECK |
+| 8C Operate | **#45** (schema version sync) | Reduced impact — auto-migrate checks currency at startup |
+| 8B Observe | #1 (alert metrics wired but read zero) | Alert metrics exist after 8B; Task 2C makes them non-zero |
+| 8C Operate | #2 (RLS doctor checks added) | Doctor detects the issue; Task 2A.1 still needed to fix it |
+
+**Post-merge follow-up risks:**
+- **Phase 2B (evaluator refactor)** may shift metric instrumentation points added by 8B Observe. If `applyPostFilters` or `queryCandidates` move, a small follow-up to re-wire metrics may be needed. The plan notes this per-task.
+- **Phase 3 (chi→huma)** must include the admin API endpoints added by 8C Operate.
+- **Task 4C (runServe/runWorker dedup)** is harder post-Phase 8 since 8B/8C/8D all add code to both functions. Deferred to Phase 6.
+
+---
+
 ## Phase Overview
 
 ```
 Phase 1: Quick Wins ──────────── Independent, low-risk, parallelizable
 Phase 2: Critical Fixes ──────── RLS security + alert pipeline wiring
-Phase 3: Chi→Huma Migration ──── Addresses 10+ API consistency findings
-Phase 4: Ops Hardening ────────── Health checks, metrics, shutdown
+Phase 3: Chi→Huma Migration ──── Addresses 10+ API consistency findings (incl. 8C admin endpoints)
+Phase 4: Ops Hardening ────────── Semaphore eviction, statement timeout (reduced scope)
 Phase 5: Test Quality ─────────── Golden files, integration tests
-Phase 6: Architecture ─────────── Deferred refactoring
+Phase 6: Architecture ─────────── Deferred refactoring (incl. runServe/runWorker dedup)
 ```
 
 **Dependency graph:**
 - Phase 1: No dependencies. All tasks independent of each other.
-- Phase 2A (RLS): Independent.
-- Phase 2B (Alert refactor): Independent. Must complete before 2C.
-- Phase 2C (Alert wiring): Depends on 2B.
-- Phase 3: Independent of Phase 2. Largest phase, needs its own detailed plan.
-- Phase 4: Independent. Task 4C (runServe/runWorker dedup) benefits from Phase 3 being done first but isn't blocked by it.
+- Phase 2A (RLS): Independent. Complements Phase 8C doctor checks (makes them pass).
+- Phase 2B (Alert refactor): Independent. Must complete before 2C. May need small follow-up for 8B Observe metric instrumentation points.
+- Phase 2C (Alert wiring): Depends on 2B. After this, 8B Observe alert metrics start registering.
+- Phase 3: Independent of Phase 2. Largest phase, needs its own detailed plan. Must include Phase 8C admin endpoints.
+- Phase 4: Reduced scope (4A/4B removed, 4C moved to Phase 6).
 - Phase 5: Independent.
-- Phase 6: Defer until Phases 2-4 are done.
+- Phase 6: Defer until Phases 2-4 are done. Now includes Task 4C (runServe/runWorker dedup).
 
-**Finding 11 (REGISTRATION_MODE default):** Already fixed — config.go line 32 shows `envDefault:"invite-only"`. Resolved; no action needed.
+**Resolved findings (no action needed):**
+- **Finding 11** (REGISTRATION_MODE default): Already fixed — config.go shows `envDefault:"invite-only"`.
+- **Finding 10** (No metrics): Resolved by Phase 8B Observe.
+- **Finding 3** (No health check): Resolved by Phase 8C Operate.
+- **Finding 38** (No readiness probe): Resolved by Phase 8C Operate.
 
 ---
 
@@ -898,6 +921,8 @@ These tasks clean up the evaluator internals BEFORE wiring it into the runtime (
 
 **Finding:** `applyPostFilters` in evaluator.go and `applyDSLPostFilters` in dsl_executor.go are 98% identical.
 
+**⚠️ Phase 8B interaction:** Phase 8B Observe may have added metric instrumentation near `applyPostFilters` in the evaluator. After extracting the shared function, verify that any metric calls still fire correctly. If 8B instruments at the call site (not inside the function), no change is needed. If 8B instruments inside `applyPostFilters`, move the instrumentation to the new shared function or the call site.
+
 **Files:**
 - Create: `internal/alert/dsl/postfilter.go`
 - Modify: `internal/alert/evaluator.go` (~lines 525-576)
@@ -1005,6 +1030,8 @@ Fixes health review finding #20.
 ## Task 2B.2: Merge queryCandidates and queryCandidatesAll (Finding 21)
 
 **Finding:** Two ~90-line methods differ only by an optional `WHERE cve_id = ANY(?)` clause.
+
+**⚠️ Phase 8B interaction:** Same as Task 2B.1 — check if 8B Observe added metric instrumentation in either `queryCandidates` or `queryCandidatesAll`. After merging, ensure metrics are preserved in the unified method.
 
 **Files:**
 - Modify: `internal/alert/evaluator.go` (~lines 425-523)
@@ -1226,6 +1253,8 @@ are logged but don't block ingestion. Completes finding #1.
 9. **Orgs** (has bootstrap, tier limits)
 10. **Members/Invitations** (tied to org management)
 11. **Audit log** (read-only, simple)
+12. **Admin endpoints** (added by Phase 8C Operate — org/user/feed/delivery/system admin)
+13. **Feeds admin** (added by Phase 8C Operate — pause/resume/logs)
 
 ### Reference pattern
 
@@ -1241,31 +1270,13 @@ Then every subsequent migration follows this reference.
 
 ---
 
-# Phase 4: Ops Hardening (Outlined)
+# Phase 4: Ops Hardening (Reduced Scope)
 
-**Findings addressed:** 3, 10, 14, 17, 38, 44
+**Findings addressed:** 14, 44
 
-### Task 4A: Container health check + readiness probe (Findings 3, 38)
-
-- Add `HEALTHCHECK` to Dockerfile using `/healthz`
-- Add `/readyz` endpoint that checks: DB ping + worker pool running + scheduler running + notification worker running
-- Update compose.yml to use `service_healthy` condition
-- Each subsystem needs a `Ready() bool` method
-
-### Task 4B: Prometheus metrics for core subsystems (Finding 10)
-
-- `internal/metrics/worker.go` — job claim/complete/fail counters, queue depth gauge
-- `internal/metrics/merge.go` — merge duration histogram, merge count counter
-- `internal/metrics/alert.go` — evaluation duration, match count, path counter (realtime/batch/EPSS)
-- `internal/metrics/notify.go` — delivery latency histogram, success/failure counters by channel type
-- Wire all metrics at creation time (pass registerer for test isolation)
-
-### Task 4C: Extract shared app setup from runServe/runWorker (Finding 17)
-
-- Create `buildApp() (*App, error)` that returns a struct with all wired dependencies
-- `runServe` calls `buildApp()` then adds HTTP server
-- `runWorker` calls `buildApp()` then runs worker pool directly
-- This should come AFTER the chi→huma migration since the API server setup will change
+Tasks 4A (health/readiness), 4B (metrics), and 4C (runServe/runWorker dedup) have been removed or moved:
+- **4A/4B:** Resolved by Phase 8B Observe and 8C Operate (merged before this plan executes).
+- **4C:** Moved to Phase 6 — Phase 8 adds significant code to both runServe/runWorker, making the refactoring more valuable but also more complex post-merge.
 
 ### Task 4D: Notification worker semaphore eviction (Finding 14)
 
@@ -1314,36 +1325,44 @@ Then every subsequent migration follows this reference.
 
 # Phase 6: Architecture (Outlined — Defer)
 
-**Findings addressed:** 15, 16, 19, 25, 39
+**Findings addressed:** 15, 16, 17, 19, 25, 39
 
-These are structural improvements that benefit from the earlier phases being stable.
+These are structural improvements that benefit from the earlier phases being stable. Phase 8 merge makes some of these more impactful (more code to factor out) but also more complex.
 
 ### Task 6A: Replace Set*Deps with options struct (Finding 15, partial)
 
 - Replace `SetAlertDeps`, `SetAIDeps`, `SetAuditDeps` with a single `ServerDeps` struct passed to `NewServer`
 - Validates all required deps at construction time
 - Eliminates temporal coupling
+- **Post-Phase 8 note:** Phase 8C Operate adds more dependencies (doctor, admin routes). Include these in the options struct.
 
 ### Task 6B: Unify or instrument notification worker (Finding 16)
 
 - Either migrate notification delivery to the generic worker pool
 - Or add equivalent health check + metrics to the notification worker
-- Decision depends on Phase 4B (metrics) being done first
+- **Post-Phase 8 note:** Phase 8B Observe already adds notification delivery metrics. The remaining gap is health check integration — the notification worker should report readiness to the `/readyz` endpoint added by Phase 8C.
 
-### Task 6C: Implement import-bulk for NVD (Finding 19)
+### Task 6C: Extract shared app setup from runServe/runWorker (Finding 17)
+
+- Create `buildApp() (*App, error)` that returns a struct with all wired dependencies
+- `runServe` calls `buildApp()` then adds HTTP server
+- `runWorker` calls `buildApp()` then runs worker pool directly
+- **Post-Phase 8 note:** Previously Task 4C. Moved here because Phase 8B/8C/8D all add code to both functions (metrics port, auto-migrate, generic feed loading), making the duplication worse but the refactoring scope larger. Best done after Phase 3 (chi→huma) is also complete so the API server setup is stable.
+
+### Task 6D: Implement import-bulk for NVD (Finding 19)
 
 - Parse NVD annual JSON archives (downloadable as .gz files)
 - Stream-parse with json.Decoder (same pattern as feed adapters)
 - Feed into the merge pipeline
 - Add progress reporting (% complete, ETA)
 
-### Task 6D: Extract MergeStore interface (Finding 25)
+### Task 6E: Extract MergeStore interface (Finding 25)
 
 - Define a `MergeStore` interface in `internal/merge/` with the methods the pipeline actually calls
 - `*store.Store` already implements these methods
 - Enables future testing with fake store
 
-### Task 6E: Refactor BootstrapFirstUserOrg to use withBypassTx (Finding 39)
+### Task 6F: Refactor BootstrapFirstUserOrg to use withBypassTx (Finding 39)
 
 - Restructure to use the defer-based transaction helper
 - Move advisory lock logic into the callback
@@ -1353,50 +1372,50 @@ These are structural improvements that benefit from the earlier phases being sta
 
 ## Appendix: Finding → Task Cross-Reference
 
-| Finding | Description | Task | Phase |
-|---------|-------------|------|-------|
-| 1 | Alert paths not wired | 2C.1, 2C.2 | 2C |
-| 2 | RLS bypass | 2A.1, 2A.2 | 2A |
-| 3 | No health check | 4A | 4 |
-| 4 | Server.Close not called | 1.1 | 1 |
-| 5 | sql.DB not closed | 1.2 | 1 |
-| 6 | Inconsistent error format | Phase 3 | 3 |
-| 7 | Inconsistent list shapes | Phase 3 | 3 |
-| 8 | Dual API client | Phase 3 | 3 |
-| 9 | Inconsistent pagination | Phase 3 | 3 |
-| 10 | No metrics | 4B | 4 |
-| 11 | Registration mode default | **RESOLVED** | — |
-| 12 | Cookie secure validation | 1.3 | 1 |
-| 13 | Worker context cancellation | 1.4 | 1 |
-| 14 | Semaphore map unbounded | 4D | 4 |
-| 15 | API monolith | 6A | 6 |
-| 16 | Dual worker systems | 6B | 6 |
-| 17 | runServe/runWorker duplication | 4C | 4 |
-| 18 | CVE endpoints unauthenticated | Phase 2 work (tracked separately) | — |
-| 19 | import-bulk stub | 6C | 6 |
-| 20 | Duplicated post-filters | 2B.1 | 2B |
-| 21 | queryCandidates duplication | 2B.2 | 2B |
-| 22 | Ingest handler mock tests | 5B | 5 |
-| 23 | No golden file tests | 5A | 5 |
-| 24 | Email test skips | 5C | 5 |
-| 25 | Store concrete struct | 6D | 6 |
-| 26 | Dead readTx method | 1.5 | 1 |
-| 27 | sqlc Cfe type name | 1.11 | 1 |
-| 28 | Duplicated toNullString | 1.12 | 1 |
-| 29 | SMTP error string matching | Low priority, monitor | — |
-| 30 | Evaluator mixes DB patterns | 2B (addressed implicitly by 2B.1/2B.2 refactoring) | 2B |
-| 31 | No Location header on 201 | Phase 3 | 3 |
-| 32 | PATCH non-pointer fields | Phase 3 | 3 |
-| 33 | Inconsistent validation codes | Phase 3 | 3 |
-| 34 | Tier limit 403 | Phase 3 | 3 |
-| 35 | InCISAKEV boolean filter | 1.10 | 1 |
-| 36 | Advisory lock test | 5D | 5 |
-| 37 | Store tests discard errors | 1.8 | 1 |
-| 38 | No readiness probe | 4A | 4 |
-| 39 | Bootstrap manual tx | 6E | 6 |
-| 40 | Misleading comment | 1.6 | 1 |
-| 41 | Test with no assertion | 1.7 | 1 |
-| 42 | Test mutates package state | 1.9 | 1 |
-| 43 | Delivery cursor unusable | Phase 3 | 3 |
-| 44 | Statement timeout | 4E | 4 |
-| 45 | Schema version manual sync | Low priority, accept risk | — |
+| Finding | Description | Task | Phase | Notes |
+|---------|-------------|------|-------|-------|
+| 1 | Alert paths not wired | 2C.1, 2C.2 | 2C | 8B Observe alert metrics activate once wired |
+| 2 | RLS bypass | 2A.1, 2A.2 | 2A | 8C/8E doctor checks validate the fix |
+| 3 | No health check | — | — | **RESOLVED by Phase 8C Operate** |
+| 4 | Server.Close not called | 1.1 | 1 | |
+| 5 | sql.DB not closed | 1.2 | 1 | |
+| 6 | Inconsistent error format | Phase 3 | 3 | Include 8C admin endpoints |
+| 7 | Inconsistent list shapes | Phase 3 | 3 | |
+| 8 | Dual API client | Phase 3 | 3 | |
+| 9 | Inconsistent pagination | Phase 3 | 3 | |
+| 10 | No metrics | — | — | **RESOLVED by Phase 8B Observe** |
+| 11 | Registration mode default | — | — | **RESOLVED** (already correct) |
+| 12 | Cookie secure validation | 1.3 | 1 | |
+| 13 | Worker context cancellation | 1.4 | 1 | |
+| 14 | Semaphore map unbounded | 4D | 4 | |
+| 15 | API monolith | 6A | 6 | Include 8C deps in options struct |
+| 16 | Dual worker systems | 6B | 6 | 8B adds notify metrics; readiness gap remains |
+| 17 | runServe/runWorker duplication | 6C | 6 | Moved from Phase 4; worse post-8 but more complete |
+| 18 | CVE endpoints unauthenticated | — | — | Tracked separately |
+| 19 | import-bulk stub | 6D | 6 | |
+| 20 | Duplicated post-filters | 2B.1 | 2B | May shift 8B metric instrumentation points |
+| 21 | queryCandidates duplication | 2B.2 | 2B | May shift 8B metric instrumentation points |
+| 22 | Ingest handler mock tests | 5B | 5 | |
+| 23 | No golden file tests | 5A | 5 | Also applies to 8D generic adapter |
+| 24 | Email test skips | 5C | 5 | |
+| 25 | Store concrete struct | 6E | 6 | |
+| 26 | Dead readTx method | 1.5 | 1 | |
+| 27 | sqlc Cfe type name | 1.11 | 1 | |
+| 28 | Duplicated toNullString | 1.12 | 1 | |
+| 29 | SMTP error string matching | — | — | Low priority, monitor |
+| 30 | Evaluator mixes DB patterns | 2B | 2B | Addressed implicitly by 2B.1/2B.2 |
+| 31 | No Location header on 201 | Phase 3 | 3 | |
+| 32 | PATCH non-pointer fields | Phase 3 | 3 | |
+| 33 | Inconsistent validation codes | Phase 3 | 3 | |
+| 34 | Tier limit 403 | Phase 3 | 3 | |
+| 35 | InCISAKEV boolean filter | 1.10 | 1 | |
+| 36 | Advisory lock test | 5D | 5 | |
+| 37 | Store tests discard errors | 1.8 | 1 | |
+| 38 | No readiness probe | — | — | **RESOLVED by Phase 8C Operate** |
+| 39 | Bootstrap manual tx | 6F | 6 | |
+| 40 | Misleading comment | 1.6 | 1 | |
+| 41 | Test with no assertion | 1.7 | 1 | |
+| 42 | Test mutates package state | 1.9 | 1 | |
+| 43 | Delivery cursor unusable | Phase 3 | 3 | |
+| 44 | Statement timeout | 4E | 4 | |
+| 45 | Schema version manual sync | — | — | Reduced impact by 8C auto-migrate |

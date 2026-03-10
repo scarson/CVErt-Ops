@@ -26,6 +26,7 @@ type FeedStatusEntry struct {
 	ConsecutiveFailures int32          `json:"consecutive_failures"`
 	LastError           string         `json:"last_error,omitempty"`
 	BackoffUntil        *time.Time     `json:"backoff_until,omitempty"`
+	PausedAt            *time.Time     `json:"paused_at,omitempty"`
 	RecentLogs          []FeedLogEntry `json:"recent_logs"`
 }
 
@@ -106,6 +107,79 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID.String()})
 }
 
+// ── Pause/Resume/Logs handlers ───────────────────────────────────────────────
+
+func (srv *Server) pauseFeedHandler(w http.ResponseWriter, r *http.Request) {
+	feedName := chi.URLParam(r, "feed")
+	if !ingest.IsKnownFeed(feedName) {
+		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		return
+	}
+	if err := srv.store.PauseFeed(r.Context(), feedName); err != nil {
+		slog.Error("pause feed", "feed", feedName, "error", err) //nolint:gosec // G706: feedName validated
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "paused", "feed": feedName})
+}
+
+func (srv *Server) resumeFeedHandler(w http.ResponseWriter, r *http.Request) {
+	feedName := chi.URLParam(r, "feed")
+	if !ingest.IsKnownFeed(feedName) {
+		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		return
+	}
+	if err := srv.store.ResumeFeed(r.Context(), feedName); err != nil {
+		slog.Error("resume feed", "feed", feedName, "error", err) //nolint:gosec // G706: feedName validated
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed", "feed": feedName})
+}
+
+func (srv *Server) feedLogsHandler(w http.ResponseWriter, r *http.Request) {
+	feedName := chi.URLParam(r, "feed")
+	if !ingest.IsKnownFeed(feedName) {
+		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		return
+	}
+
+	limit, afterTime, afterID, ok := parseKeysetParams(w, r)
+	if !ok {
+		return
+	}
+
+	logs, err := srv.store.ListFeedFetchLogsPaginated(r.Context(), feedName, afterTime, afterID, limit+1)
+	if err != nil {
+		slog.Error("feed logs", "feed", feedName, "error", err) //nolint:gosec // G706: feedName validated
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	hasMore := len(logs) > limit
+	if hasMore {
+		logs = logs[:limit]
+	}
+
+	logEntries := make([]FeedLogEntry, len(logs))
+	for i, l := range logs {
+		logEntries[i] = FeedLogEntry{
+			ID:            l.ID,
+			StartedAt:     l.StartedAt,
+			EndedAt:       l.EndedAt,
+			Status:        l.Status,
+			ItemsFetched:  l.ItemsFetched,
+			ItemsUpserted: l.ItemsUpserted,
+			ErrorSummary:  l.ErrorSummary,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":    logEntries,
+		"has_more": hasMore,
+	})
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func feedStatusFromState(s store.FeedSyncState, logs []store.FeedFetchLog) FeedStatusEntry {
@@ -128,6 +202,7 @@ func feedStatusFromState(s store.FeedSyncState, logs []store.FeedFetchLog) FeedS
 		ConsecutiveFailures: s.ConsecutiveFailures,
 		LastError:           s.LastError,
 		BackoffUntil:        s.BackoffUntil,
+		PausedAt:            s.PausedAt,
 		RecentLogs:          logEntries,
 	}
 }

@@ -224,6 +224,9 @@ func (srv *Server) Handler() http.Handler {
 		r.Use(srv.RequireSiteAdmin())
 		r.Get("/feeds", srv.listFeedsHandler)
 		r.Post("/feeds/{feed}/run", srv.triggerFeedHandler)
+		r.Post("/feeds/{feed}/pause", srv.pauseFeedHandler)
+		r.Post("/feeds/{feed}/resume", srv.resumeFeedHandler)
+		r.Get("/feeds/{feed}/logs", srv.feedLogsHandler)
 		r.Get("/version", srv.versionHandler)
 		r.Get("/doctor", srv.doctorHandler)
 
@@ -238,6 +241,16 @@ func (srv *Server) Handler() http.Handler {
 		r.Post("/users/{user_id}/enable", srv.adminEnableUserHandler)
 		r.Post("/users/{user_id}/unlock", srv.adminUnlockUserHandler)
 		r.Post("/users/{user_id}/reset-password", srv.adminResetPasswordHandler)
+
+		// Delivery management.
+		r.Get("/deliveries", srv.adminListDeliveriesHandler)
+		r.Post("/deliveries/{id}/retry", srv.adminRetryDeliveryHandler)
+		r.Post("/deliveries/retry-failed", srv.adminBulkRetryDeliveriesHandler)
+
+		// System management.
+		r.Post("/reindex", srv.adminReindexHandler)
+		r.Get("/config", srv.adminConfigHandler)
+		r.Get("/audit-log", srv.adminAuditLogHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──

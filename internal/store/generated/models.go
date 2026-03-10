@@ -308,6 +308,7 @@ type FeedSyncState struct {
 	ConsecutiveFailures int32
 	LastError           sql.NullString
 	BackoffUntil        sql.NullTime
+	PausedAt            sql.NullTime
 }
 
 type Group struct {

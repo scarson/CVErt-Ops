@@ -24,6 +24,7 @@ type FeedSyncState struct {
 	ConsecutiveFailures int32
 	LastError           string
 	BackoffUntil        *time.Time
+	PausedAt            *time.Time
 }
 
 // FeedFetchLog represents a single fetch attempt for a feed.
@@ -146,6 +147,7 @@ func syncStateFromRow(r generated.FeedSyncState) *FeedSyncState {
 		ConsecutiveFailures: r.ConsecutiveFailures,
 		LastError:           fromNullString(r.LastError),
 		BackoffUntil:        fromNullTime(r.BackoffUntil),
+		PausedAt:            fromNullTime(r.PausedAt),
 	}
 }
 
@@ -191,4 +193,41 @@ func fromNullRawMessage(nrm pqtype.NullRawMessage) json.RawMessage {
 		return nil
 	}
 	return nrm.RawMessage
+}
+
+// PauseFeed marks a feed as paused. No-ops if already paused.
+func (s *Store) PauseFeed(ctx context.Context, feedName string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.PauseFeed(ctx, feedName)
+	})
+}
+
+// ResumeFeed clears the paused flag on a feed. No-ops if not paused.
+func (s *Store) ResumeFeed(ctx context.Context, feedName string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.ResumeFeed(ctx, feedName)
+	})
+}
+
+// ListFeedFetchLogsPaginated returns paginated fetch logs for a single feed.
+func (s *Store) ListFeedFetchLogsPaginated(ctx context.Context, feedName string, afterStartedAt *time.Time, afterID *uuid.UUID, limit int) ([]FeedFetchLog, error) {
+	var rows []generated.FeedFetchLog
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		rows, err = q.ListFeedFetchLogs(ctx, generated.ListFeedFetchLogsParams{
+			FeedName:       feedName,
+			Limit:          int32(limit), //nolint:gosec // G115: limit validated by caller
+			AfterStartedAt: toNullTime(afterStartedAt),
+			AfterID:        toNullUUID(afterID),
+		})
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list feed fetch logs paginated: %w", err)
+	}
+	logs := make([]FeedFetchLog, len(rows))
+	for i, r := range rows {
+		logs[i] = fetchLogFromRow(r)
+	}
+	return logs, nil
 }

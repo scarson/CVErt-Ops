@@ -37,6 +37,12 @@ func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Han
 	return handlerWithStore(st, st, client, mergeFn, NewAdapter)
 }
 
+// HandlerWithFactory returns a worker.Handler that uses the given adapter factory.
+// Used by main.go to inject a factory that also handles generic feed configs.
+func HandlerWithFactory(st *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory) worker.Handler {
+	return handlerWithStore(st, st, client, mergeFn, factory)
+}
+
 // handlerWithStore is the internal implementation that accepts a separate HandlerStore
 // for sync state operations. This enables testing error paths without mocking the full store.
 func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory) worker.Handler {

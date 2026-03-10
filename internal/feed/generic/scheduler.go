@@ -3,7 +3,6 @@
 package generic
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -89,13 +88,3 @@ func cronToInterval(expr string) time.Duration {
 	return 24 * time.Hour
 }
 
-// SourceName returns the adapter's source name for a given feed name,
-// used by the handler to identify the source in merge.Ingest.
-func SourceName(feedName string, configs []Config) (string, error) {
-	for _, cfg := range configs {
-		if cfg.Name == feedName {
-			return cfg.Name, nil
-		}
-	}
-	return "", fmt.Errorf("unknown generic feed: %q", feedName)
-}

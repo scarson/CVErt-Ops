@@ -76,10 +76,6 @@ func NewAdapter(cfg *Config, client *http.Client) *Adapter {
 	}
 }
 
-// SourceName returns the config name, used as the source identifier in merge.Ingest.
-func (a *Adapter) SourceName() string {
-	return a.cfg.Name
-}
 
 // Fetch retrieves one page of CVE data from the configured URL. It implements
 // feed.Adapter. The cursor encodes pagination state; pass nil for the first page.
@@ -111,11 +107,11 @@ func (a *Adapter) fetchJSON(ctx context.Context, cursorJSON json.RawMessage) (*f
 	}
 	a.applyAuth(req)
 
-	resp, err := a.client.Do(req)
+	resp, err := a.client.Do(req) //nolint:gosec // G704: URL from admin-configured feed YAML, not user input
 	if err != nil {
 		return nil, fmt.Errorf("generic %s: fetch: %w", a.cfg.Name, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("generic %s: HTTP %d from %s", a.cfg.Name, resp.StatusCode, reqURL)
@@ -337,7 +333,7 @@ func (a *Adapter) applyAuth(req *http.Request) {
 		token := os.Getenv(a.cfg.Auth.TokenEnv)
 		if token == "" {
 			if a.cfg.Auth.TokenEnv != "" {
-				slog.Warn("generic feed: auth env var not set, sending request without auth",
+				slog.Warn("generic feed: auth env var not set, sending request without auth", //nolint:gosec // G706: slog structured logging, values from admin config
 					"feed", a.cfg.Name, "env_var", a.cfg.Auth.TokenEnv)
 			}
 			return
@@ -348,7 +344,7 @@ func (a *Adapter) applyAuth(req *http.Request) {
 		user := os.Getenv(a.cfg.Auth.UsernameEnv)
 		pass := os.Getenv(a.cfg.Auth.PasswordEnv)
 		if user == "" && pass == "" {
-			slog.Warn("generic feed: auth env vars not set, sending request without auth",
+			slog.Warn("generic feed: auth env vars not set, sending request without auth", //nolint:gosec // G706: slog structured logging, values from admin config
 				"feed", a.cfg.Name)
 			return
 		}
@@ -358,7 +354,7 @@ func (a *Adapter) applyAuth(req *http.Request) {
 		value := os.Getenv(a.cfg.Auth.HeaderValueEnv)
 		if value == "" {
 			if a.cfg.Auth.HeaderValueEnv != "" {
-				slog.Warn("generic feed: auth env var not set, sending request without auth",
+				slog.Warn("generic feed: auth env var not set, sending request without auth", //nolint:gosec // G706: slog structured logging, values from admin config
 					"feed", a.cfg.Name, "env_var", a.cfg.Auth.HeaderValueEnv)
 			}
 			return
@@ -380,11 +376,11 @@ func (a *Adapter) fetchCSAF(ctx context.Context) (*feed.FetchResult, error) {
 	}
 	a.applyAuth(req)
 
-	resp, err := a.client.Do(req)
+	resp, err := a.client.Do(req) //nolint:gosec // G704: URL from admin-configured feed YAML, not user input
 	if err != nil {
 		return nil, fmt.Errorf("generic %s: fetch: %w", a.cfg.Name, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("generic %s: HTTP %d", a.cfg.Name, resp.StatusCode)

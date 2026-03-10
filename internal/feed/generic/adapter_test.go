@@ -23,7 +23,7 @@ import (
 func TestAdapter_SimpleFlatArray(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": [
 			{"cve": "CVE-2026-0001", "summary": "Test vuln", "cvss_score": 8.1, "risk": "HIGH", "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"}
@@ -64,7 +64,7 @@ func TestAdapter_SimpleFlatArray(t *testing.T) {
 func TestAdapter_NestedEnvelope(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"data": {"results": [
 			{"id": "CVE-2026-0002", "text": "Nested vuln", "scoring": {"cvss": 7.5}}
@@ -96,7 +96,7 @@ func TestAdapter_NestedEnvelope(t *testing.T) {
 func TestAdapter_SparseFields(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"vulns": [{"cve": "CVE-2026-0003", "desc": "Sparse"}]}`)
 	}))
@@ -129,7 +129,7 @@ func TestAdapter_SparseFields(t *testing.T) {
 func TestAdapter_CVSS00Preserved(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": [{"cve": "CVE-2026-0004", "score": 0.0}]}`)
 	}))
@@ -157,7 +157,7 @@ func TestAdapter_CVSS00Preserved(t *testing.T) {
 func TestAdapter_NullByteSanitized(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// Embed a literal null byte in the description.
 		fmt.Fprint(w, "{\"items\": [{\"cve\": \"CVE-2026-0005\", \"desc\": \"has\\u0000null\"}]}")
@@ -187,7 +187,7 @@ func TestAdapter_NullByteSanitized(t *testing.T) {
 func TestAdapter_DateFields(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": [{"cve": "CVE-2026-0006", "pub": "2026-01-15T00:00:00Z", "mod": "2026-03-01T12:30:00Z"}]}`)
 	}))
@@ -221,7 +221,7 @@ func TestAdapter_DateFields(t *testing.T) {
 func TestAdapter_ReferencesArray(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": [{"cve": "CVE-2026-0007", "links": [{"url": "https://a.com"}, {"url": "https://b.com"}]}]}`)
 	}))
@@ -250,7 +250,7 @@ func TestAdapter_ReferencesArray(t *testing.T) {
 func TestAdapter_RawPayload(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": [{"cve": "CVE-2026-0008", "extra": "data"}]}`)
 	}))
@@ -313,7 +313,7 @@ func TestAdapter_CSAFFormat(t *testing.T) {
 		]
 	}`
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, csafDoc)
 	}))
@@ -361,7 +361,7 @@ func TestAdapter_CSAFFormat(t *testing.T) {
 func TestAdapter_EmptyCVEIDSkipped(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": [{"cve": "", "desc": "no id"}, {"cve": "CVE-2026-0009", "desc": "has id"}]}`)
 	}))
@@ -417,7 +417,7 @@ func TestAdapter_OffsetPagination(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"items": items})
+		json.NewEncoder(w).Encode(map[string]any{"items": items}) //nolint:gosec // G104: test helper
 	}))
 	defer srv.Close()
 
@@ -679,11 +679,11 @@ func TestAdapter_RateLimiting(t *testing.T) {
 		page := r.URL.Query().Get("page")
 		switch page {
 		case "", "1":
-			json.NewEncoder(w).Encode(map[string]any{
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:gosec // G104: test helper
 				"items": []map[string]any{{"cve": "CVE-2026-7001"}, {"cve": "CVE-2026-7002"}},
 			})
 		case "2":
-			json.NewEncoder(w).Encode(map[string]any{
+			json.NewEncoder(w).Encode(map[string]any{ //nolint:gosec // G104: test helper
 				"items": []map[string]any{{"cve": "CVE-2026-7003"}},
 			})
 		}
@@ -742,7 +742,7 @@ func TestAdapter_URLUnreachable(t *testing.T) {
 func TestAdapter_NonJSONResponse(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, "<html>not json</html>")
 	}))
@@ -764,7 +764,7 @@ func TestAdapter_NonJSONResponse(t *testing.T) {
 func TestAdapter_HTTP500(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -786,7 +786,7 @@ func TestAdapter_HTTP500(t *testing.T) {
 func TestAdapter_EmptyResultArray(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"items": []}`)
 	}))

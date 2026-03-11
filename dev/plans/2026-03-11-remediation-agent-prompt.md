@@ -12,76 +12,69 @@ I need you to execute the health review remediation plan at `dev/plans/2026-03-1
 
 - We're on the `dev` branch. Create a working branch `health-review-remediation` before starting.
 - The plan has 6 phases, all fully detailed with exact code, files, tests, and commit messages.
-- Execute phases in order. Each phase has its own execution strategy below.
-- Task 5A is superseded by a separate plan — skip it.
-- Task 6C is deferred (depends on Phase 3) — skip it.
-- Task 6D is invalidated — skip it.
-
-### Phase 1: Agent Team (parallel)
-
-Create an agent team with **4 teammates** to execute Phase 1 in parallel:
-
-| Teammate | Name | Tasks | Focus |
-|----------|------|-------|-------|
-| 1 | `fixes-core` | 1.1, 1.2, 1.3, 1.4 | `cmd/cvert-ops/main.go` changes (server close, DB close, cookie validation, worker context) |
-| 2 | `fixes-cleanup` | 1.5, 1.6, 1.7, 1.8 | Dead code removal, comment fix, test assertion, test error handling |
-| 3 | `fixes-test-api` | 1.9, 1.10 | Test state mutation fix, API parameter validation |
-| 4 | `fixes-refactor` | 1.11, 1.12 | sqlc rename (large blast radius), toNullString dedup |
-
-#### Instructions for ALL teammates
-
-1. **Read the full task section** from `dev/plans/2026-03-10-health-review-remediation.md` before starting each task. The plan has exact code, exact files, and exact test commands.
-2. **Read the "Subagent Execution Guidance" section** at the top of the plan — it has 7 rules you must follow.
-3. **Follow TDD** where the plan specifies it (Tasks 1.3, 1.7, 1.10): write the failing test first, run it, see it fail, then implement.
-4. **One commit per task** with the exact commit message from the plan. Don't batch commits.
-5. **Run only the test commands specified** in each task — not `go test ./...`.
-6. **Match existing code style**: tabs, lowercase error messages, `// ` comments with a space.
-7. **Don't change anything not specified** in your task. Don't "improve" surrounding code.
-8. **When the plan says "delete," delete.** Don't comment out or rename with underscore.
-9. **Read referenced files before editing.** Line numbers may have shifted from prior teammates' commits.
-10. After completing all your assigned tasks, message the lead to report completion.
-
-#### Teammate-specific warnings
-
-- **`fixes-refactor` (Tasks 1.11, 1.12):** Task 1.11 (sqlc `Cfe` → `CVE` rename) has a **large blast radius**. Every file referencing `generated.Cfe` types must be updated. Search exhaustively and verify with `go build ./...` before committing. Task 1.12 creates a new file `internal/dbutil/null.go` — only extract the duplicated helpers listed in the plan, not single-use helpers like `toNullFloat64`.
-- **`fixes-core` (Task 1.3):** This is a TDD task. Write the failing test first, confirm it fails, then implement the validation.
-- **`fixes-cleanup` (Task 1.7):** This is a TDD task. Write the assertion test first, confirm it fails, then add the assertion.
-- **`fixes-test-api` (Task 1.10):** This is a TDD task. Write the failing validation test first, then implement.
-
-#### After Phase 1 (lead coordinates)
-
-Once all 4 teammates report completion:
-
-1. **Integration check** — run these in sequence:
-   ```bash
-   go build ./...
-   golangci-lint run
-   go test ./...
-   ```
-2. **Resolve any conflicts.** Task 1.11 (sqlc rename) may conflict with tasks that touch generated types. If so, re-run `sqlc generate` and update references.
-3. **Commit any fixups** needed from integration.
+- Execute in 4 rounds. Each round uses an Agent Team for parallel work, then the lead runs integration checks before the next round.
+- Task 5A is superseded — skip it. Task 6C is deferred — skip it. Task 6D is invalidated — skip it.
 
 ---
 
-### Phase 2: Lead executes sequentially
+### Round 1: Phase 1 — Quick Wins
 
-Phase 2 has dependencies between tasks, so execute sequentially as the lead — no teammates needed.
+Create an agent team with **4 teammates**:
 
-**Phase 2A — RLS Security Fix** (independent, do first):
-- Task 2A.1: Switch app service to `cvert_ops_app` role (security-critical — don't touch migrate service)
-- Task 2A.2: Write RLS cross-tenant integration test
+| Teammate | Name | Tasks | Owns (exclusive files) |
+|----------|------|-------|----------------------|
+| 1 | `fixes-core` | 1.1, 1.2, 1.3, 1.4 | `cmd/cvert-ops/main.go` |
+| 2 | `fixes-cleanup` | 1.5, 1.6, 1.7, 1.8 | `evaluator.go`, `cve.go`, `dsl_executor.go`, `store_test.go` |
+| 3 | `fixes-test-api` | 1.9, 1.10 | `feed/util.go`, `feed/util_test.go`, `api/cves.go` |
+| 4 | `fixes-refactor` | 1.11, 1.12 | `sqlc.yaml`, `dbutil/` (new), `ai.go`, `watchlist.go` |
 
-**Phase 2B — Alert Evaluator Refactoring** (can overlap with 2A):
-- Task 2B.1: Extract shared post-filter logic to `dsl.ApplyPostFilters` (TDD)
-- Task 2B.2: Merge `queryCandidates` and `queryCandidatesAll` (depends on 2B.1)
-- Check if Phase 8B Observe added metric instrumentation near `applyPostFilters` or `queryCandidates`. If so, preserve metrics in the refactored code.
+#### Instructions for ALL teammates (applies to every round)
 
-**Phase 2C — Wire Alert Evaluation** (depends on 2B):
-- Task 2C.1: Register batch/EPSS/zombie-sweep as scheduled worker jobs
-- Task 2C.2: Wire `EvaluateRealtime` as post-merge hook (must fire AFTER merge transaction commits)
-- **Critical constraint:** Alert evaluation failures must NOT fail feed ingestion — log and continue
+1. **Read the full task section** from the plan before starting each task.
+2. **Read the "Subagent Execution Guidance" section** at the top of the plan — 7 rules to follow.
+3. **Follow TDD** where the plan specifies it: write the failing test first, run it, see it fail, then implement.
+4. **One commit per task** with the exact commit message from the plan.
+5. **Run only the test commands specified** in each task — not `go test ./...`.
+6. **Match existing code style**: tabs, lowercase error messages, `// ` comments with a space.
+7. **Don't change anything not specified** in your task.
+8. **When the plan says "delete," delete.** Don't comment out.
+9. **Read referenced files before editing.** Line numbers may shift from other teammates' commits.
+10. After completing all assigned tasks, message the lead to report completion.
 
-**Final verification after Phase 2:**
+#### Round 1 warnings
+
+- **`fixes-refactor` (Task 1.11):** sqlc `Cfe` → `CVE` rename has **large blast radius**. Search exhaustively, verify with `go build ./...`.
+- **`fixes-refactor` (Task 1.12):** Only extract the duplicated helpers listed in the plan, not single-use helpers.
+- **TDD tasks:** 1.3 (`fixes-core`), 1.7 (`fixes-cleanup`), 1.10 (`fixes-test-api`).
+
+#### After Round 1 (lead coordinates)
+
+```bash
+go build ./...
+golangci-lint run
+go test ./...
+```
+Resolve conflicts (Task 1.11 sqlc rename may conflict with generated type references). Commit fixups.
+
+---
+
+### Round 2: Phase 2 — Security + Alert Pipeline
+
+Create an agent team with **2 teammates**:
+
+| Teammate | Name | Tasks | Execution | Owns (exclusive files) |
+|----------|------|-------|-----------|----------------------|
+| 1 | `security` | 2A.1, 2A.2 | Parallel (independent) | `docker/init.sql`, `docker/compose.yml`, `rls_test.go` |
+| 2 | `alerts` | 2B.1 → 2B.2 → 2C.1 → 2C.2 | Sequential (dependency chain) | `evaluator.go`, `dsl_executor.go`, `scheduler.go`, `handler.go`, `main.go` |
+
+#### Round 2 notes
+
+- **`alerts` teammate:** Execute tasks in strict order. 2B.1 before 2B.2 (post-filter extraction before merge). 2B before 2C (evaluator ready before wiring). Check if Phase 8B Observe added metrics near `applyPostFilters` or `queryCandidates` — preserve them.
+- **`security` teammate:** Task 2A.1 is security-critical. Do NOT touch the migrate service's DATABASE_URL.
+- **Critical constraint for 2C.2:** Alert evaluation failures must NOT fail feed ingestion — log and continue.
+
+#### After Round 2 (lead coordinates)
+
 ```bash
 go build ./...
 golangci-lint run
@@ -90,63 +83,81 @@ go test ./...
 
 ---
 
-### Phase 3: Chi→Huma Migration (sequential, lead executes)
+### Round 3: Phase 3 — Chi→Huma Migration
 
-This is the largest phase. Execute Task 3.0 (Groups reference migration) first — it establishes the exact pattern. Then migrate each subsequent handler file one at a time following the reference.
+**Step 1: Lead executes Task 3.0 (Groups reference migration) alone.** This establishes the exact pattern all subsequent migrations follow. No team for this step.
 
-**Read the "Key Decisions" section** at the top of Phase 3 in the plan before starting. These 8 decisions are locked in and apply to every handler migration. Do NOT deviate.
+Read the **"Key Decisions" section** at the top of Phase 3 in the plan before starting. These 8 decisions are locked in and non-negotiable.
 
-**Execution order:** 3.0 (Groups), then 3.1–3.12 in the order listed. Each migration is one commit. Each includes the frontend update in the same commit.
+After 3.0 is committed and verified (`go build`, `go test ./internal/api/`, `cd web && npm run type-check`), proceed to Step 2.
 
-**After each handler migration:**
-```bash
-go build ./...
-go test ./internal/api/ -v -count=1
-cd web && npm run type-check
-```
+**Step 2: Create an agent team with 4 teammates** for the remaining 12 handler migrations:
 
-**After all handlers are migrated,** execute the post-migration cleanup (delete orgFetch, delete writeJSON, regenerate types).
+| Teammate | Name | Tasks | Handler Files |
+|----------|------|-------|---------------|
+| 1 | `migrate-simple` | 3.1, 3.2, 3.3 | `saved_searches.go`, `apikeys.go`, `channels.go` |
+| 2 | `migrate-paginated` | 3.4, 3.5, 3.6 | `watchlists.go`, `alert_rules.go`, `deliveries.go` |
+| 3 | `migrate-complex` | 3.7, 3.8, 3.9 | `reports.go`, `orgs.go`, `members.go`, `invitations.go` |
+| 4 | `migrate-admin` | 3.10, 3.11, 3.12 | `audit_log.go`, `admin_*.go` |
 
----
+#### Round 3 instructions (in addition to the general instructions above)
 
-### Phase 4: Ops Hardening (sequential, lead executes)
+- **Before starting your first task**, read the completed Task 3.0 (Groups) commit to understand the exact reference pattern. Every migration follows it.
+- **Each migration is one commit** including both the Go handler rewrite AND the frontend store update.
+- **server.go contention:** Each teammate adds `registerXxxRoutes` calls to `server.go`. These are independent lines in the route registration block. If you get a merge conflict on `server.go`, pull the latest and re-add your lines. Do NOT modify another teammate's registration.
+- **Frontend type regeneration:** After adding huma operations, the OpenAPI types should be regenerated. Each teammate should run `cd web && npm run type-check` after their migration to verify.
+- The **Key Decisions** section in the plan has exact patterns for: RBAC middleware, error codes, list response shape, pagination cursor, PATCH pointer types, Location headers, and frontend migration. Follow them exactly.
 
-Two independent tasks:
-- Task 4D: Notification worker semaphore eviction
-- Task 4E: Configurable long-operation statement timeout
+#### Round 3 warnings
 
-Both are detailed with exact code in the plan.
+- **`migrate-paginated` (Task 3.4):** Watchlists already have pagination — migrate to the standard cursor pattern.
+- **`migrate-paginated` (Task 3.5):** Alert rules create returns 202 (async activation).
+- **`migrate-paginated` (Task 3.6):** Delivery cursor is broken (Finding 43) — fix during migration.
+- **`migrate-complex` (Task 3.8):** Tier limit 403 → use `type: "urn:cvert-ops:error:tier-limit-exceeded"` (Finding 34).
 
----
+#### After Round 3 (lead coordinates)
 
-### Phase 5: Test Quality (sequential, lead executes)
-
-Three tasks (skip 5A — it's superseded by the fixture corpus plan):
-- Task 5B: Ingest handler integration test (real merge + real DB)
-- Task 5C: Email testcontainer with header injection verification
-- Task 5D: Advisory lock concurrency test
-
-All need Docker for testcontainers. If Docker is unavailable, skip this phase and report it.
-
----
-
-### Phase 6: Architecture (sequential, lead executes)
-
-Four tasks (skip 6C and 6D):
-- Task 6A: Replace Set*Deps with ServerDeps options struct
-- Task 6B: Add health reporting to notification worker
-- Task 6E: Extract MergeStore interface
-- Task 6F: Refactor BootstrapFirstUserOrg to use withBypassTx
-
-Execute in order. Each is one commit.
-
-**Final verification after Phase 6:**
 ```bash
 go build ./...
 golangci-lint run
 go test ./...
 cd web && npm run test:unit && npm run type-check && npm run lint
 ```
+
+Then execute the **post-migration cleanup** (delete `orgFetch.ts`, delete `writeJSON`, regenerate OpenAPI types). Commit cleanup separately.
+
+---
+
+### Round 4: Phases 4+5+6 — Ops, Tests, Architecture
+
+These 9 tasks are independent across phases. Run them as one team round, grouped by file ownership to eliminate merge conflicts.
+
+Create an agent team with **4 teammates**:
+
+| Teammate | Name | Tasks | Execution | Owns (exclusive files) |
+|----------|------|-------|-----------|----------------------|
+| 1 | `notify-arch` | 4D → 6B → 6A | Sequential | `notify/worker.go`, `notify/worker_test.go`, `api/server.go`, `cmd/main.go` |
+| 2 | `eval-config` | 4E | Single task | `config/config.go`, `config/config_test.go`, `store/timeout.go` (new), `alert/evaluator.go` |
+| 3 | `tests` | 5B, 5C, 5D | Parallel | `ingest/handler_integration_test.go` (new), `testutil/smtp.go`, `notify/email_test.go`, `merge/pipeline_integration_test.go` |
+| 4 | `store-merge` | 6E, 6F | Parallel | `merge/store.go` (new), `merge/pipeline.go`, `ingest/handler.go`, `store/org.go` |
+
+#### Round 4 notes
+
+- **`notify-arch`:** Execute 4D first (semaphore eviction), then 6B (health reporting — also modifies `worker.go`), then 6A (ServerDeps — modifies `main.go` and `server.go`). These MUST be sequential within this teammate.
+- **`eval-config`:** Task 4E modifies `evaluator.go`, which was already modified by Phase 2B. Read the current state before editing.
+- **`tests`:** All 3 tasks create or modify test files only. They need Docker for testcontainers. If Docker is unavailable, skip this teammate's tasks and report it.
+- **`store-merge`:** Task 6E modifies `ingest/handler.go` (MergeFunc type), which was modified by Phase 2C.2. Read the current state. Task 6F modifies `store/org.go` independently.
+
+#### After Round 4 — Final Verification (lead coordinates)
+
+```bash
+go build ./...
+golangci-lint run
+go test ./...
+cd web && npm run test:unit && npm run type-check && npm run lint
+```
+
+Use `superpowers:verification-before-completion` before claiming done.
 
 ---
 
@@ -156,37 +167,35 @@ cd web && npm run test:unit && npm run type-check && npm run lint
 |------|-------|
 | `dev/plans/2026-03-10-health-review-remediation.md` | The plan — read each task section before executing |
 | `dev/health-reviews/2026-03-10-project-health-review.md` | Original findings with evidence and context |
-| `cmd/cvert-ops/main.go` | 1.1, 1.2, 1.3, 1.4, 2C.1, 2C.2, 6A |
+| `cmd/cvert-ops/main.go` | 1.1, 1.2, 1.3, 1.4, 2C.1, 6A, 6B |
 | `internal/alert/evaluator.go` | 1.5, 2B.1, 2B.2, 4E |
+| `internal/api/server.go` | Phase 3, 6A |
+| `internal/api/groups.go` | 3.0 (reference migration) |
+| `internal/api/cves.go` | 1.10, Phase 3 reference |
+| `internal/config/config.go` | 4E |
+| `internal/ingest/handler.go` | 2C.2, 5B, 6E |
+| `internal/ingest/scheduler.go` | 2C.1 |
+| `internal/merge/pipeline.go` | 1.12, 2C.2, 6E |
+| `internal/merge/pipeline_integration_test.go` | 5D |
+| `internal/notify/worker.go` | 4D, 6B |
+| `internal/notify/email_test.go` | 5C |
 | `internal/store/cve.go` | 1.6 |
 | `internal/store/dsl_executor.go` | 1.7, 2B.1 |
-| `internal/store/store_test.go` | 1.8 |
-| `internal/feed/util.go` + `util_test.go` | 1.9 |
-| `internal/api/cves.go` | 1.10, Phase 3 reference |
-| `sqlc.yaml` | 1.11 |
-| `internal/merge/pipeline.go` | 1.12, 2C.2, 6E |
-| `internal/store/ai.go` | 1.12 |
-| `internal/store/watchlist.go` | 1.12 |
-| `docker/init.sql` + `docker/compose.yml` | 2A.1 |
-| `internal/ingest/scheduler.go` | 2C.1 |
-| `internal/ingest/handler.go` | 2C.2, 5B |
-| `internal/api/groups.go` | 3.0 (reference migration) |
-| `internal/api/server.go` | 3.0–3.12, 6A |
-| `internal/notify/worker.go` | 4D, 6B |
-| `internal/config/config.go` | 4E |
-| `internal/store/store.go` | 4E, 6F |
-| `internal/notify/email_test.go` | 5C |
-| `internal/testutil/smtp.go` | 5C |
-| `internal/merge/pipeline_integration_test.go` | 5D |
 | `internal/store/org.go` | 6F |
+| `internal/store/store.go` | 4E |
+| `internal/store/store_test.go` | 1.8 |
+| `internal/testutil/smtp.go` | 5C |
+| `docker/init.sql` + `docker/compose.yml` | 2A.1 |
+| `sqlc.yaml` | 1.11 |
 
 ### What NOT to Do
 
-- Don't run `go test ./...` during individual Phase 1 tasks — only the specific test commands in each task
-- Don't modify files not listed in a task
+- Don't run `go test ./...` during individual tasks — only the specific test commands
+- Don't modify files not listed in your task
 - Don't add comments explaining that code was "refactored" or "improved"
 - Don't skip TDD steps — write the failing test first where specified
 - Don't amend commits — one new commit per task
 - Don't change the migrate service's DATABASE_URL in Task 2A.1
 - Don't push to remote — leave that for Sam to review first
 - Don't execute Task 5A (superseded), Task 6C (deferred), or Task 6D (invalidated)
+- Don't modify files owned by another teammate — if you need a file another teammate owns, wait for them to finish and pull their changes

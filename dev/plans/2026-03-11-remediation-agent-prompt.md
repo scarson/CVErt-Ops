@@ -103,7 +103,7 @@ After 3.0 is committed and verified (`go build`, `go test ./internal/api/`, `cd 
 |----------|------|-------|---------------------------|-------------|
 | 1 | `migrate-simple` | 3.1, 3.2, 3.3 | `internal/api/saved_searches.go`, `internal/api/apikeys.go`, `internal/api/channels.go` | `internal/api/server.go` (append only) |
 | 2 | `migrate-paginated` | 3.4, 3.5, 3.6 | `internal/api/watchlists.go`, `internal/api/alert_rules.go`, `internal/api/deliveries.go` | `internal/api/server.go` (append only) |
-| 3 | `migrate-complex` | 3.7, 3.8, 3.9 | `internal/api/reports.go`, `internal/api/orgs.go`, `internal/api/members.go`, `internal/api/invitations.go` | `internal/api/server.go` (append only) |
+| 3 | `migrate-complex` | 3.7, 3.8, 3.9 | `internal/api/reports.go`, `internal/api/orgs.go` (orgs + members + invitations are all in this file) | `internal/api/server.go` (append only) |
 | 4 | `migrate-admin` | 3.10, 3.11, 3.12 | `internal/api/audit_log.go`, `internal/api/admin_*.go` | `internal/api/server.go` (append only) |
 
 #### Round 3 instructions (in addition to the general instructions above)
@@ -153,7 +153,7 @@ Create an agent team with **4 teammates**:
 - **`notify-arch`:** Execute 4D first (semaphore eviction), then 6B (health reporting — also modifies `worker.go`), then 6A (ServerDeps — modifies `main.go` and `server.go`). These MUST be sequential within this teammate. **Note:** `server.go` was heavily modified by Phase 3 (huma migration) — read the current file state before editing. `main.go` was modified by Rounds 1 and 2 — read before editing.
 - **`eval-config`:** Task 4E modifies `evaluator.go`, which was already modified by Phase 2B. Read the current state before editing.
 - **`tests`:** All 3 tasks create or modify test files only. They need Docker for testcontainers. If Docker is unavailable, skip this teammate's tasks and report it.
-- **`store-merge`:** Task 6E modifies `ingest/handler.go` (MergeFunc type), which was modified by Phase 2C.2. Read the current state. Task 6F modifies `store/org.go` independently.
+- **`store-merge`:** Task 6E modifies `internal/ingest/handler.go` (MergeFunc type), which was modified by Phase 2C.2. Read the current state. Task 6F modifies `internal/store/org.go` independently.
 
 #### After Round 4 — Final Verification (lead coordinates)
 

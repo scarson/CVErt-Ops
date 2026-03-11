@@ -874,14 +874,14 @@ This test must prove that when `app.org_id` is set to Org A, a query against Org
 ```go
 func TestRLS_CrossTenantBlocked(t *testing.T) {
 	// Skip if no test DB
-	s := testutil.NewTestStore(t) // or whatever the test helper is
+	tdb := testutil.NewTestDB(t)
 
 	ctx := context.Background()
 
 	// Create two orgs
-	org1, err := s.CreateOrg(ctx, "RLS Test Org 1")
+	org1, err := tdb.CreateOrg(ctx, "RLS Test Org 1")
 	require.NoError(t, err)
-	org2, err := s.CreateOrg(ctx, "RLS Test Org 2")
+	org2, err := tdb.CreateOrg(ctx, "RLS Test Org 2")
 	require.NoError(t, err)
 
 	// Create a watchlist in org1 (using org1's transaction context)
@@ -932,7 +932,7 @@ These tasks clean up the evaluator internals BEFORE wiring it into the runtime (
 
 Read the two functions side by side. The only difference is the input type and the field accessor:
 - Evaluator: `[]cveSummary` with `c.CVEID` and `c.Description`
-- DSL executor: `[]generated.Cfe` with `c.CveID` and `c.DescriptionPrimary.String`
+- DSL executor: `[]generated.CVE` with `c.CveID` and `c.DescriptionPrimary.String` (type was renamed from `Cfe` to `CVE` by Task 1.11)
 
 **Step 2: Write the failing test first**
 
@@ -1002,7 +1002,7 @@ func (c cveSummary) PostFilterField(field string) string {
 }
 ```
 
-In `internal/store/dsl_executor.go`, add a wrapper or implement on a local type that wraps `generated.Cfe`.
+In `internal/store/dsl_executor.go`, add a wrapper or implement on a local type that wraps `generated.CVE` (renamed from `Cfe` by Task 1.11).
 
 **Step 5: Replace both implementations**
 
@@ -1715,9 +1715,9 @@ Replace `<handler-name>` with the resource name (e.g., "saved searches", "API ke
 
 ### Task 3.9: Members and Invitations
 
-**File:** `internal/api/members.go`, `internal/api/invitations.go`
+**File:** `internal/api/orgs.go` (members and invitations are in the same file as orgs, not separate files)
 **Endpoints:** List/update/remove members, create/list/delete invitations
-**Special:** Currently returns bare arrays. Wrap in `{"items": [...]}`. This task covers two files — make one commit with both.
+**Special:** Currently returns bare arrays. Wrap in `{"items": [...]}`. The member and invitation handlers live in `orgs.go` alongside the org CRUD handlers migrated in Task 3.8 — migrate them in the same file.
 **Frontend:** Update members and invitations stores.
 
 ### Task 3.10: Audit Log
@@ -1729,18 +1729,18 @@ Replace `<handler-name>` with the resource name (e.g., "saved searches", "API ke
 
 ### Task 3.11: Admin Endpoints
 
-**File:** `internal/api/admin_*.go` (added by Phase 8C Operate)
-**Endpoints:** Org admin, user admin, feed admin, delivery admin, system admin
+**Files:** `internal/api/admin_orgs.go`, `admin_users.go`, `admin_deliveries.go`, `admin_system.go`, `admin_version.go`, `admin_doctor.go` (added by Phase 8C Operate). Also `admin_helpers.go` (shared admin utilities — migrate if it contains handlers, skip if it's just helpers).
+**Endpoints:** Org admin, user admin, delivery admin, system admin, doctor checks
 **Special:** These use `RequireSiteAdmin` middleware, not `RequireOrgRole`. Ensure the huma migration preserves this distinction. No org context — different middleware chain.
-**⚠️ Important:** Verify these files exist before starting. If Phase 8C didn't create them, report to lead and skip.
+**⚠️ Important:** Verify these files exist before starting. Read each file to determine which ones contain HTTP handlers (need migration) vs. just helper functions (skip).
 **Frontend:** Admin UI may or may not exist yet. If it does, update it. If not, this task is Go-only.
 
 ### Task 3.12: Feeds Admin
 
-**File:** `internal/api/admin_feeds.go` (added by Phase 8C Operate)
+**File:** `internal/api/admin_feeds.go` (expected from Phase 8C Operate)
 **Endpoints:** Pause/resume/logs for feeds
 **Special:** Same admin middleware as Task 3.11.
-**⚠️ Important:** Verify this file exists before starting. If Phase 8C didn't create it, report to lead and skip.
+**⚠️ Important:** This file may not exist. As of the latest check, Phase 8C created `admin_deliveries.go`, `admin_doctor.go`, `admin_helpers.go`, `admin_orgs.go`, `admin_system.go`, `admin_users.go`, `admin_version.go` — but NOT `admin_feeds.go`. If it doesn't exist, skip this task and report to lead.
 **Frontend:** Same as Task 3.11.
 
 ---
@@ -1978,21 +1978,22 @@ func TestSetStatementTimeout_CancelsSlowQuery(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	err := tdb.WithBypassTx(ctx, func(tx *sql.Tx) error {
-		// Set a very short timeout (1ms)
-		if err := store.SetStatementTimeout(ctx, tx, 1); err != nil {
-			return err
-		}
-		// This 1-second sleep should be cancelled by the 1ms timeout
-		_, err := tx.ExecContext(ctx, "SELECT pg_sleep(1)")
-		return err
-	})
+	// Use tdb.DB().BeginTx to get a raw *sql.Tx — the store's transaction
+	// helpers (withBypassTx, withOrgTx) are unexported and take
+	// func(*generated.Queries), not func(*sql.Tx).
+	tx, err := tdb.DB().BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback() //nolint:errcheck
+
+	// Set a very short timeout (1ms)
+	require.NoError(t, store.SetStatementTimeout(ctx, tx, 1))
+
+	// This 1-second sleep should be cancelled by the 1ms timeout
+	_, err = tx.ExecContext(ctx, "SELECT pg_sleep(1)")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "canceling statement due to statement timeout")
 }
 ```
-
-**⚠️ Important:** Read `internal/store/store.go` to find the correct transaction helper method name. It may be `withBypassTx` (unexported) or a different exported method. If `withBypassTx` is unexported, the test must be in package `store` (not `store_test`), or use a different approach to get a transaction (e.g., `tdb.DB().Begin()`).
 
 **Step 6: Run tests**
 
@@ -2690,9 +2691,9 @@ testing with fake stores. Addresses finding #25.
 
 ---
 
-## Task 6F: Refactor BootstrapFirstUserOrg to use withBypassTx (Finding 39)
+## Task 6F: Refactor BootstrapFirstUserOrg to use withBypassRawTx (Finding 39)
 
-**Finding:** `internal/store/org.go` `BootstrapFirstUserOrg` (line ~66-123) manually manages transaction begin/rollback/commit with 6 explicit rollback calls and a manual panic recovery. The rest of the store uses `withBypassTx` which handles this via defer.
+**Finding:** `internal/store/org.go` `BootstrapFirstUserOrg` (line ~66-123) manually manages transaction begin/rollback/commit with 6 explicit rollback calls and a manual panic recovery. The rest of the store uses bypass transaction helpers which handle this via defer.
 
 **Files:**
 - Modify: `internal/store/org.go`
@@ -2711,19 +2712,22 @@ Read `internal/store/org.go` lines 66-123. Understand the full flow:
 8. Six explicit `tx.Rollback()` calls on error paths
 9. Manual `recover()` with rollback in defer
 
-Read `internal/store/store.go` to understand `withBypassTx`. Find:
-- Its exact signature: `func (s *Store) withBypassTx(ctx context.Context, fn func(tx *sql.Tx) error) error` (verify)
-- What it does: begins tx, sets bypass_rls, calls fn, commits on nil error, rollbacks on error
-- Whether it handles panics (if it does, the manual recover in Bootstrap is redundant)
+Read `internal/store/store.go` to understand the bypass transaction helpers. There are TWO:
+- `withBypassTx(ctx, fn func(*generated.Queries) error)` — callback receives sqlc Queries
+- `withBypassRawTx(ctx, fn func(*sql.Tx) error)` — callback receives raw `*sql.Tx`
+
+Bootstrap needs raw SQL (advisory lock, COUNT) AND sqlc queries (CreateOrg, CreateOrgMember). Use `withBypassRawTx` and create sqlc queries inside the callback via `s.q.WithTx(tx)`.
+
+Both helpers handle panics via `recover()` + rollback in defer — the manual recover in the existing Bootstrap code is redundant.
 
 **Step 2: Refactor**
 
-Replace the manual transaction management with `withBypassTx`:
+Replace the manual transaction management with `withBypassRawTx`:
 
 ```go
 func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, orgName string) (*generated.Organization, error) {
 	var org *generated.Organization
-	err := s.withBypassTx(ctx, func(tx *sql.Tx) error {
+	err := s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
 		// Advisory lock serializes concurrent first-user bootstrap attempts.
 		const bootstrapLockKey = 0x435654626F6F74
 		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
@@ -2761,13 +2765,9 @@ func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, or
 }
 ```
 
-**⚠️ Critical detail — early return semantics:** When `count != 1`, the callback returns `nil` (no error). This causes `withBypassTx` to COMMIT the transaction (containing only the advisory lock and a SELECT). The original code did `tx.Rollback()` for this case. Both are functionally equivalent for a read-only transaction — commit and rollback have the same effect when no writes occurred. Verify that `withBypassTx` commits on nil error return.
+**⚠️ Critical detail — early return semantics:** When `count != 1`, the callback returns `nil` (no error). This causes `withBypassRawTx` to COMMIT the transaction (containing only the advisory lock and a SELECT). The original code did `tx.Rollback()` for this case. Both are functionally equivalent for a read-only transaction — commit and rollback have the same effect when no writes occurred.
 
-**⚠️ Critical detail — closure capture:** The `org` variable is declared outside the callback and assigned inside it. This is the standard pattern for returning values from `withBypassTx` callbacks. The callback communicates success via the closure; it communicates failure via the error return.
-
-**⚠️ Critical detail — panic handling:** If `withBypassTx` already includes `recover()` in its defer (read it to check), then the manual `recover()` in the current code is redundant and should NOT be replicated. If `withBypassTx` does NOT handle panics, add the same recover logic inside the callback.
-
-**⚠️ Important:** Verify that `withBypassTx` is the correct helper. The original code uses `s.db.BeginTx` (database/sql). If `withBypassTx` uses a different transaction mechanism, adjust accordingly. Read the helper's implementation.
+**⚠️ Critical detail — closure capture:** The `org` variable is declared outside the callback and assigned inside it. This is the standard pattern for returning values from `withBypassRawTx` callbacks. The callback communicates success via the closure; it communicates failure via the error return.
 
 **Step 3: Run tests**
 
@@ -2778,10 +2778,10 @@ Expected: All existing tests pass unchanged. The behavior is identical — only 
 **Step 4: Commit**
 
 ```
-refactor: use withBypassTx in BootstrapFirstUserOrg
+refactor: use withBypassRawTx in BootstrapFirstUserOrg
 
 Replaces 6 manual rollback calls and a manual panic recovery with
-the defer-based withBypassTx callback pattern used by all other
+the defer-based withBypassRawTx callback pattern used by all other
 store methods. Behavior is unchanged — the advisory lock, user
 count check, and org creation logic are preserved.
 Addresses finding #39.

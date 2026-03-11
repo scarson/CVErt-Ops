@@ -64,15 +64,13 @@
 
 ---
 
-### [MAJOR] `import-bulk` subcommand is a stub
+### ~~[MAJOR] `import-bulk` subcommand is a stub~~ — INVALIDATED
 
 **Evidence:** `cmd/cvert-ops/main.go:413-422` logs "not yet implemented" and returns nil.
 
-**Problem:** PLAN.md §3.3 identifies bulk import as essential for initial data population. NVD rate limits at 5 req/30s — API-only backfill for ~250k CVEs takes days to weeks.
+**Original claim:** NVD bulk download files could be used for initial population.
 
-**Risk:** Initial setup of a new instance requires extended API polling. Network errors during this multi-day backfill require retry. Self-hosted users see an empty corpus for an extended period.
-
-**Suggested approach:** Implement at least NVD bulk import (annual JSON archives) before production readiness.
+**Why invalidated:** NVD does not offer bulk download files. Their [developer documentation](https://nvd.nist.gov/developers/start-here) recommends iterative API calls with `startIndex` pagination for initial data population. The `import-bulk` command exists for offline/airgapped scenarios with local files, but there are no NVD bulk archives to source.
 
 ---
 

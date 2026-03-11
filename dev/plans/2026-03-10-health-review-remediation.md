@@ -1349,12 +1349,11 @@ These are structural improvements that benefit from the earlier phases being sta
 - `runWorker` calls `buildApp()` then runs worker pool directly
 - **Post-Phase 8 note:** Previously Task 4C. Moved here because Phase 8B/8C/8D all add code to both functions (metrics port, auto-migrate, generic feed loading), making the duplication worse but the refactoring scope larger. Best done after Phase 3 (chi→huma) is also complete so the API server setup is stable.
 
-### Task 6D: Implement import-bulk for NVD (Finding 19)
+### Task 6D: ~~Implement import-bulk for NVD~~ — INVALIDATED (Finding 19)
 
-- Parse NVD annual JSON archives (downloadable as .gz files)
-- Stream-parse with json.Decoder (same pattern as feed adapters)
-- Feed into the merge pipeline
-- Add progress reporting (% complete, ETA)
+**Finding 19 is invalid.** NVD does not offer bulk download files. Their [developer documentation](https://nvd.nist.gov/developers/start-here) explicitly recommends iterative API calls with `startIndex` pagination for initial data population. The existing `import-bulk` command accepts a local file, which is valid for offline/airgapped scenarios, but there are no NVD bulk archives to feed it.
+
+No action needed. If initial population performance becomes a concern, the NVD feed adapter's normal sync (with parallelized paginated API calls) is the correct approach — not a separate bulk import path.
 
 ### Task 6E: Extract MergeStore interface (Finding 25)
 
@@ -1392,7 +1391,7 @@ These are structural improvements that benefit from the earlier phases being sta
 | 16 | Dual worker systems | 6B | 6 | 8B adds notify metrics; readiness gap remains |
 | 17 | runServe/runWorker duplication | 6C | 6 | Moved from Phase 4; worse post-8 but more complete |
 | 18 | CVE endpoints unauthenticated | — | — | Tracked separately |
-| 19 | import-bulk stub | 6D | 6 | |
+| 19 | import-bulk stub | ~~6D~~ | — | **INVALIDATED** — NVD has no bulk download files; API pagination is the correct approach |
 | 20 | Duplicated post-filters | 2B.1 | 2B | May shift 8B metric instrumentation points |
 | 21 | queryCandidates duplication | 2B.2 | 2B | May shift 8B metric instrumentation points |
 | 22 | Ingest handler mock tests | 5B | 5 | |

@@ -1216,57 +1216,525 @@ are logged but don't block ingestion. Completes finding #1.
 
 ---
 
-# Phase 3: Chi→Huma Migration (Outlined)
+# Phase 3: Chi→Huma Migration
 
 **Findings addressed:** 6, 7, 8, 9, 31, 32, 33, 34, 43
 
-**This phase needs its own detailed plan.** It's the largest single body of work and affects every org-scoped endpoint. Key decisions to make before writing the detailed plan:
+This is the largest single body of work. It migrates all chi-registered org-scoped handlers to huma, which simultaneously fixes:
+- Inconsistent error formats (Finding 6: text/plain → RFC 9457)
+- Inconsistent list shapes (Finding 7: bare arrays → `{"items": [...]}`)
+- Dual API client (Finding 8: orgFetch eliminated, typed client for everything)
+- Inconsistent pagination (Finding 9: one `?cursor=` pattern everywhere)
+- Missing Location headers (Finding 31: huma can set these automatically)
+- Non-pointer PATCH fields (Finding 32: pointer types in input structs)
+- Inconsistent validation codes (Finding 33: huma standardizes to 422)
+- Tier limit 403 (Finding 34: distinct error type in RFC 9457 body)
+- Broken delivery cursor (Finding 43: standardized cursor encoding)
 
-### Migration strategy
+---
 
-1. **One handler file at a time.** Each file (watchlists.go, channels.go, etc.) is a self-contained migration unit. Complete one, verify it works (build + test + frontend smoke test), commit, then move to the next.
+## Key Decisions (Locked In — Not Negotiable)
 
-2. **Consistent response shapes.** All list endpoints migrate from bare arrays to `{"items": [...], "next_cursor": "..."}` simultaneously with the huma migration. This is a breaking frontend change — the frontend must be updated for each migrated endpoint.
+These decisions apply to ALL handler migrations. Do NOT deviate per-handler.
 
-3. **Standardize pagination.** As each endpoint migrates, adopt the standard cursor pattern: `?cursor=` with base64 JSON `{"d":"...","id":"..."}`. Document the pattern once, apply everywhere.
+### 1. RBAC Pattern
 
-4. **Frontend updates are part of each handler migration.** Don't migrate all handlers and then fix the frontend. Each handler migration includes updating the corresponding Pinia store/composable to use the typed openapi-fetch client instead of orgFetch.
+Chi middleware continues to run before huma handlers (chi is the underlying router). The existing `RequireOrgRole` middleware is unchanged — it validates org membership and injects `ctxOrgID` and `ctxRole` into the request context.
 
-### Subagent risks for this phase
+Huma handlers access the org ID via the Input struct's path param (`OrgID uuid.UUID \`path:"org_id"\``), which huma parses automatically. The middleware-validated value and the huma-parsed value are the same (both come from the URL). Use `input.OrgID` in handler bodies.
 
-- **RBAC middleware composition:** Chi handlers currently use `r.With(requireRole("admin"))` inline. Huma uses middleware differently — need to figure out the huma-compatible RBAC pattern ONCE and document it as the reference.
-- **OrgID extraction:** Chi handlers use `chi.URLParam(r, "org_id")`. Huma extracts from path params in the input struct. Every handler migration must change this.
-- **Request body parsing:** Chi handlers manually decode JSON. Huma does automatic validation from struct tags. The migration changes validation behavior — some currently-accepted inputs may be rejected.
-- **Error codes:** Migrated handlers will return RFC 9457 errors (good), but also need consistent status codes (400 vs 422 — decide once, apply everywhere).
-- **Frontend breakage:** Each migrated endpoint changes the response shape. The frontend MUST be updated in the same commit or the app breaks.
+If a handler needs the caller's role (e.g., to check admin), read from context:
+```go
+role := ctx.Value(ctxRole).(Role)
+```
 
-### Recommended handler migration order
+**Do NOT rewrite the RBAC middleware.** It works. Leave it as chi middleware.
 
-1. **Groups** (simplest, fewest endpoints, low traffic)
-2. **Saved searches** (similar simplicity)
-3. **API keys** (simple CRUD)
-4. **Channels** (medium complexity)
-5. **Watchlists** (medium complexity, has pagination)
-6. **Alert rules** (complex, has activation flow)
-7. **Deliveries** (has broken cursor — fix during migration)
-8. **Reports** (has scheduled delivery)
-9. **Orgs** (has bootstrap, tier limits)
-10. **Members/Invitations** (tied to org management)
-11. **Audit log** (read-only, simple)
-12. **Admin endpoints** (added by Phase 8C Operate — org/user/feed/delivery/system admin)
-13. **Feeds admin** (added by Phase 8C Operate — pause/resume/logs)
+### 2. Route Registration
 
-### Reference pattern
+Huma operations are registered inside a `registerXxxRoutes(api huma.API, s *store.Store)` function per handler file, following the existing `registerCVERoutes` and `registerAuthRoutes` pattern. These are called from `NewServer` after `humachi.New(apiRouter, humaConfig)`.
 
-Write one complete before/after migration (Groups) with:
-- Full huma operation registration
-- Huma input/output structs with validation tags
-- RBAC middleware in huma context
-- Standard pagination cursor
-- Standard error responses
-- Frontend store update
+RBAC enforcement moves from `r.With(srv.RequireOrgRole(RoleAdmin))` to the huma `Operation.Middlewares` field. Example:
+```go
+huma.Register(api, huma.Operation{
+	OperationID: "create-group",
+	Method:      http.MethodPost,
+	Path:        "/orgs/{org_id}/groups",
+	Tags:        []string{"Groups"},
+	Middlewares: huma.Middlewares(srv.RequireOrgRole(RoleAdmin)),
+}, createGroupHandler(s))
+```
 
-Then every subsequent migration follows this reference.
+**⚠️ Critical:** Verify that `huma.Operation.Middlewares` accepts chi-style middleware (`func(http.Handler) http.Handler`). If huma has a different middleware type, read the huma docs for the adapter. The `humachi` adapter should bridge the types.
+
+**⚠️ Critical:** Org-level middleware (`RequireOrgRole(RoleViewer)`, `tierMiddleware`, `orgRateLimitMiddleware`) currently applies to all sub-routes of `/{org_id}` via `r.Use()`. When migrating to huma, these must be applied per-operation or via a shared middleware group. Read how `humachi` handles route-level middleware.
+
+### 3. Error Status Codes
+
+| Scenario | Status Code | Huma Function |
+|----------|-------------|---------------|
+| Malformed request (bad JSON, invalid UUID) | 400 | `huma.Error400BadRequest` |
+| Validation failure (name required, too long) | 422 | `huma.Error422UnprocessableEntity` |
+| Authentication required | 401 | `huma.Error401Unauthorized` |
+| Insufficient RBAC role | 403 | `huma.Error403Forbidden` |
+| Tier limit exceeded | 403 | Custom: use `huma.NewError(403, "tier limit exceeded")` with `type: "urn:cvert-ops:error:tier-limit-exceeded"` |
+| Not found | 404 | `huma.Error404NotFound` |
+| Rate limited | 429 | `huma.Error429TooManyRequests` |
+| Internal error | 500 | Return `fmt.Errorf(...)` (huma auto-converts to 500) |
+
+**Tier limits vs RBAC:** Both return 403 but the tier limit error includes `"type": "urn:cvert-ops:error:tier-limit-exceeded"` in the RFC 9457 body. Frontend checks `error.type` to show "upgrade" CTA vs "insufficient permissions" message.
+
+**⚠️ Important:** Huma auto-validates input structs. If a required field is missing, huma returns 422 automatically — you don't need to write manual validation for required fields. Only add custom validation for business rules (e.g., field length, format, cross-field constraints).
+
+### 4. List Response Shape
+
+ALL list endpoints return:
+```json
+{"items": [...], "next_cursor": "..."}
+```
+
+Huma output struct pattern:
+```go
+type ListGroupsOutput struct {
+	Body struct {
+		Items      []GroupItem `json:"items"`
+		NextCursor string      `json:"next_cursor,omitempty"`
+	}
+}
+```
+
+For currently-unpaginated lists (groups, members, api-keys), add pagination with:
+- Default limit: 25
+- Max limit: 100
+- Cursor: opaque base64 JSON (see next section)
+- If the current data volume is small enough that pagination is unnecessary, still use the `{"items": [...]}` wrapper but omit `next_cursor`.
+
+### 5. Pagination Cursor Standard
+
+All paginated endpoints use the CVE cursor pattern:
+```
+?cursor=<base64url-raw JSON>
+```
+
+Cursor JSON structure:
+```json
+{"d": "<sort_value>", "id": "<uuid>"}
+```
+
+Where `d` is the sort column value (e.g., `created_at` timestamp) and `id` is the UUID tiebreaker. Encoding uses `base64.RawURLEncoding` (no padding).
+
+For endpoints that are currently unpaginated but have small datasets, pagination can be deferred — just wrap in `{"items": [...]}` and omit `next_cursor`. Add a TODO comment noting pagination is needed when the dataset grows.
+
+### 6. PATCH with Pointer Types
+
+PATCH input structs use pointer fields for all optional updates:
+```go
+type UpdateGroupInput struct {
+	OrgID   uuid.UUID `path:"org_id"`
+	GroupID uuid.UUID `path:"group_id"`
+	Body    struct {
+		Name        *string `json:"name,omitempty"`
+		Description *string `json:"description,omitempty"`
+	}
+}
+```
+
+`nil` = field not provided (don't update). Empty string pointer = set to empty string. This allows clients to clear optional fields.
+
+### 7. Location Header on 201
+
+Huma supports `Header` fields in output structs:
+```go
+type CreateGroupOutput struct {
+	Header struct {
+		Location string `header:"Location"`
+	}
+	Body GroupItem
+}
+```
+
+Set Location to the resource URL: `/api/v1/orgs/{org_id}/groups/{id}`
+
+### 8. Frontend Migration Pattern
+
+Each handler migration includes updating the corresponding frontend store/composable. The pattern:
+
+**Before (chi):**
+```typescript
+const resp = await orgFetch(`/orgs/${orgId}/groups`)
+const data = await resp.json() as GroupEntry[]
+```
+
+**After (huma — typed client):**
+```typescript
+const { data, error } = await client.GET('/orgs/{org_id}/groups', {
+  params: { path: { org_id: orgId } }
+})
+// data.items is typed automatically from the OpenAPI schema
+```
+
+After migrating ALL handlers, `orgFetch.ts` should have zero callers and can be deleted.
+
+---
+
+## Task 3.0: Reference Migration — Groups (DO THIS FIRST)
+
+**This is the reference implementation. All subsequent migrations copy this pattern.** Take extra care to get it right — every subsequent handler follows this exact structure.
+
+**Files:**
+- Rewrite: `internal/api/groups.go` (chi handlers → huma handlers)
+- Modify: `internal/api/server.go` (change route registration)
+- Create or modify: `web/src/stores/groups.ts` or equivalent (switch to typed client)
+- Test: existing group tests + manual frontend smoke test
+
+**Step 1: Read reference code**
+
+Read these files to understand both patterns:
+- `internal/api/groups.go` — the chi handlers to migrate (8 handlers, 315 lines)
+- `internal/api/cves.go` — the existing huma handler pattern to follow
+- `internal/api/server.go` lines ~195-205 — how huma API is created and routes registered
+- `internal/api/server.go` lines ~397-411 — current chi route registration for groups
+
+**Step 2: Define huma input/output structs**
+
+Replace the chi-style request/response structs with huma input/output structs:
+
+```go
+// ── Input structs ─────────────────────────────────────────────────────────────
+
+type CreateGroupInput struct {
+	OrgID uuid.UUID `path:"org_id" doc:"Organization ID"`
+	Body  struct {
+		Name        string `json:"name" minLength:"1" doc:"Group name (required)"`
+		Description string `json:"description,omitempty" doc:"Optional description"`
+	}
+}
+
+type ListGroupsInput struct {
+	OrgID uuid.UUID `path:"org_id" doc:"Organization ID"`
+}
+
+type GetGroupInput struct {
+	OrgID   uuid.UUID `path:"org_id" doc:"Organization ID"`
+	GroupID uuid.UUID `path:"group_id" doc:"Group ID"`
+}
+
+type UpdateGroupInput struct {
+	OrgID   uuid.UUID `path:"org_id" doc:"Organization ID"`
+	GroupID uuid.UUID `path:"group_id" doc:"Group ID"`
+	Body    struct {
+		Name        *string `json:"name,omitempty" doc:"Group name"`
+		Description *string `json:"description,omitempty" doc:"Group description"`
+	}
+}
+
+type DeleteGroupInput struct {
+	OrgID   uuid.UUID `path:"org_id" doc:"Organization ID"`
+	GroupID uuid.UUID `path:"group_id" doc:"Group ID"`
+}
+
+// ── Output structs ────────────────────────────────────────────────────────────
+
+type GroupItem struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	CreatedAt   string `json:"created_at"`
+}
+
+type CreateGroupOutput struct {
+	Header struct {
+		Location string `header:"Location"`
+	}
+	Body GroupItem
+}
+
+type ListGroupsOutput struct {
+	Body struct {
+		Items []GroupItem `json:"items"`
+	}
+}
+
+type GetGroupOutput struct {
+	Body GroupItem
+}
+
+type UpdateGroupOutput struct {
+	Body GroupItem
+}
+```
+
+**⚠️ Important:** `minLength:"1"` on the Name field makes huma auto-reject empty names with a 422. This replaces the manual `if req.Name == ""` check. Verify huma supports `minLength` validation on string fields — read the huma docs.
+
+**⚠️ Important — PATCH pointer types (Finding 32):** `UpdateGroupInput.Body` uses `*string` for both fields. This is the fix for Finding 32. The store's `UpdateGroup` method may need updating to accept pointer types and only update non-nil fields. Read the store method before changing the handler.
+
+**Step 3: Write huma handler functions**
+
+Huma handlers are closures (not Server methods) that capture dependencies:
+
+```go
+func createGroupHandler(s *store.Store) func(context.Context, *CreateGroupInput) (*CreateGroupOutput, error) {
+	return func(ctx context.Context, input *CreateGroupInput) (*CreateGroupOutput, error) {
+		group, err := s.CreateGroup(ctx, input.OrgID, input.Body.Name, input.Body.Description)
+		if err != nil {
+			slog.ErrorContext(ctx, "create group", "error", err)
+			return nil, fmt.Errorf("create group: %w", err)
+		}
+		item := GroupItem{
+			ID:          group.ID.String(),
+			Name:        group.Name,
+			Description: group.Description,
+			CreatedAt:   group.CreatedAt.Format(time.RFC3339),
+		}
+		return &CreateGroupOutput{
+			Header: struct{ Location string }{
+				Location: fmt.Sprintf("/api/v1/orgs/%s/groups/%s", input.OrgID, group.ID),
+			},
+			Body: item,
+		}, nil
+	}
+}
+
+func listGroupsHandler(s *store.Store) func(context.Context, *ListGroupsInput) (*ListGroupsOutput, error) {
+	return func(ctx context.Context, input *ListGroupsInput) (*ListGroupsOutput, error) {
+		rows, err := s.ListOrgGroups(ctx, input.OrgID)
+		if err != nil {
+			slog.ErrorContext(ctx, "list groups", "error", err)
+			return nil, fmt.Errorf("list groups: %w", err)
+		}
+		items := make([]GroupItem, 0, len(rows))
+		for _, g := range rows {
+			items = append(items, GroupItem{
+				ID:          g.ID.String(),
+				Name:        g.Name,
+				Description: g.Description,
+				CreatedAt:   g.CreatedAt.Format(time.RFC3339),
+			})
+		}
+		return &ListGroupsOutput{Body: struct {
+			Items []GroupItem `json:"items"`
+		}{Items: items}}, nil
+	}
+}
+```
+
+Follow this pattern for all 8 handlers (create, list, get, update, delete, listMembers, addMember, removeMember).
+
+**⚠️ Important — not found handling:** In the chi version, `getGroupHandler` checks `if group == nil` and returns 404. In huma, return `huma.Error404NotFound("group not found")`. Read the store method to understand how it signals "not found" — it may return `nil, nil` or a specific error.
+
+**⚠️ Important — no-content responses:** For DELETE and add-member (which return 204), huma needs an empty output. Check huma docs for how to return 204 — it may be returning `nil, nil` or a specific empty output struct. The existing codebase's auth handlers may have an example.
+
+**Step 4: Register huma routes**
+
+Create a `registerGroupRoutes` function:
+
+```go
+func registerGroupRoutes(api huma.API, srv *Server, s *store.Store) {
+	orgViewer := huma.Middlewares(
+		srv.RequireOrgRole(RoleViewer),
+		srv.tierMiddleware,
+		srv.orgRateLimitMiddleware,
+	)
+	orgAdmin := huma.Middlewares(
+		srv.RequireOrgRole(RoleAdmin),
+		srv.tierMiddleware,
+		srv.orgRateLimitMiddleware,
+	)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-groups",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/groups",
+		Tags:        []string{"Groups"},
+		Middlewares: orgViewer,
+	}, listGroupsHandler(s))
+
+	huma.Register(api, huma.Operation{
+		OperationID: "create-group",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/groups",
+		Tags:        []string{"Groups"},
+		Middlewares: orgAdmin,
+	}, createGroupHandler(s))
+
+	// ... register all 8 operations
+}
+```
+
+**⚠️ Critical — middleware type compatibility:** Verify that `huma.Middlewares()` accepts chi-style middleware functions (`func(http.Handler) http.Handler`). If it doesn't, read huma's middleware documentation for the correct way to apply chi middleware to huma operations. The `humachi` adapter may provide a bridge function.
+
+**⚠️ Critical — route path:** Huma operations use full paths from the API root. The current chi routes are nested under `/orgs/{org_id}` with parent middleware. In huma, each operation declares its full path and its own middleware. Don't accidentally lose the org-level middleware (tier, rate limit) when migrating.
+
+**Step 5: Remove chi route registrations**
+
+In `server.go`, remove the chi route block for groups (lines ~397-411). Replace with a call to `registerGroupRoutes(api, srv, srv.store)` alongside the existing `registerCVERoutes` and `registerAuthRoutes` calls.
+
+**Step 6: Update frontend**
+
+Find the frontend file(s) that call group endpoints via `orgFetch`. Replace with typed `client` calls:
+
+```typescript
+// Before:
+const resp = await orgFetch(`/orgs/${orgId}/groups`)
+const groups = await resp.json() as GroupEntry[]
+
+// After:
+const { data, error } = await client.GET('/orgs/{org_id}/groups', {
+  params: { path: { org_id: orgId } }
+})
+const groups = data?.items  // typed from OpenAPI schema
+```
+
+**⚠️ Important:** The response shape changes from a bare array to `{"items": [...]}`. The frontend MUST be updated in the same commit or the app breaks.
+
+**⚠️ Important:** After this migration, regenerate the OpenAPI TypeScript types so the typed client knows about the new group endpoints. The build step may do this automatically — check `web/package.json` scripts.
+
+**Step 7: Verify**
+
+Run: `go build ./...`
+Run: `golangci-lint run`
+Run: `go test ./internal/api/ -v -count=1 -run TestGroup`
+Run: `cd web && npm run type-check`
+Run: `cd web && npm run lint`
+Expected: All pass.
+
+**Step 8: Manual smoke test** (if dev environment is available)
+
+Start the backend and frontend. Navigate to a page that shows groups. Verify:
+- Groups list loads
+- Creating a group works
+- Editing a group works
+- Deleting a group works
+- Error messages show RFC 9457 format in browser dev tools
+
+**Step 9: Commit**
+
+```
+feat: migrate groups handlers from chi to huma
+
+Migrates all 8 group endpoints to huma with RFC 9457 errors,
+{"items": [...]} list response shape, pointer PATCH fields,
+and Location header on 201. Updates frontend to use the typed
+openapi-fetch client. Reference migration for all subsequent
+handler files. Addresses findings #6, #7, #31, #32, #33.
+```
+
+---
+
+## Tasks 3.1–3.12: Subsequent Handler Migrations
+
+Each migration follows the Groups reference pattern (Task 3.0) exactly. The handler-specific details below note what's different or needs extra attention.
+
+**Migration order:** Execute in this order. Each migration is one commit. Each includes the frontend update.
+
+### Task 3.1: Saved Searches
+
+**File:** `internal/api/saved_searches.go`
+**Endpoints:** CRUD (create, list, get, update, delete)
+**Special:** Currently not paginated. Wrap in `{"items": [...]}`. Add pagination later if needed.
+**Frontend:** Find saved search store/composable, switch to typed client.
+
+### Task 3.2: API Keys
+
+**File:** `internal/api/apikeys.go`
+**Endpoints:** Create, list, revoke
+**Special:** Create returns the raw API key value — only time it's visible. Ensure the response body includes the key. List returns masked keys only.
+**Frontend:** Find API key management store, switch to typed client.
+
+### Task 3.3: Channels
+
+**File:** `internal/api/channels.go`
+**Endpoints:** CRUD + test-send
+**Special:** Test-send endpoint triggers an outbound HTTP call (webhook). Ensure the huma handler doesn't hold a response timeout during the outbound call — apply `http.TimeoutHandler` if needed.
+**Frontend:** Find channel store, switch to typed client.
+
+### Task 3.4: Watchlists
+
+**File:** `internal/api/watchlists.go`
+**Endpoints:** CRUD + items (add/remove/list)
+**Special:** Already has pagination — migrate to the standard cursor pattern. Currently uses `?after=` with `base64.URLEncoding` of `time|uuid`. Change to `?cursor=` with `base64.RawURLEncoding` of `{"d":"...","id":"..."}`.
+**Frontend:** Update pagination logic to use the new cursor format.
+
+### Task 3.5: Alert Rules
+
+**File:** `internal/api/alert_rules.go`
+**Endpoints:** CRUD + activation
+**Special:**
+- Create returns 202 (activation is async) — handle this in huma's operation registration (`DefaultStatus: 202`)
+- Activation flow: handler inserts rule with `status='activating'`, enqueues scan job
+- Currently has hardcoded `limit=20` with no client-controllable page size — add standard pagination
+**Frontend:** Update alert rules store. The 202 response may need special handling.
+
+### Task 3.6: Deliveries
+
+**File:** `internal/api/deliveries.go`
+**Endpoints:** List + retry
+**Special:**
+- **Finding 43 fix:** The current cursor uses `<RFC3339Nano>/<uuid>` in `next_cursor` but expects `after_created_at` + `after_id` as separate params. Migrate to the standard single `?cursor=` param with base64 JSON encoding. This is a **breaking cursor change** — any stored cursors become invalid.
+- The delivery retry endpoint sends outbound HTTP — same timeout consideration as channels.
+**Frontend:** Update delivery list pagination to use the new cursor format.
+
+### Task 3.7: Reports
+
+**File:** `internal/api/reports.go`
+**Endpoints:** CRUD + schedule management
+**Special:** Has scheduled delivery fields — ensure date/time parsing works with huma's automatic input parsing.
+**Frontend:** Update report store.
+
+### Task 3.8: Orgs
+
+**File:** `internal/api/orgs.go`
+**Endpoints:** Create, get, update
+**Special:**
+- **Finding 34 fix:** Tier limit violations currently return 403. Change to 403 with `type: "urn:cvert-ops:error:tier-limit-exceeded"` in the error body. This applies here and to all other endpoints with tier checks.
+- Bootstrap logic has special auth handling — read carefully before migrating.
+**Frontend:** Update org store.
+
+### Task 3.9: Members and Invitations
+
+**File:** `internal/api/members.go`, `internal/api/invitations.go`
+**Endpoints:** List/update/remove members, create/list/delete invitations
+**Special:** Currently returns bare arrays. Wrap in `{"items": [...]}`.
+**Frontend:** Update members and invitations stores.
+
+### Task 3.10: Audit Log
+
+**File:** `internal/api/audit_log.go`
+**Endpoints:** List (read-only)
+**Special:** Simple migration. May already have pagination — standardize cursor format.
+**Frontend:** Update audit log store.
+
+### Task 3.11: Admin Endpoints
+
+**File:** `internal/api/admin_*.go` (added by Phase 8C Operate)
+**Endpoints:** Org admin, user admin, feed admin, delivery admin, system admin
+**Special:** These use `RequireSiteAdmin` middleware, not `RequireOrgRole`. Ensure the huma migration preserves this distinction. No org context — different middleware chain.
+**Frontend:** Admin UI may or may not exist yet. If it does, update it.
+
+### Task 3.12: Feeds Admin
+
+**File:** `internal/api/admin_feeds.go` (added by Phase 8C Operate)
+**Endpoints:** Pause/resume/logs for feeds
+**Special:** Same admin middleware as Task 3.11.
+**Frontend:** Same as Task 3.11.
+
+---
+
+## Post-Migration Cleanup (after all handlers migrated)
+
+1. **Delete `orgFetch.ts`** — should have zero callers. Verify with `grep -r "orgFetch" web/src/`.
+2. **Delete `writeJSON` helper** — chi handlers used it; huma doesn't need it. Verify no remaining callers.
+3. **Remove chi route blocks** — all org-scoped routes should be huma-registered. The chi router remains as the underlying transport but only for static routes (SPA fallback) and middleware application.
+4. **Regenerate OpenAPI types** — run the TypeScript type generation to pick up all new endpoints.
+5. **Run full test suite:** `go test ./...` + `cd web && npm run test:unit && npm run type-check && npm run lint`
+
+**Commit:**
+```
+chore: remove orgFetch and writeJSON after huma migration
+
+All org-scoped handlers now use huma. Remove the untyped orgFetch
+wrapper and the chi writeJSON helper. Regenerate OpenAPI types.
+```
 
 ---
 
@@ -1278,93 +1746,1021 @@ Tasks 4A (health/readiness), 4B (metrics), and 4C (runServe/runWorker dedup) hav
 - **4A/4B:** Resolved by Phase 8B Observe and 8C Operate (merged before this plan executes).
 - **4C:** Moved to Phase 6 — Phase 8 adds significant code to both runServe/runWorker, making the refactoring more valuable but also more complex post-merge.
 
-### Task 4D: Notification worker semaphore eviction (Finding 14)
+---
 
-- Add a periodic cleanup goroutine that removes semaphores not used in the last 10 minutes
-- Track last-used timestamp per entry
-- Small change, low risk
+## Task 4D: Notification worker semaphore eviction (Finding 14)
 
-### Task 4E: Configurable statement timeout (Finding 44)
+**Finding:** `internal/notify/worker.go` creates a per-org semaphore channel in `semaphore()` (line ~356) but never removes entries. Over the process lifetime, every org that ever receives a notification gets a permanent map entry.
 
-- Allow per-operation timeout override via context
-- Or add a separate config for "long operations" timeout
-- Applied to activation scans, bulk DSL queries, merge operations
+**Files:**
+- Modify: `internal/notify/worker.go`
+- Test: `internal/notify/worker_test.go` (add eviction test)
+
+**Step 1: Read the file**
+
+Read `internal/notify/worker.go`. Find:
+- The `Worker` struct (line ~35-46), specifically the `sems map[uuid.UUID]chan struct{}` and `semsMu sync.Mutex` fields
+- The `NewWorker` constructor (line ~49-62) where the map is initialized
+- The `semaphore()` method (line ~356-363) that creates entries
+- The `Start()` method (line ~71-99) event loop with existing tickers
+
+**Step 2: Add last-used tracking**
+
+Add a `semsLastUsed map[uuid.UUID]time.Time` field to the Worker struct alongside the existing `sems` map. Initialize it in `NewWorker` the same way `sems` is initialized:
+
+```go
+// In Worker struct, next to sems:
+semsLastUsed map[uuid.UUID]time.Time // last access time per semaphore
+
+// In NewWorker, next to sems initialization:
+semsLastUsed: make(map[uuid.UUID]time.Time),
+```
+
+**Step 3: Update semaphore() to record access time**
+
+Modify the `semaphore()` method to record `time.Now()` on every call. The method already holds `semsMu` — add the timestamp update inside the lock:
+
+```go
+func (w *Worker) semaphore(orgID uuid.UUID) chan struct{} {
+	w.semsMu.Lock()
+	defer w.semsMu.Unlock()
+	if _, ok := w.sems[orgID]; !ok {
+		w.sems[orgID] = make(chan struct{}, w.cfg.MaxConcurrentPerOrg)
+	}
+	w.semsLastUsed[orgID] = time.Now()
+	return w.sems[orgID]
+}
+```
+
+**Step 4: Add eviction method**
+
+Add a method that removes semaphores not used within a threshold. Only evict a semaphore if its channel is empty (no in-flight deliveries):
+
+```go
+const semaphoreEvictionAge = 10 * time.Minute
+
+func (w *Worker) evictStaleSemaphores() {
+	w.semsMu.Lock()
+	defer w.semsMu.Unlock()
+	cutoff := time.Now().Add(-semaphoreEvictionAge)
+	for orgID, lastUsed := range w.semsLastUsed {
+		if lastUsed.Before(cutoff) && len(w.sems[orgID]) == 0 {
+			delete(w.sems, orgID)
+			delete(w.semsLastUsed, orgID)
+		}
+	}
+}
+```
+
+**⚠️ Critical:** Only evict when `len(w.sems[orgID]) == 0`. A non-empty channel means deliveries are in flight — evicting would cause goroutines to read/write a channel that's no longer tracked, and a new `semaphore()` call would create a different channel, breaking the concurrency bound.
+
+**Step 5: Wire eviction into the Start() event loop**
+
+In the `Start()` method, add an eviction ticker alongside the existing tickers. Use `time.NewTicker` (NOT `time.After` — see `dev/implementation-pitfalls.md` timer leak pitfall).
+
+Find the existing ticker declarations in `Start()`. Add:
+```go
+evictTicker := time.NewTicker(semaphoreEvictionAge)
+defer evictTicker.Stop()
+```
+
+Add a case to the select loop:
+```go
+case <-evictTicker.C:
+	w.evictStaleSemaphores()
+```
+
+**Step 6: Write a test (TDD — write before implementation if not yet done)**
+
+Add tests in `internal/notify/worker_test.go`:
+
+**Test 1: Stale semaphore is evicted**
+1. Create a Worker with `MaxConcurrentPerOrg: 1` (minimal config needed to construct)
+2. Call `semaphore(orgID)` to create an entry
+3. Verify the entry exists: `len(w.sems) == 1`
+4. Manually set `w.semsLastUsed[orgID]` to `time.Now().Add(-15 * time.Minute)` (past the threshold)
+5. Call `w.evictStaleSemaphores()`
+6. Verify: `len(w.sems) == 0`
+
+**Test 2: In-flight semaphore is NOT evicted**
+1. Call `semaphore(orgID)` to create an entry
+2. Write to the channel: `w.sems[orgID] <- struct{}{}` (simulates in-flight delivery)
+3. Set lastUsed to 15 minutes ago
+4. Call `w.evictStaleSemaphores()`
+5. Verify: `len(w.sems) == 1` (entry preserved)
+
+**⚠️ Agent note:** To access `sems`, `semsLastUsed`, and `evictStaleSemaphores()` from the test, the test must be in package `notify` (not `notify_test`). Check whether the existing test file uses internal or external package naming and match it.
+
+**Step 7: Run tests**
+
+Run: `go test ./internal/notify/ -v -count=1 -run TestEvict`
+Run: `go build ./...`
+Expected: All pass.
+
+**Step 8: Commit**
+
+```
+fix: evict stale per-org semaphores from notification worker
+
+The semaphore map in the notification delivery worker grows without
+bound as orgs receive notifications. Add last-used tracking and a
+periodic cleanup that removes semaphores idle for 10+ minutes,
+but only if no deliveries are in flight. Addresses finding #14.
+```
 
 ---
 
-# Phase 5: Test Quality (Outlined)
+## Task 4E: Configurable long-operation statement timeout (Finding 44)
+
+**Finding:** `DB_STATEMENT_TIMEOUT_MS` is globally set to 14s via `RuntimeParams["statement_timeout"]` in `cmd/cvert-ops/main.go` (line ~609). This applies per-statement to every query on every connection. Some operations (activation scans, complex DSL queries) may legitimately exceed 14 seconds when scanning the full CVE corpus.
+
+**Approach:** Add a configurable long-operation timeout and a `SET LOCAL statement_timeout` helper that overrides the per-connection default within a transaction. `SET LOCAL` resets automatically when the transaction ends.
+
+**Files:**
+- Modify: `internal/config/config.go` (add config field)
+- Modify: `internal/config/config_test.go` (add default test)
+- Create: `internal/store/timeout.go` (helper function)
+- Modify: `internal/alert/evaluator.go` (apply to activation scan)
+- Test: `internal/store/timeout_test.go`
+
+**Step 1: Add config field**
+
+Read `internal/config/config.go`. Find `DBStatementTimeoutMS` (line ~22). Add `DBLongStatementTimeoutMS` immediately after it:
+
+```go
+DBLongStatementTimeoutMS int `env:"DB_LONG_STATEMENT_TIMEOUT_MS" envDefault:"120000"`
+```
+
+**Step 2: Update config test**
+
+Read `internal/config/config_test.go`. Find the defaults table test (line ~109 has `DBStatementTimeoutMS`). Add a row:
+
+```go
+{"DBLongStatementTimeoutMS", cfg.DBLongStatementTimeoutMS, 120000},
+```
+
+**Step 3: Create the helper**
+
+Create `internal/store/timeout.go`:
+
+```go
+// ABOUTME: Transaction-scoped statement timeout override for long-running operations.
+// ABOUTME: Use SetStatementTimeout within a transaction to override the connection-level default.
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+)
+
+// SetStatementTimeout overrides the connection-level statement_timeout for the
+// current transaction. The timeout resets automatically when the transaction
+// ends. Use for operations expected to exceed the default 14s timeout
+// (activation scans, complex DSL queries).
+func SetStatementTimeout(ctx context.Context, tx *sql.Tx, ms int) error {
+	_, err := tx.ExecContext(ctx, fmt.Sprintf("SET LOCAL statement_timeout = %d", ms))
+	return err
+}
+```
+
+**⚠️ Constraint:** `SET LOCAL` only works inside a transaction. This helper takes `*sql.Tx`, not a bare connection. A version that takes a bare connection would use `SET` (session-level), which would persist on the pooled connection and affect all subsequent queries — never do this.
+
+**Step 4: Apply to activation scan**
+
+Read `internal/alert/evaluator.go`. Find the activation scan method — it scans all CVEs matching a newly created rule. This is the primary operation that may exceed 14s (scanning 250k+ CVEs with regex conditions).
+
+At the start of the activation scan's transaction, call:
+```go
+if err := store.SetStatementTimeout(ctx, tx, cfg.DBLongStatementTimeoutMS); err != nil {
+	return fmt.Errorf("set long statement timeout: %w", err)
+}
+```
+
+**⚠️ Important:** Read the evaluator code carefully to find:
+1. The exact method name for activation scans
+2. How it obtains its transaction (it may use a store transaction helper)
+3. Where `cfg` is accessible (the evaluator may need the long timeout value passed at construction or as a parameter)
+
+If the evaluator doesn't have direct access to `*sql.Tx` (e.g., it uses a store method that wraps the transaction), you may need to add the timeout call inside the store method instead. Follow the existing transaction pattern — don't restructure.
+
+**Step 5: Write a test**
+
+Create `internal/store/timeout_test.go`. Test that `SetStatementTimeout` correctly overrides the timeout within a transaction:
+
+```go
+func TestSetStatementTimeout_CancelsSlowQuery(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	err := tdb.WithBypassTx(ctx, func(tx *sql.Tx) error {
+		// Set a very short timeout (1ms)
+		if err := store.SetStatementTimeout(ctx, tx, 1); err != nil {
+			return err
+		}
+		// This 1-second sleep should be cancelled by the 1ms timeout
+		_, err := tx.ExecContext(ctx, "SELECT pg_sleep(1)")
+		return err
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "canceling statement due to statement timeout")
+}
+```
+
+**⚠️ Important:** Read `internal/store/store.go` to find the correct transaction helper method name. It may be `withBypassTx` (unexported) or a different exported method. If `withBypassTx` is unexported, the test must be in package `store` (not `store_test`), or use a different approach to get a transaction (e.g., `tdb.DB().Begin()`).
+
+**Step 6: Run tests**
+
+Run: `go test ./internal/store/ -v -count=1 -run TestSetStatementTimeout`
+Run: `go test ./internal/config/ -v -count=1`
+Run: `go build ./...`
+Expected: All pass.
+
+**Step 7: Commit**
+
+```
+feat: add configurable long-operation statement timeout
+
+Add DB_LONG_STATEMENT_TIMEOUT_MS config (default 120s) and a
+store.SetStatementTimeout helper that overrides the per-connection
+14s timeout within a transaction using SET LOCAL. Applied to
+activation scans which may query the full CVE corpus.
+Addresses finding #44.
+```
+
+---
+
+# Phase 5: Test Quality
 
 **Findings addressed:** 22, 23, 24, 36
 
-### Task 5A: Feed adapter golden file tests (Finding 23)
+---
+
+## Task 5A: Feed adapter golden file tests (Finding 23)
 
 **Superseded by dedicated plan:** `dev/plans/2026-03-11-test-fixture-corpus.md`
 
 That plan covers the full scope: capture tool, CVE selection agent, fixture extraction, golden file tests for all 8 adapters (NVD, GHSA, KEV, MITRE, OSV, EPSS, MSRC, Red Hat), URL-rewrite transport infrastructure, and a `SeedCorpus` integration helper. Execute that plan instead of implementing this task directly.
 
-### Task 5B: Ingest handler integration test (Finding 22)
-
-- Write one test that uses the real merge function and a test database
-- Verifies data actually reaches the DB after handler processing
-- Replaces or supplements the mock-based tests
-
-### Task 5C: Email testcontainer test (Finding 24)
-
-- Use Inbucket testcontainer (pattern from recent commit f253dc2)
-- Replace Mailpit skip-if-unavailable with testcontainer startup
-- Update header injection test to query Inbucket API and verify Bcc was stripped
-
-### Task 5D: Advisory lock concurrency test (Finding 36)
-
-- Use two goroutines that attempt concurrent merge of the same CVE ID
-- Verify both complete without data corruption
-- Use `pg_advisory_xact_lock` visibility to prove serialization
+**Do NOT implement this task from this plan.** The fixture corpus plan has 6 review rounds of refinement and is authoritative.
 
 ---
 
-# Phase 6: Architecture (Outlined — Defer)
+## Task 5B: Ingest handler integration test (Finding 22)
+
+**Finding:** `internal/ingest/handler_test.go` tests use `mockMerge` and `mockAdapter` — all assertions verify mock call counts and arguments, never that data actually reaches the database. A bug in the handler→merge→DB data flow would go undetected.
+
+**Files:**
+- Create: `internal/ingest/handler_integration_test.go`
+- Read (reference, do not modify): `internal/ingest/handler.go` (injection points)
+- Read (reference, do not modify): `internal/ingest/handler_test.go` (existing mock patterns)
+- Read (reference, do not modify): `internal/merge/pipeline_integration_test.go` (TestDB usage)
+
+**Step 1: Understand the injection points**
+
+Read `internal/ingest/handler.go`. The key types and functions:
+
+- `Payload` struct — JSON payload passed to the handler. Read its fields (at minimum it has `FeedName string`). Do NOT guess field names.
+- `HandlerStore` interface (line ~26-30) — sync state persistence. `*store.Store` satisfies this.
+- `MergeFunc` type (line ~33) — `func(ctx, *store.Store, feed.CanonicalPatch, string) error`
+- `HandlerWithFactory` (line ~43-45) — accepts `*store.Store`, `*http.Client`, `MergeFunc`, `AdapterFactory`
+- `handlerWithStore` (line ~49) — internal implementation. Passes `st` for both `syncSt` and `mergeSt`.
+
+The integration test should use:
+- Real `*store.Store` (via `testutil.NewTestDB`) for both sync state and merge
+- Real `merge.Ingest` as the merge function
+- A test adapter that returns known `CanonicalPatch` data (we're testing handler→merge→DB, not HTTP parsing)
+
+**Step 2: Write the test adapter**
+
+Create a minimal adapter that returns one patch, then signals last page:
+
+```go
+type singlePatchAdapter struct {
+	patch  feed.CanonicalPatch
+	called bool
+}
+
+func (a *singlePatchAdapter) Fetch(ctx context.Context, cursor json.RawMessage) (*feed.FetchResult, error) {
+	if a.called {
+		return &feed.FetchResult{LastPage: true}, nil
+	}
+	a.called = true
+	return &feed.FetchResult{
+		Patches:  []feed.CanonicalPatch{a.patch},
+		Cursor:   json.RawMessage(`{"done":true}`),
+		LastPage: true,
+	}, nil
+}
+```
+
+**⚠️ Critical:** Read `internal/feed/types.go` to verify the exact `CanonicalPatch` field names and `FetchResult` field names. The struct above is illustrative. Use the actual field names from the codebase.
+
+**Step 3: Write the integration test**
+
+```go
+func TestHandler_Integration_DataReachesDB(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	testPatch := feed.CanonicalPatch{
+		CVEID:       "CVE-2024-99999",
+		Description: "Test vulnerability for integration test",
+		Severity:    "HIGH",
+		SourceURL:   "https://example.com/CVE-2024-99999",
+	}
+
+	adapter := &singlePatchAdapter{patch: testPatch}
+	factory := func(name string, client *http.Client) (feed.Adapter, error) {
+		return adapter, nil
+	}
+
+	handler := ingest.HandlerWithFactory(tdb.Store, nil, merge.Ingest, factory)
+
+	payload, err := json.Marshal(ingest.Payload{FeedName: "test-integration"})
+	require.NoError(t, err)
+
+	err = handler(ctx, payload)
+	require.NoError(t, err)
+
+	// Verify data reached the database — the CVE should exist
+	// Read the store code to find the correct method: GetCVE, GetCVEByID, etc.
+	cve, err := tdb.GetCVE(ctx, "CVE-2024-99999")
+	require.NoError(t, err)
+	require.Equal(t, "CVE-2024-99999", cve.CveID)
+}
+```
+
+**⚠️ Important:** Read the `Payload` struct to verify field names. It may be `FeedName`, `Feed`, `Name`, or something else.
+
+**⚠️ Important:** Read the store to find the correct CVE query method. It may be `GetCVE(ctx, cveID)` or `GetCVEByID(ctx, cveID)` or accessed via the sqlc-generated queries. Check `internal/store/generated/` or search for existing test patterns in `internal/merge/pipeline_integration_test.go`.
+
+**⚠️ Important:** The `AdapterFactory` type signature may differ from `func(name string, client *http.Client) (feed.Adapter, error)`. Read `internal/ingest/handler.go` for the exact type definition.
+
+**⚠️ Important:** Passing `nil` for `*http.Client` is safe only if the test adapter doesn't use it. Verify by reading `HandlerWithFactory` — if it wraps the client or passes it to the factory, `nil` may cause a panic. If so, pass `http.DefaultClient`.
+
+**Step 4: Run tests**
+
+Run: `go test ./internal/ingest/ -v -count=1 -run TestHandler_Integration`
+Expected: Test passes, proving data flows from handler through merge to database.
+
+**Step 5: Commit**
+
+```
+test: add ingest handler integration test with real merge and DB
+
+Supplements the existing mock-based handler tests with an
+integration test that uses real merge.Ingest and a real Postgres
+testcontainer. Verifies the full handler→merge→DB data path
+that mock tests cannot validate. Addresses finding #22.
+```
+
+---
+
+## Task 5C: Email testcontainer with header injection verification (Finding 24)
+
+**Finding:** `internal/notify/email_test.go` skips tests when Mailpit is unavailable (line ~25-27). The header injection test (`TestEmailSend_SubjectHeaderInjection`, line ~64-81) is security-critical but effectively unrun in CI. Even when it runs, it doesn't verify the injected header was actually stripped from the delivered message.
+
+**Files:**
+- Modify: `internal/testutil/smtp.go` (add web API URL to TestSMTP)
+- Modify: `internal/notify/email_test.go` (replace skip with testcontainer, add header verification)
+
+**Step 1: Extend TestSMTP with web API URL**
+
+Read `internal/testutil/smtp.go`. The existing `TestSMTP` struct has `Host` and `Port`. Add `WebURL string` for querying the Inbucket REST API:
+
+```go
+type TestSMTP struct {
+	Host   string
+	Port   int
+	WebURL string // Inbucket REST API base URL for message inspection
+}
+```
+
+In `NewTestSMTP`, after getting the SMTP connection, also get the web interface URL. The inbucket testcontainer module exposes this — read the module source or docs to find the exact method. It is likely one of:
+- `ctr.WebInterface(ctx)` → returns `string, error`
+- `ctr.WebAddress(ctx)` → returns `string, error`
+- `ctr.MappedPort(ctx, "9000/tcp")` → returns the mapped port
+
+**⚠️ Critical:** Do NOT guess the method name. Read the `testcontainers-go/modules/inbucket` package to find the correct method for the web API URL. The SMTP connection method is `SmtpConnection(ctx)` — there should be an analogous method for the web interface.
+
+Store the result:
+```go
+webURL, err := ctr.WebInterface(ctx) // verify method name
+if err != nil {
+	t.Fatalf("get inbucket web interface: %v", err)
+}
+return &TestSMTP{Host: host, Port: port, WebURL: webURL}
+```
+
+**⚠️ Note:** The web URL may or may not include the scheme (`http://`). If it returns just `host:port`, prepend `http://`. Read the return value documentation.
+
+**Step 2: Replace skip logic with testcontainer**
+
+Read `internal/notify/email_test.go`. The current pattern:
+```go
+// Lines 25-27 (approximate):
+conn, err := net.DialTimeout("tcp", "localhost:1025", time.Second)
+if err != nil {
+	t.Skip("Mailpit not available")
+}
+conn.Close()
+```
+
+Replace this with:
+```go
+smtp := testutil.NewTestSMTP(t)
+cfg := notify.SmtpConfig{
+	Host: smtp.Host,
+	Port: smtp.Port,
+	From: "test@example.com",
+}
+```
+
+Apply this change to ALL test functions in the file that use the skip pattern. Each test should call `testutil.NewTestSMTP(t)` — or better, if multiple tests share setup, use a `TestMain` or helper function that creates one container per test file.
+
+**⚠️ Performance consideration:** Starting a Docker container per test function is slow. If the file has multiple test functions, consider creating the container once with a helper:
+```go
+func setupSMTP(t *testing.T) (*testutil.TestSMTP, notify.SmtpConfig) {
+	t.Helper()
+	smtp := testutil.NewTestSMTP(t)
+	return smtp, notify.SmtpConfig{Host: smtp.Host, Port: smtp.Port, From: "test@example.com"}
+}
+```
+Each test calls this independently — testcontainers-go reuses containers within the same test binary run if configured, but verify this behavior.
+
+**Step 3: Add header injection verification**
+
+The existing `TestEmailSend_SubjectHeaderInjection` test sends an email with `\r\nBcc: attacker@evil.com` injected in the subject. Currently it only checks that `EmailSend` returns no error. Add verification that the delivered message does NOT contain the injected Bcc header.
+
+After sending the email, query the Inbucket REST API:
+
+```go
+// Wait briefly for message delivery
+time.Sleep(500 * time.Millisecond)
+
+// List messages in the recipient's mailbox
+// Inbucket mailbox name = local part of recipient email (before @)
+listURL := fmt.Sprintf("%s/api/v1/mailbox/recipient", smtp.WebURL)
+resp, err := http.Get(listURL)
+require.NoError(t, err)
+defer resp.Body.Close()
+
+var messages []struct {
+	ID string `json:"id"`
+}
+require.NoError(t, json.NewDecoder(resp.Body).Decode(&messages))
+require.Len(t, messages, 1, "expected exactly one delivered message")
+
+// Fetch full message with headers
+msgURL := fmt.Sprintf("%s/api/v1/mailbox/recipient/%s", smtp.WebURL, messages[0].ID)
+msgResp, err := http.Get(msgURL)
+require.NoError(t, err)
+defer msgResp.Body.Close()
+
+var msg struct {
+	Header map[string][]string `json:"header"`
+}
+require.NoError(t, json.NewDecoder(msgResp.Body).Decode(&msg))
+
+// Verify the injected Bcc header was stripped
+_, hasBcc := msg.Header["Bcc"]
+require.False(t, hasBcc, "injected Bcc header must not appear in delivered message")
+```
+
+**⚠️ Important:** Read the existing test to find the actual recipient email address used. The mailbox name in the Inbucket API is the local part (before `@`). If the test sends to `user@example.com`, the mailbox is `user`.
+
+**⚠️ Important:** The Inbucket REST API response format shown above is illustrative. Read the Inbucket API docs (https://github.com/inbucket/inbucket/wiki/REST-API) or inspect the response manually to verify the actual JSON structure. Key things to verify:
+- List endpoint response format (is it a bare array or wrapped in an object?)
+- Individual message response format (where are headers located?)
+- Whether the header field is `"header"` or `"headers"` or nested differently
+
+**⚠️ Important:** The `time.Sleep(500ms)` is a pragmatic delay for SMTP delivery. If this proves flaky, use a polling loop with a timeout instead. But start with the simple approach.
+
+**Step 4: Run tests**
+
+Run: `go test ./internal/notify/ -v -count=1 -run TestEmailSend`
+Expected: All email tests pass, including the header injection test with actual header verification.
+
+**Step 5: Commit**
+
+```
+test: replace Mailpit skip with Inbucket testcontainer and verify header stripping
+
+Email tests now always run using an Inbucket testcontainer instead of
+skipping when Mailpit is unavailable. The header injection test now
+queries the Inbucket REST API to verify the Bcc header was actually
+stripped from the delivered message. Addresses finding #24.
+```
+
+---
+
+## Task 5D: Advisory lock concurrency test (Finding 36)
+
+**Finding:** `internal/merge/pipeline_integration_test.go` has `TestIngest_AdvisoryLockAcquired` (line ~544-583) which only tests that `CVEAdvisoryKey` is deterministic and that a single Ingest succeeds. It does NOT verify that the advisory lock serializes concurrent merges.
+
+**Files:**
+- Modify: `internal/merge/pipeline_integration_test.go` (add concurrent test)
+
+**Step 1: Read the existing test**
+
+Read `internal/merge/pipeline_integration_test.go`. Find `TestIngest_AdvisoryLockAcquired` and understand the test setup: how it creates `testutil.NewTestDB`, constructs patches, and calls `merge.Ingest`.
+
+Also read the `CanonicalPatch` struct in `internal/feed/types.go` to verify field names.
+
+**Step 2: Write the concurrency test**
+
+Add `TestIngest_AdvisoryLock_SerializesConcurrentMerges` after the existing lock test:
+
+```go
+func TestIngest_AdvisoryLock_SerializesConcurrentMerges(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2024-LOCK-TEST"
+
+	// Two different source patches for the same CVE
+	patch1 := feed.CanonicalPatch{
+		CVEID:       cveID,
+		Description: "Description from source A",
+		Severity:    "HIGH",
+		SourceURL:   "https://source-a.example.com",
+	}
+	patch2 := feed.CanonicalPatch{
+		CVEID:       cveID,
+		Description: "Description from source B",
+		Severity:    "CRITICAL",
+		SourceURL:   "https://source-b.example.com",
+	}
+
+	// Run two merges concurrently — they contend on the same advisory lock
+	errs := make(chan error, 2)
+	go func() { errs <- merge.Ingest(ctx, tdb.Store, patch1, "source-a") }()
+	go func() { errs <- merge.Ingest(ctx, tdb.Store, patch2, "source-b") }()
+
+	// Both must complete without error (no deadlock, no data corruption)
+	for i := 0; i < 2; i++ {
+		require.NoError(t, <-errs)
+	}
+
+	// Verify the CVE exists with data from both sources
+	// The merge pipeline re-reads all cve_sources and resolves from scratch,
+	// so the final state reflects both source contributions.
+	// Use the correct store method — read existing tests for the pattern.
+}
+```
+
+**⚠️ Critical:** Read `internal/feed/types.go` to verify `CanonicalPatch` field names. The struct above is illustrative.
+
+**⚠️ Critical:** After verifying both merges succeed, also verify both source rows were persisted. Read the existing integration tests to find how to query `cve_sources` — it may be via a sqlc-generated method like `GetAllCVESources(ctx, cveID)`. The exact verification depends on what methods are available. At minimum, verify the CVE exists. Ideally, also verify two distinct source rows.
+
+**⚠️ Important:** This test proves serialization by showing that:
+1. Both concurrent merges complete without error (no deadlock)
+2. Both sources persist (no data loss from concurrent writes)
+3. The CVE's final state is consistent (not corrupted)
+
+It does NOT need to prove ordering (which merge runs first is nondeterministic) or measure timing. The advisory lock guarantees serialization — the test just verifies the system handles concurrent contention correctly.
+
+**Step 3: Run tests**
+
+Run: `go test ./internal/merge/ -v -count=1 -run TestIngest_AdvisoryLock_Serializes`
+Expected: Test passes.
+
+**Step 4: Commit**
+
+```
+test: add concurrent advisory lock merge test
+
+Two goroutines merge different source patches for the same CVE ID
+concurrently. Verifies both complete without error and both sources
+persist, proving the advisory lock serializes concurrent merges
+without deadlock or data corruption. Addresses finding #36.
+```
+
+---
+
+# Phase 6: Architecture
 
 **Findings addressed:** 15, 16, 17, 19, 25, 39
 
-These are structural improvements that benefit from the earlier phases being stable. Phase 8 merge makes some of these more impactful (more code to factor out) but also more complex.
+**Dependency note:** Task 6C (extract shared app setup) depends on Phase 3 completing — it's deferred. All other tasks are independent of each other and of earlier phases.
 
-### Task 6A: Replace Set*Deps with options struct (Finding 15, partial)
+---
 
-- Replace `SetAlertDeps`, `SetAIDeps`, `SetAuditDeps` with a single `ServerDeps` struct passed to `NewServer`
-- Validates all required deps at construction time
-- Eliminates temporal coupling
-- **Post-Phase 8 note:** Phase 8C Operate adds more dependencies (doctor, admin routes). Include these in the options struct.
+## Task 6A: Replace Set*Deps with ServerDeps options struct (Finding 15)
 
-### Task 6B: Unify or instrument notification worker (Finding 16)
+**Finding:** `internal/api/server.go` has three setter methods (`SetAlertDeps`, `SetAIDeps`, `SetAuditDeps`) that must be called after `NewServer` in the correct order. This temporal coupling means wrong ordering or missing calls produce nil-pointer panics at runtime, not compile time.
 
-- Either migrate notification delivery to the generic worker pool
-- Or add equivalent health check + metrics to the notification worker
-- **Post-Phase 8 note:** Phase 8B Observe already adds notification delivery metrics. The remaining gap is health check integration — the notification worker should report readiness to the `/readyz` endpoint added by Phase 8C.
+**Files:**
+- Modify: `internal/api/server.go` (add ServerDeps, modify NewServer, delete setters)
+- Modify: `cmd/cvert-ops/main.go` (update both runServe and runWorker)
+- Test: compile-time verification via `go build ./...`
 
-### Task 6C: Extract shared app setup from runServe/runWorker (Finding 17)
+**Step 1: Read the files**
 
+Read `internal/api/server.go`. Find:
+- The `Server` struct (line ~35-55) — note the fields set by the three setters:
+  - `alertCache *alert.RuleCache` and `alertEvaluator *alert.Evaluator` (set by `SetAlertDeps`, line ~425-430)
+  - `llm ai.LLMClient` (set by `SetAIDeps`, line ~432-436)
+  - `auditWriter *audit.Writer` (set by `SetAuditDeps`, line ~438-441)
+- `NewServer` constructor (line ~59-128) — note which fields it already sets during construction
+
+Read `cmd/cvert-ops/main.go`. Find where the setters are called in:
+- `runServe` (line ~196: `SetAlertDeps`, line ~199-200: `SetAIDeps`, and `SetAuditDeps` nearby)
+- `runWorker` (find the equivalent calls — runWorker may call a subset)
+
+**Step 2: Define ServerDeps struct**
+
+Add near the `Server` struct definition:
+
+```go
+// ServerDeps holds optional dependencies injected at construction time.
+// Fields may be nil if the feature is disabled (e.g., LLM client when
+// AI enrichment is off).
+type ServerDeps struct {
+	AlertCache     *alert.RuleCache
+	AlertEvaluator *alert.Evaluator
+	LLM            ai.LLMClient
+	AuditWriter    *audit.Writer
+}
+```
+
+**⚠️ Post-Phase 8 note:** Phase 8C Operate may have added additional dependencies (doctor, admin routes). Read the current `Server` struct and all `Set*` methods to capture ALL post-construction dependencies, not just the original three. If Phase 8C added more setters or direct field assignments in main.go, include those in `ServerDeps` too.
+
+**Step 3: Modify NewServer to accept ServerDeps**
+
+Change the `NewServer` signature. The current signature is approximately:
+```go
+func NewServer(st *store.Store, cfg *config.Config) (*Server, error)
+```
+
+Change to:
+```go
+func NewServer(st *store.Store, cfg *config.Config, deps ServerDeps) (*Server, error)
+```
+
+Inside the constructor, assign the deps fields alongside existing field initialization:
+```go
+srv := &Server{
+	// ... existing fields ...
+	alertCache:     deps.AlertCache,
+	alertEvaluator: deps.AlertEvaluator,
+	llm:            deps.LLM,
+	auditWriter:    deps.AuditWriter,
+}
+```
+
+**⚠️ Critical:** Read the full `NewServer` body before modifying. Don't duplicate initialization for fields already set during construction. The deps replace ONLY the fields that were previously set by the setter methods.
+
+**Step 4: Delete the setter methods**
+
+Delete `SetAlertDeps`, `SetAIDeps`, `SetAuditDeps` entirely. Do NOT comment them out, leave stubs, or add deprecation notes.
+
+**Step 5: Update callers in main.go**
+
+In `runServe`, replace the setter calls with a `ServerDeps` literal passed to `NewServer`:
+
+```go
+apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
+	AlertCache:     alertCache,
+	AlertEvaluator: alertEval,
+	LLM:            llm,        // may be nil if AI is disabled
+	AuditWriter:    auditWriter,
+})
+```
+
+Do the same in `runWorker`. Read the existing code to determine which deps are available in worker mode — `runWorker` may not create an LLM client or audit writer. Pass nil for unavailable deps.
+
+**⚠️ Important:** Search the entire codebase for calls to `SetAlertDeps`, `SetAIDeps`, `SetAuditDeps` — there may be callers in test files too. Update or remove all of them.
+
+**Step 6: Verify**
+
+Run: `go build ./...` (the compiler catches any callers still using deleted setters)
+Run: `golangci-lint run`
+Run: `go test ./internal/api/ -v -count=1`
+Expected: All pass.
+
+**Step 7: Commit**
+
+```
+refactor: replace Set*Deps with ServerDeps constructor parameter
+
+Replaces temporal coupling (SetAlertDeps, SetAIDeps, SetAuditDeps
+called post-construction) with a single ServerDeps struct passed to
+NewServer. Dependencies are wired at construction time — missing
+calls cause compile errors, not runtime nil-pointer panics.
+Addresses finding #15.
+```
+
+---
+
+## Task 6B: Add health reporting to notification worker (Finding 16)
+
+**Finding:** The notification worker (`internal/notify/worker.go`) operates independently from the generic worker pool. Phase 8B Observe added delivery metrics, but the worker has no health reporting — if it stops claiming or gets stuck, there's no visibility via the `/readyz` endpoint.
+
+**Files:**
+- Modify: `internal/notify/worker.go` (add health tracking + Healthy method)
+- Modify: `cmd/cvert-ops/main.go` (wire Healthy into readiness endpoint)
+- Test: `internal/notify/worker_test.go`
+
+**Step 1: Understand the existing health pattern**
+
+Search for the readiness endpoint added by Phase 8C. Look in:
+- `internal/api/` for a `/readyz` or `/healthz` handler
+- `cmd/cvert-ops/main.go` for readiness check registration
+
+Understand what interface or callback the readiness endpoint expects. It likely aggregates multiple component health checks. Match whatever pattern already exists — do NOT invent a new one.
+
+**⚠️ Critical:** The readiness check pattern is the single most important thing to read before writing any code. If the agent doesn't match the existing pattern, the health check won't be wired correctly.
+
+**Step 2: Add health state tracking**
+
+In the `Worker` struct, add an atomic value to track the last successful claim loop tick:
+
+```go
+lastClaimAt atomic.Value // stores time.Time — last successful claim loop iteration
+```
+
+In the `Start()` method's event loop, after each claim iteration (whether or not jobs were found), store the current time:
+
+```go
+w.lastClaimAt.Store(time.Now())
+```
+
+Find the exact location in `Start()` — it's inside the select loop, in the claim ticker case. The claim loop running at all (even finding zero jobs) means the worker is healthy.
+
+**Step 3: Add Healthy method**
+
+```go
+// Healthy reports whether the delivery worker's claim loop is running.
+// Returns false if the loop hasn't ticked within 2× the claim interval.
+func (w *Worker) Healthy() bool {
+	v := w.lastClaimAt.Load()
+	if v == nil {
+		return false
+	}
+	lastTick := v.(time.Time)
+	// Use the claim ticker interval — read the Start() method to find
+	// the exact duration used for the claim ticker.
+	return time.Since(lastTick) < 2*claimInterval
+}
+```
+
+**⚠️ Important:** Read `Start()` to find the claim ticker's interval. It may be a config field (`w.cfg.ClaimInterval` or similar) or a constant. Use whatever the existing code uses — don't hardcode a duration.
+
+**Step 4: Wire into readiness endpoint**
+
+In `cmd/cvert-ops/main.go`, find where readiness checks are registered. Add the notification worker's `Healthy()` method as an additional check.
+
+The exact wiring depends on Phase 8C's implementation. Possible patterns:
+- A `[]func() bool` slice passed to the readiness handler
+- A `HealthChecker` interface that the worker can implement
+- Direct registration on an `api.Server` method
+
+Match the existing pattern. Do NOT restructure the readiness endpoint.
+
+**Step 5: Write a test**
+
+Test `Healthy()` in isolation:
+1. Create a Worker (minimal config)
+2. Assert `Healthy()` returns `false` (never started)
+3. Manually `w.lastClaimAt.Store(time.Now())`
+4. Assert `Healthy()` returns `true`
+5. `w.lastClaimAt.Store(time.Now().Add(-1 * time.Hour))`
+6. Assert `Healthy()` returns `false` (stale)
+
+**Step 6: Run tests**
+
+Run: `go test ./internal/notify/ -v -count=1 -run TestWorker_Healthy`
+Run: `go build ./...`
+Expected: All pass.
+
+**Step 7: Commit**
+
+```
+feat: add health reporting to notification delivery worker
+
+The delivery worker now tracks its last claim loop tick and exposes
+a Healthy() method. Wired into the /readyz endpoint so the readiness
+probe detects a stuck delivery worker. Addresses finding #16.
+```
+
+---
+
+## Task 6C: Extract shared app setup from runServe/runWorker (Finding 17)
+
+**DEFERRED — depends on Phase 3 completing.**
+
+Phase 3 (chi→huma migration) will restructure how the HTTP server is initialized. Extracting `buildApp()` before that migration would require rework afterward. Additionally, Phase 8B/8C/8D all added code to both functions, making the duplication worse but the refactoring scope larger.
+
+Execute this task only after Phase 3 is complete and stable. The approach:
 - Create `buildApp() (*App, error)` that returns a struct with all wired dependencies
 - `runServe` calls `buildApp()` then adds HTTP server
 - `runWorker` calls `buildApp()` then runs worker pool directly
-- **Post-Phase 8 note:** Previously Task 4C. Moved here because Phase 8B/8C/8D all add code to both functions (metrics port, auto-migrate, generic feed loading), making the duplication worse but the refactoring scope larger. Best done after Phase 3 (chi→huma) is also complete so the API server setup is stable.
 
-### Task 6D: ~~Implement import-bulk for NVD~~ — INVALIDATED (Finding 19)
+**No action needed now.**
+
+---
+
+## Task 6D: ~~Implement import-bulk for NVD~~ — INVALIDATED (Finding 19)
 
 **Finding 19 is invalid.** NVD does not offer bulk download files. Their [developer documentation](https://nvd.nist.gov/developers/start-here) explicitly recommends iterative API calls with `startIndex` pagination for initial data population. The existing `import-bulk` command accepts a local file, which is valid for offline/airgapped scenarios, but there are no NVD bulk archives to feed it.
 
 No action needed. If initial population performance becomes a concern, the NVD feed adapter's normal sync (with parallelized paginated API calls) is the correct approach — not a separate bulk import path.
 
-### Task 6E: Extract MergeStore interface (Finding 25)
+---
 
-- Define a `MergeStore` interface in `internal/merge/` with the methods the pipeline actually calls
-- `*store.Store` already implements these methods
-- Enables future testing with fake store
+## Task 6E: Extract MergeStore interface (Finding 25)
 
-### Task 6F: Refactor BootstrapFirstUserOrg to use withBypassTx (Finding 39)
+**Finding:** `internal/merge.Ingest` takes `*store.Store` (concrete struct). The merge pipeline calls `s.Pool()` and `s.DB()` directly. This tight coupling means merge tests always require a real Postgres database.
 
-- Restructure to use the defer-based transaction helper
-- Move advisory lock logic into the callback
-- Reduces error-prone manual rollback paths
+**Files:**
+- Create: `internal/merge/store.go` (interface definition)
+- Modify: `internal/merge/pipeline.go` (change parameter type)
+- Modify: `internal/ingest/handler.go` (update MergeFunc type if it references `*store.Store`)
+- Verify: `cmd/cvert-ops/main.go` (callers pass `*store.Store` which satisfies the interface implicitly)
+
+**Step 1: Catalog store method calls in the merge pipeline**
+
+Read `internal/merge/pipeline.go` thoroughly. Find EVERY method called on the `s` parameter (currently typed `*store.Store`). Based on earlier analysis, Ingest calls:
+- `s.Pool()` — to begin a pgx transaction
+- `s.DB()` — for `database/sql` operations
+
+But there may be other calls. Read the entire function and note every `s.` call.
+
+**⚠️ Critical:** Do NOT create the interface from assumptions. Read every line of `Ingest` (and any helper functions it calls that receive `s`). If Ingest passes `s` to other functions, trace those too.
+
+**Step 2: Define the interface**
+
+Create `internal/merge/store.go`:
+
+```go
+// ABOUTME: Interface for the store dependency used by the merge pipeline.
+// ABOUTME: Decouples merge from the concrete store.Store for testability.
+package merge
+
+import (
+	"database/sql"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Store defines the database access the merge pipeline requires.
+// *store.Store satisfies this interface implicitly.
+type Store interface {
+	Pool() *pgxpool.Pool
+	DB() *sql.DB
+}
+```
+
+**⚠️ Adjust based on Step 1:** If the pipeline calls additional methods on `s` beyond `Pool()` and `DB()`, add them to the interface. The interface must include exactly the methods that are called — no more, no less.
+
+**⚠️ Naming:** The interface is `merge.Store`, not `merge.MergeStore` (the package name provides context, so `merge.MergeStore` stutters).
+
+**Step 3: Update Ingest signature**
+
+In `internal/merge/pipeline.go`, change:
+```go
+func Ingest(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
+```
+to:
+```go
+func Ingest(ctx context.Context, s Store, patch feed.CanonicalPatch, sourceName string) error
+```
+
+Remove the `store` package import if it's no longer needed (it likely is still needed for `store.Store` references in sqlc-generated queries — check carefully).
+
+**Step 4: Update MergeFunc type if needed**
+
+Read `internal/ingest/handler.go`. The `MergeFunc` type (line ~33) references `*store.Store`:
+```go
+type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
+```
+
+This must change to match the new signature:
+```go
+type MergeFunc func(ctx context.Context, s merge.Store, patch feed.CanonicalPatch, sourceName string) error
+```
+
+**⚠️ Watch for circular imports:** `ingest` already imports `merge` (it calls `merge.Ingest`). Changing `MergeFunc` to reference `merge.Store` should work since `merge.Store` is in the `merge` package. But verify there are no import cycles.
+
+**⚠️ Alternative:** If changing `MergeFunc` causes import issues, leave it as `*store.Store` — the concrete type satisfies the interface, so `merge.Ingest` can still be passed as a `MergeFunc`. The interface change in `pipeline.go` is the primary value.
+
+**Step 5: Verify**
+
+Run: `go build ./...` (compiler verifies `*store.Store` satisfies `merge.Store`)
+Run: `go test ./internal/merge/ -v -count=1`
+Run: `go test ./internal/ingest/ -v -count=1`
+Expected: All pass with zero behavior changes.
+
+**Step 6: Commit**
+
+```
+refactor: extract merge.Store interface from concrete store dependency
+
+Defines a merge.Store interface with the methods the merge pipeline
+actually calls. *store.Store satisfies it implicitly. Enables future
+testing with fake stores. Addresses finding #25.
+```
+
+---
+
+## Task 6F: Refactor BootstrapFirstUserOrg to use withBypassTx (Finding 39)
+
+**Finding:** `internal/store/org.go` `BootstrapFirstUserOrg` (line ~66-123) manually manages transaction begin/rollback/commit with 6 explicit rollback calls and a manual panic recovery. The rest of the store uses `withBypassTx` which handles this via defer.
+
+**Files:**
+- Modify: `internal/store/org.go`
+- Test: existing bootstrap tests should pass unchanged
+
+**Step 1: Read both patterns**
+
+Read `internal/store/org.go` lines 66-123. Understand the full flow:
+1. `s.db.BeginTx(ctx, nil)` — manual transaction start
+2. `SET LOCAL app.bypass_rls = 'on'` — bypass RLS
+3. `pg_advisory_xact_lock(bootstrapLockKey)` — serialize concurrent attempts
+4. `SELECT COUNT(*) FROM users` — check if first user
+5. Early return with rollback if `count != 1`
+6. `CreateOrg` + `CreateOrgMember` via sqlc
+7. `tx.Commit()`
+8. Six explicit `tx.Rollback()` calls on error paths
+9. Manual `recover()` with rollback in defer
+
+Read `internal/store/store.go` to understand `withBypassTx`. Find:
+- Its exact signature: `func (s *Store) withBypassTx(ctx context.Context, fn func(tx *sql.Tx) error) error` (verify)
+- What it does: begins tx, sets bypass_rls, calls fn, commits on nil error, rollbacks on error
+- Whether it handles panics (if it does, the manual recover in Bootstrap is redundant)
+
+**Step 2: Refactor**
+
+Replace the manual transaction management with `withBypassTx`:
+
+```go
+func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, orgName string) (*generated.Organization, error) {
+	var org *generated.Organization
+	err := s.withBypassTx(ctx, func(tx *sql.Tx) error {
+		// Advisory lock serializes concurrent first-user bootstrap attempts.
+		const bootstrapLockKey = 0x435654626F6F74
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
+			return fmt.Errorf("bootstrap advisory lock: %w", err)
+		}
+
+		var count int64
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+			return fmt.Errorf("count users: %w", err)
+		}
+		if count != 1 {
+			return nil // not the first user — no org to create
+		}
+
+		q := s.q.WithTx(tx)
+		created, err := q.CreateOrg(ctx, orgName)
+		if err != nil {
+			return fmt.Errorf("create bootstrap org: %w", err)
+		}
+		if err := q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
+			OrgID:  created.ID,
+			UserID: ownerID,
+			Role:   "owner",
+		}); err != nil {
+			return fmt.Errorf("create bootstrap owner: %w", err)
+		}
+
+		org = &created
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return org, nil
+}
+```
+
+**⚠️ Critical detail — early return semantics:** When `count != 1`, the callback returns `nil` (no error). This causes `withBypassTx` to COMMIT the transaction (containing only the advisory lock and a SELECT). The original code did `tx.Rollback()` for this case. Both are functionally equivalent for a read-only transaction — commit and rollback have the same effect when no writes occurred. Verify that `withBypassTx` commits on nil error return.
+
+**⚠️ Critical detail — closure capture:** The `org` variable is declared outside the callback and assigned inside it. This is the standard pattern for returning values from `withBypassTx` callbacks. The callback communicates success via the closure; it communicates failure via the error return.
+
+**⚠️ Critical detail — panic handling:** If `withBypassTx` already includes `recover()` in its defer (read it to check), then the manual `recover()` in the current code is redundant and should NOT be replicated. If `withBypassTx` does NOT handle panics, add the same recover logic inside the callback.
+
+**⚠️ Important:** Verify that `withBypassTx` is the correct helper. The original code uses `s.db.BeginTx` (database/sql). If `withBypassTx` uses a different transaction mechanism, adjust accordingly. Read the helper's implementation.
+
+**Step 3: Run tests**
+
+Run: `go test ./internal/store/ -v -count=1 -run TestBootstrap`
+Run: `go build ./...`
+Expected: All existing tests pass unchanged. The behavior is identical — only the transaction management pattern changed.
+
+**Step 4: Commit**
+
+```
+refactor: use withBypassTx in BootstrapFirstUserOrg
+
+Replaces 6 manual rollback calls and a manual panic recovery with
+the defer-based withBypassTx callback pattern used by all other
+store methods. Behavior is unchanged — the advisory lock, user
+count check, and org creation logic are preserved.
+Addresses finding #39.
+```
 
 ---
 

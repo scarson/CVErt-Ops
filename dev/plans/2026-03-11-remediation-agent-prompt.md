@@ -10,7 +10,7 @@ I need you to execute the health review remediation plan at `dev/plans/2026-03-1
 
 ### Context
 
-- We're on the `dev` branch. All Phase 8 worktrees have been merged.
+- We're on the `dev` branch.
 - The plan has 6 phases. **Phase 1** (12 independent quick-fix tasks) and **Phase 2** (critical security + alert pipeline) are fully detailed with code. Phases 3-6 are outlined and need their own detailed plans when we reach them.
 - **Phase 1 tasks are fully independent** — dispatch all 12 as parallel subagents using `superpowers:dispatching-parallel-agents`.
 - **Phase 2 has dependencies:** 2A (RLS) is independent. 2B.1 must complete before 2B.2. 2C depends on 2B being done. 2A can run in parallel with 2B.

@@ -100,7 +100,7 @@ CVErt Ops has extensive test coverage — over 1,600 Go test functions across 14
 
 **Feed adapter tests** use recorded HTTP responses to verify parsing, streaming, error handling, and rate limit compliance without hitting upstream APIs. Alert DSL tests cover the compiler, evaluator, and all three evaluation paths (realtime, batch, EPSS). Notification delivery tests verify the transactional safety guarantees — claim, commit, deliver, record — with real database state.
 
-The frontend uses Vitest with happy-dom and Vue Test Utils for component and composable testing.
+The frontend uses Vitest with jsdom and Vue Test Utils for component and composable testing.
 
 A maintained [`testing-pitfalls.md`](dev/testing-pitfalls.md) documents recurring test anti-patterns and hard-won lessons specific to this codebase — things like testcontainers lifecycle gotchas, RLS-aware test setup, and common assertion mistakes. It serves as onboarding material and a guard against regressing on test quality.
 

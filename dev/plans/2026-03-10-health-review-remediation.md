@@ -80,8 +80,7 @@ Phase 6: Architecture ─────────── Deferred refactoring (in
 
 # Phase 1: Quick Wins
 
-All tasks in this phase are independent and can be dispatched to parallel subagents.
-Each task is self-contained with no cross-task dependencies.
+All tasks in this phase are independent and can be dispatched to parallel subagents, **except Task 1.11** (Cfe rename) which touches files owned by other tasks. Task 1.11 must execute AFTER all other Phase 1 tasks have been committed. See the Task 1.11 section for details.
 
 ---
 
@@ -586,7 +585,26 @@ if i.InCISAKEV != "" {
 
 This is in `cves.go` which uses huma. Check how the query parameter is defined in the huma input struct. If it's defined as a `string` field with a huma tag, we can add validation.
 
-**Step 3: Add validation**
+**Step 3 (TDD): Write the failing test first**
+
+Read `internal/api/cves_test.go` (or create it if it doesn't exist). Write a test that sends `?in_cisa_kev=yes` and expects a 400 error:
+
+```go
+func TestListCVEs_InvalidInCISAKEV_Returns400(t *testing.T) {
+	// Set up the test server using existing test patterns in internal/api/
+	// Read other test files to find the setup helper (e.g., newTestServer)
+	// Send a request with ?in_cisa_kev=yes
+	// Assert HTTP 400 response
+	// Assert response body mentions "in_cisa_kev"
+}
+```
+
+**⚠️** Read the existing test setup patterns in `internal/api/` — there should be a test server helper. Match the existing pattern exactly.
+
+Run: `go test ./internal/api/ -run TestListCVEs_InvalidInCISAKEV -v -count=1`
+Expected: FAIL — the current code silently treats "yes" as false, returning 200 instead of 400.
+
+**Step 4: Add validation**
 
 Replace the current code with:
 ```go
@@ -606,12 +624,12 @@ if i.InCISAKEV != "" {
 
 **IMPORTANT:** Check the handler's return signature to make sure returning an error this way is correct for the huma handler pattern used here. Look at how other validation errors are returned in the same handler.
 
-**Step 4: Run tests**
+**Step 5: Run tests to verify pass**
 
 Run: `go test ./internal/api/ -run TestCVE -v -count=1` (or whatever test pattern exists for CVE endpoints)
-Expected: Existing tests pass. No test should have been passing `?in_cisa_kev=yes`.
+Expected: ALL CVE tests pass, including the new validation test.
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```
 fix: validate in_cisa_kev query parameter accepts only true/false
@@ -702,17 +720,27 @@ references across the codebase. Fixes finding #27.
 **Files:**
 - Create: `internal/dbutil/null.go`
 - Modify: `internal/merge/pipeline.go` (~line 298)
-- Modify: `internal/store/ai.go` (~line 239)
-- Modify: `internal/store/watchlist.go` (~line 311)
+- Modify: `internal/store/ai.go` (~line 239) — defines `toNullString`
+- Modify: `internal/store/watchlist.go` (~line 311) — defines `nullString`
+- Modify: `internal/store/audit.go` — calls `toNullString` (defined in `ai.go`, same package)
+- Modify: `internal/store/feed.go` — calls `toNullString` (defined in `ai.go`, same package)
+- Modify: `internal/store/alert_rule.go` — calls `nullString` (defined in `watchlist.go`, same package)
+- Modify: `internal/store/saved_search.go` — calls `nullString` (defined in `watchlist.go`, same package)
 
-**Step 1: Read all three implementations**
+**Step 1: Read all implementations AND callers**
 
-Read the helpers in all three files. Note the differences:
+Read the helpers in all three definition files. Note the differences:
 - `merge/pipeline.go:298`: `toNullString(s string) sql.NullString` — value-based
 - `store/ai.go:240`: `toNullString(v string) sql.NullString` — identical to above
 - `store/watchlist.go:312`: `nullString(s *string) sql.NullString` — pointer-based
 
 Also note `merge/pipeline.go` has additional helpers: `toNullStringPtr`, `toNullFloat64`, `toNullTimePtr`, `toNullRawMessage`, `derefString`. And `store/ai.go` has `toNullInt32`.
+
+**⚠️ CRITICAL — package-level callers:** `toNullString` and `nullString` are package-level unexported functions in the `store` package. They're called from multiple files beyond their definition file. Before deleting any definition, search for ALL callers:
+```bash
+grep -rn "toNullString\|nullString" internal/store/ --include="*.go"
+```
+Every caller must be updated BEFORE the definition is deleted, or the build breaks.
 
 **Step 2: Create shared package**
 
@@ -756,9 +784,21 @@ In `internal/store/ai.go`:
 - Delete the local `toNullString` function
 - Keep `toNullInt32` — unique to this file
 
+In `internal/store/audit.go`:
+- Replace calls to `toNullString(x)` with `dbutil.NullString(x)`
+
+In `internal/store/feed.go`:
+- Replace calls to `toNullString(x)` with `dbutil.NullString(x)`
+
 In `internal/store/watchlist.go`:
 - Replace calls to `nullString(x)` with `dbutil.NullStringPtr(x)`
 - Delete the local `nullString` function
+
+In `internal/store/alert_rule.go`:
+- Replace calls to `nullString(x)` with `dbutil.NullStringPtr(x)`
+
+In `internal/store/saved_search.go`:
+- Replace calls to `nullString(x)` with `dbutil.NullStringPtr(x)`
 
 **Step 4: Verify**
 
@@ -873,27 +913,32 @@ This test must prove that when `app.org_id` is set to Org A, a query against Org
 
 ```go
 func TestRLS_CrossTenantBlocked(t *testing.T) {
-	// Skip if no test DB
 	tdb := testutil.NewTestDB(t)
 
 	ctx := context.Background()
 
-	// Create two orgs
+	// Create two orgs via the superuser connection (tdb embeds *store.Store)
 	org1, err := tdb.CreateOrg(ctx, "RLS Test Org 1")
 	require.NoError(t, err)
 	org2, err := tdb.CreateOrg(ctx, "RLS Test Org 2")
 	require.NoError(t, err)
 
-	// Create a watchlist in org1 (using org1's transaction context)
-	// ... create via store method that uses withOrgTx ...
+	// Create a watchlist in org1 via superuser connection
+	// ... create via tdb (superuser store) method that uses withOrgTx ...
 
-	// Query org2's watchlists — should return empty, not org1's data
-	// ... query via store method with org2's ID ...
+	// Query through the RESTRICTED connection (tdb.AppStore) scoped to org2.
+	// tdb.AppStore uses the NOBYPASSRLS database role — if RLS is broken,
+	// this query returns org1's data. If RLS works, it returns empty.
+	// ... query via tdb.AppStore method with org2's ID ...
 	// assert len(result) == 0
 }
 ```
 
-**IMPORTANT:** This test must use the actual store methods (not raw SQL) to prove the full RLS path works. Read existing store test patterns in `internal/store/` to match the helper setup.
+**⚠️ CRITICAL (testing-pitfalls.md §10.1 — Dual-connection testing):** This test MUST query through `tdb.AppStore` (the `NOBYPASSRLS` connection), NOT through `tdb` directly (the superuser connection). Tests that only use the superuser connection cannot detect RLS policy bugs — the superuser bypasses all RLS policies. The pattern is:
+- **Setup (create data):** Use `tdb` (superuser) — both orgs, and the watchlist in org1
+- **Assert (query):** Use `tdb.AppStore` (restricted) scoped to org2 — must return zero rows
+
+Read `internal/testutil/postgres.go` to verify: `TestDB` embeds `*store.Store` (superuser) and has `AppStore *store.Store` (restricted, NOBYPASSRLS). The `AppStore` field is the one that enforces RLS.
 
 **Step 2: Run test**
 
@@ -1199,6 +1244,10 @@ if result.MaterialHashChanged {
 
 Test that the ingest handler calls EvaluateRealtime when material_hash changes and does NOT call it when it doesn't change.
 
+**⚠️ Also test the error path (testing-pitfalls.md §3.2 — error swallowing):** When EvaluateRealtime returns an error, the handler must NOT fail. Inject an evaluator that returns an error and verify:
+1. The handler still returns nil (feed ingest succeeds)
+2. The error was logged (capture slog output and assert it contains the CVE ID and "error")
+
 **Step 5: Run tests**
 
 Run: `go test ./internal/ingest/ -v -count=1`
@@ -1250,24 +1299,126 @@ role := ctx.Value(ctxRole).(Role)
 
 **Do NOT rewrite the RBAC middleware.** It works. Leave it as chi middleware.
 
-### 2. Route Registration
+### 2. Route Registration — Middleware Strategy
 
-Huma operations are registered inside a `registerXxxRoutes(api huma.API, s *store.Store)` function per handler file, following the existing `registerCVERoutes` and `registerAuthRoutes` pattern. These are called from `NewServer` after `humachi.New(apiRouter, humaConfig)`.
+**⚠️ CONFIRMED (middleware type incompatibility):** Huma's `Middlewares` type is `func(ctx huma.Context, next func(huma.Context))` — fundamentally incompatible with chi's `func(http.Handler) http.Handler`. You CANNOT pass chi middleware to `huma.Operation.Middlewares` directly.
 
-RBAC enforcement moves from `r.With(srv.RequireOrgRole(RoleAdmin))` to the huma `Operation.Middlewares` field. Example:
+**However**, chi middleware applied at the chi router level runs BEFORE humachi creates the `chiContext`. The `*http.Request` received by the huma handler already contains context values injected by chi middleware (verified in humachi source: `Handle()` creates `chiContext{r: r}` where `r` is the post-middleware request, and `Context()` returns `c.r.Context()`). This means `RequireOrgRole`'s injected `ctxOrgID` and `ctxRole` are accessible via `ctx.Context().Value(ctxOrgID)` in huma handlers.
+
+Three options for route registration follow. **Step 0 must prototype the recommended option and fall back to an alternative if it doesn't work.**
+
+#### Option A: Chi sub-router with separate huma API (NOT RECOMMENDED)
+
+Create chi sub-routers with middleware, create huma APIs from those sub-routers.
+
 ```go
-huma.Register(api, huma.Operation{
+apiRouter.Route("/orgs/{org_id}", func(r chi.Router) {
+	r.Use(srv.RequireOrgRole(RoleViewer))
+	orgAPI := humachi.New(r, humaConfig)
+	huma.Register(orgAPI, huma.Operation{Path: "/groups", ...}, handler)
+})
+```
+
+**⚠️ OpenAPI path problem:** `humachi.Handle()` calls `a.router.MethodFunc(op.Method, op.Path, ...)` — chi routing works correctly (sub-router prefixes the path). But `OpenAPI.AddOperation()` uses `op.Path` directly as the spec key. An operation registered with `Path: "/groups"` appears in the OpenAPI spec as `/groups`, not `/orgs/{org_id}/groups`. The frontend typed client would generate methods for wrong paths.
+
+**⚠️ Multiple API instances:** Each sub-router gets its own `huma.API`, potentially creating separate OpenAPI specs or requiring manual merging.
+
+#### Option B: Generic chiToHuma adapter (NOT RECOMMENDED)
+
+Write a wrapper that converts chi middleware to huma middleware.
+
+```go
+func chiToHuma(m func(http.Handler) http.Handler) func(huma.Context, func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		m(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next(ctx) // BUG: ctx still has the old request, not r
+		})).ServeHTTP(...)
+	}
+}
+```
+
+**⚠️ Context propagation bug:** Chi middleware calls `next.ServeHTTP(w, r.WithContext(newCtx))` — the modified request `r` has new context values (orgID, role). But the adapter calls `next(ctx)` with the original huma context, whose `chiContext.r` still points to the pre-middleware request. The huma handler would NOT see the middleware's context modifications. The `chiContext.r` field is unexported, so you can't update it from outside the package.
+
+This could potentially be worked around by using `humachi.Unwrap(ctx)` to get the request pointer and modifying it, but the struct field is unexported — you'd need to rewrite the middleware logic natively in huma style, at which point this isn't really an "adapter" anymore.
+
+#### Option C: Chi base middleware + huma Group + huma-native role check (RECOMMENDED)
+
+This is the cleanest approach. It combines three mechanisms:
+
+1. **Chi-level middleware** for shared org concerns (auth, base role, tier, rate limit) — these run before huma and their context values propagate automatically
+2. **`huma.NewGroup`** for OpenAPI path prefixing — the Group's `PrefixModifier` prepends the prefix to `op.Path` before BOTH `Adapter.Handle()` (routing) AND `OpenAPI.AddOperation()` (spec generation), so paths are correct everywhere
+3. **Huma-native role check** for per-route escalation — a simple function that reads the role already set by chi middleware and rejects if insufficient
+
+```go
+// In NewServer:
+apiRouter.Route("/orgs/{org_id}", func(r chi.Router) {
+	r.Use(srv.RequireAuthenticated())
+	r.Use(srv.RequireOrgRole(RoleViewer))  // sets ctxOrgID, ctxRole
+	r.Use(srv.tierMiddleware)
+	r.Use(srv.orgRateLimitMiddleware)
+
+	// Create huma API from this sub-router — chi middleware applies to all operations.
+	// Use huma.NewGroup for correct OpenAPI path prefixing:
+	orgAPI := humachi.New(r, humaConfig)
+	orgGroup := huma.NewGroup(orgAPI, "/orgs/{org_id}")
+
+	registerGroupRoutes(orgGroup, srv)
+	registerSavedSearchRoutes(orgGroup, srv)
+	// ... all operations get correct OpenAPI paths AND chi middleware
+})
+```
+
+**Per-route role escalation** via a lightweight huma-native middleware in `internal/api/middleware_huma.go`:
+
+```go
+// requireMinRole returns a huma middleware that checks if the caller's role
+// (already set in context by the chi-level RequireOrgRole middleware) meets
+// the minimum required role. This is a read-only check — it does NOT query
+// the database or inject context values.
+func requireMinRole(minRole Role) func(huma.Context, func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		role, ok := ctx.Context().Value(ctxRole).(Role)
+		if !ok || role < minRole {
+			huma.WriteErr(ctx, http.StatusForbidden, "forbidden")
+			return
+		}
+		next(ctx)
+	}
+}
+```
+
+Then per-operation:
+```go
+huma.Register(orgGroup, huma.Operation{
 	OperationID: "create-group",
 	Method:      http.MethodPost,
-	Path:        "/orgs/{org_id}/groups",
+	Path:        "/groups",  // Group prefixes to /orgs/{org_id}/groups
 	Tags:        []string{"Groups"},
-	Middlewares: huma.Middlewares(srv.RequireOrgRole(RoleAdmin)),
+	Middlewares: huma.Middlewares{requireMinRole(RoleAdmin)},
 }, createGroupHandler(s))
 ```
 
-**⚠️ Critical:** Verify that `huma.Operation.Middlewares` accepts chi-style middleware (`func(http.Handler) http.Handler`). If huma has a different middleware type, read the huma docs for the adapter. The `humachi` adapter should bridge the types.
+**Why this works:**
+- Chi middleware runs first → sets `ctxOrgID`, `ctxRole`, `ctxUserID` in the request context
+- `humachi.Handle()` receives the post-middleware `*http.Request` → `chiContext.Context()` returns the enriched context
+- `huma.NewGroup` prefixes paths → OpenAPI spec shows `/orgs/{org_id}/groups` (correct)
+- `requireMinRole` reads `ctxRole` from context → no DB query, no context injection, just a gate
+- The existing `RequireOrgRole` chi middleware is unchanged — no rewrite needed
 
-**⚠️ Critical:** Org-level middleware (`RequireOrgRole(RoleViewer)`, `tierMiddleware`, `orgRateLimitMiddleware`) currently applies to all sub-routes of `/{org_id}` via `r.Use()`. When migrating to huma, these must be applied per-operation or via a shared middleware group. Read how `humachi` handles route-level middleware.
+**⚠️ KNOWN ISSUE — path doubling:** `huma.NewGroup(orgAPI, "/orgs/{org_id}")` on a chi sub-router mounted at `/orgs/{org_id}` **WILL** double paths. The Group's `PrefixModifier` prepends `/orgs/{org_id}` to `op.Path` before calling `a.router.MethodFunc()`, but the chi sub-router already mounts at `/orgs/{org_id}`. Result: chi registers at `/orgs/{org_id}/orgs/{org_id}/groups`. This follows directly from `PrefixModifier` (group.go:32) and `Handle()` (humachi.go:159). The same doubling applies to admin routes.
+
+**Step 0 must find a working pattern that satisfies ALL of:**
+1. Chi middleware runs before huma handlers (for auth, RBAC, tier, rate limit)
+2. OpenAPI spec shows correct full paths (`/orgs/{org_id}/groups`, not `/groups`)
+3. Chi routing works (no doubled path segments)
+4. `requireMinRole(RoleAdmin)` huma-native middleware can gate per-route
+
+**Possible approaches to explore:**
+- Register on the main API (no chi sub-router), use `huma.NewGroup` for path prefix, rewrite `RequireAuthenticated` + `RequireOrgRole` as huma-native middleware (reads from request via `humachi.Unwrap`)
+- Register on a chi sub-router (for middleware), skip huma Group, accept wrong OpenAPI paths and post-process the spec
+- Use chi sub-router for middleware + `huma.NewGroup` with NO prefix + full paths in each operation (avoids doubling, gets correct OpenAPI paths, but verbose)
+
+The lead must prototype until one approach works with `go build` + a test request + correct OpenAPI output. **This is the highest-risk task in the entire plan.**
 
 ### 3. Error Status Codes
 
@@ -1526,44 +1677,41 @@ Follow this pattern for all 8 handlers (create, list, get, update, delete, listM
 
 **Step 4: Register huma routes**
 
-Create a `registerGroupRoutes` function:
+Create a `registerGroupRoutes` function using the **Option C pattern** (recommended — see Key Decision #2). Chi middleware handles auth + base role at the router level; `huma.NewGroup` handles OpenAPI path prefixing; `requireMinRole` handles per-route role escalation:
 
 ```go
-func registerGroupRoutes(api huma.API, srv *Server, s *store.Store) {
-	orgViewer := huma.Middlewares(
-		srv.RequireOrgRole(RoleViewer),
-		srv.tierMiddleware,
-		srv.orgRateLimitMiddleware,
-	)
-	orgAdmin := huma.Middlewares(
-		srv.RequireOrgRole(RoleAdmin),
-		srv.tierMiddleware,
-		srv.orgRateLimitMiddleware,
-	)
-
-	huma.Register(api, huma.Operation{
+// registerGroupRoutes registers group operations on the org-scoped huma Group.
+// Chi middleware (RequireOrgRole(RoleViewer), tier, rate limit) already runs
+// before these handlers. The orgGroup prefixes all paths with /orgs/{org_id}.
+func registerGroupRoutes(orgGroup huma.API, s *store.Store) {
+	// Read-only operations (viewer role — enforced by chi middleware):
+	huma.Register(orgGroup, huma.Operation{
 		OperationID: "list-groups",
 		Method:      http.MethodGet,
-		Path:        "/orgs/{org_id}/groups",
+		Path:        "/groups",  // Group prefixes to /orgs/{org_id}/groups
 		Tags:        []string{"Groups"},
-		Middlewares: orgViewer,
 	}, listGroupsHandler(s))
 
-	huma.Register(api, huma.Operation{
+	// Write operations (admin role — requireMinRole escalates above viewer base):
+	huma.Register(orgGroup, huma.Operation{
 		OperationID: "create-group",
 		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/groups",
+		Path:        "/groups",
 		Tags:        []string{"Groups"},
-		Middlewares: orgAdmin,
+		Middlewares: huma.Middlewares{requireMinRole(RoleAdmin)},
 	}, createGroupHandler(s))
 
 	// ... register all 8 operations
 }
 ```
 
-**⚠️ Critical — middleware type compatibility:** Verify that `huma.Middlewares()` accepts chi-style middleware functions (`func(http.Handler) http.Handler`). If it doesn't, read huma's middleware documentation for the correct way to apply chi middleware to huma operations. The `humachi` adapter may provide a bridge function.
+**⚠️ Step 0 must verify the path-doubling question:** When the chi sub-router is mounted at `/orgs/{org_id}` and the huma Group prefixes `/orgs/{org_id}`, does chi see `/orgs/{org_id}/orgs/{org_id}/groups` (doubled)? If so, either:
+- Use `huma.NewGroup(orgAPI)` with no prefix and set `Path: "/orgs/{org_id}/groups"` in each operation
+- Or adjust the chi mount point
 
-**⚠️ Critical — route path:** Huma operations use full paths from the API root. The current chi routes are nested under `/orgs/{org_id}` with parent middleware. In huma, each operation declares its full path and its own middleware. Don't accidentally lose the org-level middleware (tier, rate limit) when migrating.
+Get this right in Step 0 before proceeding — every subsequent task copies the pattern.
+
+If Option C doesn't work (e.g., path doubling can't be resolved, or chi context values don't propagate as expected), fall back to Options A or B from Key Decision #2. But Option C is the cleanest approach and should be attempted first.
 
 **Step 5: Remove chi route registrations**
 
@@ -1737,10 +1885,9 @@ Replace `<handler-name>` with the resource name (e.g., "saved searches", "API ke
 
 ### Task 3.12: Feeds Admin
 
-**File:** `internal/api/admin_feeds.go` (expected from Phase 8C Operate)
-**Endpoints:** Pause/resume/logs for feeds
-**Special:** Same admin middleware as Task 3.11.
-**⚠️ Important:** This file may not exist. As of the latest check, Phase 8C created `admin_deliveries.go`, `admin_doctor.go`, `admin_helpers.go`, `admin_orgs.go`, `admin_system.go`, `admin_users.go`, `admin_version.go` — but NOT `admin_feeds.go`. If it doesn't exist, skip this task and report to lead.
+**File:** `internal/api/feeds.go` (NOT `admin_feeds.go` — the feed admin handlers live in `feeds.go`, not a Phase 8C admin file)
+**Endpoints:** List feeds, trigger/pause/resume feed, feed logs
+**Special:** Same admin middleware as Task 3.11. These handlers are registered in the `/admin` chi route group in `server.go`.
 **Frontend:** Same as Task 3.11.
 
 ---
@@ -1855,7 +2002,14 @@ case <-evictTicker.C:
 	w.evictStaleSemaphores()
 ```
 
-**Step 6: Write a test (TDD — write before implementation if not yet done)**
+**Step 6: Write tests (TDD order)**
+
+**⚠️ TDD ordering:** Steps 2-5 above describe what to implement, but you MUST write the tests BEFORE implementing the eviction logic. The concrete order is:
+1. Add the `semsLastUsed` field to the struct and initialize it in `NewWorker` (Steps 2-3 above — struct scaffolding only)
+2. Add an empty `evictStaleSemaphores()` method stub that does nothing
+3. Write both tests below — they should FAIL (stale entry not evicted)
+4. Implement `evictStaleSemaphores()` (Step 4 above) and wire into `Start()` (Step 5)
+5. Run tests again — they should PASS
 
 Add tests in `internal/notify/worker_test.go`:
 
@@ -1969,7 +2123,14 @@ if err := store.SetStatementTimeout(ctx, tx, cfg.DBLongStatementTimeoutMS); err 
 
 If the evaluator doesn't have direct access to `*sql.Tx` (e.g., it uses a store method that wraps the transaction), you may need to add the timeout call inside the store method instead. Follow the existing transaction pattern — don't restructure.
 
-**Step 5: Write a test**
+**Step 5: Write a test (TDD order)**
+
+**⚠️ TDD ordering:** Write this test BEFORE implementing the `SetStatementTimeout` function in Step 3. The concrete order is:
+1. Create `internal/store/timeout.go` with just the package declaration and function signature (returning `nil`)
+2. Write this test — it should FAIL (the no-op function doesn't set a timeout, so `pg_sleep` completes successfully)
+3. Implement the real function body (Step 3 above)
+4. Run the test again — it should PASS
+5. Then do Steps 1-2 (config) and Step 4 (evaluator wiring) — those don't need TDD since they're config/wiring, not new logic
 
 Create `internal/store/timeout_test.go`. Test that `SetStatementTimeout` correctly overrides the timeout within a transaction:
 
@@ -2114,6 +2275,13 @@ func TestHandler_Integration_DataReachesDB(t *testing.T) {
 	cve, err := tdb.GetCVE(ctx, "CVE-2024-99999")
 	require.NoError(t, err)
 	require.Equal(t, "CVE-2024-99999", cve.CveID)
+
+	// Verify the sync cursor advanced (testing-pitfalls.md §9.6).
+	// A handler that processes data but doesn't persist its cursor will
+	// re-fetch the same data on every run. Read the store to find the
+	// method that retrieves sync state — likely GetFeedSyncState or similar.
+	// The cursor should be non-nil/non-empty after a successful run.
+	// ... verify cursor via store method for "test-integration" feed ...
 }
 ```
 
@@ -2319,10 +2487,14 @@ func TestIngest_AdvisoryLock_SerializesConcurrentMerges(t *testing.T) {
 		SourceURL:   "https://source-b.example.com",
 	}
 
-	// Run two merges concurrently — they contend on the same advisory lock
+	// Barrier pattern (testing-pitfalls.md §1.1): ensure both goroutines
+	// hit the critical section at the same time. Without this, one goroutine
+	// might complete before the other starts, making the test pass trivially.
+	ready := make(chan struct{})
 	errs := make(chan error, 2)
-	go func() { errs <- merge.Ingest(ctx, tdb.Store, patch1, "source-a") }()
-	go func() { errs <- merge.Ingest(ctx, tdb.Store, patch2, "source-b") }()
+	go func() { <-ready; errs <- merge.Ingest(ctx, tdb.Store, patch1, "source-a") }()
+	go func() { <-ready; errs <- merge.Ingest(ctx, tdb.Store, patch2, "source-b") }()
+	close(ready) // both goroutines unblock simultaneously
 
 	// Both must complete without error (no deadlock, no data corruption)
 	for i := 0; i < 2; i++ {
@@ -2545,7 +2717,15 @@ The exact wiring depends on Phase 8C's implementation. Possible patterns:
 
 Match the existing pattern. Do NOT restructure the readiness endpoint.
 
-**Step 5: Write a test**
+**Step 5: Write a test (TDD order)**
+
+**⚠️ TDD ordering:** Write this test BEFORE implementing the `Healthy()` method in Step 3. The concrete order is:
+1. Add the `lastClaimAt atomic.Value` field to the struct (Step 2 above — struct scaffolding only)
+2. Add a `Healthy()` stub that returns `false`
+3. Write this test — it should partially FAIL (the "recently active → true" case fails)
+4. Implement the real `Healthy()` method (Step 3 above)
+5. Run the test again — it should PASS
+6. Then do Step 4 (wiring into readiness endpoint)
 
 Test `Healthy()` in isolation:
 1. Create a Worker (minimal config)

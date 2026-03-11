@@ -1082,11 +1082,11 @@ The parent job returns an error (and retries) only when a database transaction i
 
 **The Initial Plan:** Use normal incremental API polling to populate a new instance.
 
-**Why It Fails:** NVD API rate limits (5 req/30s with API key, ~2000 results/page) make a from-scratch API sync of the full historical corpus (250k+ CVEs) take many hours under ideal conditions, and any network error or API downtime forces a retry from an earlier cursor. This makes a new instance unusable until polling catches up. NVD annual archives are hundreds of MB; OSV ecosystem archives are similar.
+**Why It Fails:** NVD API rate limits (5 req/30s with API key, ~2000 results/page) make a from-scratch API sync of the full historical corpus (250k+ CVEs) take many hours under ideal conditions, and any network error or API downtime forces a retry from an earlier cursor. This makes a new instance unusable until polling catches up.
 
-**The Decision:** Each large feed has a preferred bulk source for initial load (NVD annual JSON archives, OSV GCS bucket, MITRE cvelistV5 ZIP). The `cvert-ops import-bulk` CLI subcommand handles bulk ingestion through the same merge pipeline as incremental polling. After bulk import, the feed cursor is initialized to a timestamp just before the archive's "as-of" date, and normal incremental polling takes over.
+**The Decision:** Feeds with bulk archive sources (OSV GCS bucket, MITRE cvelistV5 ZIP) use the `cvert-ops import-bulk` CLI subcommand for initial load through the same merge pipeline as incremental polling. After bulk import, the feed cursor is initialized to a timestamp just before the archive's "as-of" date, and normal incremental polling takes over. **NVD does not offer bulk download files** — their [developer documentation](https://nvd.nist.gov/developers/start-here) recommends iterative API calls with `startIndex` pagination. NVD initial population uses the adapter's normal paginated sync with chunked ≤120-day windows (see §5.3). This is slow but there is no alternative.
 
-**The Lesson:** Design the initial data population path explicitly. API rate limits that are tolerable for incremental updates are often prohibitive for full-corpus initial loads. Every data-intensive service should have a "bulk load from archive" path separate from the "incremental sync" path, and they should share the same downstream pipeline to avoid divergence.
+**The Lesson:** Design the initial data population path explicitly. API rate limits that are tolerable for incremental updates are often prohibitive for full-corpus initial loads. Where bulk archives exist, provide a "bulk load from archive" path separate from the "incremental sync" path, and share the downstream pipeline to avoid divergence. Where they don't (NVD), accept the slow initial sync and design the adapter's cursor chunking to handle it.
 
 ---
 
@@ -1789,3 +1789,160 @@ srv.store.SetAICache(ctx, cacheKey, result, ttl)
 **Testing implication:** Quota exhaustion tests must use **unique inputs per request** to avoid hitting the cache. If a test sends the same query 10 times to exhaust a quota of 5, requests 2–10 will hit the cache and silently not consume quota — the test passes for the wrong reason.
 
 **The Lesson:** Any metered resource (quota, rate limit, billing) should only be consumed when the metered operation actually occurs. If a caching layer sits in front of the metered operation, the meter must be placed *after* the cache check. This applies beyond AI: API rate limits on cached responses, billing for cached CDN hits, etc.
+
+---
+
+## 13. Health Review Retrospective — Cross-Cutting Enforcement Gaps (2026-03-11)
+
+> **Source:** Analysis of the 2026-03-10 project health review against this document
+> **Purpose:** The health review surfaced 45 findings. At least six were re-occurrences of pitfalls already documented here — the pitfall was known, but the document lacked guidance on ensuring it was applied everywhere. This section captures the enforcement patterns that were missing.
+
+---
+
+### 13.1 Deployment Configuration Must Match Code-Level Protections
+
+**The Flaw:** Pitfalls 2.4, 2.9, 2.13, 2.14, and 2.17 meticulously document RLS code patterns — `SET LOCAL app.org_id`, `FORCE ROW LEVEL SECURITY`, `NOBYPASSRLS`, transaction helper selection. Every store method follows these patterns correctly. But the Docker Compose configuration connects the application service as the database superuser (`${POSTGRES_USER:-cvert_ops}`), which inherently bypasses all RLS policies. The restricted `cvert_ops_app` role existed in `init.sql` but was never wired into the deployment.
+
+**Why It Matters:** The entire RLS architecture — every `SET LOCAL` call, every `NOBYPASSRLS` assertion, every transaction helper — is a no-op when the database connection uses a superuser role. A SQL injection or application-layer tenant isolation bug has no database-level safety net. All the careful code-level work provides zero defense-in-depth because the deployment config doesn't match. This failure is invisible: the application behaves identically whether RLS is active or bypassed. Only a deliberate cross-tenant attack or a security audit reveals the gap.
+
+**The Fix:** When implementing any code-level security mechanism that depends on deployment configuration, **MUST** verify both layers:
+
+1. **Code review:** Does the code correctly use the protection? (Transaction helpers, RLS policies, middleware wiring)
+2. **Deployment review:** Does the deployment activate the protection? (Docker Compose service credentials, Kubernetes secrets, `.env.example` defaults, init scripts)
+
+For RLS specifically:
+```bash
+# Verify the app service connects as the restricted role, not superuser
+grep -n 'POSTGRES_USER\|DB_USER\|cvert_ops_app' docker/compose.yml .env.example
+```
+
+**When to check:** After implementing any security feature that has both a code component and a deployment/config component. After writing a new `docker-compose.yml` service. After modifying database connection configuration.
+
+**The Lesson:** Code-level security protections are only as strong as their deployment configuration. A perfectly implemented RLS layer connected via a superuser role is equivalent to having no RLS at all. Security features MUST be verified at both the code level and the deployment level. When this document prescribes a code-level pattern, the implicit requirement is that the deployment activates it — make that explicit.
+
+---
+
+### 13.2 Pattern-Level Fixes MUST Be Applied Codebase-Wide
+
+**The Flaw:** Three health review findings were exact re-occurrences of pitfalls already documented in this file, in different code locations:
+
+| Health Review Finding | Documented Pitfall | What Happened |
+|---|---|---|
+| #13: Worker pool passes cancellable context to jobs | §1.5: `context.WithoutCancel` for background work | Fixed in `notify/worker.go`; missed in `worker/pool.go` |
+| #14: Per-org semaphore map grows without bound | §5.14: In-memory rate limiter grows without bound | Fixed in IP rate limiter; same pattern reappeared in notification worker |
+| #32: PATCH groups uses non-pointer fields | §1.11: Pointer types required for all PATCH fields | Applied to most handlers; missed in `groups.go` |
+
+In each case, the developer (human or AI) read the pitfall, applied the fix to the code they were working on, and moved on — without checking whether the same pattern existed elsewhere in the codebase.
+
+**Why It Matters:** A documented pitfall that is only applied to the code path where it was first discovered provides a false sense of protection. The pitfall exists as a *pattern* — any instance of that pattern is vulnerable, not just the one that prompted the documentation. Fixing one instance while leaving others creates an inconsistency that is harder to detect than a uniform bug (because "we already fixed this" suppresses further investigation).
+
+**The Fix:** When applying any pitfall fix from this document, **MUST** grep the entire codebase for all instances of the same pattern before considering the fix complete:
+
+```bash
+# After fixing context.WithoutCancel in one location:
+grep -rn 'processOne(ctx' internal/       # find all ctx passthrough to background work
+grep -rn '\.Context()' internal/           # find all r.Context() usage in goroutines
+
+# After fixing pointer types on a PATCH struct:
+grep -rn 'type.*Body struct' internal/api/ # find all request body structs
+# Verify every PATCH struct uses pointer fields
+
+# After fixing unbounded map growth:
+grep -rn 'sync\.Map\|map\[.*\]\*' internal/ # find all maps keyed by external input
+# Verify each has eviction or bounded growth
+```
+
+**When to check:** Every time you apply a fix from this document. Every time you implement a pattern that matches a documented pitfall. The grep is not optional — it is the difference between fixing one bug and fixing a class of bugs.
+
+**The Lesson:** A pitfall document is only as effective as its application scope. Documenting a pattern-level bug and fixing one instance is half the job. The other half is ensuring all existing instances are found and fixed. When this document describes a pitfall, the implicit instruction is: **find and fix every instance, not just the one in front of you.**
+
+---
+
+### 13.3 API Response Contract Consistency Across Endpoints
+
+**The Flaw:** Seven health review findings (6, 7, 9, 31, 33, 34, 43) stemmed from inconsistency across API endpoints that were implemented one at a time over weeks. Each handler was correct in isolation but collectively they presented:
+- Two error formats (RFC 9457 JSON from huma routes, plaintext from chi routes)
+- Two list response shapes (`{"items": [...], "next_cursor": "..."}` vs bare `[...]` arrays)
+- Six different pagination cursor mechanisms (base64 JSON, base64 `time|uuid`, separate params, raw UUID, hardcoded limit, none)
+- Inconsistent validation status codes (400 vs 422 for the same "name is required" error)
+- Tier limits and RBAC rejections both returning 403
+
+**Why It Matters:** An API consumer's generic error handler, pagination helper, or response parser cannot work across all endpoints. Every new endpoint integration requires discovering which contract variant that endpoint uses. Adding pagination to a bare-array endpoint later is a breaking change. Clients must maintain per-endpoint special cases. This accumulates invisibly: each handler passes its own code review, but the API as a whole becomes unusable for generic client code.
+
+**The Fix:** Before writing any new endpoint handler, **MUST** check the most recent similar endpoint for these contract elements and match them exactly:
+
+| Element | Standard | Check before writing |
+|---|---|---|
+| Error format | RFC 9457 Problem Details JSON | How do existing handlers in the same router return errors? |
+| List response shape | `{"items": [...], "next_cursor": "..."}` | Does any existing list endpoint use a bare array? Don't add another. |
+| Pagination cursor | Single opaque `?cursor=` param, base64-encoded JSON | What cursor format do adjacent endpoints use? |
+| Validation errors | 422 for validation failures, 400 for parse failures | What status do similar handlers return for "field required"? |
+| Quota/tier errors | 429 (not 403) for quota/tier limits; 403 for RBAC only | How does the tier middleware signal "upgrade needed" vs "wrong role"? |
+
+**When to check:** Before writing any new HTTP handler. During code review of any new endpoint. When adding a new list endpoint or a new PATCH endpoint.
+
+**The Lesson:** API consistency is not enforced by any single handler's correctness — it is enforced by checking every new handler against the existing contract. Inconsistency accumulates silently because each handler is reviewed independently. The fix is not architectural (migrating frameworks) — it is procedural: check the contract before writing the handler.
+
+---
+
+### 13.4 Resource Lifecycle Completeness at Shutdown
+
+**The Flaw:** Two health review findings (4, 5) were about resources that had proper `Close()` or `Stop()` methods but were never called in the production entrypoint:
+- `api.Server.Close()` stops four background goroutines (rate limiters, tier cache, lockout manager) — defined, tested, never called in `main.go`
+- `stdlib.OpenDBFromPool()` returns a `*sql.DB` wrapper with its own goroutines — created inline, never closed
+
+Both resources were correctly managed in test code (`t.Cleanup(srv.Close)`) but the production wiring in `cmd/cvert-ops/main.go` omitted the shutdown call.
+
+**Why It Matters:** Leaked goroutines and unclosed resources are invisible in a long-running server that exits on SIGTERM — the OS reclaims everything. But they surface as: test failures from leaked goroutines (race detector), data races during graceful shutdown, and correctness bugs if the server lifecycle ever changes (hot-reload, library embedding, graceful restart). The pattern is insidious because it works correctly 99% of the time — only the shutdown path is broken.
+
+**The Fix:** After wiring any dependency in `main.go` (or any entrypoint), **MUST** verify resource lifecycle completeness:
+
+```bash
+# Find all types that have Close/Stop/Shutdown methods:
+grep -rn 'func.*Close()\|func.*Stop()\|func.*Shutdown(' internal/ | grep -v _test.go
+
+# For each, verify it's called in the production entrypoint:
+grep -n 'defer.*Close\|defer.*Stop\|defer.*Shutdown' cmd/cvert-ops/main.go
+```
+
+The rule: **every `New*()` constructor that returns an object with a `Close()`, `Stop()`, or `Shutdown()` method MUST have a corresponding `defer x.Close()` in the caller.** If the constructor is called inline (e.g., `alert.New(stdlib.OpenDBFromPool(db), ...)`), extract the intermediate value to enable the defer.
+
+**When to check:** After adding any new dependency to `main.go`. After any constructor that returns a closeable type. During shutdown-path code review.
+
+**The Lesson:** Test code manages resource lifecycle correctly (via `t.Cleanup`) because test frameworks enforce it. Production entrypoints have no equivalent enforcement — the developer must wire every shutdown hook manually. When a resource is created in production but only cleaned up in tests, the gap is invisible until shutdown behavior matters.
+
+---
+
+### 13.5 Security-Relevant Configuration Defaults MUST Match Documentation
+
+**The Flaw:** Two health review findings exposed configuration defaults that contradicted the project's security documentation:
+- `REGISTRATION_MODE` defaulted to `"open"` in code, while CLAUDE.md, PLAN.md, and README all documented `"invite-only"` as the default (Finding 11, since fixed)
+- `COOKIE_SECURE` defaulted to `false` with no validation that it was `true` in production HTTPS deployments (Finding 12)
+
+**Why It Matters:** Operators who rely on documented defaults (or who omit env vars assuming safe defaults) deploy with weaker security than they expect. `REGISTRATION_MODE=open` allows unrestricted public signup on a security product. `COOKIE_SECURE=false` with HTTPS sends auth cookies over unencrypted connections if any HTTP path exists. These are not edge cases — they are the default behavior for every deployment that doesn't explicitly override them.
+
+**The Fix:** For any configuration value that affects security behavior:
+
+1. **The code default MUST match the documented default.** If docs say `invite-only`, the `envDefault` tag MUST say `"invite-only"`. Grep for the env var name across all documentation when setting defaults.
+2. **Dangerous defaults MUST be validated at startup.** If `COOKIE_SECURE=false` and `EXTERNAL_URL` starts with `https://` and `APP_ENV != development`, `validateConfig` MUST return an error.
+3. **`.env.example` MUST show the production-safe value**, with a comment explaining the dev override:
+   ```env
+   REGISTRATION_MODE=invite-only  # set to "open" only for local development
+   COOKIE_SECURE=true             # set to false only for localhost without TLS
+   ```
+
+**When to check:** When adding any new configuration value that affects authentication, authorization, encryption, or tenant isolation. When changing a default value. When writing documentation that references a default.
+
+**The Lesson:** Configuration defaults are the security posture of every deployment that doesn't override them — which is most deployments. A secure-by-default configuration is not optional for a security product. When documentation says one thing and code does another, the code wins — and the operator loses.
+
+---
+
+### Summary Table (Section 13)
+
+| # | Category | Issue | Severity | Key Fix |
+|---|---|---|---|---|
+| 13.1 | Deployment | Code-level RLS bypassed by superuser deployment config | Critical | Verify both code AND deployment activate security features |
+| 13.2 | Process | Pattern-level pitfall fixed in one location, missed in others | High | Grep codebase for all instances of a pattern before considering fix complete |
+| 13.3 | API | Seven inconsistencies from per-handler implementation without contract check | High | Check existing contract elements before writing any new handler |
+| 13.4 | Operational | Resources with Close() methods never closed in production entrypoint | Medium | Every New*() with Close() MUST have a defer in the caller |
+| 13.5 | Configuration | Security defaults in code contradict documentation | High | Code defaults MUST match docs; dangerous defaults MUST be validated at startup |

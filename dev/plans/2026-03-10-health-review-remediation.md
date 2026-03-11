@@ -1298,10 +1298,9 @@ Tasks 4A (health/readiness), 4B (metrics), and 4C (runServe/runWorker dedup) hav
 
 ### Task 5A: Feed adapter golden file tests (Finding 23)
 
-- Capture real responses from NVD, GHSA, OSV, KEV, EPSS APIs
-- Save as `internal/feed/<adapter>/testdata/<feed>_response.json`
-- Write tests that parse the golden file and verify the produced `CanonicalPatch` output
-- This catches upstream API format changes
+**Superseded by dedicated plan:** `dev/plans/2026-03-11-test-fixture-corpus.md`
+
+That plan covers the full scope: capture tool, CVE selection agent, fixture extraction, golden file tests for all 8 adapters (NVD, GHSA, KEV, MITRE, OSV, EPSS, MSRC, Red Hat), URL-rewrite transport infrastructure, and a `SeedCorpus` integration helper. Execute that plan instead of implementing this task directly.
 
 ### Task 5B: Ingest handler integration test (Finding 22)
 
@@ -1395,7 +1394,7 @@ No action needed. If initial population performance becomes a concern, the NVD f
 | 20 | Duplicated post-filters | 2B.1 | 2B | May shift 8B metric instrumentation points |
 | 21 | queryCandidates duplication | 2B.2 | 2B | May shift 8B metric instrumentation points |
 | 22 | Ingest handler mock tests | 5B | 5 | |
-| 23 | No golden file tests | 5A | 5 | Also applies to 8D generic adapter |
+| 23 | No golden file tests | 5A | 5 | **Superseded** by `dev/plans/2026-03-11-test-fixture-corpus.md`; also applies to 8D generic adapter |
 | 24 | Email test skips | 5C | 5 | |
 | 25 | Store concrete struct | 6E | 6 | |
 | 26 | Dead readTx method | 1.5 | 1 | |

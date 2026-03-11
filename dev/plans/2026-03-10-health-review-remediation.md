@@ -4,7 +4,7 @@
 
 **Goal:** Address all 45 findings from the 2026-03-10 project health review, organized into 6 phases by dependency and risk.
 
-**Architecture:** Findings are grouped by root cause and dependency order. Phase 1 (quick wins) and Phase 2 (critical security + core feature) are detailed with full code. Phases 3-6 are outlined and will get their own detailed plans when reached.
+**Architecture:** Findings are grouped by root cause and dependency order. All 6 phases are fully detailed with exact code, files, test commands, and commit messages.
 
 **Tech Stack:** Go 1.26, PostgreSQL 15+, huma/chi, sqlc, squirrel, Prometheus, Vue 3 + openapi-fetch
 
@@ -1627,6 +1627,27 @@ Each migration follows the Groups reference pattern (Task 3.0) exactly. The hand
 
 **Migration order:** Execute in this order. Each migration is one commit. Each includes the frontend update.
 
+**Commit message pattern for all 3.x tasks:**
+```
+feat: migrate <handler-name> handlers from chi to huma
+
+Migrates <handler-name> endpoints to huma with RFC 9457 errors,
+{"items": [...]} list response shape, pointer PATCH fields,
+and Location header on 201. Updates frontend to use the typed
+openapi-fetch client. Addresses findings #6, #7, #31, #32, #33.
+```
+Replace `<handler-name>` with the resource name (e.g., "saved searches", "API keys"). Add finding-specific notes if the task fixes additional findings (e.g., Task 3.6 also fixes Finding 43, Task 3.8 also fixes Finding 34).
+
+**Steps for each task (follow the Task 3.0 reference pattern exactly):**
+1. Read the handler file + `server.go` route registration + frontend store
+2. Define huma input/output structs (use pointer types for PATCH body fields)
+3. Write huma handler closures (match `createGroupHandler` pattern)
+4. Create `registerXxxRoutes` function with per-operation middleware
+5. Remove chi route registration from `server.go`, add `registerXxxRoutes` call
+6. Update frontend store to use typed `client.GET`/`client.POST`/etc.
+7. Verify: `go build ./...`, `golangci-lint run`, `go test ./internal/api/ -v -count=1`, `cd web && npm run type-check`
+8. Commit with the pattern above
+
 ### Task 3.1: Saved Searches
 
 **File:** `internal/api/saved_searches.go`
@@ -1672,6 +1693,7 @@ Each migration follows the Groups reference pattern (Task 3.0) exactly. The hand
 **Special:**
 - **Finding 43 fix:** The current cursor uses `<RFC3339Nano>/<uuid>` in `next_cursor` but expects `after_created_at` + `after_id` as separate params. Migrate to the standard single `?cursor=` param with base64 JSON encoding. This is a **breaking cursor change** — any stored cursors become invalid.
 - The delivery retry endpoint sends outbound HTTP — same timeout consideration as channels.
+**Commit addendum:** Add "Fixes finding #43 (broken delivery cursor)." to the commit message.
 **Frontend:** Update delivery list pagination to use the new cursor format.
 
 ### Task 3.7: Reports
@@ -1688,13 +1710,14 @@ Each migration follows the Groups reference pattern (Task 3.0) exactly. The hand
 **Special:**
 - **Finding 34 fix:** Tier limit violations currently return 403. Change to 403 with `type: "urn:cvert-ops:error:tier-limit-exceeded"` in the error body. This applies here and to all other endpoints with tier checks.
 - Bootstrap logic has special auth handling — read carefully before migrating.
+**Commit addendum:** Add "Fixes finding #34 (tier limit error type)." to the commit message.
 **Frontend:** Update org store.
 
 ### Task 3.9: Members and Invitations
 
 **File:** `internal/api/members.go`, `internal/api/invitations.go`
 **Endpoints:** List/update/remove members, create/list/delete invitations
-**Special:** Currently returns bare arrays. Wrap in `{"items": [...]}`.
+**Special:** Currently returns bare arrays. Wrap in `{"items": [...]}`. This task covers two files — make one commit with both.
 **Frontend:** Update members and invitations stores.
 
 ### Task 3.10: Audit Log
@@ -1709,13 +1732,15 @@ Each migration follows the Groups reference pattern (Task 3.0) exactly. The hand
 **File:** `internal/api/admin_*.go` (added by Phase 8C Operate)
 **Endpoints:** Org admin, user admin, feed admin, delivery admin, system admin
 **Special:** These use `RequireSiteAdmin` middleware, not `RequireOrgRole`. Ensure the huma migration preserves this distinction. No org context — different middleware chain.
-**Frontend:** Admin UI may or may not exist yet. If it does, update it.
+**⚠️ Important:** Verify these files exist before starting. If Phase 8C didn't create them, report to lead and skip.
+**Frontend:** Admin UI may or may not exist yet. If it does, update it. If not, this task is Go-only.
 
 ### Task 3.12: Feeds Admin
 
 **File:** `internal/api/admin_feeds.go` (added by Phase 8C Operate)
 **Endpoints:** Pause/resume/logs for feeds
 **Special:** Same admin middleware as Task 3.11.
+**⚠️ Important:** Verify this file exists before starting. If Phase 8C didn't create it, report to lead and skip.
 **Frontend:** Same as Task 3.11.
 
 ---

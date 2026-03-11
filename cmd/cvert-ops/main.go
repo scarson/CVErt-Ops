@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,20 +34,33 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
+	"github.com/scarson/cvert-ops/internal/feed/generic"
 	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/merge"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 	"github.com/scarson/cvert-ops/migrations"
+)
+
+// Build metadata — set via ldflags at compile time:
+//
+//	go build -ldflags "-X main.version=v1.0.0 -X main.commit=abc123 -X main.buildTime=2026-03-10T00:00:00Z"
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildTime = "unknown"
 )
 
 func main() {
@@ -64,6 +78,8 @@ func main() {
 		migrateCmd(),
 		importBulkCmd(),
 		quotaCmd(),
+		validateFeedsCmd(),
+		doctorCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -75,11 +91,13 @@ func main() {
 // ── serve ─────────────────────────────────────────────────────────────────────
 
 func serveCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the HTTP server and embedded worker pool",
 		RunE:  runServe,
 	}
+	cmd.Flags().Bool("skip-auto-migrate", false, "Skip automatic database migrations on startup")
+	return cmd
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -100,6 +118,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
+	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
+	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
+
+	// Auto-migrate: run pending migrations before starting the server.
+	// Skippable for operators who run migrations via a separate init container.
+	skipMigrate, _ := cmd.Flags().GetBool("skip-auto-migrate")
+	if !skipMigrate {
+		slog.Info("auto-migrate: running pending migrations")
+		if err := autoMigrate(cmd.Context(), cfg); err != nil {
+			return fmt.Errorf("auto-migrate: %w", err)
+		}
+	} else {
+		slog.Info("auto-migrate: skipped (--skip-auto-migrate)")
+	}
+
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -109,9 +142,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// in-flight jobs complete and the goroutines exit. The goroutine is
 	// intentionally fire-and-forget here; the pool drains on ctx cancellation
 	// which happens before or alongside HTTP server shutdown.
+	// Load generic feed configs from CVERTOPS_FEEDS_DIR (if set).
+	var genericConfigs []generic.Config
+	if cfg.FeedsDir != "" {
+		configs, errs := generic.LoadDir(cfg.FeedsDir)
+		for _, e := range errs {
+			slog.Warn("invalid feed config", "error", e)
+		}
+		genericConfigs = configs
+		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
+	}
+
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	if len(genericConfigs) > 0 {
+		factory := generic.AdapterFactory(genericConfigs)
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+	} else {
+		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	}
 	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 
@@ -133,6 +182,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
+	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
+	apiSrv.SetVersionInfo(api.VersionInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildTime: buildTime,
+	})
 
 	// Wire alert evaluation dependencies. The cache and evaluator are used by
 	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
@@ -175,6 +230,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
+		if len(genericConfigs) > 0 {
+			feedScheduler.AddEntries(generic.ScheduleEntries(genericConfigs))
+		}
 		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 	}
 	go workerPool.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
@@ -191,6 +249,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+
+	// Metrics endpoint on a separate port so operators can restrict access
+	// without exposing it on the public API port.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{ //nolint:exhaustruct // minimal metrics server
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("metrics server started", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server error", "error", err)
+		}
+	}()
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -215,6 +289,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	)
 	defer cancel()
 
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown error", "error", err)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
@@ -250,17 +327,36 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 	defer db.Close()
 
+	// Register DB pool metrics collector so Prometheus can scrape pool utilization.
+	prometheus.MustRegister(metrics.NewDBPoolCollector(poolStatter{db}))
+
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	st := store.New(db)
+
+	// Load generic feed configs from CVERTOPS_FEEDS_DIR (if set).
+	var genericConfigs []generic.Config
+	if cfg.FeedsDir != "" {
+		configs, errs := generic.LoadDir(cfg.FeedsDir)
+		for _, e := range errs {
+			slog.Warn("invalid feed config", "error", e)
+		}
+		genericConfigs = configs
+		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
+	}
 
 	alertCache := alert.NewRuleCache()
 	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
-	workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	if len(genericConfigs) > 0 {
+		factory := generic.AdapterFactory(genericConfigs)
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+	} else {
+		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+	}
 	epssClient := &http.Client{Timeout: 300 * time.Second}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
@@ -292,11 +388,35 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
+		if len(genericConfigs) > 0 {
+			feedScheduler.AddEntries(generic.ScheduleEntries(genericConfigs))
+		}
 		go feedScheduler.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 	}
 
+	// Metrics endpoint so Prometheus can scrape the standalone worker.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{ //nolint:exhaustruct // minimal metrics server
+		Addr:              ":" + cfg.MetricsPort,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("metrics server started", "addr", metricsSrv.Addr)
+		if err := metricsSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("metrics server error", "error", err)
+		}
+	}()
+
 	slog.Info("worker started")
 	workerPool.Start(ctx) // blocks until ctx cancelled, then drains in-flight jobs
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown error", "error", err)
+	}
 	return nil
 }
 
@@ -360,28 +480,78 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 
 	slog.Info("running migrations")
 
-	// Source: embedded SQL files from the migrations package.
-	src, err := iofs.New(migrations.FS, ".")
+	db, err := openMigrateDB(cfg)
 	if err != nil {
-		return fmt.Errorf("migration source: %w", err)
+		return err
+	}
+	defer db.Close() //nolint:errcheck
+
+	return migrateUp(db)
+}
+
+// autoMigrate acquires a Postgres advisory lock and runs pending migrations.
+// The advisory lock prevents concurrent migration runs when multiple instances
+// start simultaneously (e.g., Kubernetes rolling update). The lock is released
+// on return via defer.
+//
+// The lock and migrations share the same *sql.DB connection — this is critical
+// because pg_advisory_lock is session-scoped and must protect the same session
+// that executes the DDL.
+func autoMigrate(ctx context.Context, cfg *config.Config) error {
+	db, err := openMigrateDB(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck
+
+	// Force single connection so the advisory lock and migration DDL share
+	// the same Postgres session. Without this, the pool could route the lock
+	// and the DDL to different backend connections.
+	db.SetMaxOpenConns(1)
+
+	// Verify connectivity before acquiring lock.
+	if err := db.PingContext(ctx); err != nil {
+		return fmt.Errorf("ping: %w", err)
 	}
 
-	// golang-migrate requires a *sql.DB. Use pgx's stdlib adapter so the same
-	// driver is used project-wide. No pooling needed here — this is a one-shot
-	// migration run.
+	// Acquire advisory lock — blocks until available, released on disconnect
+	// or explicit unlock. hashtext('cvertops-migrate') returns a stable int32.
+	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_lock(hashtext('cvertops-migrate'))"); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		if _, unlockErr := db.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(hashtext('cvertops-migrate'))"); unlockErr != nil {
+			slog.Error("auto-migrate: failed to release advisory lock", "error", unlockErr)
+		}
+	}()
+
+	return migrateUp(db)
+}
+
+// openMigrateDB opens a database/sql connection for running migrations.
+// golang-migrate requires *sql.DB; this uses pgx's stdlib adapter.
+// Uses DATABASE_URL_MIGRATE if set, otherwise falls back to DATABASE_URL.
+func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
 	migrateURL := cfg.DatabaseURL
 	if cfg.DatabaseURLMigrate != "" {
 		migrateURL = cfg.DatabaseURLMigrate
 	}
 	connCfg, err := pgx.ParseConfig(migrateURL)
 	if err != nil {
-		return fmt.Errorf("parse db url: %w", err)
+		return nil, fmt.Errorf("parse db url: %w", err)
 	}
 	// Simple query protocol + MultiStatementEnabled: each statement in the migration
 	// file runs as its own ExecContext call in autocommit, allowing CREATE INDEX CONCURRENTLY.
 	connCfg.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
-	db := stdlib.OpenDB(*connCfg)
-	defer db.Close() //nolint:errcheck
+	return stdlib.OpenDB(*connCfg), nil
+}
+
+// migrateUp applies all pending migrations on the given database connection.
+func migrateUp(db *sql.DB) error {
+	src, err := iofs.New(migrations.FS, ".")
+	if err != nil {
+		return fmt.Errorf("migration source: %w", err)
+	}
 
 	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
 	if err != nil {
@@ -397,8 +567,8 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 
-	version, _, _ := m.Version() //nolint:errcheck
-	slog.Info("migrations complete", "version", version)
+	ver, _, _ := m.Version() //nolint:errcheck
+	slog.Info("migrations complete", "version", ver)
 	return nil
 }
 
@@ -520,7 +690,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 34
+const expectedSchemaVersion = 38
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {
@@ -539,4 +709,17 @@ func newLogger(cfg *config.Config) *slog.Logger {
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+// poolStatter adapts *pgxpool.Pool to the metrics.PoolStatter interface.
+type poolStatter struct{ pool *pgxpool.Pool }
+
+func (p poolStatter) PoolStats() metrics.PoolStats {
+	s := p.pool.Stat()
+	return metrics.PoolStats{
+		AcquiredConns: s.AcquiredConns(),
+		IdleConns:     s.IdleConns(),
+		MaxConns:      s.MaxConns(),
+		TotalConns:    s.TotalConns(),
+	}
 }

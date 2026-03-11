@@ -72,7 +72,7 @@ func (q *Queries) CountWatchlistsByOrg(ctx context.Context, orgID uuid.UUID) (in
 
 const createOrg = `-- name: CreateOrg :one
 
-INSERT INTO organizations (name) VALUES ($1) RETURNING id, name, created_at, deleted_at, tier, tier_overrides
+INSERT INTO organizations (name) VALUES ($1) RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at
 `
 
 // ABOUTME: sqlc queries for organization and membership management.
@@ -87,6 +87,7 @@ func (q *Queries) CreateOrg(ctx context.Context, name string) (Organization, err
 		&i.DeletedAt,
 		&i.Tier,
 		&i.TierOverrides,
+		&i.SuspendedAt,
 	)
 	return i, err
 }
@@ -195,7 +196,7 @@ func (q *Queries) GetInvitationByToken(ctx context.Context, token string) (OrgIn
 }
 
 const getOrgByID = `-- name: GetOrgByID :one
-SELECT id, name, created_at, deleted_at, tier, tier_overrides FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1
+SELECT id, name, created_at, deleted_at, tier, tier_overrides, suspended_at FROM organizations WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 func (q *Queries) GetOrgByID(ctx context.Context, id uuid.UUID) (Organization, error) {
@@ -208,6 +209,7 @@ func (q *Queries) GetOrgByID(ctx context.Context, id uuid.UUID) (Organization, e
 		&i.DeletedAt,
 		&i.Tier,
 		&i.TierOverrides,
+		&i.SuspendedAt,
 	)
 	return i, err
 }
@@ -458,7 +460,7 @@ func (q *Queries) ListUserOrgs(ctx context.Context, userID uuid.UUID) ([]ListUse
 
 const updateOrg = `-- name: UpdateOrg :one
 UPDATE organizations SET name = $2 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, created_at, deleted_at, tier, tier_overrides
+RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at
 `
 
 type UpdateOrgParams struct {
@@ -476,6 +478,7 @@ func (q *Queries) UpdateOrg(ctx context.Context, arg UpdateOrgParams) (Organizat
 		&i.DeletedAt,
 		&i.Tier,
 		&i.TierOverrides,
+		&i.SuspendedAt,
 	)
 	return i, err
 }

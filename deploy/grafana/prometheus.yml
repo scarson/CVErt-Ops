@@ -1,0 +1,31 @@
+# Reference Prometheus scrape config for self-hosted CVErt Ops.
+#
+# Customize:
+#   - targets: adjust host:port for your deployment
+#   - scrape_interval: 15s is recommended; increase for high-cardinality setups
+#   - rule_files: uncomment alerts.yml path
+#   - alertmanager: configure your Alertmanager endpoint
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Uncomment to load alerting rules from alerts.yml:
+# rule_files:
+#   - "alerts.yml"
+
+# Uncomment to configure Alertmanager:
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#             - "localhost:9093"
+
+scrape_configs:
+  - job_name: "cvertops"
+    static_configs:
+      - targets:
+          - "localhost:9090"  # CVErt Ops metrics port (METRICS_PORT env var)
+        labels:
+          instance: "localhost"
+          environment: "production"  # adjust per environment

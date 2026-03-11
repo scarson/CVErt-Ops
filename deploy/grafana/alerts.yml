@@ -1,0 +1,78 @@
+# Prometheus alerting rules for CVErt Ops.
+# Compatible with Grafana Cloud Alerting and self-hosted Prometheus Alertmanager.
+#
+# Usage:
+#   - Self-hosted Prometheus: add this file path to rule_files in prometheus.yml
+#   - Grafana Cloud: import via Grafana Alerting UI or Terraform/API provisioning
+
+groups:
+  - name: cvertops
+    rules:
+      - alert: FeedStale
+        expr: time() - cvertops_feed_last_success_timestamp > 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Feed {{ $labels.feed }} has not succeeded in over 2 hours"
+          description: "The feed {{ $labels.feed }} last succeeded {{ $value | humanizeDuration }} ago."
+
+      - alert: FeedConsecutiveFailures
+        expr: cvertops_feed_consecutive_failures > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Feed {{ $labels.feed }} has {{ $value }} consecutive failures"
+          description: "The feed {{ $labels.feed }} has failed {{ $value }} times in a row. Check upstream connectivity and rate limits."
+
+      - alert: HighErrorRate
+        expr: >
+          sum(rate(cvertops_http_requests_total{status_code=~"5.."}[5m]))
+          /
+          sum(rate(cvertops_http_requests_total[5m]))
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx error rate exceeds 5%"
+          description: "The 5xx error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: SlowResponses
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(cvertops_http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP p95 latency exceeds 2 seconds"
+          description: "The 95th percentile request latency is {{ $value | humanizeDuration }}."
+
+      - alert: DeliveryBacklog
+        expr: >
+          sum(rate(cvertops_worker_jobs_claimed_total[5m]))
+          -
+          sum(rate(cvertops_worker_jobs_completed_total[5m]))
+          > 100
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker job backlog exceeds 100"
+          description: "The difference between claimed and completed jobs is {{ $value }}. Check for stuck jobs or insufficient worker capacity."
+
+      - alert: DBPoolExhaustion
+        expr: >
+          cvertops_db_pool_acquired_conns
+          /
+          cvertops_db_pool_max_conns
+          > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DB connection pool utilization exceeds 90%"
+          description: "{{ $value | humanizePercentage }} of database connections are acquired. Consider increasing max_conns or investigating slow queries."

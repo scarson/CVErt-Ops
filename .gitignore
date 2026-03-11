@@ -14,6 +14,7 @@
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
+coverage-*.txt
 *.coverprofile
 profile.cov
 
@@ -33,6 +34,8 @@ go.work.sum
 
 # Claude Code — personal local settings (credentials, personal permissions)
 .claude/settings.local.json
+# Claude Code hooks (personal guardrail scripts)
+.claude/hooks/
 # MCP local overrides (personal servers, alternate credentials)
 .mcp.local.json
 

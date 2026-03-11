@@ -55,6 +55,21 @@ func (rl *orgRateLimiter) Allow(orgID uuid.UUID, r rate.Limit, burst int) bool {
 	return e.limiter.Allow()
 }
 
+// AllowN reports whether n events may happen for the given org. Used by the
+// inbound webhook handler to count each patch as a separate rate limit unit.
+func (rl *orgRateLimiter) AllowN(orgID uuid.UUID, r rate.Limit, burst, n int) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	e, ok := rl.entries[orgID]
+	if !ok || e.limiter.Limit() != r || e.limiter.Burst() != burst {
+		e = &orgRateEntry{limiter: rate.NewLimiter(r, burst)}
+		rl.entries[orgID] = e
+	}
+	e.lastAt = rl.now()
+	return e.limiter.AllowN(rl.now(), n)
+}
+
 func (rl *orgRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(rl.evictTTL / 2)
 	defer ticker.Stop()

@@ -388,6 +388,7 @@ export interface components {
             readonly $schema?: string;
             display_name: string;
             email: string;
+            is_site_admin: boolean;
             orgs: components["schemas"]["OrgEntry"][] | null;
             user_id: string;
         };

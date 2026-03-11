@@ -255,7 +255,7 @@ After all 5 agents complete, compile findings into a single report:
 
 ```markdown
 # Project Health Review — CVErt Ops
-**Date:** YYYY-MM-DD
+**Date:** YYYY-MM-DD HH:MM
 **Scope:** [full | specific area]
 
 ## Critical Findings
@@ -284,7 +284,36 @@ After all 5 agents complete, compile findings into a single report:
 ...
 ```
 
-Save the report to `dev/health-reviews/YYYY-MM-DD-project-health-review.md`.
+### Saving Reports
+
+Save **both** the individual agent reports and the consolidated synthesis. Filenames include a timestamp and scope slug for uniqueness across multiple runs in a day.
+
+**Filename format:** `YYYY-MM-DDTHH-MM-<scope>-<report-type>.md`
+
+- `<scope>` is a slugified version of the focus area: `full` for a full review, otherwise a short slug like `alert-pipeline` or `auth-layer`
+- `HH-MM` is the time the review was initiated (24h format, local time)
+
+Example for a full review started at 14:30 on 2026-03-10:
+
+1. **Individual agent reports** — save each agent's raw output immediately when it returns:
+   - `dev/health-reviews/2026-03-10T14-30-full-agent-1-code-quality.md`
+   - `dev/health-reviews/2026-03-10T14-30-full-agent-2-architecture.md`
+   - `dev/health-reviews/2026-03-10T14-30-full-agent-3-test-quality.md`
+   - `dev/health-reviews/2026-03-10T14-30-full-agent-4-ops-readiness.md`
+   - `dev/health-reviews/2026-03-10T14-30-full-agent-5-api-design.md`
+
+   Each file should have a header like:
+   ```markdown
+   # Agent N: <Dimension Name>
+   **Date:** YYYY-MM-DD HH:MM
+   **Scope:** [full | specific area]
+   ```
+   followed by the agent's raw findings exactly as returned.
+
+2. **Consolidated synthesis** — after all agents complete and synthesis is done:
+   - `dev/health-reviews/2026-03-10T14-30-full-project-health-review.md`
+
+Save individual reports as soon as each agent completes — don't wait for synthesis. This ensures the raw analysis is preserved even if the session is interrupted.
 
 ---
 

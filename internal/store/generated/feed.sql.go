@@ -15,7 +15,7 @@ import (
 )
 
 const getFeedSyncState = `-- name: GetFeedSyncState :one
-SELECT feed_name, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until FROM feed_sync_state WHERE feed_name = $1
+SELECT feed_name, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until, paused_at FROM feed_sync_state WHERE feed_name = $1
 `
 
 func (q *Queries) GetFeedSyncState(ctx context.Context, feedName string) (FeedSyncState, error) {
@@ -29,6 +29,7 @@ func (q *Queries) GetFeedSyncState(ctx context.Context, feedName string) (FeedSy
 		&i.ConsecutiveFailures,
 		&i.LastError,
 		&i.BackoffUntil,
+		&i.PausedAt,
 	)
 	return i, err
 }
@@ -71,8 +72,66 @@ func (q *Queries) InsertFeedFetchLog(ctx context.Context, arg InsertFeedFetchLog
 	return id, err
 }
 
+const listFeedFetchLogs = `-- name: ListFeedFetchLogs :many
+SELECT id, feed_name, started_at, ended_at, status, items_fetched, items_upserted, cursor_before, cursor_after, error_summary FROM feed_fetch_log
+WHERE feed_name = $1
+  AND (
+    $3::timestamptz IS NULL
+    OR (started_at, id) < ($3::timestamptz, $4::uuid)
+  )
+ORDER BY started_at DESC, id DESC
+LIMIT $2
+`
+
+type ListFeedFetchLogsParams struct {
+	FeedName       string
+	Limit          int32
+	AfterStartedAt sql.NullTime
+	AfterID        uuid.NullUUID
+}
+
+// Keyset-paginated feed fetch logs for a single feed.
+func (q *Queries) ListFeedFetchLogs(ctx context.Context, arg ListFeedFetchLogsParams) ([]FeedFetchLog, error) {
+	rows, err := q.db.QueryContext(ctx, listFeedFetchLogs,
+		arg.FeedName,
+		arg.Limit,
+		arg.AfterStartedAt,
+		arg.AfterID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FeedFetchLog
+	for rows.Next() {
+		var i FeedFetchLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.FeedName,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.Status,
+			&i.ItemsFetched,
+			&i.ItemsUpserted,
+			&i.CursorBefore,
+			&i.CursorAfter,
+			&i.ErrorSummary,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFeedSyncStates = `-- name: ListFeedSyncStates :many
-SELECT feed_name, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until FROM feed_sync_state ORDER BY feed_name
+SELECT feed_name, cursor_json, last_success_at, last_attempt_at, consecutive_failures, last_error, backoff_until, paused_at FROM feed_sync_state ORDER BY feed_name
 `
 
 func (q *Queries) ListFeedSyncStates(ctx context.Context) ([]FeedSyncState, error) {
@@ -92,6 +151,7 @@ func (q *Queries) ListFeedSyncStates(ctx context.Context) ([]FeedSyncState, erro
 			&i.ConsecutiveFailures,
 			&i.LastError,
 			&i.BackoffUntil,
+			&i.PausedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -150,6 +210,24 @@ func (q *Queries) ListRecentFeedFetchLogs(ctx context.Context, arg ListRecentFee
 		return nil, err
 	}
 	return items, nil
+}
+
+const pauseFeed = `-- name: PauseFeed :exec
+UPDATE feed_sync_state SET paused_at = now() WHERE feed_name = $1 AND paused_at IS NULL
+`
+
+func (q *Queries) PauseFeed(ctx context.Context, feedName string) error {
+	_, err := q.db.ExecContext(ctx, pauseFeed, feedName)
+	return err
+}
+
+const resumeFeed = `-- name: ResumeFeed :exec
+UPDATE feed_sync_state SET paused_at = NULL WHERE feed_name = $1 AND paused_at IS NOT NULL
+`
+
+func (q *Queries) ResumeFeed(ctx context.Context, feedName string) error {
+	_, err := q.db.ExecContext(ctx, resumeFeed, feedName)
+	return err
 }
 
 const upsertFeedSyncState = `-- name: UpsertFeedSyncState :exec

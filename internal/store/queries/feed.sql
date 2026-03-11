@@ -31,3 +31,20 @@ SELECT * FROM feed_fetch_log
 WHERE feed_name = $1
 ORDER BY started_at DESC
 LIMIT $2;
+
+-- name: PauseFeed :exec
+UPDATE feed_sync_state SET paused_at = now() WHERE feed_name = $1 AND paused_at IS NULL;
+
+-- name: ResumeFeed :exec
+UPDATE feed_sync_state SET paused_at = NULL WHERE feed_name = $1 AND paused_at IS NOT NULL;
+
+-- name: ListFeedFetchLogs :many
+-- Keyset-paginated feed fetch logs for a single feed.
+SELECT * FROM feed_fetch_log
+WHERE feed_name = $1
+  AND (
+    sqlc.narg('after_started_at')::timestamptz IS NULL
+    OR (started_at, id) < (sqlc.narg('after_started_at')::timestamptz, sqlc.narg('after_id')::uuid)
+  )
+ORDER BY started_at DESC, id DESC
+LIMIT $2;

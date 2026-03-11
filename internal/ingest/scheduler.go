@@ -33,13 +33,15 @@ type SchedulerStore interface {
 	EnqueueJob(ctx context.Context, queue string, priority int32, payload json.RawMessage, lockKey *string, maxAttempts int32, runAfter *time.Time) (uuid.UUID, error)
 }
 
-type feedScheduleEntry struct {
+// FeedScheduleEntry defines a single feed's scheduling parameters.
+// Exported so that main.go can build entries from generic feed configs.
+type FeedScheduleEntry struct {
 	FeedName string
 	Queue    string
 	Interval time.Duration
 }
 
-var defaultSchedule = []feedScheduleEntry{
+var defaultSchedule = []FeedScheduleEntry{
 	{FeedName: "nvd", Queue: "feed_ingest", Interval: 2 * time.Hour},
 	{FeedName: "mitre", Queue: "feed_ingest", Interval: 24 * time.Hour},
 	{FeedName: "kev", Queue: "feed_ingest", Interval: 24 * time.Hour},
@@ -53,7 +55,7 @@ var defaultSchedule = []feedScheduleEntry{
 // Scheduler periodically enqueues feed ingestion jobs.
 type Scheduler struct {
 	store        SchedulerStore
-	schedule     []feedScheduleEntry
+	schedule     []FeedScheduleEntry
 	jobsEnqueued *prometheus.CounterVec
 	jobsSkipped  *prometheus.CounterVec
 }
@@ -86,6 +88,12 @@ func NewSchedulerWithRegistry(st SchedulerStore, reg prometheus.Registerer) *Sch
 	}
 }
 
+// AddEntries appends additional schedule entries (e.g., from generic feed configs).
+// Must be called before Start.
+func (s *Scheduler) AddEntries(entries []FeedScheduleEntry) {
+	s.schedule = append(s.schedule, entries...)
+}
+
 // Start runs the scheduler loop, ticking every minute. It runs the first tick
 // immediately so feeds start fetching on first boot. Blocks until ctx is cancelled.
 func (s *Scheduler) Start(ctx context.Context) {
@@ -112,7 +120,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) maybeEnqueue(ctx context.Context, entry feedScheduleEntry) {
+func (s *Scheduler) maybeEnqueue(ctx context.Context, entry FeedScheduleEntry) {
 	state, err := s.store.GetFeedSyncState(ctx, entry.FeedName)
 	if err != nil {
 		slog.Error("scheduler error", "feed", entry.FeedName, "error", err)

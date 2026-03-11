@@ -97,6 +97,7 @@ describe('InvitationView', () => {
         user_id: 'u1',
         email: 'sam@example.com',
         display_name: 'Sam Carter',
+        is_site_admin: false,
         orgs: [],
       }
 
@@ -160,6 +161,7 @@ describe('InvitationView', () => {
         user_id: 'u1',
         email: 'sam@example.com',
         display_name: 'Sam Carter',
+        is_site_admin: false,
         orgs: [{ org_id: 'org-old', name: 'Old Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-old')
@@ -176,6 +178,7 @@ describe('InvitationView', () => {
           user_id: 'u1',
           email: 'sam@example.com',
           display_name: 'Sam Carter',
+        is_site_admin: false,
           orgs: [
             { org_id: 'org-old', name: 'Old Org', role: 'admin' },
             { org_id: 'org-new', name: 'Acme Corp', role: 'member' },
@@ -209,6 +212,7 @@ describe('InvitationView', () => {
         user_id: 'u1',
         email: 'sam@example.com',
         display_name: 'Sam Carter',
+        is_site_admin: false,
         orgs: [],
       }
 
@@ -237,6 +241,7 @@ describe('InvitationView', () => {
         user_id: 'u1',
         email: 'sam@example.com',
         display_name: 'Sam Carter',
+        is_site_admin: false,
         orgs: [],
       }
 
@@ -265,6 +270,7 @@ describe('InvitationView', () => {
         user_id: 'u1',
         email: 'sam@example.com',
         display_name: 'Sam Carter',
+        is_site_admin: false,
         orgs: [],
       }
 

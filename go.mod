@@ -28,7 +28,7 @@ require (
 	github.com/wneessen/go-mail v0.7.2
 	go.yaml.in/yaml/v4 v4.0.0-rc.4
 	golang.org/x/crypto v0.48.0
-	golang.org/x/oauth2 v0.35.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.14.0
 	google.golang.org/genai v1.48.0
 )

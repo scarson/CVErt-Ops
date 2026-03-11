@@ -116,6 +116,8 @@ This project is developed with [Claude Code](https://claude.com/claude-code) usi
 
 **AI-assisted code review** uses specialized bug-hunting agents that perform multi-pass semantic analysis — targeting contract violations, pattern deviations, failure modes, concurrency issues, and error propagation. Periodic project health reviews run adversarial quality assessments across multiple dimensions.
 
+**Supply chain security** — GitHub CodeQL scans on every PR, Dependabot alerts and automated security update PRs for vulnerable dependencies, secret scanning with push protection, and weekly version update PRs for Go modules, npm packages, and GitHub Actions.
+
 **Structured planning** — features are designed in `docs/plans/` before implementation, with research notes in `dev/research-findings/` capturing technical investigations and trade-off analyses for architectural decisions.
 
 ## Architecture

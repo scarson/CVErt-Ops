@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    reviewers:
+      - scarson
+    labels:
+      - dependencies
+      - go
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    reviewers:
+      - scarson
+    labels:
+      - dependencies
+      - frontend
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    reviewers:
+      - scarson
+    labels:
+      - dependencies
+      - ci

@@ -141,7 +141,7 @@ func validateCron(expr string) error {
 	// Basic check: each field contains only valid cron characters.
 	for i, field := range fields {
 		for _, ch := range field {
-			if !((ch >= '0' && ch <= '9') || ch == '*' || ch == '/' || ch == '-' || ch == ',') {
+			if (ch < '0' || ch > '9') && ch != '*' && ch != '/' && ch != '-' && ch != ',' {
 				return fmt.Errorf("field %d contains invalid character %q", i+1, string(ch))
 			}
 		}

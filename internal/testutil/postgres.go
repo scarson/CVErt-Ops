@@ -5,8 +5,11 @@ package testutil
 import (
 	"context"
 	"errors"
+	"os"
+	"runtime"
 	"testing"
 
+	"github.com/docker/docker/client"
 	"github.com/golang-migrate/migrate/v4"
 	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -18,6 +21,17 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/migrations"
 )
+
+func init() {
+	// On Windows, testcontainers-go discovers Docker by calling os.Stat on the
+	// named pipe. Under concurrent test load, os.Stat fails with "All pipe
+	// instances are busy," causing a panic. Setting DOCKER_HOST bypasses the
+	// stat-based discovery entirely.
+	// See dev/research-findings/testcontainers-go-windows-panic.md
+	if runtime.GOOS == "windows" && os.Getenv("DOCKER_HOST") == "" {
+		os.Setenv("DOCKER_HOST", client.DefaultDockerHost)
+	}
+}
 
 // TestDB wraps a Store with helpers for RLS integration tests.
 // It embeds *store.Store so all store methods are directly callable,

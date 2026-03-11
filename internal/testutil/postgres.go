@@ -29,7 +29,7 @@ func init() {
 	// stat-based discovery entirely.
 	// See dev/research-findings/testcontainers-go-windows-panic.md
 	if runtime.GOOS == "windows" && os.Getenv("DOCKER_HOST") == "" {
-		os.Setenv("DOCKER_HOST", client.DefaultDockerHost)
+		os.Setenv("DOCKER_HOST", client.DefaultDockerHost) //nolint:errcheck,gosec // best-effort; no recovery path
 	}
 }
 

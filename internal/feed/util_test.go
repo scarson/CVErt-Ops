@@ -306,7 +306,7 @@ func TestDownloadToTemp_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
+	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat", MaxDownloadSize) //nolint:gosec // G704: test URL
 	if err != nil {
 		t.Fatalf("DownloadToTemp error: %v", err)
 	}
@@ -324,17 +324,14 @@ func TestDownloadToTemp_Success(t *testing.T) {
 }
 
 func TestDownloadToTemp_SizeLimit(t *testing.T) {
-	// Not parallel: mutates package-level MaxDownloadSize.
-	orig := MaxDownloadSize
-	MaxDownloadSize = 1024 // 1 KiB for testing
-	t.Cleanup(func() { MaxDownloadSize = orig })
+	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write(make([]byte, 2048)) //nolint:errcheck,gosec // G104: test helper
 	}))
 	defer srv.Close()
 
-	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
+	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat", 1024) //nolint:gosec // G704: test URL
 	if err == nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
@@ -353,7 +350,7 @@ func TestDownloadToTemp_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat") //nolint:gosec // G704: test URL
+	f, err := DownloadToTemp(t.Context(), srv.Client(), srv.URL, "cvert-test-*.dat", MaxDownloadSize) //nolint:gosec // G704: test URL
 	if err == nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input

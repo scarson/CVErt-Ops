@@ -136,7 +136,8 @@ func CloneStrings(ss []string) []string {
 // DownloadToTemp streams an HTTP response body to a temp file for ZIP reading.
 // The caller must defer os.Remove(f.Name()) and f.Close().
 // The tempPattern parameter is passed directly to os.CreateTemp (e.g., "cvert-mitre-*.zip").
-func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern string) (*os.File, error) {
+// maxSize caps the download; responses at or above this limit are rejected.
+func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern string, maxSize int64) (*os.File, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -158,16 +159,16 @@ func DownloadToTemp(ctx context.Context, client *http.Client, url, tempPattern s
 		return nil, err
 	}
 
-	n, err := io.Copy(f, io.LimitReader(resp.Body, MaxDownloadSize))
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxSize))
 	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
 		return nil, fmt.Errorf("feed: copy to temp: %w", err)
 	}
-	if n >= MaxDownloadSize {
+	if n >= maxSize {
 		_ = f.Close()
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp, not user input
-		return nil, fmt.Errorf("feed: download %s: response exceeds %d byte limit", url, MaxDownloadSize)
+		return nil, fmt.Errorf("feed: download %s: response exceeds %d byte limit", url, maxSize)
 	}
 
 	// Rewind for zip.NewReader.

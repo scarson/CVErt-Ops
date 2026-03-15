@@ -13,8 +13,9 @@ import (
 
 // TestSMTP holds connection details for an Inbucket SMTP test server.
 type TestSMTP struct {
-	Host string
-	Port int
+	Host   string
+	Port   int
+	WebURL string
 }
 
 // NewTestSMTP starts an Inbucket container and returns the SMTP connection details.
@@ -47,5 +48,10 @@ func NewTestSMTP(t *testing.T) *TestSMTP {
 		t.Fatalf("parse SMTP port %q: %v", portStr, err)
 	}
 
-	return &TestSMTP{Host: host, Port: port}
+	webURL, err := ctr.WebInterface(ctx)
+	if err != nil {
+		t.Fatalf("get inbucket web interface: %v", err)
+	}
+
+	return &TestSMTP{Host: host, Port: port, WebURL: webURL}
 }

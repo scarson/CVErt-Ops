@@ -690,6 +690,9 @@ func validateConfig(cfg *config.Config) error {
 	if !cfg.IsDevelopment() && !strings.HasPrefix(cfg.ExternalURL, "https://") {
 		return fmt.Errorf("EXTERNAL_URL must use https:// in non-development environments (got %q)", cfg.ExternalURL)
 	}
+	if !cfg.IsDevelopment() && strings.HasPrefix(cfg.ExternalURL, "https://") && !cfg.CookieSecure {
+		return fmt.Errorf("COOKIE_SECURE must be true when EXTERNAL_URL uses HTTPS in non-development environments")
+	}
 	return nil
 }
 

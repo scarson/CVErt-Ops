@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -62,7 +63,7 @@ func (s *Store) CompleteJob(ctx context.Context, id uuid.UUID) error {
 func (s *Store) FailJob(ctx context.Context, id uuid.UUID, errMsg string) error {
 	if err := s.q.FailJob(ctx, generated.FailJobParams{
 		ID:        id,
-		LastError: sql.NullString{String: errMsg, Valid: errMsg != ""},
+		LastError: dbutil.NullString(errMsg),
 	}); err != nil {
 		return fmt.Errorf("fail job %s: %w", id, err)
 	}

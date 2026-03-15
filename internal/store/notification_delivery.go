@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -92,7 +93,7 @@ func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds 
 		return q.RetryDelivery(ctx, generated.RetryDeliveryParams{
 			ID:        id,
 			Column2:   backoffSeconds,
-			LastError: sql.NullString{String: lastError, Valid: lastError != ""},
+			LastError: dbutil.NullString(lastError),
 		})
 	})
 	if err != nil {
@@ -106,7 +107,7 @@ func (s *Store) ExhaustDelivery(ctx context.Context, id uuid.UUID, lastError str
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.ExhaustDelivery(ctx, generated.ExhaustDeliveryParams{
 			ID:        id,
-			LastError: sql.NullString{String: lastError, Valid: lastError != ""},
+			LastError: dbutil.NullString(lastError),
 		})
 	})
 	if err != nil {

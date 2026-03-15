@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -24,7 +25,7 @@ func (s *Store) CreateUser(ctx context.Context, email, displayName, passwordHash
 		row, err = q.CreateUser(ctx, generated.CreateUserParams{
 			Email:               email,
 			DisplayName:         displayName,
-			PasswordHash:        sql.NullString{String: passwordHash, Valid: passwordHash != ""},
+			PasswordHash:        dbutil.NullString(passwordHash),
 			PasswordHashVersion: int32(hashVersion), //nolint:gosec // hashVersion is a small constant (1-255)
 		})
 		return err
@@ -101,7 +102,7 @@ func (s *Store) UpdatePasswordHash(ctx context.Context, id uuid.UUID, passwordHa
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {
 		if err := q.UpdatePasswordHash(ctx, generated.UpdatePasswordHashParams{
 			ID:                  id,
-			PasswordHash:        sql.NullString{String: passwordHash, Valid: passwordHash != ""},
+			PasswordHash:        dbutil.NullString(passwordHash),
 			PasswordHashVersion: int32(hashVersion), //nolint:gosec // hashVersion is a small constant (1-255)
 		}); err != nil {
 			return fmt.Errorf("update password hash: %w", err)

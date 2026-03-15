@@ -16,7 +16,7 @@ END
 $$;
 
 -- Set the password. In production, use a secrets manager instead.
--- ALTER ROLE cvert_ops_app WITH PASSWORD 'changeme';
+ALTER ROLE cvert_ops_app WITH LOGIN PASSWORD 'cvert_ops_app_dev';
 
 -- Grant the app role access to the database.
 GRANT CONNECT ON DATABASE cvert_ops TO cvert_ops_app;

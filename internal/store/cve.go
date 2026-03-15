@@ -1,5 +1,5 @@
 // ABOUTME: Store methods for CVE reads, search, and EPSS. Write path is in the merge pipeline.
-// ABOUTME: ListCVEs and SearchCVEs handle pagination; GetCVEDetail fetches child tables in parallel.
+// ABOUTME: ListCVEs and SearchCVEs handle pagination; GetCVEDetail fetches child tables sequentially.
 package store
 
 import (
@@ -27,8 +27,9 @@ func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.Cfe, error
 	return &row, nil
 }
 
-// GetCVEDetail fetches the canonical CVE row plus all child tables in parallel
-// queries. Returns (nil, nil, nil, nil, nil) when the CVE does not exist.
+// GetCVEDetail fetches the canonical CVE row plus all child tables (references,
+// affected packages, affected CPEs). Returns (nil, nil, nil, nil, nil) when
+// the CVE does not exist; returns (nil, nil, nil, nil, err) on query failure.
 func (s *Store) GetCVEDetail(ctx context.Context, cveID string) (
 	cve *generated.Cfe,
 	refs []generated.CveReference,

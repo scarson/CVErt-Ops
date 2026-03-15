@@ -25,7 +25,7 @@ func TestHandler_MetricsNotOnMainRouter(t *testing.T) {
 		DBMaxConns:      5,
 		LockoutDuration: 15 * 60_000_000_000, // 15m in ns
 	}
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	require.NoError(t, err)
 	defer srv.Close()
 

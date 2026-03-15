@@ -50,6 +50,9 @@ var defaultSchedule = []FeedScheduleEntry{
 	{FeedName: "msrc", Queue: "feed_ingest", Interval: 24 * time.Hour},
 	{FeedName: "redhat", Queue: "feed_ingest", Interval: 12 * time.Hour},
 	{FeedName: "epss", Queue: "epss_ingest", Interval: 24 * time.Hour},
+	{FeedName: "alert:batch", Queue: "alert_batch", Interval: 2 * time.Minute},
+	{FeedName: "alert:epss", Queue: "alert_epss", Interval: 24 * time.Hour},
+	{FeedName: "alert:zombie_sweep", Queue: "alert_zombie_sweep", Interval: 5 * time.Minute},
 }
 
 // Scheduler periodically enqueues feed ingestion jobs.

@@ -38,11 +38,10 @@ func newAITestServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Serv
 		AICacheSummarizeTTL:        24 * time.Hour,
 		GeminiModel:                "gemini-2.0-flash",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{LLM: ai.NewMockClient()})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
@@ -495,11 +494,10 @@ func newAITestServerWithLLM(t *testing.T, db *testutil.TestDB, llm ai.LLMClient)
 		AICacheSummarizeTTL:        24 * time.Hour,
 		GeminiModel:                "gemini-2.0-flash",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{LLM: llm})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetAIDeps(llm)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
@@ -773,7 +771,7 @@ func TestNLSearchHandler_NilLLM(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	// Create server WITHOUT calling SetAIDeps — llm remains nil.
+	// LLM not configured — remains nil.
 	_, ts := newAITestServerWithLLM(t, db, nil)
 	reg := doRegister(t, ctx, ts, "nlnilllm@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "nlnilllm@example.com", "test-password-1234")
@@ -825,11 +823,10 @@ func TestNLSearchHandler_QuotaDisabled(t *testing.T) {
 		GeminiModel:         "gemini-2.0-flash",
 		AICacheNLSearchTTL:  1 * time.Hour,
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{LLM: ai.NewMockClient()})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
@@ -862,11 +859,10 @@ func TestSummarizeHandler_QuotaDisabled(t *testing.T) {
 		GeminiModel:          "gemini-2.0-flash",
 		AICacheSummarizeTTL:  24 * time.Hour,
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{LLM: ai.NewMockClient()})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.SetAIDeps(ai.NewMockClient())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	t.Cleanup(srv.Close)
@@ -986,7 +982,7 @@ func TestAIHandlers_CrossOrgIsolation(t *testing.T) {
 
 func TestBuildSummaryInput_SanitizesDescription(t *testing.T) {
 	t.Parallel()
-	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+	cve := &generated.CVE{ //nolint:exhaustruct // test: only relevant fields set
 		CveID: "CVE-2024-0001",
 	}
 	cve.DescriptionPrimary.Valid = true
@@ -1010,7 +1006,7 @@ func TestBuildSummaryInput_SanitizesDescription(t *testing.T) {
 func TestBuildSummaryInput_NullFields(t *testing.T) {
 	t.Parallel()
 	// All NullXxx fields are zero-valued (not valid).
-	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+	cve := &generated.CVE{ //nolint:exhaustruct // test: only relevant fields set
 		CveID: "CVE-2024-0002",
 	}
 

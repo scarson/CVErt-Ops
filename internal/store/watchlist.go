@@ -12,6 +12,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -207,10 +208,10 @@ func (s *Store) CreateWatchlistItem(ctx context.Context, orgID, watchlistID uuid
 			WatchlistID:   watchlistID,
 			OrgID:         orgID,
 			ItemType:      p.ItemType,
-			Ecosystem:     nullString(p.Ecosystem),
-			PackageName:   nullString(p.PackageName),
-			Namespace:     nullString(p.Namespace),
-			CpeNormalized: nullString(p.CpeNormalized),
+			Ecosystem:     dbutil.NullStringPtr(p.Ecosystem),
+			PackageName:   dbutil.NullStringPtr(p.PackageName),
+			Namespace:     dbutil.NullStringPtr(p.Namespace),
+			CpeNormalized: dbutil.NullStringPtr(p.CpeNormalized),
 		})
 		return err
 	})
@@ -306,12 +307,4 @@ func (s *Store) ValidateWatchlistsOwnership(ctx context.Context, orgID uuid.UUID
 		return false, fmt.Errorf("validate watchlists ownership: %w", err)
 	}
 	return count == int64(len(ids)), nil
-}
-
-// nullString converts a *string pointer to a sql.NullString.
-func nullString(s *string) sql.NullString {
-	if s == nil {
-		return sql.NullString{}
-	}
-	return sql.NullString{Valid: true, String: *s}
 }

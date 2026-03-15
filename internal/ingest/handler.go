@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
@@ -30,23 +31,49 @@ type HandlerStore interface {
 }
 
 // MergeFunc matches the signature of merge.Ingest. Defined as a type for test injection.
-type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
+type MergeFunc func(ctx context.Context, s merge.Store, patch feed.CanonicalPatch, sourceName string) error
+
+// RealtimeEvaluator runs alert evaluation against a single CVE after its
+// material_hash changes. Implemented by *alert.Evaluator.
+type RealtimeEvaluator interface {
+	EvaluateRealtime(ctx context.Context, cveID string) error
+}
+
+// CVEHashReader reads the material_hash of a CVE. Used to detect hash changes
+// after merge for realtime alert evaluation.
+type CVEHashReader interface {
+	GetCVEMaterialHash(ctx context.Context, cveID string) (string, error)
+}
 
 // Handler returns a worker.Handler that fetches from the named feed adapter,
 // merges each patch into the CVE corpus, and persists cursor/sync state.
 func Handler(st *store.Store, client *http.Client, mergeFn MergeFunc) worker.Handler {
-	return handlerWithStore(st, st, client, mergeFn, NewAdapter)
+	return handlerWithStore(st, st, client, mergeFn, NewAdapter, nil, nil)
 }
 
 // HandlerWithFactory returns a worker.Handler that uses the given adapter factory.
 // Used by main.go to inject a factory that also handles generic feed configs.
 func HandlerWithFactory(st *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory) worker.Handler {
-	return handlerWithStore(st, st, client, mergeFn, factory)
+	return handlerWithStore(st, st, client, mergeFn, factory, nil, nil)
+}
+
+// HandlerWithAlerts returns a worker.Handler like Handler but with realtime
+// alert evaluation triggered after merges that change material_hash.
+func HandlerWithAlerts(st *store.Store, client *http.Client, mergeFn MergeFunc, eval RealtimeEvaluator) worker.Handler {
+	return handlerWithStore(st, st, client, mergeFn, NewAdapter, eval, st)
+}
+
+// HandlerWithFactoryAndAlerts returns a worker.Handler like HandlerWithFactory
+// but with realtime alert evaluation triggered after merges that change material_hash.
+func HandlerWithFactoryAndAlerts(st *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator) worker.Handler {
+	return handlerWithStore(st, st, client, mergeFn, factory, eval, st)
 }
 
 // handlerWithStore is the internal implementation that accepts a separate HandlerStore
 // for sync state operations. This enables testing error paths without mocking the full store.
-func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory) worker.Handler {
+// eval and hashReader are optional; when both are non-nil, realtime alert evaluation
+// fires after merges that change material_hash.
+func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator, hashReader CVEHashReader) worker.Handler {
 	return func(ctx context.Context, payload json.RawMessage) error {
 		var p Payload
 		if err := json.Unmarshal(payload, &p); err != nil {
@@ -107,6 +134,23 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 
 			// Merge each patch.
 			for _, patch := range result.Patches {
+				// Read hash before merge for change detection.
+				var hashBefore string
+				var hashReadOK bool
+				if eval != nil && hashReader != nil {
+					var hashErr error
+					hashBefore, hashErr = hashReader.GetCVEMaterialHash(ctx, patch.CVEID)
+					if hashErr != nil {
+						slog.Error("pre-merge hash read failed",
+							"feed", p.FeedName,
+							"cve_id", patch.CVEID,
+							"error", hashErr,
+						)
+					} else {
+						hashReadOK = true
+					}
+				}
+
 				if mergeErr := mergeFn(ctx, mergeSt, patch, result.SourceMeta.SourceName); mergeErr != nil {
 					slog.Error("feed merge failed",
 						"feed", p.FeedName,
@@ -117,6 +161,26 @@ func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Cl
 					break
 				}
 				itemsUpserted++
+
+				// Check if material_hash changed and trigger realtime alert evaluation.
+				if eval != nil && hashReader != nil {
+					hashAfter, hashErr := hashReader.GetCVEMaterialHash(ctx, patch.CVEID)
+					if hashErr != nil {
+						slog.Error("post-merge hash read failed",
+							"feed", p.FeedName,
+							"cve_id", patch.CVEID,
+							"error", hashErr,
+						)
+					} else if hashReadOK && hashAfter != hashBefore {
+						if evalErr := eval.EvaluateRealtime(ctx, patch.CVEID); evalErr != nil {
+							slog.Error("realtime alert evaluation failed",
+								"feed", p.FeedName,
+								"cve_id", patch.CVEID,
+								"error", evalErr,
+							)
+						}
+					}
+				}
 			}
 			if fetchErr != nil {
 				break

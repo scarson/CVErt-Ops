@@ -35,6 +35,14 @@ type cveSummary struct {
 	Description  string // pre-lowercased for PostFilter matching
 }
 
+// PostFilterField implements dsl.PostFilterTarget for cveSummary.
+func (c cveSummary) PostFilterField(field string) string {
+	if field == "cve_id" {
+		return c.CVEID
+	}
+	return c.Description
+}
+
 // Dispatcher triggers notification delivery for a newly created alert event.
 // A nil dispatcher disables delivery (tests, startup).
 type Dispatcher interface {
@@ -43,16 +51,19 @@ type Dispatcher interface {
 
 // Evaluator runs alert DSL rules against the CVE corpus across three evaluation paths.
 type Evaluator struct {
-	db         *sql.DB // stdlib-wrapped pool; squirrel/pq.Array compatible
-	rules      store.AlertRuleStore
-	cache      *RuleCache
-	log        *slog.Logger
-	dispatcher Dispatcher // nil = delivery disabled
+	db                     *sql.DB // stdlib-wrapped pool; squirrel/pq.Array compatible
+	rules                  store.AlertRuleStore
+	cache                  *RuleCache
+	log                    *slog.Logger
+	dispatcher             Dispatcher // nil = delivery disabled
+	longStatementTimeoutMS int        // overrides connection-level statement_timeout for activation scans
 }
 
 // New creates an Evaluator. db must be the stdlib-wrapped pool from the same store used by rules.
-func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Logger) *Evaluator {
-	return &Evaluator{db: db, rules: rules, cache: cache, log: log}
+// longTimeoutMS overrides the per-connection statement_timeout for long-running
+// operations (activation scans). Pass 0 to use the connection default.
+func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Logger, longTimeoutMS int) *Evaluator {
+	return &Evaluator{db: db, rules: rules, cache: cache, log: log, longStatementTimeoutMS: longTimeoutMS}
 }
 
 // SetDispatcher injects the notification dispatcher.
@@ -89,7 +100,7 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 			e.log.Error("compile rule for realtime", "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
 		if evalErr != nil {
 			e.log.Error("evaluate rule realtime", "rule_id", rule.ID, "cve_id", cveID, "err", evalErr)
 		}
@@ -139,7 +150,7 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 			e.log.Error("compile rule for batch", "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
 		if evalErr != nil {
 			e.log.Error("evaluate rule batch", "rule_id", rule.ID, "err", evalErr)
 		}
@@ -188,7 +199,7 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 			e.log.Error("compile rule for EPSS", "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
 		if evalErr != nil {
 			e.log.Error("evaluate rule EPSS", "rule_id", rule.ID, "err", evalErr)
 		}
@@ -243,7 +254,7 @@ func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.U
 			break
 		}
 
-		matchCount, _, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, batch, orgID, true, true)
+		matchCount, _, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, batch, orgID, true, true, e.longStatementTimeoutMS)
 		totalCandidates += int32(candidatesEval) //nolint:gosec // G115: bounded by activationBatch
 		if evalErr != nil {
 			runErr = evalErr
@@ -338,9 +349,9 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 
 	var candidates []cveSummary
 	var partial bool
-	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
+	if err := e.bypassTx(ctx, 0, func(tx *sql.Tx) error {
 		var err error
-		candidates, partial, err = e.queryCandidatesAll(ctx, tx, compiled)
+		candidates, partial, err = e.queryCandidates(ctx, tx, compiled, nil)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("query candidates: %w", err)
@@ -350,7 +361,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 		return &DryRunResult{Partial: true, CandidatesEvaluated: candidateCap + 1}, nil
 	}
 
-	matched := applyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
+	matched := dsl.ApplyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
 
 	sample := make([]string, 0, 10)
 	for i, m := range matched {
@@ -375,6 +386,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 // evaluateRule runs the DSL query against candidateIDs, applies PostFilters, inserts
 // alert_events, and detects resolutions. suppressDelivery=true marks events from the
 // activation scan baseline. suppressResolution=true skips resolution detection (activation).
+// statementTimeoutMS overrides the connection-level statement_timeout when > 0.
 // Returns (matchCount, partial, candidatesEval, err).
 func (e *Evaluator) evaluateRule(
 	ctx context.Context,
@@ -383,10 +395,11 @@ func (e *Evaluator) evaluateRule(
 	orgID uuid.UUID,
 	suppressDelivery bool,
 	suppressResolution bool,
+	statementTimeoutMS int,
 ) (int, bool, int, error) {
 	var candidates []cveSummary
 	var partial bool
-	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
+	if err := e.bypassTx(ctx, statementTimeoutMS, func(tx *sql.Tx) error {
 		var err error
 		candidates, partial, err = e.queryCandidates(ctx, tx, compiled, candidateIDs)
 		return err
@@ -397,7 +410,7 @@ func (e *Evaluator) evaluateRule(
 		return 0, true, len(candidateIDs), nil
 	}
 
-	matched := applyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
+	matched := dsl.ApplyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
 
 	// Resolution detection: find previously matched CVEs that no longer match.
 	var prevMatched []string
@@ -443,15 +456,18 @@ func (e *Evaluator) evaluateRule(
 	return len(matched), false, len(candidateIDs), nil
 }
 
-// queryCandidates runs the compiled DSL query against candidateIDs within a bypass_rls
-// transaction. Returns (candidates, partial, error). partial=true means > candidateCap
+// queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is
+// non-nil, only those CVE IDs are considered; otherwise all CVEs are scanned.
+// Returns (candidates, partial, error). partial=true means > candidateCap
 // rows matched, which triggers fail-closed behavior.
 func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule, candidateIDs []string) ([]cveSummary, bool, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	combined := sq.And{
 		compiled.SQL,
 		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
-		sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)),
+	}
+	if len(candidateIDs) > 0 {
+		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
 	}
 	sb := psql.
 		Select(
@@ -494,108 +510,6 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 	return candidates, false, nil
 }
 
-// queryCandidatesAll runs the compiled DSL query against ALL non-rejected CVEs without
-// an ID filter. Used by DryRun to evaluate against the full corpus read-only.
-func (e *Evaluator) queryCandidatesAll(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule) ([]cveSummary, bool, error) {
-	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	combined := sq.And{
-		compiled.SQL,
-		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
-	}
-	sb := psql.
-		Select(
-			"cves.cve_id",
-			"COALESCE(cves.material_hash, '')",
-			"COALESCE(lower(cves.description_primary), '')",
-		).
-		From("cves")
-	for _, j := range compiled.Joins {
-		sb = sb.Join(j)
-	}
-	query, args, err := sb.
-		Where(combined).
-		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
-		ToSql()
-	if err != nil {
-		return nil, false, fmt.Errorf("build dry-run query: %w", err)
-	}
-
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, false, fmt.Errorf("execute dry-run query: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
-	var candidates []cveSummary
-	for rows.Next() {
-		var s cveSummary
-		if err := rows.Scan(&s.CVEID, &s.MaterialHash, &s.Description); err != nil {
-			return nil, false, fmt.Errorf("scan dry-run candidate: %w", err)
-		}
-		candidates = append(candidates, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("iterate dry-run candidates: %w", err)
-	}
-	if len(candidates) > candidateCap {
-		return nil, true, nil
-	}
-	return candidates, false, nil
-}
-
-// applyPostFilters filters candidates through the compiled regex PostFilters.
-// When logic is "or", any filter matching includes the candidate; otherwise all must match (AND).
-func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter, logic dsl.Logic) []cveSummary {
-	if len(filters) == 0 {
-		return candidates
-	}
-	var matched []cveSummary
-	for _, c := range candidates {
-		if logic == dsl.LogicOr {
-			pass := false
-			for _, f := range filters {
-				ok := f.Pattern.MatchString(postFilterTarget(c, f))
-				if f.Negate {
-					ok = !ok
-				}
-				if ok {
-					pass = true
-					break
-				}
-			}
-			if pass {
-				matched = append(matched, c)
-			}
-		} else {
-			pass := true
-			for _, f := range filters {
-				ok := f.Pattern.MatchString(postFilterTarget(c, f))
-				if f.Negate {
-					ok = !ok
-				}
-				if !ok {
-					pass = false
-					break
-				}
-			}
-			if pass {
-				matched = append(matched, c)
-			}
-		}
-	}
-	return matched
-}
-
-// postFilterTarget returns the candidate field value that a PostFilter should match against.
-func postFilterTarget(c cveSummary, f dsl.PostFilter) string {
-	switch f.Field {
-	case "cve_id":
-		return c.CVEID
-	default:
-		return c.Description
-	}
-}
-
 // loadAndCompileRule returns the CompiledRule from cache, or compiles it from the rule's
 // stored conditions. rule.Logic and rule.Conditions are stored as separate DB columns;
 // we reconstruct the Rule IR directly rather than re-parsing full DSL JSON.
@@ -623,21 +537,11 @@ func (e *Evaluator) loadAndCompileRule(rule *store.AlertRuleRow) (*dsl.CompiledR
 // Database helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-// readTx opens a read-only database/sql transaction and calls fn. The transaction
-// is always rolled back at the end — writes (if any) are discarded. Use for
-// dry-run and other read-only evaluation paths that must not touch alert_events.
-func (e *Evaluator) readTx(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := e.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return fmt.Errorf("begin read tx: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-	return fn(tx)
-}
-
 // bypassTx opens a database/sql transaction with RLS bypass enabled and calls fn.
 // Use for queries that reference org-scoped tables from worker paths.
-func (e *Evaluator) bypassTx(ctx context.Context, fn func(*sql.Tx) error) error {
+// statementTimeoutMS overrides the connection-level statement_timeout for this
+// transaction when > 0.
+func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn func(*sql.Tx) error) error {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin bypass tx: %w", err)
@@ -645,6 +549,11 @@ func (e *Evaluator) bypassTx(ctx context.Context, fn func(*sql.Tx) error) error 
 	defer tx.Rollback() //nolint:errcheck
 	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
 		return fmt.Errorf("set bypass_rls: %w", err)
+	}
+	if statementTimeoutMS > 0 {
+		if err := store.SetStatementTimeout(ctx, tx, statementTimeoutMS); err != nil {
+			return fmt.Errorf("set statement timeout: %w", err)
+		}
 	}
 	if err := fn(tx); err != nil {
 		return err

@@ -14,7 +14,7 @@ import (
 
 // readyzHandler returns a readiness probe handler that checks database
 // connectivity, migration currency, and worker goroutine count.
-func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int) http.HandlerFunc {
+func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int, extraChecks ...func() bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ready := true
 
@@ -61,6 +61,16 @@ func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int) http.HandlerFunc
 		// ── Worker goroutines ────────────────────────────────────────────
 		goroutines := runtime.NumGoroutine()
 
+		// ── Delivery worker health ───────────────────────────────────────
+		deliveryStatus := "healthy"
+		for _, check := range extraChecks {
+			if !check() {
+				deliveryStatus = "unhealthy"
+				ready = false
+				break
+			}
+		}
+
 		// ── Response ─────────────────────────────────────────────────────
 		status := "ready"
 		statusCode := http.StatusOK
@@ -82,6 +92,9 @@ func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int) http.HandlerFunc
 				},
 				"worker": map[string]any{
 					"goroutines": goroutines,
+				},
+				"delivery_worker": map[string]any{
+					"status": deliveryStatus,
 				},
 			},
 		}

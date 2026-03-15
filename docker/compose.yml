@@ -132,9 +132,11 @@ services:
       - cvert-public-net   # reachable by Caddy; outbound internet for feed adapters
       - cvert-data-net     # reaches Postgres and Mailpit
     environment:
-      # Database
+      # Database — connects as the restricted cvert_ops_app role (NOBYPASSRLS)
+      # so Postgres RLS policies are enforced as a defense-in-depth layer.
+      # The migrate service retains the superuser connection for DDL operations.
       DATABASE_URL: >-
-        postgresql://${POSTGRES_USER:-cvert_ops}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=require
+        postgresql://cvert_ops_app:${APP_DB_PASSWORD:-cvert_ops_app_dev}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=require
       # PLAN.md §19.2: simple_protocol for PgBouncer compatibility (safe for direct connections too)
       DB_QUERY_EXEC_MODE: simple_protocol
 

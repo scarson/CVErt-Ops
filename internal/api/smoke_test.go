@@ -62,7 +62,7 @@ func TestSmokeHealthz(t *testing.T) {
 
 	// ── Build handler and test server ────────────────────────────────────────
 	cfg := &config.Config{Argon2MaxConcurrent: 5}
-	apiSrv, err := api.NewServer(store.New(pool), cfg)
+	apiSrv, err := api.NewServer(store.New(pool), cfg, api.ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestSmokeHealthzNilDB(t *testing.T) {
 
 	ctx := context.Background()
 	cfg := &config.Config{Argon2MaxConcurrent: 5}
-	apiSrv, err := api.NewServer(nil, cfg)
+	apiSrv, err := api.NewServer(nil, cfg, api.ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSmokeHealthzNilDB(t *testing.T) {
 func newNilDBServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	cfg := &config.Config{Argon2MaxConcurrent: 5}
-	apiSrv, err := api.NewServer(nil, cfg)
+	apiSrv, err := api.NewServer(nil, cfg, api.ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -33,7 +34,7 @@ type Job struct {
 func (s *Store) ClaimJob(ctx context.Context, queue, workerID string) (*Job, error) {
 	row, err := s.q.ClaimJob(ctx, generated.ClaimJobParams{
 		Queue:    queue,
-		LockedBy: sql.NullString{String: workerID, Valid: true},
+		LockedBy: dbutil.NullString(workerID),
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -62,7 +63,7 @@ func (s *Store) CompleteJob(ctx context.Context, id uuid.UUID) error {
 func (s *Store) FailJob(ctx context.Context, id uuid.UUID, errMsg string) error {
 	if err := s.q.FailJob(ctx, generated.FailJobParams{
 		ID:        id,
-		LastError: sql.NullString{String: errMsg, Valid: errMsg != ""},
+		LastError: dbutil.NullString(errMsg),
 	}); err != nil {
 		return fmt.Errorf("fail job %s: %w", id, err)
 	}
@@ -93,10 +94,7 @@ func (s *Store) EnqueueJob(
 	maxAttempts int32,
 	runAfter *time.Time,
 ) (uuid.UUID, error) {
-	var lk sql.NullString
-	if lockKey != nil {
-		lk = sql.NullString{String: *lockKey, Valid: true}
-	}
+	lk := dbutil.NullStringPtr(lockKey)
 
 	var ra interface{}
 	if runAfter != nil {

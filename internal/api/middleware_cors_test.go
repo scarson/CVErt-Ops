@@ -15,7 +15,7 @@ import (
 // No database is needed — tests hit /healthz which works without a DB.
 func newCORSServer(t *testing.T, cfg *config.Config) *httptest.Server {
 	t.Helper()
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

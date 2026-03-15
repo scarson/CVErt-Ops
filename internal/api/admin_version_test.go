@@ -34,11 +34,11 @@ func TestAdminVersion_SiteAdmin_200(t *testing.T) {
 	}
 
 	srv := newAuthTestServer(t, secret, db)
-	srv.SetVersionInfo(VersionInfo{
+	srv.versionInfo = VersionInfo{
 		Version:   "1.0.0",
 		Commit:    "abc123",
 		BuildTime: "2026-03-10T00:00:00Z",
-	})
+	}
 	handler := srv.Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)

@@ -179,7 +179,7 @@ type AuditLog struct {
 	CreatedAt  time.Time
 }
 
-type Cfe struct {
+type CVE struct {
 	CveID                 string
 	Status                sql.NullString
 	DatePublished         sql.NullTime

@@ -28,7 +28,7 @@
 
 **Excluded:** The `generic` adapter is config-driven with user-defined URLs. It has no fixed upstream to capture from. Generic adapter tests continue to use hand-crafted fixtures.
 
-**Relationship to health review remediation plan:** This plan implements the test infrastructure needed for Finding 23 (Task 5A) in `dev/plans/2026-03-10-health-review-remediation.md`. Once this plan is complete, Task 5A becomes "done."
+**Relationship to health review remediation plan:** This plan implements the test infrastructure needed for Finding 23 (Task 5A) in `dev/plans/2026-03-10-phase9-health-review-remediation.md`. Once this plan is complete, Task 5A becomes "done."
 
 ---
 
@@ -43,6 +43,8 @@ D:\Code\CVErt-Ops\data\feed-snapshots\
 Bash-compatible path: `/d/Code/CVErt-Ops/data/feed-snapshots/`
 
 This directory is NOT in the git repo and does NOT need a `.gitignore` entry. It contains multi-GB raw API responses used only for fixture generation. The curated fixtures extracted FROM this data are small and stored IN the repo at `internal/feed/<adapter>/testdata/golden/`.
+
+**Coverage boundary:** This corpus is for realistic schema-drift and merge-path coverage. It does NOT replace all hand-crafted negative fixtures. Keep or add synthetic fixtures/tests for cases real captures may never contain, including null bytes, malformed timestamps, and crash-recovery/final-page cursor regressions called out in `dev/testing-pitfalls.md`.
 
 ---
 
@@ -234,6 +236,33 @@ func TestRecordingTransport_SequentialNumbering(t *testing.T) {
 	}
 }
 
+func TestRecordingTransport_WriteFailureFailsRequest(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	tmp := t.TempDir()
+	notDir := filepath.Join(tmp, "not-a-directory")
+	if err := os.WriteFile(notDir, []byte("x"), 0644); err != nil {
+		t.Fatalf("seed blocking file: %v", err)
+	}
+
+	rt := &RecordingTransport{
+		Inner:  http.DefaultTransport,
+		OutDir: notDir,
+	}
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Get(ts.URL)
+	if err == nil {
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
+		t.Fatal("expected capture write failure to return an error")
+	}
+}
+
 func TestRecordingTransport_StreamingBodyTee(t *testing.T) {
 	// Verifies that the adapter can stream-read the body (e.g., json.Decoder)
 	// while the transport simultaneously writes to disk.
@@ -353,16 +382,19 @@ func (rt *RecordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	metaJSON, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return resp, nil // non-fatal: still return the response
+		resp.Body.Close()
+		return nil, fmt.Errorf("marshal response metadata: %w", err)
 	}
 	if err := os.WriteFile(prefix+".meta.json", metaJSON, 0644); err != nil {
-		return resp, nil
+		resp.Body.Close()
+		return nil, fmt.Errorf("write response metadata: %w", err)
 	}
 
 	// TeeReader: adapter reads from resp.Body, copy flows to bodyFile.
 	bodyFile, err := os.Create(prefix + ".body")
 	if err != nil {
-		return resp, nil
+		resp.Body.Close()
+		return nil, fmt.Errorf("create response body file: %w", err)
 	}
 
 	origBody := resp.Body
@@ -400,7 +432,7 @@ func (tb *teeBody) Close() error {
 ```bash
 go test ./dev/cmd/capture-feeds/... -run TestRecordingTransport -v
 ```
-Expected: PASS — all 3 tests green.
+Expected: PASS — all 4 tests green.
 
 **Step 5: Commit**
 
@@ -673,10 +705,17 @@ The default output directory is `D:/Code/CVErt-Ops/data/feed-snapshots/`. Overri
 ```bash
 du -sh /d/Code/CVErt-Ops/data/feed-snapshots/*
 ls /d/Code/CVErt-Ops/data/feed-snapshots/nvd/*.meta.json | wc -l   # ~125 pages
+ls /d/Code/CVErt-Ops/data/feed-snapshots/nvd/*.body | wc -l        # should match meta.json count
 ls /d/Code/CVErt-Ops/data/feed-snapshots/ghsa/*.meta.json | wc -l   # ~2000+ pages
+ls /d/Code/CVErt-Ops/data/feed-snapshots/ghsa/*.body | wc -l        # should match meta.json count
 ls /d/Code/CVErt-Ops/data/feed-snapshots/kev/catalog.json            # single file
 ls /d/Code/CVErt-Ops/data/feed-snapshots/epss/scores.csv.gz          # single file
+
+# Spot-check that paginated captures did not record auth/rate-limit/server errors.
+grep -R '"status_code": \(401\|403\|429\|5[0-9][0-9]\)' /d/Code/CVErt-Ops/data/feed-snapshots/{nvd,ghsa,msrc,redhat}/*.meta.json
 ```
+
+The `grep` above should return no matches. If it does, the capture is not usable yet — fix auth/rate-limit issues and re-run that feed before proceeding.
 
 **Step 3: Decompress EPSS for agent analysis**
 
@@ -716,14 +755,19 @@ Write the following content VERBATIM to `dev/plans/test-fixture-edge-case-matrix
 ```markdown
 # Test Fixture Edge Case Matrix
 
-This document defines the CVE categories needed for the test fixture corpus.
+This document defines the corpus record categories needed for the test fixture corpus.
 The selection agent reads this document, then filters captured feed data locally
-to find real CVEs matching each category.
+to find real feed records matching each category.
 
-## Target: 30-50 CVEs total
+## Target: 30-50 corpus records total
 
-Many CVEs will cover multiple categories. Prefer CVEs that hit 2+ categories
-simultaneously — this maximizes coverage with fewer fixtures.
+Most records should be CVE-backed. A small number may be feed-native advisories
+without a CVE ID when required by the matrix (currently GHSA F1).
+
+All categories are required unless explicitly marked optional.
+
+Many records will cover multiple categories. Prefer records that hit 2+
+categories simultaneously — this maximizes coverage with fewer fixtures.
 
 ## Categories
 
@@ -734,6 +778,7 @@ simultaneously — this maximizes coverage with fewer fixtures.
 | C2 | Missing CVSS entirely | Null/absent score handling | NVD pages: CVE with no `cvssMetricV31` or `cvssMetricV40` block |
 | C3 | CVSS v4.0 present | v4 parsing path | NVD pages: CVE with `cvssMetricV40` block |
 | C4 | CVSS v4.0 only (no v3) | v4 fallback when v3 absent | NVD pages: `cvssMetricV40` present, no `cvssMetricV31` or `cvssMetricV30` |
+| C4A | CVSS score = 0.0 | Falsy-value preservation | GHSA pages, MSRC CSAF docs, OSV ZIP, or NVD pages: score exactly `0.0` |
 | C5 | Multiple CWE IDs | CWE array handling | NVD pages: `weaknesses` array with 2+ entries |
 | C6 | No description | Empty/null description | NVD pages: empty `descriptions` array or status=RESERVED |
 | C7 | Multiple references (10+) | Large reference array | NVD pages: `references` array length >= 10 |
@@ -771,22 +816,28 @@ simultaneously — this maximizes coverage with fewer fixtures.
 |----|----------|--------------|----------------------------|
 | E1 | High EPSS (>0.9) | EPSS evaluator threshold | EPSS CSV: sort by score descending, take top entries |
 | E2 | Very low EPSS (<0.01) | Boundary behavior | EPSS CSV: entries with score < 0.01 |
-| E3 | EPSS score = 0 | Zero-value handling | EPSS CSV: entry with score exactly 0 (if any exist) |
+| E3 | EPSS score = 0 (optional) | Zero-value handling | EPSS CSV: entry with score exactly 0 (if any exist) |
 
 ## Output Format
 
-The agent produces a manifest file at `D:/Code/CVErt-Ops/data/feed-snapshots/manifest.json`:
+The agent produces the canonical manifest file at `dev/plans/test-fixture-manifest.json`:
 
 ```json
 {
   "generated": "2026-03-11T14:30:00Z",
   "capture_date": "2026-03-11",
-  "cves": [
+  "records": [
     {
       "cve_id": "CVE-2024-3094",
       "categories": ["X1", "X2", "X5", "E1"],
       "feeds": ["nvd", "mitre", "ghsa", "osv", "kev", "epss"],
       "why": "xz backdoor — maximum cross-feed overlap, KEV-listed, high EPSS"
+    },
+    {
+      "ghsa_id": "GHSA-xxxx-yyyy-zzzz",
+      "categories": ["F1"],
+      "feeds": ["ghsa"],
+      "why": "GHSA advisory without a CVE ID; exercises feed-native selector path"
     }
   ],
   "category_coverage": {
@@ -796,10 +847,16 @@ The agent produces a manifest file at `D:/Code/CVErt-Ops/data/feed-snapshots/man
 }
 ```
 
+Each manifest record MUST set at least one selector. For this plan, that means
+`cve_id` for normal CVE-backed records and `ghsa_id` for GHSA-native advisories
+whose `cve_id` is null.
+
 ## Verification
 
-After selection, every category MUST have at least one CVE. The agent should
-print a coverage summary showing any gaps and attempt to fill them.
+After selection, every required category MUST have at least one record. Optional
+categories should be covered when present in the captured data. The agent should
+print a coverage summary showing required gaps separately from optional misses
+and attempt to fill the required ones.
 ```
 
 **Step 2: Commit**
@@ -851,19 +908,17 @@ YOUR TASK:
      read specific CVE files without extracting the entire archive
    - For OSV ZIP: same approach — `unzip -l` then `unzip -p` for specific entries
 
-3. Find CVEs matching each edge case category per the matrix.
-   Prefer CVEs that cover multiple categories simultaneously.
+3. Find records matching each edge case category per the matrix.
+   Prefer records that cover multiple categories simultaneously.
 
-4. Target 30-50 CVEs total. Every category must have at least one CVE.
+4. Target 30-50 corpus records total. Every required category must have
+   at least one record.
 
-5. Output the manifest to D:/Code/CVErt-Ops/data/feed-snapshots/manifest.json
-   in the format specified in the matrix document.
+5. Output the canonical manifest to dev/plans/test-fixture-manifest.json in the
+   format specified in the matrix document.
 
-6. ALSO copy the manifest into the repo for version control:
-   cp D:/Code/CVErt-Ops/data/feed-snapshots/manifest.json dev/plans/test-fixture-manifest.json
-
-7. Print a coverage summary showing which CVE covers which categories,
-   and flag any categories with zero coverage.
+6. Print a coverage summary showing which record covers which categories,
+   and flag required gaps separately from optional misses.
 
 IMPORTANT CONSTRAINTS:
 - Do NOT hit any external APIs. All data is local.
@@ -872,6 +927,8 @@ IMPORTANT CONSTRAINTS:
   available for structured queries.
 - EPSS CSV format: line 1 is a comment (#model_version:...,score_date:...),
   line 2 is the header (cve,epss,percentile), lines 3+ are data.
+- For GHSA-native advisories with `cve_id: null`, record the advisory's GHSA ID
+  in `ghsa_id` and leave `cve_id` empty.
 - For MSRC/Red Hat: the *.meta.json files show the URL that was fetched.
   Use this to identify which *.body files are updates lists vs CSAF docs
   (MSRC) or list pages vs detail pages (Red Hat).
@@ -886,9 +943,9 @@ Launch a general-purpose agent with the instructions above.
 **Step 2: Review the manifest**
 
 After the agent completes, review `dev/plans/test-fixture-manifest.json`:
-- Every category should have coverage
-- Cross-reference CVEs should appear in multiple feeds
-- Total should be 30-50 CVEs
+- Every required category should have coverage
+- Cross-reference CVE-backed records should appear in multiple feeds
+- Total should be 30-50 corpus records
 
 **Step 3: Commit the manifest**
 
@@ -912,7 +969,7 @@ This tool reads the manifest, finds each selected CVE in the captured data, and 
 
 ```bash
 go run ./dev/cmd/extract-fixtures/... \
-  --manifest D:/Code/CVErt-Ops/data/feed-snapshots/manifest.json \
+  --manifest dev/plans/test-fixture-manifest.json \
   --snapshots D:/Code/CVErt-Ops/data/feed-snapshots \
   --output .
 ```
@@ -935,7 +992,7 @@ internal/feed/redhat/testdata/golden/    — Red Hat fixtures (list page + detai
 
 **NVD:** Scan each `nvd/*.body` file for CVE entries matching manifest CVE IDs. Extract matching `{"cve": {...}}` objects and group them into 1-2 synthetic response pages. Each page must be a valid NVD response envelope (see "NVD Response Envelope Structure" section above). Set `totalResults` to the actual number of CVEs in the page. Set `startIndex` to 0 for the first page, `resultsPerPage` to the count. Save as `page-001.json`, `page-002.json`.
 
-**GHSA:** Scan each `ghsa/*.body` file for advisories matching manifest CVE IDs (match on `cve_id` field) or GHSA IDs specified in the manifest. Also include any advisories where `cve_id` is null (for category F1). Extract matching advisories into a JSON array. Save as `page-001.json`. The adapter expects a JSON array at the top level `[{advisory}, ...]`.
+**GHSA:** Scan each `ghsa/*.body` file for advisories matching manifest CVE IDs (match on `cve_id` field) or manifest `ghsa_id` selectors (match on the advisory's GHSA ID). GHSA-native advisories for category F1 MUST be selected via `ghsa_id`, not by blindly including every advisory where `cve_id` is null. Extract matching advisories into a JSON array. Save as `page-001.json`. The adapter expects a JSON array at the top level `[{advisory}, ...]`.
 
 **KEV:** Read `kev/catalog.json`. Filter the `vulnerabilities` array to only entries whose `cveID` matches a manifest CVE ID. Preserve the catalog wrapper (`{catalogVersion, dateReleased, count, vulnerabilities: [...]}`, updating `count`). Save as `catalog.json`.
 
@@ -968,33 +1025,39 @@ Missing from NVD: CVE-xxxx-yyyy, CVE-xxxx-zzzz (not in captured data — may be 
 type Manifest struct {
 	Generated    string        `json:"generated"`
 	CaptureDate  string        `json:"capture_date"`
-	CVEs         []ManifestCVE `json:"cves"`
+	Records      []ManifestRecord `json:"records"`
 	// CategoryCoverage is informational only — not needed by the extraction tool.
 }
 
-type ManifestCVE struct {
-	CVEID      string   `json:"cve_id"`
+type ManifestRecord struct {
+	CVEID      string   `json:"cve_id,omitempty"`
+	GHSAID     string   `json:"ghsa_id,omitempty"`
 	Categories []string `json:"categories"`
 	Feeds      []string `json:"feeds"`
 	Why        string   `json:"why"`
 }
 ```
 
+At least one selector field must be set on every manifest record. For this
+plan, valid selectors are `cve_id` and `ghsa_id`.
+
 **Step 1: Implement the extraction tool**
 
 The implementing agent should:
-1. Use the `Manifest` struct above to unmarshal the manifest JSON
-2. Read the "NVD Response Envelope Structure" section (above) for NVD page format
-3. Read the "Adapter URL Constants Reference" section (above) for URL patterns
-4. Implement each feed's extraction logic as described in the per-feed sections above
-5. Include ABOUTME comments per project convention
-6. For NVD body files: each `nvd/*.body` file is a full NVD API JSON response (see envelope structure). Use `json.Decoder` with `Token()`/`More()` to stream-parse the `vulnerabilities` array, extracting `{"cve": {...}}` objects where `cve.id` matches a manifest CVE ID
+1. Treat `dev/plans/test-fixture-manifest.json` as the canonical manifest
+   checked into version control. Do not read from a separate scratch copy.
+2. Use the `Manifest` struct above to unmarshal the manifest JSON
+3. Read the "NVD Response Envelope Structure" section (above) for NVD page format
+4. Read the "Adapter URL Constants Reference" section (above) for URL patterns
+5. Implement each feed's extraction logic as described in the per-feed sections above
+6. Include ABOUTME comments per project convention
+7. For NVD body files: each `nvd/*.body` file is a full NVD API JSON response (see envelope structure). Use `json.Decoder` with `Token()`/`More()` to stream-parse the `vulnerabilities` array, extracting `{"cve": {...}}` objects where `cve.id` matches a manifest CVE ID
 
 **Step 2: Run the extraction**
 
 ```bash
 go run ./dev/cmd/extract-fixtures/... \
-  --manifest D:/Code/CVErt-Ops/data/feed-snapshots/manifest.json \
+  --manifest dev/plans/test-fixture-manifest.json \
   --snapshots D:/Code/CVErt-Ops/data/feed-snapshots \
   --output .
 ```
@@ -1192,6 +1255,31 @@ git commit -m "test: add golden file server and URL-rewrite transport helpers"
 
 ---
 
+### Golden test contract (applies to Tasks 9 and 10A-10G)
+
+Every adapter golden-file test in this plan MUST follow these rules:
+
+1. Treat committed fixtures as required. If the expected fixture files are
+   missing or empty, the test must fail — not skip. Bootstrap-only skips are
+   acceptable before fixtures are generated, but not in committed tests.
+2. Use only `httptest` servers and URL rewriting. The test must not hit live
+   upstream APIs.
+3. Assert non-zero adapter output or non-zero DB effects, not just successful
+   execution.
+4. Assert at least one adapter-specific semantic check tied either to the edge
+   case matrix or to a known recurring bug class from `dev/testing-pitfalls.md`
+   (for example: alias resolution, KEV flagging, vendor enrichment, or falsy
+   score preservation when the curated corpus includes such a record).
+5. For paginated adapters, drive `Fetch()` until `LastPage == true` and fail if
+   the adapter requests past the available fixture set.
+6. Do not delete existing hand-crafted negative tests for cases this corpus is
+   unlikely to contain (null bytes, malformed timestamps, crash recovery, etc.).
+
+The per-adapter tasks below specify the additional adapter-specific assertions
+on top of this shared contract.
+
+---
+
 ### Task 9: NVD golden file test (template for all adapters)
 
 This task creates the golden file test for the NVD adapter. It serves as the template for other adapters.
@@ -1230,7 +1318,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 	goldenDir := filepath.Join("testdata", "golden")
 	entries, err := os.ReadDir(goldenDir)
 	if err != nil {
-		t.Skipf("golden fixtures not found at %s (run extract-fixtures to generate): %v", goldenDir, err)
+		t.Fatalf("golden fixtures missing at %s: %v", goldenDir, err)
 	}
 
 	// Collect page files, sorted by name.
@@ -1241,12 +1329,12 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		}
 	}
 	if len(pages) == 0 {
-		t.Skipf("no .json fixture files in %s", goldenDir)
+		t.Fatalf("no .json fixture files in %s", goldenDir)
 	}
 	sort.Strings(pages)
 
-	// IMPORTANT: If we got here, fixtures exist. The test must NOT skip from
-	// this point — a skip would silently hide failures.
+	// Fixtures are committed test assets. Missing fixtures are a failure, not a
+	// skip, because silent skips would hide broken or incomplete corpus updates.
 
 	// Serve pages sequentially: first fetch → first page, second → second page, etc.
 	var requestCount atomic.Int64
@@ -1357,9 +1445,11 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **Files:** Create `internal/feed/kev/golden_test.go`
 
+**Follow the shared golden test contract above.**
+
 **URL rewrite:** Rewrite `https://www.cisa.gov` → test server. The adapter GETs the full catalog URL. Serve `catalog.json` for any request.
 
-**Test pattern:** Same as Task 9 but simpler — KEV is single-page, always returns `LastPage: true`. Verify patches include `InCISAKEV: true` and have `VendorEnrichment` set.
+**Test pattern:** Same as Task 9 but simpler — KEV is single-page, always returns `LastPage: true`. Verify non-zero patches, `LastPage == true`, at least one patch has `InCISAKEV: true`, and at least one patch has `VendorEnrichment` set.
 
 **Commit:** `test: add KEV golden file test`
 
@@ -1367,11 +1457,13 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **Files:** Create `internal/feed/ghsa/golden_test.go`
 
+**Follow the shared golden test contract above.**
+
 **URL rewrite:** Rewrite `https://api.github.com` → test server. The adapter paginates via Link headers. For a single-page fixture (most likely), the test handler simply omits the Link header → the adapter sees no `after` cursor → sets `LastPage: true`. If multiple fixture pages are needed, include `Link: <https://api.github.com/advisories?after=page2>; rel="next"` on all but the last response. The adapter extracts just the `after` query param value (not the full URL) and builds a new request to `advisoriesURL` with that param — the URL rewrite transport handles the redirect.
 
 **Important:** The GHSA adapter expects a JSON array `[{advisory}, ...]` at the top level, NOT wrapped in an object. The adapter also requires `GITHUB_TOKEN` env var for the auth header — without it, the adapter still works but sends no Authorization header.
 
-**Verify:** At least one advisory has `cve_id: null` (category F1). At least one has a CVE ID populated.
+**Verify:** Non-zero patches, `LastPage == true`, at least one advisory selected via `ghsa_id` has `cve_id: null` (category F1), and at least one advisory has a populated CVE ID. If the curated GHSA corpus includes a CVSS `0.0` advisory, assert that value survives parsing unchanged.
 
 **Commit:** `test: add GHSA golden file test`
 
@@ -1379,9 +1471,11 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **Files:** Create `internal/feed/mitre/golden_test.go`
 
+**Follow the shared golden test contract above.**
+
 **URL rewrite:** Rewrite `https://github.com` → test server. Serve `cvelistV5.zip` for any request. The adapter downloads the ZIP to a temp file, then iterates entries.
 
-**Verify:** Patches parsed from the ZIP. At least one RESERVED-status CVE present (category S2).
+**Verify:** Non-zero patches and at least one RESERVED-status CVE present (category S2).
 
 **Commit:** `test: add MITRE golden file test`
 
@@ -1389,15 +1483,19 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **Files:** Create `internal/feed/osv/golden_test.go`
 
+**Follow the shared golden test contract above.**
+
 **URL rewrite:** Rewrite `https://osv-vulnerabilities.storage.googleapis.com` → test server. Serve `all.zip`. Same pattern as MITRE.
 
-**Verify:** At least one patch has alias resolution (SourceID is not a CVE ID, CVEID is from aliases).
+**Verify:** Non-zero patches and at least one patch has alias resolution (SourceID is not a CVE ID, CVEID is from aliases). If the curated OSV corpus includes a CVSS `0.0` case, assert that score is preserved.
 
 **Commit:** `test: add OSV golden file test`
 
 ### Task 10E: EPSS golden file test
 
 **Files:** Create `internal/feed/epss/golden_test.go`
+
+**Follow the shared golden test contract above.**
 
 **EPSS is different** — it uses `Apply()` not `Fetch()`, and writes directly to the database. The golden file test should:
 1. Serve `scores.csv.gz` via httptest
@@ -1409,11 +1507,15 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **URL rewrite:** Rewrite `https://epss.empiricalsecurity.com` → test server.
 
+**Verify:** Non-zero rows updated. If the curated EPSS corpus includes score `0`, assert it persists as `0`, not NULL or missing.
+
 **Commit:** `test: add EPSS golden file test`
 
 ### Task 10F: MSRC golden file test
 
 **Files:** Create `internal/feed/msrc/golden_test.go`
+
+**Follow the shared golden test contract above.**
 
 **URL rewrite:** Rewrite `https://api.msrc.microsoft.com` → test server. The adapter makes two types of requests:
 1. `GET /cvrf/v3.0/updates?$filter=...` → serve `updates.json`
@@ -1421,7 +1523,7 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 The test server handler must route based on the request path.
 
-**Verify:** VendorEnrichment populated on patches from CSAF documents.
+**Verify:** Non-zero patches and `VendorEnrichment` populated on patches from CSAF documents. If the curated MSRC corpus includes a CVSS `0.0` case, assert that score is preserved.
 
 **Commit:** `test: add MSRC golden file test`
 
@@ -1429,13 +1531,15 @@ The test server handler must route based on the request path.
 
 **Files:** Create `internal/feed/redhat/golden_test.go`
 
+**Follow the shared golden test contract above.**
+
 **URL rewrite:** Rewrite `https://access.redhat.com` → test server. The adapter makes two types of requests:
 1. `GET /hydra/rest/securitydata/cve.json?after=...&page=...` → serve `list.json`
 2. `GET /hydra/rest/securitydata/cve/CVE-YYYY-NNNN.json` → serve `detail/<CVE-ID>.json`
 
 The test server handler must route based on path: `/cve.json` → list, `/cve/CVE-*` → detail.
 
-**Verify:** VendorEnrichment populated with vendor severity and fix state.
+**Verify:** Non-zero patches, `LastPage == true`, and `VendorEnrichment` populated with vendor severity and fix state.
 
 **Commit:** `test: add Red Hat golden file test`
 
@@ -1488,8 +1592,10 @@ type SeedStats struct {
 - `SeedCorpus(t *testing.T, db *TestDB) SeedStats` runs each adapter against its `testdata/golden/` fixtures
 - Feeds patches through the real merge pipeline (not direct DB inserts)
 - After seeding, the test DB contains the curated CVE set with proper source records, search index entries, and vendor enrichment
-- Skips adapters whose `testdata/golden/` directory doesn't exist (graceful degradation)
+- Requires fixtures for the committed corpus feeds. Missing required fixture directories are a test failure, not a graceful skip.
 - EPSS is handled separately: parse the CSV fixture and call the EPSS apply logic after CVEs are seeded from other feeds
+
+For this plan, the required corpus feeds are: `nvd`, `ghsa`, `kev`, `mitre`, `osv`, `epss`, `msrc`, `redhat`.
 
 **Key function signatures the implementing agent needs:**
 
@@ -1529,8 +1635,22 @@ func TestSeedCorpus(t *testing.T) {
 	if stats.TotalCVEs == 0 {
 		t.Fatal("SeedCorpus produced 0 CVEs")
 	}
-	if stats.FeedsSeeded == 0 {
-		t.Fatal("SeedCorpus seeded 0 feeds")
+
+	requiredFeeds := []string{"nvd", "ghsa", "kev", "mitre", "osv", "epss", "msrc", "redhat"}
+	if stats.FeedsSeeded != len(requiredFeeds) {
+		t.Fatalf("SeedCorpus seeded %d feeds, want %d (%v)", stats.FeedsSeeded, len(requiredFeeds), requiredFeeds)
+	}
+	for _, want := range requiredFeeds {
+		found := false
+		for _, got := range stats.FeedNames {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("SeedCorpus missing required feed %q (got %v)", want, stats.FeedNames)
+		}
 	}
 
 	t.Logf("seeded %d CVEs from %d feeds (%v)", stats.TotalCVEs, stats.FeedsSeeded, stats.FeedNames)
@@ -1540,16 +1660,21 @@ func TestSeedCorpus(t *testing.T) {
 **Step 2: Implement**
 
 The implementing agent should:
-1. For each adapter (except EPSS) with `testdata/golden/`:
-   a. Create an httptest server serving the golden fixtures (use `testutil.NewGoldenServer` for simple feeds, custom handler for paginated feeds like NVD/GHSA)
-   b. Create the adapter with a URL-rewriting client: `adapter.New(&http.Client{Transport: testutil.NewURLRewriteTransport(originalURL, srv.URL, http.DefaultTransport)})`
-   c. Call `Fetch()` in a loop until `result.LastPage == true`, collecting patches
-   d. For each patch, call `merge.Ingest(ctx, store, patch, "source_name")` — one call per patch, NOT a batch
+1. For each required adapter (except EPSS):
+   a. Verify `testdata/golden/` exists. If a required fixture directory is missing, fail immediately with a clear error naming the feed.
+   b. Create an httptest server serving the golden fixtures (use `testutil.NewGoldenServer` for simple feeds, custom handler for paginated feeds like NVD/GHSA)
+   c. Create the adapter with a URL-rewriting client: `adapter.New(&http.Client{Transport: testutil.NewURLRewriteTransport(originalURL, srv.URL, http.DefaultTransport)})`
+   d. Call `Fetch()` in a loop until `result.LastPage == true`, collecting patches
+   e. For each patch, call `merge.Ingest(ctx, store, patch, "source_name")` — one call per patch, NOT a batch
 2. After all feed adapters are ingested, apply EPSS:
    a. Create EPSS adapter with URL-rewriting client pointing to test server serving `scores.csv.gz`
    b. Call `adapter.Apply(ctx, store.DB(), nil)` — uses `*sql.DB` from `store.DB()`, NOT `*store.Store`
 3. Return `SeedStats{TotalCVEs, FeedsSeeded, FeedNames}`
 4. The URL rewrite base per adapter (the `OriginalBase` parameter for `NewURLRewriteTransport`) — see the **Appendix: Adapter URL Rewrite Patterns** section at the end of this document for exact values per adapter (e.g., NVD = `https://services.nvd.nist.gov`, GHSA = `https://api.github.com`, etc.)
+
+This helper is intentionally strict because downstream integration tests rely on
+the committed corpus being complete and deterministic. If a permissive local-dev
+mode is ever needed later, add it as a separate helper with a different name.
 
 **Step 3: Test and commit**
 
@@ -1583,10 +1708,11 @@ Add a `## Refresh Process` section to this plan document (not a separate file):
 The refresh process is:
 1. Re-run the capture: `go run ./dev/cmd/capture-feeds/... all`
 2. Re-run the selection agent (Task 6 instructions) against new captures
-3. Re-run extraction: `go run ./dev/cmd/extract-fixtures/...`
-4. Run all adapter tests: `go test ./internal/feed/...`
-5. If tests pass, commit the updated fixtures
-6. If tests fail, investigate — the upstream schema may have changed
+3. Review and commit the updated canonical manifest at `dev/plans/test-fixture-manifest.json`
+4. Re-run extraction: `go run ./dev/cmd/extract-fixtures/...`
+5. Run all adapter tests: `go test ./internal/feed/...`
+6. If tests pass, commit the updated manifest and fixtures together
+7. If tests fail, investigate — the upstream schema may have changed
 
 **When to refresh:**
 - When an adapter test breaks in a way suggesting upstream schema change
@@ -1634,7 +1760,7 @@ Task 5 (edge case matrix) ──┘                                     │
 **Parallelizable tasks:**
 - Tasks 1, 2, 5 are independent (can run in parallel)
 - Tasks 10A-10G (per-adapter golden tests) — each adapter is independent
-- Task 11 can start as soon as Task 9 + at least Task 10A are done
+- Task 11 starts only after Tasks 9, 10A-10G, and 10H are complete, because the committed corpus is strict by default
 
 ---
 

@@ -25,7 +25,7 @@ func newLockoutServer(t *testing.T) *httptest.Server {
 		LockoutThreshold:    3, // low threshold for faster tests
 		LockoutDuration:     2 * time.Second,
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

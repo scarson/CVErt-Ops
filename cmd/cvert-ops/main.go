@@ -153,13 +153,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
 	}
 
+	// Wire alert evaluation dependencies. The cache and evaluator are used by
+	// the dry-run endpoint, realtime feed evaluation, and batch/EPSS/activation workers.
+	alertCache := alert.NewRuleCache()
+	alertDB := stdlib.OpenDBFromPool(db)
+	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
+
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
-		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactoryAndAlerts(st, feedClient, merge.Ingest, factory, alertEval))
 	} else {
-		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
 	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
@@ -178,27 +185,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("using Gemini LLM client", "model", cfg.GeminiModel)
 	}
 
-	apiSrv, err := api.NewServer(st, cfg)
+	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
+		AlertCache:            alertCache,
+		AlertEvaluator:        alertEval,
+		LLM:                   llm,
+		ExpectedSchemaVersion: expectedSchemaVersion,
+		VersionInfo: api.VersionInfo{
+			Version:   version,
+			Commit:    commit,
+			BuildTime: buildTime,
+		},
+	})
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
-	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
-	apiSrv.SetVersionInfo(api.VersionInfo{
-		Version:   version,
-		Commit:    commit,
-		BuildTime: buildTime,
-	})
-
-	// Wire alert evaluation dependencies. The cache and evaluator are used by
-	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
-	alertCache := alert.NewRuleCache()
-	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
-	apiSrv.SetAlertDeps(alertCache, alertEval)
-
-	// Wire AI/LLM dependencies for NL search and summarization handlers.
-	if llm != nil {
-		apiSrv.SetAIDeps(llm)
-	}
+	defer apiSrv.Close()
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
 	// worker polls delivery rows and executes outbound webhook calls.
@@ -224,9 +225,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
+	apiSrv.AddHealthCheck(deliveryWorker.Healthy)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
+	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
+	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
+	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
@@ -347,19 +352,24 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 
 	alertCache := alert.NewRuleCache()
-	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
+	alertDB := stdlib.OpenDBFromPool(db)
+	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
-		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactoryAndAlerts(st, feedClient, merge.Ingest, factory, alertEval))
 	} else {
-		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
 	epssClient := &http.Client{Timeout: 300 * time.Second}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
+	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
+	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
+	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
 	deliveryClient, err := notify.BuildSafeClient()
@@ -382,6 +392,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
 		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
+	alertEval.SetDispatcher(dispatcher)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
@@ -440,6 +451,27 @@ func activationHandler(eval *alert.Evaluator) worker.Handler {
 			return fmt.Errorf("parse org_id: %w", err)
 		}
 		return eval.EvaluateActivation(ctx, ruleID, orgID)
+	}
+}
+
+// alertBatchHandler returns a worker.Handler that runs batch alert evaluation.
+func alertBatchHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		return eval.EvaluateBatch(ctx)
+	}
+}
+
+// alertEPSSHandler returns a worker.Handler that runs EPSS-triggered alert evaluation.
+func alertEPSSHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		return eval.EvaluateEPSS(ctx)
+	}
+}
+
+// alertZombieSweepHandler returns a worker.Handler that sweeps stuck activation jobs.
+func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		return eval.SweepZombieActivations(ctx)
 	}
 }
 
@@ -684,6 +716,9 @@ func validateConfig(cfg *config.Config) error {
 	}
 	if !cfg.IsDevelopment() && !strings.HasPrefix(cfg.ExternalURL, "https://") {
 		return fmt.Errorf("EXTERNAL_URL must use https:// in non-development environments (got %q)", cfg.ExternalURL)
+	}
+	if !cfg.IsDevelopment() && strings.HasPrefix(cfg.ExternalURL, "https://") && !cfg.CookieSecure {
+		return fmt.Errorf("COOKIE_SECURE must be true when EXTERNAL_URL uses HTTPS in non-development environments")
 	}
 	return nil
 }

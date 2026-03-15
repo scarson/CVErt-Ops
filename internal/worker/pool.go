@@ -33,6 +33,10 @@ const (
 
 	// staleThreshold is the age at which a 'running' job is considered stuck.
 	staleThreshold = 5 * time.Minute
+
+	// maxJobDuration caps how long a single job can run. Prevents unbounded
+	// shutdown hangs when in-flight jobs use context.WithoutCancel.
+	maxJobDuration = 10 * time.Minute
 )
 
 // Pool manages a set of goroutine workers that claim and execute jobs from
@@ -91,18 +95,14 @@ func (p *Pool) Start(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for _, q := range queues {
-		wg.Add(1)
-		go func(queue string) {
-			defer wg.Done()
-			p.runQueue(ctx, queue)
-		}(q)
+		wg.Go(func() {
+			p.runQueue(ctx, q)
+		})
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		p.runStaleRecovery(ctx)
-	}()
+	})
 
 	wg.Wait()
 	slog.Info("worker pool stopped", "worker_id", p.workerID)
@@ -136,12 +136,14 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 		case <-ticker.C:
 			select {
 			case sem <- struct{}{}:
-				inflight.Add(1)
-				go func() {
-					defer inflight.Done()
+				inflight.Go(func() {
 					defer func() { <-sem }()
-					p.processOne(ctx, queue)
-				}()
+					// Detach from parent shutdown signal so in-flight DB writes
+				// complete, but cap each job to prevent unbounded shutdown hangs.
+				jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxJobDuration)
+				defer cancel()
+				p.processOne(jobCtx, queue)
+				})
 			default:
 				// all concurrency slots occupied, skip this tick
 			}

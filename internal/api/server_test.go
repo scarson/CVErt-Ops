@@ -23,7 +23,7 @@ func TestAcquireArgon2_AllowsUpToN(t *testing.T) {
 
 	const maxConcurrent = 3
 	cfg := &config.Config{Argon2MaxConcurrent: maxConcurrent} //nolint:exhaustruct // test
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAcquireArgon2_SingleSlot(t *testing.T) {
 	t.Parallel()
 
 	cfg := &config.Config{Argon2MaxConcurrent: 1} //nolint:exhaustruct // test
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestGitHubOAuthRedirectURL(t *testing.T) {
 		GitHubClientID:      "test-client-id",
 		GitHubClientSecret:  "test-client-secret",
 	}
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestGitHubOAuth_Disabled(t *testing.T) {
 	t.Parallel()
 
 	cfg := &config.Config{Argon2MaxConcurrent: 1} //nolint:exhaustruct // test
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestAuditLog_NilWriterWithUserContext(t *testing.T) {
 	t.Parallel()
 
 	cfg := &config.Config{Argon2MaxConcurrent: 1} //nolint:exhaustruct // test
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

@@ -442,7 +442,7 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 
 	items := make([]CVEItem, len(results))
 	for i, c := range results {
-		items[i] = cfeToItem(c)
+		items[i] = cveToItem(c)
 	}
 
 	writeJSON(w, http.StatusOK, savedSearchExecuteResponse{

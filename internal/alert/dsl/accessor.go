@@ -9,7 +9,7 @@ import (
 )
 
 // CVSSV3Score returns the CVSS v3 base score, or 0 if the CVE or score is nil/absent.
-func CVSSV3Score(c *generated.Cfe) float64 {
+func CVSSV3Score(c *generated.CVE) float64 {
 	if c == nil || !c.CvssV3Score.Valid {
 		return 0
 	}
@@ -17,7 +17,7 @@ func CVSSV3Score(c *generated.Cfe) float64 {
 }
 
 // CVSSV4Score returns the CVSS v4 base score, or 0 if the CVE or score is nil/absent.
-func CVSSV4Score(c *generated.Cfe) float64 {
+func CVSSV4Score(c *generated.CVE) float64 {
 	if c == nil || !c.CvssV4Score.Valid {
 		return 0
 	}
@@ -25,7 +25,7 @@ func CVSSV4Score(c *generated.Cfe) float64 {
 }
 
 // EPSSScore returns the EPSS probability score, or 0 if the CVE or score is nil/absent.
-func EPSSScore(c *generated.Cfe) float64 {
+func EPSSScore(c *generated.CVE) float64 {
 	if c == nil || !c.EpssScore.Valid {
 		return 0
 	}
@@ -34,7 +34,7 @@ func EPSSScore(c *generated.Cfe) float64 {
 
 // DescriptionPrimary returns the primary description in lowercase, or "" if nil/absent.
 // Lowercased for case-insensitive regex matching in PostFilter evaluation.
-func DescriptionPrimary(c *generated.Cfe) string {
+func DescriptionPrimary(c *generated.CVE) string {
 	if c == nil || !c.DescriptionPrimary.Valid {
 		return ""
 	}

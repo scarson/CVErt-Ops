@@ -20,9 +20,9 @@ import (
 func TestCursorRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	// Build a synthetic Cfe row with a known date and ID.
+	// Build a synthetic CVE row with a known date and ID.
 	ts := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	row := generated.Cfe{
+	row := generated.CVE{
 		CveID:                 "CVE-2024-99999",
 		DateModifiedCanonical: ts,
 	}
@@ -251,14 +251,14 @@ func TestResolveOptionalFilters(t *testing.T) {
 			wantKEV: boolPtr(true),
 		},
 		{
-			name:    "in_cisa_kev yes — not a boolean synonym, resolves to false",
-			params:  map[string]string{"in_cisa_kev": "yes"},
-			wantKEV: boolPtr(false),
+			name:     "in_cisa_kev yes — invalid boolean value",
+			params:   map[string]string{"in_cisa_kev": "yes"},
+			wantErrs: 1,
 		},
 		{
-			name:    "in_cisa_kev 1 — not a boolean synonym, resolves to false",
-			params:  map[string]string{"in_cisa_kev": "1"},
-			wantKEV: boolPtr(false),
+			name:     "in_cisa_kev 1 — invalid boolean value",
+			params:   map[string]string{"in_cisa_kev": "1"},
+			wantErrs: 1,
 		},
 		{
 			name:        "exploit_available True (mixed case)",
@@ -266,14 +266,14 @@ func TestResolveOptionalFilters(t *testing.T) {
 			wantExploit: boolPtr(true),
 		},
 		{
-			name:        "exploit_available yes — resolves to false",
-			params:      map[string]string{"exploit_available": "yes"},
-			wantExploit: boolPtr(false),
+			name:     "exploit_available yes — invalid boolean value",
+			params:   map[string]string{"exploit_available": "yes"},
+			wantErrs: 1,
 		},
 		{
-			name:        "exploit_available 1 — resolves to false",
-			params:      map[string]string{"exploit_available": "1"},
-			wantExploit: boolPtr(false),
+			name:     "exploit_available 1 — invalid boolean value",
+			params:   map[string]string{"exploit_available": "1"},
+			wantErrs: 1,
 		},
 	}
 
@@ -306,19 +306,19 @@ func TestResolveOptionalFilters(t *testing.T) {
 	}
 }
 
-// ── cfeToItem ─────────────────────────────────────────────────────────────────
+// ── cveToItem ─────────────────────────────────────────────────────────────────
 
-func TestCfeToItemMinimal(t *testing.T) {
+func TestCVEToItemMinimal(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	row := generated.Cfe{
+	row := generated.CVE{
 		CveID:                 "CVE-2024-12345",
 		DateModifiedCanonical: now,
 		DateFirstSeen:         now,
 		// All optional fields left as zero (invalid sql.Null*).
 	}
-	item := cfeToItem(row)
+	item := cveToItem(row)
 
 	if item.CVEID != "CVE-2024-12345" {
 		t.Errorf("CVEID = %q, want %q", item.CVEID, "CVE-2024-12345")
@@ -346,29 +346,29 @@ func TestCfeToItemMinimal(t *testing.T) {
 	}
 }
 
-func TestCfeToItemNilCWEIDsBecomesEmptySlice(t *testing.T) {
+func TestCVEToItemNilCWEIDsBecomesEmptySlice(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
-	row := generated.Cfe{
+	row := generated.CVE{
 		CveID:                 "CVE-2024-99999",
 		DateModifiedCanonical: now,
 		DateFirstSeen:         now,
 		CweIds:                nil, // database may return nil for empty array
 	}
-	item := cfeToItem(row)
+	item := cveToItem(row)
 	if item.CWEIDs == nil {
 		t.Error("CWEIDs should be an empty slice, not nil (avoids JSON null)")
 	}
 }
 
-func TestCfeToItemOptionalFieldsSet(t *testing.T) {
+func TestCVEToItemOptionalFieldsSet(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	cvssScore := 9.8
 	epssScore := 0.97
-	row := generated.Cfe{
+	row := generated.CVE{
 		CveID:                 "CVE-2024-54321",
 		DateModifiedCanonical: now,
 		DateFirstSeen:         now,
@@ -384,7 +384,7 @@ func TestCfeToItemOptionalFieldsSet(t *testing.T) {
 		CvssScoreDiverges:     true,
 		CweIds:                []string{"CWE-79"},
 	}
-	item := cfeToItem(row)
+	item := cveToItem(row)
 
 	if item.Status == nil || *item.Status != "Published" {
 		t.Errorf("Status = %v, want %q", item.Status, "Published")
@@ -415,16 +415,16 @@ func TestCfeToItemOptionalFieldsSet(t *testing.T) {
 	}
 }
 
-func TestCfeToItemTimestampsRFC3339(t *testing.T) {
+func TestCVEToItemTimestampsRFC3339(t *testing.T) {
 	t.Parallel()
 
 	ts := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
-	row := generated.Cfe{
+	row := generated.CVE{
 		CveID:                 "CVE-2024-11111",
 		DateModifiedCanonical: ts,
 		DateFirstSeen:         ts,
 	}
-	item := cfeToItem(row)
+	item := cveToItem(row)
 
 	// Should be RFC3339 formatted, not RFC3339Nano or custom.
 	want := "2026-02-25T12:00:00Z"
@@ -482,7 +482,7 @@ func checkBoolPtr(t *testing.T, name string, got, want *bool) {
 func newCVETestServer(t *testing.T, s *store.Store) *httptest.Server {
 	t.Helper()
 	cfg := &config.Config{Argon2MaxConcurrent: 5} //nolint:exhaustruct // test: only relevant fields set
-	apiSrv, err := NewServer(s, cfg)
+	apiSrv, err := NewServer(s, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

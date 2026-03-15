@@ -39,7 +39,7 @@ func buildRBACTestServer(t *testing.T, srv *Server, minRole Role) (*httptest.Ser
 func newRBACServer(t *testing.T, db *testutil.TestDB, jwtSecret string) *Server {
 	t.Helper()
 	cfg := &config.Config{JWTSecret: jwtSecret} //nolint:exhaustruct // test: only JWT secret needed
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

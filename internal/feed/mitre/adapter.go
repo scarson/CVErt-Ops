@@ -81,7 +81,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	}
 
 	// Stream the ZIP to a temp file — archive/zip.NewReader requires io.ReaderAt.
-	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip")
+	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip", feed.MaxDownloadSize)
 	if err != nil {
 		return nil, fmt.Errorf("mitre: download zip: %w", err)
 	}

@@ -933,7 +933,7 @@ func TestAccessor_NilPointer(t *testing.T) {
 
 func TestAccessor_NullValues(t *testing.T) {
 	t.Parallel()
-	c := &generated.Cfe{} // all NullXxx fields are zero-valued (not valid)
+	c := &generated.CVE{} // all NullXxx fields are zero-valued (not valid)
 	if got := dsl.CVSSV3Score(c); got != 0 {
 		t.Errorf("CVSSV3Score(empty) = %v, want 0", got)
 	}
@@ -947,7 +947,7 @@ func TestAccessor_NullValues(t *testing.T) {
 
 func TestAccessor_ValidValues(t *testing.T) {
 	t.Parallel()
-	c := &generated.Cfe{}
+	c := &generated.CVE{}
 	c.CvssV3Score.Valid = true
 	c.CvssV3Score.Float64 = 9.8
 	c.EpssScore.Valid = true
@@ -1666,7 +1666,7 @@ func TestAccessor_CVSSV4Score_Nil(t *testing.T) {
 
 func TestAccessor_CVSSV4Score_NullValue(t *testing.T) {
 	t.Parallel()
-	c := &generated.Cfe{}
+	c := &generated.CVE{}
 	if got := dsl.CVSSV4Score(c); got != 0 {
 		t.Errorf("CVSSV4Score(empty) = %v, want 0", got)
 	}
@@ -1674,7 +1674,7 @@ func TestAccessor_CVSSV4Score_NullValue(t *testing.T) {
 
 func TestAccessor_CVSSV4Score_ValidValue(t *testing.T) {
 	t.Parallel()
-	c := &generated.Cfe{}
+	c := &generated.CVE{}
 	c.CvssV4Score.Valid = true
 	c.CvssV4Score.Float64 = 7.5
 	if got := dsl.CVSSV4Score(c); got != 7.5 {
@@ -1684,7 +1684,7 @@ func TestAccessor_CVSSV4Score_ValidValue(t *testing.T) {
 
 func TestAccessor_DescriptionPrimaryLowercases(t *testing.T) {
 	t.Parallel()
-	c := &generated.Cfe{}
+	c := &generated.CVE{}
 	c.DescriptionPrimary.Valid = true
 	c.DescriptionPrimary.String = "MIXED Case INPUT"
 	if got := dsl.DescriptionPrimary(c); got != "mixed case input" {

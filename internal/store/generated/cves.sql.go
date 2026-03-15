@@ -180,9 +180,9 @@ const getCVE = `-- name: GetCVE :one
 SELECT cve_id, status, date_published, date_modified_source_max, date_modified_canonical, date_first_seen, description_primary, severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source, cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges, cwe_ids, exploit_available, in_cisa_kev, epss_score, date_epss_updated, material_hash FROM cves WHERE cve_id = $1
 `
 
-func (q *Queries) GetCVE(ctx context.Context, cveID string) (Cfe, error) {
+func (q *Queries) GetCVE(ctx context.Context, cveID string) (CVE, error) {
 	row := q.db.QueryRowContext(ctx, getCVE, cveID)
-	var i Cfe
+	var i CVE
 	err := row.Scan(
 		&i.CveID,
 		&i.Status,
@@ -467,15 +467,15 @@ type ListCVEsParams struct {
 
 // Base list query — dynamic WHERE and ORDER BY built by squirrel in the
 // store layer. This static query handles the no-filter paginated case.
-func (q *Queries) ListCVEs(ctx context.Context, arg ListCVEsParams) ([]Cfe, error) {
+func (q *Queries) ListCVEs(ctx context.Context, arg ListCVEsParams) ([]CVE, error) {
 	rows, err := q.db.QueryContext(ctx, listCVEs, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Cfe
+	var items []CVE
 	for rows.Next() {
-		var i Cfe
+		var i CVE
 		if err := rows.Scan(
 			&i.CveID,
 			&i.Status,

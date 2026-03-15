@@ -65,60 +65,41 @@ func (s *Store) CreateOrgWithOwner(ctx context.Context, name string, ownerID uui
 // concurrently on a fresh instance.
 func (s *Store) BootstrapFirstUserOrg(ctx context.Context, ownerID uuid.UUID, orgName string) (*generated.Organization, error) {
 	var org *generated.Organization
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin bootstrap tx: %w", err)
-	}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = tx.Rollback()
-			panic(p)
+	err := s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
+		// Advisory lock serializes concurrent first-user bootstrap attempts.
+		// Key 0x435654_626F6F74 = "CVTboot" — unique domain to avoid collisions.
+		const bootstrapLockKey = 0x435654626F6F74
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
+			return fmt.Errorf("bootstrap advisory lock: %w", err)
 		}
-	}()
 
-	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
-		_ = tx.Rollback()
-		return nil, fmt.Errorf("set bypass_rls: %w", err)
-	}
+		var count int64
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+			return fmt.Errorf("count users: %w", err)
+		}
+		if count != 1 {
+			return nil // not the first user — no org to create
+		}
 
-	// Advisory lock serializes concurrent first-user bootstrap attempts.
-	// Key 0x435654_626F6F74 = "CVTboot" — unique domain to avoid collisions.
-	const bootstrapLockKey = 0x435654626F6F74
-	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", bootstrapLockKey); err != nil {
-		_ = tx.Rollback()
-		return nil, fmt.Errorf("bootstrap advisory lock: %w", err)
-	}
+		q := s.q.WithTx(tx)
+		created, err := q.CreateOrg(ctx, orgName)
+		if err != nil {
+			return fmt.Errorf("create bootstrap org: %w", err)
+		}
+		if err := q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
+			OrgID:  created.ID,
+			UserID: ownerID,
+			Role:   "owner",
+		}); err != nil {
+			return fmt.Errorf("create bootstrap owner: %w", err)
+		}
 
-	var count int64
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
-		_ = tx.Rollback()
-		return nil, fmt.Errorf("count users: %w", err)
-	}
-
-	if count != 1 {
-		_ = tx.Rollback()
-		return nil, nil
-	}
-
-	q := s.q.WithTx(tx)
-	created, err := q.CreateOrg(ctx, orgName)
+		org = &created
+		return nil
+	})
 	if err != nil {
-		_ = tx.Rollback()
-		return nil, fmt.Errorf("create bootstrap org: %w", err)
+		return nil, err
 	}
-	if err := q.CreateOrgMember(ctx, generated.CreateOrgMemberParams{
-		OrgID:  created.ID,
-		UserID: ownerID,
-		Role:   "owner",
-	}); err != nil {
-		_ = tx.Rollback()
-		return nil, fmt.Errorf("create bootstrap owner: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit bootstrap tx: %w", err)
-	}
-	org = &created
 	return org, nil
 }
 

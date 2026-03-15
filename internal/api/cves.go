@@ -124,7 +124,7 @@ type cveListCursor struct {
 }
 
 // encodeCursor base64-encodes the cursor JSON (opaque to API clients).
-func encodeCursor(last generated.Cfe) string {
+func encodeCursor(last generated.CVE) string {
 	c := cveListCursor{
 		SortDate: last.DateModifiedCanonical.UTC().Format(time.RFC3339Nano),
 		CVEID:    last.CveID,
@@ -152,8 +152,8 @@ func decodeCursor(s string) (*cveListCursor, error) {
 	return &c, nil
 }
 
-// cfeToItem converts a generated Cfe row to a CVEItem for list responses.
-func cfeToItem(c generated.Cfe) CVEItem {
+// cveToItem converts a generated CVE row to a CVEItem for list responses.
+func cveToItem(c generated.CVE) CVEItem {
 	item := CVEItem{
 		CVEID:             c.CveID,
 		DateModified:      c.DateModifiedCanonical.UTC().Format(time.RFC3339),
@@ -376,7 +376,7 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 
 		items := make([]CVEItem, len(rows))
 		for i, r := range rows {
-			items[i] = cfeToItem(r)
+			items[i] = cveToItem(r)
 		}
 
 		var nextCursor string
@@ -417,7 +417,7 @@ func getCVEHandler(s *store.Store) func(context.Context, *GetCVEInput) (*GetCVEO
 		}
 
 		detail := &CVEDetail{
-			CVEItem:          cfeToItem(*cve),
+			CVEItem:          cveToItem(*cve),
 			AffectedPackages: make([]AffectedPackageResponse, 0, len(pkgs)),
 			AffectedCPEs:     make([]AffectedCPEResponse, 0, len(cpes)),
 			References:       make([]ReferenceResponse, 0, len(refs)),

@@ -45,10 +45,10 @@ var cveColumns = []string{
 	"cves.material_hash",
 }
 
-// scanCVERow scans a single row into a generated.Cfe. The column order must
+// scanCVERow scans a single row into a generated.CVE. The column order must
 // match cveColumns exactly.
-func scanCVERow(rows *sql.Rows) (generated.Cfe, error) {
-	var c generated.Cfe
+func scanCVERow(rows *sql.Rows) (generated.CVE, error) {
+	var c generated.CVE
 	if err := rows.Scan(
 		&c.CveID,
 		&c.Status,
@@ -117,7 +117,7 @@ func decodeDSLCursor(s string) (dslCursor, error) {
 // watchlist conditions reference the org-scoped watchlist_items table via
 // EXISTS subqueries, so those queries run inside a bypass transaction.
 // PostFilters (regex conditions) are applied in-process after the SQL query.
-func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule, cursor string, limit int) ([]generated.Cfe, string, error) {
+func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule, cursor string, limit int) ([]generated.CVE, string, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 25
 	}
@@ -159,7 +159,7 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		return nil, "", fmt.Errorf("store: build dsl query: %w", err)
 	}
 
-	var results []generated.Cfe
+	var results []generated.CVE
 
 	// Watchlist subqueries reference org-scoped watchlist_items (has RLS).
 	// The compiled SQL already embeds the org_id explicitly, but the session
@@ -212,7 +212,7 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 type queryContextFunc func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
 
 // scanDSLRows executes a query via queryFn and scans all rows into results.
-func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query string, args []interface{}, results *[]generated.Cfe) error {
+func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query string, args []interface{}, results *[]generated.CVE) error {
 	rows, err := queryFn(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("store: execute dsl query: %w", err)
@@ -234,8 +234,8 @@ func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query
 
 // applyDSLPostFilters filters CVE results by regex PostFilters. AND logic
 // requires all filters to pass; OR logic requires any filter to pass.
-func applyDSLPostFilters(results []generated.Cfe, filters []dsl.PostFilter, logic dsl.Logic) []generated.Cfe {
-	var filtered []generated.Cfe
+func applyDSLPostFilters(results []generated.CVE, filters []dsl.PostFilter, logic dsl.Logic) []generated.CVE {
+	var filtered []generated.CVE
 	for _, c := range results {
 		if logic == dsl.LogicOr {
 			pass := false
@@ -273,7 +273,7 @@ func applyDSLPostFilters(results []generated.Cfe, filters []dsl.PostFilter, logi
 }
 
 // dslPostFilterTarget returns the CVE field value that a PostFilter should match against.
-func dslPostFilterTarget(c generated.Cfe, f dsl.PostFilter) string {
+func dslPostFilterTarget(c generated.CVE, f dsl.PostFilter) string {
 	switch f.Field {
 	case "cve_id":
 		return c.CveID

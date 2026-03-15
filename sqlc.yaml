@@ -1,4 +1,8 @@
 version: "2"
+overrides:
+  go:
+    rename:
+      cfe: CVE
 sql:
   - engine: "postgresql"
     queries: "internal/store/queries/"

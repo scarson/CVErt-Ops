@@ -986,7 +986,7 @@ func TestAIHandlers_CrossOrgIsolation(t *testing.T) {
 
 func TestBuildSummaryInput_SanitizesDescription(t *testing.T) {
 	t.Parallel()
-	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+	cve := &generated.CVE{ //nolint:exhaustruct // test: only relevant fields set
 		CveID: "CVE-2024-0001",
 	}
 	cve.DescriptionPrimary.Valid = true
@@ -1010,7 +1010,7 @@ func TestBuildSummaryInput_SanitizesDescription(t *testing.T) {
 func TestBuildSummaryInput_NullFields(t *testing.T) {
 	t.Parallel()
 	// All NullXxx fields are zero-valued (not valid).
-	cve := &generated.Cfe{ //nolint:exhaustruct // test: only relevant fields set
+	cve := &generated.CVE{ //nolint:exhaustruct // test: only relevant fields set
 		CveID: "CVE-2024-0002",
 	}
 

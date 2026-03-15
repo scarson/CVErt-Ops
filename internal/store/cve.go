@@ -16,7 +16,7 @@ import (
 
 // GetCVE returns the canonical CVE row for the given ID, or (nil, nil) if
 // the CVE does not exist.
-func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.Cfe, error) {
+func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.CVE, error) {
 	row, err := s.q.GetCVE(ctx, cveID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -31,7 +31,7 @@ func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.Cfe, error
 // affected packages, affected CPEs). Returns (nil, nil, nil, nil, nil) when
 // the CVE does not exist; returns (nil, nil, nil, nil, err) on query failure.
 func (s *Store) GetCVEDetail(ctx context.Context, cveID string) (
-	cve *generated.Cfe,
+	cve *generated.CVE,
 	refs []generated.CveReference,
 	pkgs []generated.CveAffectedPackage,
 	cpes []generated.CveAffectedCpe,
@@ -59,7 +59,7 @@ func (s *Store) GetCVEDetail(ctx context.Context, cveID string) (
 // ListCVEs returns a page of CVE rows ordered by date_modified_canonical desc,
 // cve_id. This is the base query for the no-filter paginated case; the API
 // layer uses squirrel for dynamic filter queries.
-func (s *Store) ListCVEs(ctx context.Context, limit, offset int32) ([]generated.Cfe, error) {
+func (s *Store) ListCVEs(ctx context.Context, limit, offset int32) ([]generated.CVE, error) {
 	return s.q.ListCVEs(ctx, generated.ListCVEsParams{Limit: limit, Offset: offset})
 }
 
@@ -105,7 +105,7 @@ type SearchParams struct {
 // Keyset pagination: CursorDate + CursorCVEID encode the last seen row's sort
 // position. For the nullable EPSS/date_published columns a COALESCE sentinel
 // is applied to prevent NULL rows from disappearing (pitfall §pagination).
-func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe, error) {
+func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.CVE, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	sb := psql.Select(cveColumns...).From("cves")
 
@@ -197,7 +197,7 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.Cfe
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var results []generated.Cfe
+	var results []generated.CVE
 	for rows.Next() {
 		c, scanErr := scanCVERow(rows)
 		if scanErr != nil {

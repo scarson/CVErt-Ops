@@ -203,7 +203,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	// Convert to API items.
 	items := make([]CVEItem, len(results))
 	for i, c := range results {
-		items[i] = cfeToItem(c)
+		items[i] = cveToItem(c)
 	}
 
 	// Log and respond.
@@ -401,8 +401,8 @@ func (srv *Server) logAIRequest(r *http.Request, orgID, userID uuid.UUID, featur
 	}
 }
 
-// buildSummaryInput constructs a CVESummaryInput from a Cfe row.
-func buildSummaryInput(cve *generated.Cfe) ai.CVESummaryInput {
+// buildSummaryInput constructs a CVESummaryInput from a CVE row.
+func buildSummaryInput(cve *generated.CVE) ai.CVESummaryInput {
 	input := ai.CVESummaryInput{
 		CVEID:            cve.CveID,
 		ExploitAvailable: cve.ExploitAvailable,

@@ -140,7 +140,7 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 				go func() {
 					defer inflight.Done()
 					defer func() { <-sem }()
-					p.processOne(ctx, queue)
+					p.processOne(context.WithoutCancel(ctx), queue)
 				}()
 			default:
 				// all concurrency slots occupied, skip this tick

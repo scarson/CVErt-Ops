@@ -39,6 +39,9 @@ go.work.sum
 # MCP local overrides (personal servers, alternate credentials)
 .mcp.local.json
 
+# Codex local overrides (personal servers, alternate credentials)
+.codex/config.toml
+
 # Chat exports / session logs
 chats/
 

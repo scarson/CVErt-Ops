@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -70,7 +71,7 @@ func (s *Store) CreateSavedSearch(ctx context.Context, orgID uuid.UUID, p Create
 			UserID:    p.UserID,
 			Name:      p.Name,
 			QueryJson: p.QueryJSON,
-			NlQuery:   nullString(p.NlQuery),
+			NlQuery:   dbutil.NullStringPtr(p.NlQuery),
 			IsShared:  p.IsShared,
 		})
 		if err != nil {
@@ -137,7 +138,7 @@ func (s *Store) UpdateSavedSearch(ctx context.Context, orgID, id uuid.UUID, p Up
 			OrgID:     orgID,
 			Name:      p.Name,
 			QueryJson: p.QueryJSON,
-			NlQuery:   nullString(p.NlQuery),
+			NlQuery:   dbutil.NullStringPtr(p.NlQuery),
 			IsShared:  p.IsShared,
 		})
 		if errors.Is(err, sql.ErrNoRows) {

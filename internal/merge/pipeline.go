@@ -14,6 +14,7 @@ import (
 
 	"github.com/sqlc-dev/pqtype"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
@@ -102,7 +103,7 @@ func Ingest(
 	if err := q.UpsertCVESource(ctx, generated.UpsertCVESourceParams{
 		CveID:              patch.CVEID,
 		SourceName:         sourceName,
-		SourceID:           toNullString(patch.SourceID),
+		SourceID:           dbutil.NullString(patch.SourceID),
 		NormalizedJson:     normalizedJSON,
 		SourceDateModified: toNullTimePtr(patch.DateModified),
 		SourceUrl:          sql.NullString{}, // not available in CanonicalPatch
@@ -157,18 +158,18 @@ func Ingest(
 	// is only bumped when material_hash changes (CASE expression in SQL).
 	if err := q.UpsertCVE(ctx, generated.UpsertCVEParams{
 		CveID:                 patch.CVEID,
-		Status:                toNullString(resolved.Status),
+		Status:                dbutil.NullString(resolved.Status),
 		DatePublished:         toNullTimePtr(resolved.DatePublished),
 		DateModifiedSourceMax: toNullTimePtr(resolved.DateModifiedSourceMax),
 		DateModifiedCanonical: time.Now().UTC(),
-		DescriptionPrimary:    toNullStringPtr(resolved.DescriptionPrimary),
-		Severity:              toNullString(resolved.Severity),
+		DescriptionPrimary:    dbutil.NullStringPtr(resolved.DescriptionPrimary),
+		Severity:              dbutil.NullString(resolved.Severity),
 		CvssV3Score:           toNullFloat64(resolved.CVSSv3Score),
-		CvssV3Vector:          toNullString(resolved.CVSSv3Vector),
-		CvssV3Source:          toNullString(resolved.CVSSv3Source),
+		CvssV3Vector:          dbutil.NullString(resolved.CVSSv3Vector),
+		CvssV3Source:          dbutil.NullString(resolved.CVSSv3Source),
 		CvssV4Score:           toNullFloat64(resolved.CVSSv4Score),
-		CvssV4Vector:          toNullString(resolved.CVSSv4Vector),
-		CvssV4Source:          toNullString(resolved.CVSSv4Source),
+		CvssV4Vector:          dbutil.NullString(resolved.CVSSv4Vector),
+		CvssV4Source:          dbutil.NullString(resolved.CVSSv4Source),
 		CvssScoreDiverges:     resolved.CVSSScoreDiverges,
 		CweIds:                cweIDs,
 		ExploitAvailable:      resolved.ExploitAvailable,
@@ -214,11 +215,11 @@ func Ingest(
 			CveID:        patch.CVEID,
 			Ecosystem:    pkg.Ecosystem,
 			PackageName:  pkg.PackageName,
-			Namespace:    toNullString(pkg.Namespace),
-			RangeType:    toNullString(pkg.RangeType),
-			Introduced:   toNullString(pkg.Introduced),
-			Fixed:        toNullString(pkg.Fixed),
-			LastAffected: toNullString(pkg.LastAffected),
+			Namespace:    dbutil.NullString(pkg.Namespace),
+			RangeType:    dbutil.NullString(pkg.RangeType),
+			Introduced:   dbutil.NullString(pkg.Introduced),
+			Fixed:        dbutil.NullString(pkg.Fixed),
+			LastAffected: dbutil.NullString(pkg.LastAffected),
 			Events:       toNullRawMessage(pkg.Events),
 		}); err != nil {
 			return fmt.Errorf("merge: insert affected package: %w", err)
@@ -248,8 +249,8 @@ func Ingest(
 		if err := q.UpsertVendorEnrichment(ctx, generated.UpsertVendorEnrichmentParams{
 			CveID:          patch.CVEID,
 			SourceName:     sourceName,
-			VendorSeverity: toNullString(derefString(patch.VendorEnrichment.VendorSeverity)),
-			VendorFixState: toNullString(derefString(patch.VendorEnrichment.VendorFixState)),
+			VendorSeverity: dbutil.NullString(derefString(patch.VendorEnrichment.VendorSeverity)),
+			VendorFixState: dbutil.NullString(derefString(patch.VendorEnrichment.VendorFixState)),
 			Enrichment:     enrichmentJSON,
 		}); err != nil {
 			return fmt.Errorf("merge: upsert vendor enrichment: %w", err)
@@ -294,17 +295,6 @@ func Ingest(
 }
 
 // --- sql.Null* conversion helpers ---
-
-func toNullString(s string) sql.NullString {
-	return sql.NullString{String: s, Valid: s != ""}
-}
-
-func toNullStringPtr(s *string) sql.NullString {
-	if s == nil {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: *s, Valid: true}
-}
 
 func toNullFloat64(f *float64) sql.NullFloat64 {
 	if f == nil {

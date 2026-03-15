@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/sqlc-dev/pqtype"
 )
@@ -67,7 +69,7 @@ func (s *Store) UpsertFeedSyncState(ctx context.Context, state FeedSyncState) er
 			LastSuccessAt:       toNullTime(state.LastSuccessAt),
 			LastAttemptAt:       toNullTime(state.LastAttemptAt),
 			ConsecutiveFailures: state.ConsecutiveFailures,
-			LastError:           toNullString(state.LastError),
+			LastError:           dbutil.NullString(state.LastError),
 			BackoffUntil:        toNullTime(state.BackoffUntil),
 		})
 	})
@@ -87,7 +89,7 @@ func (s *Store) InsertFeedFetchLog(ctx context.Context, log FeedFetchLog) (uuid.
 			ItemsUpserted: log.ItemsUpserted,
 			CursorBefore:  toNullRawMessage(log.CursorBefore),
 			CursorAfter:   toNullRawMessage(log.CursorAfter),
-			ErrorSummary:  toNullString(log.ErrorSummary),
+			ErrorSummary:  dbutil.NullString(log.ErrorSummary),
 		})
 		return err
 	})

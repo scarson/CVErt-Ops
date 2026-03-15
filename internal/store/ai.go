@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -222,7 +223,7 @@ func (s *Store) InsertAIRequestLog(ctx context.Context, entry AIRequestLogEntry)
 			OutputTokens:  toNullInt32(entry.OutputTokens),
 			LatencyMs:     int32(entry.LatencyMS), //nolint:gosec // G115: latency in ms fits int32
 			Status:        entry.Status,
-			ErrorType:     toNullString(entry.ErrorType),
+			ErrorType:     dbutil.NullString(entry.ErrorType),
 		})
 	})
 }
@@ -236,10 +237,3 @@ func toNullInt32(v int) sql.NullInt32 {
 	return sql.NullInt32{Int32: int32(v), Valid: true} //nolint:gosec // G115: token counts fit int32
 }
 
-// toNullString converts a string to sql.NullString; empty maps to NULL.
-func toNullString(v string) sql.NullString {
-	if v == "" {
-		return sql.NullString{}
-	}
-	return sql.NullString{String: v, Valid: true}
-}

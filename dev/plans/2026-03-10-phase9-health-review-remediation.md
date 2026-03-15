@@ -1,10 +1,10 @@
-# Health Review Remediation Plan
+# Phase 9: Health Review Remediation
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Address all 45 findings from the 2026-03-10 project health review, organized into 6 phases by dependency and risk.
+**Goal:** Address all 45 findings from the 2026-03-10 project health review, organized into 6 stages by dependency and risk.
 
-**Architecture:** Findings are grouped by root cause and dependency order. All 6 phases are fully detailed with exact code, files, test commands, and commit messages.
+**Architecture:** Findings are grouped by root cause and dependency order. All 6 stages are fully detailed with exact code, files, test commands, and commit messages.
 
 **Tech Stack:** Go 1.26, PostgreSQL 15+, huma/chi, sqlc, squirrel, Prometheus, Vue 3 + openapi-fetch
 
@@ -23,32 +23,32 @@ Phase 8 (Operational Maturity) worktrees merge before this plan executes. This r
 | 8C Operate | #2 (RLS doctor checks added) | Doctor detects the issue; Task 2A.1 still needed to fix it |
 
 **Post-merge follow-up risks:**
-- **Phase 2B (evaluator refactor)** may shift metric instrumentation points added by 8B Observe. If `applyPostFilters` or `queryCandidates` move, a small follow-up to re-wire metrics may be needed. The plan notes this per-task.
-- **Phase 3 (chi→huma)** must include the admin API endpoints added by 8C Operate.
-- **Task 4C (runServe/runWorker dedup)** is harder post-Phase 8 since 8B/8C/8D all add code to both functions. Deferred to Phase 6.
+- **Stage 2B (evaluator refactor)** may shift metric instrumentation points added by 8B Observe. If `applyPostFilters` or `queryCandidates` move, a small follow-up to re-wire metrics may be needed. The plan notes this per-task.
+- **Stage 3 (API Contract Convergence)** must include the admin API endpoints added by 8C Operate.
+- **Task 4C (runServe/runWorker dedup)** is harder post-Phase 8 since 8B/8C/8D all add code to both functions. Deferred to Stage 6.
 
 ---
 
-## Phase Overview
+## Stage Overview
 
 ```
-Phase 1: Quick Wins ──────────── Independent, low-risk, parallelizable
-Phase 2: Critical Fixes ──────── RLS security + alert pipeline wiring
-Phase 3: Chi→Huma Migration ──── Addresses 10+ API consistency findings (incl. 8C admin endpoints)
-Phase 4: Ops Hardening ────────── Semaphore eviction, statement timeout (reduced scope)
-Phase 5: Test Quality ─────────── Golden files, integration tests
-Phase 6: Architecture ─────────── Deferred refactoring (incl. runServe/runWorker dedup)
+Stage 1: Quick Wins ──────────── Independent, low-risk, parallelizable
+Stage 2: Critical Fixes ──────── RLS security + alert pipeline wiring
+Stage 3: API Contract Convergence ── REVISED — see proposal doc (was Chi→Huma Migration)
+Stage 4: Ops Hardening ────────── Semaphore eviction, statement timeout (reduced scope)
+Stage 5: Test Quality ─────────── Golden files, integration tests
+Stage 6: Architecture ─────────── Deferred refactoring (incl. runServe/runWorker dedup)
 ```
 
 **Dependency graph:**
-- Phase 1: No dependencies. All tasks independent of each other.
-- Phase 2A (RLS): Independent. Complements Phase 8C doctor checks (makes them pass).
-- Phase 2B (Alert refactor): Independent. Must complete before 2C. May need small follow-up for 8B Observe metric instrumentation points.
-- Phase 2C (Alert wiring): Depends on 2B. After this, 8B Observe alert metrics start registering.
-- Phase 3: Independent of Phase 2. Largest phase, needs its own detailed plan. Must include Phase 8C admin endpoints.
-- Phase 4: Reduced scope (4A/4B removed, 4C moved to Phase 6).
-- Phase 5: Independent.
-- Phase 6: Defer until Phases 2-4 are done. Now includes Task 4C (runServe/runWorker dedup).
+- Stage 1: No dependencies. All tasks independent of each other.
+- Stage 2A (RLS): Independent. Complements Phase 8C doctor checks (makes them pass).
+- Stage 2B (Alert refactor): Independent. Must complete before 2C. May need small follow-up for 8B Observe metric instrumentation points.
+- Stage 2C (Alert wiring): Depends on 2B. After this, 8B Observe alert metrics start registering.
+- Stage 3: **REVISED** — see `dev/plans/2026-03-15-phase9-stage3-api-contract-convergence-proposal.md`. Mandatory OpenAPI evaluation gate runs first; implementation plan written after gate completes.
+- Stage 4: Reduced scope (4A/4B removed, 4C moved to Stage 6).
+- Stage 5: Independent.
+- Stage 6: Defer until Stages 2-4 are done. Now includes Task 4C (runServe/runWorker dedup).
 
 **Resolved findings (no action needed):**
 - **Finding 11** (REGISTRATION_MODE default): Already fixed — config.go shows `envDefault:"invite-only"`.
@@ -78,9 +78,9 @@ Phase 6: Architecture ─────────── Deferred refactoring (in
 
 ---
 
-# Phase 1: Quick Wins
+# Stage 1: Quick Wins
 
-All tasks in this phase are independent and can be dispatched to parallel subagents, **except Task 1.11** (Cfe rename) which touches files owned by other tasks. Task 1.11 must execute AFTER all other Phase 1 tasks have been committed. See the Task 1.11 section for details.
+All tasks in this stage are independent and can be dispatched to parallel subagents, **except Task 1.11** (Cfe rename) which touches files owned by other tasks. Task 1.11 must execute AFTER all other Stage 1 tasks have been committed. See the Task 1.11 section for details.
 
 ---
 
@@ -820,9 +820,9 @@ dbutil.NullStringPtr. Fixes health review finding #28.
 
 ---
 
-# Phase 2: Critical Fixes
+# Stage 2: Critical Fixes
 
-## Phase 2A: RLS Security Fix (Finding 2)
+## Stage 2A: RLS Security Fix (Finding 2)
 
 ---
 
@@ -956,9 +956,9 @@ another org's data. Complements finding #2 RLS fix.
 
 ---
 
-## Phase 2B: Alert Evaluator Refactoring (Findings 20, 21, 30)
+## Stage 2B: Alert Evaluator Refactoring (Findings 20, 21, 30)
 
-These tasks clean up the evaluator internals BEFORE wiring it into the runtime (Phase 2C).
+These tasks clean up the evaluator internals BEFORE wiring it into the runtime (Stage 2C).
 
 ---
 
@@ -1130,7 +1130,7 @@ Fixes health review finding #21.
 
 ---
 
-## Phase 2C: Wire Alert Evaluation into Runtime (Finding 1)
+## Stage 2C: Wire Alert Evaluation into Runtime (Finding 1)
 
 **This is the most critical finding — the product's core feature is dead code.**
 
@@ -1265,22 +1265,23 @@ are logged but don't block ingestion. Completes finding #1.
 
 ---
 
-# Phase 3: Chi→Huma Migration
+# Stage 3: API Contract Convergence (Revised)
 
-**Findings addressed:** 6, 7, 8, 9, 31, 32, 33, 34, 43
+**Findings addressed:** 6, 7, 8 (partially), 9, 31, 32, 33, 34, 43
 
-This is the largest single body of work. It migrates all chi-registered org-scoped handlers to huma, which simultaneously fixes:
-- Inconsistent error formats (Finding 6: text/plain → RFC 9457)
-- Inconsistent list shapes (Finding 7: bare arrays → `{"items": [...]}`)
-- Dual API client (Finding 8: orgFetch eliminated, typed client for everything)
-- Inconsistent pagination (Finding 9: one `?cursor=` pattern everywhere)
-- Missing Location headers (Finding 31: huma can set these automatically)
-- Non-pointer PATCH fields (Finding 32: pointer types in input structs)
-- Inconsistent validation codes (Finding 33: huma standardizes to 422)
-- Tier limit 403 (Finding 34: distinct error type in RFC 9457 body)
-- Broken delivery cursor (Finding 43: standardized cursor encoding)
+> **This stage was revised.** The original chi→huma migration was replaced with a lower-risk contract convergence approach after technical analysis confirmed three architectural blockers with the huma migration path (middleware type incompatibility, path doubling, context propagation). See `dev/plans/2026-03-15-phase9-stage3-api-contract-convergence-proposal.md` for the full decision record, scope, locked defaults, execution sequence, testing requirements, and acceptance criteria.
+>
+> **Key changes from original plan:**
+> - Chi handlers stay on Chi — no framework migration
+> - Contract consistency achieved via shared helpers (RFC 9457 errors, list envelopes, cursor standardization, pointer PATCH DTOs)
+> - Finding 8 (dual API client) is partially deferred — depends on mandatory OpenAPI evaluation gate outcome
+> - A mandatory, timeboxed OpenAPI strategy evaluation runs before the Stage 3 implementation plan is written
+>
+> **This section previously contained ~640 lines of chi→huma migration tasks (Tasks 3.0–3.12 and key decisions). That content is superseded by the proposal document above. Do not execute the original tasks.**
 
----
+The implementation plan for the revised Stage 3 will be written after the OpenAPI evaluation gate completes. Until then, this stage has no executable tasks — only the gate itself, which is described in the proposal document.
+
+<details><summary>Original Stage 3 content (superseded — click to expand)</summary>
 
 ## Key Decisions (Locked In — Not Negotiable)
 
@@ -1908,15 +1909,17 @@ All org-scoped handlers now use huma. Remove the untyped orgFetch
 wrapper and the chi writeJSON helper. Regenerate OpenAPI types.
 ```
 
+</details>
+
 ---
 
-# Phase 4: Ops Hardening (Reduced Scope)
+# Stage 4: Ops Hardening (Reduced Scope)
 
 **Findings addressed:** 14, 44
 
 Tasks 4A (health/readiness), 4B (metrics), and 4C (runServe/runWorker dedup) have been removed or moved:
 - **4A/4B:** Resolved by Phase 8B Observe and 8C Operate (merged before this plan executes).
-- **4C:** Moved to Phase 6 — Phase 8 adds significant code to both runServe/runWorker, making the refactoring more valuable but also more complex post-merge.
+- **4C:** Moved to Stage 6 — Phase 8 adds significant code to both runServe/runWorker, making the refactoring more valuable but also more complex post-merge.
 
 ---
 
@@ -2177,7 +2180,7 @@ Addresses finding #44.
 
 ---
 
-# Phase 5: Test Quality
+# Stage 5: Test Quality
 
 **Findings addressed:** 22, 23, 24, 36
 
@@ -2537,11 +2540,11 @@ without deadlock or data corruption. Addresses finding #36.
 
 ---
 
-# Phase 6: Architecture
+# Stage 6: Architecture
 
 **Findings addressed:** 15, 16, 17, 19, 25, 39
 
-**Dependency note:** Task 6C (extract shared app setup) depends on Phase 3 completing — it's deferred. All other tasks are independent of each other and of earlier phases.
+**Dependency note:** Task 6C (extract shared app setup) depends on Stage 3 completing — it's deferred. All other tasks are independent of each other and of earlier stages.
 
 ---
 
@@ -2755,11 +2758,11 @@ probe detects a stuck delivery worker. Addresses finding #16.
 
 ## Task 6C: Extract shared app setup from runServe/runWorker (Finding 17)
 
-**DEFERRED — depends on Phase 3 completing.**
+**DEFERRED — depends on Stage 3 completing.**
 
-Phase 3 (chi→huma migration) will restructure how the HTTP server is initialized. Extracting `buildApp()` before that migration would require rework afterward. Additionally, Phase 8B/8C/8D all added code to both functions, making the duplication worse but the refactoring scope larger.
+Stage 3 (API Contract Convergence) introduces shared helpers and modifies handler response patterns. Extracting `buildApp()` before that work would require rework afterward. Additionally, Phase 8B/8C/8D all added code to both functions, making the duplication worse but the refactoring scope larger.
 
-Execute this task only after Phase 3 is complete and stable. The approach:
+Execute this task only after Stage 3 is complete and stable. The approach:
 - Create `buildApp() (*App, error)` that returns a struct with all wired dependencies
 - `runServe` calls `buildApp()` then adds HTTP server
 - `runWorker` calls `buildApp()` then runs worker pool directly
@@ -2971,17 +2974,17 @@ Addresses finding #39.
 
 ## Appendix: Finding → Task Cross-Reference
 
-| Finding | Description | Task | Phase | Notes |
+| Finding | Description | Task | Stage | Notes |
 |---------|-------------|------|-------|-------|
 | 1 | Alert paths not wired | 2C.1, 2C.2 | 2C | 8B Observe alert metrics activate once wired |
 | 2 | RLS bypass | 2A.1, 2A.2 | 2A | 8C/8E doctor checks validate the fix |
 | 3 | No health check | — | — | **RESOLVED by Phase 8C Operate** |
 | 4 | Server.Close not called | 1.1 | 1 | |
 | 5 | sql.DB not closed | 1.2 | 1 | |
-| 6 | Inconsistent error format | Phase 3 | 3 | Include 8C admin endpoints |
-| 7 | Inconsistent list shapes | Phase 3 | 3 | |
-| 8 | Dual API client | Phase 3 | 3 | |
-| 9 | Inconsistent pagination | Phase 3 | 3 | |
+| 6 | Inconsistent error format | Stage 3 | 3 | Include 8C admin endpoints |
+| 7 | Inconsistent list shapes | Stage 3 | 3 | |
+| 8 | Dual API client | Stage 3 | 3 | |
+| 9 | Inconsistent pagination | Stage 3 | 3 | |
 | 10 | No metrics | — | — | **RESOLVED by Phase 8B Observe** |
 | 11 | Registration mode default | — | — | **RESOLVED** (already correct) |
 | 12 | Cookie secure validation | 1.3 | 1 | |
@@ -2989,7 +2992,7 @@ Addresses finding #39.
 | 14 | Semaphore map unbounded | 4D | 4 | |
 | 15 | API monolith | 6A | 6 | Include 8C deps in options struct |
 | 16 | Dual worker systems | 6B | 6 | 8B adds notify metrics; readiness gap remains |
-| 17 | runServe/runWorker duplication | 6C | 6 | Moved from Phase 4; worse post-8 but more complete |
+| 17 | runServe/runWorker duplication | 6C | 6 | Moved from Stage 4; worse post-8 but more complete |
 | 18 | CVE endpoints unauthenticated | — | — | Tracked separately |
 | 19 | import-bulk stub | ~~6D~~ | — | **INVALIDATED** — NVD has no bulk download files; API pagination is the correct approach |
 | 20 | Duplicated post-filters | 2B.1 | 2B | May shift 8B metric instrumentation points |
@@ -3003,10 +3006,10 @@ Addresses finding #39.
 | 28 | Duplicated toNullString | 1.12 | 1 | |
 | 29 | SMTP error string matching | — | — | Low priority, monitor |
 | 30 | Evaluator mixes DB patterns | 2B | 2B | Addressed implicitly by 2B.1/2B.2 |
-| 31 | No Location header on 201 | Phase 3 | 3 | |
-| 32 | PATCH non-pointer fields | Phase 3 | 3 | |
-| 33 | Inconsistent validation codes | Phase 3 | 3 | |
-| 34 | Tier limit 403 | Phase 3 | 3 | |
+| 31 | No Location header on 201 | Stage 3 | 3 | |
+| 32 | PATCH non-pointer fields | Stage 3 | 3 | |
+| 33 | Inconsistent validation codes | Stage 3 | 3 | |
+| 34 | Tier limit 403 | Stage 3 | 3 | |
 | 35 | InCISAKEV boolean filter | 1.10 | 1 | |
 | 36 | Advisory lock test | 5D | 5 | |
 | 37 | Store tests discard errors | 1.8 | 1 | |
@@ -3015,6 +3018,6 @@ Addresses finding #39.
 | 40 | Misleading comment | 1.6 | 1 | |
 | 41 | Test with no assertion | 1.7 | 1 | |
 | 42 | Test mutates package state | 1.9 | 1 | |
-| 43 | Delivery cursor unusable | Phase 3 | 3 | |
+| 43 | Delivery cursor unusable | Stage 3 | 3 | |
 | 44 | Statement timeout | 4E | 4 | |
 | 45 | Schema version manual sync | — | — | Reduced impact by 8C auto-migrate |

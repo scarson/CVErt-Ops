@@ -370,6 +370,7 @@ func (f *failSyncStateStore) UpsertFeedSyncState(_ context.Context, _ store.Feed
 }
 
 // captureLogs redirects slog to a buffer for pristine test output, restoring on cleanup.
+// Callers must NOT use t.Parallel() — this mutates global slog state.
 func captureLogs(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer

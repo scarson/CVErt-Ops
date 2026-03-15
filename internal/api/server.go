@@ -442,6 +442,7 @@ func (srv *Server) Handler() http.Handler {
 
 
 // AddHealthCheck registers an extra readiness check for the /readyz endpoint.
+// Must be called before Handler() — not safe for concurrent use.
 func (srv *Server) AddHealthCheck(check func() bool) {
 	srv.healthChecks = append(srv.healthChecks, check)
 }

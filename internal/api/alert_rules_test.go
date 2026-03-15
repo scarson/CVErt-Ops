@@ -1096,7 +1096,7 @@ func TestDryRun_WithEvaluator(t *testing.T) {
 	// Wire up alert evaluator.
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	evaluator := alert.New(db.DB(), db.Store, cache, log)
+	evaluator := alert.New(db.DB(), db.Store, cache, log, 0)
 	srv.SetAlertDeps(cache, evaluator)
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
@@ -1184,7 +1184,7 @@ func TestDryRun_NonExistentRule(t *testing.T) {
 
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	evaluator := alert.New(db.DB(), db.Store, cache, log)
+	evaluator := alert.New(db.DB(), db.Store, cache, log, 0)
 	srv.SetAlertDeps(cache, evaluator)
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
@@ -1209,7 +1209,7 @@ func TestDryRun_CrossOrgIsolation(t *testing.T) {
 
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	evaluator := alert.New(db.DB(), db.Store, cache, log)
+	evaluator := alert.New(db.DB(), db.Store, cache, log, 0)
 	srv.SetAlertDeps(cache, evaluator)
 
 	// Alice creates an org and a rule.
@@ -1824,7 +1824,7 @@ func TestAlertRule_ReEnableSetsActivating(t *testing.T) {
 	ctx := context.Background()
 	srv, ts := newRegisterServer(t, db, "open")
 	alertCache := alert.NewRuleCache()
-	alertEval := alert.New(nil, db.Store, alertCache, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	alertEval := alert.New(nil, db.Store, alertCache, slog.New(slog.NewTextHandler(os.Stderr, nil)), 0)
 	srv.SetAlertDeps(alertCache, alertEval)
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")

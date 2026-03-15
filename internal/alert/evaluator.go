@@ -51,16 +51,19 @@ type Dispatcher interface {
 
 // Evaluator runs alert DSL rules against the CVE corpus across three evaluation paths.
 type Evaluator struct {
-	db         *sql.DB // stdlib-wrapped pool; squirrel/pq.Array compatible
-	rules      store.AlertRuleStore
-	cache      *RuleCache
-	log        *slog.Logger
-	dispatcher Dispatcher // nil = delivery disabled
+	db                     *sql.DB // stdlib-wrapped pool; squirrel/pq.Array compatible
+	rules                  store.AlertRuleStore
+	cache                  *RuleCache
+	log                    *slog.Logger
+	dispatcher             Dispatcher // nil = delivery disabled
+	longStatementTimeoutMS int        // overrides connection-level statement_timeout for activation scans
 }
 
 // New creates an Evaluator. db must be the stdlib-wrapped pool from the same store used by rules.
-func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Logger) *Evaluator {
-	return &Evaluator{db: db, rules: rules, cache: cache, log: log}
+// longTimeoutMS overrides the per-connection statement_timeout for long-running
+// operations (activation scans). Pass 0 to use the connection default.
+func New(db *sql.DB, rules store.AlertRuleStore, cache *RuleCache, log *slog.Logger, longTimeoutMS int) *Evaluator {
+	return &Evaluator{db: db, rules: rules, cache: cache, log: log, longStatementTimeoutMS: longTimeoutMS}
 }
 
 // SetDispatcher injects the notification dispatcher.
@@ -97,7 +100,7 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 			e.log.Error("compile rule for realtime", "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
 		if evalErr != nil {
 			e.log.Error("evaluate rule realtime", "rule_id", rule.ID, "cve_id", cveID, "err", evalErr)
 		}
@@ -147,7 +150,7 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 			e.log.Error("compile rule for batch", "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
 		if evalErr != nil {
 			e.log.Error("evaluate rule batch", "rule_id", rule.ID, "err", evalErr)
 		}
@@ -196,7 +199,7 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 			e.log.Error("compile rule for EPSS", "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
 		if evalErr != nil {
 			e.log.Error("evaluate rule EPSS", "rule_id", rule.ID, "err", evalErr)
 		}
@@ -251,7 +254,7 @@ func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.U
 			break
 		}
 
-		matchCount, _, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, batch, orgID, true, true)
+		matchCount, _, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, batch, orgID, true, true, e.longStatementTimeoutMS)
 		totalCandidates += int32(candidatesEval) //nolint:gosec // G115: bounded by activationBatch
 		if evalErr != nil {
 			runErr = evalErr
@@ -346,7 +349,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 
 	var candidates []cveSummary
 	var partial bool
-	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
+	if err := e.bypassTx(ctx, 0, func(tx *sql.Tx) error {
 		var err error
 		candidates, partial, err = e.queryCandidates(ctx, tx, compiled, nil)
 		return err
@@ -383,6 +386,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 // evaluateRule runs the DSL query against candidateIDs, applies PostFilters, inserts
 // alert_events, and detects resolutions. suppressDelivery=true marks events from the
 // activation scan baseline. suppressResolution=true skips resolution detection (activation).
+// statementTimeoutMS overrides the connection-level statement_timeout when > 0.
 // Returns (matchCount, partial, candidatesEval, err).
 func (e *Evaluator) evaluateRule(
 	ctx context.Context,
@@ -391,10 +395,11 @@ func (e *Evaluator) evaluateRule(
 	orgID uuid.UUID,
 	suppressDelivery bool,
 	suppressResolution bool,
+	statementTimeoutMS int,
 ) (int, bool, int, error) {
 	var candidates []cveSummary
 	var partial bool
-	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
+	if err := e.bypassTx(ctx, statementTimeoutMS, func(tx *sql.Tx) error {
 		var err error
 		candidates, partial, err = e.queryCandidates(ctx, tx, compiled, candidateIDs)
 		return err
@@ -534,7 +539,9 @@ func (e *Evaluator) loadAndCompileRule(rule *store.AlertRuleRow) (*dsl.CompiledR
 
 // bypassTx opens a database/sql transaction with RLS bypass enabled and calls fn.
 // Use for queries that reference org-scoped tables from worker paths.
-func (e *Evaluator) bypassTx(ctx context.Context, fn func(*sql.Tx) error) error {
+// statementTimeoutMS overrides the connection-level statement_timeout for this
+// transaction when > 0.
+func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn func(*sql.Tx) error) error {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin bypass tx: %w", err)
@@ -542,6 +549,11 @@ func (e *Evaluator) bypassTx(ctx context.Context, fn func(*sql.Tx) error) error 
 	defer tx.Rollback() //nolint:errcheck
 	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
 		return fmt.Errorf("set bypass_rls: %w", err)
+	}
+	if statementTimeoutMS > 0 {
+		if err := store.SetStatementTimeout(ctx, tx, statementTimeoutMS); err != nil {
+			return fmt.Errorf("set statement timeout: %w", err)
+		}
 	}
 	if err := fn(tx); err != nil {
 		return err

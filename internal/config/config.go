@@ -13,13 +13,14 @@ import (
 // Field defaults match .env.example. Sensitive fields are masked in String().
 type Config struct {
 	// ── Database ─────────────────────────────────────────────────────────────────
-	DatabaseURL          string        `env:"DATABASE_URL,required"`
+	DatabaseURL string `env:"DATABASE_URL,required"`
 	// DatabaseURLMigrate is the connection string used by `cvert-ops migrate`.
 	// Should use a superuser/DDL role. Falls back to DatabaseURL if unset.
-	DatabaseURLMigrate string `env:"DATABASE_URL_MIGRATE"`
-	DBMaxConns           int32         `env:"DB_MAX_CONNS"           envDefault:"25"`
-	DBMaxConnIdleTime    time.Duration `env:"DB_MAX_CONN_IDLE_TIME"  envDefault:"5m"`
-	DBStatementTimeoutMS int           `env:"DB_STATEMENT_TIMEOUT_MS" envDefault:"14000"`
+	DatabaseURLMigrate       string        `env:"DATABASE_URL_MIGRATE"`
+	DBMaxConns               int32         `env:"DB_MAX_CONNS"           envDefault:"25"`
+	DBMaxConnIdleTime        time.Duration `env:"DB_MAX_CONN_IDLE_TIME"  envDefault:"5m"`
+	DBStatementTimeoutMS     int           `env:"DB_STATEMENT_TIMEOUT_MS"      envDefault:"14000"`
+	DBLongStatementTimeoutMS int           `env:"DB_LONG_STATEMENT_TIMEOUT_MS" envDefault:"120000"`
 	// DBQueryExecMode: "simple_protocol" (PgBouncer-compatible) or "extended_protocol".
 	DBQueryExecMode string `env:"DB_QUERY_EXEC_MODE" envDefault:"simple_protocol"`
 
@@ -82,18 +83,18 @@ type Config struct {
 	GeminiModel  string `env:"GEMINI_MODEL" envDefault:"gemini-2.0-flash"`
 
 	// ── AI — Quotas & Behavior ───────────────────────────────────────────────────
-	GeminiTimeout               time.Duration `env:"GEMINI_TIMEOUT"                  envDefault:"30s"`
-	AIQuotaEnabled              bool          `env:"AI_QUOTA_ENABLED"                envDefault:"true"`
-	AINLSearchLimitFree         int           `env:"AI_NL_SEARCH_LIMIT_FREE"         envDefault:"10"`
-	AINLSearchLimitPro          int           `env:"AI_NL_SEARCH_LIMIT_PRO"          envDefault:"100"`
-	AINLSearchLimitEnterprise   int           `env:"AI_NL_SEARCH_LIMIT_ENTERPRISE"   envDefault:"1000"`
-	AISummarizeLimitFree        int           `env:"AI_SUMMARIZE_LIMIT_FREE"         envDefault:"5"`
-	AISummarizeLimitPro         int           `env:"AI_SUMMARIZE_LIMIT_PRO"          envDefault:"50"`
-	AISummarizeLimitEnterprise  int           `env:"AI_SUMMARIZE_LIMIT_ENTERPRISE"   envDefault:"500"`
-	AICacheNLSearchTTL          time.Duration `env:"AI_CACHE_NL_SEARCH_TTL"          envDefault:"1h"`
-	AICacheSummarizeTTL         time.Duration `env:"AI_CACHE_SUMMARIZE_TTL"          envDefault:"24h"`
-	AILogRetentionDays          int           `env:"AI_LOG_RETENTION_DAYS"            envDefault:"90"`
-	GeminiMock                  bool          `env:"GEMINI_MOCK"                     envDefault:"false"`
+	GeminiTimeout              time.Duration `env:"GEMINI_TIMEOUT"                  envDefault:"30s"`
+	AIQuotaEnabled             bool          `env:"AI_QUOTA_ENABLED"                envDefault:"true"`
+	AINLSearchLimitFree        int           `env:"AI_NL_SEARCH_LIMIT_FREE"         envDefault:"10"`
+	AINLSearchLimitPro         int           `env:"AI_NL_SEARCH_LIMIT_PRO"          envDefault:"100"`
+	AINLSearchLimitEnterprise  int           `env:"AI_NL_SEARCH_LIMIT_ENTERPRISE"   envDefault:"1000"`
+	AISummarizeLimitFree       int           `env:"AI_SUMMARIZE_LIMIT_FREE"         envDefault:"5"`
+	AISummarizeLimitPro        int           `env:"AI_SUMMARIZE_LIMIT_PRO"          envDefault:"50"`
+	AISummarizeLimitEnterprise int           `env:"AI_SUMMARIZE_LIMIT_ENTERPRISE"   envDefault:"500"`
+	AICacheNLSearchTTL         time.Duration `env:"AI_CACHE_NL_SEARCH_TTL"          envDefault:"1h"`
+	AICacheSummarizeTTL        time.Duration `env:"AI_CACHE_SUMMARIZE_TTL"          envDefault:"24h"`
+	AILogRetentionDays         int           `env:"AI_LOG_RETENTION_DAYS"            envDefault:"90"`
+	GeminiMock                 bool          `env:"GEMINI_MOCK"                     envDefault:"false"`
 
 	// ── Feed adapters ────────────────────────────────────────────────────────────
 	NVDAPIKey string `env:"NVD_API_KEY"`

@@ -158,7 +158,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	alertCache := alert.NewRuleCache()
 	alertDB := stdlib.OpenDBFromPool(db)
 	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
-	alertEval := alert.New(alertDB, st, alertCache, slog.Default())
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
@@ -355,7 +355,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	alertCache := alert.NewRuleCache()
 	alertDB := stdlib.OpenDBFromPool(db)
 	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
-	alertEval := alert.New(alertDB, st, alertCache, slog.Default())
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)

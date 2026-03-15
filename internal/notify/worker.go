@@ -33,16 +33,17 @@ type WorkerConfig struct {
 
 // Worker polls notification_deliveries and executes outbound deliveries (webhook or email).
 type Worker struct {
-	store       *store.Store
-	client      *http.Client
-	cfg         WorkerConfig
-	smtpCfg     SmtpConfig
-	externalURL string
-	log         *slog.Logger
-	sems        map[uuid.UUID]chan struct{} // per-org semaphores, lazy-init
-	semsMu      sync.Mutex
-	wg          sync.WaitGroup
-	dispatcher  *Dispatcher
+	store        *store.Store
+	client       *http.Client
+	cfg          WorkerConfig
+	smtpCfg      SmtpConfig
+	externalURL  string
+	log          *slog.Logger
+	sems         map[uuid.UUID]chan struct{} // per-org semaphores, lazy-init
+	semsLastUsed map[uuid.UUID]time.Time    // last use time per org semaphore
+	semsMu       sync.Mutex
+	wg           sync.WaitGroup
+	dispatcher   *Dispatcher
 }
 
 // NewWorker creates a Worker. client should be the production safeurl-wrapped client.
@@ -51,13 +52,14 @@ func NewWorker(st *store.Store, client *http.Client, cfg WorkerConfig, smtpCfg S
 		cfg.StuckThreshold = 2 * time.Minute
 	}
 	return &Worker{
-		store:       st,
-		client:      client,
-		cfg:         cfg,
-		smtpCfg:     smtpCfg,
-		externalURL: externalURL,
-		log:         slog.Default(),
-		sems:        make(map[uuid.UUID]chan struct{}),
+		store:        st,
+		client:       client,
+		cfg:          cfg,
+		smtpCfg:      smtpCfg,
+		externalURL:  externalURL,
+		log:          slog.Default(),
+		sems:         make(map[uuid.UUID]chan struct{}),
+		semsLastUsed: make(map[uuid.UUID]time.Time),
 	}
 }
 
@@ -73,11 +75,13 @@ func (w *Worker) Start(ctx context.Context) {
 	recoveryTicker := time.NewTicker(5 * time.Minute)
 	digestTicker := time.NewTicker(60 * time.Second)
 	retentionTicker := time.NewTicker(24 * time.Hour)
+	evictTicker := time.NewTicker(semaphoreEvictionAge)
 	defer claimTicker.Stop()
 	defer stuckTicker.Stop()
 	defer recoveryTicker.Stop()
 	defer digestTicker.Stop()
 	defer retentionTicker.Stop()
+	defer evictTicker.Stop()
 
 	for {
 		select {
@@ -94,6 +98,8 @@ func (w *Worker) Start(ctx context.Context) {
 			w.runDigest(ctx)
 		case <-retentionTicker.C:
 			w.scheduleRetention(ctx)
+		case <-evictTicker.C:
+			w.evictStaleSemaphores()
 		}
 	}
 }
@@ -359,7 +365,22 @@ func (w *Worker) semaphore(orgID uuid.UUID) chan struct{} {
 	if _, ok := w.sems[orgID]; !ok {
 		w.sems[orgID] = make(chan struct{}, w.cfg.MaxConcurrentPerOrg)
 	}
+	w.semsLastUsed[orgID] = time.Now()
 	return w.sems[orgID]
+}
+
+const semaphoreEvictionAge = 10 * time.Minute
+
+func (w *Worker) evictStaleSemaphores() {
+	w.semsMu.Lock()
+	defer w.semsMu.Unlock()
+	cutoff := time.Now().Add(-semaphoreEvictionAge)
+	for orgID, lastUsed := range w.semsLastUsed {
+		if lastUsed.Before(cutoff) && len(w.sems[orgID]) == 0 {
+			delete(w.sems, orgID)
+			delete(w.semsLastUsed, orgID)
+		}
+	}
 }
 
 func (w *Worker) runStuckReset(ctx context.Context) {

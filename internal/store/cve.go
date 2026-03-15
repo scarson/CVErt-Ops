@@ -27,6 +27,19 @@ func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.CVE, error
 	return &row, nil
 }
 
+// GetCVEMaterialHash returns the material_hash for a CVE, or empty string if
+// the CVE does not exist or has no hash.
+func (s *Store) GetCVEMaterialHash(ctx context.Context, cveID string) (string, error) {
+	cve, err := s.GetCVE(ctx, cveID)
+	if err != nil {
+		return "", err
+	}
+	if cve == nil {
+		return "", nil
+	}
+	return cve.MaterialHash.String, nil
+}
+
 // GetCVEDetail fetches the canonical CVE row plus all child tables (references,
 // affected packages, affected CPEs). Returns (nil, nil, nil, nil, nil) when
 // the CVE does not exist; returns (nil, nil, nil, nil, err) on query failure.

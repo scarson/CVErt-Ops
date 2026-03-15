@@ -153,13 +153,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
 	}
 
+	// Wire alert evaluation dependencies. The cache and evaluator are used by
+	// the dry-run endpoint, realtime feed evaluation, and batch/EPSS/activation workers.
+	alertCache := alert.NewRuleCache()
+	alertDB := stdlib.OpenDBFromPool(db)
+	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default())
+
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
-		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactoryAndAlerts(st, feedClient, merge.Ingest, factory, alertEval))
 	} else {
-		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
 	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
@@ -189,13 +196,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Commit:    commit,
 		BuildTime: buildTime,
 	})
-
-	// Wire alert evaluation dependencies. The cache and evaluator are used by
-	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
-	alertCache := alert.NewRuleCache()
-	alertDB := stdlib.OpenDBFromPool(db)
-	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
-	alertEval := alert.New(alertDB, st, alertCache, slog.Default())
 	apiSrv.SetAlertDeps(alertCache, alertEval)
 
 	// Wire AI/LLM dependencies for NL search and summarization handlers.
@@ -361,9 +361,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
-		workerPool.Register("feed_ingest", ingest.HandlerWithFactory(st, feedClient, merge.Ingest, factory))
+		workerPool.Register("feed_ingest", ingest.HandlerWithFactoryAndAlerts(st, feedClient, merge.Ingest, factory, alertEval))
 	} else {
-		workerPool.Register("feed_ingest", ingest.Handler(st, feedClient, merge.Ingest))
+		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
 	epssClient := &http.Client{Timeout: 300 * time.Second}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))

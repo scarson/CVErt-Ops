@@ -193,7 +193,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Wire alert evaluation dependencies. The cache and evaluator are used by
 	// the dry-run endpoint; the batch/EPSS/activation workers run via the pool.
 	alertCache := alert.NewRuleCache()
-	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
+	alertDB := stdlib.OpenDBFromPool(db)
+	defer alertDB.Close()
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default())
 	apiSrv.SetAlertDeps(alertCache, alertEval)
 
 	// Wire AI/LLM dependencies for NL search and summarization handlers.
@@ -348,7 +350,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}
 
 	alertCache := alert.NewRuleCache()
-	alertEval := alert.New(stdlib.OpenDBFromPool(db), st, alertCache, slog.Default())
+	alertDB := stdlib.OpenDBFromPool(db)
+	defer alertDB.Close()
+	alertEval := alert.New(alertDB, st, alertCache, slog.Default())
 
 	feedClient := &http.Client{Timeout: 5 * time.Minute}
 	workerPool := worker.New(st)

@@ -141,9 +141,7 @@ func TestExecuteDSLQuery_EmptyConditions(t *testing.T) {
 	}
 	_, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
 	if err == nil {
-		t.Log("Compile accepted empty conditions — NL search handler must handle this case")
-	} else {
-		t.Log("Compile rejected empty conditions — NL search handler must handle this case")
+		t.Fatal("expected Compile to reject empty conditions")
 	}
 }
 

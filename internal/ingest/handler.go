@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
@@ -30,7 +31,7 @@ type HandlerStore interface {
 }
 
 // MergeFunc matches the signature of merge.Ingest. Defined as a type for test injection.
-type MergeFunc func(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
+type MergeFunc func(ctx context.Context, s merge.Store, patch feed.CanonicalPatch, sourceName string) error
 
 // RealtimeEvaluator runs alert evaluation against a single CVE after its
 // material_hash changes. Implemented by *alert.Evaluator.
@@ -72,7 +73,7 @@ func HandlerWithFactoryAndAlerts(st *store.Store, client *http.Client, mergeFn M
 // for sync state operations. This enables testing error paths without mocking the full store.
 // eval and hashReader are optional; when both are non-nil, realtime alert evaluation
 // fires after merges that change material_hash.
-func handlerWithStore(syncSt HandlerStore, mergeSt *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator, hashReader CVEHashReader) worker.Handler {
+func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator, hashReader CVEHashReader) worker.Handler {
 	return func(ctx context.Context, payload json.RawMessage) error {
 		var p Payload
 		if err := json.Unmarshal(payload, &p); err != nil {

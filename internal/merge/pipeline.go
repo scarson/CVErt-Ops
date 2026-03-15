@@ -16,7 +16,6 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/dbutil"
 	"github.com/scarson/cvert-ops/internal/feed"
-	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -38,7 +37,7 @@ import (
 //  10. Upsert FTS index — update cve_search_index (IS DISTINCT FROM guard)
 func Ingest(
 	ctx context.Context,
-	s *store.Store,
+	s Store,
 	patch feed.CanonicalPatch,
 	sourceName string,
 ) error {

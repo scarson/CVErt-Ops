@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -51,7 +52,7 @@ type mergeCall struct {
 	SourceName string
 }
 
-func (m *mockMerge) fn(_ context.Context, _ *store.Store, patch feed.CanonicalPatch, sourceName string) error {
+func (m *mockMerge) fn(_ context.Context, _ merge.Store, patch feed.CanonicalPatch, sourceName string) error {
 	m.mu.Lock()
 	m.calls = append(m.calls, mergeCall{CVEID: patch.CVEID, SourceName: sourceName})
 	m.mu.Unlock()
@@ -695,7 +696,7 @@ func TestFeedHandler_RealtimeEval_CalledOnHashChange(t *testing.T) {
 	eval := &mockEvaluator{}
 
 	// Merge mock simulates a hash change by updating the hash reader.
-	mergeFn := func(_ context.Context, _ *store.Store, patch feed.CanonicalPatch, _ string) error {
+	mergeFn := func(_ context.Context, _ merge.Store, patch feed.CanonicalPatch, _ string) error {
 		hashReader.mu.Lock()
 		hashReader.hashes[patch.CVEID] = "hash-after"
 		hashReader.mu.Unlock()
@@ -738,7 +739,7 @@ func TestFeedHandler_RealtimeEval_NotCalledWhenHashUnchanged(t *testing.T) {
 	eval := &mockEvaluator{}
 
 	// Merge mock does NOT change the hash.
-	mergeFn := func(_ context.Context, _ *store.Store, _ feed.CanonicalPatch, _ string) error {
+	mergeFn := func(_ context.Context, _ merge.Store, _ feed.CanonicalPatch, _ string) error {
 		return nil
 	}
 
@@ -780,7 +781,7 @@ func TestFeedHandler_RealtimeEval_ErrorDoesNotFailIngest(t *testing.T) {
 	}
 
 	// Merge mock simulates a hash change to trigger evaluation.
-	mergeFn := func(_ context.Context, _ *store.Store, patch feed.CanonicalPatch, _ string) error {
+	mergeFn := func(_ context.Context, _ merge.Store, patch feed.CanonicalPatch, _ string) error {
 		hashReader.mu.Lock()
 		hashReader.hashes[patch.CVEID] = "hash-after"
 		hashReader.mu.Unlock()

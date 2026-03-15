@@ -136,6 +136,7 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 			for _, patch := range result.Patches {
 				// Read hash before merge for change detection.
 				var hashBefore string
+				var hashReadOK bool
 				if eval != nil && hashReader != nil {
 					var hashErr error
 					hashBefore, hashErr = hashReader.GetCVEMaterialHash(ctx, patch.CVEID)
@@ -145,6 +146,8 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 							"cve_id", patch.CVEID,
 							"error", hashErr,
 						)
+					} else {
+						hashReadOK = true
 					}
 				}
 
@@ -168,7 +171,7 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 							"cve_id", patch.CVEID,
 							"error", hashErr,
 						)
-					} else if hashAfter != hashBefore {
+					} else if hashReadOK && hashAfter != hashBefore {
 						if evalErr := eval.EvaluateRealtime(ctx, patch.CVEID); evalErr != nil {
 							slog.Error("realtime alert evaluation failed",
 								"feed", p.FeedName,

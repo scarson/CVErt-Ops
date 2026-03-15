@@ -22,8 +22,9 @@ func TestSetStatementTimeout_CancelsSlowQuery(t *testing.T) {
 	// Set a very short timeout (1ms)
 	require.NoError(t, store.SetStatementTimeout(ctx, tx, 1))
 
-	// This 1-second sleep should be cancelled by the 1ms timeout
+	// This 1-second sleep should be cancelled by the 1ms timeout.
+	// Check for PG error code 57014 (query_canceled) to avoid locale dependency.
 	_, err = tx.ExecContext(ctx, "SELECT pg_sleep(1)")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "canceling statement due to statement timeout")
+	require.Contains(t, err.Error(), "57014")
 }

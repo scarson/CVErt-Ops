@@ -33,6 +33,10 @@ const (
 
 	// staleThreshold is the age at which a 'running' job is considered stuck.
 	staleThreshold = 5 * time.Minute
+
+	// maxJobDuration caps how long a single job can run. Prevents unbounded
+	// shutdown hangs when in-flight jobs use context.WithoutCancel.
+	maxJobDuration = 10 * time.Minute
 )
 
 // Pool manages a set of goroutine workers that claim and execute jobs from
@@ -134,7 +138,11 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 			case sem <- struct{}{}:
 				inflight.Go(func() {
 					defer func() { <-sem }()
-					p.processOne(context.WithoutCancel(ctx), queue)
+					// Detach from parent shutdown signal so in-flight DB writes
+				// complete, but cap each job to prevent unbounded shutdown hangs.
+				jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxJobDuration)
+				defer cancel()
+				p.processOne(jobCtx, queue)
 				})
 			default:
 				// all concurrency slots occupied, skip this tick

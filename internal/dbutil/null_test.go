@@ -68,3 +68,20 @@ func TestNullStringPtr(t *testing.T) {
 		}
 	})
 }
+
+// TestNullString_vs_NullStringPtr_EmptyString documents the intentional
+// semantic difference: NullString("") → Valid=false (empty means absent),
+// NullStringPtr(&"") → Valid=true (pointer exists, value is empty).
+func TestNullString_vs_NullStringPtr_EmptyString(t *testing.T) {
+	t.Parallel()
+	byValue := NullString("")
+	s := ""
+	byPtr := NullStringPtr(&s)
+
+	if byValue.Valid {
+		t.Error("NullString(\"\") should be Valid=false")
+	}
+	if !byPtr.Valid {
+		t.Error("NullStringPtr(&\"\") should be Valid=true")
+	}
+}

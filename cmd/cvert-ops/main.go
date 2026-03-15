@@ -182,6 +182,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
+	defer apiSrv.Close()
 	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
 	apiSrv.SetVersionInfo(api.VersionInfo{
 		Version:   version,

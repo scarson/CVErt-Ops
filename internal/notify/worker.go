@@ -72,6 +72,7 @@ func (w *Worker) SetDispatcher(d *Dispatcher) {
 
 // Start runs the worker until ctx is cancelled.
 func (w *Worker) Start(ctx context.Context) {
+	w.lastClaimAt.Store(time.Now()) // mark alive for /readyz before first tick
 	claimTicker := time.NewTicker(5 * time.Second)
 	stuckTicker := time.NewTicker(60 * time.Second)
 	recoveryTicker := time.NewTicker(5 * time.Minute)

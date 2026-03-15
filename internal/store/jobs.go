@@ -34,7 +34,7 @@ type Job struct {
 func (s *Store) ClaimJob(ctx context.Context, queue, workerID string) (*Job, error) {
 	row, err := s.q.ClaimJob(ctx, generated.ClaimJobParams{
 		Queue:    queue,
-		LockedBy: sql.NullString{String: workerID, Valid: true},
+		LockedBy: dbutil.NullString(workerID),
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -94,10 +94,7 @@ func (s *Store) EnqueueJob(
 	maxAttempts int32,
 	runAfter *time.Time,
 ) (uuid.UUID, error) {
-	var lk sql.NullString
-	if lockKey != nil {
-		lk = sql.NullString{String: *lockKey, Valid: true}
-	}
+	lk := dbutil.NullStringPtr(lockKey)
 
 	var ra interface{}
 	if runAfter != nil {

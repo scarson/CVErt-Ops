@@ -71,7 +71,7 @@ func Ingest(
 	if patch.SourceID != "" && patch.CVEID != patch.SourceID {
 		oldCVEID, err := q.FindCVEBySourceID(ctx, generated.FindCVEBySourceIDParams{
 			SourceName: sourceName,
-			SourceID:   sql.NullString{String: patch.SourceID, Valid: true},
+			SourceID:   dbutil.NullString(patch.SourceID),
 		})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("merge: find CVE by source ID: %w", err)
@@ -173,7 +173,7 @@ func Ingest(
 		CweIds:                cweIDs,
 		ExploitAvailable:      resolved.ExploitAvailable,
 		InCisaKev:             resolved.InCISAKEV,
-		MaterialHash:          sql.NullString{String: materialHash, Valid: true},
+		MaterialHash:          dbutil.NullString(materialHash),
 	}); err != nil {
 		return fmt.Errorf("merge: upsert cves: %w", err)
 	}

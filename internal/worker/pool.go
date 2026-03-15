@@ -91,18 +91,14 @@ func (p *Pool) Start(ctx context.Context) {
 	var wg sync.WaitGroup
 
 	for _, q := range queues {
-		wg.Add(1)
-		go func(queue string) {
-			defer wg.Done()
-			p.runQueue(ctx, queue)
-		}(q)
+		wg.Go(func() {
+			p.runQueue(ctx, q)
+		})
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		p.runStaleRecovery(ctx)
-	}()
+	})
 
 	wg.Wait()
 	slog.Info("worker pool stopped", "worker_id", p.workerID)
@@ -136,12 +132,10 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 		case <-ticker.C:
 			select {
 			case sem <- struct{}{}:
-				inflight.Add(1)
-				go func() {
-					defer inflight.Done()
+				inflight.Go(func() {
 					defer func() { <-sem }()
 					p.processOne(context.WithoutCancel(ctx), queue)
-				}()
+				})
 			default:
 				// all concurrency slots occupied, skip this tick
 			}

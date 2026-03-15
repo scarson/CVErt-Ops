@@ -61,7 +61,7 @@ func TestExecuteDSLQuery_Pagination(t *testing.T) {
 
 	// Seed 5 CVEs with decreasing date_modified_canonical to control order.
 	base := time.Now()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ts := base.Add(-time.Duration(i) * time.Minute)
 		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-P%03d", i), "high", &testutil.SeedCVEOpts{
 			DateModifiedCanonical: &ts,
@@ -243,7 +243,7 @@ func TestExecuteDSLQuery_CraftedCursor(t *testing.T) {
 	ctx := context.Background()
 
 	base := time.Now()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		ts := base.Add(-time.Duration(i) * time.Minute)
 		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-K%03d", i), "high", &testutil.SeedCVEOpts{
 			DateModifiedCanonical: &ts,
@@ -254,7 +254,7 @@ func TestExecuteDSLQuery_CraftedCursor(t *testing.T) {
 
 	// Craft a cursor that skips all CVEs (far future date).
 	farFuture := time.Now().Add(24 * time.Hour)
-	crafted, _ := json.Marshal(map[string]interface{}{
+	crafted, _ := json.Marshal(map[string]any{
 		"s": farFuture.Format(time.RFC3339Nano),
 		"c": "CVE-9999-9999",
 	})
@@ -278,7 +278,7 @@ func TestExecuteDSLQuery_LimitZeroClamped(t *testing.T) {
 
 	// Seed 30 CVEs to exceed the clamped default of 25.
 	base := time.Now()
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		ts := base.Add(-time.Duration(i) * time.Minute)
 		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-L%03d", i), "high", &testutil.SeedCVEOpts{
 			DateModifiedCanonical: &ts,
@@ -305,7 +305,7 @@ func TestExecuteDSLQuery_LimitOverMaxClamped(t *testing.T) {
 	ctx := context.Background()
 
 	base := time.Now()
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		ts := base.Add(-time.Duration(i) * time.Minute)
 		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-M%03d", i), "high", &testutil.SeedCVEOpts{
 			DateModifiedCanonical: &ts,

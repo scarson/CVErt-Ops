@@ -1,5 +1,5 @@
-// ABOUTME: Unit tests for applyPostFilters covering regex match, negate, multi-filter AND/OR semantics.
-// ABOUTME: Uses package alert (internal test) to access the unexported applyPostFilters function.
+// ABOUTME: Unit tests for post-filter logic via dsl.ApplyPostFilters with cveSummary targets.
+// ABOUTME: Validates regex match, negate, multi-filter AND/OR semantics on cveSummary.
 package alert
 
 import (
@@ -14,7 +14,7 @@ func TestApplyPostFilters_NoFilters(t *testing.T) {
 		{CVEID: "CVE-1", Description: "apache server"},
 		{CVEID: "CVE-2", Description: "windows kernel"},
 	}
-	result := applyPostFilters(candidates, nil, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters(candidates, nil, dsl.LogicAnd)
 	if len(result) != 2 {
 		t.Fatalf("want 2 candidates with no filters, got %d", len(result))
 	}
@@ -29,7 +29,7 @@ func TestApplyPostFilters_RegexMatch(t *testing.T) {
 	filters := []dsl.PostFilter{
 		{Negate: false, Pattern: regexp.MustCompile("apache")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicAnd)
 	if len(result) != 2 {
 		t.Fatalf("want 2 matches for 'apache', got %d", len(result))
 	}
@@ -50,7 +50,7 @@ func TestApplyPostFilters_RegexNegate(t *testing.T) {
 	filters := []dsl.PostFilter{
 		{Negate: true, Pattern: regexp.MustCompile("apache")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicAnd)
 	if len(result) != 1 {
 		t.Fatalf("want 1 candidate after negated 'apache' filter, got %d", len(result))
 	}
@@ -70,7 +70,7 @@ func TestApplyPostFilters_MultipleFiltersAND(t *testing.T) {
 		{Negate: false, Pattern: regexp.MustCompile("apache")},
 		{Negate: false, Pattern: regexp.MustCompile("remote")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicAnd)
 	if len(result) != 1 {
 		t.Fatalf("want 1 candidate matching both 'apache' AND 'remote', got %d", len(result))
 	}
@@ -90,7 +90,7 @@ func TestApplyPostFilters_NegateWithPositive(t *testing.T) {
 		{Negate: false, Pattern: regexp.MustCompile("remote")},
 		{Negate: true, Pattern: regexp.MustCompile("apache")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicAnd)
 	if len(result) != 1 {
 		t.Fatalf("want 1 candidate matching 'remote' AND NOT 'apache', got %d", len(result))
 	}
@@ -103,7 +103,7 @@ func TestApplyPostFilters_EmptyCandidates(t *testing.T) {
 	filters := []dsl.PostFilter{
 		{Negate: false, Pattern: regexp.MustCompile("apache")},
 	}
-	result := applyPostFilters(nil, filters, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters([]cveSummary(nil), filters, dsl.LogicAnd)
 	if len(result) != 0 {
 		t.Fatalf("want 0 results from empty candidates, got %d", len(result))
 	}
@@ -116,7 +116,7 @@ func TestApplyPostFilters_NoMatchesReturnsNil(t *testing.T) {
 	filters := []dsl.PostFilter{
 		{Negate: false, Pattern: regexp.MustCompile("apache")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicAnd)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicAnd)
 	if len(result) != 0 {
 		t.Fatalf("want 0 matches, got %d", len(result))
 	}
@@ -133,7 +133,7 @@ func TestApplyPostFilters_ORLogic(t *testing.T) {
 		{Negate: false, Pattern: regexp.MustCompile("apache")},
 		{Negate: false, Pattern: regexp.MustCompile("windows")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicOr)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicOr)
 	if len(result) != 2 {
 		t.Fatalf("want 2 candidates matching 'apache' OR 'windows', got %d", len(result))
 	}
@@ -157,7 +157,7 @@ func TestApplyPostFilters_ORLogicNegate(t *testing.T) {
 		{Negate: true, Pattern: regexp.MustCompile("apache")},
 		{Negate: false, Pattern: regexp.MustCompile("linux")},
 	}
-	result := applyPostFilters(candidates, filters, dsl.LogicOr)
+	result := dsl.ApplyPostFilters(candidates, filters, dsl.LogicOr)
 	if len(result) != 2 {
 		t.Fatalf("want 2 candidates, got %d", len(result))
 	}

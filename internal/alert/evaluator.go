@@ -35,6 +35,14 @@ type cveSummary struct {
 	Description  string // pre-lowercased for PostFilter matching
 }
 
+// PostFilterField implements dsl.PostFilterTarget for cveSummary.
+func (c cveSummary) PostFilterField(field string) string {
+	if field == "cve_id" {
+		return c.CVEID
+	}
+	return c.Description
+}
+
 // Dispatcher triggers notification delivery for a newly created alert event.
 // A nil dispatcher disables delivery (tests, startup).
 type Dispatcher interface {
@@ -350,7 +358,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 		return &DryRunResult{Partial: true, CandidatesEvaluated: candidateCap + 1}, nil
 	}
 
-	matched := applyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
+	matched := dsl.ApplyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
 
 	sample := make([]string, 0, 10)
 	for i, m := range matched {
@@ -397,7 +405,7 @@ func (e *Evaluator) evaluateRule(
 		return 0, true, len(candidateIDs), nil
 	}
 
-	matched := applyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
+	matched := dsl.ApplyPostFilters(candidates, compiled.PostFilters, compiled.Logic)
 
 	// Resolution detection: find previously matched CVEs that no longer match.
 	var prevMatched []string
@@ -541,59 +549,6 @@ func (e *Evaluator) queryCandidatesAll(ctx context.Context, tx *sql.Tx, compiled
 		return nil, true, nil
 	}
 	return candidates, false, nil
-}
-
-// applyPostFilters filters candidates through the compiled regex PostFilters.
-// When logic is "or", any filter matching includes the candidate; otherwise all must match (AND).
-func applyPostFilters(candidates []cveSummary, filters []dsl.PostFilter, logic dsl.Logic) []cveSummary {
-	if len(filters) == 0 {
-		return candidates
-	}
-	var matched []cveSummary
-	for _, c := range candidates {
-		if logic == dsl.LogicOr {
-			pass := false
-			for _, f := range filters {
-				ok := f.Pattern.MatchString(postFilterTarget(c, f))
-				if f.Negate {
-					ok = !ok
-				}
-				if ok {
-					pass = true
-					break
-				}
-			}
-			if pass {
-				matched = append(matched, c)
-			}
-		} else {
-			pass := true
-			for _, f := range filters {
-				ok := f.Pattern.MatchString(postFilterTarget(c, f))
-				if f.Negate {
-					ok = !ok
-				}
-				if !ok {
-					pass = false
-					break
-				}
-			}
-			if pass {
-				matched = append(matched, c)
-			}
-		}
-	}
-	return matched
-}
-
-// postFilterTarget returns the candidate field value that a PostFilter should match against.
-func postFilterTarget(c cveSummary, f dsl.PostFilter) string {
-	switch f.Field {
-	case "cve_id":
-		return c.CVEID
-	default:
-		return c.Description
-	}
 }
 
 // loadAndCompileRule returns the CompiledRule from cache, or compiles it from the rule's

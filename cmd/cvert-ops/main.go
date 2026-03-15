@@ -185,23 +185,21 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("using Gemini LLM client", "model", cfg.GeminiModel)
 	}
 
-	apiSrv, err := api.NewServer(st, cfg)
+	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
+		AlertCache:            alertCache,
+		AlertEvaluator:        alertEval,
+		LLM:                   llm,
+		ExpectedSchemaVersion: expectedSchemaVersion,
+		VersionInfo: api.VersionInfo{
+			Version:   version,
+			Commit:    commit,
+			BuildTime: buildTime,
+		},
+	})
 	if err != nil {
 		return fmt.Errorf("api server init: %w", err)
 	}
 	defer apiSrv.Close()
-	apiSrv.SetExpectedSchemaVersion(expectedSchemaVersion)
-	apiSrv.SetVersionInfo(api.VersionInfo{
-		Version:   version,
-		Commit:    commit,
-		BuildTime: buildTime,
-	})
-	apiSrv.SetAlertDeps(alertCache, alertEval)
-
-	// Wire AI/LLM dependencies for NL search and summarization handlers.
-	if llm != nil {
-		apiSrv.SetAIDeps(llm)
-	}
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
 	// worker polls delivery rows and executes outbound webhook calls.

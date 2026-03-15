@@ -59,7 +59,7 @@ func newGitHubTestServer(t *testing.T, db *testutil.TestDB, ghMock *httptest.Ser
 		RegistrationMode:    "open",
 		FrontendURL:         "http://localhost:5173",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestGitHubInit_NotConfigured(t *testing.T) {
 		JWTSecret:           "ghtest-secret-32-bytes-minimum-aa",
 		Argon2MaxConcurrent: 5,
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestGitHubCallback_InviteOnlyRejectsNewUser(t *testing.T) {
 		ExternalURL:         "http://localhost",
 		RegistrationMode:    "invite-only",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

@@ -118,7 +118,7 @@ func newGoogleTestServer(t *testing.T, db *testutil.TestDB, googleMock *googleMo
 		RegistrationMode:    "open",
 		FrontendURL:         "http://localhost:5173",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestGoogleInit_NotConfigured(t *testing.T) {
 		JWTSecret:           "ggtest-secret-32-bytes-minimum-aa",
 		Argon2MaxConcurrent: 5,
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestGoogleCallback_InviteOnlyRejectsNewUser(t *testing.T) {
 		ExternalURL:         "http://localhost",
 		RegistrationMode:    "invite-only",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

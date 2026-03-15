@@ -31,6 +31,17 @@ import (
 	"github.com/scarson/cvert-ops/web"
 )
 
+// ServerDeps holds optional dependencies injected at construction time.
+// All fields are optional (nil/zero means "not configured").
+type ServerDeps struct {
+	AlertCache            *alert.RuleCache
+	AlertEvaluator        *alert.Evaluator
+	LLM                   ai.LLMClient
+	AuditWriter           *audit.Writer
+	ExpectedSchemaVersion int
+	VersionInfo           VersionInfo
+}
+
 // Server holds the dependencies for the HTTP layer.
 type Server struct {
 	store                 *store.Store
@@ -44,20 +55,20 @@ type Server struct {
 	orgRL                 *orgRateLimiter  // per-org API rate limiter
 	tierCache             *tierCache       // short-lived cache for org tier + overrides
 	oidcProviders         sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
-	alertCache            *alert.RuleCache // nil until SetAlertDeps is called
-	alertEvaluator        *alert.Evaluator // nil until SetAlertDeps is called
-	llm                   ai.LLMClient     // nil until SetAIDeps is called
-	auditWriter           *audit.Writer    // nil until SetAuditDeps is called
+	alertCache            *alert.RuleCache // nil when alert evaluation is not configured
+	alertEvaluator        *alert.Evaluator // nil when alert evaluation is not configured
+	llm                   ai.LLMClient     // nil when AI features are not configured
+	auditWriter           *audit.Writer    // nil when audit logging is not configured
 	lockout               *lockoutManager  // brute-force login protection
 	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
-	expectedSchemaVersion int              // set via SetExpectedSchemaVersion before Handler()
-	versionInfo           VersionInfo      // set via SetVersionInfo before Handler()
+	expectedSchemaVersion int              // migration version for /readyz check
+	versionInfo           VersionInfo      // build metadata for /admin/version
 	healthChecks          []func() bool    // extra readiness checks (e.g., delivery worker)
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
 // If cfg.GoogleClientID is empty, Google OIDC is skipped.
-func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
+func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, error) {
 	sem := make(chan struct{}, cfg.Argon2MaxConcurrent)
 	evictTTL := cfg.RateLimitEvictTTL
 	if evictTTL == 0 {
@@ -76,14 +87,20 @@ func NewServer(s *store.Store, cfg *config.Config) (*Server, error) {
 		lockoutDuration = 15 * time.Minute
 	}
 	srv := &Server{
-		store:        s,
-		cfg:          cfg,
-		argon2Sem:    sem,
-		rateLimiter:  rl,
-		orgRL:        orgRL,
-		tierCache:    tc,
-		ghAPIBaseURL: "https://api.github.com",
-		lockout:      newLockoutManager(lockoutThreshold, lockoutDuration, lockoutDuration, time.Now),
+		store:                 s,
+		cfg:                   cfg,
+		argon2Sem:             sem,
+		rateLimiter:           rl,
+		orgRL:                 orgRL,
+		tierCache:             tc,
+		ghAPIBaseURL:          "https://api.github.com",
+		lockout:               newLockoutManager(lockoutThreshold, lockoutDuration, lockoutDuration, time.Now),
+		alertCache:            deps.AlertCache,
+		alertEvaluator:        deps.AlertEvaluator,
+		llm:                   deps.LLM,
+		auditWriter:           deps.AuditWriter,
+		expectedSchemaVersion: deps.ExpectedSchemaVersion,
+		versionInfo:           deps.VersionInfo,
 	}
 
 	// ── GitHub OAuth (optional) ───────────────────────────────────────────────
@@ -423,29 +440,6 @@ func (srv *Server) Handler() http.Handler {
 	return r
 }
 
-// SetAlertDeps wires the alert rule cache and evaluator into the server.
-// Must be called before Handler() if alert rule endpoints are registered.
-func (srv *Server) SetAlertDeps(cache *alert.RuleCache, evaluator *alert.Evaluator) {
-	srv.alertCache = cache
-	srv.alertEvaluator = evaluator
-}
-
-// SetAIDeps wires the LLM client into the server.
-// Must be called before Handler() if AI endpoints are registered.
-func (srv *Server) SetAIDeps(llm ai.LLMClient) {
-	srv.llm = llm
-}
-
-// SetAuditDeps wires the audit writer into the server.
-func (srv *Server) SetAuditDeps(w *audit.Writer) {
-	srv.auditWriter = w
-}
-
-// SetExpectedSchemaVersion sets the schema version used by /readyz to check
-// migration currency. Must be called before Handler().
-func (srv *Server) SetExpectedSchemaVersion(v int) {
-	srv.expectedSchemaVersion = v
-}
 
 // AddHealthCheck registers an extra readiness check for the /readyz endpoint.
 func (srv *Server) AddHealthCheck(check func() bool) {

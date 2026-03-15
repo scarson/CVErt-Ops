@@ -16,12 +16,6 @@ type VersionInfo struct {
 	BuildTime string `json:"build_time"`
 }
 
-// SetVersionInfo sets the build metadata displayed by the version endpoint.
-// Must be called before Handler().
-func (srv *Server) SetVersionInfo(v VersionInfo) {
-	srv.versionInfo = v
-}
-
 // versionHandler returns the build metadata as JSON.
 func (srv *Server) versionHandler(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{

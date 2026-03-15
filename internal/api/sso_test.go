@@ -840,7 +840,7 @@ func newAuditSSOServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Se
 	t.Helper()
 	srv, ts := newSSOServer(t, db)
 	w := audit.NewWriter(db.Store, slog.Default())
-	srv.SetAuditDeps(w)
+	srv.auditWriter = w
 	return srv, ts, w
 }
 

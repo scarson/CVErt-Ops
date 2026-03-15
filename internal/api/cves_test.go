@@ -482,7 +482,7 @@ func checkBoolPtr(t *testing.T, name string, got, want *bool) {
 func newCVETestServer(t *testing.T, s *store.Store) *httptest.Server {
 	t.Helper()
 	cfg := &config.Config{Argon2MaxConcurrent: 5} //nolint:exhaustruct // test: only relevant fields set
-	apiSrv, err := NewServer(s, cfg)
+	apiSrv, err := NewServer(s, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

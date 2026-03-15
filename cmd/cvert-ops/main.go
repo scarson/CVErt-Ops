@@ -227,6 +227,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
+	apiSrv.AddHealthCheck(deliveryWorker.Healthy)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))

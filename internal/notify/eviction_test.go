@@ -63,3 +63,30 @@ func TestEvictStaleSemaphores_PreservesInFlight(t *testing.T) {
 		t.Errorf("after eviction with in-flight: sems length = %d, want 1", len(w.sems))
 	}
 }
+
+func TestWorker_Healthy(t *testing.T) {
+	t.Parallel()
+
+	w := &Worker{
+		cfg:          WorkerConfig{MaxConcurrentPerOrg: 1},
+		sems:         make(map[uuid.UUID]chan struct{}),
+		semsLastUsed: make(map[uuid.UUID]time.Time),
+	}
+
+	// Never started — should be unhealthy.
+	if w.Healthy() {
+		t.Error("Healthy() = true for never-started worker, want false")
+	}
+
+	// Simulate a recent claim tick.
+	w.lastClaimAt.Store(time.Now())
+	if !w.Healthy() {
+		t.Error("Healthy() = false after recent claim tick, want true")
+	}
+
+	// Simulate a stale claim tick (1 hour ago).
+	w.lastClaimAt.Store(time.Now().Add(-1 * time.Hour))
+	if w.Healthy() {
+		t.Error("Healthy() = true for stale claim tick, want false")
+	}
+}

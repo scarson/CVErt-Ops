@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,7 @@ type Worker struct {
 	semsMu       sync.Mutex
 	wg           sync.WaitGroup
 	dispatcher   *Dispatcher
+	lastClaimAt  atomic.Value // stores time.Time; zero value means never started
 }
 
 // NewWorker creates a Worker. client should be the production safeurl-wrapped client.
@@ -90,6 +92,7 @@ func (w *Worker) Start(ctx context.Context) {
 			return
 		case <-claimTicker.C:
 			w.runClaim(ctx)
+			w.lastClaimAt.Store(time.Now())
 		case <-stuckTicker.C:
 			w.runStuckReset(ctx)
 		case <-recoveryTicker.C:
@@ -102,6 +105,17 @@ func (w *Worker) Start(ctx context.Context) {
 			w.evictStaleSemaphores()
 		}
 	}
+}
+
+// Healthy reports whether the delivery worker's claim loop is running.
+// Returns false if the worker has never ticked or the last tick is stale.
+func (w *Worker) Healthy() bool {
+	v := w.lastClaimAt.Load()
+	if v == nil {
+		return false
+	}
+	lastTick := v.(time.Time)
+	return time.Since(lastTick) < 2*5*time.Second // 2x claim interval (5s)
 }
 
 // RunOnce executes one claim tick and waits for all goroutines to finish. Used in tests only.

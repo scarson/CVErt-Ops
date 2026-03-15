@@ -52,6 +52,7 @@ type Server struct {
 	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
 	expectedSchemaVersion int              // set via SetExpectedSchemaVersion before Handler()
 	versionInfo           VersionInfo      // set via SetVersionInfo before Handler()
+	healthChecks          []func() bool    // extra readiness checks (e.g., delivery worker)
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -187,7 +188,7 @@ func (srv *Server) Handler() http.Handler {
 
 	// ── Infrastructure endpoints ──────────────────────────────────────────────
 	r.Get("/healthz", healthzHandler())
-	r.Get("/readyz", readyzHandler(db, srv.expectedSchemaVersion))
+	r.Get("/readyz", readyzHandler(db, srv.expectedSchemaVersion, srv.healthChecks...))
 
 	// ── API v1 sub-router with huma (OpenAPI 3.1) ────────────────────────────
 	apiRouter := chi.NewRouter()
@@ -444,6 +445,11 @@ func (srv *Server) SetAuditDeps(w *audit.Writer) {
 // migration currency. Must be called before Handler().
 func (srv *Server) SetExpectedSchemaVersion(v int) {
 	srv.expectedSchemaVersion = v
+}
+
+// AddHealthCheck registers an extra readiness check for the /readyz endpoint.
+func (srv *Server) AddHealthCheck(check func() bool) {
+	srv.healthChecks = append(srv.healthChecks, check)
 }
 
 // auditLog records an audit entry if the audit writer is configured.

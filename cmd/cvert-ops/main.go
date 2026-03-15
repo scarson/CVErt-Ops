@@ -230,6 +230,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
+	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
+	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
+	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
@@ -365,6 +368,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	epssClient := &http.Client{Timeout: 300 * time.Second}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
+	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
+	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
+	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
 	deliveryClient, err := notify.BuildSafeClient()
@@ -445,6 +451,27 @@ func activationHandler(eval *alert.Evaluator) worker.Handler {
 			return fmt.Errorf("parse org_id: %w", err)
 		}
 		return eval.EvaluateActivation(ctx, ruleID, orgID)
+	}
+}
+
+// alertBatchHandler returns a worker.Handler that runs batch alert evaluation.
+func alertBatchHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		return eval.EvaluateBatch(ctx)
+	}
+}
+
+// alertEPSSHandler returns a worker.Handler that runs EPSS-triggered alert evaluation.
+func alertEPSSHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		return eval.EvaluateEPSS(ctx)
+	}
+}
+
+// alertZombieSweepHandler returns a worker.Handler that sweeps stuck activation jobs.
+func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		return eval.SweepZombieActivations(ctx)
 	}
 }
 

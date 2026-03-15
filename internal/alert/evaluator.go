@@ -348,7 +348,7 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 	var partial bool
 	if err := e.bypassTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		candidates, partial, err = e.queryCandidatesAll(ctx, tx, compiled)
+		candidates, partial, err = e.queryCandidates(ctx, tx, compiled, nil)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("query candidates: %w", err)
@@ -451,15 +451,18 @@ func (e *Evaluator) evaluateRule(
 	return len(matched), false, len(candidateIDs), nil
 }
 
-// queryCandidates runs the compiled DSL query against candidateIDs within a bypass_rls
-// transaction. Returns (candidates, partial, error). partial=true means > candidateCap
+// queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is
+// non-nil, only those CVE IDs are considered; otherwise all CVEs are scanned.
+// Returns (candidates, partial, error). partial=true means > candidateCap
 // rows matched, which triggers fail-closed behavior.
 func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule, candidateIDs []string) ([]cveSummary, bool, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	combined := sq.And{
 		compiled.SQL,
 		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
-		sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)),
+	}
+	if len(candidateIDs) > 0 {
+		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
 	}
 	sb := psql.
 		Select(
@@ -495,55 +498,6 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("iterate candidates: %w", err)
-	}
-	if len(candidates) > candidateCap {
-		return nil, true, nil
-	}
-	return candidates, false, nil
-}
-
-// queryCandidatesAll runs the compiled DSL query against ALL non-rejected CVEs without
-// an ID filter. Used by DryRun to evaluate against the full corpus read-only.
-func (e *Evaluator) queryCandidatesAll(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule) ([]cveSummary, bool, error) {
-	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	combined := sq.And{
-		compiled.SQL,
-		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
-	}
-	sb := psql.
-		Select(
-			"cves.cve_id",
-			"COALESCE(cves.material_hash, '')",
-			"COALESCE(lower(cves.description_primary), '')",
-		).
-		From("cves")
-	for _, j := range compiled.Joins {
-		sb = sb.Join(j)
-	}
-	query, args, err := sb.
-		Where(combined).
-		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
-		ToSql()
-	if err != nil {
-		return nil, false, fmt.Errorf("build dry-run query: %w", err)
-	}
-
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, false, fmt.Errorf("execute dry-run query: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-
-	var candidates []cveSummary
-	for rows.Next() {
-		var s cveSummary
-		if err := rows.Scan(&s.CVEID, &s.MaterialHash, &s.Description); err != nil {
-			return nil, false, fmt.Errorf("scan dry-run candidate: %w", err)
-		}
-		candidates = append(candidates, s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("iterate dry-run candidates: %w", err)
 	}
 	if len(candidates) > candidateCap {
 		return nil, true, nil

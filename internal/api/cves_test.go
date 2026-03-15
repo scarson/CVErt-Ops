@@ -251,14 +251,14 @@ func TestResolveOptionalFilters(t *testing.T) {
 			wantKEV: boolPtr(true),
 		},
 		{
-			name:    "in_cisa_kev yes — not a boolean synonym, resolves to false",
-			params:  map[string]string{"in_cisa_kev": "yes"},
-			wantKEV: boolPtr(false),
+			name:     "in_cisa_kev yes — invalid boolean value",
+			params:   map[string]string{"in_cisa_kev": "yes"},
+			wantErrs: 1,
 		},
 		{
-			name:    "in_cisa_kev 1 — not a boolean synonym, resolves to false",
-			params:  map[string]string{"in_cisa_kev": "1"},
-			wantKEV: boolPtr(false),
+			name:     "in_cisa_kev 1 — invalid boolean value",
+			params:   map[string]string{"in_cisa_kev": "1"},
+			wantErrs: 1,
 		},
 		{
 			name:        "exploit_available True (mixed case)",
@@ -266,14 +266,14 @@ func TestResolveOptionalFilters(t *testing.T) {
 			wantExploit: boolPtr(true),
 		},
 		{
-			name:        "exploit_available yes — resolves to false",
-			params:      map[string]string{"exploit_available": "yes"},
-			wantExploit: boolPtr(false),
+			name:     "exploit_available yes — invalid boolean value",
+			params:   map[string]string{"exploit_available": "yes"},
+			wantErrs: 1,
 		},
 		{
-			name:        "exploit_available 1 — resolves to false",
-			params:      map[string]string{"exploit_available": "1"},
-			wantExploit: boolPtr(false),
+			name:     "exploit_available 1 — invalid boolean value",
+			params:   map[string]string{"exploit_available": "1"},
+			wantErrs: 1,
 		},
 	}
 

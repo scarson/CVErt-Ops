@@ -261,12 +261,36 @@ func (i *ListCVEsInput) resolveOptionalFilters(queryFn func(string) string) []er
 	parseFloat("epss_max", 0, 1, &i.EPSSMax)
 
 	if i.InCISAKEV != "" {
-		b := strings.EqualFold(i.InCISAKEV, "true")
-		i.inCISAKEVBool = &b
+		switch strings.ToLower(i.InCISAKEV) {
+		case "true":
+			b := true
+			i.inCISAKEVBool = &b
+		case "false":
+			b := false
+			i.inCISAKEVBool = &b
+		default:
+			errs = append(errs, &huma.ErrorDetail{
+				Message:  "in_cisa_kev must be 'true' or 'false'",
+				Location: "query.in_cisa_kev",
+				Value:    i.InCISAKEV,
+			})
+		}
 	}
 	if i.ExploitAvail != "" {
-		b := strings.EqualFold(i.ExploitAvail, "true")
-		i.exploitAvailBool = &b
+		switch strings.ToLower(i.ExploitAvail) {
+		case "true":
+			b := true
+			i.exploitAvailBool = &b
+		case "false":
+			b := false
+			i.exploitAvailBool = &b
+		default:
+			errs = append(errs, &huma.ErrorDetail{
+				Message:  "exploit_available must be 'true' or 'false'",
+				Location: "query.exploit_available",
+				Value:    i.ExploitAvail,
+			})
+		}
 	}
 
 	return errs

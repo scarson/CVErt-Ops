@@ -393,6 +393,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		MaxConcurrentPerOrg: cfg.NotifyMaxConcurrentPerOrg,
 		RetentionEnabled:    cfg.RetentionCleanupEnabled,
 	}, smtpCfg, cfg.ExternalURL)
+	alertEval.SetDispatcher(dispatcher)
 	deliveryWorker.SetDispatcher(dispatcher)
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 

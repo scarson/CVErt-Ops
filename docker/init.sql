@@ -23,3 +23,11 @@ GRANT CONNECT ON DATABASE cvert_ops TO cvert_ops_app;
 
 -- Grant schema usage. Tables will be granted per-migration.
 GRANT USAGE ON SCHEMA public TO cvert_ops_app;
+
+-- Default privileges ensure future tables/sequences created by the superuser
+-- are automatically accessible to the app role. Migrations also include
+-- explicit per-table GRANTs as a second safety layer.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cvert_ops_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO cvert_ops_app;

@@ -30,14 +30,17 @@ func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.CVE, error
 // GetCVEMaterialHash returns the material_hash for a CVE, or empty string if
 // the CVE does not exist or has no hash.
 func (s *Store) GetCVEMaterialHash(ctx context.Context, cveID string) (string, error) {
-	cve, err := s.GetCVE(ctx, cveID)
-	if err != nil {
-		return "", err
-	}
-	if cve == nil {
+	var hash sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		"SELECT material_hash FROM cves WHERE cve_id = $1", cveID,
+	).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
-	return cve.MaterialHash.String, nil
+	if err != nil {
+		return "", fmt.Errorf("get cve material hash: %w", err)
+	}
+	return hash.String, nil
 }
 
 // GetCVEDetail fetches the canonical CVE row plus all child tables (references,

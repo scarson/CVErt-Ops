@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
@@ -179,8 +180,8 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		Scopes:       row.Scopes,
 		Enabled:      row.Enabled,
 		Domains:      []string{},
-		CreatedAt:    row.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    row.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:    row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    row.UpdatedAt.Format(time.RFC3339),
 	}
 
 	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
@@ -246,8 +247,8 @@ func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 		Scopes:       row.Scopes,
 		Enabled:      row.Enabled,
 		Domains:      domains,
-		CreatedAt:    row.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    row.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:    row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    row.UpdatedAt.Format(time.RFC3339),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -374,8 +375,8 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		Scopes:       updated.Scopes,
 		Enabled:      updated.Enabled,
 		Domains:      domains,
-		CreatedAt:    updated.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    updated.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:    updated.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    updated.UpdatedAt.Format(time.RFC3339),
 	}
 
 	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields

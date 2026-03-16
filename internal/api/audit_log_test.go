@@ -467,11 +467,11 @@ func TestAuditAPI_InvalidParams(t *testing.T) {
 		{"limit non-integer", "limit=abc", http.StatusBadRequest},
 		{"limit zero", "limit=0", http.StatusBadRequest},
 		{"limit negative", "limit=-1", http.StatusBadRequest},
-		{"limit above max clamped", "limit=500", http.StatusOK},
+		{"limit above max", "limit=500", http.StatusBadRequest},
 		{"invalid actor_id", "actor_id=not-a-uuid", http.StatusBadRequest},
 		{"invalid after date", "after=not-a-date", http.StatusBadRequest},
 		{"invalid before date", "before=2024-13-01", http.StatusBadRequest},
-		{"invalid cursor ignored", "cursor=not-valid-base64-cursor", http.StatusOK},
+		{"invalid cursor", "cursor=not-valid-base64-cursor", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

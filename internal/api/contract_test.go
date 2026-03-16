@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -262,6 +263,29 @@ func TestDecodeCursor_AcceptsPaddedFallback(t *testing.T) {
 	}
 	if decoded != orig {
 		t.Errorf("roundtrip mismatch: got %+v, want %+v", decoded, orig)
+	}
+}
+
+func TestCursorSurvivesURLQueryParam(t *testing.T) {
+	type cur struct {
+		T  string `json:"t"`
+		ID string `json:"id"`
+	}
+	orig := cur{T: "2026-01-01T00:00:00.123456789Z", ID: "abc+def/ghi=jkl"}
+	encoded := encodePageCursor(orig)
+
+	// Place cursor in a URL query string, parse it back out, and decode.
+	u, err := url.Parse("https://example.com/api?cursor=" + encoded)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	recovered := u.Query().Get("cursor")
+	var decoded cur
+	if err := decodePageCursor(recovered, &decoded); err != nil {
+		t.Fatalf("decodePageCursor after URL round-trip: %v", err)
+	}
+	if decoded != orig {
+		t.Errorf("URL round-trip mismatch: got %+v, want %+v", decoded, orig)
 	}
 }
 

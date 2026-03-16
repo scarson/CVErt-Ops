@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -130,8 +131,8 @@ func parseLimitParam(w http.ResponseWriter, r *http.Request, defaultLimit, maxLi
 	if s == "" {
 		return defaultLimit, true
 	}
-	var limit int
-	if _, err := fmt.Sscanf(s, "%d", &limit); err != nil || limit < 1 || limit > maxLimit {
+	limit, err := strconv.Atoi(s)
+	if err != nil || limit < 1 || limit > maxLimit {
 		writeProblem(w, http.StatusBadRequest,
 			fmt.Sprintf("invalid limit: must be 1-%d", maxLimit))
 		return 0, false

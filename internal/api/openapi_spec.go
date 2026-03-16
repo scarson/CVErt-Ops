@@ -33,6 +33,7 @@ func registerAllSpecOps(api huma.API) {
 	registerGroupsSpecOps(api)
 	registerOrgsSpecOps(api)
 	registerAPIKeysSpecOps(api)
+	registerWatchlistsSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -420,4 +421,143 @@ func registerAPIKeysSpecOps(api huma.API) {
 		Summary:     "Revoke an API key",
 		Tags:        []string{"API Keys"},
 	}, noopHandler[specRevokeAPIKeyInput, struct{}]())
+}
+
+// ── Watchlists spec-only declarations ────────────────────────────────────────
+
+type specCreateWatchlistInput struct {
+	OrgID string             `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createWatchlistBody `json:"body"`
+}
+type specCreateWatchlistOutput struct {
+	Location string         `header:"Location"`
+	Body     watchlistEntry
+}
+
+type specGetWatchlistInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Watchlist ID"`
+}
+type specGetWatchlistOutput struct {
+	Body watchlistEntry
+}
+
+type specListWatchlistsInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	After string `query:"after" doc:"Pagination cursor"`
+}
+type specListWatchlistsOutput struct {
+	Body struct {
+		Items      []watchlistEntry `json:"items"`
+		NextCursor string           `json:"next_cursor,omitempty"`
+	}
+}
+
+type specUpdateWatchlistInput struct {
+	OrgID string             `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string             `path:"id" format:"uuid" doc:"Watchlist ID"`
+	Body  patchWatchlistBody `json:"body"`
+}
+type specUpdateWatchlistOutput struct {
+	Body watchlistEntry
+}
+
+type specDeleteWatchlistInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Watchlist ID"`
+}
+
+type specCreateWatchlistItemInput struct {
+	OrgID       string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
+	WatchlistID string                 `path:"id" format:"uuid" doc:"Watchlist ID"`
+	Body        createWatchlistItemBody `json:"body"`
+}
+type specCreateWatchlistItemOutput struct {
+	Location string             `header:"Location"`
+	Body     watchlistItemEntry
+}
+
+type specListWatchlistItemsInput struct {
+	OrgID       string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	WatchlistID string `path:"id" format:"uuid" doc:"Watchlist ID"`
+	ItemType    string `query:"item_type" doc:"Filter by item type"`
+	After       string `query:"after" doc:"Pagination cursor"`
+}
+type specListWatchlistItemsOutput struct {
+	Body struct {
+		Items      []watchlistItemEntry `json:"items"`
+		NextCursor string               `json:"next_cursor,omitempty"`
+	}
+}
+
+type specDeleteWatchlistItemInput struct {
+	OrgID       string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	WatchlistID string `path:"id" format:"uuid" doc:"Watchlist ID"`
+	ItemID      string `path:"item_id" format:"uuid" doc:"Watchlist Item ID"`
+}
+
+func registerWatchlistsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-watchlist",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/watchlists",
+		Summary:     "Create a watchlist",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specCreateWatchlistInput, specCreateWatchlistOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-watchlist",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/watchlists/{id}",
+		Summary:     "Get a watchlist",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specGetWatchlistInput, specGetWatchlistOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-watchlists",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/watchlists",
+		Summary:     "List watchlists",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specListWatchlistsInput, specListWatchlistsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-watchlist",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/watchlists/{id}",
+		Summary:     "Update a watchlist",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specUpdateWatchlistInput, specUpdateWatchlistOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-watchlist",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/watchlists/{id}",
+		Summary:     "Delete a watchlist",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specDeleteWatchlistInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "create-watchlist-item",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/watchlists/{id}/items",
+		Summary:     "Add an item to a watchlist",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specCreateWatchlistItemInput, specCreateWatchlistItemOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-watchlist-items",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/watchlists/{id}/items",
+		Summary:     "List watchlist items",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specListWatchlistItemsInput, specListWatchlistItemsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-watchlist-item",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/watchlists/{id}/items/{item_id}",
+		Summary:     "Remove an item from a watchlist",
+		Tags:        []string{"Watchlists"},
+	}, noopHandler[specDeleteWatchlistItemInput, struct{}]())
 }

@@ -481,11 +481,11 @@ func TestUpdateMemberRole_CannotExceedCallerRole(t *testing.T) {
 		t.Fatalf("promote to member: got %d, want 200", resp.StatusCode)
 	}
 
-	// Admin cannot promote to owner (> admin) — "owner" is rejected at the bad-role check.
+	// Admin cannot promote to owner (> admin) — "owner" is not a valid assignable role → 422.
 	resp2 := doUpdateMemberRole(t, ctx, ts, bobToken, aliceReg.OrgID, carolReg.UserID, "owner")
 	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
-	if resp2.StatusCode != http.StatusBadRequest {
-		t.Errorf("promote to owner: got %d, want 400", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("promote to owner: got %d, want 422", resp2.StatusCode)
 	}
 }
 
@@ -817,12 +817,14 @@ func TestCancelInvitation_Success(t *testing.T) {
 	// Verify invitation is gone from the list.
 	listResp := doListInvitations(t, ctx, ts, aliceToken, aliceReg.OrgID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var items []struct{ ID string }
-	if err := json.NewDecoder(listResp.Body).Decode(&items); err != nil {
+	var envelope struct {
+		Items []struct{ ID string } `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(items) != 0 {
-		t.Errorf("len = %d, want 0 after cancel", len(items))
+	if len(envelope.Items) != 0 {
+		t.Errorf("len = %d, want 0 after cancel", len(envelope.Items))
 	}
 }
 

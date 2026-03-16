@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -78,7 +79,7 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
-	if req.Name == "" {
+	if strings.TrimSpace(req.Name) == "" {
 		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return

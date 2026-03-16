@@ -834,6 +834,76 @@ func TestDeleteSSO_EvictsOIDCProviderCache(t *testing.T) {
 	}
 }
 
+// ── Contract tests ──────────────────────────────────────────────────────────
+
+func TestCreateSSO_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-malform@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-malform@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, "{bad")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+func TestCreateSSO_ValidationErrorFormat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-valfmt@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-valfmt@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// Missing display_name should return 422 with problem+json and field location.
+	body := `{"issuer_url":"https://x","client_id":"c","client_secret":"s"}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("got %d, want 422", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	errors, ok := problem["errors"].([]any)
+	if !ok || len(errors) == 0 {
+		t.Fatalf("expected errors array, got %v", problem["errors"])
+	}
+	firstErr, _ := errors[0].(map[string]any)
+	if loc, _ := firstErr["location"].(string); loc != "body.display_name" {
+		t.Errorf("error location = %q, want body.display_name", loc)
+	}
+}
+
 // ── Audit integration ───────────────────────────────────────────────────────
 
 func newAuditSSOServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server, *audit.Writer) {

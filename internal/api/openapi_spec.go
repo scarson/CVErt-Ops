@@ -40,6 +40,8 @@ func registerAllSpecOps(api huma.API) {
 	registerDeliveriesSpecOps(api)
 	registerReportsSpecOps(api)
 	registerSavedSearchesSpecOps(api)
+	registerSSOSpecOps(api)
+	registerAuditLogSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -1177,4 +1179,130 @@ func registerSavedSearchesSpecOps(api huma.API) {
 		Summary:     "Execute a saved search",
 		Tags:        []string{"Saved Searches"},
 	}, noopHandler[specExecuteSavedSearchInput, specExecuteSavedSearchOutput]())
+}
+
+// ── SSO spec-only declarations ───────────────────────────────────────────────
+
+type specCreateSSOInput struct {
+	OrgID string        `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createSSOBody `json:"body"`
+}
+type specCreateSSOOutput struct {
+	Location string `header:"Location"`
+	Body     ssoResponse
+}
+
+type specGetSSOInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specGetSSOOutput struct {
+	Body ssoResponse
+}
+
+type specPatchSSOInput struct {
+	OrgID string       `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  patchSSOBody `json:"body"`
+}
+type specPatchSSOOutput struct {
+	Body ssoResponse
+}
+
+type specDeleteSSOInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+
+type specPutSSODomainsInput struct {
+	OrgID string            `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  putSSODomainsBody `json:"body"`
+}
+type specPutSSODomainsOutput struct {
+	Body struct {
+		Domains []string `json:"domains"`
+	}
+}
+
+type specDiscoverInput struct {
+	Body discoverBody `json:"body"`
+}
+type specDiscoverOutput struct {
+	Body discoverResponse
+}
+
+func registerSSOSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-sso",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/sso",
+		Summary:     "Create an SSO connection",
+		Tags:        []string{"SSO"},
+	}, noopHandler[specCreateSSOInput, specCreateSSOOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-sso",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/sso",
+		Summary:     "Get SSO connection",
+		Tags:        []string{"SSO"},
+	}, noopHandler[specGetSSOInput, specGetSSOOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "patch-sso",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/sso",
+		Summary:     "Update SSO connection",
+		Tags:        []string{"SSO"},
+	}, noopHandler[specPatchSSOInput, specPatchSSOOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-sso",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/sso",
+		Summary:     "Delete SSO connection",
+		Tags:        []string{"SSO"},
+	}, noopHandler[specDeleteSSOInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "put-sso-domains",
+		Method:      http.MethodPut,
+		Path:        "/orgs/{org_id}/sso/domains",
+		Summary:     "Set SSO email domains",
+		Tags:        []string{"SSO"},
+	}, noopHandler[specPutSSODomainsInput, specPutSSODomainsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "discover-sso",
+		Method:      http.MethodPost,
+		Path:        "/auth/discover",
+		Summary:     "Discover SSO for email",
+		Tags:        []string{"SSO"},
+	}, noopHandler[specDiscoverInput, specDiscoverOutput]())
+}
+
+// ── Audit Log spec-only declarations ─────────────────────────────────────────
+
+type specListAuditLogInput struct {
+	OrgID      string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	EntityType string `query:"entity_type" doc:"Filter by entity type"`
+	Action     string `query:"action" doc:"Filter by action"`
+	ActorID    string `query:"actor_id" doc:"Filter by actor ID"`
+	After      string `query:"after" doc:"Filter entries after timestamp (RFC3339)"`
+	Before     string `query:"before" doc:"Filter entries before timestamp (RFC3339)"`
+	Cursor     string `query:"cursor" doc:"Pagination cursor"`
+	Limit      int    `query:"limit" doc:"Max items per page (1-200, default 100)"`
+}
+type specListAuditLogOutput struct {
+	Body struct {
+		Items      []auditLogListEntry `json:"items"`
+		NextCursor string              `json:"next_cursor,omitempty"`
+	}
+}
+
+func registerAuditLogSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-audit-log",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/audit-log",
+		Summary:     "List audit log entries",
+		Tags:        []string{"Audit Log"},
+	}, noopHandler[specListAuditLogInput, specListAuditLogOutput]())
 }

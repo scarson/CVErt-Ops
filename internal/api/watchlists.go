@@ -4,9 +4,7 @@ package api
 
 import (
 	"database/sql"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -82,36 +80,6 @@ type watchlistItemEntry struct {
 type watchlistCursor struct {
 	T  string `json:"t"`  // created_at RFC3339Nano
 	ID string `json:"id"` // UUID tiebreaker
-}
-
-// encodeTimeCursor encodes a (time, uuid) pair as a base64 cursor string.
-// Used by alert_rules, alert_events, and audit_log until those are migrated
-// to the shared JSON cursor format.
-func encodeTimeCursor(t time.Time, id uuid.UUID) string {
-	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id.String()
-	return base64.URLEncoding.EncodeToString([]byte(raw))
-}
-
-// decodeTimeCursor decodes a base64 cursor into a (time, uuid) pair.
-// Used by alert_rules, alert_events, and audit_log until those are migrated.
-func decodeTimeCursor(s string) (time.Time, uuid.UUID, error) {
-	raw, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("decode cursor: %w", err)
-	}
-	parts := strings.SplitN(string(raw), "|", 2)
-	if len(parts) != 2 {
-		return time.Time{}, uuid.Nil, fmt.Errorf("invalid cursor format")
-	}
-	t, err := time.Parse(time.RFC3339Nano, parts[0])
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("cursor time: %w", err)
-	}
-	id, err := uuid.Parse(parts[1])
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("cursor id: %w", err)
-	}
-	return t, id, nil
 }
 
 // ── Mapping helpers ───────────────────────────────────────────────────────────

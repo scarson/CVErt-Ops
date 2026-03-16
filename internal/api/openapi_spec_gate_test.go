@@ -291,7 +291,7 @@ func TestSpecMerge_CombinesHumaAndSpecOnly(t *testing.T) {
 		}
 		outPath := filepath.Join("..", "..", "openapi-merged.json")
 		if err := os.WriteFile(outPath, append(pretty, '\n'), 0644); err != nil { //nolint:gosec // G306: OpenAPI spec is a repo artifact
-			t.Fatalf("write %s: %v", outPath, len(pretty))
+			t.Fatalf("write %s: %v", outPath, err)
 		}
 		t.Logf("wrote merged spec to %s (%d bytes)", outPath, len(pretty))
 	}

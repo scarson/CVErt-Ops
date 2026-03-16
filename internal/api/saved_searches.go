@@ -168,7 +168,10 @@ func (srv *Server) listSavedSearchesHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	limit := parseIntParam(r.URL.Query().Get("limit"), 200, 1, 200)
+	limit, ok := parseLimitParam(w, r, 200, 200)
+	if !ok {
+		return
+	}
 
 	rows, err := srv.store.ListSavedSearches(r.Context(), orgID, userID, visibility, limit)
 	if err != nil {
@@ -420,7 +423,10 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 
 	// Parse pagination params from query string.
 	cursor := r.URL.Query().Get("cursor")
-	limit := parseIntParam(r.URL.Query().Get("limit"), 25, 1, 100)
+	limit, ok2 := parseLimitParam(w, r, 25, 100)
+	if !ok2 {
+		return
+	}
 
 	// Parse, validate, compile DSL.
 	rule, parseErr := dsl.Parse(row.QueryJSON)

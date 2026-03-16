@@ -262,6 +262,11 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	recalcNextRun := false
 
 	if req.Name != nil {
+		if *req.Name == "" {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "name must not be empty", Location: "body.name", Value: ""})
+			return
+		}
 		params.Name = *req.Name
 	}
 	if req.ScheduledTime != nil {

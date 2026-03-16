@@ -39,6 +39,7 @@ func registerAllSpecOps(api huma.API) {
 	registerChannelsSpecOps(api)
 	registerDeliveriesSpecOps(api)
 	registerReportsSpecOps(api)
+	registerSavedSearchesSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -1072,4 +1073,108 @@ func registerReportsSpecOps(api huma.API) {
 		Summary:     "Unbind a channel from a report",
 		Tags:        []string{"Reports"},
 	}, noopHandler[specUnbindReportChannelInput, struct{}]())
+}
+
+// ── Saved Searches spec-only declarations ────────────────────────────────────
+
+type specCreateSavedSearchInput struct {
+	OrgID string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createSavedSearchRequest `json:"body"`
+}
+type specCreateSavedSearchOutput struct {
+	Location string           `header:"Location"`
+	Body     savedSearchEntry
+}
+
+type specListSavedSearchesInput struct {
+	OrgID      string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Visibility string `query:"visibility" doc:"Filter by visibility (private, shared, all)"`
+	Limit      int    `query:"limit" doc:"Max items per page (1-200, default 200)"`
+}
+type specListSavedSearchesOutput struct {
+	Body struct {
+		Items []savedSearchEntry `json:"items"`
+	}
+}
+
+type specGetSavedSearchInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Saved Search ID"`
+}
+type specGetSavedSearchOutput struct {
+	Body savedSearchEntry
+}
+
+type specUpdateSavedSearchInput struct {
+	OrgID string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string                 `path:"id" format:"uuid" doc:"Saved Search ID"`
+	Body  patchSavedSearchRequest `json:"body"`
+}
+type specUpdateSavedSearchOutput struct {
+	Body savedSearchEntry
+}
+
+type specDeleteSavedSearchInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Saved Search ID"`
+}
+
+type specExecuteSavedSearchInput struct {
+	OrgID  string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID     string `path:"id" format:"uuid" doc:"Saved Search ID"`
+	Cursor string `query:"cursor" doc:"Pagination cursor"`
+	Limit  int    `query:"limit" doc:"Max results per page (1-100, default 25)"`
+}
+type specExecuteSavedSearchOutput struct {
+	Body savedSearchExecuteResponse
+}
+
+func registerSavedSearchesSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-saved-searches",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/saved-searches",
+		Summary:     "List saved searches",
+		Tags:        []string{"Saved Searches"},
+	}, noopHandler[specListSavedSearchesInput, specListSavedSearchesOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "create-saved-search",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/saved-searches",
+		Summary:     "Create a saved search",
+		Tags:        []string{"Saved Searches"},
+	}, noopHandler[specCreateSavedSearchInput, specCreateSavedSearchOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-saved-search",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/saved-searches/{id}",
+		Summary:     "Get a saved search",
+		Tags:        []string{"Saved Searches"},
+	}, noopHandler[specGetSavedSearchInput, specGetSavedSearchOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-saved-search",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/saved-searches/{id}",
+		Summary:     "Update a saved search",
+		Tags:        []string{"Saved Searches"},
+	}, noopHandler[specUpdateSavedSearchInput, specUpdateSavedSearchOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-saved-search",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/saved-searches/{id}",
+		Summary:     "Delete a saved search",
+		Tags:        []string{"Saved Searches"},
+	}, noopHandler[specDeleteSavedSearchInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "execute-saved-search",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/saved-searches/{id}/execute",
+		Summary:     "Execute a saved search",
+		Tags:        []string{"Saved Searches"},
+	}, noopHandler[specExecuteSavedSearchInput, specExecuteSavedSearchOutput]())
 }

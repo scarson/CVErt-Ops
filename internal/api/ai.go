@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -55,37 +56,42 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	if srv.llm == nil {
-		http.Error(w, "AI features not configured", http.StatusServiceUnavailable)
+		writeProblem(w, http.StatusServiceUnavailable, "AI features not configured")
 		return
 	}
 
 	// Parse request body.
 	var req nlSearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if detail := decodeJSON(r, &req); detail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
 		return
 	}
 
 	// Validate query.
 	query := strings.TrimSpace(req.Query)
 	if query == "" {
-		http.Error(w, "query must not be empty", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "query must not be empty", Location: "body.query"})
 		return
 	}
 	if len(query) > 1000 {
-		http.Error(w, "query must not exceed 1000 characters", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "query must not exceed 1000 characters", Location: "body.query"})
 		return
 	}
 
 	// Parse pagination params from query string.
 	cursor := r.URL.Query().Get("cursor")
-	limit := parseIntParam(r.URL.Query().Get("limit"), 25, 1, 100)
+	limit, ok2 := parseLimitParam(w, r, 25, 100)
+	if !ok2 {
+		return
+	}
 
 	// Compute input hash for caching.
 	inputHash := fmt.Sprintf("%x", sha256.Sum256([]byte(query)))
@@ -115,7 +121,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 			count, qErr := srv.store.IncrementAIUsage(r.Context(), orgID, feature)
 			if qErr != nil {
 				slog.ErrorContext(r.Context(), "ai: increment usage", "error", qErr)
-				http.Error(w, "internal error", http.StatusInternalServerError)
+				writeProblem(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			dailyLimit := srv.resolveAIQuotaLimit(r.Context(), orgID, feature, ai.TierLimits{
@@ -126,7 +132,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 			if count > dailyLimit {
 				metrics.AIQuotaDenialsTotal.WithLabelValues(feature).Inc()
 				w.Header().Set("Retry-After", retryAfterMidnight())
-				http.Error(w, "daily AI quota exceeded", http.StatusTooManyRequests)
+				writeProblem(w, http.StatusTooManyRequests, "daily AI quota exceeded")
 				return
 			}
 		}
@@ -141,7 +147,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, false, 0, 0, start, "error", "llm_failure")
 			metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
-			http.Error(w, "AI service unavailable", http.StatusServiceUnavailable)
+			writeProblem(w, http.StatusServiceUnavailable, "AI service unavailable")
 			return
 		}
 
@@ -168,7 +174,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "ai: dsl parse", "error", parseErr, "query_json", truncateForLog(string(queryJSON), 500))
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "dsl_parse")
 		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
-		http.Error(w, "AI returned invalid query structure", http.StatusBadGateway)
+		writeProblem(w, http.StatusBadGateway, "AI returned invalid query structure")
 		return
 	}
 
@@ -177,7 +183,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "ai: dsl validation failed", "errors", valErrs, "query_json", truncateForLog(string(queryJSON), 500))
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "dsl_validate")
 		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
-		http.Error(w, "AI returned invalid query", http.StatusBadGateway)
+		writeProblem(w, http.StatusBadGateway, "AI returned invalid query")
 		return
 	}
 
@@ -186,7 +192,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "ai: dsl compile", "error", compileErr)
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "dsl_compile")
 		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
-		http.Error(w, "AI returned invalid query", http.StatusBadGateway)
+		writeProblem(w, http.StatusBadGateway, "AI returned invalid query")
 		return
 	}
 
@@ -196,7 +202,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "ai: execute dsl query", "error", execErr)
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "query_exec")
 		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -228,23 +234,23 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	if srv.llm == nil {
-		http.Error(w, "AI features not configured", http.StatusServiceUnavailable)
+		writeProblem(w, http.StatusServiceUnavailable, "AI features not configured")
 		return
 	}
 
 	cveID := chi.URLParam(r, "cve_id")
 	if cveID == "" {
-		http.Error(w, "cve_id is required", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "cve_id is required")
 		return
 	}
 	if !isValidCVEID(cveID) {
-		http.Error(w, "invalid cve_id format", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid cve_id format")
 		return
 	}
 
@@ -255,11 +261,11 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 	cve, err := srv.store.GetCVE(r.Context(), cveID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "ai: get cve", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if cve == nil {
-		http.Error(w, "CVE not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "CVE not found")
 		return
 	}
 
@@ -300,7 +306,7 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 			count, qErr := srv.store.IncrementAIUsage(r.Context(), orgID, feature)
 			if qErr != nil {
 				slog.ErrorContext(r.Context(), "ai: increment usage", "error", qErr)
-				http.Error(w, "internal error", http.StatusInternalServerError)
+				writeProblem(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			dailyLimit := srv.resolveAIQuotaLimit(r.Context(), orgID, feature, ai.TierLimits{
@@ -311,7 +317,7 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 			if count > dailyLimit {
 				metrics.AIQuotaDenialsTotal.WithLabelValues(feature).Inc()
 				w.Header().Set("Retry-After", retryAfterMidnight())
-				http.Error(w, "daily AI quota exceeded", http.StatusTooManyRequests)
+				writeProblem(w, http.StatusTooManyRequests, "daily AI quota exceeded")
 				return
 			}
 		}
@@ -328,7 +334,7 @@ func (srv *Server) summarizeHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, false, 0, 0, start, "error", "llm_failure")
 			metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
-			http.Error(w, "AI service unavailable", http.StatusServiceUnavailable)
+			writeProblem(w, http.StatusServiceUnavailable, "AI service unavailable")
 			return
 		}
 

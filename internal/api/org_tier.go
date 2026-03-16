@@ -27,13 +27,13 @@ type tierResponse struct {
 func (srv *Server) getOrgTierHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -49,19 +49,19 @@ func (srv *Server) getOrgTierHandler(w http.ResponseWriter, r *http.Request) {
 	alertCount, err := srv.store.CountAlertRulesByOrg(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get tier: count alert rules", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	watchlistCount, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get tier: count watchlists", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	memberCount, err := srv.store.CountMembersByOrg(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get tier: count members", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 

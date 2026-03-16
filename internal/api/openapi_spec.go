@@ -42,6 +42,9 @@ func registerAllSpecOps(api huma.API) {
 	registerSavedSearchesSpecOps(api)
 	registerSSOSpecOps(api)
 	registerAuditLogSpecOps(api)
+	registerAISpecOps(api)
+	registerIngestSpecOps(api)
+	registerOrgTierSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -1305,4 +1308,67 @@ func registerAuditLogSpecOps(api huma.API) {
 		Summary:     "List audit log entries",
 		Tags:        []string{"Audit Log"},
 	}, noopHandler[specListAuditLogInput, specListAuditLogOutput]())
+}
+
+// ── AI spec-only declarations ─────────────────────────────────────────────
+
+func registerAISpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "nl-search",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/ai/nl-search",
+		Summary:     "Natural language CVE search",
+		Tags:        []string{"AI"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+		Body  nlSearchRequest
+	}, struct {
+		Body nlSearchResponse
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "summarize-cve",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/ai/summarize/{cve_id}",
+		Summary:     "Summarize a CVE",
+		Tags:        []string{"AI"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+		CVEID string `path:"cve_id"`
+	}, struct {
+		Body summarizeResponse
+	}]())
+}
+
+// ── Ingest spec-only declarations ─────────────────────────────────────────
+
+func registerIngestSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "ingest-cves",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/ingest",
+		Summary:     "Ingest CVE patches",
+		Tags:        []string{"Ingest"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+		Body  ingestRequest
+	}, struct {
+		Body ingestResponse
+	}]())
+}
+
+// ── Org Tier spec-only declarations ───────────────────────────────────────
+
+func registerOrgTierSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "get-org-tier",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/tier",
+		Summary:     "Get org tier and limits",
+		Tags:        []string{"Tier"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+	}, struct {
+		Body tierResponse
+	}]())
 }

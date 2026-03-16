@@ -1495,6 +1495,31 @@ func registerAdminSystemSpecOps(api huma.API) {
 	}, struct {
 		Body listResponse[store.AuditRow]
 	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-version",
+		Method:      http.MethodGet,
+		Path:        "/admin/version",
+		Summary:     "Build version and metadata",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct{}, struct {
+		Body struct {
+			Version   string `json:"version"`
+			Commit    string `json:"commit"`
+			BuildTime string `json:"build_time"`
+			GoVersion string `json:"go_version"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-doctor",
+		Method:      http.MethodGet,
+		Path:        "/admin/doctor",
+		Summary:     "System health diagnostics",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct{}, struct {
+		Body map[string]any
+	}]())
 }
 
 // ── Admin Orgs spec ops ─────────────────────────────────────────────────────

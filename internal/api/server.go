@@ -64,6 +64,7 @@ type Server struct {
 	expectedSchemaVersion int              // migration version for /readyz check
 	versionInfo           VersionInfo      // build metadata for /admin/version
 	healthChecks          []func() bool    // extra readiness checks (e.g., delivery worker)
+	humaAPI               huma.API         // production huma API instance for spec merging
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -217,6 +218,7 @@ func (srv *Server) Handler() http.Handler {
 	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
 	api := humachi.New(apiRouter, humaConfig)
+	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 

@@ -3,8 +3,6 @@
 package api
 
 import (
-	"encoding/json"
-	"log/slog"
 	"net/http"
 	"runtime"
 )
@@ -24,8 +22,5 @@ func (srv *Server) versionHandler(w http.ResponseWriter, r *http.Request) {
 		"build_time": srv.versionInfo.BuildTime,
 		"go_version": runtime.Version(),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.ErrorContext(r.Context(), "version: failed to encode response", "error", err)
-	}
+	writeJSON(w, http.StatusOK, resp)
 }

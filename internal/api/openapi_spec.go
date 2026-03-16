@@ -49,6 +49,9 @@ func registerAllSpecOps(api huma.API) {
 	registerOrgTierSpecOps(api)
 	registerAdminFeedsSpecOps(api)
 	registerAdminSystemSpecOps(api)
+	registerAdminOrgsSpecOps(api)
+	registerAdminUsersSpecOps(api)
+	registerAdminDeliveriesSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -1491,5 +1494,176 @@ func registerAdminSystemSpecOps(api huma.API) {
 		ActorID    string `query:"actor_id,omitempty"`
 	}, struct {
 		Body listResponse[store.AuditRow]
+	}]())
+}
+
+// ── Admin Orgs spec ops ─────────────────────────────────────────────────────
+
+func registerAdminOrgsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-orgs",
+		Method:      http.MethodGet,
+		Path:        "/admin/orgs",
+		Summary:     "List organizations",
+		Tags:        []string{"Admin Orgs"},
+	}, noopHandler[struct {
+		Cursor string `query:"cursor,omitempty"`
+		Limit  int    `query:"limit,omitempty"`
+	}, struct {
+		Body listResponse[store.AdminOrgRow]
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-patch-org",
+		Method:      http.MethodPatch,
+		Path:        "/admin/orgs/{org_id}",
+		Summary:     "Update organization",
+		Tags:        []string{"Admin Orgs"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+		Body  struct {
+			Tier    *string `json:"tier,omitempty"`
+			Suspend *bool   `json:"suspend,omitempty"`
+		}
+	}, struct {
+		Body adminOrgResponse
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-org-usage",
+		Method:      http.MethodGet,
+		Path:        "/admin/orgs/{org_id}/usage",
+		Summary:     "Get organization usage",
+		Tags:        []string{"Admin Orgs"},
+	}, noopHandler[struct {
+		OrgID string `path:"org_id" format:"uuid"`
+	}, struct {
+		Body map[string]any
+	}]())
+}
+
+// ── Admin Users spec ops ────────────────────────────────────────────────────
+
+func registerAdminUsersSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-users",
+		Method:      http.MethodGet,
+		Path:        "/admin/users",
+		Summary:     "List users",
+		Tags:        []string{"Admin Users"},
+	}, noopHandler[struct {
+		Cursor string `query:"cursor,omitempty"`
+		Limit  int    `query:"limit,omitempty"`
+	}, struct {
+		Body listResponse[store.AdminUserRow]
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-disable-user",
+		Method:      http.MethodPost,
+		Path:        "/admin/users/{user_id}/disable",
+		Summary:     "Disable user",
+		Tags:        []string{"Admin Users"},
+	}, noopHandler[struct {
+		UserID string `path:"user_id" format:"uuid"`
+	}, struct {
+		Body struct {
+			Status string `json:"status"`
+			UserID string `json:"user_id"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-enable-user",
+		Method:      http.MethodPost,
+		Path:        "/admin/users/{user_id}/enable",
+		Summary:     "Enable user",
+		Tags:        []string{"Admin Users"},
+	}, noopHandler[struct {
+		UserID string `path:"user_id" format:"uuid"`
+	}, struct {
+		Body struct {
+			Status string `json:"status"`
+			UserID string `json:"user_id"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-unlock-user",
+		Method:      http.MethodPost,
+		Path:        "/admin/users/{user_id}/unlock",
+		Summary:     "Unlock user",
+		Tags:        []string{"Admin Users"},
+	}, noopHandler[struct {
+		UserID string `path:"user_id" format:"uuid"`
+	}, struct {
+		Body struct {
+			Status string `json:"status"`
+			UserID string `json:"user_id"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-reset-password",
+		Method:      http.MethodPost,
+		Path:        "/admin/users/{user_id}/reset-password",
+		Summary:     "Force password reset",
+		Tags:        []string{"Admin Users"},
+	}, noopHandler[struct {
+		UserID string `path:"user_id" format:"uuid"`
+	}, struct {
+		Body struct {
+			Status string `json:"status"`
+			UserID string `json:"user_id"`
+		}
+	}]())
+}
+
+// ── Admin Deliveries spec ops ───────────────────────────────────────────────
+
+func registerAdminDeliveriesSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-deliveries",
+		Method:      http.MethodGet,
+		Path:        "/admin/deliveries",
+		Summary:     "List deliveries",
+		Tags:        []string{"Admin Deliveries"},
+	}, noopHandler[struct {
+		Cursor string `query:"cursor,omitempty"`
+		Limit  int    `query:"limit,omitempty"`
+		Status string `query:"status,omitempty"`
+	}, struct {
+		Body listResponse[store.AdminDeliveryRow]
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-retry-delivery",
+		Method:      http.MethodPost,
+		Path:        "/admin/deliveries/{id}/retry",
+		Summary:     "Retry delivery",
+		Tags:        []string{"Admin Deliveries"},
+	}, noopHandler[struct {
+		ID string `path:"id" format:"uuid"`
+	}, struct {
+		Body struct {
+			Status       string `json:"status"`
+			DeliveryID   string `json:"delivery_id"`
+			RowsAffected int64  `json:"rows_affected"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-bulk-retry-deliveries",
+		Method:      http.MethodPost,
+		Path:        "/admin/deliveries/retry-failed",
+		Summary:     "Bulk retry failed deliveries",
+		Tags:        []string{"Admin Deliveries"},
+	}, noopHandler[struct {
+		Limit int `query:"limit,omitempty"`
+	}, struct {
+		Body struct {
+			Status       string `json:"status"`
+			RowsAffected int64  `json:"rows_affected"`
+		}
 	}]())
 }

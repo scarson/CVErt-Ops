@@ -31,34 +31,44 @@ interface AuditEntry {
 
 const entries = ref<AuditEntry[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
-const hasMore = ref(false)
+const nextCursor = ref<string | undefined>()
 const entityTypeFilter = ref('')
 const actionFilter = ref('')
 
-async function fetchAuditLog() {
-  loading.value = true
+async function fetchAuditLog(cursor?: string) {
+  if (cursor) {
+    loadingMore.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ''
 
   try {
     const params = new URLSearchParams({ limit: '50' })
     if (entityTypeFilter.value) params.set('entity_type', entityTypeFilter.value)
     if (actionFilter.value) params.set('action', actionFilter.value)
+    if (cursor) params.set('cursor', cursor)
 
     const resp = await orgFetch(`/api/v1/admin/audit-log?${params}`)
     if (!resp.ok) {
       error.value = 'Failed to load audit log.'
-      loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: AuditEntry[]; has_more: boolean }
-    entries.value = data.items ?? []
-    hasMore.value = data.has_more
+    const data = (await resp.json()) as { items: AuditEntry[]; next_cursor?: string }
+    if (cursor) {
+      entries.value = [...entries.value, ...(data.items ?? [])]
+    } else {
+      entries.value = data.items ?? []
+    }
+    nextCursor.value = data.next_cursor
   } catch {
     error.value = 'Failed to load audit log.'
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
@@ -159,8 +169,11 @@ onMounted(fetchAuditLog)
         </TableBody>
       </Table>
 
-      <div v-if="hasMore && !loading" class="flex justify-center pt-4">
-        <p class="text-sm text-muted-foreground">More entries available. Pagination coming soon.</p>
+      <div v-if="nextCursor && !loading" class="flex justify-center pt-4">
+        <Button variant="outline" :disabled="loadingMore" @click="fetchAuditLog(nextCursor)">
+          <Loader2 v-if="loadingMore" class="mr-2 size-4 animate-spin" aria-hidden="true" />
+          Load More
+        </Button>
       </div>
     </div>
   </div>

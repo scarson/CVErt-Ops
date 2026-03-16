@@ -42,14 +42,14 @@ async function fetchDashboard() {
       return
     }
 
-    const orgsData = (await orgsResp.json()) as { items: unknown[]; has_more: boolean }
-    const usersData = (await usersResp.json()) as { items: unknown[]; has_more: boolean }
+    const orgsData = (await orgsResp.json()) as { items: unknown[]; next_cursor?: string }
+    const usersData = (await usersResp.json()) as { items: unknown[]; next_cursor?: string }
     const feedsData = (await feedsResp.json()) as {
       items: { consecutive_failures: number }[]
     }
     const deliveriesData = (await deliveriesResp.json()) as {
       items: unknown[]
-      has_more: boolean
+      next_cursor?: string
     }
 
     const feeds = feedsData.items ?? []
@@ -58,13 +58,13 @@ async function fetchDashboard() {
 
     data.value = {
       orgCount: orgsData.items.length,
-      orgHasMore: orgsData.has_more,
+      orgHasMore: !!orgsData.next_cursor,
       userCount: usersData.items.length,
-      userHasMore: usersData.has_more,
+      userHasMore: !!usersData.next_cursor,
       healthyFeeds: healthy,
       failingFeeds: failing,
       failedDeliveryCount: deliveriesData.items.length,
-      failedDeliveryHasMore: deliveriesData.has_more,
+      failedDeliveryHasMore: !!deliveriesData.next_cursor,
     }
   } catch {
     error.value = 'Failed to load dashboard data.'

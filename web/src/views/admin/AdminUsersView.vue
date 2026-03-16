@@ -36,28 +36,40 @@ interface UserEntry {
 
 const users = ref<UserEntry[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
-const hasMore = ref(false)
+const nextCursor = ref<string | undefined>()
 
-async function fetchUsers() {
-  loading.value = true
+async function fetchUsers(cursor?: string) {
+  if (cursor) {
+    loadingMore.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ''
 
   try {
-    const resp = await orgFetch('/api/v1/admin/users?limit=50')
+    const params = new URLSearchParams({ limit: '50' })
+    if (cursor) params.set('cursor', cursor)
+
+    const resp = await orgFetch(`/api/v1/admin/users?${params}`)
     if (!resp.ok) {
       error.value = 'Failed to load users.'
-      loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: UserEntry[]; has_more: boolean }
-    users.value = data.items ?? []
-    hasMore.value = data.has_more
+    const data = (await resp.json()) as { items: UserEntry[]; next_cursor?: string }
+    if (cursor) {
+      users.value = [...users.value, ...(data.items ?? [])]
+    } else {
+      users.value = data.items ?? []
+    }
+    nextCursor.value = data.next_cursor
   } catch {
     error.value = 'Failed to load users.'
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
@@ -201,8 +213,11 @@ onMounted(fetchUsers)
         </TableBody>
       </Table>
 
-      <div v-if="hasMore && !loading" class="flex justify-center pt-4">
-        <p class="text-sm text-muted-foreground">More users available. Pagination coming soon.</p>
+      <div v-if="nextCursor && !loading" class="flex justify-center pt-4">
+        <Button variant="outline" :disabled="loadingMore" @click="fetchUsers(nextCursor)">
+          <Loader2 v-if="loadingMore" class="mr-2 size-4 animate-spin" aria-hidden="true" />
+          Load More
+        </Button>
       </div>
     </div>
   </div>

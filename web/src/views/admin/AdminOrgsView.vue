@@ -34,30 +34,42 @@ interface OrgEntry {
 
 const orgs = ref<OrgEntry[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
-const hasMore = ref(false)
+const nextCursor = ref<string | undefined>()
 
 const TIERS = ['free', 'pro', 'enterprise'] as const
 
-async function fetchOrgs() {
-  loading.value = true
+async function fetchOrgs(cursor?: string) {
+  if (cursor) {
+    loadingMore.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ''
 
   try {
-    const resp = await orgFetch('/api/v1/admin/orgs?limit=50')
+    const params = new URLSearchParams({ limit: '50' })
+    if (cursor) params.set('cursor', cursor)
+
+    const resp = await orgFetch(`/api/v1/admin/orgs?${params}`)
     if (!resp.ok) {
       error.value = 'Failed to load organizations.'
-      loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: OrgEntry[]; has_more: boolean }
-    orgs.value = data.items ?? []
-    hasMore.value = data.has_more
+    const data = (await resp.json()) as { items: OrgEntry[]; next_cursor?: string }
+    if (cursor) {
+      orgs.value = [...orgs.value, ...(data.items ?? [])]
+    } else {
+      orgs.value = data.items ?? []
+    }
+    nextCursor.value = data.next_cursor
   } catch {
     error.value = 'Failed to load organizations.'
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
@@ -175,8 +187,11 @@ onMounted(fetchOrgs)
         </TableBody>
       </Table>
 
-      <div v-if="hasMore && !loading" class="flex justify-center pt-4">
-        <p class="text-sm text-muted-foreground">More organizations available. Pagination coming soon.</p>
+      <div v-if="nextCursor && !loading" class="flex justify-center pt-4">
+        <Button variant="outline" :disabled="loadingMore" @click="fetchOrgs(nextCursor)">
+          <Loader2 v-if="loadingMore" class="mr-2 size-4 animate-spin" aria-hidden="true" />
+          Load More
+        </Button>
       </div>
     </div>
   </div>

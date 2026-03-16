@@ -38,9 +38,17 @@ jobs:
           args: --timeout=10m
 
   test-api:
-    name: "Test: API"
+    name: "Test: API (${{ matrix.shard }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: A-I
+            run-filter: "^Test[A-I]"
+          - shard: J-Z
+            run-filter: "^Test[J-Z]"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -59,17 +67,26 @@ jobs:
         run: cd web && npm ci && npm run build-only
 
       - name: vet
+        # vet runs once per shard but is fast; avoids a separate job
         run: go vet ./internal/api/...
 
       - name: test
-        run: go test -race -count=1 -timeout=1800s ./internal/api/...
+        run: go test -race -count=1 -timeout=1800s -run '${{ matrix.run-filter }}' ./internal/api/...
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   test-store:
-    name: "Test: Store"
+    name: "Test: Store (${{ matrix.shard }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: A-I
+            run-filter: "^Test[A-I]"
+          - shard: J-Z
+            run-filter: "^Test[J-Z]"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -82,7 +99,7 @@ jobs:
         run: go vet ./internal/store/...
 
       - name: test
-        run: go test -race -count=1 -timeout=1800s ./internal/store/...
+        run: go test -race -count=1 -timeout=1800s -run '${{ matrix.run-filter }}' ./internal/store/...
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 

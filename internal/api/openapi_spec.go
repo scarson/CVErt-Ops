@@ -1320,8 +1320,10 @@ func registerAISpecOps(api huma.API) {
 		Summary:     "Natural language CVE search",
 		Tags:        []string{"AI"},
 	}, noopHandler[struct {
-		OrgID string `path:"org_id" format:"uuid"`
-		Body  nlSearchRequest
+		OrgID  string `path:"org_id" format:"uuid"`
+		Cursor string `query:"cursor,omitempty" doc:"Pagination cursor"`
+		Limit  int    `query:"limit,omitempty" doc:"Results per page (1-100, default 25)"`
+		Body   nlSearchRequest
 	}, struct {
 		Body nlSearchResponse
 	}]())

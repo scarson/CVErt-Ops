@@ -667,39 +667,6 @@ func TestNLSearchHandler_1000CharQueryAccepted(t *testing.T) {
 	}
 }
 
-// ── parseIntParam unit tests ─────────────────────────────────────────────────
-
-func TestParseIntParam(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name       string
-		input      string
-		defaultVal int
-		min        int
-		max        int
-		want       int
-	}{
-		{"empty returns default", "", 25, 1, 100, 25},
-		{"valid in range", "50", 25, 1, 100, 50},
-		{"at min boundary", "1", 25, 1, 100, 1},
-		{"at max boundary", "100", 25, 1, 100, 100},
-		{"below min clamped", "0", 25, 1, 100, 1},
-		{"above max clamped", "101", 25, 1, 100, 100},
-		{"negative clamped to min", "-5", 25, 1, 100, 1},
-		{"non-numeric returns default", "abc", 25, 1, 100, 25},
-		{"float returns default", "3.14", 25, 1, 100, 25},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseIntParam(tc.input, tc.defaultVal, tc.min, tc.max)
-			if got != tc.want {
-				t.Errorf("parseIntParam(%q, %d, %d, %d) = %d, want %d",
-					tc.input, tc.defaultVal, tc.min, tc.max, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestSummarizeHandler_CacheHit(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

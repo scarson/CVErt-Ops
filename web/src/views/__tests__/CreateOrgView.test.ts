@@ -119,11 +119,28 @@ describe('CreateOrgView', () => {
   })
 
   describe('error handling', () => {
-    it('shows error on API failure', async () => {
+    it('shows RFC 9457 detail message on API failure', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 422,
+        json: () => Promise.resolve({ detail: 'validation failed' }),
+      })
+
+      const wrapper = await mountCreateOrg()
+
+      await wrapper.find('#org-name').setValue('My Org')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('validation failed')
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('shows fallback error when response has no detail', async () => {
       mockFetch.mockResolvedValue({
         ok: false,
         status: 500,
-        text: () => Promise.resolve('internal error'),
+        json: () => Promise.resolve({}),
       })
 
       const wrapper = await mountCreateOrg()

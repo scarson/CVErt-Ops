@@ -107,7 +107,8 @@ async function fetchMembers() {
       return
     }
 
-    members.value = await resp.json() as MemberEntry[]
+    const membersData = await resp.json()
+    members.value = membersData.items as MemberEntry[]
 
     // Fetch invitations in parallel for admin+ users
     if (isAdmin.value) {
@@ -125,7 +126,8 @@ async function fetchInvitations() {
     const resp = await orgFetch(`${apiBase()}/invitations`)
 
     if (resp.ok) {
-      invitations.value = await resp.json() as InvitationEntry[]
+      const invData = await resp.json()
+      invitations.value = invData.items as InvitationEntry[]
     }
   } catch {
     // Silently fail — invitations are supplementary

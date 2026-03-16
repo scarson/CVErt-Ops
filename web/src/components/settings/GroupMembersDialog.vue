@@ -79,7 +79,8 @@ async function fetchData() {
     } else {
       const groupData = await groupResp.json()
       groupMembers.value = groupData.items
-      orgMembers.value = await orgResp.json()
+      const orgData = await orgResp.json()
+      orgMembers.value = orgData.items ?? []
     }
   } catch {
     fetchError.value = 'Failed to load group members. Please try again.'

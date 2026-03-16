@@ -29,7 +29,8 @@ async function onSubmit() {
     })
 
     if (!response.ok) {
-      error.value = 'Failed to create organization'
+      const errData = await response.json().catch(() => ({}))
+      error.value = errData.detail ?? 'Failed to create organization'
       return
     }
 

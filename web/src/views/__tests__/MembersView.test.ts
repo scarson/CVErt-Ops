@@ -50,7 +50,7 @@ function mockMembersSuccess(members = [makeMember()]) {
   mockFetch.mockResolvedValueOnce({
     ok: true,
     status: 200,
-    json: () => Promise.resolve(members),
+    json: () => Promise.resolve({ items: members }),
   })
 }
 
@@ -58,7 +58,7 @@ function mockInvitationsSuccess(invitations = [makeInvitation()]) {
   mockFetch.mockResolvedValueOnce({
     ok: true,
     status: 200,
-    json: () => Promise.resolve(invitations),
+    json: () => Promise.resolve({ items: invitations }),
   })
 }
 

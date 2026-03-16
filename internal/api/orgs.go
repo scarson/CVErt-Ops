@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -41,7 +42,7 @@ type orgResponseBody struct {
 
 // updateOrgBody is the JSON request body for PATCH /api/v1/orgs/{org_id}.
 type updateOrgBody struct {
-	Name string `json:"name"`
+	Name *string `json:"name,omitempty"`
 }
 
 // writeJSON writes v as JSON with the given status code.
@@ -58,27 +59,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func (srv *Server) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 	userID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	var req createOrgBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return
 	}
 
 	org, err := srv.store.CreateOrgWithOwner(r.Context(), req.Name, userID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create org", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
+	writeLocation(w, r, org.ID.String())
 	writeJSON(w, http.StatusCreated, createOrgResponseBody{
 		OrgID: org.ID.String(),
 		Name:  org.Name,
@@ -90,18 +93,18 @@ func (srv *Server) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) getOrgHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	org, err := srv.store.GetOrgByID(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get org", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if org == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "org not found")
 		return
 	}
 
@@ -117,28 +120,47 @@ func (srv *Server) getOrgHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) updateOrgHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	var req updateOrgBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if strings.TrimSpace(req.Name) == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 
-	org, err := srv.store.UpdateOrg(r.Context(), orgID, req.Name)
+	// Read current org to merge pointer fields.
+	existing, err := srv.store.GetOrgByID(r.Context(), orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "update org: read existing", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if existing == nil {
+		writeProblem(w, http.StatusNotFound, "org not found")
+		return
+	}
+
+	// Merge: use existing value when pointer field is nil.
+	name := existing.Name
+	if req.Name != nil {
+		if strings.TrimSpace(*req.Name) == "" {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "name is required", Location: "body.name"})
+			return
+		}
+		name = *req.Name
+	}
+
+	org, err := srv.store.UpdateOrg(r.Context(), orgID, name)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update org", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if org == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "org not found")
 		return
 	}
 
@@ -176,14 +198,14 @@ type updateMemberRoleResponseBody struct {
 func (srv *Server) listMembersHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	rows, err := srv.store.ListOrgMembers(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list members", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -197,7 +219,7 @@ func (srv *Server) listMembersHandler(w http.ResponseWriter, r *http.Request) {
 			JoinedAt:    m.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	writeJSON(w, http.StatusOK, members)
+	writeList(w, members, "")
 }
 
 // updateMemberRoleHandler handles PATCH /api/v1/orgs/{org_id}/members/{user_id}.
@@ -206,42 +228,44 @@ func (srv *Server) listMembersHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	callerRole, ok := r.Context().Value(ctxRole).(Role)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	targetIDStr := chi.URLParam(r, "user_id")
 	targetID, err := uuid.Parse(targetIDStr)
 	if err != nil {
-		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
 		return
 	}
 
 	var req updateMemberRoleBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 
 	// Owner role cannot be assigned via PATCH; use a transfer-ownership endpoint.
 	if req.Role == "owner" {
-		http.Error(w, "cannot assign owner role via this endpoint", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "cannot assign owner role via this endpoint", Location: "body.role"})
 		return
 	}
 	if req.Role != "admin" && req.Role != "member" && req.Role != "viewer" {
-		http.Error(w, "invalid role: must be admin, member, or viewer", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "invalid role: must be admin, member, or viewer", Location: "body.role"})
 		return
 	}
 
 	// Caller cannot assign a role higher than their own.
 	newRole := parseRole(req.Role)
 	if newRole > callerRole {
-		http.Error(w, "cannot assign role higher than your own", http.StatusForbidden)
+		writeProblem(w, http.StatusForbidden, "cannot assign role higher than your own")
 		return
 	}
 
@@ -249,21 +273,21 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 	currentRole, err := srv.store.GetOrgMemberRole(r.Context(), orgID, targetID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get target role", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if currentRole == nil {
-		http.Error(w, "user not found in org", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "user not found in org")
 		return
 	}
 	if *currentRole == "owner" {
-		http.Error(w, "cannot change role of an org owner", http.StatusForbidden)
+		writeProblem(w, http.StatusForbidden, "cannot change role of an org owner")
 		return
 	}
 
 	if err := srv.store.UpdateOrgMemberRole(r.Context(), orgID, targetID, req.Role); err != nil {
 		slog.ErrorContext(r.Context(), "update member role", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -287,14 +311,14 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	targetIDStr := chi.URLParam(r, "user_id")
 	targetID, err := uuid.Parse(targetIDStr)
 	if err != nil {
-		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
 		return
 	}
 
@@ -302,11 +326,11 @@ func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	currentRole, err := srv.store.GetOrgMemberRole(r.Context(), orgID, targetID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get target role for remove", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if currentRole == nil {
-		http.Error(w, "user not found in org", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "user not found in org")
 		return
 	}
 
@@ -314,24 +338,24 @@ func (srv *Server) removeMemberHandler(w http.ResponseWriter, r *http.Request) {
 	if *currentRole == "owner" {
 		callerRole, ok := r.Context().Value(ctxRole).(Role)
 		if !ok || callerRole < RoleOwner {
-			http.Error(w, "only owners can remove other owners", http.StatusForbidden)
+			writeProblem(w, http.StatusForbidden, "only owners can remove other owners")
 			return
 		}
 		ownerCount, err := srv.store.GetOrgOwnerCount(r.Context(), orgID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "get owner count", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if ownerCount <= 1 {
-			http.Error(w, "cannot remove the sole owner", http.StatusForbidden)
+			writeProblem(w, http.StatusForbidden, "cannot remove the sole owner")
 			return
 		}
 	}
 
 	if err := srv.store.RemoveOrgMember(r.Context(), orgID, targetID); err != nil {
 		slog.ErrorContext(r.Context(), "remove member", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -369,29 +393,31 @@ type invitationEntry struct {
 func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	callerID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	var req createInvitationBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
-	if req.Email == "" {
-		http.Error(w, "email is required", http.StatusBadRequest)
+	if strings.TrimSpace(req.Email) == "" {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "email is required", Location: "body.email"})
 		return
 	}
 	if req.Role == "" {
 		req.Role = "member"
 	}
 	if req.Role != "admin" && req.Role != "member" && req.Role != "viewer" {
-		http.Error(w, "invalid role: must be admin, member, or viewer", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "invalid role: must be admin, member, or viewer", Location: "body.role"})
 		return
 	}
 
@@ -399,7 +425,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
 		slog.ErrorContext(r.Context(), "tier resolver missing from context")
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	limit := resolver.ResolveInt(tier.LimitMembers)
@@ -407,11 +433,11 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 		count, err := srv.store.CountMemberSlotsUsedByOrg(r.Context(), orgID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "count member slots for tier check", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if count >= int64(limit) {
-			http.Error(w, "tier limit: max members reached", http.StatusForbidden)
+			writeProblemTyped(w, http.StatusForbidden, problemTypeTierLimit, "tier limit: max members reached")
 			return
 		}
 	}
@@ -419,11 +445,11 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	// Caller cannot invite with a role higher than their own effective role.
 	callerRole, ok := r.Context().Value(ctxRole).(Role)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if parseRole(req.Role) > callerRole {
-		http.Error(w, "cannot invite with role higher than your own", http.StatusForbidden)
+		writeProblem(w, http.StatusForbidden, "cannot invite with role higher than your own")
 		return
 	}
 
@@ -431,18 +457,18 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	hasPending, err := srv.store.HasPendingInvitation(r.Context(), orgID, req.Email)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create invitation: check pending", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if hasPending {
-		http.Error(w, "a pending invitation already exists for this email", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "a pending invitation already exists for this email")
 		return
 	}
 
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		slog.ErrorContext(r.Context(), "create invitation: generate token", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	token := hex.EncodeToString(tokenBytes)
@@ -451,7 +477,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 	inv, err := srv.store.CreateOrgInvitation(r.Context(), orgID, req.Email, req.Role, token, callerID, expiresAt)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create invitation", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -480,14 +506,14 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 func (srv *Server) listInvitationsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	rows, err := srv.store.ListOrgInvitations(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list invitations", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -501,7 +527,7 @@ func (srv *Server) listInvitationsHandler(w http.ResponseWriter, r *http.Request
 			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeList(w, entries, "")
 }
 
 // cancelInvitationHandler handles DELETE /api/v1/orgs/{org_id}/invitations/{id}.
@@ -509,25 +535,25 @@ func (srv *Server) listInvitationsHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) cancelInvitationHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	idStr := chi.URLParam(r, "id")
 	invID, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	deleted, err := srv.store.CancelInvitation(r.Context(), orgID, invID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "cancel invitation", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if !deleted {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "invitation not found")
 		return
 	}
 
@@ -547,42 +573,42 @@ func (srv *Server) cancelInvitationHandler(w http.ResponseWriter, r *http.Reques
 func (srv *Server) resendInvitationHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	callerID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	idStr := chi.URLParam(r, "id")
 	invID, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	inv, err := srv.store.GetOrgInvitationByID(r.Context(), orgID, invID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "resend invitation: get", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if inv == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "invitation not found")
 		return
 	}
 
 	// Reject if already accepted.
 	if inv.AcceptedAt.Valid {
-		http.Error(w, "invitation already accepted", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "invitation already accepted")
 		return
 	}
 
 	// Reject if expired.
 	if inv.ExpiresAt.Before(time.Now().UTC()) {
-		http.Error(w, "invitation expired", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "invitation expired")
 		return
 	}
 

@@ -31,7 +31,7 @@ func newSpecOnlyAPI() huma.API {
 // route families. Called during OpenAPI spec generation to produce a merged spec.
 func registerAllSpecOps(api huma.API) {
 	registerGroupsSpecOps(api)
-	// Each subsequent task adds its registration call here.
+	registerOrgsSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -208,4 +208,164 @@ func registerGroupsSpecOps(api huma.API) {
 		Summary:     "Remove a member from a group",
 		Tags:        []string{"Groups"},
 	}, noopHandler[specRemoveGroupMemberInput, struct{}]())
+}
+
+// ── Orgs spec-only declarations ───────────────────────────────────────────
+
+type specCreateOrgInput struct {
+	Body createOrgBody `json:"body"`
+}
+type specCreateOrgOutput struct {
+	Location string              `header:"Location"`
+	Body     createOrgResponseBody
+}
+
+type specGetOrgInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specGetOrgOutput struct {
+	Body orgResponseBody
+}
+
+type specUpdateOrgInput struct {
+	OrgID string        `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  updateOrgBody `json:"body"`
+}
+type specUpdateOrgOutput struct {
+	Body orgResponseBody
+}
+
+type specListMembersInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specListMembersOutput struct {
+	Body struct {
+		Items []memberEntry `json:"items"`
+	}
+}
+
+type specUpdateMemberRoleInput struct {
+	OrgID  string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
+	UserID string                 `path:"user_id" format:"uuid" doc:"User ID"`
+	Body   updateMemberRoleBody   `json:"body"`
+}
+type specUpdateMemberRoleOutput struct {
+	Body updateMemberRoleResponseBody
+}
+
+type specRemoveMemberInput struct {
+	OrgID  string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	UserID string `path:"user_id" format:"uuid" doc:"User ID"`
+}
+
+type specCreateInvitationInput struct {
+	OrgID string               `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createInvitationBody `json:"body"`
+}
+type specCreateInvitationOutput struct {
+	Body invitationEntry
+}
+
+type specListInvitationsInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specListInvitationsOutput struct {
+	Body struct {
+		Items []invitationEntry `json:"items"`
+	}
+}
+
+type specCancelInvitationInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Invitation ID"`
+}
+
+type specResendInvitationInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Invitation ID"`
+}
+type specResendInvitationOutput struct {
+	Body invitationEntry
+}
+
+func registerOrgsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-org",
+		Method:      http.MethodPost,
+		Path:        "/orgs",
+		Summary:     "Create an organization",
+		Tags:        []string{"Organizations"},
+	}, noopHandler[specCreateOrgInput, specCreateOrgOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-org",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}",
+		Summary:     "Get an organization",
+		Tags:        []string{"Organizations"},
+	}, noopHandler[specGetOrgInput, specGetOrgOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-org",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}",
+		Summary:     "Update an organization",
+		Tags:        []string{"Organizations"},
+	}, noopHandler[specUpdateOrgInput, specUpdateOrgOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-members",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/members",
+		Summary:     "List organization members",
+		Tags:        []string{"Members"},
+	}, noopHandler[specListMembersInput, specListMembersOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-member-role",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/members/{user_id}",
+		Summary:     "Update a member's role",
+		Tags:        []string{"Members"},
+	}, noopHandler[specUpdateMemberRoleInput, specUpdateMemberRoleOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "remove-member",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/members/{user_id}",
+		Summary:     "Remove a member from the organization",
+		Tags:        []string{"Members"},
+	}, noopHandler[specRemoveMemberInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "create-invitation",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/invitations",
+		Summary:     "Create an invitation",
+		Tags:        []string{"Invitations"},
+	}, noopHandler[specCreateInvitationInput, specCreateInvitationOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-invitations",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/invitations",
+		Summary:     "List pending invitations",
+		Tags:        []string{"Invitations"},
+	}, noopHandler[specListInvitationsInput, specListInvitationsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "cancel-invitation",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/invitations/{id}",
+		Summary:     "Cancel an invitation",
+		Tags:        []string{"Invitations"},
+	}, noopHandler[specCancelInvitationInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "resend-invitation",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/invitations/{id}/resend",
+		Summary:     "Resend an invitation email",
+		Tags:        []string{"Invitations"},
+	}, noopHandler[specResendInvitationInput, specResendInvitationOutput]())
 }

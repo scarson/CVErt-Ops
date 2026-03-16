@@ -57,12 +57,43 @@ func TestValidateConfig_HTTPSRequiredInProduction(t *testing.T) {
 func TestValidateConfig_HTTPSAcceptedInProduction(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields
-		JWTSecret:   strings.Repeat("a", 32),
-		AppEnv:      "production",
-		ExternalURL: "https://app.example.com",
+		JWTSecret:    strings.Repeat("a", 32),
+		AppEnv:       "production",
+		ExternalURL:  "https://app.example.com",
+		CookieSecure: true,
 	}
 	if err := validateConfig(cfg); err != nil {
 		t.Fatalf("validateConfig with HTTPS in production: %v", err)
+	}
+}
+
+func TestValidateConfig_CookieSecureRequired(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields
+		JWTSecret:    strings.Repeat("a", 32),
+		CookieSecure: false,
+		AppEnv:       "production",
+		ExternalURL:  "https://example.com",
+	}
+	err := validateConfig(cfg)
+	if err == nil {
+		t.Fatal("expected error when CookieSecure=false in production with HTTPS")
+	}
+	if !strings.Contains(err.Error(), "COOKIE_SECURE") {
+		t.Errorf("error should mention COOKIE_SECURE, got: %v", err)
+	}
+}
+
+func TestValidateConfig_CookieSecureNotRequiredInDev(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields
+		JWTSecret:    strings.Repeat("a", 32),
+		CookieSecure: false,
+		AppEnv:       "development",
+		ExternalURL:  "http://localhost:8080",
+	}
+	if err := validateConfig(cfg); err != nil {
+		t.Errorf("should not require CookieSecure in development: %v", err)
 	}
 }
 

@@ -19,7 +19,7 @@ func TestOpenAPISpec(t *testing.T) {
 		ExternalURL: "http://localhost:8080",
 		FrontendURL: "/",
 	}
-	srv, err := NewServer(nil, cfg)
+	srv, err := NewServer(nil, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

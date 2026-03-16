@@ -40,12 +40,30 @@ func TestWithOrgTx_RLSEnforced(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "OrgTxOrg1")
-	org2, _ := s.CreateOrg(ctx, "OrgTxOrg2")
-	u1, _ := s.CreateUser(ctx, "orgtx1@example.com", "OrgTx1", "", 0)
-	u2, _ := s.CreateUser(ctx, "orgtx2@example.com", "OrgTx2", "", 0)
-	_ = s.CreateOrgMember(ctx, org1.ID, u1.ID, "member")
-	_ = s.CreateOrgMember(ctx, org2.ID, u2.ID, "member")
+	org1, err := s.CreateOrg(ctx, "OrgTxOrg1")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg OrgTxOrg1: %v", err)
+	}
+	org2, err := s.CreateOrg(ctx, "OrgTxOrg2")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg OrgTxOrg2: %v", err)
+	}
+	u1, err := s.CreateUser(ctx, "orgtx1@example.com", "OrgTx1", "", 0)
+	if err != nil {
+		t.Fatalf("setup: CreateUser orgtx1: %v", err)
+	}
+	u2, err := s.CreateUser(ctx, "orgtx2@example.com", "OrgTx2", "", 0)
+	if err != nil {
+		t.Fatalf("setup: CreateUser orgtx2: %v", err)
+	}
+	err = s.CreateOrgMember(ctx, org1.ID, u1.ID, "member")
+	if err != nil {
+		t.Fatalf("setup: CreateOrgMember org1/u1: %v", err)
+	}
+	err = s.CreateOrgMember(ctx, org2.ID, u2.ID, "member")
+	if err != nil {
+		t.Fatalf("setup: CreateOrgMember org2/u2: %v", err)
+	}
 
 	// ListOrgMembers uses withOrgTx internally (sqlc queries).
 	members, err := s.AppStore.ListOrgMembers(ctx, org1.ID)
@@ -64,12 +82,15 @@ func TestOrgTx_CommitsOnSuccess(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "OrgTxCommit")
+	org, err := s.CreateOrg(ctx, "OrgTxCommit")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg: %v", err)
+	}
 
 	// Insert a row within OrgTx — it should persist after commit.
-	err := s.AppStore.OrgTx(ctx, org.ID, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, "SELECT 1") // trivial operation
-		return err
+	err = s.AppStore.OrgTx(ctx, org.ID, func(tx pgx.Tx) error {
+		_, txErr := tx.Exec(ctx, "SELECT 1") // trivial operation
+		return txErr
 	})
 	if err != nil {
 		t.Fatalf("OrgTx(success): %v", err)
@@ -81,12 +102,18 @@ func TestOrgTx_RollsBackOnError(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "OrgTxRollback")
-	user, _ := s.CreateUser(ctx, "orgtxrb@example.com", "OrgTxRB", "", 0)
+	org, err := s.CreateOrg(ctx, "OrgTxRollback")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg: %v", err)
+	}
+	user, err := s.CreateUser(ctx, "orgtxrb@example.com", "OrgTxRB", "", 0)
+	if err != nil {
+		t.Fatalf("setup: CreateUser: %v", err)
+	}
 
 	// Attempt to create a group within OrgTx but return an error — should rollback.
 	sentinel := errors.New("deliberate failure")
-	err := s.AppStore.OrgTx(ctx, org.ID, func(tx pgx.Tx) error {
+	err = s.AppStore.OrgTx(ctx, org.ID, func(tx pgx.Tx) error {
 		_, txErr := tx.Exec(ctx,
 			"INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, $3)",
 			org.ID, user.ID, "viewer",
@@ -119,15 +146,33 @@ func TestWorkerTx_BypassRLSEnabled(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "WTxOrg1")
-	org2, _ := s.CreateOrg(ctx, "WTxOrg2")
-	u1, _ := s.CreateUser(ctx, "wtx1@example.com", "WTx1", "", 0)
-	u2, _ := s.CreateUser(ctx, "wtx2@example.com", "WTx2", "", 0)
-	_ = s.CreateOrgMember(ctx, org1.ID, u1.ID, "member")
-	_ = s.CreateOrgMember(ctx, org2.ID, u2.ID, "member")
+	org1, err := s.CreateOrg(ctx, "WTxOrg1")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg WTxOrg1: %v", err)
+	}
+	org2, err := s.CreateOrg(ctx, "WTxOrg2")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg WTxOrg2: %v", err)
+	}
+	u1, err := s.CreateUser(ctx, "wtx1@example.com", "WTx1", "", 0)
+	if err != nil {
+		t.Fatalf("setup: CreateUser wtx1: %v", err)
+	}
+	u2, err := s.CreateUser(ctx, "wtx2@example.com", "WTx2", "", 0)
+	if err != nil {
+		t.Fatalf("setup: CreateUser wtx2: %v", err)
+	}
+	err = s.CreateOrgMember(ctx, org1.ID, u1.ID, "member")
+	if err != nil {
+		t.Fatalf("setup: CreateOrgMember org1/u1: %v", err)
+	}
+	err = s.CreateOrgMember(ctx, org2.ID, u2.ID, "member")
+	if err != nil {
+		t.Fatalf("setup: CreateOrgMember org2/u2: %v", err)
+	}
 
 	var count int
-	err := s.AppStore.WorkerTx(ctx, func(tx pgx.Tx) error {
+	err = s.AppStore.WorkerTx(ctx, func(tx pgx.Tx) error {
 		return tx.QueryRow(ctx, "SELECT COUNT(*) FROM org_members").Scan(&count)
 	})
 	if err != nil {

@@ -28,7 +28,7 @@ func newSavedSearchTestServer(t *testing.T, db *testutil.TestDB) (*Server, *http
 		RegistrationMode:    "open",
 		Argon2MaxConcurrent: 5,
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

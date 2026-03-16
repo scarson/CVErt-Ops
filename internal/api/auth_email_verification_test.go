@@ -31,7 +31,7 @@ func newEmailVerificationServer(t *testing.T) (*testutil.TestDB, *httptest.Serve
 		EmailVerificationMaxPerHour: 10,
 		ExternalURL:                 "http://localhost:8080",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -58,7 +58,7 @@ func newEmailVerificationServerWithSMTP(t *testing.T, maxPerHour int) (*testutil
 		SMTPFrom:                    "test@cvert-ops.test",
 		ExternalURL:                 "http://localhost:8080",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestResendVerification_SMTPFailure(t *testing.T) {
 		SMTPFrom:                    "test@example.com",
 		ExternalURL:                 "http://localhost:8080",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -269,7 +270,7 @@ func (s *Store) UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status str
 			Status:              status,
 			CandidatesEvaluated: candidatesEvaluated,
 			MatchesFound:        matchesFound,
-			ErrorMessage:        nullString(errorMsg),
+			ErrorMessage:        dbutil.NullStringPtr(errorMsg),
 		})
 	})
 }

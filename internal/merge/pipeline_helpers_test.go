@@ -1,5 +1,5 @@
 // ABOUTME: Tests for unexported helper functions in the merge pipeline.
-// ABOUTME: Covers sql.Null* converters, derefString, and slice builders.
+// ABOUTME: Covers remaining sql.Null* converters, derefString, and slice builders.
 package merge
 
 import (
@@ -9,73 +9,6 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
-
-// ── toNullString ─────────────────────────────────────────────────────────────
-
-func TestToNullString(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		input     string
-		wantValid bool
-		wantStr   string
-	}{
-		{name: "empty string", input: "", wantValid: false, wantStr: ""},
-		{name: "non-empty string", input: "published", wantValid: true, wantStr: "published"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := toNullString(tc.input)
-			if got.Valid != tc.wantValid {
-				t.Errorf("toNullString(%q).Valid = %v, want %v", tc.input, got.Valid, tc.wantValid)
-			}
-			if got.String != tc.wantStr {
-				t.Errorf("toNullString(%q).String = %q, want %q", tc.input, got.String, tc.wantStr)
-			}
-		})
-	}
-}
-
-// ── toNullStringPtr ──────────────────────────────────────────────────────────
-
-func TestToNullStringPtr(t *testing.T) {
-	t.Parallel()
-
-	t.Run("nil pointer", func(t *testing.T) {
-		t.Parallel()
-		got := toNullStringPtr(nil)
-		if got.Valid {
-			t.Error("toNullStringPtr(nil).Valid = true, want false")
-		}
-	})
-
-	t.Run("non-nil pointer", func(t *testing.T) {
-		t.Parallel()
-		s := "hello"
-		got := toNullStringPtr(&s)
-		if !got.Valid {
-			t.Error("toNullStringPtr(&s).Valid = false, want true")
-		}
-		if got.String != "hello" {
-			t.Errorf("toNullStringPtr(&s).String = %q, want %q", got.String, "hello")
-		}
-	})
-
-	t.Run("non-nil empty string pointer", func(t *testing.T) {
-		t.Parallel()
-		s := ""
-		got := toNullStringPtr(&s)
-		if !got.Valid {
-			t.Error("toNullStringPtr pointer to empty string should be Valid=true")
-		}
-		if got.String != "" {
-			t.Errorf("toNullStringPtr(&\"\").String = %q, want %q", got.String, "")
-		}
-	})
-}
 
 // ── toNullFloat64 ────────────────────────────────────────────────────────────
 

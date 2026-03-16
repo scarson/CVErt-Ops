@@ -59,7 +59,7 @@ func newTestEvaluator(t *testing.T, tdb *testutil.TestDB) *alert.Evaluator {
 	t.Helper()
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return alert.New(tdb.DB(), tdb.Store, cache, log)
+	return alert.New(tdb.DB(), tdb.Store, cache, log, 0)
 }
 
 // createTestOrg inserts an organization row and returns its ID.
@@ -754,7 +754,7 @@ func TestEvaluateRealtime_FanoutNotCalledForSuppressedEvent(t *testing.T) {
 	// Build a fresh evaluator with the mock dispatcher attached
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	ev := alert.New(tdb.DB(), tdb.Store, cache, log)
+	ev := alert.New(tdb.DB(), tdb.Store, cache, log, 0)
 	disp := &mockDispatcher{}
 	ev.SetDispatcher(disp)
 

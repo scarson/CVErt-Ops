@@ -1096,8 +1096,9 @@ func TestDryRun_WithEvaluator(t *testing.T) {
 	// Wire up alert evaluator.
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	evaluator := alert.New(db.DB(), db.Store, cache, log)
-	srv.SetAlertDeps(cache, evaluator)
+	evaluator := alert.New(db.DB(), db.Store, cache, log, 0)
+	srv.alertCache = cache
+	srv.alertEvaluator = evaluator
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
@@ -1148,7 +1149,7 @@ func TestDryRun_WithoutEvaluator(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 	_, ts := newRegisterServer(t, db, "open")
-	// No SetAlertDeps call — evaluator is nil.
+	// Alert deps not configured — evaluator is nil.
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
@@ -1184,8 +1185,9 @@ func TestDryRun_NonExistentRule(t *testing.T) {
 
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	evaluator := alert.New(db.DB(), db.Store, cache, log)
-	srv.SetAlertDeps(cache, evaluator)
+	evaluator := alert.New(db.DB(), db.Store, cache, log, 0)
+	srv.alertCache = cache
+	srv.alertEvaluator = evaluator
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
@@ -1209,8 +1211,9 @@ func TestDryRun_CrossOrgIsolation(t *testing.T) {
 
 	cache := alert.NewRuleCache()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	evaluator := alert.New(db.DB(), db.Store, cache, log)
-	srv.SetAlertDeps(cache, evaluator)
+	evaluator := alert.New(db.DB(), db.Store, cache, log, 0)
+	srv.alertCache = cache
+	srv.alertEvaluator = evaluator
 
 	// Alice creates an org and a rule.
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
@@ -1824,8 +1827,9 @@ func TestAlertRule_ReEnableSetsActivating(t *testing.T) {
 	ctx := context.Background()
 	srv, ts := newRegisterServer(t, db, "open")
 	alertCache := alert.NewRuleCache()
-	alertEval := alert.New(nil, db.Store, alertCache, slog.New(slog.NewTextHandler(os.Stderr, nil)))
-	srv.SetAlertDeps(alertCache, alertEval)
+	alertEval := alert.New(nil, db.Store, alertCache, slog.New(slog.NewTextHandler(os.Stderr, nil)), 0)
+	srv.alertCache = alertCache
+	srv.alertEvaluator = alertEval
 
 	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")

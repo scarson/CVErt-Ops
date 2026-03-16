@@ -34,7 +34,7 @@ func newPasswordResetServer(t *testing.T) (*testutil.TestDB, *httptest.Server) {
 		SMTPFrom:                "test@example.com",
 		ExternalURL:             "http://localhost:8080",
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

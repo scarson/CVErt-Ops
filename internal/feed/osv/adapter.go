@@ -81,7 +81,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, fmt.Errorf("osv: rate limit: %w", err)
 	}
 
-	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-osv-*.zip")
+	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-osv-*.zip", feed.MaxDownloadSize)
 	if err != nil {
 		return nil, fmt.Errorf("osv: download zip: %w", err)
 	}

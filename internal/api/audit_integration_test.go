@@ -25,7 +25,7 @@ func newAuditServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Serve
 	t.Helper()
 	srv, ts := newRegisterServer(t, db, "open")
 	w := audit.NewWriter(db.Store, slog.Default())
-	srv.SetAuditDeps(w)
+	srv.auditWriter = w
 	return srv, ts, w
 }
 
@@ -634,7 +634,7 @@ func TestAuditLog_NilWriter(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 
-	// Create a server WITHOUT calling SetAuditDeps — writer stays nil.
+	// Audit writer not configured — stays nil.
 	srv, ts := newRegisterServer(t, db, "open")
 	_ = ts
 

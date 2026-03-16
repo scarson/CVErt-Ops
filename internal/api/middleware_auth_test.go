@@ -23,9 +23,9 @@ func newAuthTestServer(t *testing.T, jwtSecret string, db *testutil.TestDB) *Ser
 	cfg := &config.Config{JWTSecret: jwtSecret} //nolint:exhaustruct // test: only JWT secret needed
 	var srv *Server
 	if db != nil {
-		srv, _ = NewServer(db.Store, cfg)
+		srv, _ = NewServer(db.Store, cfg, ServerDeps{})
 	} else {
-		srv, _ = NewServer(nil, cfg)
+		srv, _ = NewServer(nil, cfg, ServerDeps{})
 	}
 	t.Cleanup(srv.Close)
 	return srv

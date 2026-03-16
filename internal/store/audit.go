@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 
+	"github.com/scarson/cvert-ops/internal/dbutil"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -66,11 +67,11 @@ func (s *Store) InsertAuditEntry(ctx context.Context, e AuditEntry) error {
 		return q.InsertAuditEntry(ctx, generated.InsertAuditEntryParams{
 			OrgID:      e.OrgID,
 			ActorID:    toNullUUID(e.ActorID),
-			ActorEmail: toNullString(e.ActorEmail),
+			ActorEmail: dbutil.NullString(e.ActorEmail),
 			Action:     e.Action,
 			EntityType: e.EntityType,
 			EntityID:   e.EntityID,
-			EntityName: toNullString(e.EntityName),
+			EntityName: dbutil.NullString(e.EntityName),
 			Success:    e.Success,
 			OldState:   toNullRawMessage(e.OldState),
 			NewState:   toNullRawMessage(e.NewState),

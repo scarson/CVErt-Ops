@@ -27,7 +27,7 @@ func newOIDCTestServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Se
 		RegistrationMode:    "open",
 		SSOEncryptionKey:    hex.EncodeToString([]byte("12345678901234567890123456789012")),
 	}
-	srv, err := NewServer(db.Store, cfg)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -811,7 +811,7 @@ func newAuditOIDCTestServer(t *testing.T, db *testutil.TestDB) (*Server, *httpte
 	t.Helper()
 	srv, ts := newOIDCTestServer(t, db)
 	w := audit.NewWriter(db.Store, slog.Default())
-	srv.SetAuditDeps(w)
+	srv.auditWriter = w
 	return srv, ts, w
 }
 

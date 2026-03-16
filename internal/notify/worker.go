@@ -92,8 +92,11 @@ func (w *Worker) Start(ctx context.Context) {
 			w.wg.Wait()
 			return
 		case <-claimTicker.C:
-			w.runClaim(ctx)
+			// Update health timestamp BEFORE runClaim — runClaim can block on
+			// per-org semaphore acquisition, which would make Healthy() return
+			// false even though the event loop is alive.
 			w.lastClaimAt.Store(time.Now())
+			w.runClaim(ctx)
 		case <-stuckTicker.C:
 			w.runStuckReset(ctx)
 		case <-recoveryTicker.C:

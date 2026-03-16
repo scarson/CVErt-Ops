@@ -57,8 +57,8 @@ async function fetchFeeds() {
       return
     }
 
-    const data = (await resp.json()) as { feeds: FeedEntry[] }
-    feeds.value = data.feeds ?? []
+    const data = (await resp.json()) as { items: FeedEntry[] }
+    feeds.value = data.items ?? []
   } catch {
     error.value = 'Failed to load feed status.'
   } finally {

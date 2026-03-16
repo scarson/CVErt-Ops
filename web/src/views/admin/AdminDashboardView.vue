@@ -45,14 +45,14 @@ async function fetchDashboard() {
     const orgsData = (await orgsResp.json()) as { items: unknown[]; has_more: boolean }
     const usersData = (await usersResp.json()) as { items: unknown[]; has_more: boolean }
     const feedsData = (await feedsResp.json()) as {
-      feeds: { consecutive_failures: number }[]
+      items: { consecutive_failures: number }[]
     }
     const deliveriesData = (await deliveriesResp.json()) as {
       items: unknown[]
       has_more: boolean
     }
 
-    const feeds = feedsData.feeds ?? []
+    const feeds = feedsData.items ?? []
     const healthy = feeds.filter((f) => f.consecutive_failures === 0).length
     const failing = feeds.filter((f) => f.consecutive_failures > 0).length
 

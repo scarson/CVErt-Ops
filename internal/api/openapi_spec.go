@@ -11,6 +11,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // noopHandler returns a huma handler that does nothing. Used for spec-only
@@ -45,6 +47,8 @@ func registerAllSpecOps(api huma.API) {
 	registerAISpecOps(api)
 	registerIngestSpecOps(api)
 	registerOrgTierSpecOps(api)
+	registerAdminFeedsSpecOps(api)
+	registerAdminSystemSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -1372,5 +1376,120 @@ func registerOrgTierSpecOps(api huma.API) {
 		OrgID string `path:"org_id" format:"uuid"`
 	}, struct {
 		Body tierResponse
+	}]())
+}
+
+// ── Admin Feeds spec ops ────────────────────────────────────────────────────
+
+func registerAdminFeedsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-feeds",
+		Method:      http.MethodGet,
+		Path:        "/admin/feeds",
+		Summary:     "List feed sync status",
+		Tags:        []string{"Admin Feeds"},
+	}, noopHandler[struct{}, struct {
+		Body listResponse[FeedStatusEntry]
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "trigger-feed",
+		Method:      http.MethodPost,
+		Path:        "/admin/feeds/{feed}/run",
+		Summary:     "Trigger feed sync",
+		Tags:        []string{"Admin Feeds"},
+	}, noopHandler[struct {
+		Feed string `path:"feed"`
+	}, struct {
+		Body struct {
+			JobID string `json:"job_id"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "pause-feed",
+		Method:      http.MethodPost,
+		Path:        "/admin/feeds/{feed}/pause",
+		Summary:     "Pause feed sync",
+		Tags:        []string{"Admin Feeds"},
+	}, noopHandler[struct {
+		Feed string `path:"feed"`
+	}, struct {
+		Body struct {
+			Status string `json:"status"`
+			Feed   string `json:"feed"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "resume-feed",
+		Method:      http.MethodPost,
+		Path:        "/admin/feeds/{feed}/resume",
+		Summary:     "Resume feed sync",
+		Tags:        []string{"Admin Feeds"},
+	}, noopHandler[struct {
+		Feed string `path:"feed"`
+	}, struct {
+		Body struct {
+			Status string `json:"status"`
+			Feed   string `json:"feed"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-feed-logs",
+		Method:      http.MethodGet,
+		Path:        "/admin/feeds/{feed}/logs",
+		Summary:     "List feed fetch logs",
+		Tags:        []string{"Admin Feeds"},
+	}, noopHandler[struct {
+		Feed   string `path:"feed"`
+		Cursor string `query:"cursor,omitempty"`
+		Limit  int    `query:"limit,omitempty"`
+	}, struct {
+		Body listResponse[FeedLogEntry]
+	}]())
+}
+
+// ── Admin System spec ops ───────────────────────────────────────────────────
+
+func registerAdminSystemSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-reindex",
+		Method:      http.MethodPost,
+		Path:        "/admin/reindex",
+		Summary:     "Trigger search reindex",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct{}, struct {
+		Body struct {
+			JobID string `json:"job_id"`
+		}
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-config",
+		Method:      http.MethodGet,
+		Path:        "/admin/config",
+		Summary:     "View runtime configuration",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct{}, struct {
+		Body map[string]any
+	}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-audit-log",
+		Method:      http.MethodGet,
+		Path:        "/admin/audit-log",
+		Summary:     "Cross-org audit log",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct {
+		Cursor     string `query:"cursor,omitempty"`
+		Limit      int    `query:"limit,omitempty"`
+		EntityType string `query:"entity_type,omitempty"`
+		Action     string `query:"action,omitempty"`
+		OrgID      string `query:"org_id,omitempty"`
+		ActorID    string `query:"actor_id,omitempty"`
+	}, struct {
+		Body listResponse[store.AuditRow]
 	}]())
 }

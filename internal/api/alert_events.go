@@ -24,9 +24,9 @@ type alertEventEntry struct {
 	TimesFired       int32  `json:"times_fired"`
 }
 
-type alertEventsListResponse struct {
-	Items      []alertEventEntry `json:"items"`
-	NextCursor *string           `json:"next_cursor,omitempty"`
+type alertEventCursor struct {
+	T  string `json:"t"`  // first_fired_at RFC3339Nano
+	ID string `json:"id"` // UUID tiebreaker
 }
 
 // listAlertEventsHandler handles GET /api/v1/orgs/{org_id}/alert-events.
@@ -35,7 +35,7 @@ type alertEventsListResponse struct {
 func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -45,7 +45,7 @@ func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request
 	if s := r.URL.Query().Get("rule_id"); s != "" {
 		id, err := uuid.Parse(s)
 		if err != nil {
-			http.Error(w, "invalid rule_id", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid rule_id")
 			return
 		}
 		p.RuleID = &id
@@ -60,32 +60,46 @@ func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request
 	if s := r.URL.Query().Get("since"); s != "" {
 		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			http.Error(w, "invalid since (RFC3339)", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid since (RFC3339)")
 			return
 		}
 		p.Since = &t
 	}
 	if c := r.URL.Query().Get("after"); c != "" {
-		t, id, err := decodeTimeCursor(c)
-		if err == nil {
-			p.AfterTime = &t
-			p.AfterID = &id
+		var cur alertEventCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		t, err := time.Parse(time.RFC3339Nano, cur.T)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		p.AfterTime = &t
+		p.AfterID = &id
 	}
 
 	events, err := srv.store.ListAlertEvents(r.Context(), orgID, p)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list alert events", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	var nextCursor *string
+	var cursor string
 	if len(events) > limit {
 		events = events[:limit]
 		last := events[len(events)-1]
-		c := encodeTimeCursor(last.FirstFiredAt, last.ID)
-		nextCursor = &c
+		cursor = encodePageCursor(alertEventCursor{
+			T:  last.FirstFiredAt.UTC().Format(time.RFC3339Nano),
+			ID: last.ID.String(),
+		})
 	}
 
 	entries := make([]alertEventEntry, 0, len(events))
@@ -102,5 +116,5 @@ func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request
 			TimesFired:       e.TimesFired,
 		})
 	}
-	writeJSON(w, http.StatusOK, alertEventsListResponse{Items: entries, NextCursor: nextCursor})
+	writeList(w, entries, cursor)
 }

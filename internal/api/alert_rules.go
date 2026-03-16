@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -56,9 +58,9 @@ type alertRuleEntry struct {
 	UpdatedAt                string          `json:"updated_at"`
 }
 
-type alertRuleListResponse struct {
-	Items      []alertRuleEntry `json:"items"`
-	NextCursor *string          `json:"next_cursor,omitempty"`
+type alertRuleCursor struct {
+	T  string `json:"t"`  // created_at RFC3339Nano
+	ID string `json:"id"` // UUID tiebreaker
 }
 
 type validateRuleBody struct {
@@ -168,7 +170,7 @@ func parseWatchlistUUIDs(ids []string) ([]uuid.UUID, error) {
 func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -176,7 +178,7 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
 		slog.ErrorContext(r.Context(), "tier resolver missing from context")
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	limit := resolver.ResolveInt(tier.LimitAlertRules)
@@ -184,7 +186,7 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		count, err := srv.store.CountAlertRulesByOrg(r.Context(), orgID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "count alert rules for tier check", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if count >= int64(limit) {
@@ -195,37 +197,42 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 				Success:    false,
 				Metadata:   map[string]any{"reason": "tier_limit"},
 			})
-			http.Error(w, "tier limit: max alert rules reached", http.StatusForbidden)
+			writeProblemTyped(w, http.StatusForbidden, problemTypeTierLimit, "alert rule limit reached for current tier")
 			return
 		}
 	}
 
 	var req createAlertRuleBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return
 	}
 
 	wlUUIDs, err := parseWatchlistUUIDs(req.WatchlistIDs)
 	if err != nil {
-		http.Error(w, "invalid watchlist_id", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "invalid watchlist_id", Location: "body.watchlist_ids"})
 		return
 	}
 
 	rule, meta, valErrs, err := parseDSL(req.Logic, req.Conditions, len(wlUUIDs))
 	if err != nil {
-		http.Error(w, "invalid DSL", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "invalid DSL")
 		return
 	}
 	if hasBlockingErrors(valErrs) {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"message": "alert rule DSL validation failed",
-			"errors":  valErrsToEntries(valErrs),
-		})
+		details := make([]*huma.ErrorDetail, len(valErrs))
+		for i, e := range valErrs {
+			loc := "body.conditions"
+			if e.Field != "" {
+				loc = "body.conditions[" + strconv.Itoa(e.Index) + "]." + e.Field
+			}
+			details[i] = &huma.ErrorDetail{Message: e.Message, Location: loc}
+		}
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "alert rule DSL validation failed", details...)
 		return
 	}
 	_ = rule // rule fields already captured via parseDSL; meta used below
@@ -234,11 +241,11 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		owned, err := srv.store.ValidateWatchlistsOwnership(r.Context(), orgID, wlUUIDs)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "validate watchlists ownership", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if !owned {
-			http.Error(w, "one or more watchlist_ids not found in this org", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "one or more watchlist_ids not found in this org", Location: "body.watchlist_ids"})
 			return
 		}
 	}
@@ -260,11 +267,12 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create alert rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	entry := alertRuleToEntry(*row)
+	writeLocation(w, r, row.ID.String())
 
 	if status == "activating" {
 		srv.enqueueActivation(r.Context(), orgID, row.ID)
@@ -288,22 +296,22 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) getAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	row, err := srv.store.GetAlertRule(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get alert rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, alertRuleToEntry(*row))
@@ -314,7 +322,7 @@ func (srv *Server) getAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listAlertRulesHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -327,33 +335,47 @@ func (srv *Server) listAlertRulesHandler(w http.ResponseWriter, r *http.Request)
 		statusFilter = &s
 	}
 	if c := r.URL.Query().Get("after"); c != "" {
-		t, id, err := decodeTimeCursor(c)
-		if err == nil {
-			afterTime = &t
-			afterID = &id
+		var cur alertRuleCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		t, err := time.Parse(time.RFC3339Nano, cur.T)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		afterTime = &t
+		afterID = &id
 	}
 
 	rows, err := srv.store.ListAlertRules(r.Context(), orgID, statusFilter, afterTime, afterID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list alert rules", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	var nextCursor *string
+	var cursor string
 	if len(rows) > limit {
 		rows = rows[:limit]
 		last := rows[len(rows)-1]
-		c := encodeTimeCursor(last.CreatedAt, last.ID)
-		nextCursor = &c
+		cursor = encodePageCursor(alertRuleCursor{
+			T:  last.CreatedAt.UTC().Format(time.RFC3339Nano),
+			ID: last.ID.String(),
+		})
 	}
 
 	entries := make([]alertRuleEntry, 0, len(rows))
 	for _, r := range rows {
 		entries = append(entries, alertRuleToEntry(r))
 	}
-	writeJSON(w, http.StatusOK, alertRuleListResponse{Items: entries, NextCursor: nextCursor})
+	writeList(w, entries, cursor)
 }
 
 // updateAlertRuleHandler handles PATCH /api/v1/orgs/{org_id}/alert-rules/{id}.
@@ -367,30 +389,30 @@ func (srv *Server) listAlertRulesHandler(w http.ResponseWriter, r *http.Request)
 func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	current, err := srv.store.GetAlertRule(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get alert rule for patch", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	oldState := alertRuleToEntry(*current)
 
 	var req patchAlertRuleBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 
@@ -399,7 +421,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 
 	// State machine: reject DSL changes while activating.
 	if current.Status == "activating" && hasDSLChange {
-		http.Error(w, "rule is currently activating; wait for scan to complete before changing DSL", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "rule is currently activating; wait for scan to complete before changing DSL")
 		return
 	}
 
@@ -414,7 +436,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 
 	if req.Name != nil {
 		if strings.TrimSpace(*req.Name) == "" {
-			http.Error(w, "name cannot be empty", http.StatusBadRequest)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "name cannot be empty", Location: "body.name"})
 			return
 		}
 		name = *req.Name
@@ -428,7 +450,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	if req.WatchlistIDs != nil {
 		uuids, err := parseWatchlistUUIDs(*req.WatchlistIDs)
 		if err != nil {
-			http.Error(w, "invalid watchlist_id", http.StatusBadRequest)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "invalid watchlist_id", Location: "body.watchlist_ids"})
 			return
 		}
 		wlIDs = uuids
@@ -441,14 +463,19 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	if hasDSLChange {
 		_, meta, valErrs, err := parseDSL(logic, conditions, len(wlIDs))
 		if err != nil {
-			http.Error(w, "invalid DSL", http.StatusUnprocessableEntity)
+			writeProblem(w, http.StatusUnprocessableEntity, "invalid DSL")
 			return
 		}
 		if hasBlockingErrors(valErrs) {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-				"message": "alert rule DSL validation failed",
-				"errors":  valErrsToEntries(valErrs),
-			})
+			details := make([]*huma.ErrorDetail, len(valErrs))
+			for i, e := range valErrs {
+				loc := "body.conditions"
+				if e.Field != "" {
+					loc = "body.conditions[" + strconv.Itoa(e.Index) + "]." + e.Field
+				}
+				details[i] = &huma.ErrorDetail{Message: e.Message, Location: loc}
+			}
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "alert rule DSL validation failed", details...)
 			return
 		}
 		hasEPSS = meta.hasEPSS
@@ -460,11 +487,11 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		owned, err := srv.store.ValidateWatchlistsOwnership(r.Context(), orgID, wlIDs)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "validate watchlists ownership", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if !owned {
-			http.Error(w, "one or more watchlist_ids not found in this org", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "one or more watchlist_ids not found in this org", Location: "body.watchlist_ids"})
 			return
 		}
 	}
@@ -506,11 +533,11 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update alert rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -539,12 +566,12 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -552,17 +579,17 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	current, err := srv.store.GetAlertRule(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get alert rule for delete", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if err := srv.store.SoftDeleteAlertRule(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "delete alert rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if srv.alertCache != nil {
@@ -585,13 +612,13 @@ func (srv *Server) deleteAlertRuleHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) validateAlertRuleHandler(w http.ResponseWriter, r *http.Request) {
 	_, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	var req validateRuleBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 
@@ -641,26 +668,26 @@ type dryRunResponse struct {
 func (srv *Server) dryRunHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	if srv.alertEvaluator == nil {
-		http.Error(w, "dry-run not available", http.StatusServiceUnavailable)
+		writeProblem(w, http.StatusServiceUnavailable, "dry-run not available")
 		return
 	}
 	result, err := srv.alertEvaluator.DryRun(r.Context(), id, orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "dry-run evaluation", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if result == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	sample := result.SampleCVEs
@@ -680,18 +707,18 @@ func (srv *Server) dryRunHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listRuleChannelsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	ruleID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	rows, err := srv.store.ListChannelsForRule(r.Context(), ruleID, orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list channels for rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	items := make([]channelEntry, len(rows))
@@ -706,7 +733,7 @@ func (srv *Server) listRuleChannelsHandler(w http.ResponseWriter, r *http.Reques
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}
 	}
-	writeJSON(w, http.StatusOK, channelListResponse{Items: items})
+	writeList(w, items, "")
 }
 
 // bindRuleChannelHandler handles PUT /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}.
@@ -714,17 +741,17 @@ func (srv *Server) listRuleChannelsHandler(w http.ResponseWriter, r *http.Reques
 func (srv *Server) bindRuleChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	ruleID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	channelID, err := uuid.Parse(chi.URLParam(r, "channel_id"))
 	if err != nil {
-		http.Error(w, "invalid channel_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid channel_id")
 		return
 	}
 
@@ -732,17 +759,17 @@ func (srv *Server) bindRuleChannelHandler(w http.ResponseWriter, r *http.Request
 	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, channelID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get notification channel for bind", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if ch == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if err := srv.store.BindChannelToRule(r.Context(), ruleID, channelID, orgID); err != nil {
 		slog.ErrorContext(r.Context(), "bind channel to rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -753,17 +780,17 @@ func (srv *Server) bindRuleChannelHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	ruleID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	channelID, err := uuid.Parse(chi.URLParam(r, "channel_id"))
 	if err != nil {
-		http.Error(w, "invalid channel_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid channel_id")
 		return
 	}
 
@@ -771,17 +798,17 @@ func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Reque
 	exists, err := srv.store.ChannelRuleBindingExists(r.Context(), ruleID, channelID, orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "check channel rule binding", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if !exists {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if err := srv.store.UnbindChannelFromRule(r.Context(), ruleID, channelID, orgID); err != nil {
 		slog.ErrorContext(r.Context(), "unbind channel from rule", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -801,14 +828,3 @@ func (srv *Server) enqueueActivation(ctx context.Context, orgID, ruleID uuid.UUI
 	}
 }
 
-// valErrsToEntries converts DSL ValidationErrors to API-level entries.
-func valErrsToEntries(errs []dsl.ValidationError) []dslErrorEntry {
-	if len(errs) == 0 {
-		return []dslErrorEntry{}
-	}
-	out := make([]dslErrorEntry, len(errs))
-	for i, e := range errs {
-		out[i] = dslErrorEntry{Index: e.Index, Field: e.Field, Message: e.Message, Severity: e.Severity}
-	}
-	return out
-}

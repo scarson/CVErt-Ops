@@ -34,6 +34,8 @@ func registerAllSpecOps(api huma.API) {
 	registerOrgsSpecOps(api)
 	registerAPIKeysSpecOps(api)
 	registerWatchlistsSpecOps(api)
+	registerAlertRulesSpecOps(api)
+	registerAlertEventsSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -560,4 +562,196 @@ func registerWatchlistsSpecOps(api huma.API) {
 		Summary:     "Remove an item from a watchlist",
 		Tags:        []string{"Watchlists"},
 	}, noopHandler[specDeleteWatchlistItemInput, struct{}]())
+}
+
+// ── Alert Rules spec-only declarations ───────────────────────────────────────
+
+type specCreateAlertRuleInput struct {
+	OrgID string             `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createAlertRuleBody `json:"body"`
+}
+type specCreateAlertRuleOutput struct {
+	Location string         `header:"Location"`
+	Body     alertRuleEntry
+}
+
+type specListAlertRulesInput struct {
+	OrgID  string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Status string `query:"status" doc:"Filter by status"`
+	After  string `query:"after" doc:"Pagination cursor"`
+}
+type specListAlertRulesOutput struct {
+	Body struct {
+		Items      []alertRuleEntry `json:"items"`
+		NextCursor string           `json:"next_cursor,omitempty"`
+	}
+}
+
+type specGetAlertRuleInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Alert Rule ID"`
+}
+type specGetAlertRuleOutput struct {
+	Body alertRuleEntry
+}
+
+type specUpdateAlertRuleInput struct {
+	OrgID string             `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string             `path:"id" format:"uuid" doc:"Alert Rule ID"`
+	Body  patchAlertRuleBody `json:"body"`
+}
+type specUpdateAlertRuleOutput struct {
+	Body alertRuleEntry
+}
+
+type specDeleteAlertRuleInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Alert Rule ID"`
+}
+
+type specValidateAlertRuleInput struct {
+	OrgID string           `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  validateRuleBody `json:"body"`
+}
+type specValidateAlertRuleOutput struct {
+	Body validateRuleResponse
+}
+
+type specDryRunAlertRuleInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Alert Rule ID"`
+}
+type specDryRunAlertRuleOutput struct {
+	Body dryRunResponse
+}
+
+type specListRuleChannelsInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Alert Rule ID"`
+}
+type specListRuleChannelsOutput struct {
+	Body struct {
+		Items []channelEntry `json:"items"`
+	}
+}
+
+type specBindRuleChannelInput struct {
+	OrgID     string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID        string `path:"id" format:"uuid" doc:"Alert Rule ID"`
+	ChannelID string `path:"channel_id" format:"uuid" doc:"Notification Channel ID"`
+}
+
+type specUnbindRuleChannelInput struct {
+	OrgID     string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID        string `path:"id" format:"uuid" doc:"Alert Rule ID"`
+	ChannelID string `path:"channel_id" format:"uuid" doc:"Notification Channel ID"`
+}
+
+func registerAlertRulesSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-alert-rule",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/alert-rules",
+		Summary:     "Create an alert rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specCreateAlertRuleInput, specCreateAlertRuleOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-alert-rules",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/alert-rules",
+		Summary:     "List alert rules",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specListAlertRulesInput, specListAlertRulesOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-alert-rule",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/alert-rules/{id}",
+		Summary:     "Get an alert rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specGetAlertRuleInput, specGetAlertRuleOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-alert-rule",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/alert-rules/{id}",
+		Summary:     "Update an alert rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specUpdateAlertRuleInput, specUpdateAlertRuleOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-alert-rule",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/alert-rules/{id}",
+		Summary:     "Delete an alert rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specDeleteAlertRuleInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "validate-alert-rule",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/alert-rules/validate",
+		Summary:     "Validate alert rule DSL",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specValidateAlertRuleInput, specValidateAlertRuleOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "dry-run-alert-rule",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/alert-rules/{id}/dry-run",
+		Summary:     "Dry-run an alert rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specDryRunAlertRuleInput, specDryRunAlertRuleOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-rule-channels",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/alert-rules/{id}/channels",
+		Summary:     "List channels bound to a rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specListRuleChannelsInput, specListRuleChannelsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "bind-rule-channel",
+		Method:      http.MethodPut,
+		Path:        "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}",
+		Summary:     "Bind a channel to a rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specBindRuleChannelInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "unbind-rule-channel",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}",
+		Summary:     "Unbind a channel from a rule",
+		Tags:        []string{"Alert Rules"},
+	}, noopHandler[specUnbindRuleChannelInput, struct{}]())
+}
+
+// ── Alert Events spec-only declarations ──────────────────────────────────────
+
+type specListAlertEventsInput struct {
+	OrgID          string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	RuleID         string `query:"rule_id" doc:"Filter by rule ID"`
+	CveID          string `query:"cve_id" doc:"Filter by CVE ID"`
+	LastMatchState string `query:"last_match_state" doc:"Filter by last match state"`
+	Since          string `query:"since" doc:"Filter events since timestamp (RFC3339)"`
+	After          string `query:"after" doc:"Pagination cursor"`
+}
+type specListAlertEventsOutput struct {
+	Body struct {
+		Items      []alertEventEntry `json:"items"`
+		NextCursor string            `json:"next_cursor,omitempty"`
+	}
+}
+
+func registerAlertEventsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-alert-events",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/alert-events",
+		Summary:     "List alert events",
+		Tags:        []string{"Alert Events"},
+	}, noopHandler[specListAlertEventsInput, specListAlertEventsOutput]())
 }

@@ -15,6 +15,12 @@
 
 ---
 
+## Standing Rule: Fix Small Bugs Along the Way
+
+When converting a handler, fix any small correctness bugs you encounter (missing `TrimSpace` on name validation, wrong status code expectations in tests, silent error swallowing, bare-array decoding that should use envelopes) as long as they have no blast radius beyond the files being touched. Don't defer these — they will be forgotten and we don't want a separate small-bugs pass later. Document what you fixed in the commit message.
+
+---
+
 ## Constraints (from proposal — do not deviate)
 
 1. Route registration stays on Chi for all org-scoped and admin routes. No Huma handler migration.

@@ -276,7 +276,7 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 
 	if req.Name != nil {
 		if *req.Name == "" {
-			writeProblemWithErrors(w, http.StatusBadRequest, "validation failed",
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 				&huma.ErrorDetail{Message: "name must not be empty", Location: "body.name", Value: ""})
 			return
 		}

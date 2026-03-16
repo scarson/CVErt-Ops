@@ -333,11 +333,11 @@ func TestSavedSearch_PatchValidation(t *testing.T) {
 		t.Fatalf("decode create: %v", err)
 	}
 
-	// Patch with empty name → 400.
+	// Patch with empty name → 422.
 	resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID, `{"name":""}`)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
 	}
 
 	// Patch with name > 255 → 422.

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,17 +57,9 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse pagination limit.
-	limit := 100
-	if s := r.URL.Query().Get("limit"); s != "" {
-		v, err := strconv.Atoi(s)
-		if err != nil || v < 1 {
-			writeProblem(w, http.StatusBadRequest, "invalid limit")
-			return
-		}
-		if v > 200 {
-			v = 200
-		}
-		limit = v
+	limit, ok2 := parseLimitParam(w, r, 100, 200)
+	if !ok2 {
+		return
 	}
 
 	p := store.AuditListParams{
@@ -117,14 +108,18 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse keyset cursor.
 	if c := r.URL.Query().Get("cursor"); c != "" {
 		var cur auditLogCursor
-		if err := decodePageCursor(c, &cur); err == nil {
-			t, tErr := time.Parse(time.RFC3339Nano, cur.T)
-			id, idErr := uuid.Parse(cur.ID)
-			if tErr == nil && idErr == nil {
-				p.CursorCreatedAt = &t
-				p.CursorID = &id
-			}
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		t, tErr := time.Parse(time.RFC3339Nano, cur.T)
+		id, idErr := uuid.Parse(cur.ID)
+		if tErr != nil || idErr != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		p.CursorCreatedAt = &t
+		p.CursorID = &id
 	}
 
 	rows, err := srv.store.ListAuditEntries(r.Context(), p)

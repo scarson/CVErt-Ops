@@ -170,7 +170,7 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 
 	var req createWatchlistBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -335,7 +335,7 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 
 	var req patchWatchlistBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 
@@ -467,7 +467,7 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 
 	var req createWatchlistItemBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 

@@ -72,7 +72,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 
 	var req createChannelBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -251,7 +251,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req patchChannelBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 

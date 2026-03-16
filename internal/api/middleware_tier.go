@@ -33,7 +33,7 @@ func (srv *Server) tierMiddleware(next http.Handler) http.Handler {
 			if err != nil {
 				slog.ErrorContext(r.Context(), "tier middleware: failed to load org tier",
 					"org_id", orgID, "error", err)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				writeProblem(w, http.StatusInternalServerError, "internal server error")
 				return
 			}
 			srv.tierCache.Set(orgID, tierName, overrides)

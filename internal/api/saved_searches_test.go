@@ -227,12 +227,12 @@ func TestSavedSearch_CreateValidation(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
 	token := cookieValue(loginResp, "access_token")
 
-	// Empty name → 400
+	// Empty name → 422 (validation error, not malformed)
 	body := fmt.Sprintf(`{"name":"","query_json":%s}`, validDSLJSON)
 	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
 	}
 
 	// Invalid DSL → 422
@@ -1164,8 +1164,8 @@ func TestCreateSavedSearch_ValidationErrorFormat(t *testing.T) {
 	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("empty name: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("empty name: got %d, want 422", resp.StatusCode)
 	}
 
 	ct := resp.Header.Get("Content-Type")

@@ -65,7 +65,7 @@ func (srv *Server) createOrgHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req createOrgBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -126,7 +126,7 @@ func (srv *Server) updateOrgHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req updateOrgBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 
@@ -246,7 +246,7 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 
 	var req updateMemberRoleBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 
@@ -404,7 +404,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 
 	var req createInvitationBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 	if strings.TrimSpace(req.Email) == "" {

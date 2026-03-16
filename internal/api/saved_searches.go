@@ -96,7 +96,7 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	if req.Name == "" {
-		writeProblemWithErrors(w, http.StatusBadRequest, "validation failed",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "name is required", Location: "body.name", Value: ""})
 		return
 	}
@@ -112,7 +112,7 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	if len(req.QueryJSON) == 0 {
-		writeProblemWithErrors(w, http.StatusBadRequest, "validation failed",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "query_json is required", Location: "body.query_json", Value: ""})
 		return
 	}

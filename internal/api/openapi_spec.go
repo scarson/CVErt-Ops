@@ -36,6 +36,7 @@ func registerAllSpecOps(api huma.API) {
 	registerWatchlistsSpecOps(api)
 	registerAlertRulesSpecOps(api)
 	registerAlertEventsSpecOps(api)
+	registerChannelsSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -754,4 +755,133 @@ func registerAlertEventsSpecOps(api huma.API) {
 		Summary:     "List alert events",
 		Tags:        []string{"Alert Events"},
 	}, noopHandler[specListAlertEventsInput, specListAlertEventsOutput]())
+}
+
+// ── Channels spec-only declarations ──────────────────────────────────────────
+
+type specCreateChannelInput struct {
+	OrgID string            `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createChannelBody `json:"body"`
+}
+type specCreateChannelOutput struct {
+	Location string `header:"Location"`
+	Body     channelCreateEntry
+}
+
+type specListChannelsInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specListChannelsOutput struct {
+	Body struct {
+		Items []channelEntry `json:"items"`
+	}
+}
+
+type specGetChannelInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
+}
+type specGetChannelOutput struct {
+	Body channelEntry
+}
+
+type specUpdateChannelInput struct {
+	OrgID string           `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string           `path:"id" format:"uuid" doc:"Channel ID"`
+	Body  patchChannelBody `json:"body"`
+}
+type specUpdateChannelOutput struct {
+	Body channelEntry
+}
+
+type specDeleteChannelInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
+}
+
+type specRotateSecretInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
+}
+type specRotateSecretOutput struct {
+	Body rotateSecretResponse
+}
+
+type specClearSecondaryInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
+}
+
+type specTestChannelInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
+}
+type specTestChannelOutput struct {
+	Body testChannelResponse
+}
+
+func registerChannelsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-channel",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/channels",
+		Summary:     "Create a notification channel",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specCreateChannelInput, specCreateChannelOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-channels",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/channels",
+		Summary:     "List notification channels",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specListChannelsInput, specListChannelsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-channel",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/channels/{id}",
+		Summary:     "Get a notification channel",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specGetChannelInput, specGetChannelOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-channel",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/channels/{id}",
+		Summary:     "Update a notification channel",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specUpdateChannelInput, specUpdateChannelOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-channel",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/channels/{id}",
+		Summary:     "Delete a notification channel",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specDeleteChannelInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "rotate-channel-secret",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/channels/{id}/rotate-secret",
+		Summary:     "Rotate signing secret",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specRotateSecretInput, specRotateSecretOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "clear-channel-secondary-secret",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/channels/{id}/clear-secondary",
+		Summary:     "Clear secondary signing secret",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specClearSecondaryInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "test-channel",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/channels/{id}/test",
+		Summary:     "Test a notification channel",
+		Tags:        []string{"Channels"},
+	}, noopHandler[specTestChannelInput, specTestChannelOutput]())
 }

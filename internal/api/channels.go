@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -69,24 +70,24 @@ type rotateSecretResponse struct {
 func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	var req createChannelBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		http.Error(w, "name is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return
 	}
 	if req.Type == "" {
 		req.Type = "webhook"
 	}
 	if req.Type != "webhook" && req.Type != "email" {
-		http.Error(w, "type must be 'webhook' or 'email'", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "type must be 'webhook' or 'email'", Location: "body.type"})
 		return
 	}
 
@@ -94,7 +95,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
 		slog.ErrorContext(r.Context(), "tier resolver missing from context")
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if !resolver.BoolFlag("channels_"+req.Type, req.Type == "webhook", true, true) {
@@ -106,7 +107,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 			Success:    false,
 			Metadata:   map[string]any{"reason": "tier_limit", "channel_type": req.Type},
 		})
-		http.Error(w, "tier limit: channel type not available", http.StatusForbidden)
+		writeProblemTyped(w, http.StatusForbidden, problemTypeTierLimit, "channel type not available for current tier")
 		return
 	}
 
@@ -114,23 +115,23 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	if req.Type == "webhook" {
 		var cfg map[string]any
 		if err := json.Unmarshal(req.Config, &cfg); err != nil {
-			http.Error(w, "webhook config must include a non-empty url", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must be valid JSON with a url field", Location: "body.config"})
 			return
 		}
 		urlVal, ok := cfg["url"].(string)
 		if !ok || strings.TrimSpace(urlVal) == "" {
-			http.Error(w, "webhook config must include a non-empty url", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
 			return
 		}
 		if err := validateWebhookURL(urlVal); err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
 			return
 		}
 	}
 
 	if req.Type == "email" {
 		if _, err := validateEmailConfig(req.Config); err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.recipients"})
 			return
 		}
 	}
@@ -138,7 +139,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	row, secret, err := srv.store.CreateNotificationChannel(r.Context(), orgID, req.Name, req.Type, req.Config)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create notification channel", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -151,6 +152,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		CreatedAt: row.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 	}
+	writeLocation(w, r, row.ID.String())
 	if req.Type == "webhook" {
 		writeJSON(w, http.StatusCreated, channelCreateEntry{
 			channelEntry: entry,
@@ -180,22 +182,22 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 func (srv *Server) getChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	row, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get notification channel", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, channelEntry{
@@ -213,13 +215,13 @@ func (srv *Server) getChannelHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listChannelsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	rows, err := srv.store.ListNotificationChannels(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list notification channels", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	items := make([]channelEntry, len(rows))
@@ -234,7 +236,7 @@ func (srv *Server) listChannelsHandler(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}
 	}
-	writeJSON(w, http.StatusOK, channelListResponse{Items: items})
+	writeList(w, items, "")
 }
 
 // patchChannelHandler handles PATCH /api/v1/orgs/{org_id}/channels/{id}.
@@ -242,18 +244,18 @@ func (srv *Server) listChannelsHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	var req patchChannelBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 
@@ -261,11 +263,11 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 	current, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get notification channel for patch", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	oldState := channelAuditState(current.Name, current.Type, current.Config)
@@ -276,7 +278,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name != nil {
 		if strings.TrimSpace(*req.Name) == "" {
-			http.Error(w, "name must not be empty or whitespace", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "name cannot be empty", Location: "body.name"})
 			return
 		}
 		params.Name = *req.Name
@@ -286,22 +288,22 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		if current.Type == "webhook" {
 			var cfg map[string]any
 			if err := json.Unmarshal(*req.Config, &cfg); err != nil {
-				http.Error(w, "webhook config must be valid JSON with a url field", http.StatusUnprocessableEntity)
+				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must be valid JSON with a url field", Location: "body.config"})
 				return
 			}
 			urlVal, ok := cfg["url"].(string)
 			if !ok || strings.TrimSpace(urlVal) == "" {
-				http.Error(w, "webhook config must include a non-empty url", http.StatusUnprocessableEntity)
+				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
 				return
 			}
 			if err := validateWebhookURL(urlVal); err != nil {
-				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
 				return
 			}
 		}
 		if current.Type == "email" {
 			if _, err := validateEmailConfig(*req.Config); err != nil {
-				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.recipients"})
 				return
 			}
 		}
@@ -311,11 +313,11 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 	updated, err := srv.store.UpdateNotificationChannel(r.Context(), orgID, id, params)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update notification channel", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if updated == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, channelEntry{
@@ -344,12 +346,12 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) deleteChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -357,28 +359,28 @@ func (srv *Server) deleteChannelHandler(w http.ResponseWriter, r *http.Request) 
 	current, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get channel for delete", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	hasBindings, err := srv.store.ChannelHasActiveBindings(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "check channel active bindings", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if hasBindings {
-		http.Error(w, "channel has active bound rules or reports", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "channel has active bound rules or reports")
 		return
 	}
 
 	if err := srv.store.SoftDeleteNotificationChannel(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "soft delete notification channel", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	srv.auditLog(r, audit.Entry{
@@ -398,39 +400,39 @@ func (srv *Server) deleteChannelHandler(w http.ResponseWriter, r *http.Request) 
 func (srv *Server) rotateSecretHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get channel for rotate", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if ch == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	if ch.Type != "webhook" {
-		http.Error(w, "signing secret operations are only available for webhook channels", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "signing secret operations are only available for webhook channels")
 		return
 	}
 
 	secret, err := srv.store.RotateSigningSecret(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "rotate signing secret", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if secret == "" {
 		// Channel was deleted between GET and rotate (TOCTOU).
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, rotateSecretResponse{SigningSecret: secret})
@@ -441,33 +443,33 @@ func (srv *Server) rotateSecretHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) clearSecondarySecretHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get channel for clear-secondary", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if ch == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	if ch.Type != "webhook" {
-		http.Error(w, "signing secret operations are only available for webhook channels", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "signing secret operations are only available for webhook channels")
 		return
 	}
 
 	if err := srv.store.ClearSecondarySecret(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "clear secondary secret", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -484,12 +486,12 @@ type testChannelResponse struct {
 func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -497,11 +499,11 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get channel for test", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if ch == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -512,7 +514,7 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 	case "email":
 		testErr = srv.testEmailChannel(r.Context(), ch.Config)
 	default:
-		http.Error(w, "unsupported channel type", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "unsupported channel type")
 		return
 	}
 

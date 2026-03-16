@@ -3,7 +3,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,163 +16,6 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/config"
 )
-
-// ── Huma input/output types for groups (spec-only) ──────────────────────────
-// These wrap the existing Chi DTOs so spec declarations and runtime handlers
-// share the same field definitions. Drift between these types and the Chi
-// handler DTOs is the primary risk of this approach.
-
-type specCreateGroupInput struct {
-	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	Body  createGroupBody
-}
-
-type specCreateGroupOutput struct {
-	Header http.Header `header:"Location"`
-	Body   groupEntry
-}
-
-type specListGroupsInput struct {
-	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
-}
-
-type specListGroupsOutput struct {
-	Body struct {
-		Items []groupEntry `json:"items"`
-	}
-}
-
-type specGetGroupInput struct {
-	OrgID   string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	GroupID string `path:"group_id" format:"uuid" doc:"Group ID"`
-}
-
-type specGetGroupOutput struct {
-	Body groupEntry
-}
-
-type specUpdateGroupInput struct {
-	OrgID   string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	GroupID string `path:"group_id" format:"uuid" doc:"Group ID"`
-	Body    updateGroupBody
-}
-
-type specUpdateGroupOutput struct {
-	Body groupEntry
-}
-
-type specDeleteGroupInput struct {
-	OrgID   string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	GroupID string `path:"group_id" format:"uuid" doc:"Group ID"`
-}
-
-type specListGroupMembersInput struct {
-	OrgID   string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	GroupID string `path:"group_id" format:"uuid" doc:"Group ID"`
-}
-
-type specListGroupMembersOutput struct {
-	Body struct {
-		Items []groupMemberEntry `json:"items"`
-	}
-}
-
-type specAddGroupMemberInput struct {
-	OrgID   string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	GroupID string `path:"group_id" format:"uuid" doc:"Group ID"`
-	Body    addGroupMemberBody
-}
-
-type specRemoveGroupMemberInput struct {
-	OrgID   string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	GroupID string `path:"group_id" format:"uuid" doc:"Group ID"`
-	UserID  string `path:"user_id" format:"uuid" doc:"User ID to remove"`
-}
-
-// registerGroupsSpec registers spec-only Huma operations for the groups route
-// family. These declarations exist solely for OpenAPI generation — the runtime
-// handlers remain Chi-based. Handlers are no-ops that are never called.
-func registerGroupsSpec(api huma.API) {
-	huma.Register(api, huma.Operation{
-		OperationID: "create-group",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/groups",
-		Summary:     "Create a group",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specCreateGroupInput) (*specCreateGroupOutput, error) {
-		return nil, nil // spec-only, never called at runtime
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "list-groups",
-		Method:      http.MethodGet,
-		Path:        "/orgs/{org_id}/groups",
-		Summary:     "List groups",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specListGroupsInput) (*specListGroupsOutput, error) {
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "get-group",
-		Method:      http.MethodGet,
-		Path:        "/orgs/{org_id}/groups/{group_id}",
-		Summary:     "Get a group",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specGetGroupInput) (*specGetGroupOutput, error) {
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "update-group",
-		Method:      http.MethodPatch,
-		Path:        "/orgs/{org_id}/groups/{group_id}",
-		Summary:     "Update a group",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specUpdateGroupInput) (*specUpdateGroupOutput, error) {
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "delete-group",
-		Method:      http.MethodDelete,
-		Path:        "/orgs/{org_id}/groups/{group_id}",
-		Summary:     "Delete a group",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, _ *specDeleteGroupInput) (*struct{}, error) {
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "list-group-members",
-		Method:      http.MethodGet,
-		Path:        "/orgs/{org_id}/groups/{group_id}/members",
-		Summary:     "List group members",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specListGroupMembersInput) (*specListGroupMembersOutput, error) {
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "add-group-member",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/groups/{group_id}/members",
-		Summary:     "Add a member to a group",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specAddGroupMemberInput) (*struct{}, error) {
-		return nil, nil
-	})
-
-	huma.Register(api, huma.Operation{
-		OperationID: "remove-group-member",
-		Method:      http.MethodDelete,
-		Path:        "/orgs/{org_id}/groups/{group_id}/members/{user_id}",
-		Summary:     "Remove a member from a group",
-		Tags:        []string{"Groups"},
-	}, func(_ context.Context, input *specRemoveGroupMemberInput) (*struct{}, error) {
-		return nil, nil
-	})
-}
 
 // TestSpecOnlyHumaDeclarations_Groups is the OpenAPI evaluation gate test for
 // Candidate 1 (spec-only Huma declarations). It verifies:
@@ -191,7 +33,7 @@ func TestSpecOnlyHumaDeclarations_Groups(t *testing.T) {
 	specAPI := humachi.New(specRouter, specConfig)
 
 	// Register groups spec declarations.
-	registerGroupsSpec(specAPI)
+	registerGroupsSpecOps(specAPI)
 
 	// Extract the generated OpenAPI spec.
 	specBytes, err := json.MarshalIndent(specAPI.OpenAPI(), "", "  ")
@@ -380,7 +222,7 @@ func TestSpecMerge_CombinesHumaAndSpecOnly(t *testing.T) {
 	specRouter := chi.NewRouter()
 	specConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	specAPI := humachi.New(specRouter, specConfig)
-	registerGroupsSpec(specAPI)
+	registerGroupsSpecOps(specAPI)
 
 	specOnlyBytes, _ := json.Marshal(specAPI.OpenAPI())
 	var specOnly map[string]any
@@ -449,7 +291,7 @@ func TestSpecMerge_CombinesHumaAndSpecOnly(t *testing.T) {
 		}
 		outPath := filepath.Join("..", "..", "openapi-merged.json")
 		if err := os.WriteFile(outPath, append(pretty, '\n'), 0644); err != nil { //nolint:gosec // G306: OpenAPI spec is a repo artifact
-			t.Fatalf("write %s: %v", outPath, err)
+			t.Fatalf("write %s: %v", outPath, len(pretty))
 		}
 		t.Logf("wrote merged spec to %s (%d bytes)", outPath, len(pretty))
 	}

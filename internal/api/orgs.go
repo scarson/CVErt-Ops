@@ -492,6 +492,7 @@ func (srv *Server) createInvitationHandler(w http.ResponseWriter, r *http.Reques
 		Success:    true,
 		NewState:   map[string]any{"email": inv.Email, "role": inv.Role},
 	})
+	writeLocation(w, r, inv.ID.String())
 	writeJSON(w, http.StatusAccepted, invitationEntry{
 		ID:        inv.ID.String(),
 		Email:     inv.Email,

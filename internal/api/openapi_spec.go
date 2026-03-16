@@ -37,6 +37,7 @@ func registerAllSpecOps(api huma.API) {
 	registerAlertRulesSpecOps(api)
 	registerAlertEventsSpecOps(api)
 	registerChannelsSpecOps(api)
+	registerDeliveriesSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -884,4 +885,60 @@ func registerChannelsSpecOps(api huma.API) {
 		Summary:     "Test a notification channel",
 		Tags:        []string{"Channels"},
 	}, noopHandler[specTestChannelInput, specTestChannelOutput]())
+}
+
+// ── Deliveries spec-only declarations ────────────────────────────────────────
+
+type specListDeliveriesInput struct {
+	OrgID     string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	RuleID    string `query:"rule_id" doc:"Filter by rule ID"`
+	ChannelID string `query:"channel_id" doc:"Filter by channel ID"`
+	Status    string `query:"status" doc:"Filter by status"`
+	Cursor    string `query:"cursor" doc:"Pagination cursor"`
+	Limit     int    `query:"limit" doc:"Max items per page (1-200, default 50)"`
+}
+type specListDeliveriesOutput struct {
+	Body struct {
+		Items      []deliveryEntry `json:"items"`
+		NextCursor string          `json:"next_cursor,omitempty"`
+	}
+}
+
+type specGetDeliveryInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Delivery ID"`
+}
+type specGetDeliveryOutput struct {
+	Body deliveryDetail
+}
+
+type specReplayDeliveryInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Delivery ID"`
+}
+
+func registerDeliveriesSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-deliveries",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/deliveries",
+		Summary:     "List deliveries",
+		Tags:        []string{"Deliveries"},
+	}, noopHandler[specListDeliveriesInput, specListDeliveriesOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-delivery",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/deliveries/{id}",
+		Summary:     "Get a delivery",
+		Tags:        []string{"Deliveries"},
+	}, noopHandler[specGetDeliveryInput, specGetDeliveryOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "replay-delivery",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/deliveries/{id}/replay",
+		Summary:     "Replay a delivery",
+		Tags:        []string{"Deliveries"},
+	}, noopHandler[specReplayDeliveryInput, struct{}]())
 }

@@ -344,8 +344,8 @@ func TestReplayDelivery_RateLimited(t *testing.T) {
 	}
 }
 
-// TestListDeliveries_LimitClamping verifies limit < 1 returns 400 and limit > 200 is clamped.
-func TestListDeliveries_LimitClamping(t *testing.T) {
+// TestListDeliveries_LimitValidation verifies limit < 1 and limit > 200 both return 400.
+func TestListDeliveries_LimitValidation(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -374,13 +374,13 @@ func TestListDeliveries_LimitClamping(t *testing.T) {
 		t.Errorf("limit=-1: got %d, want 400", resp2.StatusCode)
 	}
 
-	// limit=999 → 200 OK (clamped to 200, not rejected).
+	// limit=999 → 400 (exceeds max of 200)
 	q3 := url.Values{}
 	q3.Set("limit", "999")
 	resp3 := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q3)
 	defer resp3.Body.Close() //nolint:errcheck,gosec // G104
-	if resp3.StatusCode != http.StatusOK {
-		t.Errorf("limit=999: got %d, want 200 (clamped)", resp3.StatusCode)
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Errorf("limit=999: got %d, want 400", resp3.StatusCode)
 	}
 }
 
@@ -649,4 +649,129 @@ func TestReplayDelivery_RBAC_ViewerMemberForbidden(t *testing.T) {
 			t.Errorf("member get: got %d, want 200", resp.StatusCode)
 		}
 	})
+}
+
+// TestListDeliveries_Envelope verifies the standard list envelope shape.
+func TestListDeliveries_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	createTestDelivery(t, ctx, db, orgID, "env")
+
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, nil)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list deliveries: got %d, want 200", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Items      []json.RawMessage `json:"items"`
+		NextCursor string            `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if envelope.Items == nil {
+		t.Fatal("items field must be present (got nil)")
+	}
+	if len(envelope.Items) != 1 {
+		t.Fatalf("items count = %d, want 1", len(envelope.Items))
+	}
+}
+
+// TestListDeliveries_MalformedCursor verifies that an old-format cursor returns 400.
+func TestListDeliveries_MalformedCursor(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Old format: RFC3339Nano/uuid (not base64-encoded JSON).
+	q := url.Values{}
+	q.Set("cursor", "2024-01-01T00:00:00Z/"+uuid.New().String())
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, q)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("old-format cursor: got %d, want 400", resp.StatusCode)
+	}
+
+	// Verify it's problem+json.
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestReplayDelivery_429_ProblemJSON verifies that 429 responses use application/problem+json.
+func TestReplayDelivery_429_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+
+	// Create 11 distinct deliveries.
+	const total = 11
+	var delIDs [total]uuid.UUID
+	for i := range total {
+		suffix := "r" + string(rune('A'+i))
+		chanID := createTestDelivery(t, ctx, db, orgID, suffix)
+		delIDs[i] = getDeliveryIDByChannel(t, ctx, db, orgID, chanID)
+	}
+
+	// Set all to failed.
+	for i := range total {
+		setDeliveryStatus(t, ctx, db, delIDs[i], "failed")
+	}
+
+	// Exhaust the rate limit.
+	for i := range 10 {
+		resp := doReplayDelivery(t, ctx, ts, token, aliceReg.OrgID, delIDs[i].String())
+		resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("replay %d: got %d, want 204", i+1, resp.StatusCode)
+		}
+	}
+
+	// 11th replay triggers 429.
+	resp := doReplayDelivery(t, ctx, ts, token, aliceReg.OrgID, delIDs[10].String())
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("11th replay: got %d, want 429", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+
+	var problem struct {
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Status != 429 {
+		t.Errorf("problem.status = %d, want 429", problem.Status)
+	}
 }

@@ -38,7 +38,7 @@ function mockGroupsSuccess(groups = [makeGroup()]) {
   mockFetch.mockResolvedValueOnce({
     ok: true,
     status: 200,
-    json: () => Promise.resolve(groups),
+    json: () => Promise.resolve({ items: groups }),
   })
 }
 
@@ -430,10 +430,11 @@ describe('GroupsView', () => {
       await flushPromises()
 
       // Mock the fetches that GroupMembersDialog will make when it opens
+      // Group members endpoint returns list envelope; org members still bare array.
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve([]),
+        json: () => Promise.resolve({ items: [] }),
       })
       mockFetch.mockResolvedValueOnce({
         ok: true,

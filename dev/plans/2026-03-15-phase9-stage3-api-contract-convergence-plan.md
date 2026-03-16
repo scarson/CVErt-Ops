@@ -11,6 +11,8 @@
 **Proposal:** `dev/plans/2026-03-15-phase9-stage3-api-contract-convergence-proposal.md`
 **Gate Decision:** `dev/research-findings/openapi-evaluation-gate.md` — Candidate 1 (spec-only Huma) selected.
 
+**Execution environment:** All command examples assume the Bash tool running from the repo root. Do not prefix commands with `cd /c/Users/Sam/Code/CVErt-Ops` — the Bash tool already runs from the project directory. Use `rg` instead of `grep -r` where practical.
+
 ---
 
 ## Constraints (from proposal — do not deviate)
@@ -86,7 +88,7 @@ Response envelope:
 
 `next_cursor` is omitted (not `null`, not `""`) when there are no more results.
 
-This matches the existing Huma CVE endpoint cursor format. Existing `encodeTimeCursor`/`decodeTimeCursor` (pipe-separated) and `encodeDeliveryCursor` (slash-separated) will be replaced by the shared cursor helper.
+This matches the existing Huma CVE endpoint cursor format. **Encoding must be `base64.RawURLEncoding` (no `=` padding)** — matching `cves.go` lines 133/141. The old `encodeTimeCursor`/`decodeTimeCursor` (pipe-separated, padded `URLEncoding`) and `encodeDeliveryCursor` (slash-separated, plaintext) will be replaced by the shared cursor helper. `decodeCursor` accepts both padded and unpadded formats for backward compatibility, but `encodeCursor` always emits unpadded.
 
 ## Important Notes for Subagent Execution
 
@@ -162,7 +164,7 @@ Each task follows this exact recipe. Task 1 demonstrates it fully; subsequent ta
 1. **Replace `http.Error` with `writeProblem`/`writeProblemWithErrors`:**
    - Malformed JSON from `json.Decoder`: use `decodeJSON(r, &req)` → if non-nil, `writeProblem(w, 400, detail.Message); return`
    - Invalid path params (bad UUID): `writeProblem(w, 400, "invalid {param_name}")`
-   - Validation failures (missing/invalid fields): `writeProblemWithErrors(w, 422, "validation failed", problemDetail{Message: "...", Location: "body.field"})`
+   - Validation failures (missing/invalid fields): `writeProblemWithErrors(w, 422, "validation failed", &huma.ErrorDetail{Message: "...", Location: "body.field"})` — note: uses `huma.ErrorDetail` directly, not a clone type
    - Not found: `writeProblem(w, 404, "{resource} not found")`
    - Tier limit: `writeProblemTyped(w, 403, problemTypeTierLimit, "...")`
    - Internal error: `writeProblem(w, 500, "internal error")`
@@ -213,7 +215,7 @@ Each task follows this exact recipe. Task 1 demonstrates it fully; subsequent ta
 | 0 | Shared primitives | `contract.go`, `openapi_spec.go` | — | — | — |
 | 1 | Groups (reference) | `groups.go` | `GroupsView.vue`, `GroupDialog.vue`, `GroupMembersDialog.vue` | No | Yes (`updateGroupBody`) |
 | 2 | Orgs + Members + Invitations | `orgs.go` | `CreateOrgView.vue`, `MembersView.vue`, `InviteMemberDialog.vue` | No | Yes (`updateOrgBody`) |
-| 3 | API Keys | `apikeys.go` | *(none — managed within MembersView, already covered in Task 2)* | No | No |
+| 3 | API Keys | `apikeys.go` | *(backend only — preflight check for consumers)* | No | No |
 | 4 | Watchlists | `watchlists.go` | `WatchlistListView.vue`, `WatchlistDetailView.vue`, `AddItemDialog.vue`, `CreateWatchlistDialog.vue` | Yes (2) | No (already pointer) |
 | 5 | Alert Rules + Events | `alert_rules.go`, `alert_events.go` | *(no views exist yet — backend only)* | Yes (2) | No (already pointer) |
 | 6 | Channels | `channels.go` | *(no views exist yet — backend only)* | No | No (already pointer) |
@@ -288,7 +290,7 @@ func TestWriteValidationProblem_MatchesHumaFormat(t *testing.T) {
 
     rec := httptest.NewRecorder()
     writeProblemWithErrors(rec, http.StatusUnprocessableEntity, "validation failed",
-        problemDetail{Message: "too short", Location: "body.name", Value: "a"})
+        &huma.ErrorDetail{Message: "too short", Location: "body.name", Value: "a"})
     chiJSON := rec.Body.Bytes()
 
     var humaMap, chiMap map[string]any
@@ -314,6 +316,47 @@ func TestWriteValidationProblem_MatchesHumaFormat(t *testing.T) {
         if fmt.Sprint(chiErr0[key]) != fmt.Sprint(humaErr0[key]) {
             t.Errorf("errors[0].%s: got %v, want %v", key, chiErr0[key], humaErr0[key])
         }
+    }
+}
+
+func TestWriteProblem_ParityAcrossStatusCodes(t *testing.T) {
+    // Verify parity with huma for all status codes used in the API.
+    cases := []struct {
+        status    int
+        detail    string
+        humaFunc  func(string, ...error) huma.StatusError
+    }{
+        {400, "bad request", huma.Error400BadRequest},
+        {401, "not authenticated", huma.Error401Unauthorized},
+        {403, "forbidden", huma.Error403Forbidden},
+        {404, "not found", huma.Error404NotFound},
+        {429, "rate limit exceeded", huma.Error429TooManyRequests},
+    }
+    for _, tc := range cases {
+        t.Run(fmt.Sprintf("%d", tc.status), func(t *testing.T) {
+            humaErr := tc.humaFunc(tc.detail)
+            humaJSON, _ := json.Marshal(humaErr)
+
+            rec := httptest.NewRecorder()
+            writeProblem(rec, tc.status, tc.detail)
+            chiJSON := rec.Body.Bytes()
+
+            var humaMap, chiMap map[string]any
+            json.Unmarshal(humaJSON, &humaMap)
+            json.Unmarshal(chiJSON, &chiMap)
+
+            for _, key := range []string{"title", "status", "detail"} {
+                if chiMap[key] != humaMap[key] {
+                    t.Errorf("field %q: got %v, want %v", key, chiMap[key], humaMap[key])
+                }
+            }
+
+            // Must have same key set (no extra or missing keys).
+            if len(chiMap) != len(humaMap) {
+                t.Errorf("key count: got %d, want %d\n  chi: %v\n  huma: %v",
+                    len(chiMap), len(humaMap), chiMap, humaMap)
+            }
+        })
     }
 }
 
@@ -404,13 +447,44 @@ func TestCursorRoundTrip(t *testing.T) {
     }
 }
 
+func TestEncodeCursor_NoPadding(t *testing.T) {
+    // encodeCursor must use RawURLEncoding (no '=' padding), matching
+    // the existing Huma CVE cursor format in cves.go.
+    type cur struct {
+        T  string `json:"t"`
+        ID string `json:"id"`
+    }
+    encoded := encodeCursor(cur{T: "2026-01-01T00:00:00Z", ID: "abc"})
+    if strings.Contains(encoded, "=") {
+        t.Errorf("cursor contains padding: %q", encoded)
+    }
+}
+
 func TestDecodeCursor_Invalid(t *testing.T) {
     var dst struct{}
     if err := decodeCursor("not-base64!!!", &dst); err == nil {
         t.Error("expected error for invalid base64")
     }
-    if err := decodeCursor(base64.URLEncoding.EncodeToString([]byte("not-json")), &dst); err == nil {
+    if err := decodeCursor(base64.RawURLEncoding.EncodeToString([]byte("not-json")), &dst); err == nil {
         t.Error("expected error for invalid JSON inside base64")
+    }
+}
+
+func TestDecodeCursor_AcceptsPaddedFallback(t *testing.T) {
+    // Backward compatibility: decodeCursor should accept padded cursors
+    // issued before the encoding was standardized.
+    type cur struct {
+        T  string `json:"t"`
+        ID string `json:"id"`
+    }
+    orig := cur{T: "2026-01-01T00:00:00Z", ID: "abc"}
+    padded := base64.URLEncoding.EncodeToString(mustJSON(orig))
+    var decoded cur
+    if err := decodeCursor(padded, &decoded); err != nil {
+        t.Fatalf("decodeCursor should accept padded: %v", err)
+    }
+    if decoded != orig {
+        t.Errorf("roundtrip mismatch: got %+v, want %+v", decoded, orig)
     }
 }
 
@@ -459,7 +533,7 @@ Expected: compilation errors (functions don't exist yet).
 
 ```go
 // ABOUTME: Shared contract helpers for Chi JSON handlers.
-// ABOUTME: Produces RFC 9457 Problem Details matching huma's ErrorModel format.
+// ABOUTME: Produces RFC 9457 Problem Details using huma's ErrorModel/ErrorDetail types directly.
 package api
 
 import (
@@ -469,30 +543,16 @@ import (
     "log/slog"
     "net/http"
     "strings"
+
+    "github.com/danielgtaylor/huma/v2"
 )
 
-// problemResponse matches huma's ErrorModel field-for-field.
-type problemResponse struct {
-    Type   string          `json:"type,omitempty"`
-    Title  string          `json:"title,omitempty"`
-    Status int             `json:"status,omitempty"`
-    Detail string          `json:"detail,omitempty"`
-    Errors []problemDetail `json:"errors,omitempty"`
-}
-
-// problemDetail matches huma's ErrorDetail field-for-field.
-type problemDetail struct {
-    Message  string `json:"message,omitempty"`
-    Location string `json:"location,omitempty"`
-    Value    any    `json:"value,omitempty"`
-}
-
-// writeProblem writes an RFC 9457 Problem Details response matching huma's format.
+// writeProblem writes an RFC 9457 Problem Details response using huma's ErrorModel.
 // Does NOT set the "type" field — huma omits it via omitempty, so we must too.
 func writeProblem(w http.ResponseWriter, status int, detail string) {
     w.Header().Set("Content-Type", "application/problem+json")
     w.WriteHeader(status)
-    resp := problemResponse{
+    resp := huma.ErrorModel{
         Title:  http.StatusText(status),
         Status: status,
         Detail: detail,
@@ -503,11 +563,11 @@ func writeProblem(w http.ResponseWriter, status int, detail string) {
 }
 
 // writeProblemWithErrors writes an RFC 9457 response with field-level error details.
-// Does NOT set the "type" field — matches huma's default behavior.
-func writeProblemWithErrors(w http.ResponseWriter, status int, detail string, errs ...problemDetail) {
+// Uses huma.ErrorDetail directly — no custom clone types.
+func writeProblemWithErrors(w http.ResponseWriter, status int, detail string, errs ...*huma.ErrorDetail) {
     w.Header().Set("Content-Type", "application/problem+json")
     w.WriteHeader(status)
-    resp := problemResponse{
+    resp := huma.ErrorModel{
         Title:  http.StatusText(status),
         Status: status,
         Detail: detail,
@@ -523,7 +583,7 @@ func writeProblemWithErrors(w http.ResponseWriter, status int, detail string, er
 func writeProblemTyped(w http.ResponseWriter, status int, problemType, detail string) {
     w.Header().Set("Content-Type", "application/problem+json")
     w.WriteHeader(status)
-    resp := problemResponse{
+    resp := huma.ErrorModel{
         Type:   problemType,
         Title:  http.StatusText(status),
         Status: status,
@@ -538,11 +598,11 @@ func writeProblemTyped(w http.ResponseWriter, status int, problemType, detail st
 const problemTypeTierLimit = "urn:cvert:error:tier-limit"
 
 // decodeJSON decodes JSON from the request body into dst.
-// Returns a problemDetail on malformed JSON, nil on success.
+// Returns a *huma.ErrorDetail on malformed JSON, nil on success.
 // The caller is responsible for semantic validation after decode.
-func decodeJSON(r *http.Request, dst any) *problemDetail {
+func decodeJSON(r *http.Request, dst any) *huma.ErrorDetail {
     if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-        return &problemDetail{
+        return &huma.ErrorDetail{
             Message:  fmt.Sprintf("invalid JSON: %s", err.Error()),
             Location: "body",
         }
@@ -568,20 +628,27 @@ func writeList[T any](w http.ResponseWriter, items []T, nextCursor string) {
     })
 }
 
-// encodeCursor encodes cursor fields as opaque base64url JSON.
+// encodeCursor encodes cursor fields as opaque base64url JSON (no padding).
+// Uses RawURLEncoding to match the existing Huma CVE cursor format in cves.go.
 func encodeCursor(v any) string {
     raw, err := json.Marshal(v)
     if err != nil {
         return ""
     }
-    return base64.URLEncoding.EncodeToString(raw)
+    return base64.RawURLEncoding.EncodeToString(raw)
 }
 
 // decodeCursor decodes an opaque base64url JSON cursor into dst.
+// Tries RawURLEncoding first (canonical). Falls back to padded URLEncoding
+// for cursors issued before the encoding was standardized.
 func decodeCursor(s string, dst any) error {
-    raw, err := base64.URLEncoding.DecodeString(s)
+    raw, err := base64.RawURLEncoding.DecodeString(s)
     if err != nil {
-        return fmt.Errorf("invalid cursor encoding: %w", err)
+        // Fallback: try padded URLEncoding for backward compatibility.
+        raw, err = base64.URLEncoding.DecodeString(s)
+        if err != nil {
+            return fmt.Errorf("invalid cursor encoding: %w", err)
+        }
     }
     if err := json.Unmarshal(raw, dst); err != nil {
         return fmt.Errorf("invalid cursor format: %w", err)
@@ -668,6 +735,13 @@ func registerAllSpecOps(api huma.API) {
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
 // into the production OpenAPI document.
+//
+// Collision rules:
+// - Path collision: panics. A spec-only path that already exists in the production
+//   spec is a bug (the route should be on Huma, not spec-only).
+// - Schema collision: compares JSON serialization. Identical schemas are deduplicated
+//   (e.g., ErrorModel). Semantically different schemas with the same name are a bug
+//   and cause a panic. This prevents silent overwrites.
 func mergeSpecPaths(prod, specOnly huma.API) {
     prodSpec := prod.OpenAPI()
     soSpec := specOnly.OpenAPI()
@@ -676,9 +750,10 @@ func mergeSpecPaths(prod, specOnly huma.API) {
         prodSpec.Paths = map[string]*huma.PathItem{}
     }
     for path, item := range soSpec.Paths {
-        if _, exists := prodSpec.Paths[path]; !exists {
-            prodSpec.Paths[path] = item
+        if _, exists := prodSpec.Paths[path]; exists {
+            panic(fmt.Sprintf("mergeSpecPaths: path collision on %q — route exists in both production and spec-only APIs", path))
         }
+        prodSpec.Paths[path] = item
     }
 
     if prodSpec.Components == nil {
@@ -689,12 +764,18 @@ func mergeSpecPaths(prod, specOnly huma.API) {
     }
     if soSpec.Components != nil && soSpec.Components.Schemas != nil {
         soSchemas := soSpec.Components.Schemas.Map()
+        existing := prodSpec.Components.Schemas.Map()
         for name, schema := range soSchemas {
-            // Skip duplicates (e.g., ErrorModel shared between both APIs).
-            existing := prodSpec.Components.Schemas.Map()
-            if _, exists := existing[name]; !exists {
-                prodSpec.Components.Schemas.Map()[name] = schema
+            if existingSchema, exists := existing[name]; exists {
+                // Collision: compare schemas. Identical = safe dedup. Different = bug.
+                existingJSON, _ := json.Marshal(existingSchema)
+                newJSON, _ := json.Marshal(schema)
+                if string(existingJSON) != string(newJSON) {
+                    panic(fmt.Sprintf("mergeSpecPaths: schema collision on %q — same name, different definition", name))
+                }
+                continue // identical, skip
             }
+            existing[name] = schema
         }
     }
 }
@@ -717,6 +798,28 @@ mergeSpecPaths(srv.humaAPI, specAPI)
 ```
 
 The exact integration depends on how `srv.humaAPI` is exposed — may need a `HumaAPI()` accessor method on `Server`.
+
+**Merge tests to add in `openapi_test.go` or `contract_test.go`:**
+
+```go
+func TestMergeSpecPaths_NoDuplicatePaths(t *testing.T) {
+    // Verify merged spec has no path that appears in both APIs.
+    // mergeSpecPaths panics on collision — this test confirms no panic.
+    specAPI, _ := newSpecOnlyAPI()
+    registerAllSpecOps(specAPI)
+    // If this doesn't panic, there are no collisions.
+}
+
+func TestMergeSpecPaths_StableGeneration(t *testing.T) {
+    // Run merge twice, compare output — must be identical.
+    // Ensures no map iteration order randomness affects the spec.
+}
+
+func TestMergedSpec_FrontendTypegenSucceeds(t *testing.T) {
+    // GENERATE_OPENAPI=1 produces a valid spec that openapi-typescript
+    // can consume. Verified by running npx openapi-typescript in CI.
+}
+```
 
 ### Step 7: Run all tests
 
@@ -819,7 +922,7 @@ Replace every `http.Error(w, msg, status)` with the appropriate helper:
 |---------|------------|
 | `http.Error(w, "bad request", 400)` | `writeProblem(w, 400, "bad request")` |
 | `http.Error(w, "invalid request body", 400)` | `writeProblem(w, 400, decodeErr.Message)` where decodeErr from `decodeJSON` |
-| `http.Error(w, "name is required", 400)` | `writeProblemWithErrors(w, 422, "validation failed", problemDetail{Message: "name is required", Location: "body.name"})` |
+| `http.Error(w, "name is required", 400)` | `writeProblemWithErrors(w, 422, "validation failed", &huma.ErrorDetail{Message: "name is required", Location: "body.name"})` |
 | `http.Error(w, "invalid group_id", 400)` | `writeProblem(w, 400, "invalid group_id")` |
 | `http.Error(w, "not found", 404)` | `writeProblem(w, 404, "group not found")` |
 | `http.Error(w, "internal error", 500)` | `writeProblem(w, 500, "internal error")` |
@@ -873,7 +976,7 @@ func registerGroupsSpecOps(api huma.API) {
 ### Step 7: Regenerate OpenAPI spec and TypeScript types
 
 ```bash
-cd /c/Users/Sam/Code/CVErt-Ops && GENERATE_OPENAPI=1 go test ./internal/api/ -run TestOpenAPISpec -v -count=1
+GENERATE_OPENAPI=1 go test ./internal/api/ -run TestOpenAPISpec -v -count=1
 cd web && npx openapi-typescript ../openapi.json -o src/lib/api/schema.d.ts
 ```
 
@@ -954,7 +1057,7 @@ type updateOrgBody struct {
 **Status code changes:**
 - Create org: 201 + Location header
 - Create invitation: 202 (stays — async semantics) + Location header
-- Validation errors: 400 → 422 with `problemDetail` where applicable
+- Validation errors: 400 → 422 with `huma.ErrorDetail` where applicable
 
 **Frontend:** `MembersView.vue` currently parses bare arrays for members and invitations. Switch to `data.items` from typed client. `CreateOrgView.vue` and `InviteMemberDialog.vue` switch from orgFetch to typed client with RFC 9457 error handling.
 
@@ -970,7 +1073,8 @@ type updateOrgBody struct {
 - Modify: `internal/api/apikeys.go`
 - Modify: `internal/api/openapi_spec.go` — add `registerAPIKeysSpecOps()`
 - Modify/Create: `internal/api/apikeys_test.go`
-- *(no frontend — API key UI is part of MembersView, already covered in Task 2)*
+
+**Frontend:** Backend-only. Preflight check: run `rg "apikey\|api-key\|api_key" web/src/ --glob "*.{ts,vue}" -l` to confirm no dedicated API key UI exists. If a consumer is found, convert it; if not (expected), skip frontend work for this task.
 
 **List response:** `listAPIKeysHandler` returns bare array → `writeList(w, entries, "")`
 
@@ -1035,7 +1139,7 @@ Both `listWatchlistsHandler` (created_at DESC, id DESC) and `listWatchlistItemsH
 
 **Existing envelopes:** Both already use envelope responses (`alertRuleListResponse`, `alertEventsListResponse`). Replace with `writeList`.
 
-**Complex validation:** `createAlertRuleHandler` and `updateAlertRuleHandler` have validation error formatting via `valErrsToEntries()`. Convert these to `problemDetail` entries and use `writeProblemWithErrors(w, 422, "validation failed", ...)`.
+**Complex validation:** `createAlertRuleHandler` and `updateAlertRuleHandler` have validation error formatting via `valErrsToEntries()`. Convert these to `&huma.ErrorDetail{...}` entries and use `writeProblemWithErrors(w, 422, "validation failed", ...)`.
 
 **Tier limit:** Alert rule creation is tier-gated. Use `writeProblemTyped` with `problemTypeTierLimit`.
 
@@ -1275,7 +1379,7 @@ This applies to: `AdminOrgsView`, `AdminUsersView`, `AdminDeliveriesView`, `Admi
 ### Step 1: Verify zero orgFetch imports remain
 
 ```bash
-grep -r "orgFetch" web/src/ --include="*.ts" --include="*.vue" | grep -v "__tests__/orgFetch"
+rg "orgFetch" web/src/ --glob "*.{ts,vue}" | grep -v "__tests__/orgFetch"
 ```
 
 If any remain, they were missed in earlier tasks — fix them first.
@@ -1348,8 +1452,8 @@ openapi-fetch client exclusively. orgFetch removed."
 
 ## Verification Checklist (run after all tasks complete)
 
-- [ ] `grep -r "http\.Error" internal/api/*.go` returns 0 matches in handler files (middleware files may retain some)
-- [ ] `grep -r "orgFetch" web/src/ --include="*.ts" --include="*.vue"` returns 0 matches
+- [ ] `rg "http\.Error" internal/api/*.go` returns 0 matches in handler files (middleware files may retain some)
+- [ ] `rg "orgFetch" web/src/ --glob "*.{ts,vue}"` returns 0 matches
 - [ ] `go test ./internal/api/ -run TestOpenAPISpec -v` passes and verifies all expected paths
 - [ ] `GENERATE_OPENAPI=1 go test ./internal/api/ -run TestOpenAPISpec` produces a valid spec
 - [ ] `npx openapi-typescript openapi.json -o /dev/null` produces no errors

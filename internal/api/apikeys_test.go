@@ -163,14 +163,16 @@ func TestListAPIKeys_Success(t *testing.T) {
 		t.Fatalf("list api keys: got %d, want 200", listResp.StatusCode)
 	}
 
-	var out []map[string]any
-	if err := json.NewDecoder(listResp.Body).Decode(&out); err != nil {
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(out) != 2 {
-		t.Fatalf("list returned %d keys, want 2", len(out))
+	if len(envelope.Items) != 2 {
+		t.Fatalf("list returned %d keys, want 2", len(envelope.Items))
 	}
-	for _, entry := range out {
+	for _, entry := range envelope.Items {
 		if _, hasRawKey := entry["raw_key"]; hasRawKey {
 			t.Error("list response must not contain raw_key")
 		}
@@ -350,7 +352,7 @@ func TestCreateAPIKey_ViewerForbidden(t *testing.T) {
 	}
 }
 
-// TestCreateAPIKey_InvalidRole verifies that creating a key with an invalid role returns 400.
+// TestCreateAPIKey_InvalidRole verifies that creating a key with an invalid role returns 422.
 func TestCreateAPIKey_InvalidRole(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -364,8 +366,8 @@ func TestCreateAPIKey_InvalidRole(t *testing.T) {
 
 	resp := doCreateAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, "Bad Key", "superadmin")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("invalid role: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("invalid role: got %d, want 422", resp.StatusCode)
 	}
 }
 
@@ -467,4 +469,146 @@ func TestCrossOrg_APIKeyAccess(t *testing.T) {
 			t.Errorf("cross-org revoke api key: got %d, want 403", resp.StatusCode)
 		}
 	})
+}
+
+// ── Contract tests ────────────────────────────────────────────────────────────
+
+// doCreateAPIKeyRaw calls POST /api/v1/orgs/{orgID}/api-keys with a raw JSON body.
+func doCreateAPIKeyRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/api-keys", bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("create api key raw: %v", err)
+	}
+	return resp
+}
+
+// TestCreateAPIKey_MalformedJSON verifies that POST /api-keys with invalid JSON returns 400
+// with application/problem+json content type.
+func TestCreateAPIKey_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateAPIKeyRaw(t, ctx, ts, accessToken, aliceReg.OrgID, "{bad json")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestCreateAPIKey_LocationHeader verifies that POST /api-keys returns a Location header.
+func TestCreateAPIKey_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, "Location Key", "member")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create api key: got %d, want 201", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header on 201 response")
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantSuffix := "/api-keys/" + out.ID
+	if len(loc) < len(wantSuffix) || loc[len(loc)-len(wantSuffix):] != wantSuffix {
+		t.Errorf("Location = %q, want suffix %q", loc, wantSuffix)
+	}
+}
+
+// TestListAPIKeys_Envelope verifies that GET /api-keys returns {items: [...]} envelope.
+func TestListAPIKeys_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Create one key.
+	r1 := doCreateAPIKey(t, ctx, ts, accessToken, aliceReg.OrgID, "Env Key", "member")
+	defer r1.Body.Close() //nolint:errcheck,gosec // G104
+
+	listResp := doListAPIKeys(t, ctx, ts, accessToken, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list: got %d, want 200", listResp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(envelope.Items) != 1 {
+		t.Errorf("got %d items, want 1", len(envelope.Items))
+	}
+}
+
+// TestCreateAPIKey_ValidationError_ProblemJSON verifies that validation errors
+// return 422 with application/problem+json and field-level error locations.
+func TestCreateAPIKey_ValidationError_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Empty name should return 422.
+	resp := doCreateAPIKeyRaw(t, ctx, ts, accessToken, aliceReg.OrgID, `{"name":"","role":"member"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	errs, ok := problem["errors"].([]any)
+	if !ok || len(errs) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	err0, _ := errs[0].(map[string]any)
+	if err0["location"] != "body.name" {
+		t.Errorf("errors[0].location = %v, want body.name", err0["location"])
+	}
 }

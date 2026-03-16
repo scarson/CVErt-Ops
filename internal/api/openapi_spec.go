@@ -32,6 +32,7 @@ func newSpecOnlyAPI() huma.API {
 func registerAllSpecOps(api huma.API) {
 	registerGroupsSpecOps(api)
 	registerOrgsSpecOps(api)
+	registerAPIKeysSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -368,4 +369,55 @@ func registerOrgsSpecOps(api huma.API) {
 		Summary:     "Resend an invitation email",
 		Tags:        []string{"Invitations"},
 	}, noopHandler[specResendInvitationInput, specResendInvitationOutput]())
+}
+
+// ── API Keys spec-only declarations ───────────────────────────────────────
+
+type specCreateAPIKeyInput struct {
+	OrgID string           `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createAPIKeyBody `json:"body"`
+}
+type specCreateAPIKeyOutput struct {
+	Location string             `header:"Location"`
+	Body     createAPIKeyResponse
+}
+
+type specListAPIKeysInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specListAPIKeysOutput struct {
+	Body struct {
+		Items []apiKeyEntry `json:"items"`
+	}
+}
+
+type specRevokeAPIKeyInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"API Key ID"`
+}
+
+func registerAPIKeysSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "create-api-key",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/api-keys",
+		Summary:     "Create an API key",
+		Tags:        []string{"API Keys"},
+	}, noopHandler[specCreateAPIKeyInput, specCreateAPIKeyOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-api-keys",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/api-keys",
+		Summary:     "List API keys",
+		Tags:        []string{"API Keys"},
+	}, noopHandler[specListAPIKeysInput, specListAPIKeysOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "revoke-api-key",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/api-keys/{id}",
+		Summary:     "Revoke an API key",
+		Tags:        []string{"API Keys"},
+	}, noopHandler[specRevokeAPIKeyInput, struct{}]())
 }

@@ -4,11 +4,11 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -59,36 +59,38 @@ var validAPIKeyRoles = map[string]bool{
 func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	callerID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	callerRole, ok := r.Context().Value(ctxRole).(Role)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	var req createAPIKeyBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, decErr.Message, decErr)
 		return
 	}
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return
 	}
 	if !validAPIKeyRoles[req.Role] {
-		http.Error(w, "role must be viewer, member, or admin", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "role must be viewer, member, or admin", Location: "body.role"})
 		return
 	}
 	// Enforce role ≤ caller's effective role (no privilege escalation).
 	if parseRole(req.Role) > callerRole {
-		http.Error(w, "forbidden: requested role exceeds your role", http.StatusForbidden)
+		writeProblem(w, http.StatusForbidden, "forbidden: requested role exceeds your role")
 		return
 	}
 
@@ -96,7 +98,8 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	if req.ExpiresAt != "" {
 		t, err := time.Parse(time.RFC3339, req.ExpiresAt)
 		if err != nil {
-			http.Error(w, "invalid expires_at: use RFC3339 format", http.StatusBadRequest)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "invalid expires_at: use RFC3339 format", Location: "body.expires_at"})
 			return
 		}
 		expiresAt = sql.NullTime{Time: t, Valid: true}
@@ -105,14 +108,14 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	rawKey, keyHash, err := auth.GenerateAPIKey()
 	if err != nil {
 		slog.ErrorContext(r.Context(), "generate api key", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	key, err := srv.store.CreateAPIKey(r.Context(), orgID, callerID, keyHash, req.Name, req.Role, expiresAt)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create api key", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -127,6 +130,7 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 		out.ExpiresAt = key.ExpiresAt.Time.Format(time.RFC3339)
 	}
 
+	writeLocation(w, r, key.ID.String())
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -135,14 +139,14 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	rows, err := srv.store.ListOrgAPIKeys(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list api keys", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -165,7 +169,7 @@ func (srv *Server) listAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		entries = append(entries, entry)
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeList(w, entries, "")
 }
 
 // revokeAPIKeyHandler handles DELETE /api/v1/orgs/{org_id}/api-keys/{id}.
@@ -173,23 +177,23 @@ func (srv *Server) listAPIKeysHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) revokeAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	callerID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	callerRole, ok := r.Context().Value(ctxRole).(Role)
 	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	keyID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -198,22 +202,22 @@ func (srv *Server) revokeAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 		key, err := srv.store.GetOrgAPIKey(r.Context(), orgID, keyID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "get api key for revoke", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if key == nil {
-			http.Error(w, "not found", http.StatusNotFound)
+			writeProblem(w, http.StatusNotFound, "not found")
 			return
 		}
 		if key.CreatedByUserID != callerID {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			writeProblem(w, http.StatusForbidden, "forbidden")
 			return
 		}
 	}
 
 	if err := srv.store.RevokeAPIKey(r.Context(), orgID, keyID); err != nil {
 		slog.ErrorContext(r.Context(), "revoke api key", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

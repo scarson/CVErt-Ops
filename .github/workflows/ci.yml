@@ -63,6 +63,8 @@ jobs:
 
       - name: test
         run: go test -race -count=1 -timeout=1800s ./internal/api/...
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
 
   test-store:
     name: "Test: Store"
@@ -81,6 +83,8 @@ jobs:
 
       - name: test
         run: go test -race -count=1 -timeout=1800s ./internal/store/...
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
 
   test-other:
     name: "Test: Other"
@@ -109,9 +113,12 @@ jobs:
       - name: test
         # Exclude api and store (tested in dedicated jobs) to avoid
         # contending for CPU with those heavy packages.
+        # Ryuk disabled in CI — runners are ephemeral, no orphan risk.
         run: |
           packages=$(go list ./... | grep -v '/internal/api$\|/internal/store$')
           go test -race -count=1 -timeout=900s $packages
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
 
   govulncheck:
     name: Vulnerability scan

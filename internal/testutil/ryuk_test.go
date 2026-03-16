@@ -66,17 +66,18 @@ func TestRyuk_ReapsOrphanedContainers(t *testing.T) {
 	}
 	defer cli.Close()
 
-	deadline := time.Now().Add(30 * time.Second)
+	start := time.Now()
+	deadline := start.Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		_, inspectErr := cli.ContainerInspect(ctx, containerID)
+		info, inspectErr := cli.ContainerInspect(ctx, containerID)
 		if inspectErr != nil {
 			// Container not found — Ryuk reaped it successfully.
-			t.Logf("container %s reaped by Ryuk after %s", containerID, time.Since(deadline.Add(-30*time.Second)).Round(time.Second))
+			t.Logf("container %s reaped by Ryuk after %s", containerID, time.Since(start).Round(time.Second))
 			return
 		}
-		// Check if container is at least stopped (Ryuk stops before removing).
-		info, _ := cli.ContainerInspect(ctx, containerID)
-		if info.State != nil && !info.State.Running {
+		// ContainerJSON embeds *ContainerJSONBase — guard against nil before
+		// accessing State (zero value has nil embedded pointer).
+		if info.ContainerJSONBase != nil && info.State != nil && !info.State.Running {
 			t.Logf("container %s stopped, waiting for removal...", containerID)
 		}
 		time.Sleep(1 * time.Second)

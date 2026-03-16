@@ -75,20 +75,21 @@ func TestScheduler_EnqueuesNeverSyncedFeeds(t *testing.T) {
 		t.Fatalf("enqueued %d jobs, want %d (all feeds never synced)", len(enqueued), len(defaultSchedule))
 	}
 
-	// Verify EPSS uses epss_ingest queue.
+	// Build expected queue map from defaultSchedule so the test stays in
+	// sync as new entries are added.
+	expectedQueue := make(map[string]string, len(defaultSchedule))
+	for _, entry := range defaultSchedule {
+		expectedQueue[entry.FeedName] = entry.Queue
+	}
+
 	for _, job := range enqueued {
 		var p Payload
 		if err := json.Unmarshal(job.Payload, &p); err != nil {
 			t.Fatalf("unmarshal payload: %v", err)
 		}
-		if p.FeedName == "epss" {
-			if job.Queue != "epss_ingest" {
-				t.Errorf("EPSS job queue = %q, want epss_ingest", job.Queue)
-			}
-		} else {
-			if job.Queue != "feed_ingest" {
-				t.Errorf("%s job queue = %q, want feed_ingest", p.FeedName, job.Queue)
-			}
+		wantQueue := expectedQueue[p.FeedName]
+		if job.Queue != wantQueue {
+			t.Errorf("%s job queue = %q, want %q", p.FeedName, job.Queue, wantQueue)
 		}
 		if job.LockKey != "feed:"+p.FeedName {
 			t.Errorf("lock key = %q, want %q", job.LockKey, "feed:"+p.FeedName)

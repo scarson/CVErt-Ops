@@ -115,22 +115,22 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "display_name is required",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "display_name is required", Location: "body.display_name"})
 		return
 	}
 	if strings.TrimSpace(req.IssuerURL) == "" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "issuer_url is required",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "issuer_url is required", Location: "body.issuer_url"})
 		return
 	}
 	if strings.TrimSpace(req.ClientID) == "" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "client_id is required",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "client_id is required", Location: "body.client_id"})
 		return
 	}
 	if strings.TrimSpace(req.ClientSecret) == "" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "client_secret is required",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "client_secret is required", Location: "body.client_secret"})
 		return
 	}
@@ -287,7 +287,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if req.DisplayName != nil {
 		displayName = strings.TrimSpace(*req.DisplayName)
 		if displayName == "" {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "display_name cannot be empty",
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 				&huma.ErrorDetail{Message: "display_name cannot be empty", Location: "body.display_name"})
 			return
 		}
@@ -296,7 +296,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if req.IssuerURL != nil {
 		issuerURL = strings.TrimSpace(*req.IssuerURL)
 		if issuerURL == "" {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "issuer_url cannot be empty",
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 				&huma.ErrorDetail{Message: "issuer_url cannot be empty", Location: "body.issuer_url"})
 			return
 		}
@@ -305,7 +305,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if req.ClientID != nil {
 		clientID = strings.TrimSpace(*req.ClientID)
 		if clientID == "" {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "client_id cannot be empty",
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 				&huma.ErrorDetail{Message: "client_id cannot be empty", Location: "body.client_id"})
 			return
 		}
@@ -478,8 +478,8 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 		req.Domains[i] = strings.ToLower(strings.TrimSpace(req.Domains[i]))
 		d := req.Domains[i]
 		if err := validateDomain(d); err != nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "invalid domain: "+err.Error(),
-				&huma.ErrorDetail{Message: "invalid domain: " + err.Error(), Location: "body.domains"})
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "invalid domain: " + err.Error(), Location: "body.domains", Value: d})
 			return
 		}
 	}
@@ -549,7 +549,7 @@ func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.TrimSpace(req.Email)
 	if email == "" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "email is required",
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 			&huma.ErrorDetail{Message: "email is required", Location: "body.email"})
 		return
 	}
@@ -557,8 +557,8 @@ func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	// Extract domain from email.
 	parts := strings.SplitN(email, "@", 2)
 	if len(parts) != 2 || parts[1] == "" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "invalid email format",
-			&huma.ErrorDetail{Message: "invalid email format", Location: "body.email"})
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "invalid email format", Location: "body.email", Value: email})
 		return
 	}
 	domain := strings.ToLower(parts[1])

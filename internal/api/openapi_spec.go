@@ -38,6 +38,7 @@ func registerAllSpecOps(api huma.API) {
 	registerAlertEventsSpecOps(api)
 	registerChannelsSpecOps(api)
 	registerDeliveriesSpecOps(api)
+	registerReportsSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -941,4 +942,134 @@ func registerDeliveriesSpecOps(api huma.API) {
 		Summary:     "Replay a delivery",
 		Tags:        []string{"Deliveries"},
 	}, noopHandler[specReplayDeliveryInput, struct{}]())
+}
+
+// ── Reports spec-only declarations ───────────────────────────────────────────
+
+type specCreateReportInput struct {
+	OrgID string           `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Body  createReportBody `json:"body"`
+}
+type specCreateReportOutput struct {
+	Location string      `header:"Location"`
+	Body     reportEntry
+}
+
+type specListReportsInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+}
+type specListReportsOutput struct {
+	Body struct {
+		Items []reportEntry `json:"items"`
+	}
+}
+
+type specGetReportInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Report ID"`
+}
+type specGetReportOutput struct {
+	Body reportEntry
+}
+
+type specUpdateReportInput struct {
+	OrgID string          `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string          `path:"id" format:"uuid" doc:"Report ID"`
+	Body  patchReportBody `json:"body"`
+}
+type specUpdateReportOutput struct {
+	Body reportEntry
+}
+
+type specDeleteReportInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Report ID"`
+}
+
+type specListReportChannelsInput struct {
+	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string `path:"id" format:"uuid" doc:"Report ID"`
+}
+type specListReportChannelsOutput struct {
+	Body struct {
+		Items []channelEntry `json:"items"`
+	}
+}
+
+type specBindReportChannelInput struct {
+	OrgID     string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID        string `path:"id" format:"uuid" doc:"Report ID"`
+	ChannelID string `path:"channel_id" format:"uuid" doc:"Notification Channel ID"`
+}
+
+type specUnbindReportChannelInput struct {
+	OrgID     string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID        string `path:"id" format:"uuid" doc:"Report ID"`
+	ChannelID string `path:"channel_id" format:"uuid" doc:"Notification Channel ID"`
+}
+
+func registerReportsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "list-reports",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/reports",
+		Summary:     "List scheduled reports",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specListReportsInput, specListReportsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "create-report",
+		Method:      http.MethodPost,
+		Path:        "/orgs/{org_id}/reports",
+		Summary:     "Create a scheduled report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specCreateReportInput, specCreateReportOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "get-report",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/reports/{id}",
+		Summary:     "Get a scheduled report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specGetReportInput, specGetReportOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "update-report",
+		Method:      http.MethodPatch,
+		Path:        "/orgs/{org_id}/reports/{id}",
+		Summary:     "Update a scheduled report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specUpdateReportInput, specUpdateReportOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "delete-report",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/reports/{id}",
+		Summary:     "Delete a scheduled report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specDeleteReportInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "list-report-channels",
+		Method:      http.MethodGet,
+		Path:        "/orgs/{org_id}/reports/{id}/channels",
+		Summary:     "List channels bound to a report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specListReportChannelsInput, specListReportChannelsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "bind-report-channel",
+		Method:      http.MethodPut,
+		Path:        "/orgs/{org_id}/reports/{id}/channels/{channel_id}",
+		Summary:     "Bind a channel to a report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specBindReportChannelInput, struct{}]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "unbind-report-channel",
+		Method:      http.MethodDelete,
+		Path:        "/orgs/{org_id}/reports/{id}/channels/{channel_id}",
+		Summary:     "Unbind a channel from a report",
+		Tags:        []string{"Reports"},
+	}, noopHandler[specUnbindReportChannelInput, struct{}]())
 }

@@ -55,10 +55,6 @@ type channelCreateEntry struct {
 	SigningSecret string `json:"signing_secret"`
 }
 
-type channelListResponse struct {
-	Items []channelEntry `json:"items"`
-}
-
 type rotateSecretResponse struct {
 	SigningSecret string `json:"signing_secret"`
 }

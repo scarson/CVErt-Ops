@@ -1253,6 +1253,9 @@ func TestMFAChallengeInvalidPendingToken(t *testing.T) {
 }
 
 func TestMFAChallengeRateLimit(t *testing.T) {
+    // ⚠️ See implementation note on challengeHandler: CountRecentEmailOTPChallenges
+    // cannot count deleted rows. Rate limit via srv.checkAuthRateLimit (IP-based)
+    // or a per-user counter — NOT via CountRecentEmailOTPChallenges.
     // Send MFAEmailOTPMaxPerHour+1 challenge requests
     // Expect: last request returns 429
 }
@@ -1338,6 +1341,8 @@ type mfaVerifyOutput struct {
 **Handler logic for challengeHandler:**
 1. Parse and validate pending token (expired? tv matches DB? `"mfa_challenge"` is first pending item?)
 2. If method = `"email_otp"`: rate limit check → delete existing OTP → generate 6-digit code → hash → insert challenge → send email
+
+> **⚠️ Implementation note (from Tasks 1-9 review):** `CountRecentEmailOTPChallenges` can only return 0 or 1 because `CreateEmailOTPChallenge` deletes existing challenges before inserting — deleted rows aren't counted. **Do NOT rely on that query for per-user rate limiting.** Use `srv.checkAuthRateLimit(ctx)` (the existing IP-based rate limiter, already on all public auth endpoints) as the primary rate limit. If per-user OTP send limiting is needed beyond that, add a lightweight counter (e.g., increment a field on the user row or log to audit) rather than counting challenge rows.
 3. If method = `"totp"`: return 200 (client-side, no server action)
 4. Reissue pending token cookie with fresh TTL
 

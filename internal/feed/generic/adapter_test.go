@@ -866,3 +866,200 @@ func TestAdapter_EmptyResultArray(t *testing.T) {
 	assert.Empty(t, result.Patches)
 	assert.True(t, result.LastPage)
 }
+
+// --- Streaming JSON parse tests (Task 9) ---
+
+func TestAdapter_FetchJSON_StreamingSimpleRoot(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"vulnerabilities": [
+			{"cve": "CVE-2026-8001", "summary": "First vuln", "score": 7.5},
+			{"cve": "CVE-2026-8002", "summary": "Second vuln", "score": 9.1}
+		]}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "stream-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Mapping: MappingConfig{
+			Root: "vulnerabilities",
+			Fields: map[string]string{
+				"cve_id":        "cve",
+				"description":   "summary",
+				"cvss_v3_score": "score",
+			},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	result, err := adapter.Fetch(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Patches, 2)
+
+	assert.Equal(t, "CVE-2026-8001", result.Patches[0].CVEID)
+	assert.Equal(t, "First vuln", *result.Patches[0].DescriptionPrimary)
+	assert.Equal(t, 7.5, *result.Patches[0].CVSSv3Score)
+
+	assert.Equal(t, "CVE-2026-8002", result.Patches[1].CVEID)
+	assert.Equal(t, "Second vuln", *result.Patches[1].DescriptionPrimary)
+	assert.Equal(t, 9.1, *result.Patches[1].CVSSv3Score)
+
+	assert.Equal(t, "stream-feed", result.SourceMeta.SourceName)
+	assert.True(t, result.LastPage)
+}
+
+func TestAdapter_FetchJSON_BufferedNestedRoot(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data": {"items": [
+			{"cve": "CVE-2026-8003", "summary": "Nested vuln"}
+		]}}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "nested-buffered-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Mapping: MappingConfig{
+			Root: "data.items",
+			Fields: map[string]string{
+				"cve_id":      "cve",
+				"description": "summary",
+			},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	result, err := adapter.Fetch(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Patches, 1)
+	assert.Equal(t, "CVE-2026-8003", result.Patches[0].CVEID)
+	assert.Equal(t, "Nested vuln", *result.Patches[0].DescriptionPrimary)
+	assert.True(t, result.LastPage)
+}
+
+func TestAdapter_FetchJSON_StreamingWithCursorPagination(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		after := r.URL.Query().Get("after")
+		w.Header().Set("Content-Type", "application/json")
+		switch after {
+		case "":
+			fmt.Fprint(w, `{"next_cursor": "abc123", "results": [{"cve": "CVE-2026-8004"}]}`)
+		case "abc123":
+			fmt.Fprint(w, `{"next_cursor": "", "results": [{"cve": "CVE-2026-8005"}]}`)
+		default:
+			t.Fatalf("unexpected cursor: %s", after)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "stream-cursor-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Pagination: PaginationConfig{
+			Type:        "cursor",
+			CursorParam: "after",
+			CursorPath:  "next_cursor",
+		},
+		Mapping: MappingConfig{
+			Root:   "results",
+			Fields: map[string]string{"cve_id": "cve"},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	ctx := context.Background()
+
+	// Page 1: cursor present → not last page.
+	r1, err := adapter.Fetch(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, r1.Patches, 1)
+	assert.Equal(t, "CVE-2026-8004", r1.Patches[0].CVEID)
+	assert.False(t, r1.LastPage)
+
+	// Page 2: empty cursor → last page.
+	r2, err := adapter.Fetch(ctx, r1.NextCursor)
+	require.NoError(t, err)
+	require.Len(t, r2.Patches, 1)
+	assert.Equal(t, "CVE-2026-8005", r2.Patches[0].CVEID)
+	assert.True(t, r2.LastPage)
+
+	assert.Equal(t, 2, callCount)
+}
+
+func TestAdapter_FetchJSON_StreamingEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"items": []}`)
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "stream-empty-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Mapping: MappingConfig{
+			Root:   "items",
+			Fields: map[string]string{"cve_id": "cve"},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	result, err := adapter.Fetch(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, result.Patches)
+	assert.True(t, result.LastPage)
+}
+
+func TestAdapter_FetchJSON_StreamingCursorBeforeArray(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		after := r.URL.Query().Get("after")
+		w.Header().Set("Content-Type", "application/json")
+		switch after {
+		case "":
+			// Cursor key appears BEFORE the array key in JSON output.
+			fmt.Fprint(w, `{"next_cursor": "page2tok", "results": [{"cve": "CVE-2026-8006"}]}`)
+		case "page2tok":
+			fmt.Fprint(w, `{"next_cursor": "", "results": [{"cve": "CVE-2026-8007"}]}`)
+		default:
+			t.Fatalf("unexpected cursor: %s", after)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &Config{
+		Name: "stream-cursor-before-feed", URL: srv.URL, Format: "json",
+		RateLimit: 100, Timeout: "5s",
+		Pagination: PaginationConfig{
+			Type:        "cursor",
+			CursorParam: "after",
+			CursorPath:  "next_cursor",
+		},
+		Mapping: MappingConfig{
+			Root:   "results",
+			Fields: map[string]string{"cve_id": "cve"},
+		},
+	}
+	adapter := NewAdapter(cfg, srv.Client())
+	ctx := context.Background()
+
+	r1, err := adapter.Fetch(ctx, nil)
+	require.NoError(t, err)
+	require.Len(t, r1.Patches, 1)
+	assert.Equal(t, "CVE-2026-8006", r1.Patches[0].CVEID)
+	assert.False(t, r1.LastPage, "cursor present → not last page")
+
+	r2, err := adapter.Fetch(ctx, r1.NextCursor)
+	require.NoError(t, err)
+	require.Len(t, r2.Patches, 1)
+	assert.Equal(t, "CVE-2026-8007", r2.Patches[0].CVEID)
+	assert.True(t, r2.LastPage, "empty cursor → last page")
+}

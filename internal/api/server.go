@@ -95,7 +95,7 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		orgRL:                 orgRL,
 		tierCache:             tc,
 		ghAPIBaseURL:          "https://api.github.com",
-		lockout:               newLockoutManager(lockoutThreshold, lockoutDuration, lockoutDuration, time.Now),
+		lockout:               newLockoutManager(s, lockoutThreshold, lockoutDuration),
 		alertCache:            deps.AlertCache,
 		alertEvaluator:        deps.AlertEvaluator,
 		llm:                   deps.LLM,
@@ -156,9 +156,6 @@ func (srv *Server) Close() {
 	}
 	if srv.tierCache != nil {
 		srv.tierCache.Stop()
-	}
-	if srv.lockout != nil {
-		srv.lockout.Stop()
 	}
 }
 

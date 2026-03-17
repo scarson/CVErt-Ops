@@ -12,30 +12,30 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	generated "github.com/scarson/cvert-ops/internal/store/generated"
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // adminOrgResponse is a JSON-safe representation of an organization for API responses.
 type adminOrgResponse struct {
-	ID          uuid.UUID  `json:"id"`
-	Name        string     `json:"name"`
-	Tier        string     `json:"tier"`
-	SuspendedAt *time.Time `json:"suspended_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID             uuid.UUID  `json:"id"`
+	Name           string     `json:"name"`
+	Tier           string     `json:"tier"`
+	MemberCount    int64      `json:"member_count"`
+	SuspendedAt    *time.Time `json:"suspended_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastActivityAt *time.Time `json:"last_activity_at"`
 }
 
-func toAdminOrgResponse(org *generated.Organization) adminOrgResponse {
-	resp := adminOrgResponse{
-		ID:        org.ID,
-		Name:      org.Name,
-		Tier:      org.Tier,
-		CreatedAt: org.CreatedAt,
+func toAdminOrgResponse(row *store.AdminOrgRow) adminOrgResponse {
+	return adminOrgResponse{
+		ID:             row.ID,
+		Name:           row.Name,
+		Tier:           row.Tier,
+		MemberCount:    row.MemberCount,
+		SuspendedAt:    row.SuspendedAt,
+		CreatedAt:      row.CreatedAt,
+		LastActivityAt: row.LastActivityAt,
 	}
-	if org.SuspendedAt.Valid {
-		t := org.SuspendedAt.Time
-		resp.SuspendedAt = &t
-	}
-	return resp
 }
 
 // adminOrgCursor is the opaque cursor for admin org list pagination.
@@ -82,7 +82,11 @@ func (srv *Server) adminListOrgsHandler(w http.ResponseWriter, r *http.Request) 
 		nextCursor = encodePageCursor(adminOrgCursor{T: last.CreatedAt, ID: last.ID.String()})
 	}
 
-	writeList(w, orgs, nextCursor)
+	items := make([]adminOrgResponse, len(orgs))
+	for i := range orgs {
+		items[i] = toAdminOrgResponse(&orgs[i])
+	}
+	writeList(w, items, nextCursor)
 }
 
 // adminPatchOrgHandler handles PATCH /api/v1/admin/orgs/{org_id}.
@@ -125,41 +129,14 @@ func (srv *Server) adminPatchOrgHandler(w http.ResponseWriter, r *http.Request) 
 			writeProblem(w, http.StatusBadRequest, "invalid tier (free, pro, enterprise)")
 			return
 		}
-		if _, err := srv.store.AdminUpdateOrgTier(r.Context(), orgID, *body.Tier); err != nil {
-			slog.ErrorContext(r.Context(), "admin patch org: tier", "error", err)
-			writeProblem(w, http.StatusInternalServerError, "internal error")
-			return
-		}
 	}
 
-	if body.Suspend != nil {
-		if *body.Suspend {
-			if _, err := srv.store.AdminSuspendOrg(r.Context(), orgID); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					// Already suspended — idempotent.
-				} else {
-					slog.ErrorContext(r.Context(), "admin patch org: suspend", "error", err)
-					writeProblem(w, http.StatusInternalServerError, "internal error")
-					return
-				}
-			}
-		} else {
-			if _, err := srv.store.AdminUnsuspendOrg(r.Context(), orgID); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					// Already unsuspended — idempotent.
-				} else {
-					slog.ErrorContext(r.Context(), "admin patch org: unsuspend", "error", err)
-					writeProblem(w, http.StatusInternalServerError, "internal error")
-					return
-				}
-			}
-		}
-	}
-
-	// Re-fetch and return updated org.
-	updated, err := srv.store.AdminGetOrgByID(r.Context(), orgID)
+	updated, err := srv.store.AdminPatchOrg(r.Context(), orgID, store.AdminPatchOrgParams{
+		Tier:    body.Tier,
+		Suspend: body.Suspend,
+	})
 	if err != nil {
-		slog.ErrorContext(r.Context(), "admin patch org: re-fetch", "error", err)
+		slog.ErrorContext(r.Context(), "admin patch org", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}

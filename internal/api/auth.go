@@ -230,9 +230,23 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Reject disabled users with the same response as nonexistent users
+	// to prevent account status enumeration.
+	if user != nil && user.DisabledAt.Valid {
+		if !srv.acquireArgon2() {
+			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+		}
+		func() {
+			defer srv.releaseArgon2()
+			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
+		}()
+		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		return nil, huma.Error401Unauthorized("invalid credentials")
+	}
+
 	// Account lockout check — before argon2 to save CPU on locked accounts.
 	// Still normalize timing for locked accounts to prevent lockout status enumeration.
-	allowed, retryAfter := srv.lockout.Check(input.Body.Email)
+	allowed, retryAfter := srv.lockout.Check(ctx, input.Body.Email)
 	if !allowed {
 		time.Sleep(50 * time.Millisecond) // timing normalization
 		retrySeconds := int(retryAfter.Seconds())
@@ -258,7 +272,7 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 			defer srv.releaseArgon2()
 			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
 		}()
-		srv.lockout.RecordFailure(input.Body.Email)
+		srv.lockout.RecordFailure(ctx, input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -275,12 +289,12 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !ok {
-		srv.lockout.RecordFailure(input.Body.Email)
+		srv.lockout.RecordFailure(ctx, input.Body.Email)
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
 	// Successful login — reset lockout counter.
-	srv.lockout.RecordSuccess(input.Body.Email)
+	srv.lockout.RecordSuccess(ctx, input.Body.Email)
 
 	// Issue tokens.
 	jti := uuid.New()
@@ -465,11 +479,12 @@ type orgEntry struct {
 // meOutput is the response body for GET /auth/me.
 type meOutput struct {
 	Body struct {
-		UserID      string     `json:"user_id"`
-		Email       string     `json:"email"`
-		DisplayName string     `json:"display_name"`
-		IsSiteAdmin bool       `json:"is_site_admin"`
-		Orgs        []orgEntry `json:"orgs"`
+		UserID             string     `json:"user_id"`
+		Email              string     `json:"email"`
+		DisplayName        string     `json:"display_name"`
+		IsSiteAdmin        bool       `json:"is_site_admin"`
+		ForcePasswordReset bool       `json:"force_password_reset"`
+		Orgs               []orgEntry `json:"orgs"`
 	}
 }
 
@@ -506,6 +521,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	out.Body.Email = user.Email
 	out.Body.DisplayName = user.DisplayName
 	out.Body.IsSiteAdmin = isSiteAdmin
+	out.Body.ForcePasswordReset = user.ForcePasswordReset
 	out.Body.Orgs = make([]orgEntry, 0, len(orgRows))
 	for _, row := range orgRows {
 		out.Body.Orgs = append(out.Body.Orgs, orgEntry{
@@ -587,6 +603,12 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if err := srv.store.UpdatePasswordHash(ctx, user.ID, newHash, 1); err != nil {
 		slog.ErrorContext(ctx, "change-password: update hash", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Clear force_password_reset if it was set.
+	if err := srv.store.ClearForcePasswordReset(ctx, user.ID); err != nil {
+		slog.ErrorContext(ctx, "change-password: clear force reset", "error", err)
+		// Non-fatal — password is already changed.
 	}
 
 	return &changePasswordOutput{}, nil

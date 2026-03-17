@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -269,5 +270,5 @@ func (c cvePostFilterTarget) PostFilterField(field string) string {
 	if field == "cve_id" {
 		return c.cve.CveID
 	}
-	return c.cve.DescriptionPrimary.String
+	return strings.ToLower(c.cve.DescriptionPrimary.String)
 }

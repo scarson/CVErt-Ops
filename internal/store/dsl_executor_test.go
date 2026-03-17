@@ -573,3 +573,78 @@ func TestExecuteDSLQuery_PostFilterAllFiltered(t *testing.T) {
 		t.Error("expected non-empty nextCursor when PostFilter removes all rows but more DB rows exist")
 	}
 }
+
+func TestExecuteDSLQuery_PostFilterCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed a CVE with mixed-case description.
+	s.SeedTestCVE(t, "CVE-2024-CI01", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "Critical Buffer Overflow in Chrome",
+	})
+
+	// Compile a rule matching severity=high, then attach regex PostFilters.
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	t.Run("lowercase regex matches mixed-case description", func(t *testing.T) {
+		// The alert evaluator uses lower(cves.description_primary) in SQL,
+		// so a lowercase regex should match mixed-case text in PostFilter too.
+		compiled.PostFilters = []dsl.PostFilter{
+			{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
+		}
+
+		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("got %d results, want 1: lowercase regex should match mixed-case description", len(results))
+		}
+		if results[0].CveID != "CVE-2024-CI01" {
+			t.Errorf("CveID = %q, want CVE-2024-CI01", results[0].CveID)
+		}
+	})
+
+	t.Run("lowercase regex matches lowered target text", func(t *testing.T) {
+		// "critical buffer" (lowercase) should match because the target text
+		// is lowered before matching, matching the alert evaluator's lower() semantics.
+		compiled.PostFilters = []dsl.PostFilter{
+			{Negate: false, Pattern: regexp.MustCompile("critical buffer")},
+		}
+
+		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("got %d results, want 1: lowercase regex should match lowered target", len(results))
+		}
+	})
+
+	t.Run("mixed-case regex does not match lowered target", func(t *testing.T) {
+		// "Critical Buffer" has uppercase letters. The target text is lowered to
+		// "critical buffer overflow in chrome", so "Critical" (uppercase C) should
+		// NOT match. This proves we lowercase the target, not the regex.
+		compiled.PostFilters = []dsl.PostFilter{
+			{Negate: false, Pattern: regexp.MustCompile("Critical Buffer")},
+		}
+
+		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("got %d results, want 0: mixed-case regex should not match lowered target", len(results))
+		}
+	})
+}

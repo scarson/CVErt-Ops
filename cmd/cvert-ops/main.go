@@ -80,6 +80,7 @@ func main() {
 		quotaCmd(),
 		validateFeedsCmd(),
 		doctorCmd(),
+		rotateEncryptionKeyCmd(),
 	)
 
 	if err := root.Execute(); err != nil {

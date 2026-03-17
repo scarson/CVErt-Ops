@@ -15,17 +15,17 @@ import (
 
 func defaultConfig() retention.Config {
 	return retention.Config{
-		Enabled:           true,
-		BatchSize:         1000,
-		MaxRuntimeSeconds: 60,
-		RawPayloadDays:    90,
-		FeedFetchLogDays:  90,
-		JobQueueHours:     24,
+		Enabled:            true,
+		BatchSize:          1000,
+		MaxRuntimeSeconds:  60,
+		RawPayloadDays:     90,
+		FeedFetchLogDays:   90,
+		JobQueueHours:      24,
 		AILogDays:          90,
 		SecurityEventsDays: 90,
-		AlertEventsDays:   365,
-		NotifDelivDays:    90,
-		AuditLogDays:      365,
+		AlertEventsDays:    365,
+		NotifDelivDays:     90,
+		AuditLogDays:       365,
 	}
 }
 

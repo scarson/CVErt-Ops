@@ -19,15 +19,15 @@ type Config struct {
 	BatchSize         int
 	MaxRuntimeSeconds int
 	// Per-table retention windows (global tables).
-	RawPayloadDays   int
-	FeedFetchLogDays int
-	JobQueueHours    int
-	AILogDays        int
+	RawPayloadDays     int
+	FeedFetchLogDays   int
+	JobQueueHours      int
+	AILogDays          int
 	SecurityEventsDays int
 	// Per-table retention windows (tier-gated tables — fallback defaults).
-	AlertEventsDays  int
-	NotifDelivDays   int
-	AuditLogDays     int
+	AlertEventsDays int
+	NotifDelivDays  int
+	AuditLogDays    int
 }
 
 // Runner executes bounded-batch retention cleanup across all tables.

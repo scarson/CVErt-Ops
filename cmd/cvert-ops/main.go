@@ -495,17 +495,17 @@ func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
 func retentionHandler(st *store.Store, cfg *config.Config) worker.Handler {
 	return func(ctx context.Context, _ json.RawMessage) error {
 		r := retention.NewRunner(st, retention.Config{
-			Enabled:           cfg.RetentionCleanupEnabled,
-			BatchSize:         cfg.RetentionCleanupBatchSize,
-			MaxRuntimeSeconds: cfg.RetentionMaxRuntimeSeconds,
-			RawPayloadDays:    cfg.RetentionRawPayloadDays,
-			FeedFetchLogDays:  cfg.RetentionFeedFetchLogDays,
-			JobQueueHours:     cfg.RetentionJobQueueHours,
+			Enabled:            cfg.RetentionCleanupEnabled,
+			BatchSize:          cfg.RetentionCleanupBatchSize,
+			MaxRuntimeSeconds:  cfg.RetentionMaxRuntimeSeconds,
+			RawPayloadDays:     cfg.RetentionRawPayloadDays,
+			FeedFetchLogDays:   cfg.RetentionFeedFetchLogDays,
+			JobQueueHours:      cfg.RetentionJobQueueHours,
 			AILogDays:          cfg.AILogRetentionDays,
 			SecurityEventsDays: cfg.RetentionSecurityEventsDays,
-			AlertEventsDays:   cfg.RetentionAlertEventsDays,
-			NotifDelivDays:    cfg.RetentionNotifDeliveriesDays,
-			AuditLogDays:      cfg.RetentionAuditLogDays,
+			AlertEventsDays:    cfg.RetentionAlertEventsDays,
+			NotifDelivDays:     cfg.RetentionNotifDeliveriesDays,
+			AuditLogDays:       cfg.RetentionAuditLogDays,
 		}, slog.Default())
 		return r.Run(ctx)
 	}

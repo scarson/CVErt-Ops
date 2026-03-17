@@ -344,7 +344,7 @@ func (srv *Server) refreshHandler(ctx context.Context, input *refreshInput) (*re
 	}
 
 	secret := []byte(srv.cfg.JWTSecret)
-	claims, err := auth.ParseRefreshToken(input.RefreshToken, secret)
+	claims, err := auth.ParseRefreshToken(input.RefreshToken, secret, nil)
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired refresh token")
 	}
@@ -450,7 +450,7 @@ type logoutOutput struct {
 // Marks the refresh token as used (no replacement) and clears auth cookies.
 func (srv *Server) logoutHandler(ctx context.Context, input *logoutInput) (*logoutOutput, error) {
 	if input.RefreshToken != "" {
-		claims, err := auth.ParseRefreshToken(input.RefreshToken, []byte(srv.cfg.JWTSecret))
+		claims, err := auth.ParseRefreshToken(input.RefreshToken, []byte(srv.cfg.JWTSecret), nil)
 		if err == nil {
 			// Mark the token used with itself as the "replacement" to close the chain.
 			if err := srv.store.MarkRefreshTokenUsed(ctx, claims.JTI, claims.JTI); err != nil {
@@ -493,7 +493,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), nil)
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}
@@ -554,7 +554,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), nil)
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}
@@ -674,7 +674,7 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), nil)
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}

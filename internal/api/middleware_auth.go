@@ -34,7 +34,7 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret))
+			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), nil)
 			if err != nil {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return

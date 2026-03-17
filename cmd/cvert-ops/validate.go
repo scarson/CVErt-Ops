@@ -47,7 +47,7 @@ func runValidateFeeds(dir string, dryRun bool) error {
 	}
 
 	if dryRun {
-		slog.Info("dry-run: connectivity checks not yet implemented")
+		return fmt.Errorf("--dry-run is not yet implemented; omit the flag to validate config syntax only")
 	}
 
 	_, _ = fmt.Fprintf(os.Stdout, "OK: %d feed config(s) valid\n", len(configs))

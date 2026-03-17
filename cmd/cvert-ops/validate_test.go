@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,5 +108,29 @@ func TestValidateFeeds_NonexistentDir(t *testing.T) {
 	err := runValidateFeeds("/nonexistent/path", false)
 	if err == nil {
 		t.Fatal("expected error for nonexistent directory, got nil")
+	}
+}
+
+func TestValidateFeeds_DryRunReturnsError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "good.yaml"), []byte(`
+name: my-scanner
+url: http://example.com/api
+format: json
+mapping:
+  root: items
+  fields:
+    cve_id: id
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runValidateFeeds(dir, true)
+	if err == nil {
+		t.Fatal("expected error for --dry-run, got nil")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Fatalf("expected error to mention 'not yet implemented', got: %v", err)
 	}
 }

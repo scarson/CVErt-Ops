@@ -4,6 +4,8 @@ package doctor
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -132,17 +134,208 @@ func TestSMTPCheck_Unreachable_Fail(t *testing.T) {
 	}
 }
 
+// ── JWT check — previous secret ──────────────────────────────────────────────
+
+func TestJWTCheck_PreviousSecretTooShort_Warn(t *testing.T) {
+	t.Parallel()
+	c := &JWTCheck{
+		Secret:         "this-is-at-least-32-bytes-long!!",
+		PreviousSecret: "short",
+	}
+	status, msg, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusWarn {
+		t.Errorf("status = %q, want %q", status, StatusWarn)
+	}
+	if msg == "" {
+		t.Error("expected message about previous key being too short")
+	}
+}
+
+func TestJWTCheck_PreviousSecretAdequate_Pass(t *testing.T) {
+	t.Parallel()
+	c := &JWTCheck{
+		Secret:         "this-is-at-least-32-bytes-long!!",
+		PreviousSecret: "this-is-at-least-32-bytes-long!!",
+	}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
+	}
+}
+
+func TestJWTCheck_PreviousSecretEmpty_Pass(t *testing.T) {
+	t.Parallel()
+	c := &JWTCheck{
+		Secret:         "this-is-at-least-32-bytes-long!!",
+		PreviousSecret: "",
+	}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
+	}
+}
+
+// ── SecurityHeaders check ───────────────────────────────────────────────────
+
+func TestSecurityHeadersCheck_Name(t *testing.T) {
+	t.Parallel()
+	c := &SecurityHeadersCheck{}
+	if c.Name() != "security_headers" {
+		t.Errorf("Name() = %q, want %q", c.Name(), "security_headers")
+	}
+}
+
+func TestSecurityHeadersCheck_AllPresent_Pass(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	c := &SecurityHeadersCheck{ServerAddr: ts.URL}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
+	}
+}
+
+func TestSecurityHeadersCheck_MissingHeaders_Fail(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Only set one of the three required headers.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	c := &SecurityHeadersCheck{ServerAddr: ts.URL}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusFail {
+		t.Errorf("status = %q, want %q", status, StatusFail)
+	}
+}
+
+func TestSecurityHeadersCheck_EmptyServerAddr_Warn(t *testing.T) {
+	t.Parallel()
+	c := &SecurityHeadersCheck{ServerAddr: ""}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusWarn {
+		t.Errorf("status = %q, want %q", status, StatusWarn)
+	}
+}
+
+func TestSecurityHeadersCheck_Unreachable_Warn(t *testing.T) {
+	t.Parallel()
+	c := &SecurityHeadersCheck{ServerAddr: "http://192.0.2.1:1"} // TEST-NET, unreachable
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusWarn {
+		t.Errorf("status = %q, want %q", status, StatusWarn)
+	}
+}
+
+// ── SSRF protection check ───────────────────────────────────────────────────
+
+func TestSSRFProtectionCheck_Name(t *testing.T) {
+	t.Parallel()
+	c := &SSRFProtectionCheck{}
+	if c.Name() != "ssrf_protection" {
+		t.Errorf("Name() = %q, want %q", c.Name(), "ssrf_protection")
+	}
+}
+
+func TestSSRFProtectionCheck_Pass(t *testing.T) {
+	t.Parallel()
+	c := &SSRFProtectionCheck{}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
+	}
+}
+
+// ── CORS check ──────────────────────────────────────────────────────────────
+
+func TestCORSCheck_Name(t *testing.T) {
+	t.Parallel()
+	c := &CORSCheck{}
+	if c.Name() != "cors_configuration" {
+		t.Errorf("Name() = %q, want %q", c.Name(), "cors_configuration")
+	}
+}
+
+func TestCORSCheck_WildcardWithCookies_Warn(t *testing.T) {
+	t.Parallel()
+	c := &CORSCheck{AllowedOrigins: "*", CookieAuth: true}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusWarn {
+		t.Errorf("status = %q, want %q", status, StatusWarn)
+	}
+}
+
+func TestCORSCheck_SpecificOriginWithCookies_Pass(t *testing.T) {
+	t.Parallel()
+	c := &CORSCheck{AllowedOrigins: "https://example.com", CookieAuth: true}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
+	}
+}
+
+func TestCORSCheck_WildcardNoCookies_Pass(t *testing.T) {
+	t.Parallel()
+	c := &CORSCheck{AllowedOrigins: "*", CookieAuth: false}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
+	}
+}
+
 // ── StandardChecks ──────────────────────────────────────────────────────────
 
-func TestStandardChecks_ReturnsAllNineChecks(t *testing.T) {
+func TestStandardChecks_ReturnsAllTwelveChecks(t *testing.T) {
 	t.Parallel()
 	checks := StandardChecks(StandardChecksConfig{
 		DB:                    nil, // nil is fine — we just verify the slice length
 		ExpectedSchemaVersion: 34,
 		JWTSecret:             "test-secret",
 	})
-	if got := len(checks); got != 9 {
-		t.Errorf("StandardChecks returned %d checks, want 9", got)
+	if got := len(checks); got != 12 {
+		t.Errorf("StandardChecks returned %d checks, want 12", got)
 	}
 }
 

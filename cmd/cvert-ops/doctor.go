@@ -40,9 +40,12 @@ func runDoctor(_ *cobra.Command, _ []string) error {
 		SSOEncryptionKey:         cfg.SSOEncryptionKey,
 		SSOEncryptionKeyPrevious: cfg.SSOEncryptionKeyPrevious,
 		JWTSecret:                cfg.JWTSecret,
+		JWTSecretPrevious:        cfg.JWTSecretPrevious,
 		SMTPHost:                 cfg.SMTPHost,
 		SMTPPort:                 cfg.SMTPPort,
 		SMTPUsername:             cfg.SMTPUsername,
+		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
+		CookieAuth:               true, // always cookie-based auth with web SPA
 	})
 	results := doctor.Run(ctx, checks)
 

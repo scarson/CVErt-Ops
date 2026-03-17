@@ -16,9 +16,13 @@ func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
 		SSOEncryptionKey:         srv.cfg.SSOEncryptionKey,
 		SSOEncryptionKeyPrevious: srv.cfg.SSOEncryptionKeyPrevious,
 		JWTSecret:                srv.cfg.JWTSecret,
+		JWTSecretPrevious:        srv.cfg.JWTSecretPrevious,
 		SMTPHost:                 srv.cfg.SMTPHost,
 		SMTPPort:                 srv.cfg.SMTPPort,
 		SMTPUsername:             srv.cfg.SMTPUsername,
+		CORSAllowedOrigins:      srv.cfg.CORSAllowedOrigins,
+		CookieAuth:               true, // always cookie-based auth with web SPA
+		ServerAddr:               "http://" + srv.cfg.ListenAddr,
 	})
 
 	results := doctor.Run(r.Context(), checks)

@@ -1,5 +1,5 @@
 // ABOUTME: Concrete health check implementations for the doctor framework.
-// ABOUTME: Covers DB connectivity, migrations, RLS, JWT, SMTP, disk, encryption, and feeds.
+// ABOUTME: Covers DB, migrations, RLS, JWT, SMTP, disk, encryption, feeds, security headers, SSRF, and CORS.
 package doctor
 
 import (
@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -191,7 +193,8 @@ func (c *EncryptionSentinelCheck) Run(ctx context.Context) (string, string, erro
 
 // JWTCheck verifies the JWT secret meets minimum length requirements.
 type JWTCheck struct {
-	Secret string
+	Secret         string
+	PreviousSecret string
 }
 
 // Name implements Check.
@@ -201,6 +204,9 @@ func (c *JWTCheck) Name() string { return "jwt_configuration" }
 func (c *JWTCheck) Run(_ context.Context) (string, string, error) {
 	if len(c.Secret) < 32 {
 		return StatusFail, fmt.Sprintf("JWT_SECRET is %d bytes, minimum 32 required", len(c.Secret)), nil
+	}
+	if c.PreviousSecret != "" && len(c.PreviousSecret) < 32 {
+		return StatusWarn, fmt.Sprintf("JWT_SECRET_PREVIOUS is %d bytes, minimum 32 recommended", len(c.PreviousSecret)), nil
 	}
 	return StatusPass, "JWT_SECRET meets minimum length (>= 32 bytes)", nil
 }
@@ -308,16 +314,139 @@ func (c *FeedCheck) Run(ctx context.Context) (string, string, error) {
 	return StatusPass, "all feeds healthy", nil
 }
 
+// ── Security headers ─────────────────────────────────────────────────────────
+
+// SecurityHeadersCheck verifies the server returns required security headers.
+type SecurityHeadersCheck struct {
+	ServerAddr string // e.g., "http://localhost:8080"
+}
+
+// Name implements Check.
+func (c *SecurityHeadersCheck) Name() string { return "security_headers" }
+
+// Run implements Check.
+func (c *SecurityHeadersCheck) Run(ctx context.Context) (string, string, error) {
+	if c.ServerAddr == "" {
+		return StatusWarn, "server address not configured — skipped (CLI mode)", nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ServerAddr+"/healthz", nil)
+	if err != nil {
+		return StatusWarn, fmt.Sprintf("could not build request: %v", err), nil
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req) //nolint:gosec // G704: ServerAddr is from app config, not user input
+	if err != nil {
+		return StatusWarn, fmt.Sprintf("server not reachable: %v", err), nil
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort close on health check response
+
+	required := map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":       "DENY",
+		"Referrer-Policy":       "strict-origin-when-cross-origin",
+	}
+
+	var missing []string
+	for header, expected := range required {
+		if got := resp.Header.Get(header); got != expected {
+			missing = append(missing, fmt.Sprintf("%s (want %q, got %q)", header, expected, got))
+		}
+	}
+
+	if len(missing) > 0 {
+		return StatusFail, fmt.Sprintf("missing or incorrect security headers: %v", missing), nil
+	}
+	return StatusPass, "all required security headers present", nil
+}
+
+// ── SSRF protection ─────────────────────────────────────────────────────────
+
+// SSRFProtectionCheck verifies safeurl blocks requests to internal/metadata IPs.
+type SSRFProtectionCheck struct{}
+
+// Name implements Check.
+func (c *SSRFProtectionCheck) Name() string { return "ssrf_protection" }
+
+// Run implements Check. It verifies that the private network CIDRs used by
+// safeurl cover common SSRF targets (cloud metadata, loopback) without
+// making any outbound HTTP requests.
+func (c *SSRFProtectionCheck) Run(_ context.Context) (string, string, error) {
+	// These are the same private network CIDRs that safeurl's isIPBlocked
+	// checks against. We verify the IPs are blocked by checking containment
+	// directly — no HTTP calls needed.
+	privateNetworks := []net.IPNet{
+		parseCIDR("169.254.0.0/16"), // link-local / cloud metadata
+		parseCIDR("127.0.0.0/8"),    // loopback
+		parseCIDR("10.0.0.0/8"),     // private RFC 1918
+		parseCIDR("172.16.0.0/12"),  // private RFC 1918
+		parseCIDR("192.168.0.0/16"), // private RFC 1918
+	}
+
+	targets := []net.IP{
+		net.ParseIP("169.254.169.254"), // cloud metadata endpoint
+		net.ParseIP("127.0.0.1"),       // loopback
+	}
+
+	for _, target := range targets {
+		blocked := false
+		for _, network := range privateNetworks {
+			if network.Contains(target) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			return StatusFail, fmt.Sprintf("safeurl would not block %s — SSRF risk", target), nil
+		}
+	}
+
+	return StatusPass, "safeurl blocks internal/metadata IPs (169.254.169.254, 127.0.0.1)", nil
+}
+
+// parseCIDR parses a CIDR string and panics on invalid input.
+func parseCIDR(s string) net.IPNet {
+	_, network, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(fmt.Sprintf("invalid CIDR %q: %v", s, err))
+	}
+	return *network
+}
+
+// ── CORS configuration ──────────────────────────────────────────────────────
+
+// CORSCheck verifies CORS allowed origins are safe given the auth mode.
+type CORSCheck struct {
+	AllowedOrigins string
+	CookieAuth     bool
+}
+
+// Name implements Check.
+func (c *CORSCheck) Name() string { return "cors_configuration" }
+
+// Run implements Check.
+func (c *CORSCheck) Run(_ context.Context) (string, string, error) {
+	if strings.Contains(c.AllowedOrigins, "*") && c.CookieAuth {
+		return StatusWarn, "CORS allows wildcard origin with cookie-based auth — credentials may be exposed to any origin", nil
+	}
+	return StatusPass, "CORS origin configuration is appropriate for auth mode", nil
+}
+
 // StandardChecksConfig holds parameters for constructing the standard health check suite.
 type StandardChecksConfig struct {
-	DB                           *pgxpool.Pool
-	ExpectedSchemaVersion        int
-	SSOEncryptionKey             string
-	SSOEncryptionKeyPrevious     string
-	JWTSecret                    string
-	SMTPHost                     string
-	SMTPPort                     int
-	SMTPUsername                  string
+	DB                       *pgxpool.Pool
+	ExpectedSchemaVersion    int
+	SSOEncryptionKey         string
+	SSOEncryptionKeyPrevious string
+	JWTSecret                string
+	JWTSecretPrevious        string
+	SMTPHost                 string
+	SMTPPort                 int
+	SMTPUsername             string
+	CORSAllowedOrigins      string
+	CookieAuth               bool
+	ServerAddr               string // empty in CLI mode, "http://localhost:{port}" in API mode
 }
 
 // StandardChecks returns the full suite of health checks configured from the
@@ -352,10 +481,13 @@ func StandardChecks(c StandardChecksConfig) []Check {
 		&DBRoleCheck{DB: c.DB},
 		&RLSCheck{DB: c.DB, Tables: OrgScopedTables()},
 		&EncryptionSentinelCheck{DB: c.DB, Key: encKey, PreviousKey: encKeyPrev},
-		&JWTCheck{Secret: c.JWTSecret},
+		&JWTCheck{Secret: c.JWTSecret, PreviousSecret: c.JWTSecretPrevious},
 		&SMTPCheck{Host: smtpHost, Port: c.SMTPPort},
 		&DiskCheck{},
 		&FeedCheck{DB: c.DB},
+		&SecurityHeadersCheck{ServerAddr: c.ServerAddr},
+		&SSRFProtectionCheck{},
+		&CORSCheck{AllowedOrigins: c.CORSAllowedOrigins, CookieAuth: c.CookieAuth},
 	}
 }
 

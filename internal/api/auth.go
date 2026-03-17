@@ -479,11 +479,12 @@ type orgEntry struct {
 // meOutput is the response body for GET /auth/me.
 type meOutput struct {
 	Body struct {
-		UserID      string     `json:"user_id"`
-		Email       string     `json:"email"`
-		DisplayName string     `json:"display_name"`
-		IsSiteAdmin bool       `json:"is_site_admin"`
-		Orgs        []orgEntry `json:"orgs"`
+		UserID             string     `json:"user_id"`
+		Email              string     `json:"email"`
+		DisplayName        string     `json:"display_name"`
+		IsSiteAdmin        bool       `json:"is_site_admin"`
+		ForcePasswordReset bool       `json:"force_password_reset"`
+		Orgs               []orgEntry `json:"orgs"`
 	}
 }
 
@@ -520,6 +521,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	out.Body.Email = user.Email
 	out.Body.DisplayName = user.DisplayName
 	out.Body.IsSiteAdmin = isSiteAdmin
+	out.Body.ForcePasswordReset = user.ForcePasswordReset
 	out.Body.Orgs = make([]orgEntry, 0, len(orgRows))
 	for _, row := range orgRows {
 		out.Body.Orgs = append(out.Body.Orgs, orgEntry{
@@ -601,6 +603,12 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if err := srv.store.UpdatePasswordHash(ctx, user.ID, newHash, 1); err != nil {
 		slog.ErrorContext(ctx, "change-password: update hash", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Clear force_password_reset if it was set.
+	if err := srv.store.ClearForcePasswordReset(ctx, user.ID); err != nil {
+		slog.ErrorContext(ctx, "change-password: clear force reset", "error", err)
+		// Non-fatal — password is already changed.
 	}
 
 	return &changePasswordOutput{}, nil

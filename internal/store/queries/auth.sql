@@ -67,3 +67,13 @@ SELECT CAST(disabled_at IS NULL AS boolean) AS enabled FROM users WHERE id = $1;
 UPDATE users SET is_site_admin = true
 WHERE users.id = $1
   AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.is_site_admin = true);
+
+-- name: GetUserAuthStatus :one
+-- Returns enabled status and force_password_reset flag. Used by auth middleware.
+SELECT
+  CAST(disabled_at IS NULL AS boolean) AS enabled,
+  force_password_reset
+FROM users WHERE id = $1;
+
+-- name: ClearForcePasswordReset :exec
+UPDATE users SET force_password_reset = false WHERE id = $1;

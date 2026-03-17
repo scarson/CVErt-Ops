@@ -224,3 +224,36 @@ func (s *Store) SetFirstSiteAdmin(ctx context.Context, userID uuid.UUID) error {
 		return q.SetFirstSiteAdmin(ctx, userID)
 	})
 }
+
+// UserAuthStatus holds the auth-relevant flags for a user.
+type UserAuthStatus struct {
+	Enabled            bool
+	ForcePasswordReset bool
+}
+
+// GetUserAuthStatus returns the enabled and force_password_reset status for a user.
+// Uses withBypassTx since it runs from auth middleware before org context.
+func (s *Store) GetUserAuthStatus(ctx context.Context, userID uuid.UUID) (*UserAuthStatus, error) {
+	var status UserAuthStatus
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetUserAuthStatus(ctx, userID)
+		if err != nil {
+			return err
+		}
+		status.Enabled = row.Enabled
+		status.ForcePasswordReset = row.ForcePasswordReset
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get user auth status: %w", err)
+	}
+	return &status, nil
+}
+
+// ClearForcePasswordReset clears the force_password_reset flag for a user.
+// Uses withBypassTx since it runs from change-password flow before org context.
+func (s *Store) ClearForcePasswordReset(ctx context.Context, userID uuid.UUID) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.ClearForcePasswordReset(ctx, userID)
+	})
+}

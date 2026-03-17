@@ -13,6 +13,15 @@ import (
 	"github.com/google/uuid"
 )
 
+const clearForcePasswordReset = `-- name: ClearForcePasswordReset :exec
+UPDATE users SET force_password_reset = false WHERE id = $1
+`
+
+func (q *Queries) ClearForcePasswordReset(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, clearForcePasswordReset, id)
+	return err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users
 `
@@ -118,6 +127,26 @@ func (q *Queries) GetRefreshToken(ctx context.Context, jti uuid.UUID) (RefreshTo
 		&i.ReplacedByJti,
 		&i.CreatedAt,
 	)
+	return i, err
+}
+
+const getUserAuthStatus = `-- name: GetUserAuthStatus :one
+SELECT
+  CAST(disabled_at IS NULL AS boolean) AS enabled,
+  force_password_reset
+FROM users WHERE id = $1
+`
+
+type GetUserAuthStatusRow struct {
+	Enabled            bool
+	ForcePasswordReset bool
+}
+
+// Returns enabled status and force_password_reset flag. Used by auth middleware.
+func (q *Queries) GetUserAuthStatus(ctx context.Context, id uuid.UUID) (GetUserAuthStatusRow, error) {
+	row := q.db.QueryRowContext(ctx, getUserAuthStatus, id)
+	var i GetUserAuthStatusRow
+	err := row.Scan(&i.Enabled, &i.ForcePasswordReset)
 	return i, err
 }
 

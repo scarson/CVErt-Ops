@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -38,16 +39,32 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			// Reject disabled users immediately.
-			enabled, err := srv.store.IsUserEnabled(r.Context(), claims.UserID)
+			// Reject disabled users and enforce force_password_reset.
+			authStatus, err := srv.store.GetUserAuthStatus(r.Context(), claims.UserID)
 			if err != nil {
-				slog.ErrorContext(r.Context(), "auth: check user enabled", "user_id", claims.UserID, "error", err)
+				slog.ErrorContext(r.Context(), "auth: check user status", "user_id", claims.UserID, "error", err)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			if !enabled {
+			if !authStatus.Enabled {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
+			}
+			if authStatus.ForcePasswordReset {
+				path := r.URL.Path
+				allowed := strings.HasSuffix(path, "/auth/change-password") ||
+					strings.HasSuffix(path, "/auth/me") ||
+					strings.HasSuffix(path, "/auth/logout")
+				if !allowed {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"title":  "Password change required",
+						"detail": "Your password must be changed before continuing",
+						"type":   "password_change_required",
+					})
+					return
+				}
 			}
 			ctx := context.WithValue(r.Context(), ctxUserID, claims.UserID)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -72,7 +89,8 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	if subtle.ConstantTimeCompare([]byte(key.KeyHash), []byte(hash)) != 1 {
 		return false
 	}
-	// Reject disabled users.
+	// API key auth checks enabled only — API keys cannot change passwords,
+	// so force_password_reset does not apply.
 	enabled, err := srv.store.IsUserEnabled(r.Context(), key.CreatedByUserID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "api key auth: check user enabled", "user_id", key.CreatedByUserID, "error", err)

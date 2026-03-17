@@ -329,6 +329,79 @@ func TestLoginOAuthOnlyAccount(t *testing.T) {
 	}
 }
 
+func TestLoginDisabledUser(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "disabled@example.com", "test-password-1234")
+
+	// Disable the user via admin store method.
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user_id: %v", err)
+	}
+	if _, err := db.AdminDisableUser(ctx, userID); err != nil {
+		t.Fatalf("AdminDisableUser: %v", err)
+	}
+
+	// Login with correct credentials should return 401 (same as nonexistent user).
+	resp := doLogin(t, ctx, ts, "disabled@example.com", "test-password-1234")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("disabled user login: got %d, want 401", resp.StatusCode)
+	}
+
+	// Verify the error message matches the nonexistent-user response.
+	var errBody struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Detail != "invalid credentials" {
+		t.Errorf("error detail = %q, want %q", errBody.Detail, "invalid credentials")
+	}
+
+	// Verify no auth cookies were set.
+	if cookieValue(resp, "access_token") != "" {
+		t.Error("access_token cookie should not be set for disabled user")
+	}
+	if cookieValue(resp, "refresh_token") != "" {
+		t.Error("refresh_token cookie should not be set for disabled user")
+	}
+}
+
+func TestLoginDisabledUser_RecordsLockoutFailure(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "disabled-lockout@example.com", "test-password-1234")
+
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user_id: %v", err)
+	}
+	if _, err := db.AdminDisableUser(ctx, userID); err != nil {
+		t.Fatalf("AdminDisableUser: %v", err)
+	}
+
+	// Multiple login attempts on a disabled account should trigger lockout.
+	for i := 0; i < 6; i++ {
+		resp := doLogin(t, ctx, ts, "disabled-lockout@example.com", "test-password-1234")
+		resp.Body.Close() //nolint:errcheck,gosec // G104
+	}
+
+	// Verify lockout was recorded (the lockout manager should have failures).
+	allowed, _ := srv.lockout.Check("disabled-lockout@example.com")
+	if allowed {
+		t.Error("expected lockout after repeated disabled-user login attempts")
+	}
+}
+
 // ── Task 27: Refresh + Logout ─────────────────────────────────────────────────
 
 func TestRefreshRotates(t *testing.T) {

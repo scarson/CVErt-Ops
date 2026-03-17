@@ -230,6 +230,20 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Reject disabled users with the same response as nonexistent users
+	// to prevent account status enumeration.
+	if user != nil && user.DisabledAt.Valid {
+		if !srv.acquireArgon2() {
+			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+		}
+		func() {
+			defer srv.releaseArgon2()
+			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
+		}()
+		srv.lockout.RecordFailure(input.Body.Email)
+		return nil, huma.Error401Unauthorized("invalid credentials")
+	}
+
 	// Account lockout check — before argon2 to save CPU on locked accounts.
 	// Still normalize timing for locked accounts to prevent lockout status enumeration.
 	allowed, retryAfter := srv.lockout.Check(input.Body.Email)

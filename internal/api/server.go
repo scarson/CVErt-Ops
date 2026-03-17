@@ -293,6 +293,7 @@ func (srv *Server) Handler() http.Handler {
 			r.Get("/", srv.getOrgHandler)
 			r.Get("/tier", srv.getOrgTierHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
+			r.With(srv.RequireOrgRole(RoleOwner)).Patch("/mfa-settings", srv.adminUpdateOrgMFASettingsHandler)
 
 			// Member management
 			r.Route("/members", func(r chi.Router) {
@@ -301,6 +302,8 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeMemberHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/reset-mfa", srv.adminResetMFAHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/force-password-reset", srv.adminForcePasswordResetHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/require-mfa", srv.adminRequireMFAHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}/require-mfa", srv.adminUnrequireMFAHandler)
 			})
 
 			// Invitation management

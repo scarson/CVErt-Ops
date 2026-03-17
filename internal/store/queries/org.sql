@@ -73,6 +73,14 @@ SELECT tier, tier_overrides FROM organizations WHERE id = $1;
 -- name: UpdateOrgTier :exec
 UPDATE organizations SET tier = $2 WHERE id = $1;
 
+-- name: UpdateOrgMFASettings :one
+UPDATE organizations SET
+    mfa_required_all = $2,
+    mfa_remember_device_allowed = $3,
+    mfa_remember_device_days = $4
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
 -- name: CountAlertRulesByOrg :one
 SELECT COUNT(*) FROM alert_rules WHERE org_id = $1 AND deleted_at IS NULL;
 

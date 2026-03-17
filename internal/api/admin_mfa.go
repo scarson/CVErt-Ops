@@ -186,6 +186,171 @@ func (srv *Server) adminForcePasswordResetHandler(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset_required", "user_id": targetID.String()})
 }
 
+// ── Per-member MFA requirements ───────────────────────────────────────────────
+
+// adminRequireMFAHandler handles POST /api/v1/orgs/{org_id}/members/{user_id}/require-mfa.
+// Adds a per-member MFA mandate. Idempotent.
+func (srv *Server) adminRequireMFAHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+
+	// Verify target is in the org.
+	targetRole, err := srv.store.GetOrgMemberRole(r.Context(), orgID, targetID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "admin require-mfa: get role", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if targetRole == nil {
+		writeProblem(w, http.StatusNotFound, "user not found in org")
+		return
+	}
+
+	if err := srv.store.CreateMFARequirement(r.Context(), orgID, targetID, callerID); err != nil {
+		slog.ErrorContext(r.Context(), "admin require-mfa: create", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "mfa.admin_require_member",
+		EntityType: "security_event",
+		EntityID:   targetID.String(),
+		Success:    true,
+	})
+
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "mfa_required", "user_id": targetID.String()})
+}
+
+// adminUnrequireMFAHandler handles DELETE /api/v1/orgs/{org_id}/members/{user_id}/require-mfa.
+// Removes the per-member MFA mandate. Idempotent.
+func (srv *Server) adminUnrequireMFAHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+
+	if err := srv.store.DeleteMFARequirement(r.Context(), orgID, targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin unrequire-mfa: delete", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "mfa.admin_unrequire_member",
+		EntityType: "security_event",
+		EntityID:   targetID.String(),
+		Success:    true,
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── Org MFA settings ─────────────────────────────────────────────────────────
+
+// updateOrgMFASettingsBody is the request body for PATCH /orgs/{org_id}/mfa-settings.
+type updateOrgMFASettingsBody struct {
+	MFARequiredAll           *bool  `json:"mfa_required_all,omitempty"`
+	MFARememberDeviceAllowed *bool  `json:"mfa_remember_device_allowed,omitempty"`
+	MFARememberDeviceDays    *int32 `json:"mfa_remember_device_days,omitempty"`
+}
+
+// adminUpdateOrgMFASettingsHandler handles PATCH /api/v1/orgs/{org_id}/mfa-settings.
+// Owner-only. Updates MFA-related org settings.
+func (srv *Server) adminUpdateOrgMFASettingsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+
+	var req updateOrgMFASettingsBody
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+		return
+	}
+
+	// Read current org to merge pointer fields.
+	existing, err := srv.store.GetOrgByID(r.Context(), orgID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "update org mfa settings: read existing", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if existing == nil {
+		writeProblem(w, http.StatusNotFound, "org not found")
+		return
+	}
+
+	// Merge with existing values.
+	requiredAll := existing.MfaRequiredAll
+	if req.MFARequiredAll != nil {
+		requiredAll = *req.MFARequiredAll
+	}
+	rememberAllowed := existing.MfaRememberDeviceAllowed
+	if req.MFARememberDeviceAllowed != nil {
+		rememberAllowed = *req.MFARememberDeviceAllowed
+	}
+	rememberDays := existing.MfaRememberDeviceDays
+	if req.MFARememberDeviceDays != nil {
+		days := *req.MFARememberDeviceDays
+		if days < 7 || days > 90 {
+			writeProblem(w, http.StatusBadRequest, "mfa_remember_device_days must be between 7 and 90")
+			return
+		}
+		rememberDays = days
+	}
+
+	org, err := srv.store.UpdateOrgMFASettings(r.Context(), orgID, requiredAll, rememberAllowed, rememberDays)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "update org mfa settings", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if org == nil {
+		writeProblem(w, http.StatusNotFound, "org not found")
+		return
+	}
+
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "org_mfa_settings",
+		EntityID:   orgID.String(),
+		Success:    true,
+		NewState: map[string]any{
+			"mfa_required_all":            org.MfaRequiredAll,
+			"mfa_remember_device_allowed": org.MfaRememberDeviceAllowed,
+			"mfa_remember_device_days":    org.MfaRememberDeviceDays,
+		},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mfa_required_all":            org.MfaRequiredAll,
+		"mfa_remember_device_allowed": org.MfaRememberDeviceAllowed,
+		"mfa_remember_device_days":    org.MfaRememberDeviceDays,
+	})
+}
+
 // checkAdminMFAPermission enforces the RBAC hierarchy for admin MFA/password actions.
 // Owner can target members/admins. Admin can target members only.
 // Site admin can target anyone including owners.

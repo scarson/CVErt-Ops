@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -214,5 +215,187 @@ func TestAdminForcePasswordResetByMember(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("member force-password-reset: got %d, want 403", resp.StatusCode)
+	}
+}
+
+// ── Task 19: Per-member MFA requirements + org MFA settings ──────────────────
+
+func TestAdminRequireMFA(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Owner adds per-member MFA requirement.
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + actors.memberID.String() + "/require-mfa"
+	req := authedRequest(t, ctx, http.MethodPost, url, "", actors.ownerCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("require-mfa: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("require-mfa: got %d, want 201", resp.StatusCode)
+	}
+
+	// Verify the requirement exists.
+	has, err := srv.store.UserHasMFARequirement(ctx, actors.memberID)
+	if err != nil {
+		t.Fatalf("check requirement: %v", err)
+	}
+	if !has {
+		t.Error("member should have MFA requirement after require-mfa")
+	}
+}
+
+func TestAdminUnrequireMFA(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// First add the requirement.
+	if err := srv.store.CreateMFARequirement(ctx, actors.orgID, actors.memberID, actors.ownerID); err != nil {
+		t.Fatalf("create requirement: %v", err)
+	}
+
+	// Owner removes per-member MFA requirement.
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + actors.memberID.String() + "/require-mfa"
+	req := authedRequest(t, ctx, http.MethodDelete, url, "", actors.ownerCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("unrequire-mfa: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unrequire-mfa: got %d, want 204", resp.StatusCode)
+	}
+
+	// Verify the requirement is gone.
+	has, err := srv.store.UserHasMFARequirement(ctx, actors.memberID)
+	if err != nil {
+		t.Fatalf("check requirement: %v", err)
+	}
+	if has {
+		t.Error("member should not have MFA requirement after unrequire-mfa")
+	}
+}
+
+func TestAdminRequireMFAByMember(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Member tries to require MFA → 403 (middleware blocks at admin+ level).
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + actors.adminID.String() + "/require-mfa"
+	req := authedRequest(t, ctx, http.MethodPost, url, "", actors.memberCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("require-mfa: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member require-mfa: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminUpdateOrgMFASettings(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Owner updates MFA settings.
+	body := `{"mfa_required_all":true,"mfa_remember_device_allowed":false,"mfa_remember_device_days":14}`
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/mfa-settings"
+	req := authedRequest(t, ctx, http.MethodPatch, url, body, actors.ownerCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("mfa-settings: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mfa-settings: got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify the settings were applied.
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result["mfa_required_all"] != true {
+		t.Error("mfa_required_all should be true")
+	}
+	if result["mfa_remember_device_allowed"] != false {
+		t.Error("mfa_remember_device_allowed should be false")
+	}
+	if result["mfa_remember_device_days"] != float64(14) {
+		t.Errorf("mfa_remember_device_days: got %v, want 14", result["mfa_remember_device_days"])
+	}
+
+	// Verify persistence via store.
+	org, err := srv.store.GetOrgByID(ctx, actors.orgID)
+	if err != nil {
+		t.Fatalf("get org: %v", err)
+	}
+	if !org.MfaRequiredAll {
+		t.Error("org.MfaRequiredAll should be true in DB")
+	}
+}
+
+func TestAdminUpdateOrgMFASettingsRememberDeviceDaysRange(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/mfa-settings"
+
+	// Below minimum (7).
+	req := authedRequest(t, ctx, http.MethodPatch, url, `{"mfa_remember_device_days":3}`, actors.ownerCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("mfa-settings low: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("mfa-settings days=3: got %d, want 400", resp.StatusCode)
+	}
+
+	// Above maximum (90).
+	req = authedRequest(t, ctx, http.MethodPatch, url, `{"mfa_remember_device_days":100}`, actors.ownerCookies)
+	resp, err = ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("mfa-settings high: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("mfa-settings days=100: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminUpdateOrgMFASettingsByMember(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Member tries to update MFA settings → 403.
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/mfa-settings"
+	req := authedRequest(t, ctx, http.MethodPatch, url, `{"mfa_required_all":true}`, actors.memberCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("mfa-settings: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("member mfa-settings: got %d, want 403", resp.StatusCode)
 	}
 }

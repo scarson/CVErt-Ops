@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -1354,5 +1355,228 @@ func TestMFARequirement_NoRequirementAfterOrgLeave(t *testing.T) {
 	}
 	if has {
 		t.Error("expected false after user removed from org — CASCADE should clean up requirement")
+	}
+}
+
+// --- UserMFARequired (3-layer mandate check) Tests ---
+
+func TestUserMFARequired_SiteAdminRequired(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-siteadmin@example.com", "MFA Mandate SiteAdmin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: true, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, true, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if !required {
+		t.Error("expected MFA required for site admin with RequiredSiteAdmins=true")
+	}
+}
+
+func TestUserMFARequired_OrgOwnerRequired(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Mandate Owner Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-owner@example.com", "MFA Mandate Owner", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "owner"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: true}
+	required, err := tdb.UserMFARequired(ctx, user.ID, false, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if !required {
+		t.Error("expected MFA required for org owner with RequiredOrgOwners=true")
+	}
+}
+
+func TestUserMFARequired_OrgWideMFARequired(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Mandate OrgWide")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-orgwide@example.com", "MFA Mandate OrgWide", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	// Set mfa_required_all=true.
+	_, err = tdb.Pool().Exec(ctx, "UPDATE organizations SET mfa_required_all = true WHERE id = $1", org.ID)
+	if err != nil {
+		t.Fatalf("UPDATE mfa_required_all: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, false, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if !required {
+		t.Error("expected MFA required for member of org with mfa_required_all=true")
+	}
+}
+
+func TestUserMFARequired_PerMemberRequirement(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Mandate PerMember Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-permember@example.com", "MFA Mandate PerMember", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-mandate-permember-admin@example.com", "MFA Mandate PerMember Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	// Create per-member requirement.
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, false, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if !required {
+		t.Error("expected MFA required for user with per-member requirement")
+	}
+}
+
+func TestUserMFARequired_NoneRequired(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Mandate None Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-none@example.com", "MFA Mandate None", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, false, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if required {
+		t.Error("expected MFA not required when no layers match")
+	}
+}
+
+func TestUserMFARequired_SiteAdminFlagFalse(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Mandate AdminFalse Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-adminfalse@example.com", "MFA Mandate AdminFalse", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-mandate-adminfalse-admin@example.com", "MFA Mandate AdminFalse Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	// Site admin but RequiredSiteAdmins=false; per-member requirement exists → should still be required.
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, true, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if !required {
+		t.Error("expected MFA required via per-member layer even when RequiredSiteAdmins=false")
+	}
+}
+
+func TestUserMFARequired_MultipleOrgsOneMFARequired(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgA, err := tdb.CreateOrg(ctx, "MFA Mandate MultiOrg A")
+	if err != nil {
+		t.Fatalf("CreateOrg A: %v", err)
+	}
+	orgB, err := tdb.CreateOrg(ctx, "MFA Mandate MultiOrg B")
+	if err != nil {
+		t.Fatalf("CreateOrg B: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-multi@example.com", "MFA Mandate Multi", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgA.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember A: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgB.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember B: %v", err)
+	}
+
+	// Only orgB requires MFA.
+	_, err = tdb.Pool().Exec(ctx, "UPDATE organizations SET mfa_required_all = true WHERE id = $1", orgB.ID)
+	if err != nil {
+		t.Fatalf("UPDATE mfa_required_all: %v", err)
+	}
+
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, false, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if !required {
+		t.Error("expected MFA required when any org requires MFA")
 	}
 }

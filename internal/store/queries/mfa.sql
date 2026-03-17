@@ -101,6 +101,12 @@ DELETE FROM mfa_challenges WHERE expires_at < now();
 -- name: DeleteChallenge :exec
 DELETE FROM mfa_challenges WHERE id = $1;
 
+-- name: IsOrgOwner :one
+-- Does this user have the 'owner' role in any org?
+SELECT EXISTS(
+    SELECT 1 FROM org_members WHERE user_id = $1 AND role = 'owner'
+) AS is_owner;
+
 -- name: CreateMFARequirement :exec
 INSERT INTO mfa_requirements (org_id, user_id, required_by)
 VALUES ($1, $2, $3)

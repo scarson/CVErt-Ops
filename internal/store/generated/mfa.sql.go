@@ -487,6 +487,20 @@ func (q *Queries) IncrementChallengeAttempts(ctx context.Context, id uuid.UUID) 
 	return attempts, err
 }
 
+const isOrgOwner = `-- name: IsOrgOwner :one
+SELECT EXISTS(
+    SELECT 1 FROM org_members WHERE user_id = $1 AND role = 'owner'
+) AS is_owner
+`
+
+// Does this user have the 'owner' role in any org?
+func (q *Queries) IsOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isOrgOwner, userID)
+	var is_owner bool
+	err := row.Scan(&is_owner)
+	return is_owner, err
+}
+
 const markRecoveryCodeUsed = `-- name: MarkRecoveryCodeUsed :exec
 UPDATE mfa_recovery_codes SET used_at = now() WHERE id = $1
 `

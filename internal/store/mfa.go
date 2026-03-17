@@ -517,3 +517,61 @@ func (s *Store) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (boo
 	}
 	return required, nil
 }
+
+// MFAConfig holds the site-level config fields needed for the mandate check.
+type MFAConfig struct {
+	RequiredSiteAdmins bool
+	RequiredOrgOwners  bool
+}
+
+// UserMFARequired checks all three enforcement layers to determine if this user
+// must have MFA. Runs at login time under withBypassTx (cross-org queries).
+// The isSiteAdmin flag is passed in by the caller — this function does not query
+// the users table.
+func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdmin bool, cfg MFAConfig) (bool, error) {
+	// Layer 1: site config — site admins must have MFA.
+	if cfg.RequiredSiteAdmins && isSiteAdmin {
+		return true, nil
+	}
+
+	// Layer 2a: site config — org owners must have MFA.
+	if cfg.RequiredOrgOwners {
+		isOwner, err := s.isOrgOwner(ctx, userID)
+		if err != nil {
+			return false, fmt.Errorf("check org owner: %w", err)
+		}
+		if isOwner {
+			return true, nil
+		}
+	}
+
+	// Layer 2b: org-wide MFA requirement.
+	inRequiredOrg, err := s.UserInMFARequiredOrg(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("check org-wide mfa: %w", err)
+	}
+	if inRequiredOrg {
+		return true, nil
+	}
+
+	// Layer 3: per-member MFA requirement.
+	hasReq, err := s.UserHasMFARequirement(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("check per-member mfa: %w", err)
+	}
+	return hasReq, nil
+}
+
+// isOrgOwner checks whether a user has the 'owner' role in any org.
+func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var isOwner bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		isOwner, err = q.IsOrgOwner(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("is org owner: %w", err)
+	}
+	return isOwner, nil
+}

@@ -989,6 +989,8 @@ Checklist:
 
 Perform the mandatory 3-round review per the instructions at the top of this plan.
 
+**⚠️ COMPACT NOW:** After the review is complete and all issues are resolved, run `/compact` before starting Task 10. Reviews consume significant context from file reads and verification — compacting here prevents an automatic compaction mid-task in the next batch, which would discard freshly-loaded task context.
+
 ---
 
 ## Task 10: Modify Login Handler for MFA
@@ -1416,6 +1418,8 @@ The login + MFA challenge/verify flow is the security-critical core. Review thor
 
 Perform the mandatory 3-round review.
 
+**⚠️ COMPACT NOW:** After the review is complete and all issues are resolved, run `/compact` before starting Task 12. Reviews consume significant context from file reads and verification — compacting here prevents an automatic compaction mid-task in the next batch, which would discard freshly-loaded task context.
+
 ---
 
 ## Task 12: TOTP Enrollment Handlers
@@ -1804,6 +1808,8 @@ Enrollment + management handlers. Check:
 - [ ] All handlers return consistent error formats
 
 Perform the mandatory 3-round review.
+
+**⚠️ COMPACT NOW:** After the review is complete and all issues are resolved, run `/compact` before starting Task 16. Reviews consume significant context from file reads and verification — compacting here prevents an automatic compaction mid-task in the next batch, which would discard freshly-loaded task context.
 
 ---
 
@@ -2417,6 +2423,8 @@ Final handler + infrastructure review:
 - [ ] `golangci-lint run` passes on all changed files
 
 Perform the mandatory 3-round review.
+
+**⚠️ COMPACT NOW:** After the review is complete and all issues are resolved, run `/compact` before starting Task 23. Reviews consume significant context from file reads and verification — compacting here prevents an automatic compaction mid-task in the next batch, which would discard freshly-loaded task context.
 
 ---
 

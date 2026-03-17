@@ -80,6 +80,7 @@ func newRegisterServer(t *testing.T, db *testutil.TestDB, regMode string) (*Serv
 		JWTSecret:           "regtestsecret",
 		RegistrationMode:    regMode,
 		Argon2MaxConcurrent: 5,
+		MFAPendingTokenTTL:  5 * time.Minute,
 	}
 	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
@@ -1294,17 +1295,21 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 		t.Fatal("force_password_reset should be true before password change")
 	}
 
-	// Login and change password.
+	// Login — with force_password_reset, login returns a pending token.
 	loginResp := doLogin(t, ctx, ts, "forcereset-clear@example.com", "test-old-password-1")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
-	accessToken := cookieValue(loginResp, "access_token")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie from login with force_password_reset")
+	}
 
-	body := `{"current_password":"test-old-password-1","new_password":"test-new-password-1"}`
+	// Change password using restricted session (pending token, no current_password).
+	body := `{"new_password":"test-new-password-1"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)

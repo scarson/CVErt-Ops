@@ -744,31 +744,63 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 
 // ── Change password ───────────────────────────────────────────────────────────
 
-// changePasswordInput reads the access token cookie and the password change body.
+// changePasswordInput reads the access token or pending token cookie and the
+// password change body. In restricted session mode (force_password_reset via
+// pending token), current_password is optional.
 type changePasswordInput struct {
-	AccessToken string `cookie:"access_token" doc:"Access token cookie"`
-	Body        struct {
-		CurrentPassword string `json:"current_password" minLength:"1"  maxLength:"1024" doc:"Current password"`
-		NewPassword     string `json:"new_password"     minLength:"16" maxLength:"1024" doc:"New password (min 16 characters)"`
+	AccessToken     string `cookie:"access_token"       doc:"Access token cookie"`
+	MFAPendingToken string `cookie:"mfa_pending_token"   doc:"Pending token cookie (restricted session)"`
+	Body            struct {
+		CurrentPassword *string `json:"current_password,omitempty" maxLength:"1024" doc:"Current password (required in normal mode, optional in restricted mode)"`
+		NewPassword     string  `json:"new_password"               minLength:"16" maxLength:"1024" doc:"New password (min 16 characters)"`
 	}
 }
 
-// changePasswordOutput has no body — 200 on success.
-type changePasswordOutput struct{}
+// changePasswordOutput returns tokens when completing a restricted session.
+type changePasswordOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		Pending []string `json:"pending,omitempty" doc:"Remaining pending items (if any)"`
+	}
+}
 
 // changePasswordHandler handles POST /api/v1/auth/change-password.
-// Verifies the current password, hashes the new one, and increments token_version
-// to invalidate all active refresh tokens.
+// Supports two modes:
+//   - Normal: access_token + current_password → verify old password, set new one.
+//   - Restricted: mfa_pending_token with "password_reset" → skip current_password
+//     (password may be compromised). Issues full tokens or reissues pending token.
 func (srv *Server) changePasswordHandler(ctx context.Context, input *changePasswordInput) (*changePasswordOutput, error) {
-	if input.AccessToken == "" {
+	var (
+		userID        uuid.UUID
+		pendingClaims *auth.PendingClaims
+		isRestricted  bool
+	)
+
+	// Resolve auth context: access token or pending token with "password_reset".
+	if input.AccessToken != "" {
+		claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+		if err == nil {
+			userID = claims.UserID
+		}
+	}
+	if userID == uuid.Nil && input.MFAPendingToken != "" {
+		claims, err := auth.ParsePendingToken(input.MFAPendingToken, []byte(srv.cfg.JWTSecret))
+		if err == nil {
+			for _, p := range claims.Pending {
+				if p == "password_reset" {
+					userID = claims.UserID
+					pendingClaims = claims
+					isRestricted = true
+					break
+				}
+			}
+		}
+	}
+	if userID == uuid.Nil {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
-	if err != nil {
-		return nil, huma.Error401Unauthorized("invalid or expired access token")
-	}
 
-	user, err := srv.store.GetUserByID(ctx, claims.UserID)
+	user, err := srv.store.GetUserByID(ctx, userID)
 	if err != nil || user == nil {
 		slog.ErrorContext(ctx, "change-password: get user", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -777,21 +809,27 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		return nil, huma.Error400BadRequest("account uses OAuth authentication — password change not supported")
 	}
 
-	// Verify current password (argon2 semaphore, sequential — not simultaneous).
-	if !srv.acquireArgon2() {
-		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
-	}
-	var ok bool
-	func() {
-		defer srv.releaseArgon2()
-		ok, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
-	}()
-	if err != nil {
-		slog.ErrorContext(ctx, "change-password: verify", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if !ok {
-		return nil, huma.Error401Unauthorized("current password incorrect")
+	// In normal mode, verify current password. In restricted mode, skip — the
+	// password may be compromised (admin forced reset).
+	if !isRestricted {
+		if input.Body.CurrentPassword == nil || *input.Body.CurrentPassword == "" {
+			return nil, huma.Error422UnprocessableEntity("current_password is required")
+		}
+		if !srv.acquireArgon2() {
+			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+		}
+		var ok bool
+		func() {
+			defer srv.releaseArgon2()
+			ok, err = auth.VerifyPassword(*input.Body.CurrentPassword, user.PasswordHash.String)
+		}()
+		if err != nil {
+			slog.ErrorContext(ctx, "change-password: verify", "error", err)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if !ok {
+			return nil, huma.Error401Unauthorized("current password incorrect")
+		}
 	}
 
 	// Hash the new password.
@@ -820,18 +858,60 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		// Non-fatal — password is already changed.
 	}
 
+	// Delete remember-device tokens (password change invalidates them).
+	if err := srv.store.DeleteRememberDeviceTokens(ctx, user.ID); err != nil {
+		slog.WarnContext(ctx, "change-password: delete device tokens", "error", err)
+	}
+
 	if srv.eventWriter != nil {
+		method := "change_password"
+		if isRestricted {
+			method = "forced_reset"
+		}
 		srv.eventWriter.Write(ctx, secure.Event{
 			Type:       secure.EventAuthPasswordChanged,
 			Severity:   secure.SeverityInfo,
 			ActorIP:    clientIP(ctx),
 			ActorEmail: user.Email,
 			UserID:     &user.ID,
-			Details:    map[string]any{"method": "change_password"},
+			Details:    map[string]any{"method": method},
 		})
 	}
 
-	return &changePasswordOutput{}, nil
+	out := &changePasswordOutput{}
+
+	// In restricted session, progress the pending token.
+	if isRestricted && pendingClaims != nil {
+		remaining := removePendingItem(pendingClaims.Pending, "password_reset")
+		if len(remaining) > 0 {
+			token, ptErr := auth.IssuePendingToken(
+				[]byte(srv.cfg.JWTSecret), userID, pendingClaims.TokenVersion,
+				remaining, nil, srv.cfg.MFAPendingTokenTTL,
+			)
+			if ptErr != nil {
+				slog.ErrorContext(ctx, "change-password: reissue pending token", "error", ptErr)
+				return nil, huma.Error500InternalServerError("internal error")
+			}
+			out.Body.Pending = remaining
+			out.SetCookie = pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+			return out, nil
+		}
+
+		// All pending items cleared — re-read user (token_version was incremented).
+		user, err = srv.store.GetUserByID(ctx, userID)
+		if err != nil || user == nil {
+			slog.ErrorContext(ctx, "change-password: re-read user", "error", err)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		cookies, tokErr := srv.issueFullAuthTokens(ctx, user)
+		if tokErr != nil {
+			return nil, tokErr
+		}
+		out.SetCookie = cookies
+		out.SetCookie = append(out.SetCookie, clearPendingTokenCookie(srv.cfg.CookieSecure))
+	}
+
+	return out, nil
 }
 
 // ── Invitations (public + authenticated) ──────────────────────────────────────

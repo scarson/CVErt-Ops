@@ -65,7 +65,8 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				path := r.URL.Path
 				allowed := strings.HasSuffix(path, "/auth/change-password") ||
 					strings.HasSuffix(path, "/auth/me") ||
-					strings.HasSuffix(path, "/auth/logout")
+					strings.HasSuffix(path, "/auth/logout") ||
+					strings.Contains(path, "/auth/mfa/")
 				if !allowed {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusForbidden)

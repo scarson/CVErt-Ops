@@ -97,7 +97,7 @@ func (srv *Server) resendVerificationHandler(ctx context.Context, input *resendV
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), nil)
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}

@@ -327,7 +327,7 @@ func (srv *Server) oidcLinkCallbackHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "unauthorized — must be logged in to link identity", http.StatusUnauthorized)
 		return
 	}
-	jwtClaims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), nil)
+	jwtClaims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

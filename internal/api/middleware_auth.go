@@ -11,7 +11,17 @@ import (
 	"strings"
 
 	"github.com/scarson/cvert-ops/internal/auth"
+	"github.com/scarson/cvert-ops/internal/config"
 )
+
+// jwtPreviousSecret returns the previous JWT secret as bytes for key rotation,
+// or nil if no previous secret is configured.
+func jwtPreviousSecret(cfg *config.Config) []byte {
+	if cfg.JWTSecretPrevious == "" {
+		return nil
+	}
+	return []byte(cfg.JWTSecretPrevious)
+}
 
 // RequireAuthenticated returns a middleware that requires a valid JWT access-token
 // cookie or an API key Bearer token. On success it injects ctxUserID (and for API
@@ -34,7 +44,7 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), nil)
+			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 			if err != nil {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return

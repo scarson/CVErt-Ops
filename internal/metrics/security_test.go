@@ -9,7 +9,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 )
 
-func TestSecurityMetricsRegistered(t *testing.T) {
+func TestSecurityMetricsRegistered(_ *testing.T) {
 	metrics.SecurityEventsTotal.WithLabelValues("auth.login_failed", "info").Inc()
 	metrics.SecurityEventsDropped.Inc()
 }

@@ -860,6 +860,8 @@ All DB queries use withBypassTx for cross-org login-time evaluation."
 
 ## Task 9: Pending Token JWT (Restricted Session)
 
+**⚠️ Merge note:** This task adds NEW types and functions to `internal/auth/jwt.go` — it does not modify existing signatures. Phase 8E (Secure pillar) separately changes `ParseAccessToken`/`ParseRefreshToken` signatures for dual-key support. These changes are additive and should merge cleanly, but if Phase 8E has landed by the time you reach this task, read `jwt.go` fresh to confirm the current state before writing code.
+
 **Files:**
 - Modify: `internal/auth/jwt.go` (add PendingClaims and issue/parse functions)
 - Modify: `internal/auth/jwt_test.go` (add tests)
@@ -990,6 +992,24 @@ Checklist:
 Perform the mandatory 3-round review per the instructions at the top of this plan.
 
 **⚠️ COMPACT NOW:** After the review is complete and all issues are resolved, run `/compact` before starting Task 10. Reviews consume significant context from file reads and verification — compacting here prevents an automatic compaction mid-task in the next batch, which would discard freshly-loaded task context.
+
+---
+
+## ⛔ HARD STOP: Phase 8E Dependency Gate
+
+**DO NOT proceed past this point without explicit user approval.**
+
+Tasks 10+ modify files that Phase 8E (Secure pillar, `dev/plans/2026-03-16-phase8-ops-secure-v2-plan.md`) is also modifying. Specifically:
+
+- **`internal/auth/jwt.go`** — 8E changes `ParseAccessToken`/`ParseRefreshToken` signatures to accept dual keys. Task 9 (pending token) adds new functions to this file and must target the post-8E signatures.
+- **`internal/api/auth.go`** — 8E wires security events into `loginHandler`. Task 10 modifies this same handler for MFA pending tokens.
+- **`internal/api/middleware_auth.go`** — 8E changes middleware to use `writeProblem` and dual-key parsing. Task 16 adds pending-token route gating here.
+- **`internal/api/server.go`** — 8E adds `ConfigHolder` and `EventWriter` to `ServerDeps`. MFA handlers need to be wired into the post-8E server.
+- **`internal/secure/events.go`** — 8E creates `EventWriter` and `security_events` table. Task 21 should use 8E's infrastructure instead of the audit_log workaround.
+
+**Action required:** Ask Sam to check the status of the Phase 8E implementation. Do NOT proceed until Sam confirms either:
+1. Phase 8E has landed on `dev` and you should `git pull` before continuing, OR
+2. Sam gives explicit approval to proceed despite 8E being incomplete (expect merge conflicts)
 
 ---
 

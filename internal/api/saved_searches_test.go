@@ -485,7 +485,7 @@ func TestSavedSearch_Execute(t *testing.T) {
 		t.Fatalf("execute: got %d, want 200; body: %s", execResp.StatusCode, errBody)
 	}
 
-	var result savedSearchExecuteResponse
+	var result listResponse[CVEItem]
 	if err := json.NewDecoder(execResp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode execute response: %v", err)
 	}
@@ -1207,5 +1207,52 @@ func TestSavedSearch_InvalidVisibility(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid visibility: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestSavedSearch_ExecuteEmptyItems verifies that executing a saved search with
+// zero matching CVEs returns items as an empty JSON array ([]), not null.
+func TestSavedSearch_ExecuteEmptyItems(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	// No CVEs seeded — query will match nothing.
+
+	reg := doRegister(t, ctx, ts, "ss-empty@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-empty@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Create saved search for severity in [critical, high].
+	body := fmt.Sprintf(`{"name":"Empty Test","query_json":%s,"is_shared":false}`, validDSLJSON)
+	createResp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		var errBody json.RawMessage
+		json.NewDecoder(createResp.Body).Decode(&errBody) //nolint:errcheck,gosec
+		t.Fatalf("create: got %d, want 201; body: %s", createResp.StatusCode, errBody)
+	}
+	var created savedSearchEntry
+	json.NewDecoder(createResp.Body).Decode(&created) //nolint:errcheck,gosec
+
+	// Execute — no CVEs match.
+	execResp := doExecuteSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID)
+	defer execResp.Body.Close() //nolint:errcheck,gosec
+	if execResp.StatusCode != http.StatusOK {
+		var errBody json.RawMessage
+		json.NewDecoder(execResp.Body).Decode(&errBody) //nolint:errcheck,gosec
+		t.Fatalf("execute: got %d, want 200; body: %s", execResp.StatusCode, errBody)
+	}
+
+	// Decode raw JSON to check items is [] not null.
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(execResp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	itemsJSON := string(raw["items"])
+	if itemsJSON != "[]" {
+		t.Errorf("items should be empty array [], got %s", itemsJSON)
 	}
 }

@@ -1034,3 +1034,40 @@ func TestNLSearchHandler_ProTierQuota(t *testing.T) {
 		}
 	}
 }
+
+// TestNLSearchHandler_EmptyResultsArray verifies that NL search with zero
+// matching CVEs returns results as an empty JSON array ([]), not null.
+func TestNLSearchHandler_EmptyResultsArray(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// No CVEs seeded — the mock DSL matches severity in [critical, high],
+	// so zero results are expected.
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nlsearch-empty@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlsearch-empty@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{"query":"critical CVEs"}`
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody json.RawMessage
+		json.NewDecoder(resp.Body).Decode(&errBody) //nolint:errcheck,gosec
+		t.Fatalf("nl-search: got %d, want 200; body: %s", resp.StatusCode, errBody)
+	}
+
+	// Decode raw JSON to check results is [] not null.
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	resultsJSON := string(raw["results"])
+	if resultsJSON != "[]" {
+		t.Errorf("results should be empty array [], got %s", resultsJSON)
+	}
+}

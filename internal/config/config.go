@@ -134,6 +134,7 @@ type Config struct {
 	RetentionNotifDeliveriesDays int `env:"RETENTION_NOTIFICATION_DELIVERIES_DAYS"  envDefault:"90"`
 	RetentionAuditLogDays        int `env:"RETENTION_AUDIT_LOG_DAYS"                envDefault:"365"`
 	RetentionJobQueueHours       int `env:"RETENTION_JOB_QUEUE_HOURS"               envDefault:"24"`
+	RetentionSecurityEventsDays  int `env:"RETENTION_SECURITY_EVENTS_DAYS"          envDefault:"90"`
 	RetentionMaxRuntimeSeconds   int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
 
 	// ── Logging ──────────────────────────────────────────────────────────────────

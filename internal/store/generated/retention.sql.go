@@ -240,3 +240,25 @@ func (q *Queries) CleanupRefreshTokens(ctx context.Context, arg CleanupRefreshTo
 	}
 	return result.RowsAffected()
 }
+
+const cleanupSecurityEvents = `-- name: CleanupSecurityEvents :execrows
+WITH doomed AS (
+    SELECT id FROM security_events
+    WHERE created_at < $1::timestamptz
+    ORDER BY created_at LIMIT $2::int
+)
+DELETE FROM security_events se USING doomed WHERE se.id = doomed.id
+`
+
+type CleanupSecurityEventsParams struct {
+	Cutoff    time.Time
+	BatchSize int32
+}
+
+func (q *Queries) CleanupSecurityEvents(ctx context.Context, arg CleanupSecurityEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cleanupSecurityEvents, arg.Cutoff, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

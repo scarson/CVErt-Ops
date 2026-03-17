@@ -21,7 +21,8 @@ func defaultConfig() retention.Config {
 		RawPayloadDays:    90,
 		FeedFetchLogDays:  90,
 		JobQueueHours:     24,
-		AILogDays:         90,
+		AILogDays:          90,
+		SecurityEventsDays: 90,
 		AlertEventsDays:   365,
 		NotifDelivDays:    90,
 		AuditLogDays:      365,
@@ -106,6 +107,16 @@ func TestRunner_AllTables(t *testing.T) {
 		t.Fatalf("seed ai usage: %v", err)
 	}
 
+	// Seed security_events (old + recent).
+	for _, ts := range []time.Time{old, recent} {
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO security_events (event_type, severity, created_at)
+			 VALUES ('auth.login_failed', 'info', $1)`, ts,
+		); err != nil {
+			t.Fatalf("seed security_events: %v", err)
+		}
+	}
+
 	// Seed alert_events (old).
 	var ruleID uuid.UUID
 	if err := db.Pool().QueryRow(ctx,
@@ -160,6 +171,7 @@ func TestRunner_AllTables(t *testing.T) {
 		"ai_request_log":          0,
 		"ai_cache":                0,
 		"ai_usage_counters":       0,
+		"security_events":         0,
 		"alert_events":            0,
 		"notification_deliveries": 0,
 		"audit_log":               0,
@@ -195,6 +207,10 @@ func TestRunner_AllTables(t *testing.T) {
 	}
 	if counts["ai_usage_counters"] != 0 {
 		t.Errorf("ai_usage_counters remaining = %d, want 0", counts["ai_usage_counters"])
+	}
+	// security_events: old deleted, recent kept → 1
+	if counts["security_events"] != 1 {
+		t.Errorf("security_events remaining = %d, want 1", counts["security_events"])
 	}
 	// Org-scoped: all old → 0
 	if counts["alert_events"] != 0 {

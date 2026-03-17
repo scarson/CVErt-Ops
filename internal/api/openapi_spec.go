@@ -49,6 +49,7 @@ func registerAllSpecOps(api huma.API) {
 	registerOrgTierSpecOps(api)
 	registerAdminFeedsSpecOps(api)
 	registerAdminSystemSpecOps(api)
+	registerAdminReloadSpecOps(api)
 	registerAdminOrgsSpecOps(api)
 	registerAdminUsersSpecOps(api)
 	registerAdminDeliveriesSpecOps(api)
@@ -1519,6 +1520,22 @@ func registerAdminSystemSpecOps(api huma.API) {
 		Tags:        []string{"Admin System"},
 	}, noopHandler[struct{}, struct {
 		Body map[string]any
+	}]())
+}
+
+// ── Admin Reload spec ops ───────────────────────────────────────────────────
+
+func registerAdminReloadSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-reload-config",
+		Method:      http.MethodPost,
+		Path:        "/admin/reload-config",
+		Summary:     "Reload configuration from secrets file",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct{}, struct {
+		Body struct {
+			Message string `json:"message"`
+		}
 	}]())
 }
 

@@ -38,6 +38,7 @@ type ServerDeps struct {
 	AlertEvaluator        *alert.Evaluator
 	LLM                   ai.LLMClient
 	AuditWriter           *audit.Writer
+	ConfigHolder          *config.Holder
 	ExpectedSchemaVersion int
 	VersionInfo           VersionInfo
 }
@@ -60,6 +61,7 @@ type Server struct {
 	llm                   ai.LLMClient     // nil when AI features are not configured
 	auditWriter           *audit.Writer    // nil when audit logging is not configured
 	lockout               *lockoutManager  // brute-force login protection
+	configHolder          *config.Holder   // hot-reloadable config for admin reload endpoint
 	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
 	expectedSchemaVersion int              // migration version for /readyz check
 	versionInfo           VersionInfo      // build metadata for /admin/version
@@ -100,6 +102,7 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		alertEvaluator:        deps.AlertEvaluator,
 		llm:                   deps.LLM,
 		auditWriter:           deps.AuditWriter,
+		configHolder:          deps.ConfigHolder,
 		expectedSchemaVersion: deps.ExpectedSchemaVersion,
 		versionInfo:           deps.VersionInfo,
 	}
@@ -264,6 +267,7 @@ func (srv *Server) Handler() http.Handler {
 
 		// System management.
 		r.Post("/reindex", srv.adminReindexHandler)
+		r.Post("/reload-config", srv.adminReloadConfigHandler)
 		r.Get("/config", srv.adminConfigHandler)
 		r.Get("/audit-log", srv.adminAuditLogHandler)
 	})

@@ -196,6 +196,9 @@ YOU MUST follow this debugging framework for ANY technical issue:
 # NOTE: Codex's shell tool runs PowerShell in this environment. Use PowerShell/backslash paths by default.
 # Use bash explicitly only when a command genuinely requires bash/forward-slash paths.
 # Do NOT prefix shell commands with "Set-Location C:\Users\Sam\Code\CVErt-Ops; ..." unless you're outside the project base directory. Prefer the command tool's working-directory support.
+# For file reads, prefer:
+# `C:\Users\Sam\AppData\Local\Microsoft\WindowsApps\pwsh.exe -File C:\Users\Sam\.codex\tools\read-file-slice.ps1 -Path <file> -Start <n> -Count <m>`
+# Use `rg` for searches. Fall back to direct `Get-Content` only when the helper cannot express the read you need.
 
 # WORKTREE COMMANDS: When running git commands in a worktree, use `git -C <path>` instead of
 # `Set-Location <path>; git <command>` or other path-changing compound commands. This keeps

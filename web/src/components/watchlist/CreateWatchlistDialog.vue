@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import {
   Dialog,
   DialogContent,
@@ -64,26 +64,25 @@ async function handleCreate() {
   submitting.value = true
   error.value = ''
 
-  const body: Record<string, string> = { name: name.value.trim() }
-  if (description.value.trim()) {
-    body.description = description.value.trim()
+  const body = {
+    name: name.value.trim(),
+    description: description.value.trim() || null,
+    group_id: null,
   }
 
   try {
-    const resp = await orgFetch(`/api/v1/orgs/${auth.activeOrgId}/watchlists`, {
-      method: 'POST',
-      body: JSON.stringify(body),
+    const { data, error: fetchError } = await client.POST('/orgs/{org_id}/watchlists', {
+      params: { path: { org_id: auth.activeOrgId! } },
+      body,
     })
 
-    if (!resp.ok) {
-      const data = await resp.json()
-      error.value = data.detail ?? 'Failed to create watchlist'
+    if (fetchError) {
+      error.value = fetchError.detail ?? 'Failed to create watchlist'
       submitting.value = false
       return
     }
 
-    const entry: WatchlistEntry = await resp.json()
-    emit('created', entry)
+    emit('created', data as WatchlistEntry)
     emit('update:open', false)
   } catch {
     error.value = 'Network error. Please try again.'

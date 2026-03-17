@@ -85,8 +85,8 @@ func TestIngestHandler_RejectsReservedSourceName(t *testing.T) {
 	resp := doIngest(t, ctx, ts, token, orgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", resp.StatusCode)
 	}
 }
 
@@ -170,8 +170,8 @@ func TestIngestHandler_ExceedsPatchLimit(t *testing.T) {
 	resp := doIngest(t, ctx, ts, token, orgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", resp.StatusCode)
 	}
 }
 
@@ -222,8 +222,8 @@ func TestIngestHandler_EmptySourceName(t *testing.T) {
 	resp := doIngest(t, ctx, ts, token, orgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", resp.StatusCode)
 	}
 }
 
@@ -237,8 +237,8 @@ func TestIngestHandler_EmptyPatchesArray(t *testing.T) {
 	resp := doIngest(t, ctx, ts, token, orgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d", resp.StatusCode)
 	}
 }
 

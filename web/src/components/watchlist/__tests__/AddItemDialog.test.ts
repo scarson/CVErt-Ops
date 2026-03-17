@@ -16,8 +16,16 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockPOST = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: vi.fn(),
+    POST: (...args: unknown[]) => mockPOST(...args),
+    PATCH: vi.fn(),
+    DELETE: vi.fn(),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 const TEST_WATCHLIST_ID = 'wl-123'
@@ -49,27 +57,23 @@ function makeCpeItem(overrides: Record<string, unknown> = {}) {
 }
 
 function mockAddSuccess(item: Record<string, unknown> = makePackageItem()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 201,
-    json: () => Promise.resolve(item),
+  mockPOST.mockResolvedValueOnce({
+    data: item,
+    error: undefined,
   })
 }
 
 function mockAddConflict() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 409,
-    json: () => Promise.resolve({ detail: 'item already exists in watchlist' }),
+  mockPOST.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 409, detail: 'item already exists in watchlist' },
   })
 }
 
 function mockAddValidationError() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 422,
-    json: () =>
-      Promise.resolve({ detail: 'package_name is required for package items' }),
+  mockPOST.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 422, detail: 'package_name is required for package items' },
   })
 }
 
@@ -123,6 +127,7 @@ describe('AddItemDialog', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    mockPOST.mockReset()
 
     const auth = useAuthStore()
     auth.activeOrgId = TEST_ORG_ID
@@ -190,11 +195,11 @@ describe('AddItemDialog', () => {
     await clickTestId('add-item-btn')
     await flushPromises()
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      `/api/v1/orgs/${TEST_ORG_ID}/watchlists/${TEST_WATCHLIST_ID}/items`,
+    expect(mockPOST).toHaveBeenCalledWith(
+      '/orgs/{org_id}/watchlists/{id}/items',
       expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
+        params: { path: { org_id: TEST_ORG_ID, id: TEST_WATCHLIST_ID } },
+        body: expect.objectContaining({
           item_type: 'package',
           ecosystem: 'npm',
           package_name: 'lodash',
@@ -221,11 +226,11 @@ describe('AddItemDialog', () => {
     await clickTestId('add-item-btn')
     await flushPromises()
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      `/api/v1/orgs/${TEST_ORG_ID}/watchlists/${TEST_WATCHLIST_ID}/items`,
+    expect(mockPOST).toHaveBeenCalledWith(
+      '/orgs/{org_id}/watchlists/{id}/items',
       expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
+        params: { path: { org_id: TEST_ORG_ID, id: TEST_WATCHLIST_ID } },
+        body: expect.objectContaining({
           item_type: 'cpe',
           cpe_normalized: 'cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*',
         }),

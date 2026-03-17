@@ -17,8 +17,17 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockPOST = vi.fn()
+const mockPATCH = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: vi.fn(),
+    POST: (...args: unknown[]) => mockPOST(...args),
+    PATCH: (...args: unknown[]) => mockPATCH(...args),
+    DELETE: vi.fn(),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 
@@ -33,18 +42,16 @@ function makeGroup(overrides: Record<string, unknown> = {}) {
 }
 
 function mockCreateSuccess(entry = makeGroup()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 201,
-    json: () => Promise.resolve(entry),
+  mockPOST.mockResolvedValueOnce({
+    data: entry,
+    error: undefined,
   })
 }
 
 function mockPatchSuccess(entry = makeGroup()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(entry),
+  mockPATCH.mockResolvedValueOnce({
+    data: entry,
+    error: undefined,
   })
 }
 
@@ -88,7 +95,8 @@ describe('GroupDialog', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
-    mockFetch.mockReset()
+    mockPOST.mockReset()
+    mockPATCH.mockReset()
 
     const auth = useAuthStore()
     auth.activeOrgId = TEST_ORG_ID
@@ -153,11 +161,11 @@ describe('GroupDialog', () => {
       await clickTestId('group-submit-btn')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups`,
+      expect(mockPOST).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups',
         expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ name: 'New Group', description: 'A new group' }),
+          params: { path: { org_id: TEST_ORG_ID } },
+          body: { name: 'New Group', description: 'A new group' },
         }),
       )
     })
@@ -215,11 +223,11 @@ describe('GroupDialog', () => {
       await clickTestId('group-submit-btn')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups/grp-edit`,
+      expect(mockPATCH).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups/{group_id}',
         expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ name: 'Updated Name', description: 'Updated desc' }),
+          params: { path: { org_id: TEST_ORG_ID, group_id: 'grp-edit' } },
+          body: { name: 'Updated Name', description: 'Updated desc' },
         }),
       )
     })

@@ -102,26 +102,26 @@ func TestAdminFeeds_ListWithSeededData(t *testing.T) {
 	}
 
 	var body struct {
-		Feeds []struct {
+		Items []struct {
 			FeedName            string `json:"feed_name"`
 			ConsecutiveFailures int32  `json:"consecutive_failures"`
 			LastError           string `json:"last_error,omitempty"`
 			RecentLogs          []struct {
 				Status string `json:"status"`
 			} `json:"recent_logs"`
-		} `json:"feeds"`
+		} `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(body.Feeds) != len(ingest.KnownFeeds) {
-		t.Fatalf("expected %d feeds (all known), got %d", len(ingest.KnownFeeds), len(body.Feeds))
+	if len(body.Items) != len(ingest.KnownFeeds) {
+		t.Fatalf("expected %d feeds (all known), got %d", len(ingest.KnownFeeds), len(body.Items))
 	}
 
 	// Find nvd and kev entries.
 	var foundNVD, foundKEV bool
-	for _, f := range body.Feeds {
+	for _, f := range body.Items {
 		switch f.FeedName {
 		case "nvd":
 			foundNVD = true
@@ -167,21 +167,21 @@ func TestAdminFeeds_ListEmptyDB(t *testing.T) {
 	}
 
 	var body struct {
-		Feeds []struct {
+		Items []struct {
 			FeedName string `json:"feed_name"`
-		} `json:"feeds"`
+		} `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 
 	// All known feeds should appear even with no sync state rows.
-	if len(body.Feeds) != len(ingest.KnownFeeds) {
-		t.Fatalf("expected %d feeds, got %d", len(ingest.KnownFeeds), len(body.Feeds))
+	if len(body.Items) != len(ingest.KnownFeeds) {
+		t.Fatalf("expected %d feeds, got %d", len(ingest.KnownFeeds), len(body.Items))
 	}
 
 	feedSet := make(map[string]bool)
-	for _, f := range body.Feeds {
+	for _, f := range body.Items {
 		feedSet[f.FeedName] = true
 	}
 	for _, name := range ingest.KnownFeeds {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -78,25 +77,20 @@ type deliveryDetail struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-type deliveryListResponse struct {
-	Items      []deliveryEntry `json:"items"`
-	NextCursor *string         `json:"next_cursor,omitempty"`
-}
-
-// encodeDeliveryCursor encodes (time, uuid) as a stable string cursor.
-// Format: <RFC3339Nano>/<uuid>
-func encodeDeliveryCursor(t time.Time, id uuid.UUID) string {
-	return t.UTC().Format(time.RFC3339Nano) + "/" + id.String()
+// deliveryCursor encodes the keyset pagination position for delivery lists.
+type deliveryCursor struct {
+	T  string `json:"t"`  // created_at RFC3339Nano
+	ID string `json:"id"` // UUID tiebreaker
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 // listDeliveriesHandler handles GET /api/v1/orgs/{org_id}/deliveries.
-// Supports optional filters: rule_id, channel_id, status, limit, after_created_at, after_id.
+// Supports optional filters: rule_id, channel_id, status, limit, cursor.
 func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -107,7 +101,7 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 	if s := q.Get("rule_id"); s != "" {
 		parsed, err := uuid.Parse(s)
 		if err != nil {
-			http.Error(w, "invalid rule_id", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid rule_id")
 			return
 		}
 		ruleID = parsed
@@ -117,7 +111,7 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 	if s := q.Get("channel_id"); s != "" {
 		parsed, err := uuid.Parse(s)
 		if err != nil {
-			http.Error(w, "invalid channel_id", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid channel_id")
 			return
 		}
 		channelID = parsed
@@ -125,45 +119,39 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 
 	status := q.Get("status")
 
-	// Limit (default 50, max 200).
-	limit := 50
-	if s := q.Get("limit"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 1 {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
-			return
-		}
-		if n > 200 {
-			n = 200
-		}
-		limit = n
+	limit, ok := parseLimitParam(w, r, 50, 200)
+	if !ok {
+		return
 	}
 
 	// Keyset cursor.
 	cursorTime := time.Now().UTC()
 	cursorID := uuid.Max
-	if afterCreatedAt := q.Get("after_created_at"); afterCreatedAt != "" {
-		if afterID := q.Get("after_id"); afterID != "" {
-			t, err := time.Parse(time.RFC3339Nano, afterCreatedAt)
-			if err != nil {
-				http.Error(w, "invalid after_created_at: must be RFC3339Nano", http.StatusBadRequest)
-				return
-			}
-			id, err := uuid.Parse(afterID)
-			if err != nil {
-				http.Error(w, "invalid after_id", http.StatusBadRequest)
-				return
-			}
-			cursorTime = t
-			cursorID = id
+	if c := q.Get("cursor"); c != "" {
+		var cur deliveryCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		t, err := time.Parse(time.RFC3339Nano, cur.T)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		cursorTime = t
+		cursorID = id
 	}
 
 	// Fetch limit+1 rows to detect if more pages exist without a phantom last page.
 	rows, err := srv.store.ListDeliveries(r.Context(), orgID, ruleID, channelID, status, cursorTime, cursorID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list deliveries", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -205,14 +193,16 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		items[i] = entry
 	}
 
-	resp := deliveryListResponse{Items: items}
+	var nextCursor string
 	if hasMore {
 		last := rows[len(rows)-1]
-		cursor := encodeDeliveryCursor(last.CreatedAt, last.ID)
-		resp.NextCursor = &cursor
+		nextCursor = encodePageCursor(deliveryCursor{
+			T:  last.CreatedAt.UTC().Format(time.RFC3339Nano),
+			ID: last.ID.String(),
+		})
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	writeList(w, items, nextCursor)
 }
 
 // getDeliveryHandler handles GET /api/v1/orgs/{org_id}/deliveries/{id}.
@@ -220,24 +210,24 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	row, err := srv.store.GetDelivery(r.Context(), id, orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get delivery", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -281,13 +271,13 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) replayDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -295,22 +285,22 @@ func (srv *Server) replayDeliveryHandler(w http.ResponseWriter, r *http.Request)
 	delivery, err := srv.store.GetDelivery(r.Context(), id, orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get delivery for replay", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if delivery == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if !checkReplayLimit(orgID) {
-		http.Error(w, "rate limit exceeded: max 10 replays per hour per org", http.StatusTooManyRequests)
+		writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded: max 10 replays per hour per org")
 		return
 	}
 
 	if err := srv.store.ReplayDelivery(r.Context(), id, orgID); err != nil {
 		slog.ErrorContext(r.Context(), "replay delivery", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 

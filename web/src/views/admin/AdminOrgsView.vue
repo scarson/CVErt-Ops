@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -34,42 +34,51 @@ interface OrgEntry {
 
 const orgs = ref<OrgEntry[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
-const hasMore = ref(false)
+const nextCursor = ref<string | undefined>()
 
 const TIERS = ['free', 'pro', 'enterprise'] as const
 
-async function fetchOrgs() {
-  loading.value = true
+async function fetchOrgs(cursor?: string) {
+  if (cursor) {
+    loadingMore.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ''
 
   try {
-    const resp = await orgFetch('/api/v1/admin/orgs?limit=50')
-    if (!resp.ok) {
+    const { data, error: fetchError } = await client.GET('/admin/orgs', {
+      params: { query: { limit: 50, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load organizations.'
-      loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: OrgEntry[]; has_more: boolean }
-    orgs.value = data.items ?? []
-    hasMore.value = data.has_more
+    if (cursor) {
+      orgs.value = [...orgs.value, ...(data.items ?? [])]
+    } else {
+      orgs.value = data.items ?? []
+    }
+    nextCursor.value = data.next_cursor
   } catch {
     error.value = 'Failed to load organizations.'
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
 async function changeTier(orgId: string, tier: string) {
   try {
-    const resp = await orgFetch(`/api/v1/admin/orgs/${orgId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ tier }),
+    const { data, error: fetchError } = await client.PATCH('/admin/orgs/{org_id}', {
+      params: { path: { org_id: orgId } },
+      body: { tier },
     })
-    if (resp.ok) {
-      const updated: OrgEntry = await resp.json()
-      orgs.value = orgs.value.map((o) => (o.id === orgId ? { ...o, tier: updated.tier } : o))
+    if (!fetchError) {
+      orgs.value = orgs.value.map((o) => (o.id === orgId ? { ...o, tier: data.tier } : o))
       toast.success('Tier updated')
     } else {
       toast.error('Failed to update tier')
@@ -84,14 +93,13 @@ async function changeTier(orgId: string, tier: string) {
 async function toggleSuspend(org: OrgEntry) {
   const suspend = !org.suspended_at
   try {
-    const resp = await orgFetch(`/api/v1/admin/orgs/${org.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ suspend }),
+    const { data, error: fetchError } = await client.PATCH('/admin/orgs/{org_id}', {
+      params: { path: { org_id: org.id } },
+      body: { suspend },
     })
-    if (resp.ok) {
-      const updated: OrgEntry = await resp.json()
+    if (!fetchError) {
       orgs.value = orgs.value.map((o) =>
-        o.id === org.id ? { ...o, suspended_at: updated.suspended_at } : o,
+        o.id === org.id ? { ...o, suspended_at: data.suspended_at } : o,
       )
       toast.success(suspend ? 'Organization suspended' : 'Organization unsuspended')
     } else {
@@ -175,8 +183,11 @@ onMounted(fetchOrgs)
         </TableBody>
       </Table>
 
-      <div v-if="hasMore && !loading" class="flex justify-center pt-4">
-        <p class="text-sm text-muted-foreground">More organizations available. Pagination coming soon.</p>
+      <div v-if="nextCursor && !loading" class="flex justify-center pt-4">
+        <Button variant="outline" :disabled="loadingMore" @click="fetchOrgs(nextCursor)">
+          <Loader2 v-if="loadingMore" class="mr-2 size-4 animate-spin" aria-hidden="true" />
+          Load More
+        </Button>
       </div>
     </div>
   </div>

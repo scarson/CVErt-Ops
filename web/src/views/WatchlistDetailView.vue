@@ -5,7 +5,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import type { WatchlistEntry } from '@/components/watchlist/CreateWatchlistDialog.vue'
 import AddItemDialog from '@/components/watchlist/AddItemDialog.vue'
 import type { WatchlistItemEntry } from '@/components/watchlist/AddItemDialog.vue'
@@ -52,18 +52,20 @@ const editDescription = ref('')
 const saving = ref(false)
 const saveError = ref('')
 
-function apiBase() {
-  return `/api/v1/orgs/${auth.activeOrgId}/watchlists/${route.params.id}`
+function watchlistId() {
+  return route.params.id as string
 }
 
 async function fetchWatchlist() {
   error.value = ''
 
   try {
-    const resp = await orgFetch(apiBase())
+    const { data, error: fetchError } = await client.GET('/orgs/{org_id}/watchlists/{id}', {
+      params: { path: { org_id: auth.activeOrgId!, id: watchlistId() } },
+    })
 
-    if (!resp.ok) {
-      if (resp.status === 404) {
+    if (fetchError) {
+      if (fetchError.status === 404) {
         notFound.value = true
       } else {
         error.value = 'Failed to load watchlist. Please try again.'
@@ -72,7 +74,7 @@ async function fetchWatchlist() {
       return
     }
 
-    watchlist.value = await resp.json() as WatchlistEntry
+    watchlist.value = data as WatchlistEntry
   } catch {
     error.value = 'Failed to load watchlist. Please try again.'
     loading.value = false
@@ -83,11 +85,12 @@ async function fetchItems() {
   itemsError.value = ''
 
   try {
-    const resp = await orgFetch(`${apiBase()}/items`)
+    const { data, error: fetchError } = await client.GET('/orgs/{org_id}/watchlists/{id}/items', {
+      params: { path: { org_id: auth.activeOrgId!, id: watchlistId() } },
+    })
 
-    if (resp.ok) {
-      const data = await resp.json() as { items?: WatchlistItemEntry[] }
-      items.value = data.items ?? []
+    if (!fetchError) {
+      items.value = (data.items ?? []) as WatchlistItemEntry[]
     } else {
       itemsError.value = 'Failed to load items. Please try again.'
     }
@@ -116,29 +119,30 @@ async function saveName() {
   saving.value = true
   saveError.value = ''
 
-  const body: Record<string, string> = {}
-  if (editName.value.trim() !== watchlist.value.name) {
-    body.name = editName.value.trim()
-  }
-  if (editDescription.value.trim() !== (watchlist.value.description ?? '')) {
-    body.description = editDescription.value.trim()
-  }
+  const nameChanged = editName.value.trim() !== watchlist.value.name
+  const descChanged = editDescription.value.trim() !== (watchlist.value.description ?? '')
 
   // Nothing changed
-  if (Object.keys(body).length === 0) {
+  if (!nameChanged && !descChanged) {
     editingName.value = false
     saving.value = false
     return
   }
 
+  const body = {
+    name: nameChanged ? editName.value.trim() : null,
+    description: descChanged ? editDescription.value.trim() : null,
+    group_id: null,
+  }
+
   try {
-    const resp = await orgFetch(apiBase(), {
-      method: 'PATCH',
-      body: JSON.stringify(body),
+    const { data, error: fetchError } = await client.PATCH('/orgs/{org_id}/watchlists/{id}', {
+      params: { path: { org_id: auth.activeOrgId!, id: watchlistId() } },
+      body,
     })
 
-    if (resp.ok) {
-      watchlist.value = await resp.json() as WatchlistEntry
+    if (!fetchError) {
+      watchlist.value = data as WatchlistEntry
       editingName.value = false
     } else {
       saveError.value = 'Failed to save. Please try again.'
@@ -154,11 +158,11 @@ async function saveName() {
 
 async function deleteItem(itemId: string) {
   try {
-    const resp = await orgFetch(`${apiBase()}/items/${itemId}`, {
-      method: 'DELETE',
+    const { error: fetchError } = await client.DELETE('/orgs/{org_id}/watchlists/{id}/items/{item_id}', {
+      params: { path: { org_id: auth.activeOrgId!, id: watchlistId(), item_id: itemId } },
     })
 
-    if (resp.ok) {
+    if (!fetchError) {
       items.value = items.value.filter((i) => i.id !== itemId)
     } else {
       itemsError.value = 'Failed to delete item. Please try again.'

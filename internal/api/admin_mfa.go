@@ -1,0 +1,231 @@
+// ABOUTME: Org-level admin handlers for MFA reset and force password reset.
+// ABOUTME: RBAC: owner targets members/admins; admin targets members; site admin targets anyone.
+package api
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/secure"
+)
+
+// errPermissionDenied is returned by checkAdminMFAPermission when the caller
+// lacks sufficient privileges. The HTTP error response is already written.
+var errPermissionDenied = errors.New("permission denied")
+
+// adminResetMFAHandler handles POST /api/v1/orgs/{org_id}/members/{user_id}/reset-mfa.
+// Clears all MFA credentials, recovery codes, and challenges for the target user.
+// Invalidates all sessions by incrementing token_version.
+func (srv *Server) adminResetMFAHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+	callerRole, ok := r.Context().Value(ctxRole).(Role)
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+
+	// Cannot reset your own MFA via admin endpoint — use self-service.
+	if callerID == targetID {
+		writeProblem(w, http.StatusBadRequest, "use self-service MFA management to modify your own MFA")
+		return
+	}
+
+	// RBAC: check caller can act on target.
+	if err := srv.checkAdminMFAPermission(w, r, orgID, callerID, callerRole, targetID); err != nil {
+		return // response already written
+	}
+
+	// Delete all MFA state.
+	if _, err := srv.store.DeleteAllMFACredentials(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset-mfa: delete credentials", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := srv.store.DeleteAllRecoveryCodes(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset-mfa: delete recovery codes", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := srv.store.DeleteAllUserChallenges(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset-mfa: delete challenges", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if err := srv.store.DeleteRememberDeviceTokens(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset-mfa: delete device tokens", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Invalidate all sessions.
+	if _, err := srv.store.IncrementTokenVersion(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset-mfa: increment token version", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventMFAAdminReset,
+			Severity: secure.SeverityCritical,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			OrgID:    &orgID,
+			Details:  map[string]any{"target_user_id": targetID.String()},
+		})
+	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     secure.EventMFAAdminReset,
+		EntityType: "security_event",
+		EntityID:   targetID.String(),
+		Success:    true,
+		Metadata:   map[string]any{"target_user_id": targetID.String()},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "mfa_reset", "user_id": targetID.String()})
+}
+
+// adminForcePasswordResetHandler handles POST /api/v1/orgs/{org_id}/members/{user_id}/force-password-reset.
+// Sets force_password_reset=true, increments token_version, and deletes device tokens.
+func (srv *Server) adminForcePasswordResetHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+	callerRole, ok := r.Context().Value(ctxRole).(Role)
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+
+	if callerID == targetID {
+		writeProblem(w, http.StatusBadRequest, "cannot force password reset on yourself")
+		return
+	}
+
+	if err := srv.checkAdminMFAPermission(w, r, orgID, callerID, callerRole, targetID); err != nil {
+		return // response already written
+	}
+
+	// Verify the target has a native identity (password hash).
+	user, err := srv.store.GetUserByID(r.Context(), targetID)
+	if err != nil || user == nil {
+		slog.ErrorContext(r.Context(), "admin force-password-reset: get user", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !user.PasswordHash.Valid {
+		writeProblem(w, http.StatusBadRequest, "user has no native identity — cannot force password reset on OAuth-only account")
+		return
+	}
+
+	// Set force_password_reset flag (idempotent).
+	if _, err := srv.store.AdminForcePasswordReset(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin force-password-reset: set flag", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Invalidate sessions.
+	if _, err := srv.store.IncrementTokenVersion(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin force-password-reset: increment token version", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	// Delete device tokens.
+	if err := srv.store.DeleteRememberDeviceTokens(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin force-password-reset: delete device tokens", "error", err)
+		// Non-fatal — the important actions (flag + session invalidation) are done.
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventAuthPasswordResetForced,
+			Severity: secure.SeverityCritical,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			OrgID:    &orgID,
+			Details:  map[string]any{"target_user_id": targetID.String()},
+		})
+	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     secure.EventAuthPasswordResetForced,
+		EntityType: "security_event",
+		EntityID:   targetID.String(),
+		Success:    true,
+		Metadata:   map[string]any{"target_user_id": targetID.String()},
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password_reset_required", "user_id": targetID.String()})
+}
+
+// checkAdminMFAPermission enforces the RBAC hierarchy for admin MFA/password actions.
+// Owner can target members/admins. Admin can target members only.
+// Site admin can target anyone including owners.
+// Writes an error response and returns a non-nil error if permission is denied.
+func (srv *Server) checkAdminMFAPermission(w http.ResponseWriter, r *http.Request, orgID, callerID uuid.UUID, callerRole Role, targetID uuid.UUID) error {
+	// Look up target's role in the org.
+	targetRoleStr, err := srv.store.GetOrgMemberRole(r.Context(), orgID, targetID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "admin mfa: get target role", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return err
+	}
+	if targetRoleStr == nil {
+		writeProblem(w, http.StatusNotFound, "user not found in org")
+		return errPermissionDenied
+	}
+
+	targetRole := parseRole(*targetRoleStr)
+
+	// Site admin bypass — can target anyone.
+	isSiteAdmin, saErr := srv.store.IsSiteAdmin(r.Context(), callerID)
+	if saErr != nil {
+		slog.ErrorContext(r.Context(), "admin mfa: check site admin", "error", saErr)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return saErr
+	}
+	if isSiteAdmin {
+		return nil
+	}
+
+	// Owner can target admins and below.
+	if callerRole == RoleOwner && targetRole < RoleOwner {
+		return nil
+	}
+
+	// Admin can target members and below.
+	if callerRole == RoleAdmin && targetRole < RoleAdmin {
+		return nil
+	}
+
+	writeProblem(w, http.StatusForbidden, "insufficient permissions")
+	return errPermissionDenied
+}

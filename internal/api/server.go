@@ -299,6 +299,8 @@ func (srv *Server) Handler() http.Handler {
 				r.Get("/", srv.listMembersHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/{user_id}", srv.updateMemberRoleHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeMemberHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/reset-mfa", srv.adminResetMFAHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/force-password-reset", srv.adminForcePasswordResetHandler)
 			})
 
 			// Invitation management

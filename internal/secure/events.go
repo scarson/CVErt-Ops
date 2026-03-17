@@ -17,6 +17,10 @@ const (
 	EventAdminUserDisabled         = "admin.user_disabled"
 	EventAdminConfigReloaded       = "admin.config_reloaded"
 	EventAdminBulkRetryTriggered   = "admin.bulk_retry_triggered"
+
+	// MFA events
+	EventMFAAdminReset             = "mfa.admin_reset"
+	EventAuthPasswordResetForced   = "auth.password_reset_forced"
 )
 
 // Severity levels for security events.
@@ -40,6 +44,8 @@ var eventSeverity = map[string]string{
 	EventAdminUserDisabled:         SeverityWarning,
 	EventAdminConfigReloaded:       SeverityInfo,
 	EventAdminBulkRetryTriggered:   SeverityInfo,
+	EventMFAAdminReset:             SeverityCritical,
+	EventAuthPasswordResetForced:   SeverityCritical,
 }
 
 // Severity returns the default severity level for the given event type.

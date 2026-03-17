@@ -15,7 +15,7 @@ type VersionInfo struct {
 }
 
 // versionHandler returns the build metadata as JSON.
-func (srv *Server) versionHandler(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) versionHandler(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]string{
 		"version":    srv.versionInfo.Version,
 		"commit":     srv.versionInfo.Commit,

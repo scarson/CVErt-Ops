@@ -1370,57 +1370,111 @@ This applies to: `AdminOrgsView`, `AdminUsersView`, `AdminDeliveriesView`, `Admi
 
 ---
 
-## Task 14: orgFetch Elimination + Final Verification
+## Task 14a: Go-Side Spec Merge Infrastructure
 
-**Goal:** Remove `orgFetch`, verify complete OpenAPI coverage, regenerate final TypeScript types, run full test suites.
+**Goal:** Wire up the spec-only Huma declarations into the production OpenAPI spec, add missing admin route declarations, and verify all expected paths exist.
+
+**Why this is separate from frontend work:** The frontend typed client can only call paths that exist in `schema.d.ts`. The schema is generated from `openapi.json`. The spec-only declarations must be merged and verified correct BEFORE regenerating types — otherwise 18 frontend conversions would be based on incorrect or missing type information.
 
 **Files:**
-- Delete: `web/src/lib/api/orgFetch.ts` (after confirming zero imports)
-- Delete: `web/src/lib/api/__tests__/orgFetch.test.ts`
-- Modify: `web/src/lib/api/client.ts` — move any shared logic (coalesced refresh) that orgFetch used
+- Modify: `internal/api/server.go` — add `humaAPI huma.API` field to Server struct
+- Modify: `internal/api/openapi_spec.go` — add missing `/admin/version` and `/admin/doctor` spec-only declarations to `registerAdminSystemSpecOps`
+- Modify: `internal/api/admin_version.go` — convert `versionHandler` from raw `json.Encoder` to `writeJSON`
+- Modify: `internal/api/admin_doctor.go` — convert `doctorHandler` from raw `json.Encoder` to `writeJSON`
+- Modify: `internal/api/openapi_test.go` — merge spec-only API, add comprehensive path assertions
 - Regenerate: `openapi.json` — final merged spec
-- Regenerate: `web/src/lib/api/schema.d.ts` — final TypeScript types
-- Modify: `internal/api/openapi_test.go` — add comprehensive path coverage assertions
 
-### Step 1: Verify zero orgFetch imports remain
+### Step 1: Add `humaAPI` field to Server struct
 
-```bash
-rg "orgFetch" web/src/ --glob "*.{ts,vue}" | grep -v "__tests__/orgFetch"
-```
+In `internal/api/server.go`:
+- Add `humaAPI huma.API` field to the `Server` struct (around line 66, after `healthChecks`)
+- In `NewServer`, after `api := humachi.New(apiRouter, humaConfig)` (around line 219), add `srv.humaAPI = api`
 
-If any remain, they were missed in earlier tasks — fix them first.
+The `huma.API` instance is currently a local variable in `NewServer`. Storing it on the struct lets the test access it for spec merging.
 
-### Step 2: Delete orgFetch
+### Step 2: Add missing spec-only declarations
 
-```bash
-rm web/src/lib/api/orgFetch.ts
-rm web/src/lib/api/__tests__/orgFetch.test.ts
-```
-
-### Step 3: Verify coalescedRefresh
-
-`orgFetch.ts` imports `coalescedRefresh` from `client.ts`. Verify this function remains in `client.ts` (it's still used by the refresh middleware).
-
-### Step 4: Regenerate final OpenAPI spec
-
-```bash
-GENERATE_OPENAPI=1 go test ./internal/api/ -run TestOpenAPISpec -v -count=1
-```
-
-### Step 5: Add comprehensive spec path assertions
-
-In `openapi_test.go`, verify that ALL expected paths exist in the merged spec. Check every org-scoped and admin path:
+AdminSystemView calls `/admin/version` and `/admin/doctor` which have Chi handlers (`srv.versionHandler`, `srv.doctorHandler`) but no spec-only declarations. Add them to `registerAdminSystemSpecOps` in `openapi_spec.go`:
 
 ```go
+// In registerAdminSystemSpecOps, add before or after the existing declarations:
+
+huma.Register(api, huma.Operation{
+    OperationID: "admin-version",
+    Method:      http.MethodGet,
+    Path:        "/admin/version",
+    Summary:     "Build version and metadata",
+    Tags:        []string{"Admin System"},
+}, noopHandler[struct{}, struct {
+    Body struct {
+        Version   string `json:"version"`
+        Commit    string `json:"commit"`
+        BuildTime string `json:"build_time"`
+        GoVersion string `json:"go_version"`
+    }
+}]())
+
+huma.Register(api, huma.Operation{
+    OperationID: "admin-doctor",
+    Method:      http.MethodGet,
+    Path:        "/admin/doctor",
+    Summary:     "System health diagnostics",
+    Tags:        []string{"Admin System"},
+}, noopHandler[struct{}, struct {
+    Body map[string]any
+}]())
+```
+
+Check the actual response shapes of `versionHandler` and `doctorHandler` and match them.
+
+**Also fix:** Both `versionHandler` (admin_version.go) and `doctorHandler` (admin_doctor.go) use raw `json.NewEncoder(w).Encode()` with manual `Content-Type` header instead of the unified `writeJSON` helper. Convert them to use `writeJSON` for consistency with the convergence. For `doctorHandler`, the 503 status code path needs `writeJSON(w, http.StatusServiceUnavailable, resp)` and the 200 path uses `writeJSON(w, http.StatusOK, resp)`. After conversion, remove the `encoding/json` import from both files if no longer needed.
+
+### Step 3: Wire spec merge into TestOpenAPISpec
+
+In `internal/api/openapi_test.go`, after `NewServer` but BEFORE the HTTP request:
+
+```go
+// Merge spec-only Chi route declarations into the production huma API.
+specAPI := newSpecOnlyAPI()
+registerAllSpecOps(specAPI)
+mergeSpecPaths(srv.humaAPI, specAPI)
+```
+
+This mutates the production API's internal OpenAPI spec so that subsequent requests to `/api/v1/openapi.json` include all merged paths.
+
+### Step 4: Add comprehensive path assertions
+
+After the existing spot-check assertions, add a COMPLETE list of ALL expected paths. You MUST build this by:
+1. Grepping `Path:` from `openapi_spec.go` to get all spec-only paths (deduplicate — same path appears for different HTTP methods)
+2. Grepping `huma.Register` from `auth.go` and `cves.go` to get huma-registered paths
+
+Do NOT copy the partial example below — it is DELIBERATELY INCOMPLETE. Read the actual source files and extract every path.
+
+**Known gaps to be aware of:**
+- `/orgs/{org_id}/sso/link` exists as a Chi route in server.go but has NO spec-only declaration. Do NOT add it to the expected paths list. It's a known coverage gap outside this task's scope.
+- OAuth redirect routes (`/auth/oauth/github`, etc.) are browser redirects, not JSON APIs — they should NOT be in the spec.
+
+**Huma-registered auth paths** (from `auth.go`, there are 12):
+`/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me`, `/auth/change-password`, `/auth/invitations/{token}`, `/auth/invitations/{token}/accept`, `/auth/providers`, `/auth/forgot-password`, `/auth/reset-password`, `/auth/verify-email`, `/auth/resend-verification`
+
+**Huma-registered CVE paths** (from `cves.go`, there are 3):
+`/cves`, `/cves/{cve_id}`, `/cves/{cve_id}/sources`
+
+**Spec-only paths**: Extract from `openapi_spec.go` by grepping `Path:` and deduplicating. There are approximately 80+ unique paths across all `registerXxxSpecOps` functions.
+
+Example assertion structure (PARTIAL — you must complete it):
+```go
 expectedPaths := []string{
-    "/orgs/{org_id}/groups",
-    "/orgs/{org_id}/groups/{group_id}",
-    "/orgs/{org_id}/groups/{group_id}/members",
-    "/orgs/{org_id}/watchlists",
-    // ... all paths
-    "/admin/feeds",
-    "/admin/orgs",
-    // ... all admin paths
+    // Auth (huma-registered) — all 12 paths from auth.go
+    "/auth/register", "/auth/login", "/auth/refresh", /* ... */
+    // CVEs (huma-registered)
+    "/cves", "/cves/{cve_id}", "/cves/{cve_id}/sources",
+    // Spec-only: orgs, groups, members, etc. — extract ALL from openapi_spec.go
+    "/orgs", "/orgs/{org_id}",
+    // ... (complete by reading the actual Path: values) ...
+    // Spec-only: admin — extract ALL from openapi_spec.go
+    "/admin/feeds", "/admin/version", "/admin/doctor",
+    // ... (complete by reading the actual Path: values) ...
 }
 for _, p := range expectedPaths {
     if _, ok := paths[p]; !ok {
@@ -1429,29 +1483,255 @@ for _, p := range expectedPaths {
 }
 ```
 
-### Step 6: Regenerate TypeScript types
+### Step 5: Run the test
 
 ```bash
-cd web && npx openapi-typescript ../openapi.json -o src/lib/api/schema.d.ts
+go test ./internal/api/ -run TestOpenAPISpec -v -count=1
 ```
 
-### Step 7: Run full test suites
+Fix any path assertion failures by adjusting the expected paths list or adding missing spec-only declarations.
+
+### Step 6: Generate the merged spec
 
 ```bash
-go test ./... -count=1
+GENERATE_OPENAPI=1 go test ./internal/api/ -run TestOpenAPISpec -v -count=1
+```
+
+Verify `openapi.json` exists at the repo root and contains the merged paths.
+
+### Step 7: Commit
+
+```bash
+git add internal/api/server.go internal/api/openapi_spec.go internal/api/openapi_test.go internal/api/admin_version.go internal/api/admin_doctor.go openapi.json
+git commit -m "feat(api): wire spec-only declarations into OpenAPI spec generation
+
+Add humaAPI field to Server struct so tests can access the Huma API
+for spec merging. Add missing /admin/version and /admin/doctor
+declarations. Convert version/doctor handlers to writeJSON.
+TestOpenAPISpec now merges all spec-only declarations and asserts
+every expected path exists."
+```
+
+---
+
+## Task 14b: Frontend orgFetch Conversion + Cleanup
+
+**Goal:** Regenerate TypeScript types from the merged spec, convert all 18 orgFetch consumer files to the typed `openapi-fetch` client, delete orgFetch.
+
+**Prerequisite:** Task 14a must be complete and verified — `openapi.json` must contain all paths including admin routes.
+
+**Files:**
+- Regenerate: `web/src/lib/api/schema.d.ts` — from merged `openapi.json`
+- Modify: 18 Vue/TS files that import `orgFetch` (listed below)
+- Delete: `web/src/lib/api/orgFetch.ts`
+- Delete: `web/src/lib/api/__tests__/orgFetch.test.ts`
+- Modify: `web/src/lib/api/client.ts` — remove "and orgFetch" from comment, unexport `coalescedRefresh` if no external consumers remain
+
+### Step 1: Regenerate TypeScript types
+
+```bash
+cd web && npm run generate-api
+```
+
+This runs `openapi-typescript ../openapi.json -o src/lib/api/schema.d.ts` (defined in package.json scripts).
+
+Verify admin paths appear in the generated types:
+```bash
+grep "admin/orgs" web/src/lib/api/schema.d.ts | head -3
+grep "admin/version" web/src/lib/api/schema.d.ts | head -3
+```
+
+If paths are missing, Task 14a has a bug — go back and fix it.
+
+### Step 2: Convert orgFetch consumers to typed client
+
+**18 files to convert** (grouped by category):
+
+**Admin views (no org_id in path — admin routes are at `/admin/*`):**
+1. `web/src/views/admin/AdminOrgsView.vue`
+2. `web/src/views/admin/AdminUsersView.vue`
+3. `web/src/views/admin/AdminDeliveriesView.vue`
+4. `web/src/views/admin/AdminAuditLogView.vue`
+5. `web/src/views/admin/AdminDashboardView.vue`
+6. `web/src/views/admin/AdminFeedsView.vue`
+7. `web/src/views/admin/AdminSystemView.vue`
+8. `web/src/views/FeedStatusView.vue` (uses admin feeds endpoints)
+
+**Org-scoped views (get org_id from auth store's `activeOrgId`):**
+9. `web/src/views/GroupsView.vue`
+10. `web/src/views/MembersView.vue`
+11. `web/src/views/WatchlistListView.vue`
+12. `web/src/views/WatchlistDetailView.vue`
+13. `web/src/views/CreateOrgView.vue`
+
+**Dialog components (get org_id from auth store or props):**
+14. `web/src/components/settings/GroupDialog.vue`
+15. `web/src/components/settings/GroupMembersDialog.vue`
+16. `web/src/components/settings/InviteMemberDialog.vue`
+17. `web/src/components/watchlist/AddItemDialog.vue`
+18. `web/src/components/watchlist/CreateWatchlistDialog.vue`
+
+**Conversion pattern — GET requests:**
+```typescript
+// Before:
+import { orgFetch } from '@/lib/api/orgFetch'
+const resp = await orgFetch(`/api/v1/orgs/${orgId}/groups`)
+if (!resp.ok) { error.value = 'Failed'; return }
+const data = await resp.json() as { items: GroupEntry[] }
+
+// After:
+import client from '@/lib/api/client'
+const { data, error: fetchError } = await client.GET('/orgs/{org_id}/groups', {
+  params: { path: { org_id: orgId } }
+})
+if (fetchError) { error.value = 'Failed'; return }
+// data is already typed — no cast needed
+```
+
+**Conversion pattern — POST/PATCH/DELETE requests:**
+```typescript
+// Before:
+const resp = await orgFetch(`/api/v1/orgs/${orgId}/groups`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name }),
+})
+
+// After:
+const { data, error: fetchError } = await client.POST('/orgs/{org_id}/groups', {
+  params: { path: { org_id: orgId } },
+  body: { name },
+})
+```
+
+**Conversion pattern — admin routes (no org_id):**
+```typescript
+// Before:
+const resp = await orgFetch('/api/v1/admin/orgs?limit=50')
+
+// After:
+const { data, error: fetchError } = await client.GET('/admin/orgs', {
+  params: { query: { limit: 50 } }
+})
+```
+
+**Key details:**
+- The typed client has `baseUrl: '/api/v1'` so paths are relative (e.g., `/admin/orgs` not `/api/v1/admin/orgs`)
+- The typed client includes CSRF header and 401 refresh middleware automatically (same as orgFetch did)
+- `data` from the typed client is already parsed JSON — no `.json()` call needed
+- Error handling: check `error` (or `fetchError`) instead of `!resp.ok`. The typed client does NOT throw on HTTP errors — it returns `{ data: undefined, error: {...} }`. Existing `catch` blocks still catch network-level errors.
+- The `error` object from the typed client IS the parsed RFC 9457 error body — it has `detail`, `status`, `type` fields. So `errData.detail` becomes `fetchError?.detail`.
+- Do NOT include `JSON.stringify()` around request bodies — the typed client serializes automatically. Pass plain objects: `body: { name }` not `body: JSON.stringify({ name })`.
+- Do NOT include `headers: { 'Content-Type': 'application/json' }` — the typed client sets this automatically.
+- Path parameter names must match the spec path exactly — the TypeScript types enforce this. Most spec paths use generic `{id}` (e.g., `/orgs/{org_id}/watchlists/{id}`, `/orgs/{org_id}/channels/{id}`), while groups use `{group_id}`, members use `{user_id}`, watchlist items use `{item_id}`, and feed actions use `{feed}` (not `{feed_name}`). When the view has a variable like `watchlistId`, the typed client call uses `id: watchlistId` (matching the `{id}` in the spec path, NOT `watchlist_id`). Always check the actual `Path:` in `openapi_spec.go` for the correct parameter name. `type-check` will catch mismatches.
+- **Status-code-specific error handling:** Several views check `resp.status` for specific HTTP status codes to show different UI or toasts. These MUST be preserved during conversion. With the typed client, use `fetchError?.status`. Known instances:
+  - `AdminFeedsView` and `FeedStatusView`: `triggerFeed` checks `resp.status === 409` → `toast.info('Job already pending...')`
+  - `AdminDeliveriesView`: `retryDelivery` checks `resp.status === 409` → `toast.info('not in a retryable state')`
+  - `WatchlistDetailView`: `fetchWatchlist` checks `resp.status === 404` → sets `notFound.value = true`
+- Update ABOUTME comments that reference `orgFetch` (e.g., CreateOrgView, WatchlistListView)
+- **Preserve ALL existing error handling.** Every `if (!resp.ok)` branch, every `catch` block, and every error message string must have an equivalent in the converted code. Do NOT simplify error handling or remove error states during conversion. Per testing-pitfalls §12: components must render error messages on failure, never blank pages or silent failures.
+
+**`apiBase()` pattern (org-scoped views):** Several views define a local `apiBase()` function like `() => \`/api/v1/orgs/${auth.activeOrgId}/groups\``. When converting:
+1. Delete the `apiBase()` function entirely
+2. Get the org_id from `useAuthStore().activeOrgId` (NOT from route params — these views use the auth store, not URL params)
+3. Pass it as `params: { path: { org_id: auth.activeOrgId } }`
+4. The typed client path is just the resource path (e.g., `/orgs/{org_id}/groups`) — baseUrl handles `/api/v1`
+
+Files using `apiBase()`: GroupsView, MembersView, WatchlistListView, WatchlistDetailView, GroupMembersDialog.
+
+**`AdminDashboardView` Promise.all pattern:** This view fires 4 parallel orgFetch calls and checks `.ok` on all responses. The typed client returns `{ data, error }` not `Response`, so the conversion must change the error-checking pattern:
+```typescript
+// Before:
+const [orgsResp, usersResp, feedsResp, deliveriesResp] = await Promise.all([
+  orgFetch('/api/v1/admin/orgs?limit=1'),
+  orgFetch('/api/v1/admin/users?limit=1'),
+  orgFetch('/api/v1/admin/feeds'),
+  orgFetch('/api/v1/admin/deliveries?status=failed&limit=1'),
+])
+if (!orgsResp.ok || !usersResp.ok || !feedsResp.ok || !deliveriesResp.ok) { ... }
+const orgsData = (await orgsResp.json()) as { items: unknown[]; next_cursor?: string }
+
+// After:
+const [orgsResult, usersResult, feedsResult, deliveriesResult] = await Promise.all([
+  client.GET('/admin/orgs', { params: { query: { limit: 1 } } }),
+  client.GET('/admin/users', { params: { query: { limit: 1 } } }),
+  client.GET('/admin/feeds'),
+  client.GET('/admin/deliveries', { params: { query: { status: 'failed', limit: 1 } } }),
+])
+if (orgsResult.error || usersResult.error || feedsResult.error || deliveriesResult.error) { ... }
+// orgsResult.data is already typed — no .json() or cast needed
+```
+
+**AdminUsersView dynamic endpoint pattern:** `toggleDisable` builds the path dynamically (`/admin/users/${id}/${action}` where action is `enable` or `disable`). The typed client requires static string literal paths for type safety — you CANNOT use template strings for the path. Split into a conditional:
+```typescript
+const result = user.disabled_at
+  ? await client.POST('/admin/users/{user_id}/enable', { params: { path: { user_id: user.id } } })
+  : await client.POST('/admin/users/{user_id}/disable', { params: { path: { user_id: user.id } } })
+```
+
+Also: `toggleDisable` reads `resp.text()` (not `resp.json()`) on error. With the typed client, the error is already parsed — use `fetchError?.detail` instead.
+
+**AdminDeliveriesView `bulkRetryFailed` response body:** This function reads `rows_affected` from the POST success response body to show in the toast: `toast.success(\`${data.rows_affected} deliveries retried\`)`. With the typed client: `result.data?.rows_affected`.
+
+**Dialog components:** These get org_id from `useAuthStore().activeOrgId` or via props. Read each file to determine the source — don't guess.
+
+**AdminSystemView doctor endpoint edge case:** The `/admin/doctor` endpoint returns HTTP 503 when health checks fail — this is a valid "unhealthy" response, not a broken call. With `orgFetch`, the current code checks `if (doctorResp.ok)` (false for 503) but still has valid JSON in the response body. With the typed client, non-2xx responses put the body in `error`, not `data`. You have two options:
+1. Use `response` from the typed client result: `const { data, error: fetchError, response } = await client.GET(...)` and parse `response` manually for doctor
+2. Keep the doctor call using `fetch()` directly since it has non-standard success semantics
+
+Option 2 is simpler — use a raw `fetch('/api/v1/admin/doctor', { credentials: 'include' })` for doctor calls, since the typed client's error/data split doesn't match the doctor endpoint's semantics. The CSRF middleware isn't needed for GET requests, and the 401 refresh logic is unlikely to matter for an admin-only endpoint.
+
+**Note:** AdminSystemView has TWO separate calls to `/admin/doctor` — one inside `fetchAll()` (in the Promise.all) and one in `runDoctor()`. Both need the same raw fetch treatment. Inside `fetchAll`'s Promise.all, it's fine to mix typed client calls with raw fetch — the destructured results just have different shapes (`{ data, error }` for typed vs `Response` for raw).
+
+**AdminSystemView partial success pattern:** This view shows data from whichever calls succeeded — it doesn't treat any single failure as a total error. Only if ALL three calls fail does it show an error. The typed client conversion must preserve this behavior: check each result independently, populate refs with `result.data` when available.
+
+### Step 3: Verify zero orgFetch imports remain
+
+```bash
+rg "orgFetch" web/src/ --glob "*.{ts,vue}" | grep -v "__tests__/orgFetch"
+```
+
+Must return 0 matches.
+
+### Step 4: Delete orgFetch
+
+```bash
+rm web/src/lib/api/orgFetch.ts
+rm web/src/lib/api/__tests__/orgFetch.test.ts
+```
+
+### Step 5: Clean up client.ts
+
+- Update the comment on line 33-34 that says "Shared by the typed client middleware and orgFetch" — remove the "and orgFetch" part
+- Check if `coalescedRefresh` is still exported and used by anything other than orgFetch:
+  ```bash
+  rg "coalescedRefresh" web/src/ --glob "*.{ts,vue}" | grep -v "client.ts"
+  ```
+  If zero matches, remove the `export` keyword from `coalescedRefresh` (keep the function — it's used by `refreshMiddleware` in the same file)
+
+### Step 6: Run frontend tests and checks
+
+```bash
 cd web && npm run test:unit && npm run type-check && npm run lint
 ```
 
-### Step 8: Final commit
+All must pass. If `type-check` fails, the spec paths don't match what the typed client is calling — fix the spec declarations or the client calls.
+
+### Step 7: Run Go tests
+
+```bash
+go test ./internal/api/ -v -count=1
+```
+
+### Step 8: Commit
 
 ```bash
 git add -A  # after git status review
-git commit -m "feat(api): complete API contract convergence, eliminate orgFetch
+git commit -m "feat(api): convert all frontend API calls to typed client, delete orgFetch
 
-All Chi endpoints now return RFC 9457 errors, list envelopes, and
-opaque cursors matching the Huma contract. OpenAPI spec covers all
-routes via spec-only Huma declarations. Frontend uses typed
-openapi-fetch client exclusively. orgFetch removed."
+All 18 orgFetch consumer files now use the typed openapi-fetch client
+with auto-generated types from the merged OpenAPI spec. orgFetch.ts
+and its test deleted. coalescedRefresh unexported (internal only)."
 ```
 
 ---

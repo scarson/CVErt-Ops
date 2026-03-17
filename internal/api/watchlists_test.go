@@ -5,13 +5,16 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -100,6 +103,18 @@ func doListWatchlistItems(t *testing.T, ctx context.Context, ts *httptest.Server
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("list watchlist items: %v", err)
+	}
+	return resp
+}
+
+func doListWatchlistItemsWithCursor(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, watchlistID, cursor string) *http.Response {
+	t.Helper()
+	url := ts.URL + "/api/v1/orgs/" + orgID + "/watchlists/" + watchlistID + "/items?cursor=" + cursor
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("list watchlist items with cursor: %v", err)
 	}
 	return resp
 }
@@ -1128,6 +1143,101 @@ func TestCreateWatchlist_TierLimit_ProblemType(t *testing.T) {
 				t.Errorf("type = %v, want urn:cvert:error:tier-limit", problem["type"])
 			}
 		}
+	}
+}
+
+// TestWatchlistItemCursorOpaque verifies that the list watchlist items endpoint
+// returns opaque base64url-encoded cursors rather than raw UUIDs.
+func TestWatchlistItemCursorOpaque(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID, err := uuid.Parse(aliceReg.OrgID)
+	if err != nil {
+		t.Fatalf("parse org ID: %v", err)
+	}
+
+	// Create a watchlist via the store to avoid rate limits.
+	wl, err := db.CreateWatchlist(ctx, orgID, uuid.NullUUID{}, "Cursor Test", sql.NullString{})
+	if err != nil {
+		t.Fatalf("create watchlist: %v", err)
+	}
+
+	// Insert 51 items directly via the store (limit is 50) to trigger pagination.
+	for i := 0; i < 51; i++ {
+		cpe := fmt.Sprintf("cpe:2.3:a:vendor:product%d:*:*:*:*:*:*:*:*", i)
+		_, err := db.CreateWatchlistItem(ctx, orgID, wl.ID, store.CreateWatchlistItemParams{
+			ItemType:      store.WatchlistItemType("cpe"),
+			CpeNormalized: &cpe,
+		})
+		if err != nil {
+			t.Fatalf("create item %d: %v", i, err)
+		}
+	}
+
+	// Fetch first page — should have next_cursor.
+	page1Resp := doListWatchlistItems(t, ctx, ts, token, aliceReg.OrgID, wl.ID.String())
+	defer page1Resp.Body.Close() //nolint:errcheck,gosec // G104
+	if page1Resp.StatusCode != http.StatusOK {
+		t.Fatalf("list page 1: got %d, want 200", page1Resp.StatusCode)
+	}
+	var page1 struct {
+		Items      []struct{ ID string `json:"id"` } `json:"items"`
+		NextCursor string                             `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(page1Resp.Body).Decode(&page1); err != nil {
+		t.Fatalf("decode page 1: %v", err)
+	}
+	if len(page1.Items) != 50 {
+		t.Fatalf("page 1 items: got %d, want 50", len(page1.Items))
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("page 1 next_cursor is empty, expected a cursor for page 2")
+	}
+
+	// The cursor must NOT be a raw UUID — it should be opaque (base64url-encoded JSON).
+	if _, err := uuid.Parse(page1.NextCursor); err == nil {
+		t.Errorf("next_cursor is a raw UUID (%s), expected opaque base64url-encoded cursor", page1.NextCursor)
+	}
+
+	// Fetch page 2 using the cursor.
+	page2Resp := doListWatchlistItemsWithCursor(t, ctx, ts, token, aliceReg.OrgID, wl.ID.String(), page1.NextCursor)
+	defer page2Resp.Body.Close() //nolint:errcheck,gosec // G104
+	if page2Resp.StatusCode != http.StatusOK {
+		t.Fatalf("list page 2: got %d, want 200", page2Resp.StatusCode)
+	}
+	var page2 struct {
+		Items      []struct{ ID string `json:"id"` } `json:"items"`
+		NextCursor string                             `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(page2Resp.Body).Decode(&page2); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+	if len(page2.Items) != 1 {
+		t.Fatalf("page 2 items: got %d, want 1", len(page2.Items))
+	}
+
+	// No overlap between pages.
+	page1IDs := make(map[string]bool, len(page1.Items))
+	for _, item := range page1.Items {
+		page1IDs[item.ID] = true
+	}
+	for _, item := range page2.Items {
+		if page1IDs[item.ID] {
+			t.Errorf("item %s appears on both page 1 and page 2", item.ID)
+		}
+	}
+
+	// Page 2 should have no next_cursor (only 51 items total).
+	if page2.NextCursor != "" {
+		t.Errorf("page 2 next_cursor = %q, want empty (no more pages)", page2.NextCursor)
 	}
 }
 

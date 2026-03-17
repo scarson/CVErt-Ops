@@ -177,7 +177,7 @@ web/                 Vue 3 SPA
 
 - Go 1.26+
 - PostgreSQL 15+
-- Node.js 20+ (for frontend development)
+- Node.js 24+ (for frontend development)
 - Docker and Docker Compose (recommended for local Postgres)
 
 ### Development Setup

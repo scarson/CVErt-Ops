@@ -57,12 +57,12 @@ vi.mock('lucide-vue-next', () => ({
   RefreshCcw: { name: 'RefreshCcw', template: '<span />' },
 }))
 
-let fetchMock: ReturnType<typeof vi.fn>
+let fetchMock: ReturnType<typeof vi.fn<typeof globalThis.fetch>>
 let originalFetch: typeof globalThis.fetch
 
 beforeEach(() => {
   originalFetch = globalThis.fetch
-  fetchMock = vi.fn()
+  fetchMock = vi.fn<typeof globalThis.fetch>()
   globalThis.fetch = fetchMock
 })
 

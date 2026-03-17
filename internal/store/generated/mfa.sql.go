@@ -23,6 +23,18 @@ func (q *Queries) CountMFACredentialsByUser(ctx context.Context, userID uuid.UUI
 	return count, err
 }
 
+const countUnusedRecoveryCodes = `-- name: CountUnusedRecoveryCodes :one
+SELECT COUNT(*) FROM mfa_recovery_codes
+WHERE user_id = $1 AND used_at IS NULL
+`
+
+func (q *Queries) CountUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUnusedRecoveryCodes, userID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createMFACredential = `-- name: CreateMFACredential :one
 INSERT INTO mfa_credentials (user_id, method, secret_enc)
 VALUES ($1, $2, $3)
@@ -50,12 +62,39 @@ func (q *Queries) CreateMFACredential(ctx context.Context, arg CreateMFACredenti
 	return i, err
 }
 
+const createMFARecoveryCode = `-- name: CreateMFARecoveryCode :exec
+INSERT INTO mfa_recovery_codes (user_id, code_hash)
+VALUES ($1, $2)
+`
+
+type CreateMFARecoveryCodeParams struct {
+	UserID   uuid.UUID
+	CodeHash string
+}
+
+func (q *Queries) CreateMFARecoveryCode(ctx context.Context, arg CreateMFARecoveryCodeParams) error {
+	_, err := q.db.ExecContext(ctx, createMFARecoveryCode, arg.UserID, arg.CodeHash)
+	return err
+}
+
 const deleteAllMFACredentials = `-- name: DeleteAllMFACredentials :execrows
 DELETE FROM mfa_credentials WHERE user_id = $1
 `
 
 func (q *Queries) DeleteAllMFACredentials(ctx context.Context, userID uuid.UUID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteAllMFACredentials, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteAllRecoveryCodes = `-- name: DeleteAllRecoveryCodes :execrows
+DELETE FROM mfa_recovery_codes WHERE user_id = $1
+`
+
+func (q *Queries) DeleteAllRecoveryCodes(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAllRecoveryCodes, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -139,6 +178,62 @@ func (q *Queries) GetMFACredentialsByUserID(ctx context.Context, userID uuid.UUI
 		return nil, err
 	}
 	return items, nil
+}
+
+const getUnusedRecoveryCodeByHash = `-- name: GetUnusedRecoveryCodeByHash :one
+SELECT id, user_id, code_hash, used_at, created_at FROM mfa_recovery_codes
+WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL
+`
+
+type GetUnusedRecoveryCodeByHashParams struct {
+	UserID   uuid.UUID
+	CodeHash string
+}
+
+func (q *Queries) GetUnusedRecoveryCodeByHash(ctx context.Context, arg GetUnusedRecoveryCodeByHashParams) (MfaRecoveryCode, error) {
+	row := q.db.QueryRowContext(ctx, getUnusedRecoveryCodeByHash, arg.UserID, arg.CodeHash)
+	var i MfaRecoveryCode
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CodeHash,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getUnusedRecoveryCodeByHashForUpdate = `-- name: GetUnusedRecoveryCodeByHashForUpdate :one
+SELECT id, user_id, code_hash, used_at, created_at FROM mfa_recovery_codes
+WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL
+FOR UPDATE SKIP LOCKED
+`
+
+type GetUnusedRecoveryCodeByHashForUpdateParams struct {
+	UserID   uuid.UUID
+	CodeHash string
+}
+
+func (q *Queries) GetUnusedRecoveryCodeByHashForUpdate(ctx context.Context, arg GetUnusedRecoveryCodeByHashForUpdateParams) (MfaRecoveryCode, error) {
+	row := q.db.QueryRowContext(ctx, getUnusedRecoveryCodeByHashForUpdate, arg.UserID, arg.CodeHash)
+	var i MfaRecoveryCode
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CodeHash,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const markRecoveryCodeUsed = `-- name: MarkRecoveryCodeUsed :exec
+UPDATE mfa_recovery_codes SET used_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, markRecoveryCodeUsed, id)
+	return err
 }
 
 const updateMFACredentialLastUsed = `-- name: UpdateMFACredentialLastUsed :exec

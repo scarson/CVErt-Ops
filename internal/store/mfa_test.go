@@ -1,10 +1,13 @@
-// ABOUTME: Integration tests for MFA credential store methods.
+// ABOUTME: Integration tests for MFA credential and recovery code store methods.
 // ABOUTME: Uses testutil.NewTestDB which starts a real Postgres container with migrations.
 package store_test
 
 import (
 	"context"
 	"database/sql"
+	"regexp"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -294,5 +297,312 @@ func TestMFA_CascadeOnUserDelete(t *testing.T) {
 	}
 	if len(creds) != 0 {
 		t.Errorf("len(creds) = %d after user delete, want 0", len(creds))
+	}
+}
+
+// --- Recovery Code Tests ---
+
+func TestRecoveryCode_Generate10Codes(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-gen@example.com", "RC Gen", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codes, err := s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+	if len(codes) != 10 {
+		t.Fatalf("len(codes) = %d, want 10", len(codes))
+	}
+
+	// Verify format: xxxxx-xxxxx with a-z0-9.
+	pat := regexp.MustCompile(`^[a-z0-9]{5}-[a-z0-9]{5}$`)
+	seen := make(map[string]bool)
+	for _, code := range codes {
+		if !pat.MatchString(code) {
+			t.Errorf("code %q does not match xxxxx-xxxxx pattern", code)
+		}
+		if seen[code] {
+			t.Errorf("duplicate code: %q", code)
+		}
+		seen[code] = true
+	}
+
+	// Verify DB count.
+	count, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes: %v", err)
+	}
+	if count != 10 {
+		t.Errorf("count = %d, want 10", count)
+	}
+}
+
+func TestRecoveryCode_VerifyValid(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-verify@example.com", "RC Verify", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codes, err := s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	ok, remaining, err := s.VerifyRecoveryCode(ctx, user.ID, codes[0])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode: %v", err)
+	}
+	if !ok {
+		t.Error("expected verification to succeed")
+	}
+	if remaining != 9 {
+		t.Errorf("remaining = %d, want 9", remaining)
+	}
+}
+
+func TestRecoveryCode_VerifyUsedCode(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-used@example.com", "RC Used", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codes, err := s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	// Use the code once.
+	ok, _, err := s.VerifyRecoveryCode(ctx, user.ID, codes[0])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (first): %v", err)
+	}
+	if !ok {
+		t.Fatal("first verification should succeed")
+	}
+
+	// Second attempt with the same code should fail.
+	ok, remaining, err := s.VerifyRecoveryCode(ctx, user.ID, codes[0])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (second): %v", err)
+	}
+	if ok {
+		t.Error("expected used code verification to fail")
+	}
+	if remaining != 9 {
+		t.Errorf("remaining = %d, want 9", remaining)
+	}
+}
+
+func TestRecoveryCode_VerifyWrongCode(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-wrong@example.com", "RC Wrong", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	_, err = s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	ok, remaining, err := s.VerifyRecoveryCode(ctx, user.ID, "zzzzz-zzzzz")
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode: %v", err)
+	}
+	if ok {
+		t.Error("expected wrong code verification to fail")
+	}
+	if remaining != 10 {
+		t.Errorf("remaining = %d, want 10", remaining)
+	}
+}
+
+func TestRecoveryCode_VerifyCaseDashVariation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-case@example.com", "RC Case", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codes, err := s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	// Verify with uppercase and no dash — should match the same hash.
+	code := codes[0]
+	uppercaseNoDash := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
+
+	ok, remaining, err := s.VerifyRecoveryCode(ctx, user.ID, uppercaseNoDash)
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode: %v", err)
+	}
+	if !ok {
+		t.Errorf("expected uppercase/no-dash %q to match code %q", uppercaseNoDash, code)
+	}
+	if remaining != 9 {
+		t.Errorf("remaining = %d, want 9", remaining)
+	}
+}
+
+func TestRecoveryCode_ConcurrentConsumption(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-concurrent@example.com", "RC Concurrent", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codes, err := s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	code := codes[0]
+	barrier := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]bool, 2)
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-barrier
+			ok, _, _ := s.VerifyRecoveryCode(ctx, user.ID, code)
+			results[idx] = ok
+		}(i)
+	}
+	close(barrier)
+	wg.Wait()
+
+	// Exactly one should succeed.
+	if results[0] == results[1] {
+		t.Errorf("concurrent consumption: both results = %v, expected exactly one true", results[0])
+	}
+
+	// 9 codes should remain.
+	count, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes: %v", err)
+	}
+	if count != 9 {
+		t.Errorf("remaining count = %d, want 9", count)
+	}
+}
+
+func TestRecoveryCode_Regenerate(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-regen@example.com", "RC Regen", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	oldCodes, err := s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	// Use one old code.
+	ok, _, err := s.VerifyRecoveryCode(ctx, user.ID, oldCodes[0])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected old code to work before regeneration")
+	}
+
+	// Regenerate.
+	newCodes, err := s.RegenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("RegenerateRecoveryCodes: %v", err)
+	}
+	if len(newCodes) != 10 {
+		t.Fatalf("len(newCodes) = %d, want 10", len(newCodes))
+	}
+
+	// Old codes (unused ones) should no longer work.
+	ok, _, err = s.VerifyRecoveryCode(ctx, user.ID, oldCodes[1])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (old): %v", err)
+	}
+	if ok {
+		t.Error("expected old code to fail after regeneration")
+	}
+
+	// New codes should work.
+	ok, remaining, err := s.VerifyRecoveryCode(ctx, user.ID, newCodes[0])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (new): %v", err)
+	}
+	if !ok {
+		t.Error("expected new code to work after regeneration")
+	}
+	if remaining != 9 {
+		t.Errorf("remaining = %d, want 9", remaining)
+	}
+
+	// Total unused should be 9.
+	count, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes: %v", err)
+	}
+	if count != 9 {
+		t.Errorf("count = %d, want 9", count)
+	}
+}
+
+func TestRecoveryCode_CascadeOnUserDelete(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-cascade@example.com", "RC Cascade", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	_, err = s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	// Delete the user via raw SQL.
+	_, err = s.Pool().Exec(ctx, "DELETE FROM users WHERE id = $1", user.ID)
+	if err != nil {
+		t.Fatalf("DELETE user: %v", err)
+	}
+
+	// Recovery codes should be gone via CASCADE.
+	count, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d after user delete, want 0", count)
 	}
 }

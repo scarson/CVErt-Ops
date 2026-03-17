@@ -28,3 +28,26 @@ SELECT EXISTS(SELECT 1 FROM mfa_credentials WHERE user_id = $1) AS has_mfa;
 
 -- name: CountMFACredentialsByUser :one
 SELECT COUNT(*) FROM mfa_credentials WHERE user_id = $1;
+
+-- name: CreateMFARecoveryCode :exec
+INSERT INTO mfa_recovery_codes (user_id, code_hash)
+VALUES ($1, $2);
+
+-- name: GetUnusedRecoveryCodeByHash :one
+SELECT * FROM mfa_recovery_codes
+WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL;
+
+-- name: GetUnusedRecoveryCodeByHashForUpdate :one
+SELECT * FROM mfa_recovery_codes
+WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL
+FOR UPDATE SKIP LOCKED;
+
+-- name: MarkRecoveryCodeUsed :exec
+UPDATE mfa_recovery_codes SET used_at = now() WHERE id = $1;
+
+-- name: CountUnusedRecoveryCodes :one
+SELECT COUNT(*) FROM mfa_recovery_codes
+WHERE user_id = $1 AND used_at IS NULL;
+
+-- name: DeleteAllRecoveryCodes :execrows
+DELETE FROM mfa_recovery_codes WHERE user_id = $1;

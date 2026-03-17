@@ -24,10 +24,12 @@ type Event struct {
 }
 
 // EventWriter writes security events asynchronously. Write failures are
-// logged via slog and never propagated to callers.
+// logged via slog and never propagated to callers. When a SyslogWriter is
+// configured, events are also forwarded to a remote syslog endpoint.
 type EventWriter struct {
 	store       *store.Store
 	rateLimiter *eventRateLimiter
+	syslog      *SyslogWriter
 	wg          sync.WaitGroup
 }
 
@@ -38,6 +40,12 @@ func NewEventWriter(s *store.Store) *EventWriter {
 		store:       s,
 		rateLimiter: newEventRateLimiter(10, time.Minute, 5*time.Minute, nil),
 	}
+}
+
+// SetSyslog attaches an optional SyslogWriter. When set, non-rate-limited
+// events are forwarded to the syslog endpoint in addition to the database.
+func (w *EventWriter) SetSyslog(sw *SyslogWriter) {
+	w.syslog = sw
 }
 
 // Write records a security event asynchronously. If the rate limit for the
@@ -80,12 +88,27 @@ func (w *EventWriter) Write(ctx context.Context, event Event) {
 				"error", err,
 			)
 		}
+
+		// Forward to syslog independently of DB result.
+		if w.syslog != nil {
+			if sErr := w.syslog.Send(event); sErr != nil {
+				slog.Error("security event syslog send failed",
+					"event_type", event.Type,
+					"error", sErr,
+				)
+			}
+		}
 	}()
 }
 
-// Stop stops the rate limiter eviction goroutine and waits for all pending
-// writes to complete.
+// Stop stops the rate limiter eviction goroutine, waits for all pending
+// writes to complete, and closes the syslog connection if configured.
 func (w *EventWriter) Stop() {
 	w.rateLimiter.Stop()
 	w.wg.Wait()
+	if w.syslog != nil {
+		if err := w.syslog.Close(); err != nil {
+			slog.Error("syslog close failed", "error", err)
+		}
+	}
 }

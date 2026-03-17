@@ -60,11 +60,15 @@ func (c *MigrationCheck) Run(ctx context.Context) (string, string, error) {
 		return StatusFail, "database pool is nil", nil
 	}
 	var version int
+	var dirty bool
 	err := c.DB.QueryRow(ctx,
-		"SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
-	).Scan(&version)
+		"SELECT version, dirty FROM schema_migrations ORDER BY version DESC LIMIT 1",
+	).Scan(&version, &dirty)
 	if err != nil {
 		return StatusFail, fmt.Sprintf("query failed: %v", err), nil
+	}
+	if dirty {
+		return StatusFail, fmt.Sprintf("schema version %d is dirty (migration failed mid-apply)", version), nil
 	}
 	if version != c.ExpectedVersion {
 		return StatusWarn, fmt.Sprintf("schema version %d, expected %d", version, c.ExpectedVersion), nil

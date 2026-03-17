@@ -262,7 +262,7 @@ func (srv *Server) listWatchlistsHandler(w http.ResponseWriter, r *http.Request)
 	var afterTime *time.Time
 	var afterID *uuid.UUID
 
-	if c := r.URL.Query().Get("after"); c != "" {
+	if c := r.URL.Query().Get("cursor"); c != "" {
 		var cur watchlistCursor
 		if err := decodePageCursor(c, &cur); err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid cursor")
@@ -550,7 +550,7 @@ func (srv *Server) listWatchlistItemsHandler(w http.ResponseWriter, r *http.Requ
 		t := store.WatchlistItemType(it)
 		itemTypeFilter = &t
 	}
-	if a := r.URL.Query().Get("after"); a != "" {
+	if a := r.URL.Query().Get("cursor"); a != "" {
 		id, err := uuid.Parse(a)
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid cursor")

@@ -461,8 +461,8 @@ type specGetWatchlistOutput struct {
 }
 
 type specListWatchlistsInput struct {
-	OrgID string `path:"org_id" format:"uuid" doc:"Organization ID"`
-	After string `query:"after" doc:"Pagination cursor"`
+	OrgID  string `path:"org_id" format:"uuid" doc:"Organization ID"`
+	Cursor string `query:"cursor" doc:"Pagination cursor"`
 }
 type specListWatchlistsOutput struct {
 	Body struct {
@@ -499,7 +499,7 @@ type specListWatchlistItemsInput struct {
 	OrgID       string `path:"org_id" format:"uuid" doc:"Organization ID"`
 	WatchlistID string `path:"id" format:"uuid" doc:"Watchlist ID"`
 	ItemType    string `query:"item_type" doc:"Filter by item type"`
-	After       string `query:"after" doc:"Pagination cursor"`
+	Cursor      string `query:"cursor" doc:"Pagination cursor"`
 }
 type specListWatchlistItemsOutput struct {
 	Body struct {
@@ -594,7 +594,7 @@ type specCreateAlertRuleOutput struct {
 type specListAlertRulesInput struct {
 	OrgID  string `path:"org_id" format:"uuid" doc:"Organization ID"`
 	Status string `query:"status" doc:"Filter by status"`
-	After  string `query:"after" doc:"Pagination cursor"`
+	Cursor string `query:"cursor" doc:"Pagination cursor"`
 }
 type specListAlertRulesOutput struct {
 	Body struct {
@@ -753,7 +753,7 @@ type specListAlertEventsInput struct {
 	CveID          string `query:"cve_id" doc:"Filter by CVE ID"`
 	LastMatchState string `query:"last_match_state" doc:"Filter by last match state"`
 	Since          string `query:"since" doc:"Filter events since timestamp (RFC3339)"`
-	After          string `query:"after" doc:"Pagination cursor"`
+	Cursor         string `query:"cursor" doc:"Pagination cursor"`
 }
 type specListAlertEventsOutput struct {
 	Body struct {

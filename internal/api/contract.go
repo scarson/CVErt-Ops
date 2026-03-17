@@ -14,6 +14,15 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
+// writeJSON writes v as JSON with the given status code.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("writeJSON: encode failed", "error", err)
+	}
+}
+
 // writeProblem writes an RFC 9457 Problem Details response using huma's ErrorModel.
 // Does NOT set the "type" field — huma omits it via omitempty, so we must too.
 func writeProblem(w http.ResponseWriter, status int, detail string) {

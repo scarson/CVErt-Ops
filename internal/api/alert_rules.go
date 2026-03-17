@@ -334,7 +334,7 @@ func (srv *Server) listAlertRulesHandler(w http.ResponseWriter, r *http.Request)
 	if s := r.URL.Query().Get("status"); s != "" {
 		statusFilter = &s
 	}
-	if c := r.URL.Query().Get("after"); c != "" {
+	if c := r.URL.Query().Get("cursor"); c != "" {
 		var cur alertRuleCursor
 		if err := decodePageCursor(c, &cur); err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid cursor")

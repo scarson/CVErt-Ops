@@ -161,9 +161,7 @@ func (srv *Server) ingestHandler(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusBadRequest
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(resp)
+	writeJSON(w, statusCode, resp)
 }
 
 // toCanonicalPatch converts an ingest request patch to a merge-pipeline CanonicalPatch.

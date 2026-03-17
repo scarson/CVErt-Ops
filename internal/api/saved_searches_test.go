@@ -489,8 +489,8 @@ func TestSavedSearch_Execute(t *testing.T) {
 	if err := json.NewDecoder(execResp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode execute response: %v", err)
 	}
-	if len(result.Results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(result.Results))
+	if len(result.Items) != 2 {
+		t.Errorf("expected 2 results, got %d", len(result.Items))
 	}
 }
 

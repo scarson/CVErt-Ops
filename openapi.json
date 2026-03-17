@@ -3324,10 +3324,7 @@
             "readOnly": true,
             "type": "string"
           },
-          "cursor": {
-            "type": "string"
-          },
-          "results": {
+          "items": {
             "items": {
               "$ref": "#/components/schemas/CVEItem"
             },
@@ -3335,10 +3332,13 @@
               "array",
               "null"
             ]
+          },
+          "next_cursor": {
+            "type": "string"
           }
         },
         "required": [
-          "results"
+          "items"
         ],
         "type": "object"
       },
@@ -6367,7 +6367,7 @@
             "description": "Pagination cursor",
             "explode": false,
             "in": "query",
-            "name": "after",
+            "name": "cursor",
             "schema": {
               "description": "Pagination cursor",
               "type": "string"
@@ -6431,7 +6431,7 @@
             "description": "Pagination cursor",
             "explode": false,
             "in": "query",
-            "name": "after",
+            "name": "cursor",
             "schema": {
               "description": "Pagination cursor",
               "type": "string"
@@ -9808,7 +9808,7 @@
             "description": "Pagination cursor",
             "explode": false,
             "in": "query",
-            "name": "after",
+            "name": "cursor",
             "schema": {
               "description": "Pagination cursor",
               "type": "string"
@@ -10106,7 +10106,7 @@
             "description": "Pagination cursor",
             "explode": false,
             "in": "query",
-            "name": "after",
+            "name": "cursor",
             "schema": {
               "description": "Pagination cursor",
               "type": "string"

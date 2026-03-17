@@ -65,7 +65,7 @@ func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request
 		}
 		p.Since = &t
 	}
-	if c := r.URL.Query().Get("after"); c != "" {
+	if c := r.URL.Query().Get("cursor"); c != "" {
 		var cur alertEventCursor
 		if err := decodePageCursor(c, &cur); err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid cursor")

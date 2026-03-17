@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -43,15 +42,6 @@ type orgResponseBody struct {
 // updateOrgBody is the JSON request body for PATCH /api/v1/orgs/{org_id}.
 type updateOrgBody struct {
 	Name *string `json:"name,omitempty"`
-}
-
-// writeJSON writes v as JSON with the given status code.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("writeJSON: encode failed", "error", err)
-	}
 }
 
 // createOrgHandler handles POST /api/v1/orgs.

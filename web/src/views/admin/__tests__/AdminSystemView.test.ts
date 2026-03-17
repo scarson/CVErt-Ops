@@ -163,4 +163,30 @@ describe('AdminSystemView', () => {
     expect(wrapper.text()).toContain('feeds')
     expect(wrapper.text()).toContain('stale data')
   })
+
+  it('does NOT populate doctor data on 500 — only 200 and 503 are valid', async () => {
+    // Version: success
+    mockGET.mockResolvedValueOnce({ data: versionData, error: undefined })
+    // Config: success
+    mockGET.mockResolvedValueOnce({ data: configData, error: undefined })
+
+    // Doctor: 500 (a real error, not unhealthy-but-valid like 503)
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(doctorData), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const wrapper = await mountView()
+    await flushPromises()
+
+    // Doctor data should NOT be rendered on 500
+    expect(wrapper.text()).not.toContain('unhealthy')
+    expect(wrapper.text()).not.toContain('stale data')
+
+    // Version and config should still render (they succeeded)
+    expect(wrapper.text()).toContain('1.0.0')
+    expect(wrapper.text()).toContain('invite-only')
+  })
 })

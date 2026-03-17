@@ -396,7 +396,7 @@ func TestLoginDisabledUser_RecordsLockoutFailure(t *testing.T) {
 	}
 
 	// Verify lockout was recorded (the lockout manager should have failures).
-	allowed, _ := srv.lockout.Check("disabled-lockout@example.com")
+	allowed, _ := srv.lockout.Check(ctx, "disabled-lockout@example.com")
 	if allowed {
 		t.Error("expected lockout after repeated disabled-user login attempts")
 	}

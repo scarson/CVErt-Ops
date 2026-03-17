@@ -257,3 +257,65 @@ func (s *Store) ClearForcePasswordReset(ctx context.Context, userID uuid.UUID) e
 		return q.ClearForcePasswordReset(ctx, userID)
 	})
 }
+
+// LoginLockoutState holds the lockout-relevant fields for a user.
+type LoginLockoutState struct {
+	FailedCount int32
+	LockedAt    *time.Time
+}
+
+// RecordLoginFailure atomically increments the failed login count and locks the
+// account if the threshold is reached. Returns the resulting lockout state.
+// Uses withBypassTx since it runs from the login flow before org context.
+func (s *Store) RecordLoginFailure(ctx context.Context, email string, threshold int) (*LoginLockoutState, error) {
+	var state LoginLockoutState
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.RecordLoginFailure(ctx, generated.RecordLoginFailureParams{
+			Email:     email,
+			Threshold: int32(threshold), //nolint:gosec // threshold is a small config constant (1-100)
+		})
+		if err != nil {
+			return err
+		}
+		state.FailedCount = row.FailedLoginCount
+		if row.LockedAt.Valid {
+			t := row.LockedAt.Time
+			state.LockedAt = &t
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("record login failure: %w", err)
+	}
+	return &state, nil
+}
+
+// RecordLoginSuccess resets lockout state after a successful login.
+// Uses withBypassTx since it runs from the login flow before org context.
+func (s *Store) RecordLoginSuccess(ctx context.Context, email string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		return q.RecordLoginSuccess(ctx, email)
+	})
+}
+
+// GetLoginLockoutState returns the lockout state for a user by email.
+// Uses withBypassTx since it runs from the login flow before org context.
+func (s *Store) GetLoginLockoutState(ctx context.Context, email string) (*LoginLockoutState, error) {
+	var state LoginLockoutState
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetLoginLockoutState(ctx, email)
+		if err != nil {
+			return err
+		}
+		state.FailedCount = row.FailedLoginCount
+		if row.LockedAt.Valid {
+			t := row.LockedAt.Time
+			state.LockedAt = &t
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get login lockout state: %w", err)
+	}
+	return &state, nil
+}

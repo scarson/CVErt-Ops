@@ -77,3 +77,22 @@ FROM users WHERE id = $1;
 
 -- name: ClearForcePasswordReset :exec
 UPDATE users SET force_password_reset = false WHERE id = $1;
+
+-- name: RecordLoginFailure :one
+-- Atomically increments failed_login_count and sets locked_at if threshold reached.
+UPDATE users
+SET failed_login_count = failed_login_count + 1,
+    locked_at = CASE
+        WHEN failed_login_count + 1 >= @threshold::int THEN COALESCE(locked_at, now())
+        ELSE locked_at
+    END
+WHERE email = @email
+RETURNING failed_login_count, locked_at;
+
+-- name: RecordLoginSuccess :exec
+-- Resets lockout state after a successful login.
+UPDATE users SET failed_login_count = 0, locked_at = NULL WHERE email = @email;
+
+-- name: GetLoginLockoutState :one
+-- Returns lockout state for a user by email.
+SELECT failed_login_count, locked_at FROM users WHERE email = @email;

@@ -111,6 +111,23 @@ func (q *Queries) DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
 	return result.RowsAffected()
 }
 
+const getLoginLockoutState = `-- name: GetLoginLockoutState :one
+SELECT failed_login_count, locked_at FROM users WHERE email = $1
+`
+
+type GetLoginLockoutStateRow struct {
+	FailedLoginCount int32
+	LockedAt         sql.NullTime
+}
+
+// Returns lockout state for a user by email.
+func (q *Queries) GetLoginLockoutState(ctx context.Context, email string) (GetLoginLockoutStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getLoginLockoutState, email)
+	var i GetLoginLockoutStateRow
+	err := row.Scan(&i.FailedLoginCount, &i.LockedAt)
+	return i, err
+}
+
 const getRefreshToken = `-- name: GetRefreshToken :one
 SELECT jti, user_id, token_version, expires_at, used_at, replaced_by_jti, created_at FROM refresh_tokens WHERE jti = $1 LIMIT 1
 `
@@ -284,6 +301,45 @@ type MarkRefreshTokenUsedParams struct {
 
 func (q *Queries) MarkRefreshTokenUsed(ctx context.Context, arg MarkRefreshTokenUsedParams) error {
 	_, err := q.db.ExecContext(ctx, markRefreshTokenUsed, arg.Jti, arg.ReplacedByJti)
+	return err
+}
+
+const recordLoginFailure = `-- name: RecordLoginFailure :one
+UPDATE users
+SET failed_login_count = failed_login_count + 1,
+    locked_at = CASE
+        WHEN failed_login_count + 1 >= $1::int THEN COALESCE(locked_at, now())
+        ELSE locked_at
+    END
+WHERE email = $2
+RETURNING failed_login_count, locked_at
+`
+
+type RecordLoginFailureParams struct {
+	Threshold int32
+	Email     string
+}
+
+type RecordLoginFailureRow struct {
+	FailedLoginCount int32
+	LockedAt         sql.NullTime
+}
+
+// Atomically increments failed_login_count and sets locked_at if threshold reached.
+func (q *Queries) RecordLoginFailure(ctx context.Context, arg RecordLoginFailureParams) (RecordLoginFailureRow, error) {
+	row := q.db.QueryRowContext(ctx, recordLoginFailure, arg.Threshold, arg.Email)
+	var i RecordLoginFailureRow
+	err := row.Scan(&i.FailedLoginCount, &i.LockedAt)
+	return i, err
+}
+
+const recordLoginSuccess = `-- name: RecordLoginSuccess :exec
+UPDATE users SET failed_login_count = 0, locked_at = NULL WHERE email = $1
+`
+
+// Resets lockout state after a successful login.
+func (q *Queries) RecordLoginSuccess(ctx context.Context, email string) error {
+	_, err := q.db.ExecContext(ctx, recordLoginSuccess, email)
 	return err
 }
 

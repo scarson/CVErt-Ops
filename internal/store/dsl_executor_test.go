@@ -449,16 +449,16 @@ func TestExecuteDSLQuery_PostFilterPagination(t *testing.T) {
 	}
 
 	// limit=15: SQL fetches 16 rows (limit+1). Of those 16, only ~5-6 match
-	// the PostFilter. BUG: len(filtered) < 15 → no cursor emitted, even
-	// though there are more unfiltered rows in the DB.
+	// the PostFilter. The pagination decision must use the pre-filter count
+	// (16 > 15 → has next page) rather than the post-filter count.
 	results, nextCursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 15)
 	if err != nil {
 		t.Fatalf("ExecuteDSLQuery: %v", err)
 	}
 
-	// We should get some matching results (not all 10, since SQL only fetched 16).
-	if len(results) == 0 {
-		t.Fatal("expected some PostFilter-matching results, got 0")
+	// SQL fetches 16 rows (indices 0-15). Of those, i%3==0 matches: 0,3,6,9,12,15 → 6 results.
+	if len(results) != 6 {
+		t.Fatalf("expected 6 PostFilter-matching results, got %d", len(results))
 	}
 
 	// The critical assertion: nextCursor must be non-empty because there are
@@ -516,5 +516,60 @@ func TestExecuteDSLQuery_PostFilterLastPage(t *testing.T) {
 	// This IS the last page (only 5 rows total, limit=10). No spurious cursor.
 	if nextCursor != "" {
 		t.Errorf("expected empty cursor on last page with PostFilter, got %q", nextCursor)
+	}
+}
+
+func TestExecuteDSLQuery_PostFilterAllFiltered(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 20 CVEs: none in the first limit+1 rows match the PostFilter regex,
+	// but more rows exist in the DB. This exercises the preFetchCursorRow fallback
+	// when PostFilter removes ALL visible rows.
+	base := time.Now()
+	for i := range 20 {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		desc := "unrelated vulnerability in some library"
+		// Only the last few CVEs match — they won't appear in the first page fetch.
+		if i >= 18 {
+			desc = "buffer overflow in network stack"
+		}
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-AF%02d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+			DescriptionPrimary:    desc,
+		})
+	}
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	compiled.PostFilters = []dsl.PostFilter{
+		{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
+	}
+
+	// limit=5: SQL fetches 6 rows (limit+1). None of the first 6 rows (indices 0-5)
+	// match "buffer overflow", so PostFilter removes ALL of them. But preFetchCount
+	// is 6 > 5, so a cursor must be emitted using the preFetchCursorRow fallback.
+	results, nextCursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 5)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+
+	// All rows on this page were filtered out.
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (all filtered), got %d", len(results))
+	}
+
+	// Cursor must be non-empty — more rows exist in the DB beyond this fetch.
+	if nextCursor == "" {
+		t.Error("expected non-empty nextCursor when PostFilter removes all rows but more DB rows exist")
 	}
 }

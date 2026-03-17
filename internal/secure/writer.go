@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -58,6 +59,7 @@ func (w *EventWriter) Write(ctx context.Context, event Event) {
 			"event_type", event.Type,
 			"actor_ip", event.ActorIP,
 		)
+		metrics.SecurityEventsDropped.Inc()
 		return
 	}
 
@@ -87,6 +89,8 @@ func (w *EventWriter) Write(ctx context.Context, event Event) {
 				"event_type", event.Type,
 				"error", err,
 			)
+		} else {
+			metrics.SecurityEventsTotal.WithLabelValues(event.Type, event.Severity).Inc()
 		}
 
 		// Forward to syslog independently of DB result.

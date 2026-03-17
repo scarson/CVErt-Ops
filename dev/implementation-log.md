@@ -1564,6 +1564,99 @@ Testing pitfalls: `dev/testing-pitfalls.md` — 8-category checklist distilled f
 
 ---
 
+## Phase 8A — Shared Foundation
+
+**Branch:** None (landed directly on `dev`)
+**Plan:** `dev/plans/2026-03-10-phase8-ops-phase8a-plan.md`
+**PR:** #11 (bundled with code review fixes and documentation)
+
+### What was built
+
+5 tasks delivering foundational prerequisites that Phase 8B (Observe), 8C (Operate), and 8D (Extend) all depend on:
+
+1. **`system_settings` migration (000034)** — System-level key-value table (`TEXT` PK, `BYTEA` value). NOT org-scoped, no RLS. Used by doctor encryption sentinel and CLI tools.
+2. **`RequireSiteAdmin()` middleware verification** — Confirmed existing middleware is tested and correct. No new code.
+3. **Security event type constants** (`internal/secure/events.go`) — 12 event type constants + 3 severity levels + `Severity()` lookup function with unexported `eventSeverity` map.
+4. **Custom source precedence verification** (`internal/merge/resolve_custom_test.go`) — 4 tests codifying that `otherSources()` lets unknown source names contribute to union fields without winning scalar precedence. Added `IsReservedSourceName` helper in `internal/ingest/feeds.go`.
+5. **Schema version bump** — `expectedSchemaVersion` from 30 to 34.
+
+### Key decisions
+
+- **Severity map unexported:** Initially exported `EventSeverity` map was refactored to unexported `eventSeverity` with a `Severity()` accessor function for cleaner encapsulation.
+- **`system_settings` is NOT org-scoped:** No `org_id`, no RLS. Used only by site admins and CLI tools.
+- **`IsReservedSourceName` is a semantic wrapper:** Delegates to `IsKnownFeed()` but provides a domain-meaningful name for config validation of custom feeds.
+
+### Gotchas
+
+- **gosec G101 false positives:** 3 `//nolint:gosec` suppressions needed on event constants containing "key", "token", "password" substrings (gosec thinks they're hardcoded credentials).
+- **Schema version jump from 30 to 34:** Migrations 31-33 came from Phase 6/7 work before Phase 8A was planned.
+- **No dedicated branch:** Phase 8A was intentionally a pre-gate on `dev`, bundled into PR #11 alongside code review fixes and documentation.
+
+### Tests
+
+| File | Tests |
+|------|-------|
+| `internal/secure/events_test.go` | 2 (`TestEventSeverityMapIsExhaustive`, `TestEventSeverityValues`) |
+| `internal/merge/resolve_custom_test.go` | 4 (custom source CVSS, only-source, references union, packages union) |
+| `internal/ingest/feeds_test.go` | 1 (`TestIsReservedSourceName`) |
+| **Total** | **7** |
+
+### Quality checks
+
+- **go build ./...:** Clean
+- **golangci-lint:** Clean (3 gosec false positives suppressed inline)
+
+---
+
+## Phase 8B — Observe Pillar
+
+**Branch:** `phase-8b-observe` (worktree, concurrent with 8C/8D)
+**Plan:** `dev/plans/2026-03-10-phase8-ops-observe-plan.md`
+**PR:** #12 → merged to dev; #15 merged 8B/8C/8D to main
+
+### What was built
+
+5 batches across 19 tasks implementing the "Observe" pillar — Prometheus metrics across 6 subsystems, structured log correlation, separate metrics port, and Grafana dashboards:
+
+1. **Metric definitions** (`internal/metrics/`) — 6 subsystem packages: HTTP (request counter + duration histogram), Feed (ingestion health), Alert (evaluation counters), Notification (delivery counters), Worker (job lifecycle), DB (pool collector via `PoolStatter` interface)
+2. **Log correlation** (`internal/log/context.go`) — Context-aware slog helpers: `FromContext` fallback, `WithLogger` roundtrip, `Enrich` for adding fields. Request ID correlation middleware in `internal/api/log_middleware.go`
+3. **Metrics port separation** — `/metrics` moved from main router to separate HTTP server on `METRICS_PORT` (default `9090`). Also added to standalone `worker` command
+4. **Subsystem instrumentation** — Feed ingest handler, alert evaluator, notification worker, job pool, and DB pool collector all wired with metric calls. HTTP metrics middleware with cardinality-safe route labels
+5. **Grafana dashboards & configs** — 3 dashboards (system overview, feed health, alerts & delivery) in `deploy/grafana/dashboards/`. Alerting rules in `deploy/grafana/alerts.yml`. Reference configs for Alloy and Prometheus
+
+### Key decisions
+
+- **DB Pool Collector uses `PoolStatter` interface:** Custom `PoolStats` struct instead of directly depending on `pgxpool.Stat`, with a pgxpool adapter for registration.
+- **`statusWriter` includes `Unwrap()` method:** So `http.ResponseController` can discover `http.Flusher` and `http.Hijacker` on the underlying writer.
+- **HTTP metrics middleware takes metrics as parameters:** `httpMetricsMiddleware(reqTotal, reqDuration)` rather than package-level vars — enables isolated-registry testing without cardinality collisions.
+- **Retry-path metrics after DB write:** Moved per `tp§9.6` — metrics must reflect committed state, not optimistic state.
+
+### Gotchas
+
+- **Middleware ordering matters:** Review fix corrected ordering and added doc comments to metric vars.
+- **`statusWriter` needed `Unwrap()`:** Required for compatibility with chi's response writer middleware chain.
+- **Retry-path metrics placement:** Initially placed before `RetryDelivery` DB write, had to be moved after per testing-pitfalls §9.6.
+- **Worker command also needs metrics:** The standalone `worker` cobra command needed its own metrics server + DB pool collector registration.
+
+### Tests
+
+| File | Tests |
+|------|-------|
+| `internal/metrics/*_test.go` | 6 (1 per subsystem) |
+| `internal/log/context_test.go` | 3 (FromContext fallback, WithLogger roundtrip, Enrich) |
+| `internal/api/log_middleware_test.go` | 1 |
+| `internal/api/metrics_middleware_test.go` | 2 |
+| `internal/api/metrics_server_test.go` | 1 |
+| **Total** | **13** |
+
+### Quality checks
+
+- **go build ./...:** Clean
+- **golangci-lint:** Clean (post-review fixes in `2bbec79`)
+- **Go unit tests:** 13/13 pass across metrics, log, and API middleware packages
+
+---
+
 ## Phase 8C — Operate Pillar
 
 **Branch:** `phase-8c-operate` (worktree: `.worktrees/phase-8c-operate`)
@@ -1606,5 +1699,59 @@ Testing pitfalls: `dev/testing-pitfalls.md` — 8-category checklist distilled f
 - **Frontend build (Vite):** Clean
 - **Frontend tests (Vitest):** 421/421 pass across 32 test files
 - **Go unit tests:** All Phase 8C packages pass (api, doctor, auth, crypto, tier, worker, secure, alert, cmd)
+
+---
+
+## Phase 8D — Extend Pillar
+
+**Branch:** `phase-8d-extend` (worktree, concurrent with 8B/8C)
+**Plan:** `dev/plans/2026-03-10-phase8-ops-extend-plan.md`
+**PR:** #13 → merged to dev; #15 merged 8B/8C/8D to main
+
+### What was built
+
+7 batches across 15 tasks implementing the "Extend" pillar — config-driven generic feed adapters and an inbound webhook for custom CVE sources:
+
+1. **Dependencies** — `tidwall/gjson` for JSON field mapping, `go.yaml.in/yaml/v4` for config parsing (not the archived `gopkg.in/yaml.v3`)
+2. **Config system** (`internal/feed/generic/config.go`) — YAML config struct with validation (required fields, reserved name collision via `ingest.IsReservedSourceName`, cron expression checks), `LoadDir` for directory scanning, `Loader` struct with `Rescan()` for SIGHUP integration
+3. **Generic feed adapter** (`internal/feed/generic/adapter.go`) — Implements `feed.Adapter`. JSON format with gjson field mapping, CSAF format via shared parser. 4 pagination strategies (none/offset/cursor/link-header), 4 auth types (none/bearer/basic/header with env-var credentials), rate limiting via `x/time/rate`, 50MB response cap, null byte sanitization
+4. **Scheduler bridge** (`internal/feed/generic/scheduler.go`) — Converts generic configs to `ingest.FeedScheduleEntry` with cron-to-interval conversion. `AdapterFactory` wraps the built-in factory, creating generic adapters for known generic feed names and falling back to built-in adapters otherwise
+5. **Inbound webhook** (`internal/api/ingest.go`) — `POST /api/v1/orgs/{org_id}/ingest` accepting CVE patches via JSON. Validates source name (non-reserved), CVE ID format, 100-patch limit. N patches consume N rate-limit tokens. Calls `merge.Ingest` per-patch independently. Returns 202 partial success or 400 if all rejected
+6. **`validate-feeds` CLI** (`cmd/cvert-ops/validate.go`) — `cvert-ops validate-feeds` subcommand. Reads `CVERTOPS_FEEDS_DIR`, validates all YAML configs, reports errors. `--dry-run` flag stubbed for future connectivity testing
+7. **Migration 000038** — Drops `cve_sources_source_name_check` constraint to allow custom feed names (validated at app layer via `IsReservedSourceName` instead)
+
+### Key decisions
+
+- **Timeout as string:** Config stores timeout as `string` (e.g., `"30s"`) rather than `time.Duration` — parsed at adapter creation time to avoid YAML marshaling issues with duration types.
+- **Pagination raw count:** `nextPage` receives `rawCount` (before CVE ID filtering) to prevent filtered-out records from causing premature last-page detection.
+- **Adapter factory wrapping:** Generic feeds don't modify `KnownFeeds` or `NewAdapter`. `AdapterFactory` wraps the built-in factory with a map lookup, cleanly separating generic from built-in feeds.
+- **CSAF reuse:** CSAF format bypasses gjson mapping entirely and delegates to shared `csaf.Parse` — no mapping config needed for CSAF feeds.
+- **Rate limit accounting on webhook:** N-1 additional tokens consumed (middleware already consumed 1 for the request itself).
+
+### Gotchas
+
+- **`cve_sources_source_name_check` constraint:** The Phase 7 migration hardcoded allowed source names. 8D's custom feeds need arbitrary names → migration 000038 drops the constraint in favor of app-layer validation.
+- **Cursor URL encoding:** Cursor values from upstream APIs needed URL encoding when interpolated into pagination URLs (commit `9aa4be0`).
+- **CSAF null bytes:** CSAF advisory strings contained null bytes that needed sanitization before database insertion (commit `9aa4be0`).
+- **Empty CVE IDs:** Some records had no CVE ID — needed to be filtered rather than producing empty patches (commit `9aa4be0`).
+- **Config test default mismatch:** Test assumed `RegistrationMode` default `"open"` but code default is `"invite-only"` (pre-existing, commit `b0ad824`).
+
+### Tests
+
+| File | Tests |
+|------|-------|
+| `internal/feed/generic/adapter_test.go` | 23 |
+| `internal/feed/generic/config_test.go` | 20 |
+| `internal/feed/generic/scheduler_test.go` | 3 |
+| `internal/api/ingest_test.go` | 11 |
+| `cmd/cvert-ops/validate_test.go` | 6 |
+| **Total** | **63** |
+
+### Quality checks
+
+- **go build ./...:** Clean
+- **golangci-lint:** Clean (post-review fixes in `a9a2bb2`)
+- **Go unit tests:** 63/63 pass across generic feed, ingest, and validate packages
+- **Post-merge fix:** `d17460e` resolved integration issues from 8B/8C/8D merge
 
 ---

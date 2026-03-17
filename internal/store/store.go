@@ -157,8 +157,10 @@ func (s *Store) OrgTx(ctx context.Context, orgID uuid.UUID, fn func(pgx.Tx) erro
 // lo and hi must be within int32 range.
 func clampInt32(v, lo, hi int) int32 {
 	clamped := min(max(v, lo), hi)
-	if clamped < math.MinInt32 || clamped > math.MaxInt32 {
-		return int32(lo)
+	if clamped < math.MinInt32 {
+		clamped = math.MinInt32
+	} else if clamped > math.MaxInt32 {
+		clamped = math.MaxInt32
 	}
 	return int32(clamped) //nolint:gosec // bounds checked above
 }

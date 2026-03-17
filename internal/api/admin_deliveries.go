@@ -116,24 +116,6 @@ func (srv *Server) adminBulkRetryDeliveriesHandler(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Also accept limit from JSON body.
-	if r.ContentLength > 0 {
-		var body struct {
-			Limit *int `json:"limit"`
-		}
-		if errDetail := decodeJSON(r, &body); errDetail != nil {
-			writeProblem(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
-		if body.Limit != nil {
-			if *body.Limit < 1 || *body.Limit > 1000 {
-				writeProblem(w, http.StatusBadRequest, "invalid limit (1-1000)")
-				return
-			}
-			limit = *body.Limit
-		}
-	}
-
 	n, err := srv.store.AdminBulkRetryFailed(r.Context(), limit)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "admin bulk retry deliveries", "error", err)

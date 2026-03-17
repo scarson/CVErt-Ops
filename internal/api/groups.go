@@ -235,6 +235,18 @@ func (srv *Server) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify group exists before deleting.
+	current, err := srv.store.GetGroup(r.Context(), orgID, groupID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get group for delete", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if current == nil {
+		writeProblem(w, http.StatusNotFound, "not found")
+		return
+	}
+
 	if err := srv.store.SoftDeleteGroup(r.Context(), orgID, groupID); err != nil {
 		slog.ErrorContext(r.Context(), "delete group", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

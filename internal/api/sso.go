@@ -81,6 +81,21 @@ func (srv *Server) ssoEncryptionKey() ([32]byte, error) {
 	return key, nil
 }
 
+// ssoEncryptionKeyPrevious parses the hex-encoded previous SSO encryption key
+// from config. Returns zero-value key if unset (no previous key configured).
+func (srv *Server) ssoEncryptionKeyPrevious() [32]byte {
+	var key [32]byte
+	if srv.cfg.SSOEncryptionKeyPrevious == "" {
+		return key
+	}
+	raw, err := hex.DecodeString(srv.cfg.SSOEncryptionKeyPrevious)
+	if err != nil || len(raw) != 32 {
+		return key
+	}
+	copy(key[:], raw)
+	return key
+}
+
 // requireEnterpriseTier checks that the request is from an enterprise-tier org.
 // Returns false (and writes the HTTP error) if gating fails.
 func requireEnterpriseTier(w http.ResponseWriter, r *http.Request) bool {

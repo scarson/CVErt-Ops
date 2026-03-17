@@ -15,6 +15,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/secure"
 )
 
 // formatTTL converts a duration to a human-readable string for email templates.
@@ -70,6 +71,16 @@ func (srv *Server) forgotPasswordHandler(ctx context.Context, input *forgotPassw
 	out := &forgotPasswordOutput{Body: struct {
 		Message string `json:"message"`
 	}{Message: forgotPasswordResponse}}
+
+	// Fire regardless of whether the user exists (anti-enumeration).
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:       secure.EventAuthPasswordResetReq,
+			Severity:   secure.SeverityInfo,
+			ActorIP:    clientIP(ctx),
+			ActorEmail: input.Body.Email,
+		})
+	}
 
 	user, err := srv.store.GetUserByEmail(ctx, input.Body.Email)
 	if err != nil {
@@ -210,6 +221,16 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 	if err := srv.store.UpdatePasswordHash(ctx, tok.UserID, newHash, 1); err != nil {
 		slog.ErrorContext(ctx, "reset-password: update password", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventAuthPasswordChanged,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &tok.UserID,
+			Details:  map[string]any{"method": "password_reset"},
+		})
 	}
 
 	return &resetPasswordOutput{}, nil

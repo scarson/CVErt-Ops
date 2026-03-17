@@ -27,6 +27,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/metrics"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/web"
 )
@@ -38,6 +39,8 @@ type ServerDeps struct {
 	AlertEvaluator        *alert.Evaluator
 	LLM                   ai.LLMClient
 	AuditWriter           *audit.Writer
+	EventWriter           *secure.EventWriter
+	ConfigHolder          *config.Holder
 	ExpectedSchemaVersion int
 	VersionInfo           VersionInfo
 }
@@ -59,7 +62,9 @@ type Server struct {
 	alertEvaluator        *alert.Evaluator // nil when alert evaluation is not configured
 	llm                   ai.LLMClient     // nil when AI features are not configured
 	auditWriter           *audit.Writer    // nil when audit logging is not configured
+	eventWriter           *secure.EventWriter // async security event recording
 	lockout               *lockoutManager  // brute-force login protection
+	configHolder          *config.Holder   // hot-reloadable config for admin reload endpoint
 	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
 	expectedSchemaVersion int              // migration version for /readyz check
 	versionInfo           VersionInfo      // build metadata for /admin/version
@@ -95,11 +100,13 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		orgRL:                 orgRL,
 		tierCache:             tc,
 		ghAPIBaseURL:          "https://api.github.com",
+		eventWriter:           deps.EventWriter,
 		lockout:               newLockoutManager(s, lockoutThreshold, lockoutDuration),
 		alertCache:            deps.AlertCache,
 		alertEvaluator:        deps.AlertEvaluator,
 		llm:                   deps.LLM,
 		auditWriter:           deps.AuditWriter,
+		configHolder:          deps.ConfigHolder,
 		expectedSchemaVersion: deps.ExpectedSchemaVersion,
 		versionInfo:           deps.VersionInfo,
 	}
@@ -156,6 +163,9 @@ func (srv *Server) Close() {
 	}
 	if srv.tierCache != nil {
 		srv.tierCache.Stop()
+	}
+	if srv.eventWriter != nil {
+		srv.eventWriter.Stop()
 	}
 }
 
@@ -264,8 +274,10 @@ func (srv *Server) Handler() http.Handler {
 
 		// System management.
 		r.Post("/reindex", srv.adminReindexHandler)
+		r.Post("/reload-config", srv.adminReloadConfigHandler)
 		r.Get("/config", srv.adminConfigHandler)
 		r.Get("/audit-log", srv.adminAuditLogHandler)
+		r.Get("/security-events", srv.adminSecurityEventsHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──

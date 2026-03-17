@@ -49,9 +49,11 @@ func registerAllSpecOps(api huma.API) {
 	registerOrgTierSpecOps(api)
 	registerAdminFeedsSpecOps(api)
 	registerAdminSystemSpecOps(api)
+	registerAdminReloadSpecOps(api)
 	registerAdminOrgsSpecOps(api)
 	registerAdminUsersSpecOps(api)
 	registerAdminDeliveriesSpecOps(api)
+	registerAdminSecurityEventsSpecOps(api)
 }
 
 // mergeSpecPaths copies paths and component schemas from a spec-only API
@@ -1522,6 +1524,22 @@ func registerAdminSystemSpecOps(api huma.API) {
 	}]())
 }
 
+// ── Admin Reload spec ops ───────────────────────────────────────────────────
+
+func registerAdminReloadSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-reload-config",
+		Method:      http.MethodPost,
+		Path:        "/admin/reload-config",
+		Summary:     "Reload configuration from secrets file",
+		Tags:        []string{"Admin System"},
+	}, noopHandler[struct{}, struct {
+		Body struct {
+			Message string `json:"message"`
+		}
+	}]())
+}
+
 // ── Admin Orgs spec ops ─────────────────────────────────────────────────────
 
 func registerAdminOrgsSpecOps(api huma.API) {
@@ -1690,5 +1708,27 @@ func registerAdminDeliveriesSpecOps(api huma.API) {
 			Status       string `json:"status"`
 			RowsAffected int64  `json:"rows_affected"`
 		}
+	}]())
+}
+
+// ── Admin Security Events spec ops ──────────────────────────────────────────
+
+func registerAdminSecurityEventsSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "admin-list-security-events",
+		Method:      http.MethodGet,
+		Path:        "/admin/security-events",
+		Summary:     "List security events",
+		Tags:        []string{"Admin Security Events"},
+	}, noopHandler[struct {
+		EventType  string `query:"event_type,omitempty" doc:"Filter by event type"`
+		Severity   string `query:"severity,omitempty" doc:"Filter by severity"`
+		ActorEmail string `query:"actor_email,omitempty" doc:"Filter by actor email"`
+		Since      string `query:"since,omitempty" doc:"Filter events after timestamp (RFC3339)"`
+		Until      string `query:"until,omitempty" doc:"Filter events before timestamp (RFC3339)"`
+		Cursor     string `query:"cursor,omitempty" doc:"Pagination cursor"`
+		Limit      int    `query:"limit,omitempty" doc:"Max items per page (1-100, default 50)"`
+	}, struct {
+		Body listResponse[store.SecurityEventRow]
 	}]())
 }

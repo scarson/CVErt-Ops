@@ -1274,3 +1274,27 @@ Each procedure: prerequisites, exact commands, verification steps (run `doctor`)
 | 25 | Anti-enumeration leak via security events | Agent conditions event write on user existence | Task 11: `auth.login_failed` and `auth.password_reset_requested` fire REGARDLESS of whether the user exists. |
 | 26 | Retention config missing envDefault | Agent adds config field without default → 0 days → all events deleted immediately | Task 13: `envDefault:"90"` explicitly specified. |
 | 27 | Security event writer uses withOrgTx | Agent uses org-scoped transaction for a system table | Task 9: security_events has no RLS. Use `withBypassTx`. |
+
+---
+
+## Post-Implementation Review Findings (2026-03-17)
+
+All 18 tasks implemented and committed (20 commits on `phase8e-secure`). Three review rounds with 4 parallel code-reviewer agents identified the following:
+
+### Bugs found and fixed (commit `132c979`):
+
+1. **Keyset pagination cursor ID unused in SQL WHERE** — `securityEventCursor` encoded `(T, ID)` but the SQL only used `created_at < $cursor_time`. Rows with identical timestamps were silently skipped. Fixed with composite predicate `(created_at < $6 OR (created_at = $6 AND id < $7))`.
+2. **EventWriter + ConfigHolder not wired in main.go** — Both existed in the API layer and were nil-checked before use, but neither was instantiated or passed through `ServerDeps` in the `serve` command. All security event recording and admin config reload were dead code. Fixed by creating `secure.NewEventWriter(st)` and passing both to `ServerDeps`.
+3. **CLI doctor always exits non-zero** — `SecurityHeadersCheck` returned `StatusWarn` in CLI mode (no `ServerAddr`), and the exit logic treated any warn as failure. Fixed to return `StatusPass` with skip message, matching SMTPCheck's pattern.
+4. **Syslog comment falsely claimed RFC 3164** — Used RFC 3339 timestamps. Comment corrected.
+5. **JWT test t.Logf instead of t.Errorf** — Assertion was silently passing. Fixed.
+
+### Design-level issues for follow-up (not bugs, not fixed):
+
+1. **SSO handlers read from static `srv.cfg`, not `configHolder`** — `ssoEncryptionKey()` and `ssoEncryptionKeyPrevious()` in `sso.go` resolve keys from the startup config, not from the hot-reloadable config holder. SSO encryption key rotation via SIGHUP or admin API reload has no effect on actual decryption until the process restarts. To fix: these helpers need to read from `srv.configHolder.Load()`.
+2. **SSRFProtectionCheck is a static CIDR canary, not a production-config verification** — It hardcodes the same CIDRs that safeurl blocks and tests containment arithmetic. If safeurl is misconfigured (e.g., `AllowInternalConnections: true`), this check still passes. Consider wiring the check to attempt a `safeurl.Get` against the real client, or document the limitation explicitly.
+3. **`DecryptWithFallback` zero-key sentinel + silent hex decode failure** — `LoadFromConfig` silently zeros invalid hex for SSO keys. An operator who misconfigures `SSO_ENCRYPTION_KEY_PREVIOUS` as non-hex gets no error, and `DecryptWithFallback` skips the zeroed key entirely. `LoadFromSecretsFile` does validate, so this only affects env-var-based config.
+
+### Test coverage gap pattern:
+
+The main.go wiring gap was undetectable by unit tests because API tests use `newAuthTestServer()` which constructs dependencies directly, bypassing the real startup path. Future phases should include an integration smoke test that verifies non-nil injection through the real entry point.

@@ -53,7 +53,7 @@ func (srv *Server) oidcBuildOAuthConfig(ctx context.Context, conn *store.SSOConn
 	if err != nil {
 		return nil, nil, fmt.Errorf("encryption key: %w", err)
 	}
-	secret, err := crypto.Decrypt(key, conn.ClientSecretEnc)
+	secret, err := crypto.DecryptWithFallback(key, srv.ssoEncryptionKeyPrevious(), conn.ClientSecretEnc)
 	if err != nil {
 		return nil, nil, fmt.Errorf("decrypt secret: %w", err)
 	}
@@ -327,7 +327,7 @@ func (srv *Server) oidcLinkCallbackHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "unauthorized — must be logged in to link identity", http.StatusUnauthorized)
 		return
 	}
-	jwtClaims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret))
+	jwtClaims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

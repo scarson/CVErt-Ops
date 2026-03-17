@@ -463,6 +463,18 @@ type ScheduledReport struct {
 	UpdatedAt         time.Time
 }
 
+type SecurityEvent struct {
+	ID         uuid.UUID
+	EventType  string
+	Severity   string
+	ActorIp    sql.NullString
+	ActorEmail sql.NullString
+	UserID     uuid.NullUUID
+	OrgID      uuid.NullUUID
+	Details    pqtype.NullRawMessage
+	CreatedAt  time.Time
+}
+
 type SsoConnection struct {
 	ID              uuid.UUID
 	OrgID           uuid.UUID

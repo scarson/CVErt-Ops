@@ -106,6 +106,28 @@ func (s *Store) RevokeAPIKey(ctx context.Context, orgID, id uuid.UUID) error {
 	})
 }
 
+// LookupAPIKeyByHash returns the key matching keyHash regardless of revocation
+// or expiry status, or (nil, nil) if not found. Used for revoked-key detection
+// in security event logging.
+func (s *Store) LookupAPIKeyByHash(ctx context.Context, keyHash string) (*generated.ApiKey, error) {
+	var result *generated.ApiKey
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.LookupAPIKeyByHash(ctx, keyHash)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("lookup api key by hash: %w", err)
+	}
+	return result, nil
+}
+
 // UpdateAPIKeyLastUsed records the current time as last_used_at for the key.
 // Executes with RLS bypass — called from async goroutines without an org context.
 func (s *Store) UpdateAPIKeyLastUsed(ctx context.Context, id uuid.UUID) error {

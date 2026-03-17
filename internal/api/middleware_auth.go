@@ -11,7 +11,18 @@ import (
 	"strings"
 
 	"github.com/scarson/cvert-ops/internal/auth"
+	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/secure"
 )
+
+// jwtPreviousSecret returns the previous JWT secret as bytes for key rotation,
+// or nil if no previous secret is configured.
+func jwtPreviousSecret(cfg *config.Config) []byte {
+	if cfg.JWTSecretPrevious == "" {
+		return nil
+	}
+	return []byte(cfg.JWTSecretPrevious)
+}
 
 // RequireAuthenticated returns a middleware that requires a valid JWT access-token
 // cookie or an API key Bearer token. On success it injects ctxUserID (and for API
@@ -34,7 +45,7 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret))
+			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 			if err != nil {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
@@ -83,6 +94,20 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 		return true // response sent
 	}
 	if key == nil {
+		// Check if the key exists but is revoked — fire a security event if so.
+		if srv.eventWriter != nil {
+			allKey, lookupErr := srv.store.LookupAPIKeyByHash(r.Context(), hash)
+			if lookupErr == nil && allKey != nil && allKey.RevokedAt.Valid {
+				srv.eventWriter.Write(r.Context(), secure.Event{
+					Type:     secure.EventAuthAPIKeyUsedAfterRevoke,
+					Severity: secure.SeverityCritical,
+					ActorIP:  clientIP(r.Context()),
+					UserID:   &allKey.CreatedByUserID,
+					OrgID:    &allKey.OrgID,
+					Details:  map[string]any{"key_id": allKey.ID.String(), "key_name": allKey.Name},
+				})
+			}
+		}
 		return false
 	}
 	// Defense-in-depth: constant-time compare to prevent timing attacks.

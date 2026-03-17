@@ -442,7 +442,7 @@ func TestRefreshRotates(t *testing.T) {
 	}
 
 	// Verify old JTI is marked used in DB.
-	oldClaims, err := auth.ParseRefreshToken(oldRefreshToken, []byte("regtestsecret"))
+	oldClaims, err := auth.ParseRefreshToken(oldRefreshToken, []byte("regtestsecret"), nil)
 	if err != nil {
 		t.Fatalf("parse old refresh token: %v", err)
 	}
@@ -509,7 +509,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 	resp1.Body.Close()                //nolint:errcheck,gosec // G104
 
 	// Backdate used_at to simulate grace window expiry.
-	oldClaims, err := auth.ParseRefreshToken(firstRefreshToken, []byte("regtestsecret"))
+	oldClaims, err := auth.ParseRefreshToken(firstRefreshToken, []byte("regtestsecret"), nil)
 	if err != nil {
 		t.Fatalf("parse refresh token: %v", err)
 	}

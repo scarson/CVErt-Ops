@@ -49,6 +49,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 	"github.com/scarson/cvert-ops/migrations"
@@ -80,6 +81,7 @@ func main() {
 		quotaCmd(),
 		validateFeedsCmd(),
 		doctorCmd(),
+		rotateEncryptionKeyCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -136,6 +138,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// Hot-reloadable config holder — seeded from startup config, updated by
+	// SIGHUP or admin API. Passed to components that need live secret rotation.
+	configHolder := config.NewHolder(config.LoadFromConfig(cfg))
+
+	// SIGHUP handler for config hot-reload (Unix only).
+	// This is a SEPARATE signal handler — do NOT add SIGHUP to the NotifyContext above.
+	stopSIGHUP := config.StartSIGHUPHandler(configHolder, cfg.SecretsFile, nil)
+	defer stopSIGHUP()
+
 	st := store.New(db)
 
 	// Start embedded worker pool. Runs until ctx is cancelled, at which point
@@ -188,10 +199,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("using Gemini LLM client", "model", cfg.GeminiModel)
 	}
 
+	eventWriter := secure.NewEventWriter(st)
+	defer eventWriter.Stop()
+
 	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
 		AlertCache:            alertCache,
 		AlertEvaluator:        alertEval,
 		LLM:                   llm,
+		EventWriter:           eventWriter,
+		ConfigHolder:          configHolder,
 		ExpectedSchemaVersion: expectedSchemaVersion,
 		VersionInfo: api.VersionInfo{
 			Version:   version,
@@ -485,16 +501,17 @@ func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
 func retentionHandler(st *store.Store, cfg *config.Config) worker.Handler {
 	return func(ctx context.Context, _ json.RawMessage) error {
 		r := retention.NewRunner(st, retention.Config{
-			Enabled:           cfg.RetentionCleanupEnabled,
-			BatchSize:         cfg.RetentionCleanupBatchSize,
-			MaxRuntimeSeconds: cfg.RetentionMaxRuntimeSeconds,
-			RawPayloadDays:    cfg.RetentionRawPayloadDays,
-			FeedFetchLogDays:  cfg.RetentionFeedFetchLogDays,
-			JobQueueHours:     cfg.RetentionJobQueueHours,
-			AILogDays:         cfg.AILogRetentionDays,
-			AlertEventsDays:   cfg.RetentionAlertEventsDays,
-			NotifDelivDays:    cfg.RetentionNotifDeliveriesDays,
-			AuditLogDays:      cfg.RetentionAuditLogDays,
+			Enabled:            cfg.RetentionCleanupEnabled,
+			BatchSize:          cfg.RetentionCleanupBatchSize,
+			MaxRuntimeSeconds:  cfg.RetentionMaxRuntimeSeconds,
+			RawPayloadDays:     cfg.RetentionRawPayloadDays,
+			FeedFetchLogDays:   cfg.RetentionFeedFetchLogDays,
+			JobQueueHours:      cfg.RetentionJobQueueHours,
+			AILogDays:          cfg.AILogRetentionDays,
+			SecurityEventsDays: cfg.RetentionSecurityEventsDays,
+			AlertEventsDays:    cfg.RetentionAlertEventsDays,
+			NotifDelivDays:     cfg.RetentionNotifDeliveriesDays,
+			AuditLogDays:       cfg.RetentionAuditLogDays,
 		}, slog.Default())
 		return r.Run(ctx)
 	}
@@ -731,7 +748,7 @@ func validateConfig(cfg *config.Config) error {
 
 // expectedSchemaVersion is the database migration version this binary requires.
 // Update this constant when new migrations are added.
-const expectedSchemaVersion = 38
+const expectedSchemaVersion = 39
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 func newLogger(cfg *config.Config) *slog.Logger {

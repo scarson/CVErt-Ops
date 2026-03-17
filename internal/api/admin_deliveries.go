@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/secure"
 )
 
 // adminDeliveryCursor is the opaque cursor for admin delivery list pagination.
@@ -121,6 +123,17 @@ func (srv *Server) adminBulkRetryDeliveriesHandler(w http.ResponseWriter, r *htt
 		slog.ErrorContext(r.Context(), "admin bulk retry deliveries", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+
+	if srv.eventWriter != nil {
+		callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventAdminBulkRetryTriggered,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			Details:  map[string]any{"rows_affected": n},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

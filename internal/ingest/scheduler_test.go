@@ -223,6 +223,96 @@ func TestScheduler_MetricsSkipped(t *testing.T) {
 	}
 }
 
+func TestScheduler_SkipsPausedFeed(t *testing.T) {
+	ms := newMockSchedulerStore()
+	pausedAt := time.Now().UTC().Add(-1 * time.Hour)
+	old := time.Now().UTC().Add(-3 * time.Hour)
+	ms.syncStates["nvd"] = &store.FeedSyncState{
+		FeedName:      "nvd",
+		LastSuccessAt: &old,
+		PausedAt:      &pausedAt,
+	}
+
+	reg := prometheus.NewRegistry()
+	s := NewSchedulerWithRegistry(ms, reg)
+	s.tick(context.Background())
+
+	enqueued := ms.Enqueued()
+	for _, job := range enqueued {
+		var p Payload
+		_ = json.Unmarshal(job.Payload, &p)
+		if p.FeedName == "nvd" {
+			t.Error("nvd should not be enqueued — feed is paused")
+		}
+	}
+	// All others should be enqueued (never synced).
+	if len(enqueued) != len(defaultSchedule)-1 {
+		t.Errorf("enqueued %d jobs, want %d", len(enqueued), len(defaultSchedule)-1)
+	}
+
+	// Verify the "paused" skip metric was incremented.
+	if val := testutil.ToFloat64(s.jobsSkipped.WithLabelValues("nvd", "paused")); val != 1 {
+		t.Errorf("jobsSkipped{feed=nvd, reason=paused} = %v, want 1", val)
+	}
+}
+
+func TestScheduler_RunsResumedFeed(t *testing.T) {
+	ms := newMockSchedulerStore()
+	old := time.Now().UTC().Add(-3 * time.Hour) // synced 3h ago, overdue
+	ms.syncStates["nvd"] = &store.FeedSyncState{
+		FeedName:      "nvd",
+		LastSuccessAt: &old,
+		PausedAt:      nil, // explicitly not paused
+	}
+
+	s := NewScheduler(ms)
+	s.tick(context.Background())
+
+	enqueued := ms.Enqueued()
+	var foundNVD bool
+	for _, job := range enqueued {
+		var p Payload
+		_ = json.Unmarshal(job.Payload, &p)
+		if p.FeedName == "nvd" {
+			foundNVD = true
+		}
+	}
+	if !foundNVD {
+		t.Error("nvd should be enqueued — feed is resumed (PausedAt=nil) and overdue")
+	}
+}
+
+func TestScheduler_SkipsPausedFeedEvenWithBackoff(t *testing.T) {
+	ms := newMockSchedulerStore()
+	pausedAt := time.Now().UTC().Add(-1 * time.Hour)
+	old := time.Now().UTC().Add(-3 * time.Hour)
+	backoff := time.Now().UTC().Add(10 * time.Minute)
+	ms.syncStates["nvd"] = &store.FeedSyncState{
+		FeedName:      "nvd",
+		LastSuccessAt: &old,
+		PausedAt:      &pausedAt,
+		BackoffUntil:  &backoff,
+	}
+
+	reg := prometheus.NewRegistry()
+	s := NewSchedulerWithRegistry(ms, reg)
+	s.tick(context.Background())
+
+	enqueued := ms.Enqueued()
+	for _, job := range enqueued {
+		var p Payload
+		_ = json.Unmarshal(job.Payload, &p)
+		if p.FeedName == "nvd" {
+			t.Error("nvd should not be enqueued — feed is both paused and in backoff")
+		}
+	}
+
+	// Backoff is checked first, so the skip reason should be "backoff".
+	if val := testutil.ToFloat64(s.jobsSkipped.WithLabelValues("nvd", "backoff")); val != 1 {
+		t.Errorf("jobsSkipped{feed=nvd, reason=backoff} = %v, want 1 (backoff checked first)", val)
+	}
+}
+
 func TestScheduler_SkipsFeedsInBackoff(t *testing.T) {
 	ms := newMockSchedulerStore()
 	backoff := time.Now().UTC().Add(10 * time.Minute) // backoff until 10 min from now

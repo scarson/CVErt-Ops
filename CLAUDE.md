@@ -280,7 +280,7 @@ Mailpit UI: http://localhost:8025
 | Frontend | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue (reka-ui) |
 | Frontend state | Pinia + VueUse |
 | Frontend API | openapi-fetch (typed from OpenAPI schema) |
-| Frontend test | Vitest + happy-dom + @vue/test-utils |
+| Frontend test | Vitest + jsdom + @vue/test-utils |
 | Frontend lint | oxlint + eslint + prettier |
 
 ## Architecture (Key Points)

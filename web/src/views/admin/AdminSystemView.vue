@@ -51,14 +51,15 @@ async function fetchAll() {
     if (!versionResult.error) {
       version.value = versionResult.data as VersionInfo
     }
-    if (doctorResp.ok) {
+    if (doctorResp.status === 200 || doctorResp.status === 503) {
       doctor.value = (await doctorResp.json()) as DoctorResult
     }
     if (!configResult.error) {
       config.value = configResult.data as Record<string, unknown>
     }
 
-    if (versionResult.error && !doctorResp.ok && configResult.error) {
+    const doctorFailed = doctorResp.status !== 200 && doctorResp.status !== 503
+    if (versionResult.error && doctorFailed && configResult.error) {
       error.value = 'Failed to load system information.'
     }
   } catch {
@@ -73,7 +74,7 @@ async function runDoctor() {
   try {
     // Raw fetch — see comment in fetchAll() for why doctor uses raw fetch.
     const resp = await fetch('/api/v1/admin/doctor', { credentials: 'include' })
-    if (resp.ok) {
+    if (resp.status === 200 || resp.status === 503) {
       doctor.value = (await resp.json()) as DoctorResult
     }
   } catch {

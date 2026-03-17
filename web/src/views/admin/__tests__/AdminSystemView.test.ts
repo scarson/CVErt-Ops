@@ -130,4 +130,21 @@ describe('AdminSystemView doctor response handling', () => {
     expect(wrapper.text()).toContain('unhealthy')
     expect(wrapper.text()).toContain('connection refused')
   })
+
+  it('does NOT populate doctor data on 500 — only 200 and 503 are valid', async () => {
+    // Doctor: 500 (a real error, not unhealthy-but-valid like 503)
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(unhealthyDoctor), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const wrapper = mount(AdminSystemView)
+    await flushPromises()
+
+    // Doctor data should NOT be rendered on 500
+    expect(wrapper.text()).not.toContain('unhealthy')
+    expect(wrapper.text()).not.toContain('connection refused')
+  })
 })

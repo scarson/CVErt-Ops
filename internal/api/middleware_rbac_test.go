@@ -113,6 +113,7 @@ func TestRequireOrgRole_InsufficientRole_403(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("viewer accessing admin-gated resource: got %d, want 403", resp.StatusCode)
 	}
+	assertRFC9457Response(t, resp, http.StatusForbidden)
 }
 
 func TestRequireOrgRole_NotAMember_403(t *testing.T) {

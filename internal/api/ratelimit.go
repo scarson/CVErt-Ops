@@ -87,7 +87,7 @@ func (srv *Server) authRateLimit() func(http.Handler) http.Handler {
 			}
 			if !srv.rateLimiter.Allow(ip) {
 				w.Header().Set("Retry-After", "60")
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
 			next.ServeHTTP(w, r)

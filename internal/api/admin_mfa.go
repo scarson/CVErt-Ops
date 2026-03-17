@@ -201,6 +201,11 @@ func (srv *Server) adminRequireMFAHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+	callerRole, ok := r.Context().Value(ctxRole).(Role)
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 
 	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
@@ -208,16 +213,14 @@ func (srv *Server) adminRequireMFAHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Verify target is in the org.
-	targetRole, err := srv.store.GetOrgMemberRole(r.Context(), orgID, targetID)
-	if err != nil {
-		slog.ErrorContext(r.Context(), "admin require-mfa: get role", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal error")
+	if callerID == targetID {
+		writeProblem(w, http.StatusBadRequest, "use self-service MFA management to modify your own MFA")
 		return
 	}
-	if targetRole == nil {
-		writeProblem(w, http.StatusNotFound, "user not found in org")
-		return
+
+	// RBAC: check caller can act on target.
+	if err := srv.checkAdminMFAPermission(w, r, orgID, callerID, callerRole, targetID); err != nil {
+		return // response already written
 	}
 
 	if err := srv.store.CreateMFARequirement(r.Context(), orgID, targetID, callerID); err != nil {
@@ -256,11 +259,26 @@ func (srv *Server) adminUnrequireMFAHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+	callerRole, ok := r.Context().Value(ctxRole).(Role)
+	if !ok {
+		writeProblem(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 
 	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid user_id")
 		return
+	}
+
+	if callerID == targetID {
+		writeProblem(w, http.StatusBadRequest, "use self-service MFA management to modify your own MFA")
+		return
+	}
+
+	// RBAC: check caller can act on target.
+	if err := srv.checkAdminMFAPermission(w, r, orgID, callerID, callerRole, targetID); err != nil {
+		return // response already written
 	}
 
 	if err := srv.store.DeleteMFARequirement(r.Context(), orgID, targetID); err != nil {

@@ -39,10 +39,6 @@ const (
 	maxJobDuration = 10 * time.Minute
 )
 
-// Pool manages a set of goroutine workers that claim and execute jobs from
-// the job_queue table. One polling goroutine runs per registered queue; a
-// shared stale-lock recovery goroutine resets stuck jobs. Per-queue concurrency
-// limits control how many jobs execute simultaneously within each queue.
 // PeriodicTask runs on a fixed interval alongside the job queue polling.
 type PeriodicTask struct {
 	Name     string
@@ -50,6 +46,10 @@ type PeriodicTask struct {
 	Fn       func(ctx context.Context) error
 }
 
+// Pool manages a set of goroutine workers that claim and execute jobs from
+// the job_queue table. One polling goroutine runs per registered queue; a
+// shared stale-lock recovery goroutine resets stuck jobs. Per-queue concurrency
+// limits control how many jobs execute simultaneously within each queue.
 type Pool struct {
 	store       JobStore
 	workerID    string

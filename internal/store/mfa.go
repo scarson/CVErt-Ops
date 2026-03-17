@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -338,7 +339,7 @@ func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 			return err
 		}
 
-		if challenge.TokenHash == codeHash {
+		if subtle.ConstantTimeCompare([]byte(challenge.TokenHash), []byte(codeHash)) == 1 {
 			// Correct code — delete the challenge and report success.
 			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
 				return err

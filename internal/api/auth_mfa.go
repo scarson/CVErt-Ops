@@ -1251,13 +1251,16 @@ func (srv *Server) clearEnrollmentPending(pendingToken string) []string {
 }
 
 // buildMFARequiredReasons returns the list of reasons why MFA is required
-// for this user (empty if not required).
+// for this user (empty if not required). Fail-closed: DB errors add a
+// "db_error" reason so MFA appears mandatory when status is unknown.
 func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID) []string {
 	var reasons []string
+	var dbErr bool
 
 	isSiteAdmin, err := srv.store.IsSiteAdmin(ctx, userID)
 	if err != nil {
 		slog.WarnContext(ctx, "mfa-reasons: check site admin", "error", err)
+		dbErr = true
 	}
 
 	if srv.cfg.MFARequiredSiteAdmins && isSiteAdmin {
@@ -1268,6 +1271,7 @@ func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID
 		isOwner, err := srv.store.IsOrgOwner(ctx, userID)
 		if err != nil {
 			slog.WarnContext(ctx, "mfa-reasons: check org owner", "error", err)
+			dbErr = true
 		}
 		if isOwner {
 			reasons = append(reasons, "org_owner")
@@ -1277,6 +1281,7 @@ func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID
 	inReqOrg, err := srv.store.UserInMFARequiredOrg(ctx, userID)
 	if err != nil {
 		slog.WarnContext(ctx, "mfa-reasons: check org-wide", "error", err)
+		dbErr = true
 	}
 	if inReqOrg {
 		reasons = append(reasons, "org_policy")
@@ -1285,9 +1290,17 @@ func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID
 	hasReq, err := srv.store.UserHasMFARequirement(ctx, userID)
 	if err != nil {
 		slog.WarnContext(ctx, "mfa-reasons: check per-member", "error", err)
+		dbErr = true
 	}
 	if hasReq {
 		reasons = append(reasons, "per_member")
+	}
+
+	// Fail-closed: if any DB check failed and no explicit reason was found,
+	// report MFA as required so the UI doesn't show "not required" when we
+	// can't determine the real status.
+	if dbErr && len(reasons) == 0 {
+		reasons = append(reasons, "db_error")
 	}
 
 	return reasons

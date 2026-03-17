@@ -47,7 +47,7 @@ func newMFAServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server)
 // Returns the plaintext TOTP secret for code generation.
 func enrollTOTP(t *testing.T, ctx context.Context, srv *Server, userID uuid.UUID) string {
 	t.Helper()
-	secret := "JBSWY3DPEHPK3PXP" // standard test secret
+	secret := "JBSWY3DPEHPK3PXP" //nolint:gosec // G101: test TOTP secret
 	encKey, err := srv.ssoEncryptionKey()
 	if err != nil {
 		t.Fatalf("enrollTOTP: encryption key: %v", err)
@@ -97,7 +97,7 @@ func TestLoginNoMFA_NoMandate(t *testing.T) {
 
 	doRegister(t, ctx, ts, "nomfa@example.com", "test-password-1234")
 	resp := doLogin(t, ctx, ts, "nomfa@example.com", "test-password-1234")
-	defer resp.Body.Close() //nolint:errcheck,gosec
+	defer resp.Body.Close() //nolint:errcheck,gosec,gosec
 
 	body := parseLoginBody(t, resp)
 	if len(body.Pending) != 0 {
@@ -122,7 +122,7 @@ func TestLoginWithMFAEnrolled(t *testing.T) {
 	enrollTOTP(t, ctx, srv, userID)
 
 	resp := doLogin(t, ctx, ts, "mfauser@example.com", "test-password-1234")
-	defer resp.Body.Close() //nolint:errcheck,gosec
+	defer resp.Body.Close() //nolint:errcheck,gosec,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login: got %d, want 200", resp.StatusCode)
@@ -158,7 +158,7 @@ func TestLoginNoMFA_MFARequired(t *testing.T) {
 	}
 
 	resp := doLogin(t, ctx, ts, "mandated@example.com", "test-password-1234")
-	defer resp.Body.Close() //nolint:errcheck,gosec
+	defer resp.Body.Close() //nolint:errcheck,gosec,gosec
 
 	body := parseLoginBody(t, resp)
 	if len(body.Pending) == 0 || body.Pending[0] != "mfa_enrollment_required" {
@@ -177,12 +177,12 @@ func TestLoginMFA_ForcePasswordReset(t *testing.T) {
 	enrollTOTP(t, ctx, srv, userID)
 
 	// Set force_password_reset.
-	if _, err := db.Store.AdminForcePasswordReset(ctx, userID); err != nil {
+	if _, err := db.AdminForcePasswordReset(ctx, userID); err != nil {
 		t.Fatalf("force password reset: %v", err)
 	}
 
 	resp := doLogin(t, ctx, ts, "forcereset@example.com", "test-password-1234")
-	defer resp.Body.Close() //nolint:errcheck,gosec
+	defer resp.Body.Close() //nolint:errcheck,gosec,gosec
 
 	body := parseLoginBody(t, resp)
 	// Should have both mfa_challenge and password_reset.
@@ -212,7 +212,7 @@ func TestMFAChallengeEmailOTP(t *testing.T) {
 	// Login to get pending token.
 	loginResp := doLogin(t, ctx, ts, "emailotp@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Request email OTP challenge.
 	reqBody := `{"method":"email_otp"}`
@@ -224,7 +224,7 @@ func TestMFAChallengeEmailOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("challenge request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("challenge: got %d, want 200", resp.StatusCode)
@@ -243,7 +243,7 @@ func TestMFAChallengeTOTP(t *testing.T) {
 
 	loginResp := doLogin(t, ctx, ts, "totpchallenge@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	reqBody := `{"method":"totp"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -254,7 +254,7 @@ func TestMFAChallengeTOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("challenge request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("totp challenge: got %d, want 200", resp.StatusCode)
@@ -276,7 +276,7 @@ func TestMFAChallengeInvalidToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("challenge request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("invalid token challenge: got %d, want 401", resp.StatusCode)
@@ -298,7 +298,7 @@ func TestMFAVerifyTOTP(t *testing.T) {
 	// Login to get pending token.
 	loginResp := doLogin(t, ctx, ts, "verifytotp@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Generate valid TOTP code.
 	code, err := totp.GenerateCode(secret, time.Now())
@@ -316,7 +316,7 @@ func TestMFAVerifyTOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("verify TOTP: got %d, want 200", resp.StatusCode)
@@ -350,7 +350,7 @@ func TestMFAVerifyEmailOTP(t *testing.T) {
 	// Login to get pending token.
 	loginResp := doLogin(t, ctx, ts, "verifyemail@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Create an email OTP challenge directly (simulating challenge endpoint).
 	code := "123456"
@@ -370,7 +370,7 @@ func TestMFAVerifyEmailOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("verify email OTP: got %d, want 200", resp.StatusCode)
@@ -399,7 +399,7 @@ func TestMFAVerifyRecoveryCode(t *testing.T) {
 	// Login to get pending token.
 	loginResp := doLogin(t, ctx, ts, "verifyrecovery@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Verify with a recovery code.
 	verifyBody := fmt.Sprintf(`{"method":"recovery","code":%q}`, codes[0])
@@ -411,7 +411,7 @@ func TestMFAVerifyRecoveryCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("verify recovery: got %d, want 200", resp.StatusCode)
@@ -433,7 +433,7 @@ func TestMFAVerifyWrongCode(t *testing.T) {
 
 	loginResp := doLogin(t, ctx, ts, "wrongcode@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Submit wrong code.
 	verifyBody := `{"method":"totp","code":"000000"}`
@@ -445,7 +445,7 @@ func TestMFAVerifyWrongCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong code: got %d, want 401", resp.StatusCode)
@@ -470,7 +470,7 @@ func TestMFAVerifyTOTPReplay(t *testing.T) {
 	// First verify — should succeed.
 	loginResp1 := doLogin(t, ctx, ts, "replay@example.com", "test-password-1234")
 	pt1 := cookieValue(loginResp1, "mfa_pending_token")
-	loginResp1.Body.Close() //nolint:errcheck
+	loginResp1.Body.Close() //nolint:errcheck,gosec
 
 	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -481,7 +481,7 @@ func TestMFAVerifyTOTPReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first verify: %v", err)
 	}
-	resp1.Body.Close() //nolint:errcheck
+	resp1.Body.Close() //nolint:errcheck,gosec
 	if resp1.StatusCode != http.StatusOK {
 		t.Fatalf("first verify: got %d, want 200", resp1.StatusCode)
 	}
@@ -489,7 +489,7 @@ func TestMFAVerifyTOTPReplay(t *testing.T) {
 	// Second verify with same code — should fail (replay).
 	loginResp2 := doLogin(t, ctx, ts, "replay@example.com", "test-password-1234")
 	pt2 := cookieValue(loginResp2, "mfa_pending_token")
-	loginResp2.Body.Close() //nolint:errcheck
+	loginResp2.Body.Close() //nolint:errcheck,gosec
 
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
@@ -499,7 +499,7 @@ func TestMFAVerifyTOTPReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second verify: %v", err)
 	}
-	resp2.Body.Close() //nolint:errcheck
+	resp2.Body.Close() //nolint:errcheck,gosec
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replay: got %d, want 401", resp2.StatusCode)
 	}
@@ -517,7 +517,7 @@ func TestMFAVerifyTokenVersionMismatch(t *testing.T) {
 
 	loginResp := doLogin(t, ctx, ts, "tvmismatch@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Increment token_version (simulating admin action).
 	if _, err := srv.store.IncrementTokenVersion(ctx, userID); err != nil {
@@ -538,7 +538,7 @@ func TestMFAVerifyTokenVersionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("tv mismatch: got %d, want 401", resp.StatusCode)
@@ -556,13 +556,13 @@ func TestMFAVerifyWithRemainingPending(t *testing.T) {
 	secret := enrollTOTP(t, ctx, srv, userID)
 
 	// Set force_password_reset so pending has two items.
-	if _, err := db.Store.AdminForcePasswordReset(ctx, userID); err != nil {
+	if _, err := db.AdminForcePasswordReset(ctx, userID); err != nil {
 		t.Fatalf("force password reset: %v", err)
 	}
 
 	loginResp := doLogin(t, ctx, ts, "remaining@example.com", "test-password-1234")
 	pendingToken := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	code, err := totp.GenerateCode(secret, time.Now())
 	if err != nil {
@@ -579,7 +579,7 @@ func TestMFAVerifyWithRemainingPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("verify remaining: got %d, want 200", resp.StatusCode)
@@ -641,14 +641,14 @@ func TestTOTPSetup(t *testing.T) {
 	doRegister(t, ctx, ts, "totp-setup@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "totp-setup@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("setup request: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("totp setup: got %d, want 200", resp.StatusCode)
@@ -681,7 +681,7 @@ func TestTOTPConfirm(t *testing.T) {
 	doRegister(t, ctx, ts, "totp-confirm@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "totp-confirm@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Call setup to get enrollment token.
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
@@ -696,7 +696,7 @@ func TestTOTPConfirm(t *testing.T) {
 		t.Fatalf("decode setup: %v", err)
 	}
 	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
-	setupResp.Body.Close() //nolint:errcheck
+	setupResp.Body.Close() //nolint:errcheck,gosec
 
 	// Generate valid TOTP code.
 	code, err := totp.GenerateCode(setupBody.Secret, time.Now())
@@ -712,7 +712,7 @@ func TestTOTPConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	defer confirmResp.Body.Close() //nolint:errcheck
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
 
 	if confirmResp.StatusCode != http.StatusOK {
 		t.Fatalf("totp confirm: got %d, want 200", confirmResp.StatusCode)
@@ -738,7 +738,7 @@ func TestTOTPConfirmWrongCode(t *testing.T) {
 	doRegister(t, ctx, ts, "totp-wrong@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "totp-wrong@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Call setup.
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
@@ -747,7 +747,7 @@ func TestTOTPConfirmWrongCode(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
-	setupResp.Body.Close() //nolint:errcheck
+	setupResp.Body.Close() //nolint:errcheck,gosec
 
 	// Confirm with wrong code.
 	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
@@ -756,7 +756,7 @@ func TestTOTPConfirmWrongCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	defer confirmResp.Body.Close() //nolint:errcheck
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
 
 	if confirmResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong code: got %d, want 401", confirmResp.StatusCode)
@@ -772,7 +772,7 @@ func TestTOTPConfirmWithoutSetup(t *testing.T) {
 	doRegister(t, ctx, ts, "totp-nosetup@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "totp-nosetup@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Confirm without enrollment cookie.
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", `{"code":"123456"}`, cookies)
@@ -780,7 +780,7 @@ func TestTOTPConfirmWithoutSetup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	defer confirmResp.Body.Close() //nolint:errcheck
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
 
 	if confirmResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no setup: got %d, want 401", confirmResp.StatusCode)
@@ -799,7 +799,7 @@ func TestTOTPDoubleEnrollment(t *testing.T) {
 
 	loginResp := doLogin(t, ctx, ts, "totp-double@example.com", "test-password-1234")
 	// This user has MFA, so login returns pending token. We need access token instead.
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Use a fresh login without MFA to get access token — actually, can't.
 	// The user has MFA so they get a pending token. For this test, we can
@@ -819,7 +819,7 @@ func TestTOTPDoubleEnrollment(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 	cookies := authedCookies(t, verifyResp)
-	verifyResp.Body.Close() //nolint:errcheck
+	verifyResp.Body.Close() //nolint:errcheck,gosec
 
 	// Now try to set up TOTP again — should get 409.
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
@@ -827,7 +827,7 @@ func TestTOTPDoubleEnrollment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer setupResp.Body.Close() //nolint:errcheck
+	defer setupResp.Body.Close() //nolint:errcheck,gosec
 
 	if setupResp.StatusCode != http.StatusConflict {
 		t.Fatalf("double enrollment: got %d, want 409", setupResp.StatusCode)
@@ -845,14 +845,14 @@ func TestEmailOTPSetup(t *testing.T) {
 	doRegister(t, ctx, ts, "email-setup@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "email-setup@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("email otp setup: got %d, want 200", resp.StatusCode)
@@ -869,7 +869,7 @@ func TestEmailOTPConfirm(t *testing.T) {
 	userID, _ := uuid.Parse(reg.UserID)
 	loginResp := doLogin(t, ctx, ts, "email-confirm@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Call setup (this creates an OTP challenge in DB).
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
@@ -877,7 +877,7 @@ func TestEmailOTPConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	setupResp.Body.Close() //nolint:errcheck
+	setupResp.Body.Close() //nolint:errcheck,gosec
 
 	// Look up the challenge hash from DB to get the code.
 	// Since we can't easily extract the code, create one directly.
@@ -895,7 +895,7 @@ func TestEmailOTPConfirm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
-	defer confirmResp.Body.Close() //nolint:errcheck
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
 
 	if confirmResp.StatusCode != http.StatusOK {
 		t.Fatalf("email otp confirm: got %d, want 200", confirmResp.StatusCode)
@@ -926,7 +926,7 @@ func TestEmailOTPAlreadyEnrolled(t *testing.T) {
 	// This user has MFA enrolled, so login gives pending token.
 	// Verify to get access token.
 	pt := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	// Create a challenge and verify email OTP to get access token.
 	otpCode := "111222"
@@ -944,7 +944,7 @@ func TestEmailOTPAlreadyEnrolled(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 	cookies := authedCookies(t, verifyResp)
-	verifyResp.Body.Close() //nolint:errcheck
+	verifyResp.Body.Close() //nolint:errcheck,gosec
 
 	// Try to set up email OTP again — should get 409.
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
@@ -952,7 +952,7 @@ func TestEmailOTPAlreadyEnrolled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	defer setupResp.Body.Close() //nolint:errcheck
+	defer setupResp.Body.Close() //nolint:errcheck,gosec
 
 	if setupResp.StatusCode != http.StatusConflict {
 		t.Fatalf("already enrolled: got %d, want 409", setupResp.StatusCode)
@@ -970,7 +970,7 @@ func fullTOTPLogin(t *testing.T, ctx context.Context, srv *Server, ts *httptest.
 
 	loginResp := doLogin(t, ctx, ts, email, password)
 	pt := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	code, err := totp.GenerateCode(secret, time.Now())
 	if err != nil {
@@ -986,7 +986,7 @@ func fullTOTPLogin(t *testing.T, ctx context.Context, srv *Server, ts *httptest.
 		t.Fatalf("verify: %v", err)
 	}
 	cookies := authedCookies(t, verifyResp)
-	verifyResp.Body.Close() //nolint:errcheck
+	verifyResp.Body.Close() //nolint:errcheck,gosec
 	return userID, cookies
 }
 
@@ -1007,7 +1007,7 @@ func TestMFAMethodsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("methods list: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("methods list: got %d, want 200", resp.StatusCode)
@@ -1034,7 +1034,7 @@ func TestMFAMethodsListEmpty(t *testing.T) {
 	doRegister(t, ctx, ts, "methods-empty@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "methods-empty@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 		ts.URL+"/api/v1/auth/mfa/methods", nil)
@@ -1045,7 +1045,7 @@ func TestMFAMethodsListEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("methods list: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("methods list: got %d, want 200", resp.StatusCode)
@@ -1082,7 +1082,7 @@ func TestMFARemoveMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("remove TOTP: got %d, want 204", resp.StatusCode)
@@ -1107,7 +1107,7 @@ func TestMFARemoveLastMethodBlocked(t *testing.T) {
 
 	loginResp := doLogin(t, ctx, ts, "remove-blocked@example.com", "test-password-1234")
 	pt := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	code, err := totp.GenerateCode(secret, time.Now())
 	if err != nil {
@@ -1123,7 +1123,7 @@ func TestMFARemoveLastMethodBlocked(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 	cookies := authedCookies(t, verifyResp)
-	verifyResp.Body.Close() //nolint:errcheck
+	verifyResp.Body.Close() //nolint:errcheck,gosec
 
 	// Try to remove the last (only) method — should be blocked.
 	removeReq := authedRequest(t, ctx, http.MethodDelete, ts.URL+"/api/v1/auth/mfa/methods/totp", `{"current_password":"test-password-1234"}`, cookies)
@@ -1131,7 +1131,7 @@ func TestMFARemoveLastMethodBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	defer removeResp.Body.Close() //nolint:errcheck
+	defer removeResp.Body.Close() //nolint:errcheck,gosec
 
 	if removeResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("remove last method (mandated): got %d, want 403", removeResp.StatusCode)
@@ -1151,7 +1151,7 @@ func TestMFARemoveWrongPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong password: got %d, want 401", resp.StatusCode)
@@ -1173,7 +1173,7 @@ func TestRecoveryCodeRegenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("regen: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("regen: got %d, want 200", resp.StatusCode)
@@ -1199,14 +1199,14 @@ func TestRecoveryCodeRegenerateNoMFA(t *testing.T) {
 	doRegister(t, ctx, ts, "regen-nomfa@example.com", "test-password-1234")
 	loginResp := doLogin(t, ctx, ts, "regen-nomfa@example.com", "test-password-1234")
 	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/recovery-codes/regenerate", `{"current_password":"test-password-1234"}`, cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("regen: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("regen no MFA: got %d, want 409", resp.StatusCode)
@@ -1226,7 +1226,7 @@ func TestRecoveryCodeRegenerateWrongPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("regen: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close() //nolint:errcheck,gosec
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("regen wrong password: got %d, want 401", resp.StatusCode)
@@ -1249,7 +1249,7 @@ func TestRememberDeviceFlow(t *testing.T) {
 	// 1. Login → MFA challenge → verify with remember_device=true.
 	loginResp := doLogin(t, ctx, ts, email, password)
 	pt := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	code, err := totp.GenerateCode(secret, time.Now())
 	if err != nil {
@@ -1264,7 +1264,7 @@ func TestRememberDeviceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	defer verifyResp.Body.Close() //nolint:errcheck
+	defer verifyResp.Body.Close() //nolint:errcheck,gosec
 
 	if verifyResp.StatusCode != http.StatusOK {
 		t.Fatalf("verify: got %d, want 200", verifyResp.StatusCode)
@@ -1286,7 +1286,7 @@ func TestRememberDeviceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second login: %v", err)
 	}
-	defer loginResp2.Body.Close() //nolint:errcheck
+	defer loginResp2.Body.Close() //nolint:errcheck,gosec
 
 	if loginResp2.StatusCode != http.StatusOK {
 		t.Fatalf("second login: got %d, want 200", loginResp2.StatusCode)
@@ -1323,7 +1323,7 @@ func TestRememberDeviceOrgDisallowed(t *testing.T) {
 	// Login → MFA challenge → verify with remember_device=true.
 	loginResp := doLogin(t, ctx, ts, email, password)
 	pt := cookieValue(loginResp, "mfa_pending_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	code, err := totp.GenerateCode(secret, time.Now())
 	if err != nil {
@@ -1338,7 +1338,7 @@ func TestRememberDeviceOrgDisallowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	defer verifyResp.Body.Close() //nolint:errcheck
+	defer verifyResp.Body.Close() //nolint:errcheck,gosec
 
 	if verifyResp.StatusCode != http.StatusOK {
 		t.Fatalf("verify: got %d, want 200", verifyResp.StatusCode)
@@ -1357,7 +1357,7 @@ func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
 	ctx := context.Background()
 	srv, ts := newMFAServer(t, db)
 
-	email, password := "dev-pw-change@example.com", "test-password-1234"
+	email, password := "dev-pw-change@example.com", "test-password-1234" //nolint:gosec // G101: test credentials
 	reg := doRegister(t, ctx, ts, email, password)
 	userID := uuid.MustParse(reg.UserID)
 
@@ -1379,7 +1379,7 @@ func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
 	// Change password.
 	loginResp := doLogin(t, ctx, ts, email, password)
 	accessToken := cookieValue(loginResp, "access_token")
-	loginResp.Body.Close() //nolint:errcheck
+	loginResp.Body.Close() //nolint:errcheck,gosec
 
 	changePWReq := authedRequest(t, ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/change-password",
@@ -1389,7 +1389,7 @@ func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("change password: %v", err)
 	}
-	defer changePWResp.Body.Close() //nolint:errcheck
+	defer changePWResp.Body.Close() //nolint:errcheck,gosec
 	if changePWResp.StatusCode != http.StatusOK {
 		t.Fatalf("change password: got %d, want 200", changePWResp.StatusCode)
 	}

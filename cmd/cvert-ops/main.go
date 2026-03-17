@@ -137,6 +137,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// Hot-reloadable config holder — seeded from startup config, updated by
+	// SIGHUP or admin API. Passed to components that need live secret rotation.
+	configHolder := config.NewHolder(config.LoadFromConfig(cfg))
+
+	// SIGHUP handler for config hot-reload (Unix only).
+	// This is a SEPARATE signal handler — do NOT add SIGHUP to the NotifyContext above.
+	stopSIGHUP := config.StartSIGHUPHandler(configHolder, cfg.SecretsFile, nil)
+	defer stopSIGHUP()
+
 	st := store.New(db)
 
 	// Start embedded worker pool. Runs until ctx is cancelled, at which point

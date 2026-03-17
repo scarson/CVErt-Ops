@@ -97,6 +97,9 @@ type Config struct {
 	AILogRetentionDays         int           `env:"AI_LOG_RETENTION_DAYS"            envDefault:"90"`
 	GeminiMock                 bool          `env:"GEMINI_MOCK"                     envDefault:"false"`
 
+	// ── Secrets file (SIGHUP reload) ─────────────────────────────────────────────
+	SecretsFile string `env:"CVERTOPS_SECRETS_FILE"`
+
 	// ── Feed adapters ────────────────────────────────────────────────────────────
 	NVDAPIKey string `env:"NVD_API_KEY"`
 	FeedsDir  string `env:"CVERTOPS_FEEDS_DIR"`

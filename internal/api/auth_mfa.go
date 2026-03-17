@@ -408,7 +408,8 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 // verifyEmailOTP validates an email OTP code against the active challenge.
 func (srv *Server) verifyEmailOTP(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
 	codeHash := sha256Hex(code)
-	return srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, int32(srv.cfg.MFAChallengeMaxAttempts))
+	maxAttempts := int32(srv.cfg.MFAChallengeMaxAttempts) //nolint:gosec // G115: config value, bounded by env default (3)
+	return srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
 }
 
 // generateEmailOTPCode generates a cryptographically random 6-digit code.
@@ -842,7 +843,8 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 
 	// Verify the code.
 	codeHash := sha256Hex(input.Body.Code)
-	matched, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, int32(srv.cfg.MFAChallengeMaxAttempts))
+	maxAttempts := int32(srv.cfg.MFAChallengeMaxAttempts) //nolint:gosec // G115: config value, bounded by env default (3)
+	matched, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
 	if err != nil {
 		slog.ErrorContext(ctx, "email-otp-confirm: verify", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")

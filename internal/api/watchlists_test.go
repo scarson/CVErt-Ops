@@ -690,7 +690,7 @@ func TestWatchlist_SoftDeleteBehavior(t *testing.T) {
 }
 
 // doListWatchlistsWithQuery performs a GET /api/v1/orgs/{org_id}/watchlists
-// with an optional query string (e.g. "?after=...").
+// with an optional query string (e.g. "?cursor=...").
 func doListWatchlistsWithQuery(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, queryString string) *http.Response {
 	t.Helper()
 	url := ts.URL + "/api/v1/orgs/" + orgID + "/watchlists" + queryString
@@ -741,7 +741,7 @@ func TestWatchlist_ListPagination(t *testing.T) {
 	// The list limit is 20, so with 3 items there's no next_cursor.
 	if allList.NextCursor != nil {
 		// Use the cursor to verify the second page works.
-		page2Resp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?after="+*allList.NextCursor)
+		page2Resp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?cursor="+*allList.NextCursor)
 		defer page2Resp.Body.Close() //nolint:errcheck,gosec // G104
 		if page2Resp.StatusCode != http.StatusOK {
 			t.Fatalf("page 2: got %d, want 200", page2Resp.StatusCode)
@@ -749,7 +749,7 @@ func TestWatchlist_ListPagination(t *testing.T) {
 	}
 
 	// Test with an invalid cursor — should return 400.
-	badCursorResp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?after=notavalidcursor")
+	badCursorResp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?cursor=notavalidcursor")
 	defer badCursorResp.Body.Close() //nolint:errcheck,gosec // G104
 	if badCursorResp.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad cursor: got %d, want 400", badCursorResp.StatusCode)

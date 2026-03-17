@@ -150,6 +150,9 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			slog.Warn("invalid feed config", "error", e)
 		}
 		genericConfigs = configs
+		for _, gc := range genericConfigs {
+			ingest.RegisterFeed(gc.Name)
+		}
 		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
 	}
 
@@ -348,6 +351,9 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 			slog.Warn("invalid feed config", "error", e)
 		}
 		genericConfigs = configs
+		for _, gc := range genericConfigs {
+			ingest.RegisterFeed(gc.Name)
+		}
 		slog.Info("loaded generic feed configs", "count", len(genericConfigs), "dir", cfg.FeedsDir)
 	}
 

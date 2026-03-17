@@ -58,8 +58,9 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 		stateMap[s.FeedName] = s
 	}
 
-	entries := make([]FeedStatusEntry, 0, len(ingest.KnownFeeds))
-	for _, feedName := range ingest.KnownFeeds {
+	allFeeds := ingest.AllFeedNames()
+	entries := make([]FeedStatusEntry, 0, len(allFeeds))
+	for _, feedName := range allFeeds {
 		if s, ok := stateMap[feedName]; ok {
 			logs, err := srv.store.ListRecentFeedFetchLogs(ctx, feedName, 5)
 			if err != nil {

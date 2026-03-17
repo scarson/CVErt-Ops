@@ -5,6 +5,7 @@ package ingest
 import (
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/ghsa"
@@ -20,9 +21,39 @@ import (
 // the ingest handler and admin API.
 var KnownFeeds = []string{"nvd", "mitre", "kev", "ghsa", "osv", "epss", "msrc", "redhat"}
 
-// IsKnownFeed returns true if feedName is a recognized feed.
+var (
+	registeredFeeds []string
+	feedMu          sync.Mutex
+)
+
+// RegisterFeed adds a generic feed name to the feed registry.
+// Must be called before server start (during init in main.go).
+func RegisterFeed(name string) {
+	feedMu.Lock()
+	defer feedMu.Unlock()
+	registeredFeeds = append(registeredFeeds, name)
+}
+
+// AllFeedNames returns built-in feeds plus any registered generic feeds.
+func AllFeedNames() []string {
+	feedMu.Lock()
+	defer feedMu.Unlock()
+	all := make([]string, 0, len(KnownFeeds)+len(registeredFeeds))
+	all = append(all, KnownFeeds...)
+	all = append(all, registeredFeeds...)
+	return all
+}
+
+// IsKnownFeed returns true if feedName is a built-in or registered feed.
 func IsKnownFeed(feedName string) bool {
 	for _, f := range KnownFeeds {
+		if f == feedName {
+			return true
+		}
+	}
+	feedMu.Lock()
+	defer feedMu.Unlock()
+	for _, f := range registeredFeeds {
 		if f == feedName {
 			return true
 		}
@@ -31,10 +62,21 @@ func IsKnownFeed(feedName string) bool {
 }
 
 // IsReservedSourceName returns true if the given name collides with a
-// built-in feed name. Used by generic feed config validation and the
-// inbound webhook handler to reject reserved names.
+// built-in feed name. Generic feeds are not reserved — only built-in feeds are.
 func IsReservedSourceName(name string) bool {
-	return IsKnownFeed(name)
+	for _, f := range KnownFeeds {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
+// ResetRegistry clears registered feeds. Test use only.
+func ResetRegistry() {
+	feedMu.Lock()
+	defer feedMu.Unlock()
+	registeredFeeds = nil
 }
 
 // QueueForFeed returns "epss_ingest" for EPSS, "feed_ingest" for all others.

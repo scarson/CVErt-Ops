@@ -251,12 +251,13 @@ func (a *Adapter) fetchJSONStream(_ context.Context, resp *http.Response, cur *c
 			}
 
 		case cursorKey != "" && key == cursorKey:
-			// Read the cursor value as a raw string.
-			var val string
-			if err := dec.Decode(&val); err != nil {
+			// Read the cursor value — decode as RawMessage then coerce to string
+			// so numeric cursors (e.g. 42) work the same as the buffered gjson path.
+			var rawVal json.RawMessage
+			if err := dec.Decode(&rawVal); err != nil {
 				return nil, fmt.Errorf("generic %s: stream: decode cursor value: %w", a.cfg.Name, err)
 			}
-			nextCursorValue = val
+			nextCursorValue = gjson.ParseBytes(rawVal).String()
 
 		default:
 			// Skip unknown keys.

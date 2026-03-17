@@ -884,6 +884,14 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 			UserID:     &user.ID,
 			Details:    map[string]any{"method": method},
 		})
+		if isRestricted {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventAuthPasswordResetForcedCompleted,
+				Severity: secure.SeverityInfo,
+				ActorIP:  clientIP(ctx),
+				UserID:   &user.ID,
+			})
+		}
 	}
 
 	out := &changePasswordOutput{}

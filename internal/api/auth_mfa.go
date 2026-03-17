@@ -66,8 +66,13 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 
 	if input.Body.Method == "totp" {
 		// TOTP is client-side — just reissue the pending token with fresh TTL.
+		cookies, reissueErr := srv.reissuePendingTokenCookies(claims)
+		if reissueErr != nil {
+			slog.ErrorContext(ctx, "mfa-challenge: reissue pending token", "error", reissueErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
 		out := &mfaChallengeOutput{}
-		out.SetCookie = srv.reissuePendingTokenCookies(claims)
+		out.SetCookie = cookies
 		return out, nil
 	}
 
@@ -126,8 +131,13 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 		})
 	}
 
+	cookies, reissueErr := srv.reissuePendingTokenCookies(claims)
+	if reissueErr != nil {
+		slog.ErrorContext(ctx, "mfa-challenge: reissue pending token", "error", reissueErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
 	out := &mfaChallengeOutput{}
-	out.SetCookie = srv.reissuePendingTokenCookies(claims)
+	out.SetCookie = cookies
 	return out, nil
 }
 
@@ -229,7 +239,10 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 		return nil, huma.Error401Unauthorized("invalid verification code")
 	}
 
-	// MFA verified — emit success event.
+	// MFA verified — clear lockout counter.
+	srv.lockout.RecordSuccess(ctx, user.Email)
+
+	// Emit success event.
 	if srv.eventWriter != nil {
 		srv.eventWriter.Write(ctx, secure.Event{
 			Type:     secure.EventMFAVerifySuccess,
@@ -313,17 +326,16 @@ func (srv *Server) validatePendingToken(tokenStr string, expectedStep string) (*
 }
 
 // reissuePendingTokenCookies reissues the pending token with a fresh TTL.
-func (srv *Server) reissuePendingTokenCookies(claims *auth.PendingClaims) []string {
+func (srv *Server) reissuePendingTokenCookies(claims *auth.PendingClaims) ([]string, error) {
 	secret := []byte(srv.cfg.JWTSecret)
 	token, err := auth.IssuePendingToken(
 		secret, claims.UserID, claims.TokenVersion,
 		claims.Pending, claims.Methods, srv.cfg.MFAPendingTokenTTL,
 	)
 	if err != nil {
-		slog.Error("mfa: reissue pending token", "error", err)
-		return nil
+		return nil, fmt.Errorf("reissue pending token: %w", err)
 	}
-	return pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+	return pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL), nil
 }
 
 // issueFullAuthTokens creates and returns access + refresh token cookies.
@@ -368,8 +380,10 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 		return false, fmt.Errorf("decrypt TOTP secret: %w", err)
 	}
 
-	// Validate the TOTP code.
-	valid, err := totp.ValidateCustom(code, string(secretBytes), time.Now(), totpValidateOpts)
+	// Validate the TOTP code. Capture time once to prevent clock-boundary
+	// race between validation and replay-prevention step calculation.
+	now := time.Now()
+	valid, err := totp.ValidateCustom(code, string(secretBytes), now, totpValidateOpts)
 	if err != nil {
 		return false, fmt.Errorf("validate TOTP: %w", err)
 	}
@@ -378,7 +392,7 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 	}
 
 	// Replay prevention: check last_used_step.
-	currentStep := time.Now().Unix() / 30
+	currentStep := now.Unix() / 30
 	if cred.LastUsedStep.Valid && cred.LastUsedStep.Int64 >= currentStep {
 		return false, nil // replay
 	}
@@ -636,6 +650,15 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !valid {
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAEnrollmentFailed,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &userID,
+				Details:  map[string]any{"method": "totp", "reason": "invalid_code"},
+			})
+		}
 		return nil, huma.Error401Unauthorized("invalid TOTP code")
 	}
 
@@ -825,6 +848,15 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !matched {
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAEnrollmentFailed,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &userID,
+				Details:  map[string]any{"method": "email_otp", "reason": "invalid_code"},
+			})
+		}
 		return nil, huma.Error401Unauthorized("invalid verification code")
 	}
 

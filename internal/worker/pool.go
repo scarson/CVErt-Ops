@@ -253,9 +253,17 @@ func (p *Pool) runPeriodic(ctx context.Context, task PeriodicTask) {
 			slog.Info("periodic task stopping", "task", task.Name)
 			return
 		case <-ticker.C:
-			if err := task.Fn(ctx); err != nil {
-				slog.Error("periodic task error", "task", task.Name, "error", err)
-			}
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("periodic task panic", "task", task.Name,
+							"error", r, "stack", string(debug.Stack()))
+					}
+				}()
+				if err := task.Fn(ctx); err != nil {
+					slog.Error("periodic task error", "task", task.Name, "error", err)
+				}
+			}()
 		}
 	}
 }

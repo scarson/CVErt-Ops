@@ -134,9 +134,13 @@ func (srv *Server) adminForcePasswordResetHandler(w http.ResponseWriter, r *http
 
 	// Verify the target has a native identity (password hash).
 	user, err := srv.store.GetUserByID(r.Context(), targetID)
-	if err != nil || user == nil {
+	if err != nil {
 		slog.ErrorContext(r.Context(), "admin force-password-reset: get user", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if user == nil {
+		writeProblem(w, http.StatusNotFound, "user not found")
 		return
 	}
 	if !user.PasswordHash.Valid {

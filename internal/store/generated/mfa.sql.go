@@ -335,8 +335,8 @@ const getMFACredentialsByUserID = `-- name: GetMFACredentialsByUserID :many
 SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at
 `
 
-// ABOUTME: sqlc queries for MFA credential management.
-// ABOUTME: Used by store/mfa.go — global tables, no RLS.
+// ABOUTME: sqlc queries for MFA credentials, recovery codes, challenges, requirements, and mandate checks.
+// ABOUTME: Used by store/mfa.go — mostly global tables; mfa_requirements is org-scoped with RLS.
 func (q *Queries) GetMFACredentialsByUserID(ctx context.Context, userID uuid.UUID) ([]MfaCredential, error) {
 	rows, err := q.db.QueryContext(ctx, getMFACredentialsByUserID, userID)
 	if err != nil {

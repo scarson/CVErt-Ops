@@ -273,6 +273,44 @@ func TestMFA_UserHasMFACredentials(t *testing.T) {
 	}
 }
 
+func TestMFA_CountCredentials(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "mfa-count@example.com", "MFA Count", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Zero credentials.
+	n, err := s.CountMFACredentialsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountMFACredentialsByUser: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count = %d, want 0", n)
+	}
+
+	// Add two credentials.
+	_, err = s.CreateMFACredential(ctx, user.ID, "totp", []byte("secret"))
+	if err != nil {
+		t.Fatalf("CreateMFACredential (totp): %v", err)
+	}
+	_, err = s.CreateMFACredential(ctx, user.ID, "email_otp", nil)
+	if err != nil {
+		t.Fatalf("CreateMFACredential (email_otp): %v", err)
+	}
+
+	n, err = s.CountMFACredentialsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountMFACredentialsByUser: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("count = %d, want 2", n)
+	}
+}
+
 func TestMFA_CascadeOnUserDelete(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -608,6 +646,43 @@ func TestRecoveryCode_CascadeOnUserDelete(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("count = %d after user delete, want 0", count)
+	}
+}
+
+func TestRecoveryCode_DeleteAll(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "rc-delall@example.com", "RC DelAll", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	_, err = s.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	count, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes (before): %v", err)
+	}
+	if count != 10 {
+		t.Fatalf("count = %d before delete, want 10", count)
+	}
+
+	err = s.DeleteAllRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DeleteAllRecoveryCodes: %v", err)
+	}
+
+	count, err = s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes (after): %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d after delete, want 0", count)
 	}
 }
 
@@ -973,6 +1048,135 @@ func TestMFAChallenge_ConcurrentVerification(t *testing.T) {
 	}
 	if successCount != 1 {
 		t.Errorf("concurrent verification: %d successes, want exactly 1 (results: %v)", successCount, results)
+	}
+}
+
+func TestMFAChallenge_DeleteAllUserChallenges(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-delall@example.com", "OTP DelAll", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Create both an email OTP challenge and a remember-device token.
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, hashCode("123456"), time.Now().Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+	err = s.CreateRememberDeviceToken(ctx, user.ID, hashCode("device-token"), time.Now().Add(30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateRememberDeviceToken: %v", err)
+	}
+
+	// Delete all challenges for the user.
+	err = s.DeleteAllUserChallenges(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DeleteAllUserChallenges: %v", err)
+	}
+
+	// Email OTP should fail (no challenge).
+	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, hashCode("123456"), 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
+	}
+	if ok {
+		t.Error("expected email OTP verification to fail after DeleteAllUserChallenges")
+	}
+
+	// Remember-device token should fail.
+	ok, err = s.ValidateRememberDeviceToken(ctx, user.ID, hashCode("device-token"))
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken: %v", err)
+	}
+	if ok {
+		t.Error("expected remember-device validation to fail after DeleteAllUserChallenges")
+	}
+}
+
+func TestMFAChallenge_DeleteExpiredRememberDevice(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-exprd@example.com", "OTP ExpRD", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Create an expired remember-device token.
+	err = s.CreateRememberDeviceToken(ctx, user.ID, hashCode("expired-rd"), time.Now().Add(-1*time.Minute))
+	if err != nil {
+		t.Fatalf("CreateRememberDeviceToken (expired): %v", err)
+	}
+
+	// Create a valid remember-device token (different user to avoid interference).
+	user2, err := s.CreateUser(ctx, "otp-exprd2@example.com", "OTP ExpRD2", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (2): %v", err)
+	}
+	err = s.CreateRememberDeviceToken(ctx, user2.ID, hashCode("valid-rd"), time.Now().Add(30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateRememberDeviceToken (valid): %v", err)
+	}
+
+	// Run cleanup.
+	deleted, err := s.DeleteExpiredChallenges(ctx)
+	if err != nil {
+		t.Fatalf("DeleteExpiredChallenges: %v", err)
+	}
+	if deleted < 1 {
+		t.Errorf("deleted = %d, want >= 1", deleted)
+	}
+
+	// Valid token should survive cleanup.
+	ok, err := s.ValidateRememberDeviceToken(ctx, user2.ID, hashCode("valid-rd"))
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken (valid after cleanup): %v", err)
+	}
+	if !ok {
+		t.Error("expected valid remember-device token to survive cleanup")
+	}
+}
+
+func TestMFAChallenge_RememberDeviceCrossUserIsolation(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	userA, err := s.CreateUser(ctx, "rd-iso-a@example.com", "RD Iso A", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := s.CreateUser(ctx, "rd-iso-b@example.com", "RD Iso B", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+
+	tokenHash := hashCode("shared-device-token")
+	err = s.CreateRememberDeviceToken(ctx, userA.ID, tokenHash, time.Now().Add(30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("CreateRememberDeviceToken for A: %v", err)
+	}
+
+	// User A can validate their own token.
+	ok, err := s.ValidateRememberDeviceToken(ctx, userA.ID, tokenHash)
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken (A): %v", err)
+	}
+	if !ok {
+		t.Error("expected user A to validate their own token")
+	}
+
+	// User B cannot validate user A's token.
+	ok, err = s.ValidateRememberDeviceToken(ctx, userB.ID, tokenHash)
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken (B): %v", err)
+	}
+	if ok {
+		t.Error("expected user B to NOT validate user A's token — cross-user isolation failure")
 	}
 }
 
@@ -1538,6 +1742,34 @@ func TestUserMFARequired_SiteAdminFlagFalse(t *testing.T) {
 	}
 	if !required {
 		t.Error("expected MFA required via per-member layer even when RequiredSiteAdmins=false")
+	}
+}
+
+func TestUserMFARequired_SiteAdminNotRequiredWhenConfigOff(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Mandate AdminOff Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-mandate-adminoff@example.com", "MFA Mandate AdminOff", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	// isSiteAdmin=true but RequiredSiteAdmins=false, NO other layers active.
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: false}
+	required, err := tdb.UserMFARequired(ctx, user.ID, true, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if required {
+		t.Error("expected MFA NOT required for site admin when RequiredSiteAdmins=false and no other layers match")
 	}
 }
 

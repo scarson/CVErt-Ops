@@ -3,7 +3,6 @@
 package config
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 )
@@ -100,8 +99,8 @@ func TestLoad_Defaults(t *testing.T) {
 
 	defaults := []struct {
 		name string
-		got  interface{}
-		want interface{}
+		got  any
+		want any
 	}{
 		// Database
 		{"DBMaxConns", cfg.DBMaxConns, int32(25)},
@@ -205,6 +204,3 @@ func TestMFAConfigDefaults(t *testing.T) {
 		t.Errorf("MFAPendingTokenTTL: got %v, want %v", cfg.MFAPendingTokenTTL, 5*time.Minute)
 	}
 }
-
-// Silence unused import warning for slog.
-var _ = slog.Default

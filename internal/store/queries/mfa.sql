@@ -1,5 +1,5 @@
--- ABOUTME: sqlc queries for MFA credential management.
--- ABOUTME: Used by store/mfa.go — global tables, no RLS.
+-- ABOUTME: sqlc queries for MFA credentials, recovery codes, challenges, requirements, and mandate checks.
+-- ABOUTME: Used by store/mfa.go — mostly global tables; mfa_requirements is org-scoped with RLS.
 
 -- name: GetMFACredentialsByUserID :many
 SELECT * FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at;

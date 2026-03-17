@@ -49,6 +49,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/retention"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 	"github.com/scarson/cvert-ops/migrations"
@@ -198,10 +199,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		slog.Info("using Gemini LLM client", "model", cfg.GeminiModel)
 	}
 
+	eventWriter := secure.NewEventWriter(st)
+	defer eventWriter.Stop()
+
 	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
 		AlertCache:            alertCache,
 		AlertEvaluator:        alertEval,
 		LLM:                   llm,
+		EventWriter:           eventWriter,
+		ConfigHolder:          configHolder,
 		ExpectedSchemaVersion: expectedSchemaVersion,
 		VersionInfo: api.VersionInfo{
 			Version:   version,

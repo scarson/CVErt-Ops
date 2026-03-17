@@ -77,6 +77,8 @@ type SecurityEventRow struct {
 
 // listSecurityEventsQuery is the raw SQL for listing security events.
 // Uses nullable parameters so that unset filters correctly evaluate to NULL.
+// Keyset pagination uses composite cursor (created_at, id) to avoid skipping
+// rows with identical timestamps.
 const listSecurityEventsQuery = `
 SELECT id, event_type, severity, actor_ip, actor_email, user_id, org_id, details, created_at
 FROM security_events
@@ -86,15 +88,15 @@ WHERE
     ($3::text IS NULL OR actor_email = $3) AND
     ($4::timestamptz IS NULL OR created_at >= $4) AND
     ($5::timestamptz IS NULL OR created_at <= $5) AND
-    ($6::timestamptz IS NULL OR created_at < $6)
+    ($6::timestamptz IS NULL OR (created_at < $6 OR (created_at = $6 AND id < $7)))
 ORDER BY created_at DESC, id DESC
-LIMIT $7
+LIMIT $8
 `
 
 // ListSecurityEvents returns security events with optional filters and cursor pagination.
 // Uses withBypassRawTx with nullable params because the sqlc-generated types
 // use non-nullable Go types that don't produce SQL NULL in simple protocol mode.
-func (s *Store) ListSecurityEvents(ctx context.Context, eventType, severity, actorEmail string, since, until, cursorTime *time.Time, limit int) ([]SecurityEventRow, error) {
+func (s *Store) ListSecurityEvents(ctx context.Context, eventType, severity, actorEmail string, since, until, cursorTime *time.Time, cursorID *uuid.UUID, limit int) ([]SecurityEventRow, error) {
 	// Convert Go strings/times to sql.Null* so empty/nil values become SQL NULL.
 	eventTypeP := sql.NullString{String: eventType, Valid: eventType != ""}
 	severityP := sql.NullString{String: severity, Valid: severity != ""}
@@ -111,11 +113,15 @@ func (s *Store) ListSecurityEvents(ctx context.Context, eventType, severity, act
 	if cursorTime != nil {
 		cursorP = sql.NullTime{Time: *cursorTime, Valid: true}
 	}
+	cursorIDP := uuid.NullUUID{}
+	if cursorID != nil {
+		cursorIDP = uuid.NullUUID{UUID: *cursorID, Valid: true}
+	}
 
 	var result []SecurityEventRow
 	err := s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, listSecurityEventsQuery,
-			eventTypeP, severityP, actorEmailP, sinceP, untilP, cursorP, limit)
+			eventTypeP, severityP, actorEmailP, sinceP, untilP, cursorP, cursorIDP, limit)
 		if err != nil {
 			return err
 		}

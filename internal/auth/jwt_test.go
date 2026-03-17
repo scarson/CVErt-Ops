@@ -301,7 +301,7 @@ func TestParseAccessToken_ExpiredWithPreviousKeyRejects(t *testing.T) {
 		// The active key should fail with signature error, triggering fallback to previous key.
 		// The previous key should then reject because the token is expired.
 		// Either way, an expired token must never succeed.
-		t.Logf("error = %v (expected expiry-related error)", err)
+		t.Errorf("error = %v (expected expiry-related error)", err)
 	}
 }
 

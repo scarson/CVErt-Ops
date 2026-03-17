@@ -327,7 +327,7 @@ func (c *SecurityHeadersCheck) Name() string { return "security_headers" }
 // Run implements Check.
 func (c *SecurityHeadersCheck) Run(ctx context.Context) (string, string, error) {
 	if c.ServerAddr == "" {
-		return StatusWarn, "server address not configured — skipped (CLI mode)", nil
+		return StatusPass, "server address not configured — skipped (CLI mode)", nil
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.ServerAddr+"/healthz", nil)

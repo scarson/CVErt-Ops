@@ -121,7 +121,7 @@ func (sw *SyslogWriter) formatMessage(event Event) ([]byte, error) {
 		payload = string(b)
 	}
 
-	// RFC 3164-style syslog header: <priority>timestamp hostname: message
+	// Syslog header: <priority>timestamp hostname: message
 	msg := fmt.Sprintf("<%d>%s %s: %s", pri, timestamp, hostname, payload)
 	return []byte(msg), nil
 }

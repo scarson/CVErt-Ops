@@ -233,15 +233,15 @@ func TestSecurityHeadersCheck_MissingHeaders_Fail(t *testing.T) {
 	}
 }
 
-func TestSecurityHeadersCheck_EmptyServerAddr_Warn(t *testing.T) {
+func TestSecurityHeadersCheck_EmptyServerAddr_Pass(t *testing.T) {
 	t.Parallel()
 	c := &SecurityHeadersCheck{ServerAddr: ""}
 	status, _, err := c.Run(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if status != StatusWarn {
-		t.Errorf("status = %q, want %q", status, StatusWarn)
+	if status != StatusPass {
+		t.Errorf("status = %q, want %q", status, StatusPass)
 	}
 }
 

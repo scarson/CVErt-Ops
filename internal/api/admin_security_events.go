@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // securityEventCursor is the opaque cursor for security event list pagination.
@@ -24,8 +26,9 @@ func (srv *Server) adminSecurityEventsHandler(w http.ResponseWriter, r *http.Req
 
 	q := r.URL.Query()
 
-	// Parse cursor.
+	// Parse composite cursor (created_at, id) for keyset pagination.
 	var cursorTime *time.Time
+	var cursorID *uuid.UUID
 	if c := q.Get("cursor"); c != "" {
 		var cur securityEventCursor
 		if err := decodePageCursor(c, &cur); err != nil {
@@ -38,6 +41,12 @@ func (srv *Server) adminSecurityEventsHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 		cursorTime = &t
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		cursorID = &id
 	}
 
 	// Parse optional date range filters.
@@ -59,7 +68,7 @@ func (srv *Server) adminSecurityEventsHandler(w http.ResponseWriter, r *http.Req
 		until = &t
 	}
 
-	rows, err := srv.store.ListSecurityEvents(r.Context(), q.Get("event_type"), q.Get("severity"), q.Get("actor_email"), since, until, cursorTime, limit+1)
+	rows, err := srv.store.ListSecurityEvents(r.Context(), q.Get("event_type"), q.Get("severity"), q.Get("actor_email"), since, until, cursorTime, cursorID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "admin security events", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

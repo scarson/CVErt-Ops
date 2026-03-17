@@ -633,6 +633,48 @@ func TestDeleteGroup_NonExistent(t *testing.T) {
 	}
 }
 
+// TestAddGroupMember_NonExistentGroup verifies that adding a member to a non-existent
+// group returns 404, not 500 from an FK violation.
+func TestAddGroupMember_NonExistentGroup(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doAddGroupMember(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID, aliceReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("add member to non-existent group: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestRemoveGroupMember_NonExistentGroup verifies that removing a member from a
+// non-existent group returns 404, not a silent 204.
+func TestRemoveGroupMember_NonExistentGroup(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doRemoveGroupMember(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID, aliceReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("remove member from non-existent group: got %d, want 404", resp.StatusCode)
+	}
+}
+
 // TestCreateGroup_EmptyName verifies that POST /groups with empty name returns 422
 // with RFC 9457 problem details and field-level error location.
 func TestCreateGroup_EmptyName(t *testing.T) {

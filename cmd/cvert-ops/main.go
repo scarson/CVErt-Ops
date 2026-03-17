@@ -252,6 +252,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	workerPool.RegisterPeriodic(worker.PeriodicTask{
+		Name:     "mfa-challenge-cleanup",
+		Interval: 1 * time.Hour,
+		Fn: func(ctx context.Context) error {
+			deleted, err := st.DeleteExpiredChallenges(ctx)
+			if err != nil {
+				return err
+			}
+			if deleted > 0 {
+				slog.InfoContext(ctx, "mfa: cleaned expired challenges", "count", deleted)
+			}
+			return nil
+		},
+	})
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
 		if len(genericConfigs) > 0 {
@@ -419,6 +433,20 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	workerPool.RegisterPeriodic(worker.PeriodicTask{
+		Name:     "mfa-challenge-cleanup",
+		Interval: 1 * time.Hour,
+		Fn: func(ctx context.Context) error {
+			deleted, err := st.DeleteExpiredChallenges(ctx)
+			if err != nil {
+				return err
+			}
+			if deleted > 0 {
+				slog.InfoContext(ctx, "mfa: cleaned expired challenges", "count", deleted)
+			}
+			return nil
+		},
+	})
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
 		if len(genericConfigs) > 0 {

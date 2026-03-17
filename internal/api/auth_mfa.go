@@ -28,6 +28,15 @@ import (
 // enrollmentTokenTTL is the duration a TOTP enrollment token is valid.
 const enrollmentTokenTTL = 5 * time.Minute
 
+// totpValidateOpts are the TOTP validation parameters used for both
+// login verification and enrollment confirmation.
+var totpValidateOpts = totp.ValidateOpts{
+	Period:    30,
+	Skew:     1,
+	Digits:   6,
+	Algorithm: otp.AlgorithmSHA1,
+}
+
 // ── MFA Challenge ────────────────────────────────────────────────────────────
 
 type mfaChallengeInput struct {
@@ -292,12 +301,7 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 	}
 
 	// Validate the TOTP code.
-	valid, err := totp.ValidateCustom(code, string(secretBytes), time.Now(), totp.ValidateOpts{
-		Period:    30,
-		Skew:     1,
-		Digits:   6,
-		Algorithm: 0, // SHA1
-	})
+	valid, err := totp.ValidateCustom(code, string(secretBytes), time.Now(), totpValidateOpts)
 	if err != nil {
 		return false, fmt.Errorf("validate TOTP: %w", err)
 	}
@@ -444,7 +448,11 @@ func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupI
 	}
 
 	// Check not already enrolled.
-	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	if existErr != nil {
+		slog.ErrorContext(ctx, "totp-setup: check existing", "error", existErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
 	if existing != nil {
 		return nil, huma.Error409Conflict("TOTP already enrolled")
 	}
@@ -554,12 +562,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	}
 
 	// Validate the TOTP code against the provisional secret.
-	valid, err := totp.ValidateCustom(input.Body.Code, string(secretBytes), time.Now(), totp.ValidateOpts{
-		Period:    30,
-		Skew:     1,
-		Digits:   6,
-		Algorithm: 0, // SHA1
-	})
+	valid, err := totp.ValidateCustom(input.Body.Code, string(secretBytes), time.Now(), totpValidateOpts)
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: validate code", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -569,7 +572,11 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	}
 
 	// Check not already enrolled (race condition guard).
-	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	if existErr != nil {
+		slog.ErrorContext(ctx, "totp-confirm: check existing", "error", existErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
 	if existing != nil {
 		return nil, huma.Error409Conflict("TOTP already enrolled")
 	}
@@ -591,8 +598,10 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	out := &mfaTOTPConfirmOutput{}
 
 	// Generate recovery codes on first enrollment.
-	credCount, _ := srv.store.CountMFACredentialsByUser(ctx, userID)
-	if credCount == 1 {
+	credCount, countErr := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if countErr != nil {
+		slog.ErrorContext(ctx, "totp-confirm: count credentials", "error", countErr)
+	} else if credCount == 1 {
 		codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
 		if err != nil {
 			slog.ErrorContext(ctx, "totp-confirm: generate recovery codes", "error", err)
@@ -634,7 +643,11 @@ func (srv *Server) mfaEmailOTPSetupHandler(ctx context.Context, input *mfaEmailO
 	}
 
 	// Check not already enrolled.
-	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
+	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
+	if existErr != nil {
+		slog.ErrorContext(ctx, "email-otp-setup: check existing", "error", existErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
 	if existing != nil {
 		return nil, huma.Error409Conflict("email OTP already enrolled")
 	}
@@ -701,7 +714,11 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 	}
 
 	// Check not already enrolled.
-	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
+	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
+	if existErr != nil {
+		slog.ErrorContext(ctx, "email-otp-confirm: check existing", "error", existErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
 	if existing != nil {
 		return nil, huma.Error409Conflict("email OTP already enrolled")
 	}
@@ -726,8 +743,10 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 	out := &mfaEmailOTPConfirmOutput{}
 
 	// Generate recovery codes on first enrollment.
-	credCount, _ := srv.store.CountMFACredentialsByUser(ctx, userID)
-	if credCount == 1 {
+	credCount, countErr := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if countErr != nil {
+		slog.ErrorContext(ctx, "email-otp-confirm: count credentials", "error", countErr)
+	} else if credCount == 1 {
 		codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
 		if err != nil {
 			slog.ErrorContext(ctx, "email-otp-confirm: generate recovery codes", "error", err)
@@ -818,28 +837,8 @@ func (srv *Server) mfaRemoveMethodHandler(ctx context.Context, input *mfaRemoveM
 	}
 
 	// Re-authenticate with current password.
-	user, err := srv.store.GetUserByID(ctx, userID)
-	if err != nil || user == nil {
-		slog.ErrorContext(ctx, "mfa-remove: get user", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if !user.PasswordHash.Valid {
-		return nil, huma.Error400BadRequest("account uses OAuth — password re-auth not available")
-	}
-	if !srv.acquireArgon2() {
-		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
-	}
-	var pwOK bool
-	func() {
-		defer srv.releaseArgon2()
-		pwOK, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
-	}()
-	if err != nil {
-		slog.ErrorContext(ctx, "mfa-remove: verify password", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if !pwOK {
-		return nil, huma.Error401Unauthorized("current password incorrect")
+	if _, err := srv.reauthenticatePassword(ctx, userID, input.Body.CurrentPassword, "mfa-remove"); err != nil {
+		return nil, err
 	}
 
 	// Check if this is the last method and MFA is mandated.
@@ -929,28 +928,8 @@ func (srv *Server) mfaRegenerateCodesHandler(ctx context.Context, input *mfaRege
 	}
 
 	// Re-authenticate with current password.
-	user, err := srv.store.GetUserByID(ctx, userID)
-	if err != nil || user == nil {
-		slog.ErrorContext(ctx, "recovery-regen: get user", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if !user.PasswordHash.Valid {
-		return nil, huma.Error400BadRequest("account uses OAuth — password re-auth not available")
-	}
-	if !srv.acquireArgon2() {
-		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
-	}
-	var pwOK bool
-	func() {
-		defer srv.releaseArgon2()
-		pwOK, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
-	}()
-	if err != nil {
-		slog.ErrorContext(ctx, "recovery-regen: verify password", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if !pwOK {
-		return nil, huma.Error401Unauthorized("current password incorrect")
+	if _, err := srv.reauthenticatePassword(ctx, userID, input.Body.CurrentPassword, "recovery-regen"); err != nil {
+		return nil, err
 	}
 
 	// Regenerate codes (deletes old, creates new).
@@ -963,6 +942,37 @@ func (srv *Server) mfaRegenerateCodesHandler(ctx context.Context, input *mfaRege
 	out := &mfaRegenerateCodesOutput{}
 	out.Body.RecoveryCodes = codes
 	return out, nil
+}
+
+// ── Password Re-Auth ─────────────────────────────────────────────────────────
+
+// reauthenticatePassword verifies the user's current password using the
+// argon2 semaphore. Returns the user on success, or an appropriate huma error.
+func (srv *Server) reauthenticatePassword(ctx context.Context, userID uuid.UUID, password, logPrefix string) (*generated.User, error) {
+	user, err := srv.store.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, logPrefix+": get user", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !user.PasswordHash.Valid {
+		return nil, huma.Error400BadRequest("account uses OAuth — password re-auth not available")
+	}
+	if !srv.acquireArgon2() {
+		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+	}
+	var pwOK bool
+	func() {
+		defer srv.releaseArgon2()
+		pwOK, err = auth.VerifyPassword(password, user.PasswordHash.String)
+	}()
+	if err != nil {
+		slog.ErrorContext(ctx, logPrefix+": verify password", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !pwOK {
+		return nil, huma.Error401Unauthorized("current password incorrect")
+	}
+	return user, nil
 }
 
 // ── Enrollment/Management Helpers ────────────────────────────────────────────

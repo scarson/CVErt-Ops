@@ -25,29 +25,29 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				if srv.tryAPIKeyAuth(r, rawKey, w, next) {
 					return
 				}
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			// Try JWT access-token cookie.
 			cookie, err := r.Cookie("access_token")
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret))
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			// Reject disabled users and enforce force_password_reset.
 			authStatus, err := srv.store.GetUserAuthStatus(r.Context(), claims.UserID)
 			if err != nil {
 				slog.ErrorContext(r.Context(), "auth: check user status", "user_id", claims.UserID, "error", err)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			if !authStatus.Enabled {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			if authStatus.ForcePasswordReset {
@@ -79,7 +79,7 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	key, err := srv.store.LookupAPIKey(r.Context(), hash)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "api key auth: database error", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return true // response sent
 	}
 	if key == nil {
@@ -94,7 +94,7 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	enabled, err := srv.store.IsUserEnabled(r.Context(), key.CreatedByUserID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "api key auth: check user enabled", "user_id", key.CreatedByUserID, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return true // response sent
 	}
 	if !enabled {

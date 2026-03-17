@@ -361,7 +361,7 @@ func TestAlertEvents_Pagination(t *testing.T) {
 	// With only 3 items and limit=100, no pagination cursor should exist.
 	if allList.NextCursor != nil {
 		// If a cursor is returned, use it to verify page 2 works.
-		page2Resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?after="+*allList.NextCursor)
+		page2Resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?cursor="+*allList.NextCursor)
 		defer page2Resp.Body.Close() //nolint:errcheck,gosec // G104
 		if page2Resp.StatusCode != http.StatusOK {
 			t.Fatalf("page 2: got %d, want 200", page2Resp.StatusCode)
@@ -495,7 +495,7 @@ func TestAlertEvents_MalformedCursor(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
-	resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?after=not-valid-cursor")
+	resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?cursor=not-valid-cursor")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("malformed cursor: got %d, want 400", resp.StatusCode)

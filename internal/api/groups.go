@@ -235,6 +235,18 @@ func (srv *Server) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify group exists before deleting.
+	current, err := srv.store.GetGroup(r.Context(), orgID, groupID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get group for delete", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if current == nil {
+		writeProblem(w, http.StatusNotFound, "not found")
+		return
+	}
+
 	if err := srv.store.SoftDeleteGroup(r.Context(), orgID, groupID); err != nil {
 		slog.ErrorContext(r.Context(), "delete group", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -292,6 +304,18 @@ func (srv *Server) addGroupMemberHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Verify group exists.
+	group, err := srv.store.GetGroup(r.Context(), orgID, groupID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get group", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if group == nil {
+		writeProblem(w, http.StatusNotFound, "group not found")
+		return
+	}
+
 	var req addGroupMemberBody
 	if detail := decodeJSON(r, &req); detail != nil {
 		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
@@ -324,6 +348,18 @@ func (srv *Server) removeGroupMemberHandler(w http.ResponseWriter, r *http.Reque
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
 		writeProblem(w, http.StatusBadRequest, "invalid group_id")
+		return
+	}
+
+	// Verify group exists.
+	group, err := srv.store.GetGroup(r.Context(), orgID, groupID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get group", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if group == nil {
+		writeProblem(w, http.StatusNotFound, "group not found")
 		return
 	}
 

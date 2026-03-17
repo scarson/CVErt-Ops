@@ -82,6 +82,11 @@ type watchlistCursor struct {
 	ID string `json:"id"` // UUID tiebreaker
 }
 
+// watchlistItemCursor is the JSON-encoded keyset cursor for watchlist item pagination.
+type watchlistItemCursor struct {
+	ID string `json:"id"`
+}
+
 // ── Mapping helpers ───────────────────────────────────────────────────────────
 
 func watchlistToEntry(r store.WatchlistRow) watchlistEntry {
@@ -551,7 +556,12 @@ func (srv *Server) listWatchlistItemsHandler(w http.ResponseWriter, r *http.Requ
 		itemTypeFilter = &t
 	}
 	if a := r.URL.Query().Get("cursor"); a != "" {
-		id, err := uuid.Parse(a)
+		var cur watchlistItemCursor
+		if err := decodePageCursor(a, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		id, err := uuid.Parse(cur.ID)
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, "invalid cursor")
 			return
@@ -569,7 +579,9 @@ func (srv *Server) listWatchlistItemsHandler(w http.ResponseWriter, r *http.Requ
 	var nextCursor string
 	if len(items) > limit {
 		items = items[:limit]
-		nextCursor = items[len(items)-1].ID.String()
+		nextCursor = encodePageCursor(watchlistItemCursor{
+			ID: items[len(items)-1].ID.String(),
+		})
 	}
 
 	entries := make([]watchlistItemEntry, 0, len(items))

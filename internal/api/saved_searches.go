@@ -43,11 +43,6 @@ type savedSearchEntry struct {
 	UpdatedAt string          `json:"updated_at"`
 }
 
-type savedSearchExecuteResponse struct {
-	Items      []CVEItem `json:"items"`
-	NextCursor string    `json:"next_cursor,omitempty"`
-}
-
 // savedSearchToEntry converts a store row to an API response entry.
 func savedSearchToEntry(row *store.SavedSearchRow) savedSearchEntry {
 	entry := savedSearchEntry{
@@ -462,10 +457,7 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 		items[i] = cveToItem(c)
 	}
 
-	writeJSON(w, http.StatusOK, savedSearchExecuteResponse{
-		Items:      items,
-		NextCursor: nextCursor,
-	})
+	writeList(w, items, nextCursor)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────

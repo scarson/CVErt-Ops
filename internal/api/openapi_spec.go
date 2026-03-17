@@ -1138,7 +1138,7 @@ type specExecuteSavedSearchInput struct {
 	Limit  int    `query:"limit" doc:"Max results per page (1-100, default 25)"`
 }
 type specExecuteSavedSearchOutput struct {
-	Body savedSearchExecuteResponse
+	Body listResponse[CVEItem]
 }
 
 func registerSavedSearchesSpecOps(api huma.API) {

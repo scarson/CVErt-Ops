@@ -473,6 +473,54 @@ func TestParseRefreshToken_ExpiredWithPreviousKeyRejects(t *testing.T) {
 	}
 }
 
+func TestParseRefreshToken_NoPreviousKeyConfigured(t *testing.T) {
+	t.Parallel()
+	activeKey := []byte("active-key-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	jti := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	tokenStr, err := auth.IssueRefreshToken(activeKey, userID, 1, jti, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// nil previousSecret — only active key tried.
+	claims, err := auth.ParseRefreshToken(tokenStr, activeKey, nil)
+	if err != nil {
+		t.Fatalf("ParseRefreshToken with nil previous should succeed: %v", err)
+	}
+	if claims.UserID != userID {
+		t.Errorf("UserID = %v, want %v", claims.UserID, userID)
+	}
+	if claims.JTI != jti {
+		t.Errorf("JTI = %v, want %v", claims.JTI, jti)
+	}
+}
+
+func TestParseRefreshToken_BothKeysSameValue(t *testing.T) {
+	t.Parallel()
+	key := []byte("same-key-32-bytes-minimum-aaaaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	jti := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+
+	tokenStr, err := auth.IssueRefreshToken(key, userID, 1, jti, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// activeKey == previousKey — harmless, should work.
+	claims, err := auth.ParseRefreshToken(tokenStr, key, key)
+	if err != nil {
+		t.Fatalf("ParseRefreshToken with identical keys should succeed: %v", err)
+	}
+	if claims.UserID != userID {
+		t.Errorf("UserID = %v, want %v", claims.UserID, userID)
+	}
+	if claims.JTI != jti {
+		t.Errorf("JTI = %v, want %v", claims.JTI, jti)
+	}
+}
+
 // ── Rotation flow integration test ──────────────────────────────────────────
 
 func TestRefreshTokenFlowAcrossRotation(t *testing.T) {

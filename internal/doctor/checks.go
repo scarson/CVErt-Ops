@@ -154,8 +154,9 @@ func (c *RLSCheck) Run(ctx context.Context) (string, string, error) {
 
 // EncryptionSentinelCheck verifies the encryption sentinel can be decrypted.
 type EncryptionSentinelCheck struct {
-	DB  *pgxpool.Pool
-	Key [32]byte
+	DB          *pgxpool.Pool
+	Key         [32]byte
+	PreviousKey [32]byte
 }
 
 // Name implements Check.
@@ -179,7 +180,7 @@ func (c *EncryptionSentinelCheck) Run(ctx context.Context) (string, string, erro
 		return StatusFail, fmt.Sprintf("query system_settings: %v", err), nil
 	}
 
-	_, err = crypto.Decrypt(c.Key, value)
+	_, err = crypto.DecryptWithFallback(c.Key, c.PreviousKey, value)
 	if err != nil {
 		return StatusFail, fmt.Sprintf("sentinel decryption failed: %v — encryption key may have changed", err), nil
 	}
@@ -309,13 +310,14 @@ func (c *FeedCheck) Run(ctx context.Context) (string, string, error) {
 
 // StandardChecksConfig holds parameters for constructing the standard health check suite.
 type StandardChecksConfig struct {
-	DB                    *pgxpool.Pool
-	ExpectedSchemaVersion int
-	SSOEncryptionKey      string
-	JWTSecret             string
-	SMTPHost              string
-	SMTPPort              int
-	SMTPUsername          string
+	DB                           *pgxpool.Pool
+	ExpectedSchemaVersion        int
+	SSOEncryptionKey             string
+	SSOEncryptionKeyPrevious     string
+	JWTSecret                    string
+	SMTPHost                     string
+	SMTPPort                     int
+	SMTPUsername                  string
 }
 
 // StandardChecks returns the full suite of health checks configured from the
@@ -326,6 +328,14 @@ func StandardChecks(c StandardChecksConfig) []Check {
 		decoded, err := hex.DecodeString(c.SSOEncryptionKey)
 		if err == nil && len(decoded) == 32 {
 			copy(encKey[:], decoded)
+		}
+	}
+
+	var encKeyPrev [32]byte
+	if c.SSOEncryptionKeyPrevious != "" {
+		decoded, err := hex.DecodeString(c.SSOEncryptionKeyPrevious)
+		if err == nil && len(decoded) == 32 {
+			copy(encKeyPrev[:], decoded)
 		}
 	}
 
@@ -341,7 +351,7 @@ func StandardChecks(c StandardChecksConfig) []Check {
 		&MigrationCheck{DB: c.DB, ExpectedVersion: c.ExpectedSchemaVersion},
 		&DBRoleCheck{DB: c.DB},
 		&RLSCheck{DB: c.DB, Tables: OrgScopedTables()},
-		&EncryptionSentinelCheck{DB: c.DB, Key: encKey},
+		&EncryptionSentinelCheck{DB: c.DB, Key: encKey, PreviousKey: encKeyPrev},
 		&JWTCheck{Secret: c.JWTSecret},
 		&SMTPCheck{Host: smtpHost, Port: c.SMTPPort},
 		&DiskCheck{},

@@ -11,13 +11,14 @@ import (
 // doctorHandler runs all doctor checks and returns results as JSON.
 func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
 	checks := doctor.StandardChecks(doctor.StandardChecksConfig{
-		DB:                    srv.store.Pool(),
-		ExpectedSchemaVersion: srv.expectedSchemaVersion,
-		SSOEncryptionKey:      srv.cfg.SSOEncryptionKey,
-		JWTSecret:             srv.cfg.JWTSecret,
-		SMTPHost:              srv.cfg.SMTPHost,
-		SMTPPort:              srv.cfg.SMTPPort,
-		SMTPUsername:          srv.cfg.SMTPUsername,
+		DB:                       srv.store.Pool(),
+		ExpectedSchemaVersion:    srv.expectedSchemaVersion,
+		SSOEncryptionKey:         srv.cfg.SSOEncryptionKey,
+		SSOEncryptionKeyPrevious: srv.cfg.SSOEncryptionKeyPrevious,
+		JWTSecret:                srv.cfg.JWTSecret,
+		SMTPHost:                 srv.cfg.SMTPHost,
+		SMTPPort:                 srv.cfg.SMTPPort,
+		SMTPUsername:             srv.cfg.SMTPUsername,
 	})
 
 	results := doctor.Run(r.Context(), checks)

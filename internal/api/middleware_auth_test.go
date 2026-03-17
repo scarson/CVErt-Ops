@@ -363,3 +363,131 @@ func TestRequireAuthenticated_APIKey_ContextValues(t *testing.T) {
 		t.Errorf("ctxAPIKeyOrgID = %v, want %v", gotAPIKeyOrgID, org.ID)
 	}
 }
+
+// TestRequireAuthenticated_ForcePasswordReset_BlocksNonAuthEndpoints verifies that
+// a user with force_password_reset=true gets 403 on non-auth endpoints.
+func TestRequireAuthenticated_ForcePasswordReset_BlocksNonAuthEndpoints(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "forcereset-block@example.com", "ForceResetBlock", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Use httptest.NewRecorder to control the request URL path.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/some-org/cves", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("force_password_reset on non-auth endpoint: got %d, want 403", rec.Code)
+	}
+
+	// Verify the response body contains the expected error type.
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["type"] != "password_change_required" {
+		t.Errorf("error type = %q, want %q", body["type"], "password_change_required")
+	}
+}
+
+// TestRequireAuthenticated_ForcePasswordReset_AllowsChangePassword verifies that
+// a user with force_password_reset=true can still access /auth/change-password.
+func TestRequireAuthenticated_ForcePasswordReset_AllowsChangePassword(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "forcereset-cp@example.com", "ForceResetCP", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	var reached bool
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/change-password", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("force_password_reset on /auth/change-password: got %d, want 200", rec.Code)
+	}
+	if !reached {
+		t.Error("handler was not reached — middleware blocked /auth/change-password")
+	}
+}
+
+// TestRequireAuthenticated_ForcePasswordReset_AllowsMe verifies that
+// a user with force_password_reset=true can still access /auth/me.
+func TestRequireAuthenticated_ForcePasswordReset_AllowsMe(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "forcereset-me@example.com", "ForceResetMe", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	var reached bool
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("force_password_reset on /auth/me: got %d, want 200", rec.Code)
+	}
+	if !reached {
+		t.Error("handler was not reached — middleware blocked /auth/me")
+	}
+}

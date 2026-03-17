@@ -84,6 +84,67 @@ func (s *Store) AdminListOrgs(ctx context.Context, afterTime *time.Time, afterID
 	return result, err
 }
 
+// AdminPatchOrgParams holds the optional fields for an atomic admin org update.
+type AdminPatchOrgParams struct {
+	Tier    *string
+	Suspend *bool
+}
+
+// AdminPatchOrg atomically applies tier and/or suspend changes to an organization,
+// then re-fetches with member_count and last_activity_at in the same transaction.
+func (s *Store) AdminPatchOrg(ctx context.Context, orgID uuid.UUID, params AdminPatchOrgParams) (*AdminOrgRow, error) {
+	var result AdminOrgRow
+	err := s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
+		if params.Tier != nil {
+			_, err := tx.ExecContext(ctx,
+				"UPDATE organizations SET tier = $1 WHERE id = $2 AND deleted_at IS NULL",
+				*params.Tier, orgID)
+			if err != nil {
+				return fmt.Errorf("update tier: %w", err)
+			}
+		}
+		if params.Suspend != nil {
+			if *params.Suspend {
+				_, err := tx.ExecContext(ctx,
+					"UPDATE organizations SET suspended_at = now() WHERE id = $1 AND deleted_at IS NULL AND suspended_at IS NULL",
+					orgID)
+				if err != nil {
+					return fmt.Errorf("suspend org: %w", err)
+				}
+			} else {
+				_, err := tx.ExecContext(ctx,
+					"UPDATE organizations SET suspended_at = NULL WHERE id = $1 AND deleted_at IS NULL AND suspended_at IS NOT NULL",
+					orgID)
+				if err != nil {
+					return fmt.Errorf("unsuspend org: %w", err)
+				}
+			}
+		}
+		// Re-fetch within same transaction with member_count + last_activity_at.
+		row := tx.QueryRowContext(ctx, `
+			SELECT o.id, o.name, o.tier, COUNT(om.user_id), o.created_at, o.suspended_at, MAX(u.last_login_at)
+			FROM organizations o
+			LEFT JOIN org_members om ON om.org_id = o.id
+			LEFT JOIN users u ON u.id = om.user_id
+			WHERE o.id = $1 AND o.deleted_at IS NULL
+			GROUP BY o.id`, orgID)
+		var suspendedAt sql.NullTime
+		var lastActivityAt sql.NullTime
+		err := row.Scan(&result.ID, &result.Name, &result.Tier, &result.MemberCount,
+			&result.CreatedAt, &suspendedAt, &lastActivityAt)
+		if err != nil {
+			return fmt.Errorf("re-fetch org: %w", err)
+		}
+		result.SuspendedAt = fromNullTime(suspendedAt)
+		result.LastActivityAt = fromNullTime(lastActivityAt)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, err
+}
+
 // AdminGetOrgByID retrieves a single organization by ID (including deleted).
 func (s *Store) AdminGetOrgByID(ctx context.Context, orgID uuid.UUID) (*generated.Organization, error) {
 	var org generated.Organization

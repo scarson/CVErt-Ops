@@ -5,6 +5,8 @@ package doctor
 import (
 	"context"
 	"testing"
+
+	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
 func TestRun_CollectsResults(t *testing.T) {
@@ -164,6 +166,42 @@ func TestStandardChecks_SMTPLocalhostTreatedAsUnconfigured(t *testing.T) {
 		}
 	}
 	t.Fatal("smtp_connectivity check not found in StandardChecks")
+}
+
+// ── MigrationCheck dirty flag (integration) ─────────────────────────────────
+
+func TestMigrationCheck_Dirty_ReturnsFail(t *testing.T) {
+	t.Parallel()
+
+	db := testutil.NewTestDB(t)
+	pool := db.Pool()
+	ctx := context.Background()
+
+	// Read current schema version.
+	var version int
+	if err := pool.QueryRow(ctx, "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1").Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+
+	// Set dirty flag.
+	if _, err := pool.Exec(ctx, "UPDATE schema_migrations SET dirty = true WHERE version = $1", version); err != nil {
+		t.Fatalf("set dirty flag: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, "UPDATE schema_migrations SET dirty = false WHERE version = $1", version)
+	})
+
+	check := &MigrationCheck{DB: pool, ExpectedVersion: version}
+	status, msg, err := check.Run(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusFail {
+		t.Errorf("status = %q, want %q", status, StatusFail)
+	}
+	if msg == "" {
+		t.Error("expected message mentioning dirty migration")
+	}
 }
 
 // ── stub helpers ─────────────────────────────────────────────────────────────

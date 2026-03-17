@@ -58,8 +58,7 @@ async function fetchAll() {
       config.value = configResult.data as Record<string, unknown>
     }
 
-    const doctorFailed = doctorResp.status !== 200 && doctorResp.status !== 503
-    if (versionResult.error && doctorFailed && configResult.error) {
+    if (versionResult.error && doctorResp.status !== 200 && doctorResp.status !== 503 && configResult.error) {
       error.value = 'Failed to load system information.'
     }
   } catch {

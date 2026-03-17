@@ -115,8 +115,8 @@ func TestAdminFeeds_ListWithSeededData(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if len(body.Items) != len(ingest.KnownFeeds) {
-		t.Fatalf("expected %d feeds (all known), got %d", len(ingest.KnownFeeds), len(body.Items))
+	if len(body.Items) != len(ingest.AllFeedNames()) {
+		t.Fatalf("expected %d feeds (all known), got %d", len(ingest.AllFeedNames()), len(body.Items))
 	}
 
 	// Find nvd and kev entries.
@@ -176,15 +176,15 @@ func TestAdminFeeds_ListEmptyDB(t *testing.T) {
 	}
 
 	// All known feeds should appear even with no sync state rows.
-	if len(body.Items) != len(ingest.KnownFeeds) {
-		t.Fatalf("expected %d feeds, got %d", len(ingest.KnownFeeds), len(body.Items))
+	if len(body.Items) != len(ingest.AllFeedNames()) {
+		t.Fatalf("expected %d feeds, got %d", len(ingest.AllFeedNames()), len(body.Items))
 	}
 
 	feedSet := make(map[string]bool)
 	for _, f := range body.Items {
 		feedSet[f.FeedName] = true
 	}
-	for _, name := range ingest.KnownFeeds {
+	for _, name := range ingest.AllFeedNames() {
 		if !feedSet[name] {
 			t.Errorf("missing feed %q in response", name)
 		}
@@ -278,6 +278,74 @@ func TestAdminFeeds_TriggerAlreadyPending(t *testing.T) {
 	defer resp2.Body.Close() //nolint:errcheck
 	if resp2.StatusCode != http.StatusConflict {
 		t.Fatalf("second trigger: got %d, want 409", resp2.StatusCode)
+	}
+}
+
+func TestAdminFeeds_RegisteredGenericFeedVisible(t *testing.T) {
+	ingest.RegisterFeed("acme-scanner")
+	t.Cleanup(func() { ingest.ResetRegistry() })
+
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "open")
+	ctx := context.Background()
+
+	doRegister(t, ctx, ts, "generic@test.com", "TestPassword1234!")
+	loginResp := doLogin(t, ctx, ts, "generic@test.com", "TestPassword1234!")
+	defer loginResp.Body.Close() //nolint:errcheck
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doGetFeeds(t, ctx, ts, accessToken)
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin/feeds: got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Items []struct {
+			FeedName string `json:"feed_name"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	// Should include built-in feeds + the registered generic feed.
+	expectedCount := len(ingest.KnownFeeds) + 1
+	if len(body.Items) != expectedCount {
+		t.Fatalf("expected %d feeds, got %d", expectedCount, len(body.Items))
+	}
+
+	var found bool
+	for _, f := range body.Items {
+		if f.FeedName == "acme-scanner" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("registered generic feed 'acme-scanner' not found in feed list")
+	}
+}
+
+func TestAdminFeeds_TriggerRegisteredGenericFeed(t *testing.T) {
+	ingest.RegisterFeed("acme-scanner")
+	t.Cleanup(func() { ingest.ResetRegistry() })
+
+	db := testutil.NewTestDB(t)
+	_, ts := newRegisterServer(t, db, "open")
+	ctx := context.Background()
+
+	doRegister(t, ctx, ts, "generic-trigger@test.com", "TestPassword1234!")
+	loginResp := doLogin(t, ctx, ts, "generic-trigger@test.com", "TestPassword1234!")
+	defer loginResp.Body.Close() //nolint:errcheck
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doTriggerFeed(t, ctx, ts, accessToken, "acme-scanner")
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /admin/feeds/acme-scanner/run: got %d, want 202", resp.StatusCode)
 	}
 }
 

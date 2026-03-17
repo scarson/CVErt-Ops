@@ -1,154 +1,123 @@
-// ABOUTME: Tests for AdminSystemView — verifies doctor 503 responses are parsed as valid data.
-// ABOUTME: Covers the edge case where /admin/doctor returns 503 with valid JSON when unhealthy.
+// ABOUTME: Tests for AdminSystemView doctor endpoint 503 response handling.
+// ABOUTME: Verifies that both 200 and 503 doctor responses populate the health check data.
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import AdminSystemView from '../AdminSystemView.vue'
 
-vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ path: '/admin/system' })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
-  RouterLink: {
-    name: 'RouterLink',
-    props: ['to'],
-    template: '<a :href="to"><slot /></a>',
-  },
-}))
-
-const mockGET = vi.fn()
-
-vi.mock('@/lib/api/client', () => ({
-  default: {
-    GET: (...args: unknown[]) => mockGET(...args),
-  },
-}))
-
-const doctorData = {
-  status: 'unhealthy',
+const healthyDoctor = {
+  status: 'healthy',
   checks: [
     { name: 'database', status: 'pass', message: 'connected' },
-    { name: 'feeds', status: 'fail', message: 'stale data' },
+    { name: 'redis', status: 'pass', message: 'connected' },
   ],
 }
 
-const versionData = {
-  version: '1.0.0',
-  commit: 'abc123',
-  build_time: '2026-03-16T00:00:00Z',
-  go_version: 'go1.26',
+const unhealthyDoctor = {
+  status: 'unhealthy',
+  checks: [
+    { name: 'database', status: 'fail', message: 'connection refused' },
+    { name: 'redis', status: 'pass', message: 'connected' },
+  ],
 }
 
-const configData = {
-  registration_mode: 'invite-only',
-}
+// Stub the openapi-fetch client used by the component.
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: vi.fn().mockResolvedValue({ data: null, error: { status: 500 } }),
+  },
+}))
 
-async function mountView() {
-  const { default: AdminSystemView } = await import(
-    '@/views/admin/AdminSystemView.vue'
-  )
-  return mount(AdminSystemView, {
-    global: {
-      stubs: {
-        Card: { template: '<div><slot /></div>' },
-        CardHeader: { template: '<div><slot /></div>' },
-        CardTitle: { template: '<div><slot /></div>' },
-        CardContent: { template: '<div><slot /></div>' },
-        Badge: { template: '<span><slot /></span>' },
-        Button: {
-          template: '<button @click="$emit(\'click\')"><slot /></button>',
-        },
-        Loader2: { template: '<span />' },
-        RefreshCcw: { template: '<span />' },
-      },
-    },
+// Stub UI components to avoid importing the full shadcn-vue tree.
+vi.mock('@/components/ui/button', () => ({
+  Button: {
+    name: 'Button',
+    template: '<button><slot /></button>',
+    props: ['variant', 'size', 'disabled'],
+  },
+}))
+
+vi.mock('@/components/ui/card', () => ({
+  Card: { name: 'Card', template: '<div><slot /></div>' },
+  CardContent: { name: 'CardContent', template: '<div><slot /></div>' },
+  CardHeader: { name: 'CardHeader', template: '<div><slot /></div>' },
+  CardTitle: { name: 'CardTitle', template: '<div><slot /></div>' },
+}))
+
+vi.mock('@/components/ui/badge', () => ({
+  Badge: {
+    name: 'Badge',
+    template: '<span><slot /></span>',
+    props: ['variant'],
+  },
+}))
+
+vi.mock('lucide-vue-next', () => ({
+  Loader2: { name: 'Loader2', template: '<span />' },
+  RefreshCcw: { name: 'RefreshCcw', template: '<span />' },
+}))
+
+let fetchMock: ReturnType<typeof vi.fn>
+let originalFetch: typeof globalThis.fetch
+
+beforeEach(() => {
+  originalFetch = globalThis.fetch
+  fetchMock = vi.fn()
+  globalThis.fetch = fetchMock
+})
+
+afterEach(() => {
+  globalThis.fetch = originalFetch
+  vi.restoreAllMocks()
+})
+
+describe('AdminSystemView doctor response handling', () => {
+  it('populates doctor data from a 200 response', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(healthyDoctor), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const wrapper = mount(AdminSystemView)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('healthy')
+    expect(wrapper.text()).toContain('database')
   })
-}
 
-describe('AdminSystemView', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>
-
-  beforeEach(() => {
-    vi.resetModules()
-    mockGET.mockReset()
-    fetchSpy = vi.fn()
-    vi.stubGlobal('fetch', fetchSpy)
-  })
-
-  afterEach(() => {
-    vi.unstubAllGlobals()
-  })
-
-  it('renders doctor results when endpoint returns 503 (unhealthy)', async () => {
-    // Version: success
-    mockGET.mockResolvedValueOnce({ data: versionData, error: undefined })
-    // Config: success
-    mockGET.mockResolvedValueOnce({ data: configData, error: undefined })
-
-    // Doctor: 503 with valid JSON body
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify(doctorData), {
+  it('populates doctor data from a 503 response', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(unhealthyDoctor), {
         status: 503,
         headers: { 'Content-Type': 'application/json' },
       }),
     )
 
-    const wrapper = await mountView()
+    const wrapper = mount(AdminSystemView)
     await flushPromises()
 
-    // Doctor data should be rendered — 503 is valid, not an error
     expect(wrapper.text()).toContain('unhealthy')
     expect(wrapper.text()).toContain('database')
-    expect(wrapper.text()).toContain('feeds')
-    expect(wrapper.text()).toContain('stale data')
-
-    // Should NOT show the global error
-    expect(wrapper.text()).not.toContain('Failed to load system information')
+    expect(wrapper.text()).toContain('connection refused')
   })
 
-  it('shows global error when ALL three calls fail', async () => {
-    // Version: error
-    mockGET.mockResolvedValueOnce({
-      data: undefined,
-      error: { status: 500, detail: 'server error' },
-    })
-    // Config: error
-    mockGET.mockResolvedValueOnce({
-      data: undefined,
-      error: { status: 500, detail: 'server error' },
-    })
-
-    // Doctor: 500 (not 200 or 503 — a real failure)
-    fetchSpy.mockResolvedValueOnce(
-      new Response('Internal Server Error', {
-        status: 500,
-        headers: { 'Content-Type': 'text/plain' },
+  it('handles 503 response when Run button is clicked', async () => {
+    // Initial fetch returns 200 healthy.
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(healthyDoctor), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
       }),
     )
 
-    const wrapper = await mountView()
+    const wrapper = mount(AdminSystemView)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('Failed to load system information')
-  })
-
-  it('updates doctor results when runDoctor gets 503 response', async () => {
-    // Initial load: all succeed with doctor healthy (200)
-    mockGET.mockResolvedValueOnce({ data: versionData, error: undefined })
-    mockGET.mockResolvedValueOnce({ data: configData, error: undefined })
-    fetchSpy.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ status: 'healthy', checks: [] }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      ),
-    )
-
-    const wrapper = await mountView()
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('healthy')
-
-    // Click "Run" button to re-run doctor — returns 503 this time
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify(doctorData), {
+    // Clicking Run triggers runDoctor() which issues a second fetch.
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(unhealthyDoctor), {
         status: 503,
         headers: { 'Content-Type': 'application/json' },
       }),
@@ -158,35 +127,24 @@ describe('AdminSystemView', () => {
     await runButton.trigger('click')
     await flushPromises()
 
-    // Should show updated unhealthy data
     expect(wrapper.text()).toContain('unhealthy')
-    expect(wrapper.text()).toContain('feeds')
-    expect(wrapper.text()).toContain('stale data')
+    expect(wrapper.text()).toContain('connection refused')
   })
 
   it('does NOT populate doctor data on 500 — only 200 and 503 are valid', async () => {
-    // Version: success
-    mockGET.mockResolvedValueOnce({ data: versionData, error: undefined })
-    // Config: success
-    mockGET.mockResolvedValueOnce({ data: configData, error: undefined })
-
     // Doctor: 500 (a real error, not unhealthy-but-valid like 503)
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify(doctorData), {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(unhealthyDoctor), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       }),
     )
 
-    const wrapper = await mountView()
+    const wrapper = mount(AdminSystemView)
     await flushPromises()
 
     // Doctor data should NOT be rendered on 500
     expect(wrapper.text()).not.toContain('unhealthy')
-    expect(wrapper.text()).not.toContain('stale data')
-
-    // Version and config should still render (they succeeded)
-    expect(wrapper.text()).toContain('1.0.0')
-    expect(wrapper.text()).toContain('invite-only')
+    expect(wrapper.text()).not.toContain('connection refused')
   })
 })

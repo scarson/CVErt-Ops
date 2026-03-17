@@ -57,7 +57,7 @@ func (q *Queries) AdminCountOrgWatchlists(ctx context.Context, orgID uuid.UUID) 
 
 const adminGetOrgByID = `-- name: AdminGetOrgByID :one
 
-SELECT id, name, created_at, deleted_at, tier, tier_overrides, suspended_at FROM organizations WHERE id = $1
+SELECT id, name, created_at, deleted_at, tier, tier_overrides, suspended_at, mfa_required_all, mfa_remember_device_allowed, mfa_remember_device_days FROM organizations WHERE id = $1
 `
 
 // ABOUTME: sqlc queries for site admin organization management.
@@ -73,13 +73,16 @@ func (q *Queries) AdminGetOrgByID(ctx context.Context, id uuid.UUID) (Organizati
 		&i.Tier,
 		&i.TierOverrides,
 		&i.SuspendedAt,
+		&i.MfaRequiredAll,
+		&i.MfaRememberDeviceAllowed,
+		&i.MfaRememberDeviceDays,
 	)
 	return i, err
 }
 
 const adminSuspendOrg = `-- name: AdminSuspendOrg :one
 UPDATE organizations SET suspended_at = now() WHERE id = $1 AND deleted_at IS NULL AND suspended_at IS NULL
-RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at
+RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at, mfa_required_all, mfa_remember_device_allowed, mfa_remember_device_days
 `
 
 func (q *Queries) AdminSuspendOrg(ctx context.Context, id uuid.UUID) (Organization, error) {
@@ -93,13 +96,16 @@ func (q *Queries) AdminSuspendOrg(ctx context.Context, id uuid.UUID) (Organizati
 		&i.Tier,
 		&i.TierOverrides,
 		&i.SuspendedAt,
+		&i.MfaRequiredAll,
+		&i.MfaRememberDeviceAllowed,
+		&i.MfaRememberDeviceDays,
 	)
 	return i, err
 }
 
 const adminUnsuspendOrg = `-- name: AdminUnsuspendOrg :one
 UPDATE organizations SET suspended_at = NULL WHERE id = $1 AND deleted_at IS NULL AND suspended_at IS NOT NULL
-RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at
+RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at, mfa_required_all, mfa_remember_device_allowed, mfa_remember_device_days
 `
 
 func (q *Queries) AdminUnsuspendOrg(ctx context.Context, id uuid.UUID) (Organization, error) {
@@ -113,13 +119,16 @@ func (q *Queries) AdminUnsuspendOrg(ctx context.Context, id uuid.UUID) (Organiza
 		&i.Tier,
 		&i.TierOverrides,
 		&i.SuspendedAt,
+		&i.MfaRequiredAll,
+		&i.MfaRememberDeviceAllowed,
+		&i.MfaRememberDeviceDays,
 	)
 	return i, err
 }
 
 const adminUpdateOrgTier = `-- name: AdminUpdateOrgTier :one
 UPDATE organizations SET tier = $2 WHERE id = $1 AND deleted_at IS NULL
-RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at
+RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at, mfa_required_all, mfa_remember_device_allowed, mfa_remember_device_days
 `
 
 type AdminUpdateOrgTierParams struct {
@@ -138,6 +147,9 @@ func (q *Queries) AdminUpdateOrgTier(ctx context.Context, arg AdminUpdateOrgTier
 		&i.Tier,
 		&i.TierOverrides,
 		&i.SuspendedAt,
+		&i.MfaRequiredAll,
+		&i.MfaRememberDeviceAllowed,
+		&i.MfaRememberDeviceDays,
 	)
 	return i, err
 }

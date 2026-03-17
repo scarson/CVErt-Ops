@@ -1232,3 +1232,174 @@ func TestRecoveryCodeRegenerateWrongPassword(t *testing.T) {
 		t.Fatalf("regen wrong password: got %d, want 401", resp.StatusCode)
 	}
 }
+
+// ── Remember-device tests ─────────────────────────────────────────────────
+
+func TestRememberDeviceFlow(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	email, password := "remember-dev@example.com", "test-password-1234"
+	reg := doRegister(t, ctx, ts, email, password)
+	userID := uuid.MustParse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	// 1. Login → MFA challenge → verify with remember_device=true.
+	loginResp := doLogin(t, ctx, ts, email, password)
+	pt := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q,"remember_device":true}`, code)
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer verifyResp.Body.Close() //nolint:errcheck
+
+	if verifyResp.StatusCode != http.StatusOK {
+		t.Fatalf("verify: got %d, want 200", verifyResp.StatusCode)
+	}
+
+	// 2. Extract the mfa_device_token cookie.
+	deviceToken := cookieValue(verifyResp, "mfa_device_token")
+	if deviceToken == "" {
+		t.Fatal("expected mfa_device_token cookie from verify with remember_device=true")
+	}
+
+	// 3. Login again with device token — expect NO MFA challenge (direct access token).
+	loginBody := fmt.Sprintf(`{"email":%q,"password":%q}`, email, password)
+	loginReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/login", bytes.NewBufferString(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.AddCookie(&http.Cookie{Name: "mfa_device_token", Value: deviceToken})
+	loginResp2, err := ts.Client().Do(loginReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("second login: %v", err)
+	}
+	defer loginResp2.Body.Close() //nolint:errcheck
+
+	if loginResp2.StatusCode != http.StatusOK {
+		t.Fatalf("second login: got %d, want 200", loginResp2.StatusCode)
+	}
+
+	// Should get access_token directly (no pending token).
+	accessToken := cookieValue(loginResp2, "access_token")
+	if accessToken == "" {
+		t.Error("expected access_token cookie from login with valid device token (MFA bypass)")
+	}
+	pendingToken := cookieValue(loginResp2, "mfa_pending_token")
+	if pendingToken != "" {
+		t.Error("should not get mfa_pending_token when device token is valid")
+	}
+}
+
+func TestRememberDeviceOrgDisallowed(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	email, password := "no-remember@example.com", "test-password-1234"
+	reg := doRegister(t, ctx, ts, email, password)
+	userID := uuid.MustParse(reg.UserID)
+	orgID := uuid.MustParse(reg.OrgID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	// Disable remember-device for the org.
+	if _, err := srv.store.UpdateOrgMFASettings(ctx, orgID, false, false, 30); err != nil {
+		t.Fatalf("update org settings: %v", err)
+	}
+
+	// Login → MFA challenge → verify with remember_device=true.
+	loginResp := doLogin(t, ctx, ts, email, password)
+	pt := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q,"remember_device":true}`, code)
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer verifyResp.Body.Close() //nolint:errcheck
+
+	if verifyResp.StatusCode != http.StatusOK {
+		t.Fatalf("verify: got %d, want 200", verifyResp.StatusCode)
+	}
+
+	// No device token should be issued.
+	deviceToken := cookieValue(verifyResp, "mfa_device_token")
+	if deviceToken != "" {
+		t.Error("should not get mfa_device_token when org disallows remember-device")
+	}
+}
+
+func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	email, password := "dev-pw-change@example.com", "test-password-1234"
+	reg := doRegister(t, ctx, ts, email, password)
+	userID := uuid.MustParse(reg.UserID)
+
+	// Create a device token directly in the DB.
+	tokenHash := sha256Hex("fake-device-token-123")
+	if err := srv.store.CreateRememberDeviceToken(ctx, userID, tokenHash, time.Now().Add(30*24*time.Hour)); err != nil {
+		t.Fatalf("create device token: %v", err)
+	}
+
+	// Verify the token is valid.
+	valid, err := srv.store.ValidateRememberDeviceToken(ctx, userID, tokenHash)
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if !valid {
+		t.Fatal("device token should be valid before password change")
+	}
+
+	// Change password.
+	loginResp := doLogin(t, ctx, ts, email, password)
+	accessToken := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck
+
+	changePWReq := authedRequest(t, ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/change-password",
+		fmt.Sprintf(`{"current_password":%q,"new_password":"new-secure-password-1"}`, password),
+		[]*http.Cookie{{Name: "access_token", Value: accessToken}})
+	changePWResp, err := ts.Client().Do(changePWReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	defer changePWResp.Body.Close() //nolint:errcheck
+	if changePWResp.StatusCode != http.StatusOK {
+		t.Fatalf("change password: got %d, want 200", changePWResp.StatusCode)
+	}
+
+	// Verify the device token is now invalid.
+	valid, err = srv.store.ValidateRememberDeviceToken(ctx, userID, tokenHash)
+	if err != nil {
+		t.Fatalf("validate after change: %v", err)
+	}
+	if valid {
+		t.Error("device token should be invalidated after password change")
+	}
+}

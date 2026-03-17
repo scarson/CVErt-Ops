@@ -19,6 +19,32 @@ func TestEventSeverityMapIsExhaustive(t *testing.T) {
 		EventAdminUserDisabled,
 		EventAdminConfigReloaded,
 		EventAdminBulkRetryTriggered,
+		// MFA authentication events
+		EventMFAChallengeRequested,
+		EventMFAVerifySuccess,
+		EventMFAVerifyFailed,
+		EventMFAChallengeExhausted,
+		EventMFAEmailOTPRateLimited,
+		EventMFARememberDeviceIssued,
+		EventMFARememberDeviceUsed,
+		// Recovery code events
+		EventMFARecoveryCodesGenerated,
+		EventMFARecoveryCodeUsed,
+		EventMFARecoveryCodeFailed,
+		// Enrollment/management events
+		EventMFAMethodEnrolled,
+		EventMFAMethodRemoved,
+		EventMFAAllMethodsRemoved,
+		EventMFAEnrollmentFailed,
+		EventMFADisableBlocked,
+		// Admin action events
+		EventMFAAdminReset,
+		EventMFAAdminRequireMember,
+		EventMFAAdminUnrequireMember,
+		EventMFAOrgRequireAllEnabled,
+		EventMFAOrgRequireAllDisabled,
+		EventAuthPasswordResetForced,
+		EventAuthPasswordResetForcedCompleted,
 	}
 	for _, e := range allEvents {
 		if _, ok := Severity(e); !ok {

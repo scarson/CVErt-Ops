@@ -222,9 +222,19 @@ func (srv *Server) adminRequireMFAHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventMFAAdminRequireMember,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			OrgID:    &orgID,
+			Details:  map[string]any{"target_user_id": targetID.String()},
+		})
+	}
 	srv.auditLog(r, audit.Entry{
 		OrgID:      orgID,
-		Action:     "mfa.admin_require_member",
+		Action:     secure.EventMFAAdminRequireMember,
 		EntityType: "security_event",
 		EntityID:   targetID.String(),
 		Success:    true,
@@ -241,6 +251,7 @@ func (srv *Server) adminUnrequireMFAHandler(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	targetID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
@@ -254,9 +265,19 @@ func (srv *Server) adminUnrequireMFAHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventMFAAdminUnrequireMember,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			OrgID:    &orgID,
+			Details:  map[string]any{"target_user_id": targetID.String()},
+		})
+	}
 	srv.auditLog(r, audit.Entry{
 		OrgID:      orgID,
-		Action:     "mfa.admin_unrequire_member",
+		Action:     secure.EventMFAAdminUnrequireMember,
 		EntityType: "security_event",
 		EntityID:   targetID.String(),
 		Success:    true,
@@ -282,6 +303,7 @@ func (srv *Server) adminUpdateOrgMFASettingsHandler(w http.ResponseWriter, r *ht
 		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
+	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	var req updateOrgMFASettingsBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
@@ -329,6 +351,23 @@ func (srv *Server) adminUpdateOrgMFASettingsHandler(w http.ResponseWriter, r *ht
 	if org == nil {
 		writeProblem(w, http.StatusNotFound, "org not found")
 		return
+	}
+
+	// Emit event if mfa_required_all changed.
+	if srv.eventWriter != nil && org.MfaRequiredAll != existing.MfaRequiredAll {
+		evType := secure.EventMFAOrgRequireAllEnabled
+		severity := secure.SeverityInfo
+		if !org.MfaRequiredAll {
+			evType = secure.EventMFAOrgRequireAllDisabled
+			severity = secure.SeverityWarning
+		}
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     evType,
+			Severity: severity,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			OrgID:    &orgID,
+		})
 	}
 
 	srv.auditLog(r, audit.Entry{

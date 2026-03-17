@@ -18,9 +18,35 @@ const (
 	EventAdminConfigReloaded       = "admin.config_reloaded"
 	EventAdminBulkRetryTriggered   = "admin.bulk_retry_triggered"
 
-	// MFA events
-	EventMFAAdminReset             = "mfa.admin_reset"
-	EventAuthPasswordResetForced   = "auth.password_reset_forced"
+	// MFA authentication events
+	EventMFAChallengeRequested  = "mfa.challenge_requested"
+	EventMFAVerifySuccess       = "mfa.verify_success"
+	EventMFAVerifyFailed        = "mfa.verify_failed"
+	EventMFAChallengeExhausted  = "mfa.challenge_exhausted"
+	EventMFAEmailOTPRateLimited = "mfa.email_otp_rate_limited"
+	EventMFARememberDeviceIssued = "mfa.remember_device_issued"
+	EventMFARememberDeviceUsed  = "mfa.remember_device_used"
+
+	// Recovery code events
+	EventMFARecoveryCodesGenerated = "mfa.recovery_codes_generated"
+	EventMFARecoveryCodeUsed       = "mfa.recovery_code_used"
+	EventMFARecoveryCodeFailed     = "mfa.recovery_code_failed"
+
+	// Enrollment/management events
+	EventMFAMethodEnrolled     = "mfa.method_enrolled"
+	EventMFAMethodRemoved      = "mfa.method_removed"
+	EventMFAAllMethodsRemoved  = "mfa.all_methods_removed"
+	EventMFAEnrollmentFailed   = "mfa.enrollment_failed"
+	EventMFADisableBlocked     = "mfa.disable_blocked"
+
+	// Admin action events
+	EventMFAAdminReset            = "mfa.admin_reset"
+	EventMFAAdminRequireMember    = "mfa.admin_require_member"
+	EventMFAAdminUnrequireMember  = "mfa.admin_unrequire_member"
+	EventMFAOrgRequireAllEnabled  = "mfa.org_require_all_enabled"
+	EventMFAOrgRequireAllDisabled = "mfa.org_require_all_disabled"
+	EventAuthPasswordResetForced          = "auth.password_reset_forced"
+	EventAuthPasswordResetForcedCompleted = "auth.password_reset_forced_completed"
 )
 
 // Severity levels for security events.
@@ -44,8 +70,28 @@ var eventSeverity = map[string]string{
 	EventAdminUserDisabled:         SeverityWarning,
 	EventAdminConfigReloaded:       SeverityInfo,
 	EventAdminBulkRetryTriggered:   SeverityInfo,
-	EventMFAAdminReset:             SeverityCritical,
-	EventAuthPasswordResetForced:   SeverityCritical,
+	EventMFAChallengeRequested:            SeverityInfo,
+	EventMFAVerifySuccess:                 SeverityInfo,
+	EventMFAVerifyFailed:                  SeverityWarning,
+	EventMFAChallengeExhausted:            SeverityWarning,
+	EventMFAEmailOTPRateLimited:           SeverityWarning,
+	EventMFARememberDeviceIssued:          SeverityInfo,
+	EventMFARememberDeviceUsed:            SeverityInfo,
+	EventMFARecoveryCodesGenerated:        SeverityInfo,
+	EventMFARecoveryCodeUsed:              SeverityWarning,
+	EventMFARecoveryCodeFailed:            SeverityWarning,
+	EventMFAMethodEnrolled:                SeverityInfo,
+	EventMFAMethodRemoved:                 SeverityInfo,
+	EventMFAAllMethodsRemoved:             SeverityWarning,
+	EventMFAEnrollmentFailed:              SeverityWarning,
+	EventMFADisableBlocked:                SeverityWarning,
+	EventMFAAdminReset:                    SeverityCritical,
+	EventMFAAdminRequireMember:            SeverityInfo,
+	EventMFAAdminUnrequireMember:          SeverityInfo,
+	EventMFAOrgRequireAllEnabled:          SeverityInfo,
+	EventMFAOrgRequireAllDisabled:         SeverityWarning,
+	EventAuthPasswordResetForced:          SeverityCritical,
+	EventAuthPasswordResetForcedCompleted: SeverityInfo,
 }
 
 // Severity returns the default severity level for the given event type.

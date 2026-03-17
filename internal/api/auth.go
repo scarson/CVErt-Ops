@@ -416,6 +416,14 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 			}
 			if valid {
 				skipMFA = true
+				if srv.eventWriter != nil {
+					srv.eventWriter.Write(ctx, secure.Event{
+						Type:     secure.EventMFARememberDeviceUsed,
+						Severity: secure.SeverityInfo,
+						ActorIP:  clientIP(ctx),
+						UserID:   &user.ID,
+					})
+				}
 			}
 		}
 		if !skipMFA {

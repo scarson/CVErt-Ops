@@ -21,6 +21,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/crypto"
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -79,6 +80,14 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if count >= int64(srv.cfg.MFAEmailOTPMaxPerHour) {
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAEmailOTPRateLimited,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &claims.UserID,
+			})
+		}
 		return nil, huma.Error429TooManyRequests("too many email OTP requests — try again later")
 	}
 
@@ -105,6 +114,16 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 	if err := srv.sendMFAOTPEmail(ctx, user.Email, code); err != nil {
 		slog.WarnContext(ctx, "mfa-challenge: send email", "error", err)
 		// Don't fail the request — the code is in the DB.
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAChallengeRequested,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &claims.UserID,
+			Details:  map[string]any{"method": "email_otp"},
+		})
 	}
 
 	out := &mfaChallengeOutput{}
@@ -166,6 +185,27 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 		verified, remaining, err = srv.store.VerifyRecoveryCode(ctx, claims.UserID, input.Body.Code)
 		if verified {
 			slog.InfoContext(ctx, "mfa-verify: recovery code used", "user_id", claims.UserID, "remaining", remaining)
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:     secure.EventMFARecoveryCodeUsed,
+					Severity: secure.SeverityWarning,
+					ActorIP:  clientIP(ctx),
+					UserID:   &claims.UserID,
+					Details:  map[string]any{"codes_remaining": remaining},
+				})
+			}
+			if remaining <= 2 {
+				slog.WarnContext(ctx, "mfa-verify: recovery codes running low", "user_id", claims.UserID, "remaining", remaining)
+			}
+		} else if err == nil {
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:     secure.EventMFARecoveryCodeFailed,
+					Severity: secure.SeverityWarning,
+					ActorIP:  clientIP(ctx),
+					UserID:   &claims.UserID,
+				})
+			}
 		}
 	default:
 		return nil, huma.Error400BadRequest("unsupported MFA method")
@@ -177,10 +217,30 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 	}
 	if !verified {
 		srv.lockout.RecordFailure(ctx, user.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAVerifyFailed,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &claims.UserID,
+				Details:  map[string]any{"method": input.Body.Method},
+			})
+		}
 		return nil, huma.Error401Unauthorized("invalid verification code")
 	}
 
-	// MFA verified — progress the pending token.
+	// MFA verified — emit success event.
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAVerifySuccess,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &claims.UserID,
+			Details:  map[string]any{"method": input.Body.Method},
+		})
+	}
+
+	// Progress the pending token.
 	remaining := removePendingItem(claims.Pending, "mfa_challenge")
 
 	out := &mfaVerifyOutput{}
@@ -220,6 +280,14 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 			slog.WarnContext(ctx, "mfa-verify: issue device token", "error", rdErr)
 		} else if deviceCookie != "" {
 			out.SetCookie = append(out.SetCookie, deviceCookie)
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:     secure.EventMFARememberDeviceIssued,
+					Severity: secure.SeverityInfo,
+					ActorIP:  clientIP(ctx),
+					UserID:   &claims.UserID,
+				})
+			}
 		}
 	}
 
@@ -595,6 +663,16 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAMethodEnrolled,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+			Details:  map[string]any{"method": "totp"},
+		})
+	}
+
 	out := &mfaTOTPConfirmOutput{}
 
 	// Generate recovery codes on first enrollment.
@@ -608,6 +686,14 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 			// Non-fatal: credential is persisted, codes can be generated later.
 		} else {
 			out.Body.RecoveryCodes = codes
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:     secure.EventMFARecoveryCodesGenerated,
+					Severity: secure.SeverityInfo,
+					ActorIP:  clientIP(ctx),
+					UserID:   &userID,
+				})
+			}
 		}
 	}
 
@@ -666,6 +752,14 @@ func (srv *Server) mfaEmailOTPSetupHandler(ctx context.Context, input *mfaEmailO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if count >= int64(srv.cfg.MFAEmailOTPMaxPerHour) {
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAEmailOTPRateLimited,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &userID,
+			})
+		}
 		return nil, huma.Error429TooManyRequests("too many email OTP requests — try again later")
 	}
 
@@ -740,6 +834,16 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAMethodEnrolled,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+			Details:  map[string]any{"method": "email_otp"},
+		})
+	}
+
 	out := &mfaEmailOTPConfirmOutput{}
 
 	// Generate recovery codes on first enrollment.
@@ -752,6 +856,14 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 			slog.ErrorContext(ctx, "email-otp-confirm: generate recovery codes", "error", err)
 		} else {
 			out.Body.RecoveryCodes = codes
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:     secure.EventMFARecoveryCodesGenerated,
+					Severity: secure.SeverityInfo,
+					ActorIP:  clientIP(ctx),
+					UserID:   &userID,
+				})
+			}
 		}
 	}
 
@@ -863,6 +975,15 @@ func (srv *Server) mfaRemoveMethodHandler(ctx context.Context, input *mfaRemoveM
 			return nil, huma.Error500InternalServerError("internal error")
 		}
 		if required {
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:     secure.EventMFADisableBlocked,
+					Severity: secure.SeverityWarning,
+					ActorIP:  clientIP(ctx),
+					UserID:   &userID,
+					Details:  map[string]any{"method": input.Method},
+				})
+			}
 			return nil, huma.Error403Forbidden("MFA is required and cannot be disabled")
 		}
 	}
@@ -877,6 +998,16 @@ func (srv *Server) mfaRemoveMethodHandler(ctx context.Context, input *mfaRemoveM
 		return nil, huma.Error404NotFound("method not enrolled")
 	}
 
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAMethodRemoved,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+			Details:  map[string]any{"method": input.Method},
+		})
+	}
+
 	// If no remaining credentials, delete recovery codes too.
 	remaining, err := srv.store.CountMFACredentialsByUser(ctx, userID)
 	if err != nil {
@@ -888,6 +1019,14 @@ func (srv *Server) mfaRemoveMethodHandler(ctx context.Context, input *mfaRemoveM
 		// Also delete remember-device tokens.
 		if err := srv.store.DeleteRememberDeviceTokens(ctx, userID); err != nil {
 			slog.WarnContext(ctx, "mfa-remove: delete device tokens", "error", err)
+		}
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAAllMethodsRemoved,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &userID,
+			})
 		}
 	}
 
@@ -937,6 +1076,15 @@ func (srv *Server) mfaRegenerateCodesHandler(ctx context.Context, input *mfaRege
 	if err != nil {
 		slog.ErrorContext(ctx, "recovery-regen: regenerate", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFARecoveryCodesGenerated,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+		})
 	}
 
 	out := &mfaRegenerateCodesOutput{}

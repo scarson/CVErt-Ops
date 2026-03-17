@@ -6,7 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/secure"
 )
 
 // adminReloadConfigHandler handles POST /api/v1/admin/reload-config.
@@ -34,6 +37,16 @@ func (srv *Server) adminReloadConfigHandler(w http.ResponseWriter, r *http.Reque
 
 	srv.configHolder.Store(newCfg)
 	slog.InfoContext(r.Context(), "config reloaded via admin API")
+
+	if srv.eventWriter != nil {
+		callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventAdminConfigReloaded,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+		})
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "config reloaded"})
 }

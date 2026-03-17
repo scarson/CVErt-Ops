@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/auth"
+	"github.com/scarson/cvert-ops/internal/secure"
 )
 
 // createAPIKeyBody is the JSON request body for POST /api/v1/orgs/{org_id}/api-keys.
@@ -129,6 +130,17 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if key.ExpiresAt.Valid {
 		out.ExpiresAt = key.ExpiresAt.Time.Format(time.RFC3339)
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:       secure.EventAuthAPIKeyCreated,
+			Severity:   secure.SeverityInfo,
+			ActorIP:    clientIP(r.Context()),
+			UserID:     &callerID,
+			OrgID:      &orgID,
+			Details:    map[string]any{"key_name": req.Name, "role": req.Role},
+		})
 	}
 
 	writeLocation(w, r, key.ID.String())

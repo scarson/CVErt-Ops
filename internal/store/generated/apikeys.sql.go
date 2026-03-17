@@ -159,6 +159,32 @@ func (q *Queries) LookupAPIKey(ctx context.Context, keyHash string) (ApiKey, err
 	return i, err
 }
 
+const lookupAPIKeyByHash = `-- name: LookupAPIKeyByHash :one
+SELECT id, org_id, created_by_user_id, key_hash, name, role, expires_at, last_used_at, created_at, revoked_at FROM api_keys
+WHERE key_hash = $1
+LIMIT 1
+`
+
+// Returns the key matching the hash regardless of revocation/expiry status.
+// Used to detect revoked-key usage for security event logging.
+func (q *Queries) LookupAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, error) {
+	row := q.db.QueryRowContext(ctx, lookupAPIKeyByHash, keyHash)
+	var i ApiKey
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.CreatedByUserID,
+		&i.KeyHash,
+		&i.Name,
+		&i.Role,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :exec
 UPDATE api_keys SET revoked_at = now()
 WHERE id = $1 AND org_id = $2

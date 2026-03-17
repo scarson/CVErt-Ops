@@ -16,6 +16,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
+	"github.com/scarson/cvert-ops/internal/secure"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -241,6 +242,16 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
 		}()
 		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     &user.ID,
+				Details:    map[string]any{"reason": "account disabled"},
+			})
+		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -249,6 +260,20 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	allowed, retryAfter := srv.lockout.Check(ctx, input.Body.Email)
 	if !allowed {
 		time.Sleep(50 * time.Millisecond) // timing normalization
+		if srv.eventWriter != nil {
+			var uid *uuid.UUID
+			if user != nil {
+				uid = &user.ID
+			}
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     uid,
+				Details:    map[string]any{"reason": "account locked"},
+			})
+		}
 		retrySeconds := int(retryAfter.Seconds())
 		if retrySeconds < 1 {
 			retrySeconds = 1
@@ -273,6 +298,15 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
 		}()
 		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				Details:    map[string]any{"reason": "invalid credentials"},
+			})
+		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -290,6 +324,28 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	}
 	if !ok {
 		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     &user.ID,
+				Details:    map[string]any{"reason": "invalid credentials"},
+			})
+		}
+		// Check if this failure triggered account lockout.
+		if locked, _ := srv.lockout.Check(ctx, input.Body.Email); !locked {
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:       secure.EventAuthAccountLocked,
+					Severity:   secure.SeverityCritical,
+					ActorIP:    clientIP(ctx),
+					ActorEmail: input.Body.Email,
+					UserID:     &user.ID,
+				})
+			}
+		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -316,6 +372,16 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	// Non-fatal — last_login_at is informational only.
 	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
 		slog.WarnContext(ctx, "login: update last login", "error", err)
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:       secure.EventAuthLoginSuccess,
+			Severity:   secure.SeverityInfo,
+			ActorIP:    clientIP(ctx),
+			ActorEmail: input.Body.Email,
+			UserID:     &user.ID,
+		})
 	}
 
 	return &loginOutput{SetCookie: authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)}, nil
@@ -366,6 +432,14 @@ func (srv *Server) refreshHandler(ctx context.Context, input *refreshInput) (*re
 		// Outside grace window: token reuse without grace → treat as theft.
 		if _, incrErr := srv.store.IncrementTokenVersion(ctx, stored.UserID); incrErr != nil {
 			slog.ErrorContext(ctx, "refresh: increment token version on theft", "error", incrErr)
+		}
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventAuthTokenReuseDetected,
+				Severity: secure.SeverityCritical,
+				ActorIP:  clientIP(ctx),
+				UserID:   &stored.UserID,
+			})
 		}
 		return nil, huma.Error401Unauthorized("refresh token already used")
 	}
@@ -609,6 +683,17 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if err := srv.store.ClearForcePasswordReset(ctx, user.ID); err != nil {
 		slog.ErrorContext(ctx, "change-password: clear force reset", "error", err)
 		// Non-fatal — password is already changed.
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:       secure.EventAuthPasswordChanged,
+			Severity:   secure.SeverityInfo,
+			ActorIP:    clientIP(ctx),
+			ActorEmail: user.Email,
+			UserID:     &user.ID,
+			Details:    map[string]any{"method": "change_password"},
+		})
 	}
 
 	return &changePasswordOutput{}, nil

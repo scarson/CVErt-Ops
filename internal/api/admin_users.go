@@ -11,6 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/secure"
 )
 
 // adminUserCursor is the opaque cursor for admin user list pagination.
@@ -105,6 +107,16 @@ func (srv *Server) adminDisableUserHandler(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventAdminUserDisabled,
+			Severity: secure.SeverityWarning,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			Details:  map[string]any{"target_user_id": userID.String()},
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled", "user_id": user.ID.String()})
 }
 
@@ -163,6 +175,17 @@ func (srv *Server) adminUnlockUserHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		// Not locked — idempotent.
+	}
+
+	if srv.eventWriter != nil {
+		callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
+		srv.eventWriter.Write(r.Context(), secure.Event{
+			Type:     secure.EventAuthAccountUnlocked,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			Details:  map[string]any{"target_user_id": userID.String()},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unlocked", "user_id": userID.String()})

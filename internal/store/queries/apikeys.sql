@@ -28,5 +28,12 @@ WHERE id = $1 AND org_id = $2;
 SELECT id, org_id, created_by_user_id, key_hash, name, role, expires_at, last_used_at, created_at, revoked_at
 FROM api_keys WHERE id = $1 AND org_id = $2 LIMIT 1;
 
+-- name: LookupAPIKeyByHash :one
+-- Returns the key matching the hash regardless of revocation/expiry status.
+-- Used to detect revoked-key usage for security event logging.
+SELECT * FROM api_keys
+WHERE key_hash = $1
+LIMIT 1;
+
 -- name: UpdateAPIKeyLastUsed :exec
 UPDATE api_keys SET last_used_at = now() WHERE id = $1;

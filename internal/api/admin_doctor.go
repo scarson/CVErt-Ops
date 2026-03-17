@@ -3,8 +3,6 @@
 package api
 
 import (
-	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/scarson/cvert-ops/internal/doctor"
@@ -36,9 +34,5 @@ func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
 		"checks": results,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.ErrorContext(r.Context(), "doctor: failed to encode response", "error", err)
-	}
+	writeJSON(w, statusCode, resp)
 }

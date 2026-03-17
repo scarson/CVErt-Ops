@@ -19,8 +19,18 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockGET = vi.fn()
+const mockPATCH = vi.fn()
+const mockDELETE = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: (...args: unknown[]) => mockGET(...args),
+    POST: vi.fn(),
+    PATCH: (...args: unknown[]) => mockPATCH(...args),
+    DELETE: (...args: unknown[]) => mockDELETE(...args),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 
@@ -63,42 +73,37 @@ function makeCpeItem(overrides: Record<string, unknown> = {}) {
 }
 
 function mockWatchlistSuccess(wl = makeWatchlist()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(wl),
+  mockGET.mockResolvedValueOnce({
+    data: wl,
+    error: undefined,
   })
 }
 
 function mockWatchlistNotFound() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 404,
-    json: () => Promise.resolve({ detail: 'watchlist not found' }),
+  mockGET.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 404, detail: 'watchlist not found' },
   })
 }
 
 function mockItemsSuccess(items: unknown[] = [], nextCursor?: string) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ items, next_cursor: nextCursor }),
+  mockGET.mockResolvedValueOnce({
+    data: { items, next_cursor: nextCursor },
+    error: undefined,
   })
 }
 
 function mockPatchSuccess(wl = makeWatchlist()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(wl),
+  mockPATCH.mockResolvedValueOnce({
+    data: wl,
+    error: undefined,
   })
 }
 
 function mockDeleteItemSuccess() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 204,
-    json: () => Promise.resolve(null),
+  mockDELETE.mockResolvedValueOnce({
+    data: undefined,
+    error: undefined,
   })
 }
 
@@ -155,7 +160,7 @@ describe('WatchlistDetailView', () => {
 
   describe('loading state', () => {
     it('shows loading indicator while fetching', async () => {
-      mockFetch.mockImplementation(() => new Promise(() => {}))
+      mockGET.mockImplementation(() => new Promise(() => {}))
       await mountView()
 
       expect(wrapper.text()).toContain('Loading')
@@ -174,10 +179,9 @@ describe('WatchlistDetailView', () => {
 
   describe('error state', () => {
     it('shows error message when API returns 500', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Internal Server Error' }),
+      mockGET.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Internal Server Error' },
       })
       await mountView()
       await flushPromises()
@@ -187,7 +191,7 @@ describe('WatchlistDetailView', () => {
 
     it('shows error when fetching items fails (network error)', async () => {
       mockWatchlistSuccess()
-      mockFetch.mockRejectedValueOnce(new Error('Network error'))
+      mockGET.mockRejectedValueOnce(new Error('Network error'))
 
       await mountView()
       await flushPromises()
@@ -341,10 +345,10 @@ describe('WatchlistDetailView', () => {
       await clickTestId('save-name-btn')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123`,
+      expect(mockPATCH).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists/{id}',
         expect.objectContaining({
-          method: 'PATCH',
+          params: { path: { org_id: TEST_ORG_ID, id: 'wl-123' } },
         }),
       )
 
@@ -369,10 +373,9 @@ describe('WatchlistDetailView', () => {
       await flushPromises()
 
       // Mock failed PATCH
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Server error' }),
+      mockPATCH.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
       })
 
       await clickTestId('save-name-btn')
@@ -395,7 +398,7 @@ describe('WatchlistDetailView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
+      mockDELETE.mockReset()
       mockDeleteItemSuccess()
 
       // Click delete on the second item
@@ -404,10 +407,10 @@ describe('WatchlistDetailView', () => {
       await deleteBtns[1]!.trigger('click')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123/items/item-del`,
+      expect(mockDELETE).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists/{id}/items/{item_id}',
         expect.objectContaining({
-          method: 'DELETE',
+          params: { path: { org_id: TEST_ORG_ID, id: 'wl-123', item_id: 'item-del' } },
         }),
       )
 
@@ -421,11 +424,10 @@ describe('WatchlistDetailView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Server error' }),
+      mockDELETE.mockReset()
+      mockDELETE.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
       })
 
       const deleteBtn = wrapper.find('[data-testid="delete-item-btn"]')
@@ -498,18 +500,18 @@ describe('WatchlistDetailView', () => {
       await flushPromises()
 
       // First call: fetch watchlist
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists/{id}',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID, id: 'wl-123' } },
         }),
       )
 
       // Second call: fetch items
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-123/items`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists/{id}/items',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID, id: 'wl-123' } },
         }),
       )
     })

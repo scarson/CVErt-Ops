@@ -16,8 +16,16 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockPOST = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: vi.fn(),
+    POST: (...args: unknown[]) => mockPOST(...args),
+    PATCH: vi.fn(),
+    DELETE: vi.fn(),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 
@@ -34,26 +42,23 @@ function makeWatchlistEntry(overrides: Record<string, unknown> = {}) {
 }
 
 function mockCreateSuccess(entry = makeWatchlistEntry()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 201,
-    json: () => Promise.resolve(entry),
+  mockPOST.mockResolvedValueOnce({
+    data: entry,
+    error: undefined,
   })
 }
 
 function mockCreateConflict() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 409,
-    json: () => Promise.resolve({ detail: 'watchlist name already exists' }),
+  mockPOST.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 409, detail: 'watchlist name already exists' },
   })
 }
 
 function mockCreateForbidden() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 403,
-    json: () => Promise.resolve({ detail: 'tier limit: max watchlists reached' }),
+  mockPOST.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 403, detail: 'tier limit: max watchlists reached' },
   })
 }
 
@@ -101,6 +106,7 @@ describe('CreateWatchlistDialog', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    mockPOST.mockReset()
 
     const auth = useAuthStore()
     auth.activeOrgId = TEST_ORG_ID
@@ -152,16 +158,20 @@ describe('CreateWatchlistDialog', () => {
     await clickTestId('create-watchlist-btn')
     await flushPromises()
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      `/api/v1/orgs/${TEST_ORG_ID}/watchlists`,
+    expect(mockPOST).toHaveBeenCalledWith(
+      '/orgs/{org_id}/watchlists',
       expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ name: 'Test WL', description: 'Desc' }),
+        params: { path: { org_id: TEST_ORG_ID } },
       }),
     )
+
+    // Verify the body includes name and description
+    const callArgs = mockPOST.mock.calls[0]!
+    expect(callArgs[1].body.name).toBe('Test WL')
+    expect(callArgs[1].body.description).toBe('Desc')
   })
 
-  it('omits description from payload when empty', async () => {
+  it('sends null description when empty', async () => {
     mockCreateSuccess(makeWatchlistEntry({ description: undefined }))
 
     await mountDialog()
@@ -173,9 +183,9 @@ describe('CreateWatchlistDialog', () => {
     await clickTestId('create-watchlist-btn')
     await flushPromises()
 
-    const callBody = JSON.parse(mockFetch.mock.calls[0]![1].body as string)
-    expect(callBody).toEqual({ name: 'Name Only' })
-    expect(callBody).not.toHaveProperty('description')
+    const callArgs = mockPOST.mock.calls[0]!
+    expect(callArgs[1].body.name).toBe('Name Only')
+    expect(callArgs[1].body.description).toBeNull()
   })
 
   it('shows error on 409 conflict', async () => {

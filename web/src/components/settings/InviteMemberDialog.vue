@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import {
   Dialog,
   DialogContent,
@@ -88,21 +88,19 @@ async function handleSend() {
   error.value = ''
 
   try {
-    const resp = await orgFetch(`/api/v1/orgs/${auth.activeOrgId}/invitations`, {
-      method: 'POST',
-      body: JSON.stringify({ email: email.value.trim(), role: role.value }),
+    const { data, error: fetchError } = await client.POST('/orgs/{org_id}/invitations', {
+      params: { path: { org_id: auth.activeOrgId! } },
+      body: { email: email.value.trim(), role: role.value },
     })
 
-    if (!resp.ok) {
-      const data = await resp.json()
-      error.value = data.detail ?? 'Failed to send invitation'
+    if (fetchError) {
+      error.value = fetchError.detail ?? 'Failed to send invitation'
       submitting.value = false
       return
     }
 
-    const entry: InvitationEntry = await resp.json()
     success.value = true
-    emit('invited', entry)
+    emit('invited', data as InvitationEntry)
   } catch {
     error.value = 'Network error. Please try again.'
   } finally {

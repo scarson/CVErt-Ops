@@ -179,12 +179,12 @@ func TestSavedSearch_CRUD(t *testing.T) {
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("list: got %d, want 200", listResp.StatusCode)
 	}
-	var items []savedSearchEntry
-	if err := json.NewDecoder(listResp.Body).Decode(&items); err != nil {
+	var list listResponse[savedSearchEntry]
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list response: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("list len = %d, want 1", len(items))
+	if len(list.Items) != 1 {
+		t.Fatalf("list len = %d, want 1", len(list.Items))
 	}
 
 	// 4. Patch
@@ -227,12 +227,12 @@ func TestSavedSearch_CreateValidation(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
 	token := cookieValue(loginResp, "access_token")
 
-	// Empty name → 400
+	// Empty name → 422 (validation error, not malformed)
 	body := fmt.Sprintf(`{"name":"","query_json":%s}`, validDSLJSON)
 	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
 	}
 
 	// Invalid DSL → 422
@@ -333,11 +333,11 @@ func TestSavedSearch_PatchValidation(t *testing.T) {
 		t.Fatalf("decode create: %v", err)
 	}
 
-	// Patch with empty name → 400.
+	// Patch with empty name → 422.
 	resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, created.ID, `{"name":""}`)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
 	}
 
 	// Patch with name > 255 → 422.
@@ -436,13 +436,13 @@ func TestSavedSearch_PrivateVisibility(t *testing.T) {
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("bob list shared: got %d, want 200", listResp.StatusCode)
 	}
-	var listItems []savedSearchEntry
-	json.NewDecoder(listResp.Body).Decode(&listItems) //nolint:errcheck,gosec
-	if len(listItems) != 1 {
-		t.Fatalf("bob shared list len = %d, want 1", len(listItems))
+	var listResult listResponse[savedSearchEntry]
+	json.NewDecoder(listResp.Body).Decode(&listResult) //nolint:errcheck,gosec
+	if len(listResult.Items) != 1 {
+		t.Fatalf("bob shared list len = %d, want 1", len(listResult.Items))
 	}
-	if listItems[0].Name != "Alice Shared" {
-		t.Errorf("expected Alice Shared, got %q", listItems[0].Name)
+	if listResult.Items[0].Name != "Alice Shared" {
+		t.Errorf("expected Alice Shared, got %q", listResult.Items[0].Name)
 	}
 }
 
@@ -489,8 +489,8 @@ func TestSavedSearch_Execute(t *testing.T) {
 	if err := json.NewDecoder(execResp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode execute response: %v", err)
 	}
-	if len(result.Results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(result.Results))
+	if len(result.Items) != 2 {
+		t.Errorf("expected 2 results, got %d", len(result.Items))
 	}
 }
 
@@ -760,6 +760,30 @@ func TestSavedSearch_CreateMalformedJSON(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("create malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+
+	var prob struct {
+		Status int `json:"status"`
+		Errors []struct {
+			Location string `json:"location"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&prob); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if prob.Status != 400 {
+		t.Errorf("problem status = %d, want 400", prob.Status)
+	}
+	if len(prob.Errors) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	if prob.Errors[0].Location != "body" {
+		t.Errorf("errors[0].location = %q, want %q", prob.Errors[0].Location, "body")
 	}
 }
 
@@ -1058,6 +1082,112 @@ func TestSavedSearch_CreateUnauthenticated(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated create: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// ── Contract tests: Location header, list envelope, validation error format ──
+
+func TestCreateSavedSearch_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-loc@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-loc@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	body := fmt.Sprintf(`{"name":"Loc Test","query_json":%s}`, validDSLJSON)
+	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+
+	var created savedSearchEntry
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("Location header is empty")
+	}
+	if !strings.Contains(loc, created.ID) {
+		t.Errorf("Location %q does not contain search ID %q", loc, created.ID)
+	}
+}
+
+func TestListSavedSearches_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-env@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-env@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doListSavedSearches(t, ctx, ts, token, reg.OrgID, "")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list: got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify the response has "items" key by decoding into a map.
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["items"]; !ok {
+		t.Fatal("response missing 'items' key")
+	}
+}
+
+func TestCreateSavedSearch_ValidationErrorFormat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-valerr@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-valerr@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	// Send empty name to trigger validation error.
+	body := fmt.Sprintf(`{"name":"","query_json":%s}`, validDSLJSON)
+	resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("empty name: got %d, want 422", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+
+	var prob struct {
+		Status int `json:"status"`
+		Errors []struct {
+			Location string `json:"location"`
+			Message  string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&prob); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(prob.Errors) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	if prob.Errors[0].Location != "body.name" {
+		t.Errorf("errors[0].location = %q, want %q", prob.Errors[0].Location, "body.name")
 	}
 }
 

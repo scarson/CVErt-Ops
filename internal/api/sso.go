@@ -4,12 +4,13 @@ package api
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/audit"
@@ -86,11 +87,11 @@ func requireEnterpriseTier(w http.ResponseWriter, r *http.Request) bool {
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
 		slog.ErrorContext(r.Context(), "sso: tier resolver missing from context")
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return false
 	}
 	if resolver.Tier != "enterprise" {
-		http.Error(w, "SSO requires enterprise tier", http.StatusForbidden)
+		writeProblemTyped(w, http.StatusForbidden, problemTypeTierLimit, "SSO requires enterprise tier")
 		return false
 	}
 	return true
@@ -102,7 +103,7 @@ func requireEnterpriseTier(w http.ResponseWriter, r *http.Request) bool {
 func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	if !requireEnterpriseTier(w, r) {
@@ -110,24 +111,28 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createSSOBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
-		http.Error(w, "display_name is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "display_name is required", Location: "body.display_name"})
 		return
 	}
 	if strings.TrimSpace(req.IssuerURL) == "" {
-		http.Error(w, "issuer_url is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "issuer_url is required", Location: "body.issuer_url"})
 		return
 	}
 	if strings.TrimSpace(req.ClientID) == "" {
-		http.Error(w, "client_id is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "client_id is required", Location: "body.client_id"})
 		return
 	}
 	if strings.TrimSpace(req.ClientSecret) == "" {
-		http.Error(w, "client_secret is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "client_secret is required", Location: "body.client_secret"})
 		return
 	}
 
@@ -135,13 +140,13 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 	key, err := srv.ssoEncryptionKey()
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso create: encryption key", "error", err)
-		http.Error(w, "server configuration error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "server configuration error")
 		return
 	}
 	encSecret, err := crypto.Encrypt(key, []byte(req.ClientSecret))
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso create: encrypt secret", "error", err)
-		http.Error(w, "encryption error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "encryption error")
 		return
 	}
 
@@ -157,11 +162,11 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		encSecret, req.Scopes, enabled)
 	if err != nil {
 		if isUniqueViolation(err) {
-			http.Error(w, "SSO connection already exists for this org", http.StatusConflict)
+			writeProblem(w, http.StatusConflict, "SSO connection already exists for this org")
 			return
 		}
 		slog.ErrorContext(r.Context(), "sso create: store", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -175,8 +180,8 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		Scopes:       row.Scopes,
 		Enabled:      row.Enabled,
 		Domains:      []string{},
-		CreatedAt:    row.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    row.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:    row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    row.UpdatedAt.Format(time.RFC3339),
 	}
 
 	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
@@ -195,6 +200,7 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
+	writeLocation(w, r, row.ID.String())
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -202,7 +208,7 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	if !requireEnterpriseTier(w, r) {
@@ -212,11 +218,11 @@ func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 	row, err := srv.store.GetSSOConnection(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso get: store", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "no SSO connection", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "no SSO connection")
 		return
 	}
 
@@ -224,7 +230,7 @@ func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 	domains, err := srv.store.ListSSOEmailDomains(r.Context(), orgID, row.ID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso get: list domains", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if domains == nil {
@@ -241,8 +247,8 @@ func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 		Scopes:       row.Scopes,
 		Enabled:      row.Enabled,
 		Domains:      domains,
-		CreatedAt:    row.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    row.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:    row.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    row.UpdatedAt.Format(time.RFC3339),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -252,7 +258,7 @@ func (srv *Server) getSSOHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	if !requireEnterpriseTier(w, r) {
@@ -263,17 +269,17 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	current, err := srv.store.GetSSOConnection(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso patch: get", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "no SSO connection", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "no SSO connection")
 		return
 	}
 
 	var req patchSSOBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 
@@ -282,7 +288,8 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if req.DisplayName != nil {
 		displayName = strings.TrimSpace(*req.DisplayName)
 		if displayName == "" {
-			http.Error(w, "display_name cannot be empty", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "display_name cannot be empty", Location: "body.display_name"})
 			return
 		}
 	}
@@ -290,7 +297,8 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if req.IssuerURL != nil {
 		issuerURL = strings.TrimSpace(*req.IssuerURL)
 		if issuerURL == "" {
-			http.Error(w, "issuer_url cannot be empty", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "issuer_url cannot be empty", Location: "body.issuer_url"})
 			return
 		}
 	}
@@ -298,7 +306,8 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if req.ClientID != nil {
 		clientID = strings.TrimSpace(*req.ClientID)
 		if clientID == "" {
-			http.Error(w, "client_id cannot be empty", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "client_id cannot be empty", Location: "body.client_id"})
 			return
 		}
 	}
@@ -307,13 +316,13 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		key, err := srv.ssoEncryptionKey()
 		if err != nil {
 			slog.ErrorContext(r.Context(), "sso patch: encryption key", "error", err)
-			http.Error(w, "server configuration error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "server configuration error")
 			return
 		}
 		secretEnc, err = crypto.Encrypt(key, []byte(*req.ClientSecret))
 		if err != nil {
 			slog.ErrorContext(r.Context(), "sso patch: encrypt secret", "error", err)
-			http.Error(w, "encryption error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "encryption error")
 			return
 		}
 	}
@@ -329,7 +338,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	if err := srv.store.UpdateSSOConnection(r.Context(), orgID,
 		displayName, issuerURL, clientID, secretEnc, scopes, enabled); err != nil {
 		slog.ErrorContext(r.Context(), "sso patch: update", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -342,14 +351,14 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	updated, err := srv.store.GetSSOConnection(r.Context(), orgID)
 	if err != nil || updated == nil {
 		slog.ErrorContext(r.Context(), "sso patch: re-read", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	domains, err := srv.store.ListSSOEmailDomains(r.Context(), orgID, updated.ID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso patch: list domains", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if domains == nil {
@@ -366,8 +375,8 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 		Scopes:       updated.Scopes,
 		Enabled:      updated.Enabled,
 		Domains:      domains,
-		CreatedAt:    updated.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    updated.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt:    updated.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:    updated.UpdatedAt.Format(time.RFC3339),
 	}
 
 	srv.auditLog(r, audit.Entry{ //nolint:exhaustruct // optional fields
@@ -398,7 +407,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	if !requireEnterpriseTier(w, r) {
@@ -409,17 +418,17 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 	current, err := srv.store.GetSSOConnection(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso delete: get", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "no SSO connection", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "no SSO connection")
 		return
 	}
 
 	if err := srv.store.DeleteSSOConnection(r.Context(), orgID); err != nil {
 		slog.ErrorContext(r.Context(), "sso delete: store", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -440,7 +449,7 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	if !requireEnterpriseTier(w, r) {
@@ -451,17 +460,17 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 	conn, err := srv.store.GetSSOConnection(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso put domains: get connection", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if conn == nil {
-		http.Error(w, "no SSO connection", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "no SSO connection")
 		return
 	}
 
 	var req putSSODomainsBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 
@@ -470,18 +479,19 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 		req.Domains[i] = strings.ToLower(strings.TrimSpace(req.Domains[i]))
 		d := req.Domains[i]
 		if err := validateDomain(d); err != nil {
-			http.Error(w, "invalid domain: "+err.Error(), http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "invalid domain: " + err.Error(), Location: "body.domains", Value: d})
 			return
 		}
 	}
 
 	if err := srv.store.SetSSOEmailDomains(r.Context(), conn.ID, orgID, req.Domains); err != nil {
 		if isUniqueViolation(err) {
-			http.Error(w, "domain already claimed by another organization", http.StatusConflict)
+			writeProblem(w, http.StatusConflict, "domain already claimed by another organization")
 			return
 		}
 		slog.ErrorContext(r.Context(), "sso put domains: store", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -534,20 +544,22 @@ func validateDomain(d string) error {
 // Public endpoint (no auth). Extracts domain from email and looks up SSO connection.
 func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	var req discoverBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 	email := strings.TrimSpace(req.Email)
 	if email == "" {
-		http.Error(w, "email is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "email is required", Location: "body.email"})
 		return
 	}
 
 	// Extract domain from email.
 	parts := strings.SplitN(email, "@", 2)
 	if len(parts) != 2 || parts[1] == "" {
-		http.Error(w, "invalid email format", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "invalid email format", Location: "body.email", Value: email})
 		return
 	}
 	domain := strings.ToLower(parts[1])
@@ -555,7 +567,7 @@ func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	row, err := srv.store.LookupSSOByDomain(r.Context(), domain)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "discover: lookup", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 

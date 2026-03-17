@@ -31,10 +31,10 @@ async function refreshTokens(): Promise<boolean> {
 }
 
 // Prevents multiple concurrent refresh calls when several API requests
-// receive 401 simultaneously. Shared by the typed client middleware and orgFetch.
+// receive 401 simultaneously.
 let refreshPromise: Promise<boolean> | null = null
 
-export function coalescedRefresh(): Promise<boolean> {
+function coalescedRefresh(): Promise<boolean> {
   if (!refreshPromise) {
     refreshPromise = refreshTokens().finally(() => {
       refreshPromise = null

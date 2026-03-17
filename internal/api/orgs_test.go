@@ -320,22 +320,24 @@ func TestListMembers_Success(t *testing.T) {
 		t.Fatalf("list members: got %d, want 200", resp.StatusCode)
 	}
 
-	var members []struct {
-		UserID string `json:"user_id"`
-		Role   string `json:"role"`
-		Email  string `json:"email"`
+	var envelope struct {
+		Items []struct {
+			UserID string `json:"user_id"`
+			Role   string `json:"role"`
+			Email  string `json:"email"`
+		} `json:"items"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&members); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(members) != 1 {
-		t.Fatalf("len(members) = %d, want 1", len(members))
+	if len(envelope.Items) != 1 {
+		t.Fatalf("len(items) = %d, want 1", len(envelope.Items))
 	}
-	if members[0].UserID != aliceReg.UserID {
-		t.Errorf("user_id = %q, want %q", members[0].UserID, aliceReg.UserID)
+	if envelope.Items[0].UserID != aliceReg.UserID {
+		t.Errorf("user_id = %q, want %q", envelope.Items[0].UserID, aliceReg.UserID)
 	}
-	if members[0].Role != "owner" {
-		t.Errorf("role = %q, want owner", members[0].Role)
+	if envelope.Items[0].Role != "owner" {
+		t.Errorf("role = %q, want owner", envelope.Items[0].Role)
 	}
 }
 
@@ -418,8 +420,8 @@ func TestUpdateMemberRole_CannotAssignOwner(t *testing.T) {
 
 	resp := doUpdateMemberRole(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID, "owner")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("got %d, want 422", resp.StatusCode)
 	}
 }
 
@@ -479,11 +481,11 @@ func TestUpdateMemberRole_CannotExceedCallerRole(t *testing.T) {
 		t.Fatalf("promote to member: got %d, want 200", resp.StatusCode)
 	}
 
-	// Admin cannot promote to owner (> admin) — "owner" is rejected at the bad-role check.
+	// Admin cannot promote to owner (> admin) — "owner" is not a valid assignable role → 422.
 	resp2 := doUpdateMemberRole(t, ctx, ts, bobToken, aliceReg.OrgID, carolReg.UserID, "owner")
 	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
-	if resp2.StatusCode != http.StatusBadRequest {
-		t.Errorf("promote to owner: got %d, want 400", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("promote to owner: got %d, want 422", resp2.StatusCode)
 	}
 }
 
@@ -766,19 +768,21 @@ func TestListInvitations_Success(t *testing.T) {
 		t.Fatalf("list invitations: got %d, want 200", resp.StatusCode)
 	}
 
-	var items []struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-		Role  string `json:"role"`
+	var envelope struct {
+		Items []struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+			Role  string `json:"role"`
+		} `json:"items"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("len = %d, want 1", len(items))
+	if len(envelope.Items) != 1 {
+		t.Fatalf("len = %d, want 1", len(envelope.Items))
 	}
-	if items[0].Email != "bob@example.com" {
-		t.Errorf("email = %q, want bob@example.com", items[0].Email)
+	if envelope.Items[0].Email != "bob@example.com" {
+		t.Errorf("email = %q, want bob@example.com", envelope.Items[0].Email)
 	}
 }
 
@@ -813,12 +817,14 @@ func TestCancelInvitation_Success(t *testing.T) {
 	// Verify invitation is gone from the list.
 	listResp := doListInvitations(t, ctx, ts, aliceToken, aliceReg.OrgID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var items []struct{ ID string }
-	if err := json.NewDecoder(listResp.Body).Decode(&items); err != nil {
+	var envelope struct {
+		Items []struct{ ID string } `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(items) != 0 {
-		t.Errorf("len = %d, want 0 after cancel", len(items))
+	if len(envelope.Items) != 0 {
+		t.Errorf("len = %d, want 0 after cancel", len(envelope.Items))
 	}
 }
 
@@ -1136,7 +1142,7 @@ func TestCrossOrg_MemberOperations(t *testing.T) {
 	})
 }
 
-// TestCreateOrg_EmptyName verifies that POST /api/v1/orgs with empty name returns 400.
+// TestCreateOrg_EmptyName verifies that POST /api/v1/orgs with empty name returns 422.
 func TestCreateOrg_EmptyName(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -1150,13 +1156,13 @@ func TestCreateOrg_EmptyName(t *testing.T) {
 
 	resp := doCreateOrg(t, ctx, ts, accessToken, "")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name create org: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name create org: got %d, want 422", resp.StatusCode)
 	}
 }
 
 // TestCreateOrg_WhitespaceName verifies that POST /api/v1/orgs with whitespace-only
-// name returns 400 (B6).
+// name returns 422 (B6).
 func TestCreateOrg_WhitespaceName(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -1170,13 +1176,13 @@ func TestCreateOrg_WhitespaceName(t *testing.T) {
 
 	resp := doCreateOrg(t, ctx, ts, accessToken, "   ")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("whitespace name create org: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("whitespace name create org: got %d, want 422", resp.StatusCode)
 	}
 }
 
 // TestUpdateOrg_WhitespaceName verifies that PATCH /api/v1/orgs/{org_id} with
-// whitespace-only name returns 400 (B6).
+// whitespace-only name returns 422 (B6).
 func TestUpdateOrg_WhitespaceName(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -1190,8 +1196,8 @@ func TestUpdateOrg_WhitespaceName(t *testing.T) {
 
 	resp := doUpdateOrg(t, ctx, ts, accessToken, aliceReg.OrgID, "   ")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("whitespace name update org: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("whitespace name update org: got %d, want 422", resp.StatusCode)
 	}
 }
 
@@ -1253,7 +1259,7 @@ func TestRemoveMember_AdminCannotRemoveOwner(t *testing.T) {
 	}
 }
 
-// TestCreateInvitation_InvalidRole verifies that POST /invitations with an invalid role returns 400.
+// TestCreateInvitation_InvalidRole verifies that POST /invitations with an invalid role returns 422.
 func TestCreateInvitation_InvalidRole(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -1267,8 +1273,8 @@ func TestCreateInvitation_InvalidRole(t *testing.T) {
 
 	resp := doCreateInvitation(t, ctx, ts, aliceToken, aliceReg.OrgID, "bob@example.com", "superadmin")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("invalid role: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("invalid role: got %d, want 422", resp.StatusCode)
 	}
 }
 
@@ -1541,5 +1547,218 @@ func TestResendInvitation_RequiresAdmin(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck,gosec
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("viewer resend: got %d, want 403", resp.StatusCode)
+	}
+}
+
+// ── Contract tests ────────────────────────────────────────────────────────────
+
+// doCreateOrgRaw calls POST /api/v1/orgs with a raw JSON body string.
+func doCreateOrgRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs", bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("create org raw: %v", err)
+	}
+	return resp
+}
+
+// doUpdateOrgRaw calls PATCH /api/v1/orgs/{orgID} with a raw JSON body string.
+func doUpdateOrgRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID, bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("update org raw: %v", err)
+	}
+	return resp
+}
+
+// TestCreateOrg_MalformedJSON verifies that POST /orgs with invalid JSON returns 400
+// with application/problem+json content type.
+func TestCreateOrg_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateOrgRaw(t, ctx, ts, accessToken, "{bad json")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestCreateOrg_LocationHeader verifies that POST /orgs returns a Location header.
+func TestCreateOrg_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateOrg(t, ctx, ts, accessToken, "Contract Org")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create org: got %d, want 201", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header on 201 response")
+	}
+	var out struct {
+		OrgID string `json:"org_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantSuffix := "/orgs/" + out.OrgID
+	if len(loc) < len(wantSuffix) || loc[len(loc)-len(wantSuffix):] != wantSuffix {
+		t.Errorf("Location = %q, want suffix %q", loc, wantSuffix)
+	}
+}
+
+// TestListMembers_Envelope verifies that GET /members returns {items: [...]} envelope.
+func TestListMembers_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	listResp := doListMembers(t, ctx, ts, accessToken, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list members: got %d, want 200", listResp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(envelope.Items) < 1 {
+		t.Errorf("got %d items, want at least 1 (the owner)", len(envelope.Items))
+	}
+}
+
+// TestListInvitations_Envelope verifies that GET /invitations returns {items: [...]} envelope.
+func TestListInvitations_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	listResp := doListInvitations(t, ctx, ts, accessToken, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list invitations: got %d, want 200", listResp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Empty is fine — just checking the envelope structure works.
+	if envelope.Items == nil {
+		t.Error("items should be non-nil (empty array, not null)")
+	}
+}
+
+// TestUpdateOrg_OmittedNamePreserved verifies that PATCH with an empty body
+// preserves the existing name (pointer DTO behavior).
+func TestUpdateOrg_OmittedNamePreserved(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	// Send PATCH with empty JSON body — name should be preserved.
+	updateResp := doUpdateOrgRaw(t, ctx, ts, accessToken, aliceReg.OrgID, `{}`)
+	defer updateResp.Body.Close() //nolint:errcheck,gosec // G104
+	if updateResp.StatusCode != http.StatusOK {
+		t.Fatalf("update: got %d, want 200", updateResp.StatusCode)
+	}
+
+	var out struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(updateResp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The name from registration auto-creates org — just verify it's not empty.
+	if out.Name == "" {
+		t.Error("name should be preserved when omitted from PATCH body")
+	}
+}
+
+// TestCreateOrg_ValidationError_ProblemJSON verifies that validation errors
+// return 422 with application/problem+json and field-level error locations.
+func TestCreateOrg_ValidationError_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateOrg(t, ctx, ts, accessToken, "")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	errs, ok := problem["errors"].([]any)
+	if !ok || len(errs) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	err0, _ := errs[0].(map[string]any)
+	if err0["location"] != "body.name" {
+		t.Errorf("errors[0].location = %v, want body.name", err0["location"])
 	}
 }

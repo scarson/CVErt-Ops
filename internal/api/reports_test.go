@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -258,7 +259,7 @@ func TestListReports(t *testing.T) {
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("list reports: got %d, want 200", listResp.StatusCode)
 	}
-	var list reportListResponse
+	var list listResponse[reportEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
@@ -384,7 +385,7 @@ func TestDeleteReport(t *testing.T) {
 	// Verify no longer in list.
 	listResp := doListReports(t, ctx, ts, token, reg.OrgID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var list reportListResponse
+	var list listResponse[reportEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
@@ -439,7 +440,7 @@ func TestBindChannelToReport(t *testing.T) {
 	// List channels should show 1.
 	listResp := doListReportChannels(t, ctx, ts, token, reg.OrgID, created.ID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var list channelListResponse
+	var list listResponse[channelEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
@@ -737,7 +738,7 @@ func TestReports_CrossOrgIsolation(t *testing.T) {
 	// Bob's list should be empty.
 	listResp := doListReports(t, ctx, ts, bobToken, bobOrg.OrgID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var list reportListResponse
+	var list listResponse[reportEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
@@ -1001,11 +1002,146 @@ func TestUnbindChannelFromReport(t *testing.T) {
 	// List channels should show 0.
 	listResp := doListReportChannels(t, ctx, ts, token, reg.OrgID, created.ID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var list channelListResponse
+	var list listResponse[channelEntry]
 	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
 	if len(list.Items) != 0 {
 		t.Errorf("bound channels after unbind = %d, want 0", len(list.Items))
+	}
+}
+
+// ── Contract tests ────────────────────────────────────────────────────────────
+
+func TestCreateReport_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateReport(t, ctx, ts, token, reg.OrgID, `{bad`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem struct {
+		Status int `json:"status"`
+		Errors []struct {
+			Location string `json:"location"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) == 0 {
+		t.Fatal("expected at least one error detail")
+	}
+	if problem.Errors[0].Location != "body" {
+		t.Errorf("errors[0].location = %q, want %q", problem.Errors[0].Location, "body")
+	}
+}
+
+func TestCreateReport_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+	var created reportEntry
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("Location header is empty")
+	}
+	if !strings.Contains(loc, created.ID) {
+		t.Errorf("Location %q does not contain report ID %q", loc, created.ID)
+	}
+}
+
+func TestListReports_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	listResp := doListReports(t, ctx, ts, token, reg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list: got %d, want 200", listResp.StatusCode)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(listResp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["items"]; !ok {
+		t.Fatal("response missing 'items' key")
+	}
+}
+
+func TestCreateReport_ValidationErrorFormat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateReport(t, ctx, ts, token, reg.OrgID,
+		`{"name":"Bad TZ","scheduled_time":"09:00","timezone":"Invalid/Zone"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("bad timezone: got %d, want 422", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem struct {
+		Status int `json:"status"`
+		Errors []struct {
+			Location string `json:"location"`
+			Message  string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Status != http.StatusUnprocessableEntity {
+		t.Errorf("problem.status = %d, want 422", problem.Status)
+	}
+	if len(problem.Errors) == 0 {
+		t.Fatal("expected at least one error detail")
+	}
+	if problem.Errors[0].Location != "body.timezone" {
+		t.Errorf("errors[0].location = %q, want %q", problem.Errors[0].Location, "body.timezone")
 	}
 }

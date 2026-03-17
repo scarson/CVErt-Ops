@@ -4,15 +4,13 @@ package api
 
 import (
 	"database/sql"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -56,10 +54,6 @@ type watchlistEntry struct {
 	UpdatedAt   string  `json:"updated_at"`
 }
 
-type watchlistListResponse struct {
-	Items      []watchlistEntry `json:"items"`
-	NextCursor *string          `json:"next_cursor,omitempty"`
-}
 
 type createWatchlistItemBody struct {
 	ItemType      string  `json:"item_type"`
@@ -79,38 +73,13 @@ type watchlistItemEntry struct {
 	CreatedAt     string  `json:"created_at"`
 }
 
-type watchlistItemsResponse struct {
-	Items      []watchlistItemEntry `json:"items"`
-	NextCursor *string              `json:"next_cursor,omitempty"`
-}
 
 // ── Cursor helpers ────────────────────────────────────────────────────────────
 
-// encodeTimeCursor encodes a (time, uuid) pair as a base64 cursor string.
-func encodeTimeCursor(t time.Time, id uuid.UUID) string {
-	raw := t.UTC().Format(time.RFC3339Nano) + "|" + id.String()
-	return base64.URLEncoding.EncodeToString([]byte(raw))
-}
-
-// decodeTimeCursor decodes a base64 cursor into a (time, uuid) pair.
-func decodeTimeCursor(s string) (time.Time, uuid.UUID, error) {
-	raw, err := base64.URLEncoding.DecodeString(s)
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("decode cursor: %w", err)
-	}
-	parts := strings.SplitN(string(raw), "|", 2)
-	if len(parts) != 2 {
-		return time.Time{}, uuid.Nil, fmt.Errorf("invalid cursor format")
-	}
-	t, err := time.Parse(time.RFC3339Nano, parts[0])
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("cursor time: %w", err)
-	}
-	id, err := uuid.Parse(parts[1])
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("cursor id: %w", err)
-	}
-	return t, id, nil
+// watchlistCursor is the JSON-encoded keyset cursor for watchlist pagination.
+type watchlistCursor struct {
+	T  string `json:"t"`  // created_at RFC3339Nano
+	ID string `json:"id"` // UUID tiebreaker
 }
 
 // ── Mapping helpers ───────────────────────────────────────────────────────────
@@ -167,7 +136,7 @@ func isUniqueViolation(err error) bool {
 func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -175,7 +144,7 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
 		slog.ErrorContext(r.Context(), "tier resolver missing from context")
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	limit := resolver.ResolveInt(tier.LimitWatchlists)
@@ -183,7 +152,7 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 		count, err := srv.store.CountWatchlistsByOrg(r.Context(), orgID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "count watchlists for tier check", "error", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if count >= int64(limit) {
@@ -194,18 +163,19 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 				Success:    false,
 				Metadata:   map[string]any{"reason": "tier_limit"},
 			})
-			http.Error(w, "tier limit: max watchlists reached", http.StatusForbidden)
+			writeProblemTyped(w, http.StatusForbidden, problemTypeTierLimit, "watchlist limit reached for current tier")
 			return
 		}
 	}
 
 	var req createWatchlistBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return
 	}
 
@@ -213,7 +183,8 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 	if req.GroupID != nil {
 		id, err := uuid.Parse(*req.GroupID)
 		if err != nil {
-			http.Error(w, "invalid group_id", http.StatusBadRequest)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "invalid group_id", Location: "body.group_id"})
 			return
 		}
 		groupID = uuid.NullUUID{UUID: id, Valid: true}
@@ -227,15 +198,16 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 	row, err := srv.store.CreateWatchlist(r.Context(), orgID, groupID, req.Name, desc)
 	if err != nil {
 		if isUniqueViolation(err) {
-			http.Error(w, "watchlist name already exists", http.StatusConflict)
+			writeProblem(w, http.StatusConflict, "watchlist name already exists")
 			return
 		}
 		slog.ErrorContext(r.Context(), "create watchlist", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	wlEntry := watchlistToEntry(*row)
+	writeLocation(w, r, row.ID.String())
 	writeJSON(w, http.StatusCreated, wlEntry)
 	srv.auditLog(r, audit.Entry{
 		OrgID:      orgID,
@@ -253,24 +225,24 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) getWatchlistHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	row, err := srv.store.GetWatchlist(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get watchlist", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -282,7 +254,7 @@ func (srv *Server) getWatchlistHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listWatchlistsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -290,34 +262,48 @@ func (srv *Server) listWatchlistsHandler(w http.ResponseWriter, r *http.Request)
 	var afterTime *time.Time
 	var afterID *uuid.UUID
 
-	if c := r.URL.Query().Get("after"); c != "" {
-		t, id, err := decodeTimeCursor(c)
-		if err == nil {
-			afterTime = &t
-			afterID = &id
+	if c := r.URL.Query().Get("cursor"); c != "" {
+		var cur watchlistCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		t, err := time.Parse(time.RFC3339Nano, cur.T)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		afterTime = &t
+		afterID = &id
 	}
 
 	rows, err := srv.store.ListWatchlists(r.Context(), orgID, afterTime, afterID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list watchlists", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	var nextCursor *string
+	var nextCursor string
 	if len(rows) > limit {
 		rows = rows[:limit]
 		last := rows[len(rows)-1]
-		c := encodeTimeCursor(last.CreatedAt, last.ID)
-		nextCursor = &c
+		nextCursor = encodePageCursor(watchlistCursor{
+			T:  last.CreatedAt.UTC().Format(time.RFC3339Nano),
+			ID: last.ID.String(),
+		})
 	}
 
 	entries := make([]watchlistEntry, 0, len(rows))
 	for _, wl := range rows {
 		entries = append(entries, watchlistToEntry(wl))
 	}
-	writeJSON(w, http.StatusOK, watchlistListResponse{Items: entries, NextCursor: nextCursor})
+	writeList(w, entries, nextCursor)
 }
 
 // updateWatchlistHandler handles PATCH /api/v1/orgs/{org_id}/watchlists/{id}.
@@ -325,31 +311,31 @@ func (srv *Server) listWatchlistsHandler(w http.ResponseWriter, r *http.Request)
 func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	current, err := srv.store.GetWatchlist(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get watchlist for patch", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	oldState := watchlistToEntry(*current)
 
 	var req patchWatchlistBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 
@@ -361,7 +347,8 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 
 	if req.Name != nil {
 		if strings.TrimSpace(*req.Name) == "" {
-			http.Error(w, "name cannot be empty", http.StatusBadRequest)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "name cannot be empty", Location: "body.name"})
 			return
 		}
 		p.Name = *req.Name
@@ -375,7 +362,8 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 		} else {
 			gid, err := uuid.Parse(**req.GroupID)
 			if err != nil {
-				http.Error(w, "invalid group_id", http.StatusBadRequest)
+				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+					&huma.ErrorDetail{Message: "invalid group_id", Location: "body.group_id"})
 				return
 			}
 			p.GroupID = uuid.NullUUID{UUID: gid, Valid: true}
@@ -385,15 +373,15 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 	updated, err := srv.store.UpdateWatchlist(r.Context(), orgID, id, p)
 	if err != nil {
 		if isUniqueViolation(err) {
-			http.Error(w, "watchlist name already exists", http.StatusConflict)
+			writeProblem(w, http.StatusConflict, "watchlist name already exists")
 			return
 		}
 		slog.ErrorContext(r.Context(), "update watchlist", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if updated == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -401,7 +389,7 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 	row, err := srv.store.GetWatchlist(r.Context(), orgID, id)
 	if err != nil || row == nil {
 		slog.ErrorContext(r.Context(), "re-fetch watchlist after update", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	newEntry := watchlistToEntry(*row)
@@ -423,13 +411,13 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) deleteWatchlistHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -437,17 +425,17 @@ func (srv *Server) deleteWatchlistHandler(w http.ResponseWriter, r *http.Request
 	current, err := srv.store.GetWatchlist(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get watchlist for delete", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if err := srv.store.DeleteWatchlist(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	srv.auditLog(r, audit.Entry{
@@ -467,19 +455,19 @@ func (srv *Server) deleteWatchlistHandler(w http.ResponseWriter, r *http.Request
 func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	watchlistID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid watchlist id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid watchlist id")
 		return
 	}
 
 	var req createWatchlistItemBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 
@@ -487,12 +475,14 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 	switch req.ItemType {
 	case "package":
 		if req.Ecosystem == nil || req.PackageName == nil {
-			http.Error(w, "ecosystem and package_name are required for package items", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "ecosystem and package_name are required for package items", Location: "body"})
 			return
 		}
 		eco := strings.ToLower(*req.Ecosystem)
 		if !validEcosystems[eco] {
-			http.Error(w, "unknown ecosystem", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "unknown ecosystem", Location: "body.ecosystem"})
 			return
 		}
 		p = store.CreateWatchlistItemParams{
@@ -503,11 +493,13 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 		}
 	case "cpe":
 		if req.CpeNormalized == nil {
-			http.Error(w, "cpe_normalized is required for cpe items", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "cpe_normalized is required for cpe items", Location: "body.cpe_normalized"})
 			return
 		}
 		if !strings.HasPrefix(*req.CpeNormalized, "cpe:2.3:") {
-			http.Error(w, "cpe_normalized must start with cpe:2.3:", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "cpe_normalized must start with cpe:2.3:", Location: "body.cpe_normalized"})
 			return
 		}
 		p = store.CreateWatchlistItemParams{
@@ -515,21 +507,23 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 			CpeNormalized: req.CpeNormalized,
 		}
 	default:
-		http.Error(w, "item_type must be 'package' or 'cpe'", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "item_type must be 'package' or 'cpe'", Location: "body.item_type"})
 		return
 	}
 
 	item, err := srv.store.CreateWatchlistItem(r.Context(), orgID, watchlistID, p)
 	if err != nil {
 		if isUniqueViolation(err) {
-			http.Error(w, "item already exists in watchlist", http.StatusConflict)
+			writeProblem(w, http.StatusConflict, "item already exists in watchlist")
 			return
 		}
 		slog.ErrorContext(r.Context(), "create watchlist item", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
+	writeLocation(w, r, item.ID.String())
 	writeJSON(w, http.StatusCreated, watchlistItemToEntry(*item))
 }
 
@@ -538,13 +532,13 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 func (srv *Server) listWatchlistItemsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	watchlistID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid watchlist id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid watchlist id")
 		return
 	}
 
@@ -556,32 +550,33 @@ func (srv *Server) listWatchlistItemsHandler(w http.ResponseWriter, r *http.Requ
 		t := store.WatchlistItemType(it)
 		itemTypeFilter = &t
 	}
-	if a := r.URL.Query().Get("after"); a != "" {
+	if a := r.URL.Query().Get("cursor"); a != "" {
 		id, err := uuid.Parse(a)
-		if err == nil {
-			afterID = &id
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		afterID = &id
 	}
 
 	items, err := srv.store.ListWatchlistItems(r.Context(), orgID, watchlistID, itemTypeFilter, afterID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list watchlist items", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	var nextCursor *string
+	var nextCursor string
 	if len(items) > limit {
 		items = items[:limit]
-		last := items[len(items)-1].ID.String()
-		nextCursor = &last
+		nextCursor = items[len(items)-1].ID.String()
 	}
 
 	entries := make([]watchlistItemEntry, 0, len(items))
 	for _, item := range items {
 		entries = append(entries, watchlistItemToEntry(item))
 	}
-	writeJSON(w, http.StatusOK, watchlistItemsResponse{Items: entries, NextCursor: nextCursor})
+	writeList(w, entries, nextCursor)
 }
 
 // deleteWatchlistItemHandler handles DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}.
@@ -589,30 +584,30 @@ func (srv *Server) listWatchlistItemsHandler(w http.ResponseWriter, r *http.Requ
 func (srv *Server) deleteWatchlistItemHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	watchlistID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid watchlist id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid watchlist id")
 		return
 	}
 
 	itemID, err := uuid.Parse(chi.URLParam(r, "item_id"))
 	if err != nil {
-		http.Error(w, "invalid item id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid item id")
 		return
 	}
 
 	deleted, err := srv.store.DeleteWatchlistItem(r.Context(), orgID, watchlistID, itemID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "delete watchlist item", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if !deleted {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

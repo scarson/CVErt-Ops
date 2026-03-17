@@ -3,11 +3,12 @@
 package api
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -27,9 +28,10 @@ type createGroupBody struct {
 }
 
 // updateGroupBody is the request body for PATCH /groups/{id}.
+// Pointer fields allow distinguishing "omitted" from "set to zero value".
 type updateGroupBody struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
 }
 
 // addGroupMemberBody is the request body for POST /groups/{id}/members.
@@ -50,27 +52,29 @@ type groupMemberEntry struct {
 func (srv *Server) createGroupHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	var req createGroupBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if detail := decodeJSON(r, &req); detail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
 		return
 	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+	if strings.TrimSpace(req.Name) == "" {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name is required", Location: "body.name"})
 		return
 	}
 
-	group, err := srv.store.CreateGroup(r.Context(), orgID, req.Name, req.Description)
+	group, err := srv.store.CreateGroup(r.Context(), orgID, strings.TrimSpace(req.Name), req.Description)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create group", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
+	writeLocation(w, r, group.ID.String())
 	writeJSON(w, http.StatusCreated, groupEntry{
 		ID:          group.ID.String(),
 		Name:        group.Name,
@@ -84,14 +88,14 @@ func (srv *Server) createGroupHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listGroupsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	rows, err := srv.store.ListOrgGroups(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list groups", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -104,7 +108,7 @@ func (srv *Server) listGroupsHandler(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:   g.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeList(w, entries, "")
 }
 
 // getGroupHandler handles GET /api/v1/orgs/{org_id}/groups/{group_id}.
@@ -112,24 +116,24 @@ func (srv *Server) listGroupsHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) getGroupHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
-		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid group_id")
 		return
 	}
 
 	group, err := srv.store.GetGroup(r.Context(), orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get group", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if group == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "group not found")
 		return
 	}
 
@@ -142,33 +146,57 @@ func (srv *Server) getGroupHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // updateGroupHandler handles PATCH /api/v1/orgs/{org_id}/groups/{group_id}.
-// Requires admin+.
+// Requires admin+. Uses pointer DTO to distinguish omitted from empty fields.
 func (srv *Server) updateGroupHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
-		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid group_id")
 		return
 	}
 
 	var req updateGroupBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+	if detail := decodeJSON(r, &req); detail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
 		return
 	}
 
-	if err := srv.store.UpdateGroup(r.Context(), orgID, groupID, req.Name, req.Description); err != nil {
+	// Validate provided name is not empty.
+	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name must not be empty", Location: "body.name"})
+		return
+	}
+
+	// Read existing group to merge non-nil fields.
+	existing, err := srv.store.GetGroup(r.Context(), orgID, groupID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get group for update", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if existing == nil {
+		writeProblem(w, http.StatusNotFound, "group not found")
+		return
+	}
+
+	name := existing.Name
+	if req.Name != nil {
+		name = strings.TrimSpace(*req.Name)
+	}
+	description := existing.Description
+	if req.Description != nil {
+		description = *req.Description
+	}
+
+	if err := srv.store.UpdateGroup(r.Context(), orgID, groupID, name, description); err != nil {
 		slog.ErrorContext(r.Context(), "update group", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -176,11 +204,11 @@ func (srv *Server) updateGroupHandler(w http.ResponseWriter, r *http.Request) {
 	group, err := srv.store.GetGroup(r.Context(), orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get group after update", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if group == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "group not found")
 		return
 	}
 
@@ -197,19 +225,19 @@ func (srv *Server) updateGroupHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
-		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid group_id")
 		return
 	}
 
 	if err := srv.store.SoftDeleteGroup(r.Context(), orgID, groupID); err != nil {
 		slog.ErrorContext(r.Context(), "delete group", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -220,20 +248,20 @@ func (srv *Server) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listGroupMembersHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
-		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid group_id")
 		return
 	}
 
 	rows, err := srv.store.ListGroupMembers(r.Context(), orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list group members", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -246,7 +274,7 @@ func (srv *Server) listGroupMembersHandler(w http.ResponseWriter, r *http.Reques
 			JoinedAt:    m.CreatedAt.Format(time.RFC3339),
 		})
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeList(w, entries, "")
 }
 
 // addGroupMemberHandler handles POST /api/v1/orgs/{org_id}/groups/{group_id}/members.
@@ -254,31 +282,31 @@ func (srv *Server) listGroupMembersHandler(w http.ResponseWriter, r *http.Reques
 func (srv *Server) addGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
-		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid group_id")
 		return
 	}
 
 	var req addGroupMemberBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if detail := decodeJSON(r, &req); detail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
 		return
 	}
 
 	userID, err := uuid.Parse(req.UserID)
 	if err != nil {
-		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
 		return
 	}
 
 	if err := srv.store.AddGroupMember(r.Context(), orgID, groupID, userID); err != nil {
 		slog.ErrorContext(r.Context(), "add group member", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -289,25 +317,25 @@ func (srv *Server) addGroupMemberHandler(w http.ResponseWriter, r *http.Request)
 func (srv *Server) removeGroupMemberHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	groupID, err := uuid.Parse(chi.URLParam(r, "group_id"))
 	if err != nil {
-		http.Error(w, "invalid group_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid group_id")
 		return
 	}
 
 	userID, err := uuid.Parse(chi.URLParam(r, "user_id"))
 	if err != nil {
-		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid user_id")
 		return
 	}
 
 	if err := srv.store.RemoveGroupMember(r.Context(), orgID, groupID, userID); err != nil {
 		slog.ErrorContext(r.Context(), "remove group member", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

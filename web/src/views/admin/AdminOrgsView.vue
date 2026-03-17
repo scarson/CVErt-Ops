@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -49,16 +49,14 @@ async function fetchOrgs(cursor?: string) {
   error.value = ''
 
   try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (cursor) params.set('cursor', cursor)
-
-    const resp = await orgFetch(`/api/v1/admin/orgs?${params}`)
-    if (!resp.ok) {
+    const { data, error: fetchError } = await client.GET('/admin/orgs', {
+      params: { query: { limit: 50, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load organizations.'
       return
     }
 
-    const data = (await resp.json()) as { items: OrgEntry[]; next_cursor?: string }
     if (cursor) {
       orgs.value = [...orgs.value, ...(data.items ?? [])]
     } else {
@@ -75,13 +73,12 @@ async function fetchOrgs(cursor?: string) {
 
 async function changeTier(orgId: string, tier: string) {
   try {
-    const resp = await orgFetch(`/api/v1/admin/orgs/${orgId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ tier }),
+    const { data, error: fetchError } = await client.PATCH('/admin/orgs/{org_id}', {
+      params: { path: { org_id: orgId } },
+      body: { tier },
     })
-    if (resp.ok) {
-      const updated: OrgEntry = await resp.json()
-      orgs.value = orgs.value.map((o) => (o.id === orgId ? { ...o, tier: updated.tier } : o))
+    if (!fetchError) {
+      orgs.value = orgs.value.map((o) => (o.id === orgId ? { ...o, tier: data.tier } : o))
       toast.success('Tier updated')
     } else {
       toast.error('Failed to update tier')
@@ -96,14 +93,13 @@ async function changeTier(orgId: string, tier: string) {
 async function toggleSuspend(org: OrgEntry) {
   const suspend = !org.suspended_at
   try {
-    const resp = await orgFetch(`/api/v1/admin/orgs/${org.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ suspend }),
+    const { data, error: fetchError } = await client.PATCH('/admin/orgs/{org_id}', {
+      params: { path: { org_id: org.id } },
+      body: { suspend },
     })
-    if (resp.ok) {
-      const updated: OrgEntry = await resp.json()
+    if (!fetchError) {
       orgs.value = orgs.value.map((o) =>
-        o.id === org.id ? { ...o, suspended_at: updated.suspended_at } : o,
+        o.id === org.id ? { ...o, suspended_at: data.suspended_at } : o,
       )
       toast.success(suspend ? 'Organization suspended' : 'Organization unsuspended')
     } else {

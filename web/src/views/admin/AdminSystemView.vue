@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -39,23 +39,26 @@ async function fetchAll() {
   error.value = ''
 
   try {
-    const [versionResp, doctorResp, configResp] = await Promise.all([
-      orgFetch('/api/v1/admin/version'),
-      orgFetch('/api/v1/admin/doctor'),
-      orgFetch('/api/v1/admin/config'),
+    const [versionResult, doctorResp, configResult] = await Promise.all([
+      client.GET('/admin/version'),
+      // Raw fetch: /admin/doctor returns 503 for unhealthy (valid response, not an error).
+      // The typed client puts non-2xx bodies in `error` not `data`, which doesn't match
+      // the doctor endpoint's semantics where 503 carries the same JSON structure as 200.
+      fetch('/api/v1/admin/doctor', { credentials: 'include' }),
+      client.GET('/admin/config'),
     ])
 
-    if (versionResp.ok) {
-      version.value = (await versionResp.json()) as VersionInfo
+    if (!versionResult.error) {
+      version.value = versionResult.data as VersionInfo
     }
     if (doctorResp.ok) {
       doctor.value = (await doctorResp.json()) as DoctorResult
     }
-    if (configResp.ok) {
-      config.value = (await configResp.json()) as Record<string, unknown>
+    if (!configResult.error) {
+      config.value = configResult.data as Record<string, unknown>
     }
 
-    if (!versionResp.ok && !doctorResp.ok && !configResp.ok) {
+    if (versionResult.error && !doctorResp.ok && configResult.error) {
       error.value = 'Failed to load system information.'
     }
   } catch {
@@ -68,7 +71,8 @@ async function fetchAll() {
 async function runDoctor() {
   runningDoctor.value = true
   try {
-    const resp = await orgFetch('/api/v1/admin/doctor')
+    // Raw fetch — see comment in fetchAll() for why doctor uses raw fetch.
+    const resp = await fetch('/api/v1/admin/doctor', { credentials: 'include' })
     if (resp.ok) {
       doctor.value = (await resp.json()) as DoctorResult
     }

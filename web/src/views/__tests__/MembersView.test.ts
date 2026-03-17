@@ -18,8 +18,18 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockGET = vi.fn()
+const mockPATCH = vi.fn()
+const mockDELETE = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: (...args: unknown[]) => mockGET(...args),
+    POST: vi.fn(),
+    PATCH: (...args: unknown[]) => mockPATCH(...args),
+    DELETE: (...args: unknown[]) => mockDELETE(...args),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 const TEST_USER_ID = '00000000-0000-0000-0000-000000000099'
@@ -47,42 +57,37 @@ function makeInvitation(overrides: Record<string, unknown> = {}) {
 }
 
 function mockMembersSuccess(members = [makeMember()]) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ items: members }),
+  mockGET.mockResolvedValueOnce({
+    data: { items: members },
+    error: undefined,
   })
 }
 
 function mockInvitationsSuccess(invitations = [makeInvitation()]) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ items: invitations }),
+  mockGET.mockResolvedValueOnce({
+    data: { items: invitations },
+    error: undefined,
   })
 }
 
 function mockMembersError() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 500,
-    json: () => Promise.resolve({ detail: 'Internal Server Error' }),
+  mockGET.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 500, detail: 'Internal Server Error' },
   })
 }
 
 function mockDeleteSuccess() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 204,
-    json: () => Promise.resolve(null),
+  mockDELETE.mockResolvedValueOnce({
+    data: undefined,
+    error: undefined,
   })
 }
 
 function mockPatchSuccess(userId: string, role: string) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ user_id: userId, role }),
+  mockPATCH.mockResolvedValueOnce({
+    data: { user_id: userId, role },
+    error: undefined,
   })
 }
 
@@ -142,7 +147,9 @@ describe('MembersView', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
-    mockFetch.mockReset()
+    mockGET.mockReset()
+    mockPATCH.mockReset()
+    mockDELETE.mockReset()
   })
 
   afterEach(() => {
@@ -153,7 +160,7 @@ describe('MembersView', () => {
   describe('loading state', () => {
     it('shows loading indicator while fetching', async () => {
       setupAuthStore('admin')
-      mockFetch.mockImplementation(() => new Promise(() => {}))
+      mockGET.mockImplementation(() => new Promise(() => {}))
       await mountView()
 
       expect(wrapper.text()).toContain('Loading')
@@ -364,7 +371,7 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockDELETE.mockReset()
       mockDeleteSuccess()
 
       // Click remove on second member
@@ -379,10 +386,10 @@ describe('MembersView', () => {
       confirmBtn!.click()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/members/u2`,
+      expect(mockDELETE).toHaveBeenCalledWith(
+        '/orgs/{org_id}/members/{user_id}',
         expect.objectContaining({
-          method: 'DELETE',
+          params: { path: { org_id: TEST_ORG_ID, user_id: 'u2' } },
         }),
       )
 
@@ -458,7 +465,7 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockPATCH.mockReset()
       mockPatchSuccess('u1', 'viewer')
 
       // Use exposed changeRole method since reka-ui Select is hard to trigger in JSDOM.
@@ -466,11 +473,11 @@ describe('MembersView', () => {
       await view.changeRole('u1', 'viewer')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/members/u1`,
+      expect(mockPATCH).toHaveBeenCalledWith(
+        '/orgs/{org_id}/members/{user_id}',
         expect.objectContaining({
-          method: 'PATCH',
-          body: JSON.stringify({ role: 'viewer' }),
+          params: { path: { org_id: TEST_ORG_ID, user_id: 'u1' } },
+          body: { role: 'viewer' },
         }),
       )
     })
@@ -523,7 +530,7 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockDELETE.mockReset()
       mockDeleteSuccess()
 
       const cancelBtns = wrapper.findAll('[data-testid="cancel-invitation-btn"]')
@@ -531,10 +538,10 @@ describe('MembersView', () => {
       await cancelBtns[1]!.trigger('click')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/invitations/inv-2`,
+      expect(mockDELETE).toHaveBeenCalledWith(
+        '/orgs/{org_id}/invitations/{id}',
         expect.objectContaining({
-          method: 'DELETE',
+          params: { path: { org_id: TEST_ORG_ID, id: 'inv-2' } },
         }),
       )
 
@@ -551,8 +558,11 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
-      mockFetch.mockResolvedValueOnce({ ok: false, status: 500, json: () => Promise.resolve({}) })
+      mockDELETE.mockReset()
+      mockDELETE.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
+      })
 
       const cancelBtns = wrapper.findAll('[data-testid="cancel-invitation-btn"]')
       await cancelBtns[0]!.trigger('click')
@@ -574,12 +584,11 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockPATCH.mockReset()
       // Mock failed PATCH
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 403,
-        json: () => Promise.resolve({ detail: 'Forbidden' }),
+      mockPATCH.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 403, detail: 'Forbidden' },
       })
 
       const view = wrapper.vm as any
@@ -604,11 +613,10 @@ describe('MembersView', () => {
       await wrapper.find('[data-testid="remove-member-btn"]').trigger('click')
       await flushPromises()
 
-      mockFetch.mockReset()
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Server error' }),
+      mockDELETE.mockReset()
+      mockDELETE.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
       })
 
       const confirmBtn = findTestId('confirm-remove-btn')
@@ -630,7 +638,7 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
+      mockGET.mockClear()
       const ORG_B_ID = '00000000-0000-0000-0000-000000000002'
       mockMembersSuccess([makeMember({ email: 'bob@example.com' })])
       mockInvitationsSuccess([])
@@ -638,9 +646,11 @@ describe('MembersView', () => {
       auth.activeOrgId = ORG_B_ID
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${ORG_B_ID}/members`,
-        expect.objectContaining({ method: 'GET' }),
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/members',
+        expect.objectContaining({
+          params: { path: { org_id: ORG_B_ID } },
+        }),
       )
     })
   })
@@ -653,10 +663,10 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/members`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/members',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID } },
         }),
       )
     })
@@ -668,10 +678,10 @@ describe('MembersView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/invitations`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/invitations',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID } },
         }),
       )
     })

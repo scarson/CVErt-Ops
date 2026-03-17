@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -68,19 +68,15 @@ async function fetchDeliveries(cursor?: string) {
   error.value = ''
 
   try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (statusFilter.value && statusFilter.value !== 'all') {
-      params.set('status', statusFilter.value)
-    }
-    if (cursor) params.set('cursor', cursor)
-
-    const resp = await orgFetch(`/api/v1/admin/deliveries?${params}`)
-    if (!resp.ok) {
+    const status = statusFilter.value && statusFilter.value !== 'all' ? statusFilter.value : undefined
+    const { data, error: fetchError } = await client.GET('/admin/deliveries', {
+      params: { query: { limit: 50, status, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load deliveries.'
       return
     }
 
-    const data = (await resp.json()) as { items: DeliveryEntry[]; next_cursor?: string }
     if (cursor) {
       deliveries.value = [...deliveries.value, ...(data.items ?? [])]
     } else {
@@ -100,11 +96,13 @@ async function retryDelivery(id: string) {
   retrying.value = id
 
   try {
-    const resp = await orgFetch(`/api/v1/admin/deliveries/${id}/retry`, { method: 'POST' })
-    if (resp.ok) {
+    const { error: fetchError } = await client.POST('/admin/deliveries/{id}/retry', {
+      params: { path: { id } },
+    })
+    if (!fetchError) {
       toast.success('Delivery retry enqueued')
       await fetchDeliveries()
-    } else if (resp.status === 409) {
+    } else if (fetchError.status === 409) {
       toast.info('Delivery is not in a retryable state')
     } else {
       toast.error('Failed to retry delivery')
@@ -121,10 +119,9 @@ async function bulkRetryFailed() {
   bulkRetrying.value = true
 
   try {
-    const resp = await orgFetch('/api/v1/admin/deliveries/retry-failed', { method: 'POST' })
-    if (resp.ok) {
-      const data = (await resp.json()) as { rows_affected: number }
-      toast.success(`${data.rows_affected} deliveries retried`)
+    const { data, error: fetchError } = await client.POST('/admin/deliveries/retry-failed')
+    if (!fetchError) {
+      toast.success(`${data?.rows_affected ?? 0} deliveries retried`)
       await fetchDeliveries()
     } else {
       toast.error('Failed to bulk retry deliveries')

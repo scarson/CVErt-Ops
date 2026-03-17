@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import {
   Dialog,
   DialogContent,
@@ -84,26 +84,31 @@ async function handleSubmit() {
     description: description.value.trim(),
   }
 
-  const url = isEdit.value
-    ? `/api/v1/orgs/${auth.activeOrgId}/groups/${props.group!.id}`
-    : `/api/v1/orgs/${auth.activeOrgId}/groups`
-
-  const method = isEdit.value ? 'PATCH' : 'POST'
-
   try {
-    const resp = await orgFetch(url, {
-      method,
-      body: JSON.stringify(body),
-    })
-
-    if (!resp.ok) {
-      const data = await resp.json()
-      error.value = data.detail ?? 'Failed to save group'
-      submitting.value = false
-      return
+    let entry: GroupEntry
+    if (isEdit.value) {
+      const { data, error: fetchError } = await client.PATCH('/orgs/{org_id}/groups/{group_id}', {
+        params: { path: { org_id: auth.activeOrgId!, group_id: props.group!.id } },
+        body,
+      })
+      if (fetchError) {
+        error.value = fetchError.detail ?? 'Failed to save group'
+        submitting.value = false
+        return
+      }
+      entry = data as GroupEntry
+    } else {
+      const { data, error: fetchError } = await client.POST('/orgs/{org_id}/groups', {
+        params: { path: { org_id: auth.activeOrgId! } },
+        body,
+      })
+      if (fetchError) {
+        error.value = fetchError.detail ?? 'Failed to save group'
+        submitting.value = false
+        return
+      }
+      entry = data as GroupEntry
     }
-
-    const entry: GroupEntry = await resp.json()
     emit('saved', entry)
     emit('update:open', false)
   } catch {

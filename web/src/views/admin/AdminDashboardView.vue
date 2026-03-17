@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2, Building2, Users, Activity, AlertTriangle } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
@@ -29,42 +29,32 @@ async function fetchDashboard() {
 
   try {
     // Fetch summary data from multiple admin endpoints in parallel.
-    const [orgsResp, usersResp, feedsResp, deliveriesResp] = await Promise.all([
-      orgFetch('/api/v1/admin/orgs?limit=1'),
-      orgFetch('/api/v1/admin/users?limit=1'),
-      orgFetch('/api/v1/admin/feeds'),
-      orgFetch('/api/v1/admin/deliveries?status=failed&limit=1'),
+    const [orgsResult, usersResult, feedsResult, deliveriesResult] = await Promise.all([
+      client.GET('/admin/orgs', { params: { query: { limit: 1 } } }),
+      client.GET('/admin/users', { params: { query: { limit: 1 } } }),
+      client.GET('/admin/feeds'),
+      client.GET('/admin/deliveries', { params: { query: { status: 'failed', limit: 1 } } }),
     ])
 
-    if (!orgsResp.ok || !usersResp.ok || !feedsResp.ok || !deliveriesResp.ok) {
+    if (orgsResult.error || usersResult.error || feedsResult.error || deliveriesResult.error) {
       error.value = 'Failed to load dashboard data.'
       loading.value = false
       return
     }
 
-    const orgsData = (await orgsResp.json()) as { items: unknown[]; next_cursor?: string }
-    const usersData = (await usersResp.json()) as { items: unknown[]; next_cursor?: string }
-    const feedsData = (await feedsResp.json()) as {
-      items: { consecutive_failures: number }[]
-    }
-    const deliveriesData = (await deliveriesResp.json()) as {
-      items: unknown[]
-      next_cursor?: string
-    }
-
-    const feeds = feedsData.items ?? []
+    const feeds = feedsResult.data.items ?? []
     const healthy = feeds.filter((f) => f.consecutive_failures === 0).length
     const failing = feeds.filter((f) => f.consecutive_failures > 0).length
 
     data.value = {
-      orgCount: orgsData.items.length,
-      orgHasMore: !!orgsData.next_cursor,
-      userCount: usersData.items.length,
-      userHasMore: !!usersData.next_cursor,
+      orgCount: (orgsResult.data.items ?? []).length,
+      orgHasMore: !!orgsResult.data.next_cursor,
+      userCount: (usersResult.data.items ?? []).length,
+      userHasMore: !!usersResult.data.next_cursor,
       healthyFeeds: healthy,
       failingFeeds: failing,
-      failedDeliveryCount: deliveriesData.items.length,
-      failedDeliveryHasMore: !!deliveriesData.next_cursor,
+      failedDeliveryCount: (deliveriesResult.data.items ?? []).length,
+      failedDeliveryHasMore: !!deliveriesResult.data.next_cursor,
     }
   } catch {
     error.value = 'Failed to load dashboard data.'

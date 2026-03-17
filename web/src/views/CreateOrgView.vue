@@ -1,11 +1,11 @@
 <!-- ABOUTME: Create organization page -- shown when an authenticated user has no orgs. -->
-<!-- ABOUTME: Posts to the chi-registered /api/v1/orgs endpoint via orgFetch. -->
+<!-- ABOUTME: Posts to the /orgs endpoint via typed API client. -->
 
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,18 +23,14 @@ async function onSubmit() {
   submitting.value = true
 
   try {
-    const response = await orgFetch('/api/v1/orgs', {
-      method: 'POST',
-      body: JSON.stringify({ name: orgName.value }),
+    const { data, error: fetchError } = await client.POST('/orgs', {
+      body: { name: orgName.value },
     })
 
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}))
-      error.value = errData.detail ?? 'Failed to create organization'
+    if (fetchError) {
+      error.value = fetchError.detail ?? 'Failed to create organization'
       return
     }
-
-    const data: { org_id: string } = await response.json()
 
     // Refresh user session to pick up the org membership.
     await auth.fetchMe()

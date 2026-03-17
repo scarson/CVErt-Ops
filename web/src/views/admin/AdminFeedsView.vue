@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -50,15 +50,17 @@ async function fetchFeeds() {
   error.value = ''
 
   try {
-    const resp = await orgFetch('/api/v1/admin/feeds')
-    if (!resp.ok) {
+    const { data, error: fetchError } = await client.GET('/admin/feeds')
+    if (fetchError) {
       error.value = 'Failed to load feed status.'
       loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: FeedEntry[] }
-    feeds.value = data.items ?? []
+    feeds.value = (data.items ?? []).map((f) => ({
+      ...f,
+      recent_logs: f.recent_logs ?? [],
+    }))
   } catch {
     error.value = 'Failed to load feed status.'
   } finally {
@@ -71,10 +73,12 @@ async function triggerFeed(feedName: string) {
   actionInProgress.value = feedName
 
   try {
-    const resp = await orgFetch(`/api/v1/admin/feeds/${feedName}/run`, { method: 'POST' })
-    if (resp.status === 409) {
+    const { error: fetchError } = await client.POST('/admin/feeds/{feed}/run', {
+      params: { path: { feed: feedName } },
+    })
+    if (fetchError?.status === 409) {
       toast.info('Job already pending for ' + feedName)
-    } else if (resp.ok) {
+    } else if (!fetchError) {
       toast.success('Job enqueued for ' + feedName)
       await fetchFeeds()
     } else {
@@ -92,8 +96,10 @@ async function pauseFeed(feedName: string) {
   actionInProgress.value = feedName
 
   try {
-    const resp = await orgFetch(`/api/v1/admin/feeds/${feedName}/pause`, { method: 'POST' })
-    if (resp.ok) {
+    const { error: fetchError } = await client.POST('/admin/feeds/{feed}/pause', {
+      params: { path: { feed: feedName } },
+    })
+    if (!fetchError) {
       toast.success(feedName + ' paused')
       await fetchFeeds()
     } else {
@@ -111,8 +117,10 @@ async function resumeFeed(feedName: string) {
   actionInProgress.value = feedName
 
   try {
-    const resp = await orgFetch(`/api/v1/admin/feeds/${feedName}/resume`, { method: 'POST' })
-    if (resp.ok) {
+    const { error: fetchError } = await client.POST('/admin/feeds/{feed}/resume', {
+      params: { path: { feed: feedName } },
+    })
+    if (!fetchError) {
       toast.success(feedName + ' resumed')
       await fetchFeeds()
     } else {

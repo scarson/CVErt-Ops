@@ -18,8 +18,17 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockGET = vi.fn()
+const mockDELETE = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: (...args: unknown[]) => mockGET(...args),
+    POST: vi.fn(),
+    PATCH: vi.fn(),
+    DELETE: (...args: unknown[]) => mockDELETE(...args),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 const TEST_USER_ID = '00000000-0000-0000-0000-000000000099'
@@ -35,26 +44,23 @@ function makeGroup(overrides: Record<string, unknown> = {}) {
 }
 
 function mockGroupsSuccess(groups = [makeGroup()]) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ items: groups }),
+  mockGET.mockResolvedValueOnce({
+    data: { items: groups },
+    error: undefined,
   })
 }
 
 function mockGroupsError() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 500,
-    json: () => Promise.resolve({ detail: 'Internal Server Error' }),
+  mockGET.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 500, detail: 'Internal Server Error' },
   })
 }
 
 function mockDeleteSuccess() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 204,
-    json: () => Promise.resolve(null),
+  mockDELETE.mockResolvedValueOnce({
+    data: undefined,
+    error: undefined,
   })
 }
 
@@ -99,7 +105,8 @@ describe('GroupsView', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
-    mockFetch.mockReset()
+    mockGET.mockReset()
+    mockDELETE.mockReset()
   })
 
   afterEach(() => {
@@ -110,7 +117,7 @@ describe('GroupsView', () => {
   describe('loading state', () => {
     it('shows loading indicator while fetching', async () => {
       setupAuthStore('admin')
-      mockFetch.mockImplementation(() => new Promise(() => {}))
+      mockGET.mockImplementation(() => new Promise(() => {}))
       await mountView()
 
       expect(wrapper.text()).toContain('Loading')
@@ -367,7 +374,7 @@ describe('GroupsView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockDELETE.mockReset()
       mockDeleteSuccess()
 
       // Click delete on second group
@@ -382,10 +389,10 @@ describe('GroupsView', () => {
       confirmBtn!.click()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups/g2`,
+      expect(mockDELETE).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups/{group_id}',
         expect.objectContaining({
-          method: 'DELETE',
+          params: { path: { org_id: TEST_ORG_ID, group_id: 'g2' } },
         }),
       )
 
@@ -401,11 +408,10 @@ describe('GroupsView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockReset()
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Server error' }),
+      mockDELETE.mockReset()
+      mockDELETE.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
       })
 
       await wrapper.find('[data-testid="delete-group-btn"]').trigger('click')
@@ -430,16 +436,13 @@ describe('GroupsView', () => {
       await flushPromises()
 
       // Mock the fetches that GroupMembersDialog will make when it opens
-      // Group members endpoint returns list envelope; org members still bare array.
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ items: [] }),
+      mockGET.mockResolvedValueOnce({
+        data: { items: [] },
+        error: undefined,
       })
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve([]),
+      mockGET.mockResolvedValueOnce({
+        data: { items: [] },
+        error: undefined,
       })
 
       await wrapper.find('[data-testid="manage-members-btn"]').trigger('click')
@@ -458,16 +461,18 @@ describe('GroupsView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
+      mockGET.mockClear()
       const ORG_B_ID = '00000000-0000-0000-0000-000000000002'
       mockGroupsSuccess([makeGroup({ name: 'Org B Group' })])
 
       auth.activeOrgId = ORG_B_ID
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${ORG_B_ID}/groups`,
-        expect.objectContaining({ method: 'GET' }),
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups',
+        expect.objectContaining({
+          params: { path: { org_id: ORG_B_ID } },
+        }),
       )
     })
   })
@@ -479,10 +484,10 @@ describe('GroupsView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID } },
         }),
       )
     })

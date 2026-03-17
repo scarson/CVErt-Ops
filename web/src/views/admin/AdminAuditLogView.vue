@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -46,18 +46,16 @@ async function fetchAuditLog(cursor?: string) {
   error.value = ''
 
   try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (entityTypeFilter.value) params.set('entity_type', entityTypeFilter.value)
-    if (actionFilter.value) params.set('action', actionFilter.value)
-    if (cursor) params.set('cursor', cursor)
-
-    const resp = await orgFetch(`/api/v1/admin/audit-log?${params}`)
-    if (!resp.ok) {
+    const entity_type = entityTypeFilter.value || undefined
+    const action = actionFilter.value || undefined
+    const { data, error: fetchError } = await client.GET('/admin/audit-log', {
+      params: { query: { limit: 50, entity_type, action, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load audit log.'
       return
     }
 
-    const data = (await resp.json()) as { items: AuditEntry[]; next_cursor?: string }
     if (cursor) {
       entries.value = [...entries.value, ...(data.items ?? [])]
     } else {

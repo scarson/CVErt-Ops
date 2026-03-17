@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import {
   Dialog,
   DialogContent,
@@ -103,37 +103,36 @@ async function handleAdd() {
   submitting.value = true
   error.value = ''
 
-  const body: Record<string, string> =
+  const body =
     itemType.value === 'package'
       ? {
-          item_type: 'package',
+          item_type: 'package' as const,
           ecosystem: ecosystem.value,
           package_name: packageName.value.trim(),
-          ...(namespace.value.trim() ? { namespace: namespace.value.trim() } : {}),
+          namespace: namespace.value.trim() || null,
+          cpe_normalized: null,
         }
       : {
-          item_type: 'cpe',
+          item_type: 'cpe' as const,
           cpe_normalized: cpeNormalized.value.trim(),
+          ecosystem: null,
+          package_name: null,
+          namespace: null,
         }
 
   try {
-    const resp = await orgFetch(
-      `/api/v1/orgs/${auth.activeOrgId}/watchlists/${props.watchlistId}/items`,
-      {
-        method: 'POST',
-        body: JSON.stringify(body),
-      },
-    )
+    const { data, error: fetchError } = await client.POST('/orgs/{org_id}/watchlists/{id}/items', {
+      params: { path: { org_id: auth.activeOrgId!, id: props.watchlistId } },
+      body,
+    })
 
-    if (!resp.ok) {
-      const data = await resp.json()
-      error.value = data.detail ?? 'Failed to add item'
+    if (fetchError) {
+      error.value = fetchError.detail ?? 'Failed to add item'
       submitting.value = false
       return
     }
 
-    const item: WatchlistItemEntry = await resp.json()
-    emit('added', item)
+    emit('added', data as WatchlistItemEntry)
     emit('update:open', false)
   } catch {
     error.value = 'Network error. Please try again.'

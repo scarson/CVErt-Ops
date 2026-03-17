@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import {
   Dialog,
   DialogContent,
@@ -60,27 +60,25 @@ const availableMembers = computed(() => {
   return orgMembers.value.filter((m) => !memberIds.has(m.user_id))
 })
 
-function apiBase() {
-  return `/api/v1/orgs/${auth.activeOrgId}`
-}
-
 async function fetchData() {
   loading.value = true
   fetchError.value = ''
 
   try {
-    const [groupResp, orgResp] = await Promise.all([
-      orgFetch(`${apiBase()}/groups/${props.groupId}/members`),
-      orgFetch(`${apiBase()}/members`),
+    const [groupResult, orgResult] = await Promise.all([
+      client.GET('/orgs/{org_id}/groups/{group_id}/members', {
+        params: { path: { org_id: auth.activeOrgId!, group_id: props.groupId } },
+      }),
+      client.GET('/orgs/{org_id}/members', {
+        params: { path: { org_id: auth.activeOrgId! } },
+      }),
     ])
 
-    if (!groupResp.ok || !orgResp.ok) {
+    if (groupResult.error || orgResult.error) {
       fetchError.value = 'Failed to load group members. Please try again.'
     } else {
-      const groupData = await groupResp.json()
-      groupMembers.value = groupData.items
-      const orgData = await orgResp.json()
-      orgMembers.value = orgData.items ?? []
+      groupMembers.value = groupResult.data.items ?? []
+      orgMembers.value = orgResult.data.items ?? []
     }
   } catch {
     fetchError.value = 'Failed to load group members. Please try again.'
@@ -95,12 +93,12 @@ async function addMember(userId: string) {
   actionError.value = ''
 
   try {
-    const resp = await orgFetch(`${apiBase()}/groups/${props.groupId}/members`, {
-      method: 'POST',
-      body: JSON.stringify({ user_id: userId }),
+    const { error: fetchErr } = await client.POST('/orgs/{org_id}/groups/{group_id}/members', {
+      params: { path: { org_id: auth.activeOrgId!, group_id: props.groupId } },
+      body: { user_id: userId },
     })
 
-    if (resp.ok) {
+    if (!fetchErr) {
       // Move the user from available to group members
       const orgMember = orgMembers.value.find((m) => m.user_id === userId)
       if (orgMember) {
@@ -127,11 +125,11 @@ async function removeMember(userId: string) {
   actionError.value = ''
 
   try {
-    const resp = await orgFetch(`${apiBase()}/groups/${props.groupId}/members/${userId}`, {
-      method: 'DELETE',
+    const { error: fetchErr } = await client.DELETE('/orgs/{org_id}/groups/{group_id}/members/{user_id}', {
+      params: { path: { org_id: auth.activeOrgId!, group_id: props.groupId, user_id: userId } },
     })
 
-    if (resp.ok) {
+    if (!fetchErr) {
       groupMembers.value = groupMembers.value.filter((m) => m.user_id !== userId)
     } else {
       actionError.value = 'Failed to remove member. Please try again.'

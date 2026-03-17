@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -49,16 +49,14 @@ async function fetchUsers(cursor?: string) {
   error.value = ''
 
   try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (cursor) params.set('cursor', cursor)
-
-    const resp = await orgFetch(`/api/v1/admin/users?${params}`)
-    if (!resp.ok) {
+    const { data, error: fetchError } = await client.GET('/admin/users', {
+      params: { query: { limit: 50, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load users.'
       return
     }
 
-    const data = (await resp.json()) as { items: UserEntry[]; next_cursor?: string }
     if (cursor) {
       users.value = [...users.value, ...(data.items ?? [])]
     } else {
@@ -76,15 +74,14 @@ async function fetchUsers(cursor?: string) {
 async function toggleDisable(user: UserEntry) {
   const action = user.disabled_at ? 'enable' : 'disable'
   try {
-    const resp = await orgFetch(`/api/v1/admin/users/${user.id}/${action}`, {
-      method: 'POST',
-    })
-    if (resp.ok) {
+    const result = user.disabled_at
+      ? await client.POST('/admin/users/{user_id}/enable', { params: { path: { user_id: user.id } } })
+      : await client.POST('/admin/users/{user_id}/disable', { params: { path: { user_id: user.id } } })
+    if (!result.error) {
       toast.success(`User ${action}d`)
       await fetchUsers()
     } else {
-      const body = await resp.text()
-      toast.error(body || `Failed to ${action} user`)
+      toast.error(result.error?.detail || `Failed to ${action} user`)
     }
   } catch {
     toast.error(`Failed to ${action} user`)
@@ -93,10 +90,10 @@ async function toggleDisable(user: UserEntry) {
 
 async function unlockUser(userId: string) {
   try {
-    const resp = await orgFetch(`/api/v1/admin/users/${userId}/unlock`, {
-      method: 'POST',
+    const { error: fetchError } = await client.POST('/admin/users/{user_id}/unlock', {
+      params: { path: { user_id: userId } },
     })
-    if (resp.ok) {
+    if (!fetchError) {
       toast.success('User unlocked')
       await fetchUsers()
     } else {
@@ -109,10 +106,10 @@ async function unlockUser(userId: string) {
 
 async function forcePasswordReset(userId: string) {
   try {
-    const resp = await orgFetch(`/api/v1/admin/users/${userId}/reset-password`, {
-      method: 'POST',
+    const { error: fetchError } = await client.POST('/admin/users/{user_id}/reset-password', {
+      params: { path: { user_id: userId } },
     })
-    if (resp.ok) {
+    if (!fetchError) {
       toast.success('Password reset required on next login')
       await fetchUsers()
     } else {

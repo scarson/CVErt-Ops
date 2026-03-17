@@ -16,8 +16,16 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockPOST = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: vi.fn(),
+    POST: (...args: unknown[]) => mockPOST(...args),
+    PATCH: vi.fn(),
+    DELETE: vi.fn(),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 
@@ -33,10 +41,9 @@ function makeInvitationEntry(overrides: Record<string, unknown> = {}) {
 }
 
 function mockInviteSuccess(entry = makeInvitationEntry()) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 202,
-    json: () => Promise.resolve(entry),
+  mockPOST.mockResolvedValueOnce({
+    data: entry,
+    error: undefined,
   })
 }
 
@@ -82,6 +89,7 @@ describe('InviteMemberDialog', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    mockPOST.mockReset()
 
     const auth = useAuthStore()
     auth.activeOrgId = TEST_ORG_ID
@@ -151,16 +159,16 @@ describe('InviteMemberDialog', () => {
     await clickTestId('send-invite-btn')
     await flushPromises()
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      `/api/v1/orgs/${TEST_ORG_ID}/invitations`,
+    expect(mockPOST).toHaveBeenCalledWith(
+      '/orgs/{org_id}/invitations',
       expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ email: 'test@example.com', role: 'member' }),
+        params: { path: { org_id: TEST_ORG_ID } },
+        body: { email: 'test@example.com', role: 'member' },
       }),
     )
   })
 
-  it('shows success message after 202 response', async () => {
+  it('shows success message after success', async () => {
     mockInviteSuccess()
 
     await mountDialog()

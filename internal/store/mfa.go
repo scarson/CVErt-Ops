@@ -536,7 +536,7 @@ func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdm
 
 	// Layer 2a: site config — org owners must have MFA.
 	if cfg.RequiredOrgOwners {
-		isOwner, err := s.isOrgOwner(ctx, userID)
+		isOwner, err := s.IsOrgOwner(ctx, userID)
 		if err != nil {
 			return false, fmt.Errorf("check org owner: %w", err)
 		}
@@ -562,8 +562,8 @@ func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdm
 	return hasReq, nil
 }
 
-// isOrgOwner checks whether a user has the 'owner' role in any org.
-func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
+// IsOrgOwner checks whether a user has the 'owner' role in any org.
+func (s *Store) IsOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
 	var isOwner bool
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error

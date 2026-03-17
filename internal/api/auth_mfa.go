@@ -15,13 +15,18 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/crypto"
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
+
+// enrollmentTokenTTL is the duration a TOTP enrollment token is valid.
+const enrollmentTokenTTL = 5 * time.Minute
 
 // ── MFA Challenge ────────────────────────────────────────────────────────────
 
@@ -413,9 +418,692 @@ func (srv *Server) issueRememberDeviceToken(ctx context.Context, userID uuid.UUI
 	return cookie.String(), nil
 }
 
+// ── TOTP Enrollment ──────────────────────────────────────────────────────────
+
+type mfaTOTPSetupInput struct {
+	AccessToken     string `cookie:"access_token"`
+	MFAPendingToken string `cookie:"mfa_pending_token"`
+}
+
+type mfaTOTPSetupOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		QRCodeURI string `json:"qr_code_uri" doc:"otpauth:// URI for QR code"`
+		Secret    string `json:"secret"      doc:"Base32-encoded TOTP secret (manual entry)"`
+	}
+}
+
+// mfaTOTPSetupHandler handles POST /auth/mfa/totp/setup.
+// Generates a TOTP secret/QR URI and stores the encrypted secret in a
+// short-lived enrollment cookie. The secret is NOT persisted to the DB
+// until the user confirms with a valid code.
+func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupInput) (*mfaTOTPSetupOutput, error) {
+	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check not already enrolled.
+	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	if existing != nil {
+		return nil, huma.Error409Conflict("TOTP already enrolled")
+	}
+
+	// Look up user email for the TOTP account name.
+	user, err := srv.store.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, "totp-setup: get user", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Generate TOTP key.
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "CVErt Ops",
+		AccountName: user.Email,
+		Period:      30,
+		SecretSize:  20,
+		Digits:      otp.DigitsSix,
+		Algorithm:   otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-setup: generate key", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Validate URI round-trip (design doc requirement).
+	parsed, err := otp.NewKeyFromURL(key.URL())
+	if err != nil || parsed.Secret() != key.Secret() {
+		slog.ErrorContext(ctx, "totp-setup: URI round-trip failed")
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Encrypt secret for enrollment cookie.
+	encKey, err := srv.ssoEncryptionKey()
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-setup: encryption key", "error", err)
+		return nil, huma.Error500InternalServerError("encryption key not configured")
+	}
+	secretEnc, err := crypto.Encrypt(encKey, []byte(key.Secret()))
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-setup: encrypt secret", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Issue enrollment token (short-lived JWT containing encrypted secret).
+	jwtSecret := []byte(srv.cfg.JWTSecret)
+	enrollToken, err := auth.IssueEnrollmentToken(jwtSecret, userID, secretEnc, enrollmentTokenTTL)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-setup: issue enrollment token", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	out := &mfaTOTPSetupOutput{}
+	out.Body.QRCodeURI = key.URL()
+	out.Body.Secret = key.Secret()
+	out.SetCookie = enrollmentTokenCookies(enrollToken, srv.cfg.CookieSecure)
+	return out, nil
+}
+
+type mfaTOTPConfirmInput struct {
+	AccessToken       string `cookie:"access_token"`
+	MFAPendingToken   string `cookie:"mfa_pending_token"`
+	MFAEnrollToken    string `cookie:"mfa_enroll_token"`
+	Body              struct {
+		Code string `json:"code" minLength:"6" maxLength:"6" doc:"6-digit TOTP code from authenticator app"`
+	}
+}
+
+type mfaTOTPConfirmOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		RecoveryCodes []string `json:"recovery_codes,omitempty" doc:"One-time recovery codes (only on first MFA enrollment)"`
+	}
+}
+
+// mfaTOTPConfirmHandler handles POST /auth/mfa/totp/confirm.
+// Validates the TOTP code against the provisional secret from the enrollment
+// cookie, then persists the credential and generates recovery codes.
+func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConfirmInput) (*mfaTOTPConfirmOutput, error) {
+	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse enrollment token.
+	if input.MFAEnrollToken == "" {
+		return nil, huma.Error401Unauthorized("enrollment token required — call setup first")
+	}
+	enrollClaims, err := auth.ParseEnrollmentToken(input.MFAEnrollToken, []byte(srv.cfg.JWTSecret))
+	if err != nil {
+		return nil, huma.Error401Unauthorized("invalid or expired enrollment token")
+	}
+	if enrollClaims.UserID != userID {
+		return nil, huma.Error401Unauthorized("enrollment token user mismatch")
+	}
+
+	// Decrypt the provisional secret.
+	encKey, err := srv.ssoEncryptionKey()
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-confirm: encryption key", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	secretBytes, err := crypto.Decrypt(encKey, enrollClaims.SecretEnc)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-confirm: decrypt secret", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Validate the TOTP code against the provisional secret.
+	valid, err := totp.ValidateCustom(input.Body.Code, string(secretBytes), time.Now(), totp.ValidateOpts{
+		Period:    30,
+		Skew:     1,
+		Digits:   6,
+		Algorithm: 0, // SHA1
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-confirm: validate code", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !valid {
+		return nil, huma.Error401Unauthorized("invalid TOTP code")
+	}
+
+	// Check not already enrolled (race condition guard).
+	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	if existing != nil {
+		return nil, huma.Error409Conflict("TOTP already enrolled")
+	}
+
+	// Re-encrypt secret for DB storage (enrollment cookie used same key, but
+	// re-encrypt to get a fresh nonce for defense in depth).
+	secretEncDB, err := crypto.Encrypt(encKey, secretBytes)
+	if err != nil {
+		slog.ErrorContext(ctx, "totp-confirm: re-encrypt secret", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Persist the credential.
+	if _, err := srv.store.CreateMFACredential(ctx, userID, "totp", secretEncDB); err != nil {
+		slog.ErrorContext(ctx, "totp-confirm: create credential", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	out := &mfaTOTPConfirmOutput{}
+
+	// Generate recovery codes on first enrollment.
+	credCount, _ := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if credCount == 1 {
+		codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
+		if err != nil {
+			slog.ErrorContext(ctx, "totp-confirm: generate recovery codes", "error", err)
+			// Non-fatal: credential is persisted, codes can be generated later.
+		} else {
+			out.Body.RecoveryCodes = codes
+		}
+	}
+
+	// Clear enrollment cookie.
+	out.SetCookie = []string{clearEnrollmentCookie(srv.cfg.CookieSecure)}
+
+	// If this was a restricted enrollment session, clear mfa_enrollment_required.
+	if input.MFAPendingToken != "" {
+		cookies := srv.clearEnrollmentPending(input.MFAPendingToken)
+		out.SetCookie = append(out.SetCookie, cookies...)
+	}
+
+	return out, nil
+}
+
+// ── Email OTP Enrollment ─────────────────────────────────────────────────────
+
+type mfaEmailOTPSetupInput struct {
+	AccessToken     string `cookie:"access_token"`
+	MFAPendingToken string `cookie:"mfa_pending_token"`
+}
+
+type mfaEmailOTPSetupOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+}
+
+// mfaEmailOTPSetupHandler handles POST /auth/mfa/email-otp/setup.
+// Sends a verification code to the user's email address.
+func (srv *Server) mfaEmailOTPSetupHandler(ctx context.Context, input *mfaEmailOTPSetupInput) (*mfaEmailOTPSetupOutput, error) {
+	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check not already enrolled.
+	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
+	if existing != nil {
+		return nil, huma.Error409Conflict("email OTP already enrolled")
+	}
+
+	user, err := srv.store.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, "email-otp-setup: get user", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Rate-limit email OTP codes per hour.
+	since := time.Now().Add(-1 * time.Hour)
+	count, countErr := srv.store.CountRecentEmailOTPChallenges(ctx, userID, since)
+	if countErr != nil {
+		slog.ErrorContext(ctx, "email-otp-setup: count recent", "error", countErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if count >= int64(srv.cfg.MFAEmailOTPMaxPerHour) {
+		return nil, huma.Error429TooManyRequests("too many email OTP requests — try again later")
+	}
+
+	// Generate and store OTP code.
+	code, err := generateEmailOTPCode()
+	if err != nil {
+		slog.ErrorContext(ctx, "email-otp-setup: generate code", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	codeHash := sha256Hex(code)
+	expiresAt := time.Now().Add(srv.cfg.MFAEmailOTPTTL)
+	if err := srv.store.CreateEmailOTPChallenge(ctx, userID, codeHash, expiresAt); err != nil {
+		slog.ErrorContext(ctx, "email-otp-setup: create challenge", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Send the code.
+	if err := srv.sendMFAOTPEmail(ctx, user.Email, code); err != nil {
+		slog.WarnContext(ctx, "email-otp-setup: send email", "error", err)
+	}
+
+	return &mfaEmailOTPSetupOutput{}, nil
+}
+
+type mfaEmailOTPConfirmInput struct {
+	AccessToken     string `cookie:"access_token"`
+	MFAPendingToken string `cookie:"mfa_pending_token"`
+	Body            struct {
+		Code string `json:"code" minLength:"6" maxLength:"6" doc:"6-digit code from email"`
+	}
+}
+
+type mfaEmailOTPConfirmOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		RecoveryCodes []string `json:"recovery_codes,omitempty" doc:"One-time recovery codes (only on first MFA enrollment)"`
+	}
+}
+
+// mfaEmailOTPConfirmHandler handles POST /auth/mfa/email-otp/confirm.
+// Verifies the email OTP code and creates the email_otp credential.
+func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmailOTPConfirmInput) (*mfaEmailOTPConfirmOutput, error) {
+	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check not already enrolled.
+	existing, _ := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
+	if existing != nil {
+		return nil, huma.Error409Conflict("email OTP already enrolled")
+	}
+
+	// Verify the code.
+	codeHash := sha256Hex(input.Body.Code)
+	matched, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, int32(srv.cfg.MFAChallengeMaxAttempts))
+	if err != nil {
+		slog.ErrorContext(ctx, "email-otp-confirm: verify", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !matched {
+		return nil, huma.Error401Unauthorized("invalid verification code")
+	}
+
+	// Persist the credential (no secret for email OTP).
+	if _, err := srv.store.CreateMFACredential(ctx, userID, "email_otp", nil); err != nil {
+		slog.ErrorContext(ctx, "email-otp-confirm: create credential", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	out := &mfaEmailOTPConfirmOutput{}
+
+	// Generate recovery codes on first enrollment.
+	credCount, _ := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if credCount == 1 {
+		codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
+		if err != nil {
+			slog.ErrorContext(ctx, "email-otp-confirm: generate recovery codes", "error", err)
+		} else {
+			out.Body.RecoveryCodes = codes
+		}
+	}
+
+	// If this was a restricted enrollment session, clear mfa_enrollment_required.
+	if input.MFAPendingToken != "" {
+		out.SetCookie = srv.clearEnrollmentPending(input.MFAPendingToken)
+	}
+
+	return out, nil
+}
+
+// ── MFA Management ───────────────────────────────────────────────────────────
+
+type mfaMethodsInput struct {
+	AccessToken string `cookie:"access_token"`
+}
+
+type mfaMethodEntry struct {
+	Method    string    `json:"method"     doc:"MFA method name (totp, email_otp)"`
+	CreatedAt time.Time `json:"created_at" doc:"When this method was enrolled"`
+}
+
+type mfaMethodsOutput struct {
+	Body struct {
+		Methods                []mfaMethodEntry `json:"methods"`
+		RecoveryCodesRemaining int              `json:"recovery_codes_remaining"`
+		Required               bool             `json:"required"          doc:"Whether MFA is required for this user"`
+		RequiredReasons        []string         `json:"required_reasons"  doc:"Why MFA is required (site_admin, org_owner, org_policy, per_member)"`
+	}
+}
+
+// mfaMethodsHandler handles GET /auth/mfa/methods.
+// Returns enrolled MFA methods, recovery code count, and enforcement status.
+func (srv *Server) mfaMethodsHandler(ctx context.Context, input *mfaMethodsInput) (*mfaMethodsOutput, error) {
+	userID, err := srv.resolveAccessTokenUserID(input.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	creds, err := srv.store.GetMFACredentialsByUserID(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "mfa-methods: get credentials", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	remaining, err := srv.store.CountUnusedRecoveryCodes(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "mfa-methods: count recovery codes", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	reasons := srv.buildMFARequiredReasons(ctx, userID)
+
+	out := &mfaMethodsOutput{}
+	out.Body.Methods = make([]mfaMethodEntry, len(creds))
+	for i, c := range creds {
+		out.Body.Methods[i] = mfaMethodEntry{
+			Method:    c.Method,
+			CreatedAt: c.CreatedAt,
+		}
+	}
+	out.Body.RecoveryCodesRemaining = int(remaining)
+	out.Body.Required = len(reasons) > 0
+	out.Body.RequiredReasons = reasons
+	return out, nil
+}
+
+type mfaRemoveMethodInput struct {
+	AccessToken string `cookie:"access_token"`
+	Method      string `path:"method" enum:"totp,email_otp" doc:"MFA method to remove"`
+	Body        struct {
+		CurrentPassword string `json:"current_password" minLength:"1" doc:"Current password for re-authentication"`
+	}
+}
+
+// mfaRemoveMethodHandler handles DELETE /auth/mfa/methods/{method}.
+// Removes an MFA method after password re-authentication. Blocks removal
+// of the last method when MFA is mandated.
+func (srv *Server) mfaRemoveMethodHandler(ctx context.Context, input *mfaRemoveMethodInput) (*struct{}, error) {
+	userID, err := srv.resolveAccessTokenUserID(input.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-authenticate with current password.
+	user, err := srv.store.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, "mfa-remove: get user", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !user.PasswordHash.Valid {
+		return nil, huma.Error400BadRequest("account uses OAuth — password re-auth not available")
+	}
+	if !srv.acquireArgon2() {
+		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+	}
+	var pwOK bool
+	func() {
+		defer srv.releaseArgon2()
+		pwOK, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
+	}()
+	if err != nil {
+		slog.ErrorContext(ctx, "mfa-remove: verify password", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !pwOK {
+		return nil, huma.Error401Unauthorized("current password incorrect")
+	}
+
+	// Check if this is the last method and MFA is mandated.
+	credCount, err := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "mfa-remove: count credentials", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if credCount <= 1 {
+		isSiteAdmin, saErr := srv.store.IsSiteAdmin(ctx, userID)
+		if saErr != nil {
+			slog.ErrorContext(ctx, "mfa-remove: check site admin", "error", saErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		mfaCfg := store.MFAConfig{
+			RequiredSiteAdmins: srv.cfg.MFARequiredSiteAdmins,
+			RequiredOrgOwners:  srv.cfg.MFARequiredOrgOwners,
+		}
+		required, reqErr := srv.store.UserMFARequired(ctx, userID, isSiteAdmin, mfaCfg)
+		if reqErr != nil {
+			slog.ErrorContext(ctx, "mfa-remove: check mandate", "error", reqErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if required {
+			return nil, huma.Error403Forbidden("MFA is required and cannot be disabled")
+		}
+	}
+
+	// Delete the method.
+	deleted, err := srv.store.DeleteMFACredential(ctx, userID, input.Method)
+	if err != nil {
+		slog.ErrorContext(ctx, "mfa-remove: delete credential", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if deleted == 0 {
+		return nil, huma.Error404NotFound("method not enrolled")
+	}
+
+	// If no remaining credentials, delete recovery codes too.
+	remaining, err := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if err != nil {
+		slog.WarnContext(ctx, "mfa-remove: count remaining", "error", err)
+	} else if remaining == 0 {
+		if err := srv.store.DeleteAllRecoveryCodes(ctx, userID); err != nil {
+			slog.WarnContext(ctx, "mfa-remove: delete recovery codes", "error", err)
+		}
+		// Also delete remember-device tokens.
+		if err := srv.store.DeleteRememberDeviceTokens(ctx, userID); err != nil {
+			slog.WarnContext(ctx, "mfa-remove: delete device tokens", "error", err)
+		}
+	}
+
+	return nil, nil
+}
+
+// ── Recovery Code Regeneration ───────────────────────────────────────────────
+
+type mfaRegenerateCodesInput struct {
+	AccessToken string `cookie:"access_token"`
+	Body        struct {
+		CurrentPassword string `json:"current_password" minLength:"1" doc:"Current password for re-authentication"`
+	}
+}
+
+type mfaRegenerateCodesOutput struct {
+	Body struct {
+		RecoveryCodes []string `json:"recovery_codes" doc:"10 new one-time recovery codes"`
+	}
+}
+
+// mfaRegenerateCodesHandler handles POST /auth/mfa/recovery-codes/regenerate.
+// Requires active MFA enrollment and password re-authentication.
+func (srv *Server) mfaRegenerateCodesHandler(ctx context.Context, input *mfaRegenerateCodesInput) (*mfaRegenerateCodesOutput, error) {
+	userID, err := srv.resolveAccessTokenUserID(input.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify user has MFA enrolled.
+	hasMFA, err := srv.store.UserHasMFACredentials(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "recovery-regen: check MFA", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !hasMFA {
+		return nil, huma.Error409Conflict("no MFA methods enrolled")
+	}
+
+	// Re-authenticate with current password.
+	user, err := srv.store.GetUserByID(ctx, userID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, "recovery-regen: get user", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !user.PasswordHash.Valid {
+		return nil, huma.Error400BadRequest("account uses OAuth — password re-auth not available")
+	}
+	if !srv.acquireArgon2() {
+		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+	}
+	var pwOK bool
+	func() {
+		defer srv.releaseArgon2()
+		pwOK, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
+	}()
+	if err != nil {
+		slog.ErrorContext(ctx, "recovery-regen: verify password", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if !pwOK {
+		return nil, huma.Error401Unauthorized("current password incorrect")
+	}
+
+	// Regenerate codes (deletes old, creates new).
+	codes, err := srv.store.RegenerateRecoveryCodes(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, "recovery-regen: regenerate", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	out := &mfaRegenerateCodesOutput{}
+	out.Body.RecoveryCodes = codes
+	return out, nil
+}
+
+// ── Enrollment/Management Helpers ────────────────────────────────────────────
+
+// resolveEnrollmentUserID extracts the user ID from either an access token
+// or a pending enrollment token. Returns 401 if neither is valid.
+func (srv *Server) resolveEnrollmentUserID(accessToken, pendingToken string) (uuid.UUID, error) {
+	secret := []byte(srv.cfg.JWTSecret)
+
+	// Try access token first (fully authenticated user).
+	if accessToken != "" {
+		claims, err := auth.ParseAccessToken(accessToken, secret, jwtPreviousSecret(srv.cfg))
+		if err == nil {
+			return claims.UserID, nil
+		}
+	}
+
+	// Fall back to pending enrollment token.
+	if pendingToken != "" {
+		claims, err := auth.ParsePendingToken(pendingToken, secret)
+		if err == nil {
+			for _, p := range claims.Pending {
+				if p == "mfa_enrollment_required" {
+					return claims.UserID, nil
+				}
+			}
+		}
+	}
+
+	return uuid.Nil, huma.Error401Unauthorized("authentication required")
+}
+
+// resolveAccessTokenUserID extracts the user ID from an access token only.
+// Used by management endpoints that require full authentication.
+func (srv *Server) resolveAccessTokenUserID(accessToken string) (uuid.UUID, error) {
+	if accessToken == "" {
+		return uuid.Nil, huma.Error401Unauthorized("authentication required")
+	}
+	claims, err := auth.ParseAccessToken(accessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+	if err != nil {
+		return uuid.Nil, huma.Error401Unauthorized("invalid or expired access token")
+	}
+	return claims.UserID, nil
+}
+
+// enrollmentTokenCookies creates the mfa_enroll_token Set-Cookie header.
+func enrollmentTokenCookies(token string, secure bool) []string {
+	c := &http.Cookie{
+		Name:     "mfa_enroll_token",
+		Value:    token,
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(enrollmentTokenTTL.Seconds()),
+	}
+	return []string{c.String()}
+}
+
+// clearEnrollmentCookie expires the mfa_enroll_token cookie.
+func clearEnrollmentCookie(secure bool) string {
+	c := &http.Cookie{
+		Name:     "mfa_enroll_token",
+		Value:    "",
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	}
+	return c.String()
+}
+
+// clearEnrollmentPending removes "mfa_enrollment_required" from the pending
+// token and reissues it. If no items remain, issues full auth tokens.
+func (srv *Server) clearEnrollmentPending(pendingToken string) []string {
+	claims, err := auth.ParsePendingToken(pendingToken, []byte(srv.cfg.JWTSecret))
+	if err != nil {
+		return nil
+	}
+	remaining := removePendingItem(claims.Pending, "mfa_enrollment_required")
+	if len(remaining) > 0 {
+		secret := []byte(srv.cfg.JWTSecret)
+		token, err := auth.IssuePendingToken(secret, claims.UserID, claims.TokenVersion, remaining, nil, srv.cfg.MFAPendingTokenTTL)
+		if err != nil {
+			slog.Error("mfa: reissue pending after enrollment", "error", err)
+			return nil
+		}
+		return pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+	}
+	// All pending items cleared — but we can't issue full tokens here because
+	// we don't have the user object. The client should re-login.
+	return []string{clearPendingTokenCookie(srv.cfg.CookieSecure)}
+}
+
+// buildMFARequiredReasons returns the list of reasons why MFA is required
+// for this user (empty if not required).
+func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID) []string {
+	var reasons []string
+
+	isSiteAdmin, err := srv.store.IsSiteAdmin(ctx, userID)
+	if err != nil {
+		slog.WarnContext(ctx, "mfa-reasons: check site admin", "error", err)
+	}
+
+	if srv.cfg.MFARequiredSiteAdmins && isSiteAdmin {
+		reasons = append(reasons, "site_admin")
+	}
+
+	if srv.cfg.MFARequiredOrgOwners {
+		isOwner, err := srv.store.IsOrgOwner(ctx, userID)
+		if err != nil {
+			slog.WarnContext(ctx, "mfa-reasons: check org owner", "error", err)
+		}
+		if isOwner {
+			reasons = append(reasons, "org_owner")
+		}
+	}
+
+	inReqOrg, err := srv.store.UserInMFARequiredOrg(ctx, userID)
+	if err != nil {
+		slog.WarnContext(ctx, "mfa-reasons: check org-wide", "error", err)
+	}
+	if inReqOrg {
+		reasons = append(reasons, "org_policy")
+	}
+
+	hasReq, err := srv.store.UserHasMFARequirement(ctx, userID)
+	if err != nil {
+		slog.WarnContext(ctx, "mfa-reasons: check per-member", "error", err)
+	}
+	if hasReq {
+		reasons = append(reasons, "per_member")
+	}
+
+	return reasons
+}
+
 // ── Route registration ────────────────────────────────────────────────────────
 
-// registerMFARoutes registers MFA challenge and verify routes on the huma API.
+// registerMFARoutes registers MFA challenge, verify, enrollment, and management routes.
 func registerMFARoutes(api huma.API, srv *Server) {
 	huma.Register(api, huma.Operation{
 		OperationID:   "mfa-challenge",
@@ -434,4 +1122,71 @@ func registerMFARoutes(api huma.API, srv *Server) {
 		Summary:       "Submit MFA verification code",
 		DefaultStatus: http.StatusOK,
 	}, srv.mfaVerifyHandler)
+
+	// TOTP enrollment.
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-totp-setup",
+		Method:        http.MethodPost,
+		Path:          "/auth/mfa/totp/setup",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "Generate TOTP secret and QR code URI",
+		DefaultStatus: http.StatusOK,
+	}, srv.mfaTOTPSetupHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-totp-confirm",
+		Method:        http.MethodPost,
+		Path:          "/auth/mfa/totp/confirm",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "Verify TOTP code and finalize enrollment",
+		DefaultStatus: http.StatusOK,
+	}, srv.mfaTOTPConfirmHandler)
+
+	// Email OTP enrollment.
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-email-otp-setup",
+		Method:        http.MethodPost,
+		Path:          "/auth/mfa/email-otp/setup",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "Send email OTP verification code for enrollment",
+		DefaultStatus: http.StatusOK,
+	}, srv.mfaEmailOTPSetupHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-email-otp-confirm",
+		Method:        http.MethodPost,
+		Path:          "/auth/mfa/email-otp/confirm",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "Verify email OTP code and finalize enrollment",
+		DefaultStatus: http.StatusOK,
+	}, srv.mfaEmailOTPConfirmHandler)
+
+	// MFA management.
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-methods-list",
+		Method:        http.MethodGet,
+		Path:          "/auth/mfa/methods",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "List enrolled MFA methods and enforcement status",
+		DefaultStatus: http.StatusOK,
+	}, srv.mfaMethodsHandler)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-method-remove",
+		Method:        http.MethodDelete,
+		Path:          "/auth/mfa/methods/{method}",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "Remove an MFA method (requires password re-auth)",
+		DefaultStatus: http.StatusNoContent,
+	}, srv.mfaRemoveMethodHandler)
+
+	// Recovery code regeneration.
+	huma.Register(api, huma.Operation{
+		OperationID:   "mfa-recovery-codes-regenerate",
+		Method:        http.MethodPost,
+		Path:          "/auth/mfa/recovery-codes/regenerate",
+		Tags:          []string{"auth", "mfa"},
+		Summary:       "Regenerate recovery codes (requires password re-auth)",
+		DefaultStatus: http.StatusOK,
+	}, srv.mfaRegenerateCodesHandler)
 }

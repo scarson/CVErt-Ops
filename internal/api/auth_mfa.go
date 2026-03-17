@@ -57,6 +57,17 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 	}
 
 	// Email OTP: generate code, store hash, send email.
+	// Rate-limit: max N codes per hour per user.
+	since := time.Now().Add(-1 * time.Hour)
+	count, countErr := srv.store.CountRecentEmailOTPChallenges(ctx, claims.UserID, since)
+	if countErr != nil {
+		slog.ErrorContext(ctx, "mfa-challenge: count recent OTPs", "error", countErr)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if count >= int64(srv.cfg.MFAEmailOTPMaxPerHour) {
+		return nil, huma.Error429TooManyRequests("too many email OTP requests — try again later")
+	}
+
 	user, err := srv.store.GetUserByID(ctx, claims.UserID)
 	if err != nil || user == nil {
 		slog.ErrorContext(ctx, "mfa-challenge: get user", "error", err)

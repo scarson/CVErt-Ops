@@ -436,7 +436,11 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	}
 
 	if !hasMFA {
-		isSiteAdmin, _ := srv.store.IsSiteAdmin(ctx, user.ID)
+		isSiteAdmin, saErr := srv.store.IsSiteAdmin(ctx, user.ID)
+		if saErr != nil {
+			slog.ErrorContext(ctx, "login: check site admin", "error", saErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
 		mfaCfg := store.MFAConfig{
 			RequiredSiteAdmins: srv.cfg.MFARequiredSiteAdmins,
 			RequiredOrgOwners:  srv.cfg.MFARequiredOrgOwners,

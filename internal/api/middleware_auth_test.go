@@ -5,6 +5,8 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,6 +18,37 @@ import (
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
+
+// assertRFC9457Response checks that the response has Content-Type application/problem+json
+// and a valid JSON body with status, title, and detail fields per RFC 9457.
+func assertRFC9457Response(t *testing.T, resp *http.Response, wantStatus int) {
+	t.Helper()
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var problem struct {
+		Status int    `json:"status"`
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		t.Fatalf("decode problem+json: %v (body: %s)", err, string(body))
+	}
+	if problem.Status != wantStatus {
+		t.Errorf("problem.status = %d, want %d", problem.Status, wantStatus)
+	}
+	if problem.Title == "" {
+		t.Error("problem.title is empty")
+	}
+	if problem.Detail == "" {
+		t.Error("problem.detail is empty")
+	}
+}
 
 // newAuthTestServer builds a minimal Server with the given JWTSecret and optional store.
 func newAuthTestServer(t *testing.T, jwtSecret string, db *testutil.TestDB) *Server {
@@ -49,6 +82,7 @@ func TestRequireAuthenticated_NoCredentials_401(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("no credentials: got %d, want 401", resp.StatusCode)
 	}
+	assertRFC9457Response(t, resp, http.StatusUnauthorized)
 }
 
 func TestRequireAuthenticated_JWT_Valid(t *testing.T) {

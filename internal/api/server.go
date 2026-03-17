@@ -277,6 +277,7 @@ func (srv *Server) Handler() http.Handler {
 		r.Post("/reload-config", srv.adminReloadConfigHandler)
 		r.Get("/config", srv.adminConfigHandler)
 		r.Get("/audit-log", srv.adminAuditLogHandler)
+		r.Get("/security-events", srv.adminSecurityEventsHandler)
 	})
 
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──

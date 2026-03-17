@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
@@ -59,6 +60,98 @@ func (s *Store) InsertSecurityEvent(ctx context.Context, p InsertSecurityEventPa
 			Details: details,
 		})
 	})
+}
+
+// SecurityEventRow is the API-friendly representation of a security event.
+type SecurityEventRow struct {
+	ID         uuid.UUID        `json:"id"`
+	EventType  string           `json:"event_type"`
+	Severity   string           `json:"severity"`
+	ActorIP    string           `json:"actor_ip,omitempty"`
+	ActorEmail string           `json:"actor_email,omitempty"`
+	UserID     *uuid.UUID       `json:"user_id,omitempty"`
+	OrgID      *uuid.UUID       `json:"org_id,omitempty"`
+	Details    json.RawMessage  `json:"details,omitempty"`
+	CreatedAt  time.Time        `json:"created_at"`
+}
+
+// listSecurityEventsQuery is the raw SQL for listing security events.
+// Uses nullable parameters so that unset filters correctly evaluate to NULL.
+const listSecurityEventsQuery = `
+SELECT id, event_type, severity, actor_ip, actor_email, user_id, org_id, details, created_at
+FROM security_events
+WHERE
+    ($1::text IS NULL OR event_type = $1) AND
+    ($2::text IS NULL OR severity = $2) AND
+    ($3::text IS NULL OR actor_email = $3) AND
+    ($4::timestamptz IS NULL OR created_at >= $4) AND
+    ($5::timestamptz IS NULL OR created_at <= $5) AND
+    ($6::timestamptz IS NULL OR created_at < $6)
+ORDER BY created_at DESC, id DESC
+LIMIT $7
+`
+
+// ListSecurityEvents returns security events with optional filters and cursor pagination.
+// Uses withBypassRawTx with nullable params because the sqlc-generated types
+// use non-nullable Go types that don't produce SQL NULL in simple protocol mode.
+func (s *Store) ListSecurityEvents(ctx context.Context, eventType, severity, actorEmail string, since, until, cursorTime *time.Time, limit int) ([]SecurityEventRow, error) {
+	// Convert Go strings/times to sql.Null* so empty/nil values become SQL NULL.
+	eventTypeP := sql.NullString{String: eventType, Valid: eventType != ""}
+	severityP := sql.NullString{String: severity, Valid: severity != ""}
+	actorEmailP := sql.NullString{String: actorEmail, Valid: actorEmail != ""}
+	sinceP := sql.NullTime{}
+	if since != nil {
+		sinceP = sql.NullTime{Time: *since, Valid: true}
+	}
+	untilP := sql.NullTime{}
+	if until != nil {
+		untilP = sql.NullTime{Time: *until, Valid: true}
+	}
+	cursorP := sql.NullTime{}
+	if cursorTime != nil {
+		cursorP = sql.NullTime{Time: *cursorTime, Valid: true}
+	}
+
+	var result []SecurityEventRow
+	err := s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, listSecurityEventsQuery,
+			eventTypeP, severityP, actorEmailP, sinceP, untilP, cursorP, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close() //nolint:errcheck // best-effort close in deferred position
+
+		for rows.Next() {
+			var (
+				row        SecurityEventRow
+				actorIP    sql.NullString
+				actorEmail sql.NullString
+				userID     uuid.NullUUID
+				orgID      uuid.NullUUID
+				details    pqtype.NullRawMessage
+			)
+			if err := rows.Scan(&row.ID, &row.EventType, &row.Severity,
+				&actorIP, &actorEmail, &userID, &orgID, &details, &row.CreatedAt); err != nil {
+				return err
+			}
+			row.ActorIP = actorIP.String
+			row.ActorEmail = actorEmail.String
+			if userID.Valid {
+				uid := userID.UUID
+				row.UserID = &uid
+			}
+			if orgID.Valid {
+				oid := orgID.UUID
+				row.OrgID = &oid
+			}
+			if details.Valid {
+				row.Details = details.RawMessage
+			}
+			result = append(result, row)
+		}
+		return rows.Err()
+	})
+	return result, err
 }
 
 // uuidOrZero dereferences a *uuid.UUID, returning uuid.Nil if nil.

@@ -136,6 +136,15 @@ This is a security product — supply chain risk from unmaintained dependencies 
 - NEVER SKIP, EVADE OR DISABLE A PRE-COMMIT HOOK
 - NEVER use `git add -A` unless you've just done a `git status` - Don't add random test files to the repo.
 
+### Worktree base branch
+
+When creating git worktrees, ALWAYS branch from local `dev` (not `main`).
+The flow is: `worktree branch → dev → main`. Use:
+```bash
+git worktree add "$path" -b "$BRANCH_NAME" dev
+```
+Worktree directory: `.claude/worktrees/` (already gitignored).
+
 ### Worktree PR safety
 
 When PRing from a worktree that was created from `main` and merged `dev`:

@@ -57,6 +57,14 @@ type Config struct {
 	LockoutThreshold int           `env:"LOCKOUT_THRESHOLD" envDefault:"5"`
 	LockoutDuration  time.Duration `env:"LOCKOUT_DURATION"  envDefault:"15m"`
 
+	// ── Auth — MFA ──────────────────────────────────────────────────────────
+	MFARequiredSiteAdmins  bool          `env:"MFA_REQUIRED_SITE_ADMINS"   envDefault:"false"`
+	MFARequiredOrgOwners   bool          `env:"MFA_REQUIRED_ORG_OWNERS"    envDefault:"false"`
+	MFAEmailOTPTTL         time.Duration `env:"MFA_EMAIL_OTP_TTL"          envDefault:"10m"`
+	MFAEmailOTPMaxPerHour  int           `env:"MFA_EMAIL_OTP_MAX_PER_HOUR" envDefault:"5"`
+	MFAChallengeMaxAttempts int           `env:"MFA_CHALLENGE_MAX_ATTEMPTS" envDefault:"3"`
+	MFAPendingTokenTTL     time.Duration `env:"MFA_PENDING_TOKEN_TTL"      envDefault:"5m"`
+
 	// ── CORS ─────────────────────────────────────────────────────────────────
 	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
 	// Empty in production disables CORS. In development, defaults to localhost dev servers.

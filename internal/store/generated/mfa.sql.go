@@ -129,6 +129,23 @@ func (q *Queries) CreateMFARecoveryCode(ctx context.Context, arg CreateMFARecove
 	return err
 }
 
+const createMFARequirement = `-- name: CreateMFARequirement :exec
+INSERT INTO mfa_requirements (org_id, user_id, required_by)
+VALUES ($1, $2, $3)
+ON CONFLICT (org_id, user_id) DO NOTHING
+`
+
+type CreateMFARequirementParams struct {
+	OrgID      uuid.UUID
+	UserID     uuid.UUID
+	RequiredBy uuid.NullUUID
+}
+
+func (q *Queries) CreateMFARequirement(ctx context.Context, arg CreateMFARequirementParams) error {
+	_, err := q.db.ExecContext(ctx, createMFARequirement, arg.OrgID, arg.UserID, arg.RequiredBy)
+	return err
+}
+
 const deleteAllMFACredentials = `-- name: DeleteAllMFACredentials :execrows
 DELETE FROM mfa_credentials WHERE user_id = $1
 `
@@ -210,6 +227,23 @@ type DeleteMFACredentialParams struct {
 
 func (q *Queries) DeleteMFACredential(ctx context.Context, arg DeleteMFACredentialParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteMFACredential, arg.UserID, arg.Method)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteMFARequirement = `-- name: DeleteMFARequirement :execrows
+DELETE FROM mfa_requirements WHERE org_id = $1 AND user_id = $2
+`
+
+type DeleteMFARequirementParams struct {
+	OrgID  uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeleteMFARequirement(ctx context.Context, arg DeleteMFARequirementParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteMFARequirement, arg.OrgID, arg.UserID)
 	if err != nil {
 		return 0, err
 	}
@@ -320,6 +354,38 @@ func (q *Queries) GetMFACredentialsByUserID(ctx context.Context, userID uuid.UUI
 			&i.LastUsedStep,
 			&i.CreatedAt,
 			&i.LastUsedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getMFARequirementsByOrg = `-- name: GetMFARequirementsByOrg :many
+SELECT org_id, user_id, required_by, created_at FROM mfa_requirements WHERE org_id = $1 ORDER BY created_at
+`
+
+func (q *Queries) GetMFARequirementsByOrg(ctx context.Context, orgID uuid.UUID) ([]MfaRequirement, error) {
+	rows, err := q.db.QueryContext(ctx, getMFARequirementsByOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MfaRequirement
+	for rows.Next() {
+		var i MfaRequirement
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.UserID,
+			&i.RequiredBy,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -455,4 +521,36 @@ func (q *Queries) UserHasMFACredentials(ctx context.Context, userID uuid.UUID) (
 	var has_mfa bool
 	err := row.Scan(&has_mfa)
 	return has_mfa, err
+}
+
+const userHasMFARequirement = `-- name: UserHasMFARequirement :one
+SELECT EXISTS(
+    SELECT 1 FROM mfa_requirements WHERE user_id = $1
+) AS required
+`
+
+// Cross-org check: does this user have an MFA requirement in ANY org?
+// Used at login time under withBypassTx.
+func (q *Queries) UserHasMFARequirement(ctx context.Context, userID uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, userHasMFARequirement, userID)
+	var required bool
+	err := row.Scan(&required)
+	return required, err
+}
+
+const userInMFARequiredOrg = `-- name: UserInMFARequiredOrg :one
+SELECT EXISTS(
+    SELECT 1 FROM org_members om
+    JOIN organizations o ON o.id = om.org_id
+    WHERE om.user_id = $1 AND o.mfa_required_all = true
+) AS required
+`
+
+// Does this user belong to any org with mfa_required_all=true?
+// Used at login time under withBypassTx.
+func (q *Queries) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, userInMFARequiredOrg, userID)
+	var required bool
+	err := row.Scan(&required)
+	return required, err
 }

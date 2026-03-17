@@ -1,5 +1,5 @@
-// ABOUTME: Store methods for MFA credential and recovery code operations.
-// ABOUTME: All operations use withBypassTx — MFA tables are global (no RLS).
+// ABOUTME: Store methods for MFA credential, recovery code, challenge, and requirement operations.
+// ABOUTME: Credentials/recovery/challenges use withBypassTx (global); requirements use withOrgTx (RLS).
 package store
 
 import (
@@ -447,4 +447,73 @@ func (s *Store) DeleteExpiredChallenges(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("delete expired challenges: %w", err)
 	}
 	return n, nil
+}
+
+// --- MFA Requirement Operations (Org-Scoped, RLS) ---
+
+// CreateMFARequirement adds a per-member MFA mandate within an org.
+// Idempotent: ON CONFLICT DO NOTHING if the requirement already exists.
+func (s *Store) CreateMFARequirement(ctx context.Context, orgID, userID, requiredByID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		return q.CreateMFARequirement(ctx, generated.CreateMFARequirementParams{
+			OrgID:      orgID,
+			UserID:     userID,
+			RequiredBy: uuid.NullUUID{UUID: requiredByID, Valid: true},
+		})
+	})
+}
+
+// DeleteMFARequirement removes the MFA mandate for a user in an org.
+func (s *Store) DeleteMFARequirement(ctx context.Context, orgID, userID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		_, err := q.DeleteMFARequirement(ctx, generated.DeleteMFARequirementParams{
+			OrgID:  orgID,
+			UserID: userID,
+		})
+		return err
+	})
+}
+
+// GetMFARequirementsByOrg returns all MFA requirements for an org, ordered by created_at.
+func (s *Store) GetMFARequirementsByOrg(ctx context.Context, orgID uuid.UUID) ([]generated.MfaRequirement, error) {
+	var rows []generated.MfaRequirement
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		rows, err = q.GetMFARequirementsByOrg(ctx, orgID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get mfa requirements by org: %w", err)
+	}
+	return rows, nil
+}
+
+// UserHasMFARequirement checks whether a user has an MFA requirement in any org.
+// Uses withBypassTx for login-time cross-org checks.
+func (s *Store) UserHasMFARequirement(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var has bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		has, err = q.UserHasMFARequirement(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("user has mfa requirement: %w", err)
+	}
+	return has, nil
+}
+
+// UserInMFARequiredOrg checks whether a user belongs to any org with mfa_required_all=true.
+// Uses withBypassTx for login-time cross-org checks.
+func (s *Store) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var required bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		required, err = q.UserInMFARequiredOrg(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("user in mfa required org: %w", err)
+	}
+	return required, nil
 }

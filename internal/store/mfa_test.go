@@ -1,4 +1,4 @@
-// ABOUTME: Integration tests for MFA credential and recovery code store methods.
+// ABOUTME: Integration tests for MFA credential, recovery code, challenge, and requirement store methods.
 // ABOUTME: Uses testutil.NewTestDB which starts a real Postgres container with migrations.
 package store_test
 
@@ -972,5 +972,387 @@ func TestMFAChallenge_ConcurrentVerification(t *testing.T) {
 	}
 	if successCount != 1 {
 		t.Errorf("concurrent verification: %d successes, want exactly 1 (results: %v)", successCount, results)
+	}
+}
+
+// --- MFA Requirement Tests ---
+
+func TestMFARequirement_CreateAndRetrieve(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Setup: create org, user, membership.
+	org, err := tdb.CreateOrg(ctx, "MFA Req Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-create@example.com", "MFA Req Create", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-req-admin@example.com", "MFA Req Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	// Create requirement.
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	// Retrieve requirements for org.
+	reqs, err := tdb.GetMFARequirementsByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetMFARequirementsByOrg: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("len(reqs) = %d, want 1", len(reqs))
+	}
+	if reqs[0].UserID != user.ID {
+		t.Errorf("UserID = %v, want %v", reqs[0].UserID, user.ID)
+	}
+	if reqs[0].OrgID != org.ID {
+		t.Errorf("OrgID = %v, want %v", reqs[0].OrgID, org.ID)
+	}
+	if !reqs[0].RequiredBy.Valid || reqs[0].RequiredBy.UUID != admin.ID {
+		t.Errorf("RequiredBy = %v, want %v", reqs[0].RequiredBy, admin.ID)
+	}
+	if reqs[0].CreatedAt.IsZero() {
+		t.Error("CreatedAt should be set")
+	}
+}
+
+func TestMFARequirement_IdempotentCreate(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Req Idempotent Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-idem@example.com", "MFA Req Idem", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-req-idem-admin@example.com", "MFA Req Idem Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	// First create.
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement (first): %v", err)
+	}
+
+	// Second create — ON CONFLICT DO NOTHING, should not error.
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement (second): %v, expected no error on duplicate", err)
+	}
+
+	// Still only one row.
+	reqs, err := tdb.GetMFARequirementsByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetMFARequirementsByOrg: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Errorf("len(reqs) = %d, want 1 (idempotent create should not duplicate)", len(reqs))
+	}
+}
+
+func TestMFARequirement_Delete(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Req Del Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-del@example.com", "MFA Req Del", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-req-del-admin@example.com", "MFA Req Del Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	// Delete.
+	err = tdb.DeleteMFARequirement(ctx, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("DeleteMFARequirement: %v", err)
+	}
+
+	// Verify gone.
+	reqs, err := tdb.GetMFARequirementsByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetMFARequirementsByOrg: %v", err)
+	}
+	if len(reqs) != 0 {
+		t.Errorf("len(reqs) = %d, want 0 after delete", len(reqs))
+	}
+}
+
+func TestMFARequirement_CascadeOnMembershipRemoval(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Req Cascade Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-cascade@example.com", "MFA Req Cascade", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-req-cascade-admin@example.com", "MFA Req Cascade Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	// Remove user from org — composite FK CASCADE should delete the requirement.
+	if err := tdb.RemoveOrgMember(ctx, org.ID, user.ID); err != nil {
+		t.Fatalf("RemoveOrgMember: %v", err)
+	}
+
+	// Requirement should be gone.
+	reqs, err := tdb.GetMFARequirementsByOrg(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("GetMFARequirementsByOrg: %v", err)
+	}
+	if len(reqs) != 0 {
+		t.Errorf("len(reqs) = %d after membership removal, want 0 (CASCADE)", len(reqs))
+	}
+}
+
+func TestMFARequirement_RLSCrossTenantIsolation(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create two orgs with users via superuser.
+	orgA, err := tdb.CreateOrg(ctx, "MFA Req RLS Org A")
+	if err != nil {
+		t.Fatalf("CreateOrg A: %v", err)
+	}
+	orgB, err := tdb.CreateOrg(ctx, "MFA Req RLS Org B")
+	if err != nil {
+		t.Fatalf("CreateOrg B: %v", err)
+	}
+	userA, err := tdb.CreateUser(ctx, "mfa-req-rls-a@example.com", "MFA RLS A", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser A: %v", err)
+	}
+	userB, err := tdb.CreateUser(ctx, "mfa-req-rls-b@example.com", "MFA RLS B", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser B: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgA.ID, userA.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember A: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgB.ID, userB.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember B: %v", err)
+	}
+
+	admin, err := tdb.CreateUser(ctx, "mfa-req-rls-admin@example.com", "MFA RLS Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	// Create requirements in both orgs via superuser.
+	err = tdb.CreateMFARequirement(ctx, orgA.ID, userA.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement A: %v", err)
+	}
+	err = tdb.CreateMFARequirement(ctx, orgB.ID, userB.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement B: %v", err)
+	}
+
+	// Query via NOBYPASSRLS connection scoped to Org A — should not see Org B's data.
+	gotA, err := tdb.AppStore.GetMFARequirementsByOrg(ctx, orgA.ID)
+	if err != nil {
+		t.Fatalf("AppStore.GetMFARequirementsByOrg(orgA): %v", err)
+	}
+	if len(gotA) != 1 {
+		t.Errorf("expected 1 requirement for orgA via AppStore, got %d — RLS isolation failure", len(gotA))
+	} else if gotA[0].UserID != userA.ID {
+		t.Errorf("expected userA, got %v", gotA[0].UserID)
+	}
+
+	// Query via NOBYPASSRLS connection scoped to Org B.
+	gotB, err := tdb.AppStore.GetMFARequirementsByOrg(ctx, orgB.ID)
+	if err != nil {
+		t.Fatalf("AppStore.GetMFARequirementsByOrg(orgB): %v", err)
+	}
+	if len(gotB) != 1 {
+		t.Errorf("expected 1 requirement for orgB via AppStore, got %d — RLS isolation failure", len(gotB))
+	} else if gotB[0].UserID != userB.ID {
+		t.Errorf("expected userB, got %v", gotB[0].UserID)
+	}
+}
+
+func TestMFARequirement_UserHasMFARequirementBypass(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Req Bypass Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-bypass@example.com", "MFA Req Bypass", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-req-bypass-admin@example.com", "MFA Req Bypass Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	// No requirement yet.
+	has, err := tdb.UserHasMFARequirement(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFARequirement: %v", err)
+	}
+	if has {
+		t.Error("expected false when no requirement exists")
+	}
+
+	// Add requirement.
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	// Now should be true — queried without org context (bypass).
+	has, err = tdb.UserHasMFARequirement(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFARequirement: %v", err)
+	}
+	if !has {
+		t.Error("expected true when requirement exists")
+	}
+}
+
+func TestMFARequirement_UserInMFARequiredOrgBypass(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Req AllOrg")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-allorg@example.com", "MFA Req AllOrg", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	// mfa_required_all defaults to false.
+	inReq, err := tdb.UserInMFARequiredOrg(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserInMFARequiredOrg: %v", err)
+	}
+	if inReq {
+		t.Error("expected false when org has mfa_required_all=false")
+	}
+
+	// Set mfa_required_all=true via raw SQL.
+	_, err = tdb.Pool().Exec(ctx, "UPDATE organizations SET mfa_required_all = true WHERE id = $1", org.ID)
+	if err != nil {
+		t.Fatalf("UPDATE mfa_required_all: %v", err)
+	}
+
+	inReq, err = tdb.UserInMFARequiredOrg(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserInMFARequiredOrg: %v", err)
+	}
+	if !inReq {
+		t.Error("expected true when org has mfa_required_all=true")
+	}
+}
+
+func TestMFARequirement_NoRequirementAfterOrgLeave(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "MFA Req Leave Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "mfa-req-leave@example.com", "MFA Req Leave", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	admin, err := tdb.CreateUser(ctx, "mfa-req-leave-admin@example.com", "MFA Req Leave Admin", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (admin): %v", err)
+	}
+
+	err = tdb.CreateMFARequirement(ctx, org.ID, user.ID, admin.ID)
+	if err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	// Confirm requirement exists (bypass check).
+	has, err := tdb.UserHasMFARequirement(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFARequirement (before leave): %v", err)
+	}
+	if !has {
+		t.Fatal("expected requirement to exist before org leave")
+	}
+
+	// Remove user from org.
+	if err := tdb.RemoveOrgMember(ctx, org.ID, user.ID); err != nil {
+		t.Fatalf("RemoveOrgMember: %v", err)
+	}
+
+	// Requirement should be gone (composite FK CASCADE).
+	has, err = tdb.UserHasMFARequirement(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFARequirement (after leave): %v", err)
+	}
+	if has {
+		t.Error("expected false after user removed from org — CASCADE should clean up requirement")
 	}
 }

@@ -50,3 +50,4 @@ chats/
 
 # Git worktrees
 .worktrees/
+.claude/worktrees/

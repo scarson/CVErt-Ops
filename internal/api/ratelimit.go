@@ -87,7 +87,7 @@ func (srv *Server) authRateLimit() func(http.Handler) http.Handler {
 			}
 			if !srv.rateLimiter.Allow(ip) {
 				w.Header().Set("Retry-After", "60")
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -109,13 +109,20 @@ func clientIPMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// clientIP extracts the client IP address from the request context.
+// Returns "unknown" if the middleware hasn't injected it.
+func clientIP(ctx context.Context) string {
+	ip, _ := ctx.Value(ctxClientIP).(string)
+	if ip == "" {
+		return "unknown"
+	}
+	return ip
+}
+
 // checkAuthRateLimit checks the per-IP rate limiter using the client IP from
 // context. Returns a huma error if the rate limit is exceeded, nil otherwise.
 func (srv *Server) checkAuthRateLimit(ctx context.Context) error {
-	ip, _ := ctx.Value(ctxClientIP).(string)
-	if ip == "" {
-		ip = "unknown"
-	}
+	ip := clientIP(ctx)
 	if !srv.rateLimiter.Allow(ip) {
 		return huma.Error429TooManyRequests("rate limit exceeded; retry after 60 seconds")
 	}

@@ -1,11 +1,11 @@
 <!-- ABOUTME: Watchlist listing page — shows all org watchlists with create and delete. -->
-<!-- ABOUTME: Fetches via orgFetch(); supports empty, loading, and error states. -->
+<!-- ABOUTME: Fetches via typed API client; supports empty, loading, and error states. -->
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import CreateWatchlistDialog from '@/components/watchlist/CreateWatchlistDialog.vue'
 import type { WatchlistEntry } from '@/components/watchlist/CreateWatchlistDialog.vue'
 import { Button } from '@/components/ui/button'
@@ -40,24 +40,21 @@ const deleteDialogOpen = ref(false)
 const deleting = ref(false)
 const deleteError = ref('')
 
-function apiBase() {
-  return `/api/v1/orgs/${auth.activeOrgId}/watchlists`
-}
-
 async function fetchWatchlists() {
   loading.value = true
   error.value = ''
 
   try {
-    const resp = await orgFetch(apiBase())
+    const { data, error: fetchError } = await client.GET('/orgs/{org_id}/watchlists', {
+      params: { path: { org_id: auth.activeOrgId! } },
+    })
 
-    if (!resp.ok) {
+    if (fetchError) {
       error.value = 'Failed to load watchlists. Please try again.'
       loading.value = false
       return
     }
 
-    const data = await resp.json() as { items?: WatchlistEntry[] }
     watchlists.value = data.items ?? []
   } catch {
     error.value = 'Failed to load watchlists. Please try again.'
@@ -84,11 +81,11 @@ async function confirmDelete() {
   const id = deleteTarget.value.id
 
   try {
-    const resp = await orgFetch(`${apiBase()}/${id}`, {
-      method: 'DELETE',
+    const { error: fetchError } = await client.DELETE('/orgs/{org_id}/watchlists/{id}', {
+      params: { path: { org_id: auth.activeOrgId!, id } },
     })
 
-    if (resp.ok) {
+    if (!fetchError) {
       watchlists.value = watchlists.value.filter((w) => w.id !== id)
       deleteDialogOpen.value = false
       deleteTarget.value = null

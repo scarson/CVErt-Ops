@@ -153,9 +153,8 @@ func (s *Store) OrgTx(ctx context.Context, orgID uuid.UUID, fn func(pgx.Tx) erro
 }
 
 // clampInt32 clamps v to [lo, hi] and returns it as int32.
-// lo and hi must be within int32 range.
-func clampInt32(v, lo, hi int) int32 {
-	return int32(min(max(v, lo), hi)) //nolint:gosec // bounds enforced by lo/hi constants
+func clampInt32(v, lo, hi int32) int32 {
+	return min(max(v, lo), hi)
 }
 
 // WorkerTx opens a pgx native transaction with RLS bypass enabled.

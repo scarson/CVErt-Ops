@@ -136,6 +136,23 @@ This is a security product — supply chain risk from unmaintained dependencies 
 - NEVER SKIP, EVADE OR DISABLE A PRE-COMMIT HOOK
 - NEVER use `git add -A` unless you've just done a `git status` - Don't add random test files to the repo.
 
+### Worktree base branch
+
+When creating git worktrees, ALWAYS branch from local `dev` (not `main`).
+The flow is: `worktree branch → dev → main`. Use:
+```bash
+git worktree add "$path" -b "$BRANCH_NAME" dev
+```
+Worktree directory: `.claude/worktrees/` (already gitignored).
+
+### Worktree PR safety
+
+When PRing from a worktree that was created from `main` and merged `dev`:
+- **ALWAYS** run `git diff origin/<target-branch> --stat` before creating the PR
+- Check for unexpected file deletions — files added on `dev` after the last main←dev merge can silently disappear during the worktree merge
+- If deletions are found, restore files with `git checkout origin/dev -- <path>` before pushing
+- When resolving merge conflicts between the worktree and `dev`, take dev's structural/API changes and apply the worktree's formatting/semantic fixes on top — neither side alone may be complete
+
 ## Testing
 
 - ALL TEST FAILURES ARE YOUR RESPONSIBILITY, even if they're not your fault. The Broken Windows theory is real.
@@ -263,7 +280,7 @@ Mailpit UI: http://localhost:8025
 | Frontend | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue (reka-ui) |
 | Frontend state | Pinia + VueUse |
 | Frontend API | openapi-fetch (typed from OpenAPI schema) |
-| Frontend test | Vitest + happy-dom + @vue/test-utils |
+| Frontend test | Vitest + jsdom + @vue/test-utils |
 | Frontend lint | oxlint + eslint + prettier |
 
 ## Architecture (Key Points)

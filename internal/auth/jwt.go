@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,21 +43,38 @@ func IssueAccessToken(secret []byte, userID uuid.UUID, tokenVersion int, ttl tim
 	return signed, nil
 }
 
-// ParseAccessToken validates and parses an HS256 access token.
-// Returns an error if the token is expired, uses a wrong algorithm, or is invalid.
-// PLAN.md §7.1: WithValidMethods and WithExpirationRequired are MANDATORY.
-func ParseAccessToken(tokenStr string, secret []byte) (*AccessClaims, error) {
+// ParseAccessToken validates and parses an HS256 access token using dual-key
+// verification for zero-downtime secret rotation. It tries activeSecret first.
+// On signature failure only (not expiry or claims errors), it retries with
+// previousSecret if non-nil. Signing always uses activeSecret via IssueAccessToken.
+func ParseAccessToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*AccessClaims, error) {
 	claims := &AccessClaims{}
 	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
-		return secret, nil
+		return activeSecret, nil
 	},
 		jwt.WithValidMethods([]string{"HS256"}),
 		jwt.WithExpirationRequired(),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("parse access token: %w", err)
+	if err == nil {
+		return claims, nil
 	}
-	return claims, nil
+
+	// Only try previous key on signature error — not expiry, not claims.
+	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		fallbackClaims := &AccessClaims{}
+		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
+			return previousSecret, nil
+		},
+			jwt.WithValidMethods([]string{"HS256"}),
+			jwt.WithExpirationRequired(),
+		)
+		if err2 == nil {
+			return fallbackClaims, nil
+		}
+		return nil, fmt.Errorf("parse access token: %w", err2)
+	}
+
+	return nil, fmt.Errorf("parse access token: %w", err)
 }
 
 // RefreshClaims holds the claims embedded in a refresh token.
@@ -93,9 +111,82 @@ func IssueRefreshToken(secret []byte, userID uuid.UUID, tokenVersion int, jti uu
 	return signed, nil
 }
 
-// ParseRefreshToken validates and parses an HS256 refresh token.
-func ParseRefreshToken(tokenStr string, secret []byte) (*RefreshClaims, error) {
+// ParseRefreshToken validates and parses an HS256 refresh token using dual-key
+// verification for zero-downtime secret rotation. It tries activeSecret first.
+// On signature failure only (not expiry or claims errors), it retries with
+// previousSecret if non-nil.
+func ParseRefreshToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*RefreshClaims, error) {
 	claims := &RefreshClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
+		return activeSecret, nil
+	},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+	)
+	if err == nil {
+		return claims, nil
+	}
+
+	// Only try previous key on signature error — not expiry, not claims.
+	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		fallbackClaims := &RefreshClaims{}
+		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
+			return previousSecret, nil
+		},
+			jwt.WithValidMethods([]string{"HS256"}),
+			jwt.WithExpirationRequired(),
+		)
+		if err2 == nil {
+			return fallbackClaims, nil
+		}
+		return nil, fmt.Errorf("parse refresh token: %w", err2)
+	}
+
+	return nil, fmt.Errorf("parse refresh token: %w", err)
+}
+
+// PendingClaims holds the claims for a restricted session token issued when
+// additional authentication steps (MFA challenge, password reset) are required
+// before granting full access.
+type PendingClaims struct {
+	jwt.RegisteredClaims
+	// UserID shadows RegisteredClaims.Subject (same json:"sub" tag) so that
+	// "sub" serializes as a UUID. See AccessClaims.UserID for details.
+	UserID uuid.UUID `json:"sub"`
+	// TokenVersion must match users.token_version for the token to remain valid.
+	TokenVersion int `json:"tv"`
+	// Pending lists the requirements that must be satisfied (e.g. "mfa_challenge", "password_reset").
+	Pending []string `json:"pending"`
+	// Methods lists the available MFA methods when Pending contains "mfa_challenge".
+	Methods []string `json:"methods,omitempty"`
+}
+
+// IssuePendingToken creates a signed HS256 JWT for a restricted session that
+// requires additional authentication steps before granting full access.
+func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pending, methods []string, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := PendingClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+		UserID:       userID,
+		TokenVersion: tokenVersion,
+		Pending:      pending,
+		Methods:      methods,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(secret)
+	if err != nil {
+		return "", fmt.Errorf("sign pending token: %w", err)
+	}
+	return signed, nil
+}
+
+// ParsePendingToken validates and parses an HS256 pending session token.
+// Returns an error if the token is expired, uses a wrong algorithm, or is invalid.
+func ParsePendingToken(tokenStr string, secret []byte) (*PendingClaims, error) {
+	claims := &PendingClaims{}
 	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
 		return secret, nil
 	},
@@ -103,7 +194,7 @@ func ParseRefreshToken(tokenStr string, secret []byte) (*RefreshClaims, error) {
 		jwt.WithExpirationRequired(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("parse refresh token: %w", err)
+		return nil, fmt.Errorf("parse pending token: %w", err)
 	}
 	return claims, nil
 }

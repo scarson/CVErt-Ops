@@ -361,7 +361,7 @@ func TestAlertEvents_Pagination(t *testing.T) {
 	// With only 3 items and limit=100, no pagination cursor should exist.
 	if allList.NextCursor != nil {
 		// If a cursor is returned, use it to verify page 2 works.
-		page2Resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?after="+*allList.NextCursor)
+		page2Resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?cursor="+*allList.NextCursor)
 		defer page2Resp.Body.Close() //nolint:errcheck,gosec // G104
 		if page2Resp.StatusCode != http.StatusOK {
 			t.Fatalf("page 2: got %d, want 200", page2Resp.StatusCode)
@@ -447,4 +447,57 @@ func doListAlertEvents(t *testing.T, ctx context.Context, ts *httptest.Server, a
 		t.Fatalf("list alert events: %v", err)
 	}
 	return resp
+}
+
+// ── Contract convergence tests ────────────────────────────────────────────────
+
+// TestAlertEvents_ListEnvelope verifies {items: [...]} envelope on empty list (items not null).
+func TestAlertEvents_ListEnvelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list: got %d, want 200", resp.StatusCode)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	itemsRaw, ok := raw["items"]
+	if !ok {
+		t.Fatal("expected 'items' key in response")
+	}
+	// items must be [] not null.
+	if string(itemsRaw) == "null" {
+		t.Error("items must be [] not null for empty list")
+	}
+}
+
+// TestAlertEvents_MalformedCursor verifies bad cursor returns 400.
+func TestAlertEvents_MalformedCursor(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?cursor=not-valid-cursor")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("malformed cursor: got %d, want 400", resp.StatusCode)
+	}
 }

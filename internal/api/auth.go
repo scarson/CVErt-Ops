@@ -16,6 +16,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
+	"github.com/scarson/cvert-ops/internal/secure"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -230,11 +231,49 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// Reject disabled users with the same response as nonexistent users
+	// to prevent account status enumeration.
+	if user != nil && user.DisabledAt.Valid {
+		if !srv.acquireArgon2() {
+			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+		}
+		func() {
+			defer srv.releaseArgon2()
+			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
+		}()
+		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     &user.ID,
+				Details:    map[string]any{"reason": "account disabled"},
+			})
+		}
+		return nil, huma.Error401Unauthorized("invalid credentials")
+	}
+
 	// Account lockout check — before argon2 to save CPU on locked accounts.
 	// Still normalize timing for locked accounts to prevent lockout status enumeration.
-	allowed, retryAfter := srv.lockout.Check(input.Body.Email)
+	allowed, retryAfter := srv.lockout.Check(ctx, input.Body.Email)
 	if !allowed {
 		time.Sleep(50 * time.Millisecond) // timing normalization
+		if srv.eventWriter != nil {
+			var uid *uuid.UUID
+			if user != nil {
+				uid = &user.ID
+			}
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     uid,
+				Details:    map[string]any{"reason": "account locked"},
+			})
+		}
 		retrySeconds := int(retryAfter.Seconds())
 		if retrySeconds < 1 {
 			retrySeconds = 1
@@ -258,7 +297,16 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 			defer srv.releaseArgon2()
 			_, _ = auth.VerifyPassword(input.Body.Password, dummyPasswordHash)
 		}()
-		srv.lockout.RecordFailure(input.Body.Email)
+		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				Details:    map[string]any{"reason": "invalid credentials"},
+			})
+		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
@@ -275,12 +323,34 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !ok {
-		srv.lockout.RecordFailure(input.Body.Email)
+		srv.lockout.RecordFailure(ctx, input.Body.Email)
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginFailed,
+				Severity:   secure.SeverityWarning,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     &user.ID,
+				Details:    map[string]any{"reason": "invalid credentials"},
+			})
+		}
+		// Check if this failure triggered account lockout.
+		if locked, _ := srv.lockout.Check(ctx, input.Body.Email); !locked {
+			if srv.eventWriter != nil {
+				srv.eventWriter.Write(ctx, secure.Event{
+					Type:       secure.EventAuthAccountLocked,
+					Severity:   secure.SeverityCritical,
+					ActorIP:    clientIP(ctx),
+					ActorEmail: input.Body.Email,
+					UserID:     &user.ID,
+				})
+			}
+		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
 
 	// Successful login — reset lockout counter.
-	srv.lockout.RecordSuccess(input.Body.Email)
+	srv.lockout.RecordSuccess(ctx, input.Body.Email)
 
 	// Issue tokens.
 	jti := uuid.New()
@@ -302,6 +372,16 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	// Non-fatal — last_login_at is informational only.
 	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
 		slog.WarnContext(ctx, "login: update last login", "error", err)
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:       secure.EventAuthLoginSuccess,
+			Severity:   secure.SeverityInfo,
+			ActorIP:    clientIP(ctx),
+			ActorEmail: input.Body.Email,
+			UserID:     &user.ID,
+		})
 	}
 
 	return &loginOutput{SetCookie: authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)}, nil
@@ -330,7 +410,7 @@ func (srv *Server) refreshHandler(ctx context.Context, input *refreshInput) (*re
 	}
 
 	secret := []byte(srv.cfg.JWTSecret)
-	claims, err := auth.ParseRefreshToken(input.RefreshToken, secret)
+	claims, err := auth.ParseRefreshToken(input.RefreshToken, secret, jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired refresh token")
 	}
@@ -352,6 +432,14 @@ func (srv *Server) refreshHandler(ctx context.Context, input *refreshInput) (*re
 		// Outside grace window: token reuse without grace → treat as theft.
 		if _, incrErr := srv.store.IncrementTokenVersion(ctx, stored.UserID); incrErr != nil {
 			slog.ErrorContext(ctx, "refresh: increment token version on theft", "error", incrErr)
+		}
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventAuthTokenReuseDetected,
+				Severity: secure.SeverityCritical,
+				ActorIP:  clientIP(ctx),
+				UserID:   &stored.UserID,
+			})
 		}
 		return nil, huma.Error401Unauthorized("refresh token already used")
 	}
@@ -436,7 +524,7 @@ type logoutOutput struct {
 // Marks the refresh token as used (no replacement) and clears auth cookies.
 func (srv *Server) logoutHandler(ctx context.Context, input *logoutInput) (*logoutOutput, error) {
 	if input.RefreshToken != "" {
-		claims, err := auth.ParseRefreshToken(input.RefreshToken, []byte(srv.cfg.JWTSecret))
+		claims, err := auth.ParseRefreshToken(input.RefreshToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 		if err == nil {
 			// Mark the token used with itself as the "replacement" to close the chain.
 			if err := srv.store.MarkRefreshTokenUsed(ctx, claims.JTI, claims.JTI); err != nil {
@@ -465,11 +553,12 @@ type orgEntry struct {
 // meOutput is the response body for GET /auth/me.
 type meOutput struct {
 	Body struct {
-		UserID      string     `json:"user_id"`
-		Email       string     `json:"email"`
-		DisplayName string     `json:"display_name"`
-		IsSiteAdmin bool       `json:"is_site_admin"`
-		Orgs        []orgEntry `json:"orgs"`
+		UserID             string     `json:"user_id"`
+		Email              string     `json:"email"`
+		DisplayName        string     `json:"display_name"`
+		IsSiteAdmin        bool       `json:"is_site_admin"`
+		ForcePasswordReset bool       `json:"force_password_reset"`
+		Orgs               []orgEntry `json:"orgs"`
 	}
 }
 
@@ -478,7 +567,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}
@@ -506,6 +595,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	out.Body.Email = user.Email
 	out.Body.DisplayName = user.DisplayName
 	out.Body.IsSiteAdmin = isSiteAdmin
+	out.Body.ForcePasswordReset = user.ForcePasswordReset
 	out.Body.Orgs = make([]orgEntry, 0, len(orgRows))
 	for _, row := range orgRows {
 		out.Body.Orgs = append(out.Body.Orgs, orgEntry{
@@ -538,7 +628,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}
@@ -587,6 +677,23 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if err := srv.store.UpdatePasswordHash(ctx, user.ID, newHash, 1); err != nil {
 		slog.ErrorContext(ctx, "change-password: update hash", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	// Clear force_password_reset if it was set.
+	if err := srv.store.ClearForcePasswordReset(ctx, user.ID); err != nil {
+		slog.ErrorContext(ctx, "change-password: clear force reset", "error", err)
+		// Non-fatal — password is already changed.
+	}
+
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:       secure.EventAuthPasswordChanged,
+			Severity:   secure.SeverityInfo,
+			ActorIP:    clientIP(ctx),
+			ActorEmail: user.Email,
+			UserID:     &user.ID,
+			Details:    map[string]any{"method": "change_password"},
+		})
 	}
 
 	return &changePasswordOutput{}, nil
@@ -652,7 +759,7 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}

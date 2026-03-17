@@ -49,7 +49,7 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 	states, err := srv.store.ListFeedSyncStates(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "list feed sync states", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -58,13 +58,14 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 		stateMap[s.FeedName] = s
 	}
 
-	entries := make([]FeedStatusEntry, 0, len(ingest.KnownFeeds))
-	for _, feedName := range ingest.KnownFeeds {
+	allFeeds := ingest.AllFeedNames()
+	entries := make([]FeedStatusEntry, 0, len(allFeeds))
+	for _, feedName := range allFeeds {
 		if s, ok := stateMap[feedName]; ok {
 			logs, err := srv.store.ListRecentFeedFetchLogs(ctx, feedName, 5)
 			if err != nil {
 				slog.ErrorContext(ctx, "list feed fetch logs", "feed", feedName, "error", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
+				writeProblem(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			entries = append(entries, feedStatusFromState(s, logs))
@@ -76,7 +77,7 @@ func (srv *Server) listFeedsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"feeds": entries})
+	writeList(w, entries, "")
 }
 
 // ── Trigger feed handler ──────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	feedName := chi.URLParam(r, "feed")
 
 	if !ingest.IsKnownFeed(feedName) {
-		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("unknown feed: %q", feedName))
 		return
 	}
 
@@ -96,11 +97,11 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 	jobID, err := srv.store.EnqueueJob(ctx, queue, 0, payload, &lockKey, 3, nil)
 	if err != nil {
 		slog.ErrorContext(ctx, "enqueue feed job", "feed", feedName, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if jobID == uuid.Nil {
-		http.Error(w, "feed job already pending", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "feed job already pending")
 		return
 	}
 
@@ -112,12 +113,12 @@ func (srv *Server) triggerFeedHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) pauseFeedHandler(w http.ResponseWriter, r *http.Request) {
 	feedName := chi.URLParam(r, "feed")
 	if !ingest.IsKnownFeed(feedName) {
-		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("unknown feed: %q", feedName))
 		return
 	}
 	if err := srv.store.PauseFeed(r.Context(), feedName); err != nil {
 		slog.ErrorContext(r.Context(), "pause feed", "feed", feedName, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "paused", "feed": feedName})
@@ -126,39 +127,64 @@ func (srv *Server) pauseFeedHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) resumeFeedHandler(w http.ResponseWriter, r *http.Request) {
 	feedName := chi.URLParam(r, "feed")
 	if !ingest.IsKnownFeed(feedName) {
-		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("unknown feed: %q", feedName))
 		return
 	}
 	if err := srv.store.ResumeFeed(r.Context(), feedName); err != nil {
 		slog.ErrorContext(r.Context(), "resume feed", "feed", feedName, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "resumed", "feed": feedName})
 }
 
+// feedLogCursor is the opaque cursor for feed log pagination.
+type feedLogCursor struct {
+	T  time.Time `json:"t"`
+	ID string    `json:"id"`
+}
+
 func (srv *Server) feedLogsHandler(w http.ResponseWriter, r *http.Request) {
 	feedName := chi.URLParam(r, "feed")
 	if !ingest.IsKnownFeed(feedName) {
-		http.Error(w, fmt.Sprintf("unknown feed: %q", feedName), http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("unknown feed: %q", feedName))
 		return
 	}
 
-	limit, afterTime, afterID, ok := parseKeysetParams(w, r)
+	limit, ok := parseLimitParam(w, r, 50, 200)
 	if !ok {
 		return
+	}
+
+	var afterTime *time.Time
+	var afterID *uuid.UUID
+	if c := r.URL.Query().Get("cursor"); c != "" {
+		var cur feedLogCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		afterTime = &cur.T
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		afterID = &id
 	}
 
 	logs, err := srv.store.ListFeedFetchLogsPaginated(r.Context(), feedName, afterTime, afterID, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "feed logs", "feed", feedName, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	hasMore := len(logs) > limit
-	if hasMore {
+	var nextCursor string
+	if len(logs) > limit {
 		logs = logs[:limit]
+		last := logs[len(logs)-1]
+		nextCursor = encodePageCursor(feedLogCursor{T: last.StartedAt, ID: last.ID.String()})
 	}
 
 	logEntries := make([]FeedLogEntry, len(logs))
@@ -174,10 +200,7 @@ func (srv *Server) feedLogsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    logEntries,
-		"has_more": hasMore,
-	})
+	writeList(w, logEntries, nextCursor)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

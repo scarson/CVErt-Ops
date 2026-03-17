@@ -19,14 +19,15 @@ type Config struct {
 	BatchSize         int
 	MaxRuntimeSeconds int
 	// Per-table retention windows (global tables).
-	RawPayloadDays   int
-	FeedFetchLogDays int
-	JobQueueHours    int
-	AILogDays        int
+	RawPayloadDays     int
+	FeedFetchLogDays   int
+	JobQueueHours      int
+	AILogDays          int
+	SecurityEventsDays int
 	// Per-table retention windows (tier-gated tables — fallback defaults).
-	AlertEventsDays  int
-	NotifDelivDays   int
-	AuditLogDays     int
+	AlertEventsDays int
+	NotifDelivDays  int
+	AuditLogDays    int
 }
 
 // Runner executes bounded-batch retention cleanup across all tables.
@@ -87,6 +88,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.cleanupTable(ctx, "ai_usage_counters", deadline, func(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
 		return r.store.CleanupAIUsageCounters(ctx, cutoff, batch)
 	}, start.AddDate(0, 0, -r.cfg.AILogDays))
+
+	r.cleanupTable(ctx, "security_events", deadline, func(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
+		return r.store.CleanupSecurityEvents(ctx, cutoff, batch)
+	}, start.AddDate(0, 0, -r.cfg.SecurityEventsDays))
 
 	// Check for context cancellation between global and tier-gated phases.
 	if err := ctx.Err(); err != nil {

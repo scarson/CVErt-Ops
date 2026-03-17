@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,9 +29,10 @@ type auditLogListEntry struct {
 	CreatedAt  string          `json:"created_at"`
 }
 
-type auditLogListResponse struct {
-	Items      []auditLogListEntry `json:"items"`
-	NextCursor *string             `json:"next_cursor,omitempty"`
+// auditLogCursor is the JSON-encoded keyset cursor for audit log pagination.
+type auditLogCursor struct {
+	T  string `json:"t"`  // created_at RFC3339Nano
+	ID string `json:"id"` // UUID tiebreaker
 }
 
 // listAuditLogHandler handles GET /api/v1/orgs/{org_id}/audit-log.
@@ -40,7 +40,7 @@ type auditLogListResponse struct {
 func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
@@ -48,26 +48,18 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver)
 	if !ok {
 		slog.ErrorContext(r.Context(), "audit log: tier resolver missing from context")
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if resolver.Tier != "enterprise" {
-		http.Error(w, "audit log requires enterprise tier", http.StatusForbidden)
+		writeProblemTyped(w, http.StatusForbidden, problemTypeTierLimit, "audit log requires enterprise tier")
 		return
 	}
 
 	// Parse pagination limit.
-	limit := 100
-	if s := r.URL.Query().Get("limit"); s != "" {
-		v, err := strconv.Atoi(s)
-		if err != nil || v < 1 {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
-			return
-		}
-		if v > 200 {
-			v = 200
-		}
-		limit = v
+	limit, ok2 := parseLimitParam(w, r, 100, 200)
+	if !ok2 {
+		return
 	}
 
 	p := store.AuditListParams{
@@ -85,7 +77,7 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	if s := r.URL.Query().Get("actor_id"); s != "" {
 		id, err := uuid.Parse(s)
 		if err != nil {
-			http.Error(w, "invalid actor_id", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid actor_id")
 			return
 		}
 		p.ActorID = &id
@@ -95,7 +87,7 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	if s := r.URL.Query().Get("after"); s != "" {
 		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			http.Error(w, "invalid after (RFC3339)", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid after (RFC3339)")
 			return
 		}
 		p.After = t
@@ -105,7 +97,7 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 	if s := r.URL.Query().Get("before"); s != "" {
 		t, err := time.Parse(time.RFC3339, s)
 		if err != nil {
-			http.Error(w, "invalid before (RFC3339)", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid before (RFC3339)")
 			return
 		}
 		p.Before = t
@@ -115,27 +107,37 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Parse keyset cursor.
 	if c := r.URL.Query().Get("cursor"); c != "" {
-		t, id, err := decodeTimeCursor(c)
-		if err == nil {
-			p.CursorCreatedAt = &t
-			p.CursorID = &id
+		var cur auditLogCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
 		}
+		t, tErr := time.Parse(time.RFC3339Nano, cur.T)
+		id, idErr := uuid.Parse(cur.ID)
+		if tErr != nil || idErr != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		p.CursorCreatedAt = &t
+		p.CursorID = &id
 	}
 
 	rows, err := srv.store.ListAuditEntries(r.Context(), p)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list audit entries", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	// Detect next page.
-	var nextCursor *string
+	var nextCursor string
 	if len(rows) > limit {
 		rows = rows[:limit]
 		last := rows[len(rows)-1]
-		c := encodeTimeCursor(last.CreatedAt, last.ID)
-		nextCursor = &c
+		nextCursor = encodePageCursor(auditLogCursor{
+			T:  last.CreatedAt.UTC().Format(time.RFC3339Nano),
+			ID: last.ID.String(),
+		})
 	}
 
 	items := make([]auditLogListEntry, 0, len(rows))
@@ -160,5 +162,5 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 		items = append(items, entry)
 	}
 
-	writeJSON(w, http.StatusOK, auditLogListResponse{Items: items, NextCursor: nextCursor})
+	writeList(w, items, nextCursor)
 }

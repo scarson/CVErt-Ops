@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -36,8 +36,9 @@ interface DeliveryEntry {
 
 const deliveries = ref<DeliveryEntry[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
-const hasMore = ref(false)
+const nextCursor = ref<string | undefined>()
 const statusFilter = ref('failed')
 const retrying = ref<string | null>(null)
 const bulkRetrying = ref(false)
@@ -58,29 +59,35 @@ const statusBadgeVariant: Record<string, 'default' | 'destructive' | 'secondary'
   claimed: 'secondary',
 }
 
-async function fetchDeliveries() {
-  loading.value = true
+async function fetchDeliveries(cursor?: string) {
+  if (cursor) {
+    loadingMore.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ''
 
   try {
-    const params = new URLSearchParams({ limit: '50' })
-    if (statusFilter.value && statusFilter.value !== 'all') {
-      params.set('status', statusFilter.value)
-    }
-    const resp = await orgFetch(`/api/v1/admin/deliveries?${params}`)
-    if (!resp.ok) {
+    const status = statusFilter.value && statusFilter.value !== 'all' ? statusFilter.value : undefined
+    const { data, error: fetchError } = await client.GET('/admin/deliveries', {
+      params: { query: { limit: 50, status, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load deliveries.'
-      loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: DeliveryEntry[]; has_more: boolean }
-    deliveries.value = data.items ?? []
-    hasMore.value = data.has_more
+    if (cursor) {
+      deliveries.value = [...deliveries.value, ...(data.items ?? [])]
+    } else {
+      deliveries.value = data.items ?? []
+    }
+    nextCursor.value = data.next_cursor
   } catch {
     error.value = 'Failed to load deliveries.'
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
@@ -89,11 +96,13 @@ async function retryDelivery(id: string) {
   retrying.value = id
 
   try {
-    const resp = await orgFetch(`/api/v1/admin/deliveries/${id}/retry`, { method: 'POST' })
-    if (resp.ok) {
+    const { error: fetchError } = await client.POST('/admin/deliveries/{id}/retry', {
+      params: { path: { id } },
+    })
+    if (!fetchError) {
       toast.success('Delivery retry enqueued')
       await fetchDeliveries()
-    } else if (resp.status === 409) {
+    } else if (fetchError.status === 409) {
       toast.info('Delivery is not in a retryable state')
     } else {
       toast.error('Failed to retry delivery')
@@ -110,10 +119,9 @@ async function bulkRetryFailed() {
   bulkRetrying.value = true
 
   try {
-    const resp = await orgFetch('/api/v1/admin/deliveries/retry-failed', { method: 'POST' })
-    if (resp.ok) {
-      const data = (await resp.json()) as { rows_affected: number }
-      toast.success(`${data.rows_affected} deliveries retried`)
+    const { data, error: fetchError } = await client.POST('/admin/deliveries/retry-failed')
+    if (!fetchError) {
+      toast.success(`${data?.rows_affected ?? 0} deliveries retried`)
       await fetchDeliveries()
     } else {
       toast.error('Failed to bulk retry deliveries')
@@ -237,8 +245,11 @@ onMounted(fetchDeliveries)
         </TableBody>
       </Table>
 
-      <div v-if="hasMore && !loading" class="flex justify-center pt-4">
-        <p class="text-sm text-muted-foreground">More deliveries available. Pagination coming soon.</p>
+      <div v-if="nextCursor && !loading" class="flex justify-center pt-4">
+        <Button variant="outline" :disabled="loadingMore" @click="fetchDeliveries(nextCursor)">
+          <Loader2 v-if="loadingMore" class="mr-2 size-4 animate-spin" aria-hidden="true" />
+          Load More
+        </Button>
       </div>
     </div>
   </div>

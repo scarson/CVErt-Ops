@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import InviteMemberDialog from '@/components/settings/InviteMemberDialog.vue'
 import type { InvitationEntry } from '@/components/settings/InviteMemberDialog.vue'
 import { Button } from '@/components/ui/button'
@@ -89,25 +89,23 @@ const roleBadgeVariant: Record<string, 'default' | 'secondary' | 'outline' | 'de
   viewer: 'outline',
 }
 
-function apiBase() {
-  return `/api/v1/orgs/${auth.activeOrgId}`
-}
-
 async function fetchMembers() {
   loading.value = true
   error.value = ''
   invitations.value = []
 
   try {
-    const resp = await orgFetch(`${apiBase()}/members`)
+    const { data, error: fetchError } = await client.GET('/orgs/{org_id}/members', {
+      params: { path: { org_id: auth.activeOrgId! } },
+    })
 
-    if (!resp.ok) {
+    if (fetchError) {
       error.value = 'Failed to load members. Please try again.'
       loading.value = false
       return
     }
 
-    members.value = await resp.json() as MemberEntry[]
+    members.value = data.items as MemberEntry[]
 
     // Fetch invitations in parallel for admin+ users
     if (isAdmin.value) {
@@ -122,10 +120,12 @@ async function fetchMembers() {
 
 async function fetchInvitations() {
   try {
-    const resp = await orgFetch(`${apiBase()}/invitations`)
+    const { data, error: fetchError } = await client.GET('/orgs/{org_id}/invitations', {
+      params: { path: { org_id: auth.activeOrgId! } },
+    })
 
-    if (resp.ok) {
-      invitations.value = await resp.json() as InvitationEntry[]
+    if (!fetchError) {
+      invitations.value = data.items as InvitationEntry[]
     }
   } catch {
     // Silently fail — invitations are supplementary
@@ -136,15 +136,14 @@ async function changeRole(userId: string, newRole: string) {
   roleChangeError.value = ''
 
   try {
-    const resp = await orgFetch(`${apiBase()}/members/${userId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ role: newRole }),
+    const { data, error: fetchError } = await client.PATCH('/orgs/{org_id}/members/{user_id}', {
+      params: { path: { org_id: auth.activeOrgId!, user_id: userId } },
+      body: { role: newRole },
     })
 
-    if (resp.ok) {
-      const updated: MemberEntry = await resp.json()
+    if (!fetchError) {
       members.value = members.value.map((m) =>
-        m.user_id === userId ? { ...m, role: updated.role } : m,
+        m.user_id === userId ? { ...m, role: data.role } : m,
       )
     } else {
       roleChangeError.value = 'Failed to change role. Please try again.'
@@ -171,11 +170,11 @@ async function confirmRemove() {
   const userId = removeTarget.value.user_id
 
   try {
-    const resp = await orgFetch(`${apiBase()}/members/${userId}`, {
-      method: 'DELETE',
+    const { error: fetchError } = await client.DELETE('/orgs/{org_id}/members/{user_id}', {
+      params: { path: { org_id: auth.activeOrgId!, user_id: userId } },
     })
 
-    if (resp.ok) {
+    if (!fetchError) {
       members.value = members.value.filter((m) => m.user_id !== userId)
       removeDialogOpen.value = false
       removeTarget.value = null
@@ -193,11 +192,11 @@ async function cancelInvitation(invitationId: string) {
   cancelError.value = ''
 
   try {
-    const resp = await orgFetch(`${apiBase()}/invitations/${invitationId}`, {
-      method: 'DELETE',
+    const { error: fetchError } = await client.DELETE('/orgs/{org_id}/invitations/{id}', {
+      params: { path: { org_id: auth.activeOrgId!, id: invitationId } },
     })
 
-    if (resp.ok) {
+    if (!fetchError) {
       invitations.value = invitations.value.filter((i) => i.id !== invitationId)
     } else {
       cancelError.value = 'Failed to cancel invitation. Please try again.'

@@ -1,82 +1,69 @@
-// ABOUTME: In-memory account lockout manager to prevent brute-force login attacks.
+// ABOUTME: DB-backed account lockout manager to prevent brute-force login attacks.
 // ABOUTME: Locks accounts after repeated failed login attempts for a configurable duration.
 package api
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"log/slog"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
-// loginAttempt tracks failed login attempts for a single email address.
-type loginAttempt struct {
-	count        int
-	lockedAt     time.Time // zero value if not locked
-	lastActivity time.Time // set on every RecordFailure
+// lockoutStore defines the database operations needed by the lockout manager.
+type lockoutStore interface {
+	RecordLoginFailure(ctx context.Context, email string, threshold int) (*store.LoginLockoutState, error)
+	RecordLoginSuccess(ctx context.Context, email string) error
+	GetLoginLockoutState(ctx context.Context, email string) (*store.LoginLockoutState, error)
 }
 
-// lockoutManager tracks failed login attempts and temporarily locks accounts.
-// Thread-safe via sync.Mutex. Uses an injectable clock for testing.
+// lockoutManager tracks failed login attempts and temporarily locks accounts
+// using the database as the source of truth. Survives server restarts and
+// works across multi-instance deployments.
 type lockoutManager struct {
-	mu        sync.Mutex
-	attempts  map[string]*loginAttempt
+	store     lockoutStore
 	threshold int
 	duration  time.Duration
-	evictTTL  time.Duration
-	now       func() time.Time
-	done      chan struct{}
 }
 
-// newLockoutManager creates a lockout manager with the given threshold, duration,
-// and evict TTL. Starts a background cleanup goroutine that evicts stale entries.
-// The now function is used for clock injection in tests.
-func newLockoutManager(threshold int, duration, evictTTL time.Duration, now func() time.Time) *lockoutManager {
-	m := &lockoutManager{
-		attempts:  make(map[string]*loginAttempt),
+// newLockoutManager creates a lockout manager backed by the given store.
+func newLockoutManager(s lockoutStore, threshold int, duration time.Duration) *lockoutManager {
+	return &lockoutManager{
+		store:     s,
 		threshold: threshold,
 		duration:  duration,
-		evictTTL:  evictTTL,
-		now:       now,
-		done:      make(chan struct{}),
 	}
-	go m.cleanupLoop()
-	return m
-}
-
-// Stop terminates the background cleanup goroutine.
-func (m *lockoutManager) Stop() {
-	close(m.done)
-}
-
-// Len returns the number of tracked email entries (for testing).
-func (m *lockoutManager) Len() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.attempts)
 }
 
 // Check returns whether the email is allowed to attempt login.
 // If locked, retryAfter indicates the remaining lockout duration.
-func (m *lockoutManager) Check(email string) (allowed bool, retryAfter time.Duration) {
+// Nonexistent users are always allowed (timing normalization handles them).
+func (m *lockoutManager) Check(ctx context.Context, email string) (allowed bool, retryAfter time.Duration) {
 	email = strings.ToLower(email)
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	a, ok := m.attempts[email]
-	if !ok {
+	state, err := m.store.GetLoginLockoutState(ctx, email)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, 0
+		}
+		slog.ErrorContext(ctx, "lockout: get state", "error", err)
+		// Fail open on DB errors — rate limiter provides a secondary defense.
 		return true, 0
 	}
 
-	// Not locked yet (below threshold).
-	if a.count < m.threshold {
+	if state.LockedAt == nil {
 		return true, 0
 	}
 
-	// Locked — check if lockout has expired.
-	remaining := m.duration - m.now().Sub(a.lockedAt)
+	remaining := m.duration - time.Since(*state.LockedAt)
 	if remaining <= 0 {
-		// Lockout expired — reset and allow.
-		delete(m.attempts, email)
+		// Lockout expired — reset state so the user can try again.
+		if err := m.store.RecordLoginSuccess(ctx, email); err != nil {
+			slog.ErrorContext(ctx, "lockout: auto-unlock", "error", err)
+		}
 		return true, 0
 	}
 
@@ -85,69 +72,24 @@ func (m *lockoutManager) Check(email string) (allowed bool, retryAfter time.Dura
 
 // RecordFailure increments the failure count for an email.
 // When the threshold is reached, the account becomes locked.
-func (m *lockoutManager) RecordFailure(email string) {
+// Nonexistent users are silently ignored.
+func (m *lockoutManager) RecordFailure(ctx context.Context, email string) {
 	email = strings.ToLower(email)
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	a, ok := m.attempts[email]
-	if !ok {
-		a = &loginAttempt{}
-		m.attempts[email] = a
-	}
-	a.count++
-	a.lastActivity = m.now()
-	if a.count >= m.threshold && a.lockedAt.IsZero() {
-		a.lockedAt = m.now()
+	_, err := m.store.RecordLoginFailure(ctx, email, m.threshold)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		slog.ErrorContext(ctx, "lockout: record failure", "error", err)
 	}
 }
 
 // RecordSuccess resets the failure count for an email.
-func (m *lockoutManager) RecordSuccess(email string) {
+func (m *lockoutManager) RecordSuccess(ctx context.Context, email string) {
 	email = strings.ToLower(email)
-	m.mu.Lock()
-	defer m.mu.Unlock()
 
-	delete(m.attempts, email)
-}
-
-// evictStale removes entries that are idle longer than evictTTL and below the
-// lockout threshold. Also removes expired lockouts (lockedAt + duration < now).
-func (m *lockoutManager) evictStale() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	now := m.now()
-	cutoff := now.Add(-m.evictTTL)
-	for email, a := range m.attempts {
-		if a.count >= m.threshold {
-			// Locked entry — only evict if the lockout has expired.
-			if !a.lockedAt.IsZero() && now.Sub(a.lockedAt) >= m.duration {
-				delete(m.attempts, email)
-			}
-			continue
-		}
-		// Sub-threshold entry — evict if idle past evictTTL.
-		if a.lastActivity.Before(cutoff) {
-			delete(m.attempts, email)
-		}
-	}
-}
-
-// cleanupLoop periodically evicts stale entries. Mirrors ipRateLimiter.cleanupLoop.
-func (m *lockoutManager) cleanupLoop() {
-	interval := m.evictTTL / 2
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			m.evictStale()
-		case <-m.done:
-			return
-		}
+	if err := m.store.RecordLoginSuccess(ctx, email); err != nil {
+		slog.ErrorContext(ctx, "lockout: record success", "error", err)
 	}
 }

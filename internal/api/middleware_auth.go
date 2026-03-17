@@ -5,12 +5,24 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/scarson/cvert-ops/internal/auth"
+	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/secure"
 )
+
+// jwtPreviousSecret returns the previous JWT secret as bytes for key rotation,
+// or nil if no previous secret is configured.
+func jwtPreviousSecret(cfg *config.Config) []byte {
+	if cfg.JWTSecretPrevious == "" {
+		return nil
+	}
+	return []byte(cfg.JWTSecretPrevious)
+}
 
 // RequireAuthenticated returns a middleware that requires a valid JWT access-token
 // cookie or an API key Bearer token. On success it injects ctxUserID (and for API
@@ -24,30 +36,46 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				if srv.tryAPIKeyAuth(r, rawKey, w, next) {
 					return
 				}
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			// Try JWT access-token cookie.
 			cookie, err := r.Cookie("access_token")
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret))
+			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
 			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			// Reject disabled users immediately.
-			enabled, err := srv.store.IsUserEnabled(r.Context(), claims.UserID)
+			// Reject disabled users and enforce force_password_reset.
+			authStatus, err := srv.store.GetUserAuthStatus(r.Context(), claims.UserID)
 			if err != nil {
-				slog.ErrorContext(r.Context(), "auth: check user enabled", "user_id", claims.UserID, "error", err)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				slog.ErrorContext(r.Context(), "auth: check user status", "user_id", claims.UserID, "error", err)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			if !enabled {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if !authStatus.Enabled {
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
+			}
+			if authStatus.ForcePasswordReset {
+				path := r.URL.Path
+				allowed := strings.HasSuffix(path, "/auth/change-password") ||
+					strings.HasSuffix(path, "/auth/me") ||
+					strings.HasSuffix(path, "/auth/logout")
+				if !allowed {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					_ = json.NewEncoder(w).Encode(map[string]string{
+						"title":  "Password change required",
+						"detail": "Your password must be changed before continuing",
+						"type":   "password_change_required",
+					})
+					return
+				}
 			}
 			ctx := context.WithValue(r.Context(), ctxUserID, claims.UserID)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -62,21 +90,36 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	key, err := srv.store.LookupAPIKey(r.Context(), hash)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "api key auth: database error", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return true // response sent
 	}
 	if key == nil {
+		// Check if the key exists but is revoked — fire a security event if so.
+		if srv.eventWriter != nil {
+			allKey, lookupErr := srv.store.LookupAPIKeyByHash(r.Context(), hash)
+			if lookupErr == nil && allKey != nil && allKey.RevokedAt.Valid {
+				srv.eventWriter.Write(r.Context(), secure.Event{
+					Type:     secure.EventAuthAPIKeyUsedAfterRevoke,
+					Severity: secure.SeverityCritical,
+					ActorIP:  clientIP(r.Context()),
+					UserID:   &allKey.CreatedByUserID,
+					OrgID:    &allKey.OrgID,
+					Details:  map[string]any{"key_id": allKey.ID.String(), "key_name": allKey.Name},
+				})
+			}
+		}
 		return false
 	}
 	// Defense-in-depth: constant-time compare to prevent timing attacks.
 	if subtle.ConstantTimeCompare([]byte(key.KeyHash), []byte(hash)) != 1 {
 		return false
 	}
-	// Reject disabled users.
+	// API key auth checks enabled only — API keys cannot change passwords,
+	// so force_password_reset does not apply.
 	enabled, err := srv.store.IsUserEnabled(r.Context(), key.CreatedByUserID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "api key auth: check user enabled", "user_id", key.CreatedByUserID, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return true // response sent
 	}
 	if !enabled {

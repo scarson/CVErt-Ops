@@ -345,6 +345,41 @@ type JobQueue struct {
 	LastError   sql.NullString
 }
 
+type MfaChallenge struct {
+	ID            uuid.UUID
+	UserID        uuid.UUID
+	ChallengeType string
+	TokenHash     string
+	Attempts      int32
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+}
+
+type MfaCredential struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	Method       string
+	SecretEnc    []byte
+	LastUsedStep sql.NullInt64
+	CreatedAt    time.Time
+	LastUsedAt   sql.NullTime
+}
+
+type MfaRecoveryCode struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	CodeHash  string
+	UsedAt    sql.NullTime
+	CreatedAt time.Time
+}
+
+type MfaRequirement struct {
+	OrgID      uuid.UUID
+	UserID     uuid.UUID
+	RequiredBy uuid.NullUUID
+	CreatedAt  time.Time
+}
+
 type NotificationChannel struct {
 	ID                     uuid.UUID
 	OrgID                  uuid.UUID
@@ -397,13 +432,16 @@ type OrgMember struct {
 }
 
 type Organization struct {
-	ID            uuid.UUID
-	Name          string
-	CreatedAt     time.Time
-	DeletedAt     sql.NullTime
-	Tier          string
-	TierOverrides json.RawMessage
-	SuspendedAt   sql.NullTime
+	ID                       uuid.UUID
+	Name                     string
+	CreatedAt                time.Time
+	DeletedAt                sql.NullTime
+	Tier                     string
+	TierOverrides            json.RawMessage
+	SuspendedAt              sql.NullTime
+	MfaRequiredAll           bool
+	MfaRememberDeviceAllowed bool
+	MfaRememberDeviceDays    int32
 }
 
 type PasswordResetToken struct {
@@ -461,6 +499,18 @@ type ScheduledReport struct {
 	DeletedAt         sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type SecurityEvent struct {
+	ID         uuid.UUID
+	EventType  string
+	Severity   string
+	ActorIp    sql.NullString
+	ActorEmail sql.NullString
+	UserID     uuid.NullUUID
+	OrgID      uuid.NullUUID
+	Details    pqtype.NullRawMessage
+	CreatedAt  time.Time
 }
 
 type SsoConnection struct {

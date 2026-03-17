@@ -123,6 +123,23 @@ func (a *Adapter) fetchJSON(ctx context.Context, cursorJSON json.RawMessage) (*f
 		return nil, fmt.Errorf("generic %s: unexpected content-type %q from %s", a.cfg.Name, ct, reqURL)
 	}
 
+	// Simple root paths (no dots) use streaming JSON parse to avoid buffering
+	// the full response body. Nested root paths require the buffered gjson approach.
+	// Also fall back to buffered when cursor pagination uses a nested cursor path,
+	// since the streaming path can only read sibling keys at the root level.
+	canStream := !strings.Contains(a.cfg.Mapping.Root, ".")
+	if canStream && a.cfg.Pagination.Type == "cursor" && strings.Contains(a.cfg.Pagination.CursorPath, ".") {
+		canStream = false
+	}
+	if canStream {
+		return a.fetchJSONStream(ctx, resp, &cur)
+	}
+	return a.fetchJSONBuffered(ctx, resp, &cur)
+}
+
+// fetchJSONBuffered reads the entire response body and uses gjson to extract records.
+// Used for nested root paths (e.g. "data.items") that require full-body access.
+func (a *Adapter) fetchJSONBuffered(_ context.Context, resp *http.Response, cur *cursor) (*feed.FetchResult, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("generic %s: read body: %w", a.cfg.Name, err)
@@ -132,7 +149,7 @@ func (a *Adapter) fetchJSON(ctx context.Context, cursorJSON json.RawMessage) (*f
 	rootResult := gjson.GetBytes(body, a.cfg.Mapping.Root)
 	if !rootResult.Exists() || !rootResult.IsArray() {
 		// Empty/missing array is not an error — just no results.
-		nextCur, _ := json.Marshal(cur)
+		nextCur, _ := json.Marshal(*cur)
 		return &feed.FetchResult{
 			Patches:    nil,
 			SourceMeta: feed.SourceMeta{SourceName: a.cfg.Name, FetchedAt: time.Now().UTC()},
@@ -154,7 +171,115 @@ func (a *Adapter) fetchJSON(ctx context.Context, cursorJSON json.RawMessage) (*f
 
 	// Determine pagination state using raw record count (before CVE ID filtering)
 	// so that filtered-out records don't cause premature last-page detection.
-	lastPage, nextCur := a.nextPage(body, resp.Header, &cur, rawCount)
+	lastPage, nextCur := a.nextPage(body, resp.Header, cur, rawCount)
+
+	nextCurJSON, _ := json.Marshal(nextCur)
+	return &feed.FetchResult{
+		Patches:    patches,
+		SourceMeta: feed.SourceMeta{SourceName: a.cfg.Name, FetchedAt: time.Now().UTC()},
+		NextCursor: nextCurJSON,
+		LastPage:   lastPage,
+	}, nil
+}
+
+// fetchJSONStream parses the response using json.Decoder to avoid buffering the full
+// body. It streams through a top-level JSON object, processing the array at the
+// configured root key element-by-element.
+func (a *Adapter) fetchJSONStream(_ context.Context, resp *http.Response, cur *cursor) (*feed.FetchResult, error) {
+	dec := json.NewDecoder(io.LimitReader(resp.Body, maxResponseSize))
+
+	// Expect opening '{' of top-level object.
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, fmt.Errorf("generic %s: stream: read opening token: %w", a.cfg.Name, err)
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, fmt.Errorf("generic %s: stream: expected '{', got %v", a.cfg.Name, tok)
+	}
+
+	// Determine if cursor path is a simple sibling key (no dots) that we can
+	// read during streaming.
+	cursorKey := ""
+	if a.cfg.Pagination.Type == "cursor" && !strings.Contains(a.cfg.Pagination.CursorPath, ".") {
+		cursorKey = a.cfg.Pagination.CursorPath
+	}
+
+	var patches []feed.CanonicalPatch
+	var rawCount int
+	var nextCursorValue string
+	foundRoot := false
+
+	// Iterate over top-level keys.
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("generic %s: stream: read key: %w", a.cfg.Name, err)
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, fmt.Errorf("generic %s: stream: expected string key, got %T", a.cfg.Name, keyTok)
+		}
+
+		switch {
+		case key == a.cfg.Mapping.Root:
+			foundRoot = true
+			// Consume '[' opening the array.
+			arrTok, err := dec.Token()
+			if err != nil {
+				return nil, fmt.Errorf("generic %s: stream: read array open: %w", a.cfg.Name, err)
+			}
+			if delim, ok := arrTok.(json.Delim); !ok || delim != '[' {
+				return nil, fmt.Errorf("generic %s: stream: expected '[' for root array, got %v", a.cfg.Name, arrTok)
+			}
+
+			for dec.More() {
+				var raw json.RawMessage
+				if err := dec.Decode(&raw); err != nil {
+					return nil, fmt.Errorf("generic %s: stream: decode record: %w", a.cfg.Name, err)
+				}
+				rawCount++
+				record := gjson.ParseBytes(raw)
+				p := a.mapRecord(record)
+				if p.CVEID != "" {
+					patches = append(patches, p)
+				}
+			}
+
+			// Consume ']' closing the array.
+			if _, err := dec.Token(); err != nil {
+				return nil, fmt.Errorf("generic %s: stream: read array close: %w", a.cfg.Name, err)
+			}
+
+		case cursorKey != "" && key == cursorKey:
+			// Read the cursor value — decode as RawMessage then coerce to string
+			// so numeric cursors (e.g. 42) work the same as the buffered gjson path.
+			var rawVal json.RawMessage
+			if err := dec.Decode(&rawVal); err != nil {
+				return nil, fmt.Errorf("generic %s: stream: decode cursor value: %w", a.cfg.Name, err)
+			}
+			nextCursorValue = gjson.ParseBytes(rawVal).String()
+
+		default:
+			// Skip unknown keys.
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return nil, fmt.Errorf("generic %s: stream: skip key %q: %w", a.cfg.Name, key, err)
+			}
+		}
+	}
+
+	if !foundRoot {
+		// Root key not found — return empty results.
+		nextCurJSON, _ := json.Marshal(*cur)
+		return &feed.FetchResult{
+			Patches:    nil,
+			SourceMeta: feed.SourceMeta{SourceName: a.cfg.Name, FetchedAt: time.Now().UTC()},
+			NextCursor: nextCurJSON,
+			LastPage:   true,
+		}, nil
+	}
+
+	lastPage, nextCur := a.nextPageFromStream(nextCursorValue, resp.Header, cur, rawCount)
 
 	nextCurJSON, _ := json.Marshal(nextCur)
 	return &feed.FetchResult{
@@ -238,6 +363,45 @@ func (a *Adapter) nextPage(body []byte, headers http.Header, cur *cursor, patchC
 
 	default:
 		// "none" or unset — single request.
+		return true, cursor{}
+	}
+}
+
+// nextPageFromStream computes pagination state using a cursor value extracted
+// during streaming (instead of from the buffered body). For offset and
+// link-header pagination, delegates to the same logic as nextPage. For cursor
+// pagination with a nested CursorPath (dots), returns lastPage=true since the
+// streaming path cannot read nested cursor values.
+func (a *Adapter) nextPageFromStream(nextCursorValue string, headers http.Header, cur *cursor, patchCount int) (lastPage bool, next cursor) {
+	switch a.cfg.Pagination.Type {
+	case "offset":
+		next.Page = cur.Page + 1
+		if next.Page <= 1 {
+			next.Page = 2
+		}
+		if a.cfg.Pagination.PageSize > 0 && patchCount < a.cfg.Pagination.PageSize {
+			return true, next
+		}
+		return false, next
+
+	case "cursor":
+		if strings.Contains(a.cfg.Pagination.CursorPath, ".") {
+			// Nested cursor path — streaming couldn't extract it.
+			return true, cursor{}
+		}
+		if nextCursorValue == "" {
+			return true, cursor{}
+		}
+		return false, cursor{CursorValue: nextCursorValue}
+
+	case "link-header":
+		link := headers.Get("Link")
+		if m := linkNextRe.FindStringSubmatch(link); len(m) > 1 {
+			return false, cursor{NextURL: m[1]}
+		}
+		return true, cursor{}
+
+	default:
 		return true, cursor{}
 	}
 }

@@ -3,8 +3,6 @@
 package api
 
 import (
-	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/scarson/cvert-ops/internal/doctor"
@@ -13,13 +11,18 @@ import (
 // doctorHandler runs all doctor checks and returns results as JSON.
 func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
 	checks := doctor.StandardChecks(doctor.StandardChecksConfig{
-		DB:                    srv.store.Pool(),
-		ExpectedSchemaVersion: srv.expectedSchemaVersion,
-		SSOEncryptionKey:      srv.cfg.SSOEncryptionKey,
-		JWTSecret:             srv.cfg.JWTSecret,
-		SMTPHost:              srv.cfg.SMTPHost,
-		SMTPPort:              srv.cfg.SMTPPort,
-		SMTPUsername:          srv.cfg.SMTPUsername,
+		DB:                       srv.store.Pool(),
+		ExpectedSchemaVersion:    srv.expectedSchemaVersion,
+		SSOEncryptionKey:         srv.cfg.SSOEncryptionKey,
+		SSOEncryptionKeyPrevious: srv.cfg.SSOEncryptionKeyPrevious,
+		JWTSecret:                srv.cfg.JWTSecret,
+		JWTSecretPrevious:        srv.cfg.JWTSecretPrevious,
+		SMTPHost:                 srv.cfg.SMTPHost,
+		SMTPPort:                 srv.cfg.SMTPPort,
+		SMTPUsername:             srv.cfg.SMTPUsername,
+		CORSAllowedOrigins:      srv.cfg.CORSAllowedOrigins,
+		CookieAuth:               true, // always cookie-based auth with web SPA
+		ServerAddr:               "http://" + srv.cfg.ListenAddr,
 	})
 
 	results := doctor.Run(r.Context(), checks)
@@ -36,9 +39,5 @@ func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
 		"checks": results,
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.ErrorContext(r.Context(), "doctor: failed to encode response", "error", err)
-	}
+	writeJSON(w, statusCode, resp)
 }

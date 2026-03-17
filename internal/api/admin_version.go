@@ -3,8 +3,6 @@
 package api
 
 import (
-	"encoding/json"
-	"log/slog"
 	"net/http"
 	"runtime"
 )
@@ -17,15 +15,12 @@ type VersionInfo struct {
 }
 
 // versionHandler returns the build metadata as JSON.
-func (srv *Server) versionHandler(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) versionHandler(w http.ResponseWriter, _ *http.Request) {
 	resp := map[string]string{
 		"version":    srv.versionInfo.Version,
 		"commit":     srv.versionInfo.Commit,
 		"build_time": srv.versionInfo.BuildTime,
 		"go_version": runtime.Version(),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.ErrorContext(r.Context(), "version: failed to encode response", "error", err)
-	}
+	writeJSON(w, http.StatusOK, resp)
 }

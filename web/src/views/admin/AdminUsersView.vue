@@ -3,7 +3,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -36,43 +36,52 @@ interface UserEntry {
 
 const users = ref<UserEntry[]>([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref('')
-const hasMore = ref(false)
+const nextCursor = ref<string | undefined>()
 
-async function fetchUsers() {
-  loading.value = true
+async function fetchUsers(cursor?: string) {
+  if (cursor) {
+    loadingMore.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ''
 
   try {
-    const resp = await orgFetch('/api/v1/admin/users?limit=50')
-    if (!resp.ok) {
+    const { data, error: fetchError } = await client.GET('/admin/users', {
+      params: { query: { limit: 50, cursor } },
+    })
+    if (fetchError) {
       error.value = 'Failed to load users.'
-      loading.value = false
       return
     }
 
-    const data = (await resp.json()) as { items: UserEntry[]; has_more: boolean }
-    users.value = data.items ?? []
-    hasMore.value = data.has_more
+    if (cursor) {
+      users.value = [...users.value, ...(data.items ?? [])]
+    } else {
+      users.value = data.items ?? []
+    }
+    nextCursor.value = data.next_cursor
   } catch {
     error.value = 'Failed to load users.'
   } finally {
     loading.value = false
+    loadingMore.value = false
   }
 }
 
 async function toggleDisable(user: UserEntry) {
   const action = user.disabled_at ? 'enable' : 'disable'
   try {
-    const resp = await orgFetch(`/api/v1/admin/users/${user.id}/${action}`, {
-      method: 'POST',
-    })
-    if (resp.ok) {
+    const result = user.disabled_at
+      ? await client.POST('/admin/users/{user_id}/enable', { params: { path: { user_id: user.id } } })
+      : await client.POST('/admin/users/{user_id}/disable', { params: { path: { user_id: user.id } } })
+    if (!result.error) {
       toast.success(`User ${action}d`)
       await fetchUsers()
     } else {
-      const body = await resp.text()
-      toast.error(body || `Failed to ${action} user`)
+      toast.error(result.error?.detail || `Failed to ${action} user`)
     }
   } catch {
     toast.error(`Failed to ${action} user`)
@@ -81,10 +90,10 @@ async function toggleDisable(user: UserEntry) {
 
 async function unlockUser(userId: string) {
   try {
-    const resp = await orgFetch(`/api/v1/admin/users/${userId}/unlock`, {
-      method: 'POST',
+    const { error: fetchError } = await client.POST('/admin/users/{user_id}/unlock', {
+      params: { path: { user_id: userId } },
     })
-    if (resp.ok) {
+    if (!fetchError) {
       toast.success('User unlocked')
       await fetchUsers()
     } else {
@@ -97,10 +106,10 @@ async function unlockUser(userId: string) {
 
 async function forcePasswordReset(userId: string) {
   try {
-    const resp = await orgFetch(`/api/v1/admin/users/${userId}/reset-password`, {
-      method: 'POST',
+    const { error: fetchError } = await client.POST('/admin/users/{user_id}/reset-password', {
+      params: { path: { user_id: userId } },
     })
-    if (resp.ok) {
+    if (!fetchError) {
       toast.success('Password reset required on next login')
       await fetchUsers()
     } else {
@@ -201,8 +210,11 @@ onMounted(fetchUsers)
         </TableBody>
       </Table>
 
-      <div v-if="hasMore && !loading" class="flex justify-center pt-4">
-        <p class="text-sm text-muted-foreground">More users available. Pagination coming soon.</p>
+      <div v-if="nextCursor && !loading" class="flex justify-center pt-4">
+        <Button variant="outline" :disabled="loadingMore" @click="fetchUsers(nextCursor)">
+          <Loader2 v-if="loadingMore" class="mr-2 size-4 animate-spin" aria-hidden="true" />
+          Load More
+        </Button>
       </div>
     </div>
   </div>

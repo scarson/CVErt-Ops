@@ -16,8 +16,18 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockGET = vi.fn()
+const mockPOST = vi.fn()
+const mockDELETE = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: (...args: unknown[]) => mockGET(...args),
+    POST: (...args: unknown[]) => mockPOST(...args),
+    PATCH: vi.fn(),
+    DELETE: (...args: unknown[]) => mockDELETE(...args),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 const TEST_GROUP_ID = 'grp-001'
@@ -44,34 +54,30 @@ function makeOrgMember(overrides: Record<string, unknown> = {}) {
 }
 
 function mockGroupMembersSuccess(members = [makeGroupMember()]) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(members),
+  mockGET.mockResolvedValueOnce({
+    data: { items: members },
+    error: undefined,
   })
 }
 
 function mockOrgMembersSuccess(members = [makeOrgMember()]) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(members),
+  mockGET.mockResolvedValueOnce({
+    data: { items: members },
+    error: undefined,
   })
 }
 
 function mockAddMemberSuccess() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 204,
-    json: () => Promise.resolve(null),
+  mockPOST.mockResolvedValueOnce({
+    data: undefined,
+    error: undefined,
   })
 }
 
 function mockRemoveMemberSuccess() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 204,
-    json: () => Promise.resolve(null),
+  mockDELETE.mockResolvedValueOnce({
+    data: undefined,
+    error: undefined,
   })
 }
 
@@ -112,7 +118,9 @@ describe('GroupMembersDialog', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
-    mockFetch.mockReset()
+    mockGET.mockReset()
+    mockPOST.mockReset()
+    mockDELETE.mockReset()
 
     const auth = useAuthStore()
     auth.activeOrgId = TEST_ORG_ID
@@ -125,7 +133,7 @@ describe('GroupMembersDialog', () => {
 
   describe('loading state', () => {
     it('shows loading indicator while fetching members', async () => {
-      mockFetch.mockImplementation(() => new Promise(() => {}))
+      mockGET.mockImplementation(() => new Promise(() => {}))
       await mountDialog()
       await flushPromises()
 
@@ -135,18 +143,17 @@ describe('GroupMembersDialog', () => {
 
   describe('error state', () => {
     it('shows error when fetching group members fails (network)', async () => {
-      mockFetch.mockRejectedValueOnce(new Error('Network error'))
+      mockGET.mockRejectedValueOnce(new Error('Network error'))
       await mountDialog()
       await flushPromises()
 
       expect(bodyText()).toContain('Failed to load')
     })
 
-    it('shows error when group members API returns non-ok', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Server error' }),
+    it('shows error when group members API returns error', async () => {
+      mockGET.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
       })
       mockOrgMembersSuccess([])
       await mountDialog()
@@ -221,7 +228,7 @@ describe('GroupMembersDialog', () => {
       await mountDialog()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockDELETE.mockReset()
       mockRemoveMemberSuccess()
 
       // Remove the second member (Bob)
@@ -229,10 +236,10 @@ describe('GroupMembersDialog', () => {
       removeBtns[1]!.click()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups/${TEST_GROUP_ID}/members/u2`,
+      expect(mockDELETE).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups/{group_id}/members/{user_id}',
         expect.objectContaining({
-          method: 'DELETE',
+          params: { path: { org_id: TEST_ORG_ID, group_id: TEST_GROUP_ID, user_id: 'u2' } },
         }),
       )
 
@@ -269,7 +276,7 @@ describe('GroupMembersDialog', () => {
       await mountDialog()
       await flushPromises()
 
-      mockFetch.mockReset()
+      mockPOST.mockReset()
       mockAddMemberSuccess()
 
       // Use the exposed addMember method since reka-ui Select is hard to trigger in JSDOM
@@ -277,11 +284,11 @@ describe('GroupMembersDialog', () => {
       await vm.addMember('u1')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups/${TEST_GROUP_ID}/members`,
+      expect(mockPOST).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups/{group_id}/members',
         expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ user_id: 'u1' }),
+          params: { path: { org_id: TEST_ORG_ID, group_id: TEST_GROUP_ID } },
+          body: { user_id: 'u1' },
         }),
       )
 
@@ -297,10 +304,10 @@ describe('GroupMembersDialog', () => {
       await mountDialog()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/groups/${TEST_GROUP_ID}/members`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/groups/{group_id}/members',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID, group_id: TEST_GROUP_ID } },
         }),
       )
     })
@@ -311,10 +318,10 @@ describe('GroupMembersDialog', () => {
       await mountDialog()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/members`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/members',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID } },
         }),
       )
     })

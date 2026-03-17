@@ -52,6 +52,7 @@ func TestRequireSiteAdmin_NonAdmin_403(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("non-admin user: got %d, want 403", resp.StatusCode)
 	}
+	assertRFC9457Response(t, resp, http.StatusForbidden)
 }
 
 func TestRequireSiteAdmin_Admin_200(t *testing.T) {

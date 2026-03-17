@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { orgFetch } from '@/lib/api/orgFetch'
+import client from '@/lib/api/client'
 import GroupDialog from '@/components/settings/GroupDialog.vue'
 import type { GroupEntry } from '@/components/settings/GroupDialog.vue'
 import GroupMembersDialog from '@/components/settings/GroupMembersDialog.vue'
@@ -54,24 +54,22 @@ const membersTarget = ref<GroupEntry | null>(null)
 const userRole = computed(() => auth.activeOrg?.role ?? 'viewer')
 const isAdmin = computed(() => ROLE_HIERARCHY[userRole.value]! >= ROLE_HIERARCHY['admin']!)
 
-function apiBase() {
-  return `/api/v1/orgs/${auth.activeOrgId}/groups`
-}
-
 async function fetchGroups() {
   loading.value = true
   error.value = ''
 
   try {
-    const resp = await orgFetch(apiBase())
+    const { data, error: fetchError } = await client.GET('/orgs/{org_id}/groups', {
+      params: { path: { org_id: auth.activeOrgId! } },
+    })
 
-    if (!resp.ok) {
+    if (fetchError) {
       error.value = 'Failed to load groups. Please try again.'
       loading.value = false
       return
     }
 
-    groups.value = await resp.json() as GroupEntry[]
+    groups.value = data.items as GroupEntry[]
   } catch {
     error.value = 'Failed to load groups. Please try again.'
   } finally {
@@ -113,11 +111,11 @@ async function confirmDelete() {
   const id = deleteTarget.value.id
 
   try {
-    const resp = await orgFetch(`${apiBase()}/${id}`, {
-      method: 'DELETE',
+    const { error: fetchError } = await client.DELETE('/orgs/{org_id}/groups/{group_id}', {
+      params: { path: { org_id: auth.activeOrgId!, group_id: id } },
     })
 
-    if (resp.ok) {
+    if (!fetchError) {
       groups.value = groups.value.filter((g) => g.id !== id)
       deleteDialogOpen.value = false
       deleteTarget.value = null

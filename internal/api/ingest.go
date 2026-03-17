@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
@@ -70,33 +71,37 @@ type ingestError struct {
 func (srv *Server) ingestHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	var req ingestRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if detail := decodeJSON(r, &req); detail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
 		return
 	}
 
 	// Validate source_name.
 	if strings.TrimSpace(req.SourceName) == "" {
-		http.Error(w, "source_name is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "source_name is required", Location: "body.source_name"})
 		return
 	}
 	if ingest.IsReservedSourceName(req.SourceName) {
-		http.Error(w, fmt.Sprintf("source_name %q is reserved", req.SourceName), http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: fmt.Sprintf("source_name %q is reserved", req.SourceName), Location: "body.source_name", Value: req.SourceName})
 		return
 	}
 
 	// Validate patch count.
 	if len(req.Patches) == 0 {
-		http.Error(w, "patches array is required and must not be empty", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "patches array must not be empty", Location: "body.patches"})
 		return
 	}
 	if len(req.Patches) > maxIngestPatches {
-		http.Error(w, fmt.Sprintf("too many patches: %d exceeds limit of %d", len(req.Patches), maxIngestPatches), http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: fmt.Sprintf("too many patches: %d exceeds limit of %d", len(req.Patches), maxIngestPatches), Location: "body.patches", Value: len(req.Patches)})
 		return
 	}
 
@@ -112,7 +117,7 @@ func (srv *Server) ingestHandler(w http.ResponseWriter, r *http.Request) {
 			burst = 1
 		}
 		if !srv.orgRL.AllowN(orgID, ratePerSec, burst, n-1) {
-			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
 	}
@@ -156,9 +161,7 @@ func (srv *Server) ingestHandler(w http.ResponseWriter, r *http.Request) {
 		statusCode = http.StatusBadRequest
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(resp)
+	writeJSON(w, statusCode, resp)
 }
 
 // toCanonicalPatch converts an ingest request patch to a merge-pipeline CanonicalPatch.

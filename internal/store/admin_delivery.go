@@ -128,7 +128,7 @@ func (s *Store) AdminRetryDelivery(ctx context.Context, id uuid.UUID) (int64, er
 func (s *Store) AdminBulkRetryFailed(ctx context.Context, limit int) (int64, error) {
 	var n int64
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		result, err := q.AdminBulkRetryFailed(ctx, int32(limit)) //nolint:gosec // G115: limit validated by caller
+		result, err := q.AdminBulkRetryFailed(ctx, clampInt32(int32(limit), 1, 10000)) //nolint:gosec // limit bounded by parseLimitParam [1,1000]
 		if err != nil {
 			return err
 		}

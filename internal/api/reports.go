@@ -4,12 +4,12 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -57,10 +57,6 @@ type reportEntry struct {
 	UpdatedAt         string   `json:"updated_at"`
 }
 
-type reportListResponse struct {
-	Items []reportEntry `json:"items"`
-}
-
 // ── Mapping helpers ───────────────────────────────────────────────────────────
 
 func reportToEntry(r store.ScheduledReportRow) reportEntry {
@@ -106,38 +102,38 @@ var validSeverityThresholds = map[string]bool{
 func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 
 	var req createReportBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		http.Error(w, "name is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "name is required", Location: "body.name", Value: ""})
 		return
 	}
 	if strings.TrimSpace(req.ScheduledTime) == "" {
-		http.Error(w, "scheduled_time is required", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "scheduled_time is required", Location: "body.scheduled_time", Value: ""})
 		return
 	}
 	if strings.TrimSpace(req.Timezone) == "" {
 		req.Timezone = "UTC"
 	}
 	if _, err := time.LoadLocation(req.Timezone); err != nil {
-		http.Error(w, "invalid timezone", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "invalid timezone", Location: "body.timezone", Value: req.Timezone})
 		return
 	}
 	if req.SeverityThreshold != nil && !validSeverityThresholds[*req.SeverityThreshold] {
-		http.Error(w, "severity_threshold must be critical, high, medium, or low", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "severity_threshold must be critical, high, medium, or low", Location: "body.severity_threshold", Value: *req.SeverityThreshold})
 		return
 	}
 
 	nextRun, err := notify.ComputeNextRunAt(req.ScheduledTime, req.Timezone)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.scheduled_time", Value: req.ScheduledTime})
 		return
 	}
 
@@ -146,7 +142,7 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 	for i, s := range req.WatchlistIDs {
 		id, err := uuid.Parse(s)
 		if err != nil {
-			http.Error(w, "invalid watchlist_id: "+s, http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "invalid watchlist_id: " + s, Location: "body.watchlist_ids", Value: s})
 			return
 		}
 		watchlistIDs[i] = id
@@ -169,9 +165,10 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 	row, err := srv.store.CreateScheduledReport(r.Context(), orgID, params)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create scheduled report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	writeLocation(w, r, row.ID.String())
 	writeJSON(w, http.StatusCreated, reportToEntry(*row))
 }
 
@@ -179,22 +176,22 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) getReportHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	row, err := srv.store.GetScheduledReport(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get scheduled report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, reportToEntry(*row))
@@ -204,49 +201,49 @@ func (srv *Server) getReportHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) listReportsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	rows, err := srv.store.ListScheduledReports(r.Context(), orgID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list scheduled reports", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	items := make([]reportEntry, len(rows))
 	for i, row := range rows {
 		items[i] = reportToEntry(row)
 	}
-	writeJSON(w, http.StatusOK, reportListResponse{Items: items})
+	writeList(w, items, "")
 }
 
 // patchReportHandler handles PATCH /api/v1/orgs/{org_id}/reports/{id}.
 func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	var req patchReportBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 
 	current, err := srv.store.GetScheduledReport(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get scheduled report for patch", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if current == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -265,6 +262,11 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	recalcNextRun := false
 
 	if req.Name != nil {
+		if *req.Name == "" {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "name must not be empty", Location: "body.name", Value: ""})
+			return
+		}
 		params.Name = *req.Name
 	}
 	if req.ScheduledTime != nil {
@@ -273,7 +275,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Timezone != nil {
 		if _, err := time.LoadLocation(*req.Timezone); err != nil {
-			http.Error(w, "invalid timezone", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "invalid timezone", Location: "body.timezone", Value: *req.Timezone})
 			return
 		}
 		params.Timezone = *req.Timezone
@@ -284,7 +286,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 			// Empty string clears the severity threshold to NULL (no filter).
 			params.SeverityThreshold = sql.NullString{}
 		} else if !validSeverityThresholds[*req.SeverityThreshold] {
-			http.Error(w, "severity_threshold must be critical, high, medium, or low", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "severity_threshold must be critical, high, medium, or low", Location: "body.severity_threshold", Value: *req.SeverityThreshold})
 			return
 		} else {
 			params.SeverityThreshold = sql.NullString{String: *req.SeverityThreshold, Valid: true}
@@ -295,7 +297,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 		for i, s := range *req.WatchlistIDs {
 			wID, err := uuid.Parse(s)
 			if err != nil {
-				http.Error(w, "invalid watchlist_id: "+s, http.StatusUnprocessableEntity)
+				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "invalid watchlist_id: " + s, Location: "body.watchlist_ids", Value: s})
 				return
 			}
 			ids[i] = wID
@@ -317,7 +319,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			params.Status = *req.Status
 		default:
-			http.Error(w, "status must be 'active' or 'paused'", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "status must be 'active' or 'paused'", Location: "body.status", Value: *req.Status})
 			return
 		}
 	}
@@ -325,7 +327,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	if recalcNextRun {
 		nextRun, err := notify.ComputeNextRunAt(params.ScheduledTime, params.Timezone)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.scheduled_time", Value: params.ScheduledTime})
 			return
 		}
 		params.NextRunAt = nextRun
@@ -334,11 +336,11 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	updated, err := srv.store.UpdateScheduledReport(r.Context(), orgID, id, params)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update scheduled report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if updated == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, reportToEntry(*updated))
@@ -348,27 +350,27 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) deleteReportHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	existing, err := srv.store.GetScheduledReport(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get report for delete", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if existing == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 	if err := srv.store.SoftDeleteScheduledReport(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "soft delete scheduled report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -378,17 +380,17 @@ func (srv *Server) deleteReportHandler(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) bindChannelToReportHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	reportID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	channelID, err := uuid.Parse(chi.URLParam(r, "channel_id"))
 	if err != nil {
-		http.Error(w, "invalid channel_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid channel_id")
 		return
 	}
 
@@ -396,11 +398,11 @@ func (srv *Server) bindChannelToReportHandler(w http.ResponseWriter, r *http.Req
 	report, err := srv.store.GetScheduledReport(r.Context(), orgID, reportID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get report for bind", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if report == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -408,17 +410,17 @@ func (srv *Server) bindChannelToReportHandler(w http.ResponseWriter, r *http.Req
 	ch, err := srv.store.GetNotificationChannel(r.Context(), orgID, channelID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get channel for bind", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if ch == nil {
-		http.Error(w, "channel not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "channel not found")
 		return
 	}
 
 	if err := srv.store.BindChannelToReport(r.Context(), orgID, reportID, channelID); err != nil {
 		slog.ErrorContext(r.Context(), "bind channel to report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -428,22 +430,22 @@ func (srv *Server) bindChannelToReportHandler(w http.ResponseWriter, r *http.Req
 func (srv *Server) unbindChannelFromReportHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	reportID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	channelID, err := uuid.Parse(chi.URLParam(r, "channel_id"))
 	if err != nil {
-		http.Error(w, "invalid channel_id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid channel_id")
 		return
 	}
 	if err := srv.store.UnbindChannelFromReport(r.Context(), orgID, reportID, channelID); err != nil {
 		slog.ErrorContext(r.Context(), "unbind channel from report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -453,18 +455,18 @@ func (srv *Server) unbindChannelFromReportHandler(w http.ResponseWriter, r *http
 func (srv *Server) listReportChannelsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	reportID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	rows, err := srv.store.ListChannelsForReport(r.Context(), orgID, reportID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list channels for report", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	items := make([]channelEntry, len(rows))
@@ -479,5 +481,5 @@ func (srv *Server) listReportChannelsHandler(w http.ResponseWriter, r *http.Requ
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}
 	}
-	writeJSON(w, http.StatusOK, channelListResponse{Items: items})
+	writeList(w, items, "")
 }

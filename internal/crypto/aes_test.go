@@ -120,3 +120,103 @@ func TestAESGCM_ShortCiphertext(t *testing.T) {
 		t.Error("Decrypt succeeded on too-short ciphertext, want error")
 	}
 }
+
+// ── DecryptWithFallback ─────────────────────────────────────────────────────
+
+func TestDecryptWithFallback_CurrentKeyWorks(t *testing.T) {
+	t.Parallel()
+	currentKey := testKey(t)
+	previousKey := testKey(t)
+	plaintext := []byte("current key decryption")
+
+	ciphertext, err := Encrypt(currentKey, plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	got, err := DecryptWithFallback(currentKey, previousKey, ciphertext)
+	if err != nil {
+		t.Fatalf("DecryptWithFallback: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("plaintext mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestDecryptWithFallback_PreviousKeyWorks(t *testing.T) {
+	t.Parallel()
+	oldKey := testKey(t)
+	newKey := testKey(t)
+	plaintext := []byte("encrypted with old key")
+
+	ciphertext, err := Encrypt(oldKey, plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// newKey as current fails GCM auth; oldKey as previous succeeds.
+	got, err := DecryptWithFallback(newKey, oldKey, ciphertext)
+	if err != nil {
+		t.Fatalf("DecryptWithFallback: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("plaintext mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestDecryptWithFallback_BothKeysWrong(t *testing.T) {
+	t.Parallel()
+	keyA := testKey(t)
+	keyB := testKey(t)
+	keyC := testKey(t)
+	plaintext := []byte("neither key works")
+
+	ciphertext, err := Encrypt(keyA, plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	_, err = DecryptWithFallback(keyB, keyC, ciphertext)
+	if err == nil {
+		t.Error("DecryptWithFallback succeeded with both wrong keys, want error")
+	}
+}
+
+func TestDecryptWithFallback_NoPreviousKey(t *testing.T) {
+	t.Parallel()
+	currentKey := testKey(t)
+	var zeroKey [32]byte
+	plaintext := []byte("no previous key")
+
+	ciphertext, err := Encrypt(currentKey, plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// Zero previous key → only current key tried.
+	got, err := DecryptWithFallback(currentKey, zeroKey, ciphertext)
+	if err != nil {
+		t.Fatalf("DecryptWithFallback: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("plaintext mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestDecryptWithFallback_NoPreviousKeyCurrentFails(t *testing.T) {
+	t.Parallel()
+	keyA := testKey(t)
+	keyB := testKey(t)
+	var zeroKey [32]byte
+
+	ciphertext, err := Encrypt(keyA, []byte("no previous key fails"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// Wrong current key, zero previous → returns error without panic.
+	_, err = DecryptWithFallback(keyB, zeroKey, ciphertext)
+	if err == nil {
+		t.Error("DecryptWithFallback succeeded with wrong current and zero previous, want error")
+	}
+}

@@ -1,6 +1,6 @@
 # Secure Pillar — Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **For Claude:** CRITICAL NOTE: This plan was never implemented and is maintained for historical reference only. It's superseded by dev\plans\2026-03-16-phase8-ops-secure-v2-plan.md.
 
 > **⚠️ DEFERRED REVIEW NOTICE:** This plan was written alongside the Phase 8B-8D plans (Observe, Operate, Extend) but is designed to execute AFTER Phase 8B-8D completes. Before starting implementation, this plan MUST be reviewed and re-assessed in light of the Phase 8B-8D implementation. Specifically:
 > - Verify the Operate pillar's doctor `Check` interface matches what this plan expects

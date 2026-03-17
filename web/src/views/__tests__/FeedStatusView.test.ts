@@ -1,5 +1,5 @@
 // ABOUTME: Tests for the feed status dashboard — validates feed listing, status badges, and run triggers.
-// ABOUTME: Mocks fetch to return feed status data and verifies component rendering and interactions.
+// ABOUTME: Mocks the typed API client to return feed status data and verifies component rendering and interactions.
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -14,50 +14,69 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFeedData = {
-  feeds: [
-    {
-      feed_name: 'nvd',
-      last_success_at: '2026-03-07T10:00:00Z',
-      last_attempt_at: '2026-03-07T10:00:00Z',
-      consecutive_failures: 0,
-      last_error: '',
-      recent_logs: [
-        {
-          id: '00000000-0000-0000-0000-000000000001',
-          started_at: '2026-03-07T09:58:00Z',
-          ended_at: '2026-03-07T10:00:00Z',
-          status: 'success',
-          items_fetched: 150,
-          items_upserted: 42,
-        },
-      ],
-    },
-    {
-      feed_name: 'kev',
-      last_success_at: '2026-03-06T08:00:00Z',
-      last_attempt_at: '2026-03-07T08:00:00Z',
-      consecutive_failures: 3,
-      last_error: 'connection refused',
-      recent_logs: [
-        {
-          id: '00000000-0000-0000-0000-000000000002',
-          started_at: '2026-03-07T07:58:00Z',
-          ended_at: '2026-03-07T08:00:00Z',
-          status: 'error',
-          items_fetched: 0,
-          items_upserted: 0,
-          error_summary: 'connection refused',
-        },
-      ],
-    },
-  ],
+const mockGET = vi.fn()
+const mockPOST = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: (...args: unknown[]) => mockGET(...args),
+    POST: (...args: unknown[]) => mockPOST(...args),
+  },
+}))
+
+const mockFeedItems = [
+  {
+    feed_name: 'nvd',
+    last_success_at: '2026-03-07T10:00:00Z',
+    last_attempt_at: '2026-03-07T10:00:00Z',
+    consecutive_failures: 0,
+    last_error: '',
+    recent_logs: [
+      {
+        id: '00000000-0000-0000-0000-000000000001',
+        started_at: '2026-03-07T09:58:00Z',
+        ended_at: '2026-03-07T10:00:00Z',
+        status: 'success',
+        items_fetched: 150,
+        items_upserted: 42,
+      },
+    ],
+  },
+  {
+    feed_name: 'kev',
+    last_success_at: '2026-03-06T08:00:00Z',
+    last_attempt_at: '2026-03-07T08:00:00Z',
+    consecutive_failures: 3,
+    last_error: 'connection refused',
+    recent_logs: [
+      {
+        id: '00000000-0000-0000-0000-000000000002',
+        started_at: '2026-03-07T07:58:00Z',
+        ended_at: '2026-03-07T08:00:00Z',
+        status: 'error',
+        items_fetched: 0,
+        items_upserted: 0,
+        error_summary: 'connection refused',
+      },
+    ],
+  },
+]
+
+function mockFeedsSuccess() {
+  mockGET.mockResolvedValueOnce({
+    data: { items: mockFeedItems },
+    error: undefined,
+  })
 }
 
-async function mountFeedStatus(fetchImpl?: typeof fetch) {
-  if (fetchImpl) {
-    vi.stubGlobal('fetch', fetchImpl)
-  }
+function mockFeedsError() {
+  mockGET.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 500, detail: 'server error' },
+  })
+}
+
+async function mountFeedStatus() {
   const { default: FeedStatusView } = await import('@/views/FeedStatusView.vue')
   const wrapper = mount(FeedStatusView)
   await flushPromises()
@@ -67,20 +86,13 @@ async function mountFeedStatus(fetchImpl?: typeof fetch) {
 describe('FeedStatusView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve(mockFeedData),
-        }),
-      ),
-    )
+    mockGET.mockReset()
+    mockPOST.mockReset()
+    mockFeedsSuccess()
   })
 
   afterEach(() => {
-    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   it('renders the page title', async () => {
@@ -125,44 +137,33 @@ describe('FeedStatusView', () => {
   })
 
   it('sends POST on Run Now click', async () => {
-    const fetchMock = vi.fn()
-      // Initial list fetch
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(mockFeedData),
-      })
-      // Trigger POST
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 202,
-        json: () => Promise.resolve({ job_id: 'test-job-id' }),
-      })
-      // Refresh list fetch
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(mockFeedData),
-      })
+    const wrapper = await mountFeedStatus()
 
-    const wrapper = await mountFeedStatus(fetchMock as unknown as typeof fetch)
+    // Mock the POST trigger response
+    mockPOST.mockResolvedValueOnce({
+      data: { job_id: 'test-job-id' },
+      error: undefined,
+    })
+    // Mock the refresh GET after trigger
+    mockFeedsSuccess()
+
     const runButtons = wrapper.findAll('[data-testid="run-feed-btn"]')
     expect(runButtons.length).toBeGreaterThan(0)
     await runButtons[0]!.trigger('click')
     await flushPromises()
 
-    // Verify the POST was made to the correct URL
-    const postCall = fetchMock.mock.calls.find(
-      (call: unknown[]) => (call[1] as RequestInit | undefined)?.method === 'POST',
+    // Verify the POST was made with the correct path
+    expect(mockPOST).toHaveBeenCalledWith(
+      '/admin/feeds/{feed}/run',
+      expect.objectContaining({
+        params: { path: { feed: 'nvd' } },
+      }),
     )
-    expect(postCall).toBeTruthy()
-    expect(postCall![0]).toContain('/api/v1/admin/feeds/nvd/run')
   })
 
   it('shows loading state', async () => {
-    // Use a fetch that never resolves to keep loading state
-    const neverResolve = vi.fn(() => new Promise(() => {}))
-    vi.stubGlobal('fetch', neverResolve)
+    mockGET.mockReset()
+    mockGET.mockImplementation(() => new Promise(() => {}))
     const { default: FeedStatusView } = await import('@/views/FeedStatusView.vue')
     const wrapper = mount(FeedStatusView)
     expect(wrapper.text()).toContain('Loading')
@@ -202,15 +203,10 @@ describe('FeedStatusView', () => {
   })
 
   it('shows error state on fetch failure', async () => {
-    const failFetch = vi.fn(() =>
-      Promise.resolve({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ error: 'server error' }),
-      }),
-    )
+    mockGET.mockReset()
+    mockFeedsError()
 
-    const wrapper = await mountFeedStatus(failFetch as unknown as typeof fetch)
+    const wrapper = await mountFeedStatus()
     expect(wrapper.text()).toContain('Failed to load feed status')
   })
 })

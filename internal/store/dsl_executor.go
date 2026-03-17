@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -185,6 +186,17 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		return nil, "", err
 	}
 
+	// Save pre-filter state for pagination. The pagination decision must use the
+	// pre-filter row count because PostFilters can remove rows after SQL fetch.
+	preFetchCount := len(results)
+
+	// Save the last pre-filter row's cursor position BEFORE filtering overwrites results.
+	// Needed when PostFilters remove all visible rows but more pages exist.
+	var preFetchCursorRow generated.CVE
+	if preFetchCount > limit {
+		preFetchCursorRow = results[limit-1]
+	}
+
 	// Apply in-process PostFilters (regex conditions) to SQL results.
 	if len(compiled.PostFilters) > 0 {
 		wrapped := make([]cvePostFilterTarget, len(results))
@@ -198,15 +210,23 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		}
 	}
 
-	// If we got limit+1 rows, there is a next page. Trim the extra row and
-	// build a cursor from the last included result.
+	// If the pre-filter fetch returned limit+1 rows, there is a next page.
 	var nextCursor string
-	if len(results) > limit {
-		results = results[:limit]
-		last := results[limit-1]
+	if preFetchCount > limit {
+		// Trim post-filtered results to at most limit entries.
+		if len(results) > limit {
+			results = results[:limit]
+		}
+		// Use the last visible row for cursor when we have post-filter results,
+		// otherwise fall back to the pre-filter cursor position so the client
+		// can advance past this empty page.
+		cursorSource := preFetchCursorRow
+		if len(results) > 0 {
+			cursorSource = results[len(results)-1]
+		}
 		nextCursor, err = encodeDSLCursor(dslCursor{
-			SortDate: last.DateModifiedCanonical,
-			CVEID:    last.CveID,
+			SortDate: cursorSource.DateModifiedCanonical,
+			CVEID:    cursorSource.CveID,
 		})
 		if err != nil {
 			return nil, "", err
@@ -250,5 +270,5 @@ func (c cvePostFilterTarget) PostFilterField(field string) string {
 	if field == "cve_id" {
 		return c.cve.CveID
 	}
-	return c.cve.DescriptionPrimary.String
+	return strings.ToLower(c.cve.DescriptionPrimary.String)
 }

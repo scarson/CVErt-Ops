@@ -34,8 +34,9 @@ type Config struct {
 	RegistrationMode       string `env:"REGISTRATION_MODE"        envDefault:"invite-only"`
 
 	// ── Auth — JWT ───────────────────────────────────────────────────────────────
-	JWTSecret    string `env:"JWT_SECRET,required"`
-	JWTAlgorithm string `env:"JWT_ALGORITHM" envDefault:"HS256"`
+	JWTSecret         string `env:"JWT_SECRET,required"`
+	JWTSecretPrevious string `env:"JWT_SECRET_PREVIOUS"`
+	JWTAlgorithm      string `env:"JWT_ALGORITHM" envDefault:"HS256"`
 
 	// ── Auth — Cookies ───────────────────────────────────────────────────────────
 	// Must be false for http://localhost; must be true in production with TLS.
@@ -56,6 +57,14 @@ type Config struct {
 	// ── Auth — Account Lockout ───────────────────────────────────────────────
 	LockoutThreshold int           `env:"LOCKOUT_THRESHOLD" envDefault:"5"`
 	LockoutDuration  time.Duration `env:"LOCKOUT_DURATION"  envDefault:"15m"`
+
+	// ── Auth — MFA ──────────────────────────────────────────────────────────
+	MFARequiredSiteAdmins  bool          `env:"MFA_REQUIRED_SITE_ADMINS"   envDefault:"false"`
+	MFARequiredOrgOwners   bool          `env:"MFA_REQUIRED_ORG_OWNERS"    envDefault:"false"`
+	MFAEmailOTPTTL         time.Duration `env:"MFA_EMAIL_OTP_TTL"          envDefault:"10m"`
+	MFAEmailOTPMaxPerHour  int           `env:"MFA_EMAIL_OTP_MAX_PER_HOUR" envDefault:"5"`
+	MFAChallengeMaxAttempts int           `env:"MFA_CHALLENGE_MAX_ATTEMPTS" envDefault:"3"`
+	MFAPendingTokenTTL     time.Duration `env:"MFA_PENDING_TOKEN_TTL"      envDefault:"5m"`
 
 	// ── CORS ─────────────────────────────────────────────────────────────────
 	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
@@ -96,6 +105,9 @@ type Config struct {
 	AILogRetentionDays         int           `env:"AI_LOG_RETENTION_DAYS"            envDefault:"90"`
 	GeminiMock                 bool          `env:"GEMINI_MOCK"                     envDefault:"false"`
 
+	// ── Secrets file (SIGHUP reload) ─────────────────────────────────────────────
+	SecretsFile string `env:"CVERTOPS_SECRETS_FILE"`
+
 	// ── Feed adapters ────────────────────────────────────────────────────────────
 	NVDAPIKey string `env:"NVD_API_KEY"`
 	FeedsDir  string `env:"CVERTOPS_FEEDS_DIR"`
@@ -114,7 +126,8 @@ type Config struct {
 	RateLimitEvictTTL time.Duration `env:"RATE_LIMIT_EVICT_TTL" envDefault:"15m"`
 
 	// ── SSO ─────────────────────────────────────────────────────────────────────
-	SSOEncryptionKey string `env:"SSO_ENCRYPTION_KEY"` // 32-byte hex key; required if SSO is used
+	SSOEncryptionKey         string `env:"SSO_ENCRYPTION_KEY"`          // 32-byte hex key; required if SSO is used
+	SSOEncryptionKeyPrevious string `env:"SSO_ENCRYPTION_KEY_PREVIOUS"` // previous key for rotation
 
 	// ── Feed scheduler ──────────────────────────────────────────────────────────
 	FeedSchedulerEnabled bool `env:"FEED_SCHEDULER_ENABLED" envDefault:"true"`
@@ -129,6 +142,7 @@ type Config struct {
 	RetentionNotifDeliveriesDays int `env:"RETENTION_NOTIFICATION_DELIVERIES_DAYS"  envDefault:"90"`
 	RetentionAuditLogDays        int `env:"RETENTION_AUDIT_LOG_DAYS"                envDefault:"365"`
 	RetentionJobQueueHours       int `env:"RETENTION_JOB_QUEUE_HOURS"               envDefault:"24"`
+	RetentionSecurityEventsDays  int `env:"RETENTION_SECURITY_EVENTS_DAYS"          envDefault:"90"`
 	RetentionMaxRuntimeSeconds   int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
 
 	// ── Logging ──────────────────────────────────────────────────────────────────
@@ -162,6 +176,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Bool("cookie_secure", c.CookieSecure),
 		slog.String("registration_mode", c.RegistrationMode),
 		slog.String("jwt_secret", masked(c.JWTSecret)),
+		slog.String("jwt_secret_previous", masked(c.JWTSecretPrevious)),
 		slog.String("github_client_id", c.GitHubClientID),
 		slog.String("github_client_secret", masked(c.GitHubClientSecret)),
 		slog.String("google_client_id", c.GoogleClientID),
@@ -173,6 +188,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Bool("gemini_mock", c.GeminiMock),
 		slog.String("nvd_api_key", masked(c.NVDAPIKey)),
 		slog.String("sso_encryption_key", masked(c.SSOEncryptionKey)),
+		slog.String("sso_encryption_key_previous", masked(c.SSOEncryptionKeyPrevious)),
 	)
 }
 

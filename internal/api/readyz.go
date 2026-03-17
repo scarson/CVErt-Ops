@@ -39,16 +39,20 @@ func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int, extraChecks ...f
 		// ── Migration currency ───────────────────────────────────────────
 		var migStatus string
 		var migVersion int
+		var migDirty bool
 		if db == nil {
 			migStatus = "unknown"
 			ready = false
 		} else {
 			err := db.QueryRow(r.Context(),
-				"SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
-			).Scan(&migVersion)
+				"SELECT version, dirty FROM schema_migrations ORDER BY version DESC LIMIT 1",
+			).Scan(&migVersion, &migDirty)
 			if err != nil {
 				slog.WarnContext(r.Context(), "readyz: migration version query failed", "error", err)
 				migStatus = "unknown"
+				ready = false
+			} else if migDirty {
+				migStatus = "dirty"
 				ready = false
 			} else if migVersion != expectedSchemaVersion {
 				migStatus = "behind"
@@ -89,6 +93,7 @@ func readyzHandler(db *pgxpool.Pool, expectedSchemaVersion int, extraChecks ...f
 				"migrations": map[string]any{
 					"status":  migStatus,
 					"version": migVersion,
+					"dirty":   migDirty,
 				},
 				"worker": map[string]any{
 					"goroutines": goroutines,

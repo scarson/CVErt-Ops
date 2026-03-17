@@ -17,26 +17,6 @@ import (
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
-// auditLogResponse mirrors the JSON response from the audit-log endpoint.
-type auditLogResponse struct {
-	Items      []auditLogEntry `json:"items"`
-	NextCursor *string         `json:"next_cursor,omitempty"`
-}
-
-type auditLogEntry struct {
-	ID         string          `json:"id"`
-	ActorID    *string         `json:"actor_id,omitempty"`
-	ActorEmail string          `json:"actor_email"`
-	Action     string          `json:"action"`
-	EntityType string          `json:"entity_type"`
-	EntityID   string          `json:"entity_id"`
-	EntityName string          `json:"entity_name,omitempty"`
-	Success    bool            `json:"success"`
-	OldState   json.RawMessage `json:"old_state,omitempty"`
-	NewState   json.RawMessage `json:"new_state,omitempty"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
-	CreatedAt  string          `json:"created_at"`
-}
 
 // setupAuditAPIOrg creates a server with audit enabled, registers a user,
 // upgrades the org to enterprise tier, and returns the pieces tests need.
@@ -223,31 +203,31 @@ func TestAuditAPI_Pagination(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("page 1: got %d, want 200", resp.StatusCode)
 	}
-	var page1 auditLogResponse
+	var page1 listResponse[auditLogListEntry]
 	if err := json.NewDecoder(resp.Body).Decode(&page1); err != nil {
 		t.Fatalf("decode page 1: %v", err)
 	}
 	if len(page1.Items) != 2 {
 		t.Fatalf("page 1: got %d items, want 2", len(page1.Items))
 	}
-	if page1.NextCursor == nil {
+	if page1.NextCursor == "" {
 		t.Fatal("page 1: expected next_cursor")
 	}
 
 	// Fetch page 2 using cursor.
-	resp2 := doGetAuditLog(t, ctx, ts, token, orgID.String(), "limit=2&cursor="+*page1.NextCursor)
+	resp2 := doGetAuditLog(t, ctx, ts, token, orgID.String(), "limit=2&cursor="+page1.NextCursor)
 	defer resp2.Body.Close() //nolint:errcheck,gosec
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("page 2: got %d, want 200", resp2.StatusCode)
 	}
-	var page2 auditLogResponse
+	var page2 listResponse[auditLogListEntry]
 	if err := json.NewDecoder(resp2.Body).Decode(&page2); err != nil {
 		t.Fatalf("decode page 2: %v", err)
 	}
 	if len(page2.Items) != 2 {
 		t.Fatalf("page 2: got %d items, want 2", len(page2.Items))
 	}
-	if page2.NextCursor == nil {
+	if page2.NextCursor == "" {
 		t.Fatal("page 2: expected next_cursor")
 	}
 
@@ -263,14 +243,14 @@ func TestAuditAPI_Pagination(t *testing.T) {
 	}
 
 	// Page 3: should have 1 remaining.
-	resp3 := doGetAuditLog(t, ctx, ts, token, orgID.String(), "limit=2&cursor="+*page2.NextCursor)
+	resp3 := doGetAuditLog(t, ctx, ts, token, orgID.String(), "limit=2&cursor="+page2.NextCursor)
 	defer resp3.Body.Close() //nolint:errcheck,gosec
-	var page3 auditLogResponse
+	var page3 listResponse[auditLogListEntry]
 	json.NewDecoder(resp3.Body).Decode(&page3) //nolint:errcheck,gosec
 	if len(page3.Items) != 1 {
 		t.Fatalf("page 3: got %d items, want 1", len(page3.Items))
 	}
-	if page3.NextCursor != nil {
+	if page3.NextCursor != "" {
 		t.Error("page 3: expected no next_cursor")
 	}
 }
@@ -300,7 +280,7 @@ func TestAuditAPI_Filters(t *testing.T) {
 	t.Run("EntityType", func(t *testing.T) {
 		resp := doGetAuditLog(t, ctx, ts, token, orgID.String(), "entity_type=alert_rule")
 		defer resp.Body.Close() //nolint:errcheck,gosec
-		var body auditLogResponse
+		var body listResponse[auditLogListEntry]
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck,gosec
 		if len(body.Items) != 2 {
 			t.Errorf("entity_type=alert_rule: got %d, want 2", len(body.Items))
@@ -310,7 +290,7 @@ func TestAuditAPI_Filters(t *testing.T) {
 	t.Run("Action", func(t *testing.T) {
 		resp := doGetAuditLog(t, ctx, ts, token, orgID.String(), "action=create")
 		defer resp.Body.Close() //nolint:errcheck,gosec
-		var body auditLogResponse
+		var body listResponse[auditLogListEntry]
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck,gosec
 		if len(body.Items) != 2 {
 			t.Errorf("action=create: got %d, want 2", len(body.Items))
@@ -320,7 +300,7 @@ func TestAuditAPI_Filters(t *testing.T) {
 	t.Run("ActorID", func(t *testing.T) {
 		resp := doGetAuditLog(t, ctx, ts, token, orgID.String(), "actor_id="+actorAlice.String())
 		defer resp.Body.Close() //nolint:errcheck,gosec
-		var body auditLogResponse
+		var body listResponse[auditLogListEntry]
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck,gosec
 		if len(body.Items) != 2 {
 			t.Errorf("actor_id=alice: got %d, want 2", len(body.Items))
@@ -333,7 +313,7 @@ func TestAuditAPI_Filters(t *testing.T) {
 		before := time.Now().Add(1 * time.Hour).Format(time.RFC3339)
 		resp := doGetAuditLog(t, ctx, ts, token, orgID.String(), "after="+after+"&before="+before)
 		defer resp.Body.Close() //nolint:errcheck,gosec
-		var body auditLogResponse
+		var body listResponse[auditLogListEntry]
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck,gosec
 		if len(body.Items) != 4 {
 			t.Errorf("date range (all recent): got %d, want 4", len(body.Items))
@@ -343,7 +323,7 @@ func TestAuditAPI_Filters(t *testing.T) {
 		pastBefore := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
 		resp2 := doGetAuditLog(t, ctx, ts, token, orgID.String(), "before="+pastBefore)
 		defer resp2.Body.Close() //nolint:errcheck,gosec
-		var body2 auditLogResponse
+		var body2 listResponse[auditLogListEntry]
 		json.NewDecoder(resp2.Body).Decode(&body2) //nolint:errcheck,gosec
 		if len(body2.Items) != 0 {
 			t.Errorf("date range (past): got %d, want 0", len(body2.Items))
@@ -354,7 +334,7 @@ func TestAuditAPI_Filters(t *testing.T) {
 		// entity_type=channel + action=create → 1 entry (bob's create channel).
 		resp := doGetAuditLog(t, ctx, ts, token, orgID.String(), "entity_type=channel&action=create")
 		defer resp.Body.Close() //nolint:errcheck,gosec
-		var body auditLogResponse
+		var body listResponse[auditLogListEntry]
 		json.NewDecoder(resp.Body).Decode(&body) //nolint:errcheck,gosec
 		if len(body.Items) != 1 {
 			t.Errorf("entity_type=channel&action=create: got %d, want 1", len(body.Items))
@@ -401,7 +381,7 @@ func TestAuditAPI_CrossOrgIsolation(t *testing.T) {
 	// Org A should see only its 3 entries.
 	respA := doGetAuditLog(t, ctx, ts, tokenA, orgIDA.String(), "")
 	defer respA.Body.Close() //nolint:errcheck,gosec
-	var bodyA auditLogResponse
+	var bodyA listResponse[auditLogListEntry]
 	json.NewDecoder(respA.Body).Decode(&bodyA) //nolint:errcheck,gosec
 	if len(bodyA.Items) != 3 {
 		t.Errorf("org A: got %d items, want 3", len(bodyA.Items))
@@ -413,7 +393,7 @@ func TestAuditAPI_CrossOrgIsolation(t *testing.T) {
 	if respB.StatusCode != http.StatusOK {
 		t.Fatalf("org B: got status %d, want 200", respB.StatusCode)
 	}
-	var bodyB auditLogResponse
+	var bodyB listResponse[auditLogListEntry]
 	json.NewDecoder(respB.Body).Decode(&bodyB) //nolint:errcheck,gosec
 	if len(bodyB.Items) != 2 {
 		t.Errorf("org B: got %d items, want 2", len(bodyB.Items))
@@ -424,6 +404,50 @@ func TestAuditAPI_CrossOrgIsolation(t *testing.T) {
 	respCross.Body.Close() //nolint:errcheck,gosec
 	if respCross.StatusCode != http.StatusForbidden {
 		t.Errorf("cross-org: got %d, want 403", respCross.StatusCode)
+	}
+}
+
+func TestAuditLog_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, _, token, orgID := setupAuditAPIOrg(t, db)
+
+	resp := doGetAuditLog(t, ctx, ts, token, orgID.String(), "")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["items"]; !ok {
+		t.Error("response missing 'items' key")
+	}
+}
+
+func TestAuditLog_TierGating_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create server — org starts on free tier.
+	_, ts, _ := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-pjson@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-pjson@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	resp := doGetAuditLog(t, ctx, ts, token, reg.OrgID, "")
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("got %d, want 403", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
 	}
 }
 
@@ -443,11 +467,11 @@ func TestAuditAPI_InvalidParams(t *testing.T) {
 		{"limit non-integer", "limit=abc", http.StatusBadRequest},
 		{"limit zero", "limit=0", http.StatusBadRequest},
 		{"limit negative", "limit=-1", http.StatusBadRequest},
-		{"limit above max clamped", "limit=500", http.StatusOK},
+		{"limit above max", "limit=500", http.StatusBadRequest},
 		{"invalid actor_id", "actor_id=not-a-uuid", http.StatusBadRequest},
 		{"invalid after date", "after=not-a-date", http.StatusBadRequest},
 		{"invalid before date", "before=2024-13-01", http.StatusBadRequest},
-		{"invalid cursor ignored", "cursor=not-valid-base64-cursor", http.StatusOK},
+		{"invalid cursor", "cursor=not-valid-base64-cursor", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

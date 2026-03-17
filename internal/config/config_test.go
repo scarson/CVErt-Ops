@@ -3,7 +3,6 @@
 package config
 
 import (
-	"log/slog"
 	"testing"
 	"time"
 )
@@ -100,8 +99,8 @@ func TestLoad_Defaults(t *testing.T) {
 
 	defaults := []struct {
 		name string
-		got  interface{}
-		want interface{}
+		got  any
+		want any
 	}{
 		// Database
 		{"DBMaxConns", cfg.DBMaxConns, int32(25)},
@@ -157,6 +156,13 @@ func TestLoad_Defaults(t *testing.T) {
 		{"RetentionAuditLogDays", cfg.RetentionAuditLogDays, 365},
 		{"RetentionJobQueueHours", cfg.RetentionJobQueueHours, 24},
 		{"RetentionMaxRuntimeSeconds", cfg.RetentionMaxRuntimeSeconds, 300},
+		// MFA
+		{"MFARequiredSiteAdmins", cfg.MFARequiredSiteAdmins, false},
+		{"MFARequiredOrgOwners", cfg.MFARequiredOrgOwners, false},
+		{"MFAEmailOTPTTL", cfg.MFAEmailOTPTTL, 10 * time.Minute},
+		{"MFAEmailOTPMaxPerHour", cfg.MFAEmailOTPMaxPerHour, 5},
+		{"MFAChallengeMaxAttempts", cfg.MFAChallengeMaxAttempts, 3},
+		{"MFAPendingTokenTTL", cfg.MFAPendingTokenTTL, 5 * time.Minute},
 		// Logging
 		{"LogLevel", cfg.LogLevel, "info"},
 		{"LogFormat", cfg.LogFormat, "json"},
@@ -169,5 +175,32 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 }
 
-// Silence unused import warning for slog.
-var _ = slog.Default
+func TestMFAConfigDefaults(t *testing.T) {
+	// Set only required vars, let MFA fields use defaults.
+	t.Setenv("JWT_SECRET", "test-secret-min-32-chars-long-xx")
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.MFARequiredSiteAdmins != false {
+		t.Errorf("MFARequiredSiteAdmins: got %v, want false", cfg.MFARequiredSiteAdmins)
+	}
+	if cfg.MFARequiredOrgOwners != false {
+		t.Errorf("MFARequiredOrgOwners: got %v, want false", cfg.MFARequiredOrgOwners)
+	}
+	if cfg.MFAEmailOTPTTL != 10*time.Minute {
+		t.Errorf("MFAEmailOTPTTL: got %v, want %v", cfg.MFAEmailOTPTTL, 10*time.Minute)
+	}
+	if cfg.MFAEmailOTPMaxPerHour != 5 {
+		t.Errorf("MFAEmailOTPMaxPerHour: got %v, want 5", cfg.MFAEmailOTPMaxPerHour)
+	}
+	if cfg.MFAChallengeMaxAttempts != 3 {
+		t.Errorf("MFAChallengeMaxAttempts: got %v, want 3", cfg.MFAChallengeMaxAttempts)
+	}
+	if cfg.MFAPendingTokenTTL != 5*time.Minute {
+		t.Errorf("MFAPendingTokenTTL: got %v, want %v", cfg.MFAPendingTokenTTL, 5*time.Minute)
+	}
+}

@@ -4,6 +4,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/secure"
+	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -206,15 +209,55 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 
 // loginInput is the request body for POST /auth/login.
 type loginInput struct {
-	Body struct {
+	MFADeviceToken string `cookie:"mfa_device_token" doc:"Remember-device token (optional)"`
+	Body           struct {
 		Email    string `json:"email"    format:"email" maxLength:"254"  doc:"User email"`
 		Password string `json:"password" minLength:"16" maxLength:"1024" doc:"Password"`
 	}
 }
 
-// loginOutput returns auth cookies (no JSON body needed).
+// loginOutput returns auth cookies and MFA pending state.
 type loginOutput struct {
 	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		UserID  uuid.UUID `json:"user_id"           doc:"Authenticated user ID"`
+		Pending []string  `json:"pending"            doc:"Remaining auth steps (empty = fully authenticated)"`
+		Methods []string  `json:"methods,omitempty"   doc:"Available MFA methods (only when pending contains mfa_challenge)"`
+	}
+}
+
+// sha256Hex returns the hex-encoded SHA-256 hash of s.
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// pendingTokenCookies creates the mfa_pending_token Set-Cookie header.
+func pendingTokenCookies(token string, secure bool, ttl time.Duration) []string {
+	c := &http.Cookie{
+		Name:     "mfa_pending_token",
+		Value:    token,
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(ttl.Seconds()),
+	}
+	return []string{c.String()}
+}
+
+// clearPendingTokenCookie expires the mfa_pending_token cookie.
+func clearPendingTokenCookie(secure bool) string {
+	c := &http.Cookie{
+		Name:     "mfa_pending_token",
+		Value:    "",
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	}
+	return c.String()
 }
 
 // loginHandler handles POST /api/v1/auth/login.
@@ -352,7 +395,96 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	// Successful login — reset lockout counter.
 	srv.lockout.RecordSuccess(ctx, input.Body.Email)
 
-	// Issue tokens.
+	// ── MFA / restricted session checks ──────────────────────────────
+	var pending []string
+	var methods []string
+
+	hasMFA, err := srv.store.UserHasMFACredentials(ctx, user.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "login: check MFA credentials", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	if hasMFA {
+		// Check remember-device cookie before requiring MFA challenge.
+		skipMFA := false
+		if input.MFADeviceToken != "" {
+			tokenHash := sha256Hex(input.MFADeviceToken)
+			valid, valErr := srv.store.ValidateRememberDeviceToken(ctx, user.ID, tokenHash)
+			if valErr != nil {
+				slog.WarnContext(ctx, "login: check device token", "error", valErr)
+			}
+			if valid {
+				skipMFA = true
+			}
+		}
+		if !skipMFA {
+			pending = append(pending, "mfa_challenge")
+			creds, credErr := srv.store.GetMFACredentialsByUserID(ctx, user.ID)
+			if credErr != nil {
+				slog.ErrorContext(ctx, "login: get MFA methods", "error", credErr)
+				return nil, huma.Error500InternalServerError("internal error")
+			}
+			for _, c := range creds {
+				methods = append(methods, c.Method)
+			}
+		}
+	}
+
+	if user.ForcePasswordReset {
+		pending = append(pending, "password_reset")
+	}
+
+	if !hasMFA {
+		isSiteAdmin, _ := srv.store.IsSiteAdmin(ctx, user.ID)
+		mfaCfg := store.MFAConfig{
+			RequiredSiteAdmins: srv.cfg.MFARequiredSiteAdmins,
+			RequiredOrgOwners:  srv.cfg.MFARequiredOrgOwners,
+		}
+		required, mfaErr := srv.store.UserMFARequired(ctx, user.ID, isSiteAdmin, mfaCfg)
+		if mfaErr != nil {
+			slog.ErrorContext(ctx, "login: check MFA mandate", "error", mfaErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if required {
+			pending = append(pending, "mfa_enrollment_required")
+		}
+	}
+
+	// Non-fatal — last_login_at is informational only.
+	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
+		slog.WarnContext(ctx, "login: update last login", "error", err)
+	}
+
+	if len(pending) > 0 {
+		// Issue restricted pending token instead of full auth tokens.
+		pendingToken, ptErr := auth.IssuePendingToken(
+			secret, user.ID, int(user.TokenVersion),
+			pending, methods, srv.cfg.MFAPendingTokenTTL,
+		)
+		if ptErr != nil {
+			slog.ErrorContext(ctx, "login: issue pending token", "error", ptErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginSuccess,
+				Severity:   secure.SeverityInfo,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     &user.ID,
+				Details:    map[string]any{"pending": pending},
+			})
+		}
+		out := &loginOutput{}
+		out.Body.UserID = user.ID
+		out.Body.Pending = pending
+		out.Body.Methods = methods
+		out.SetCookie = pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+		return out, nil
+	}
+
+	// No pending items — issue full access + refresh tokens.
 	jti := uuid.New()
 	accessToken, err := auth.IssueAccessToken(secret, user.ID, int(user.TokenVersion), accessTokenTTL)
 	if err != nil {
@@ -369,11 +501,6 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
-	// Non-fatal — last_login_at is informational only.
-	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
-		slog.WarnContext(ctx, "login: update last login", "error", err)
-	}
-
 	if srv.eventWriter != nil {
 		srv.eventWriter.Write(ctx, secure.Event{
 			Type:       secure.EventAuthLoginSuccess,
@@ -384,7 +511,11 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		})
 	}
 
-	return &loginOutput{SetCookie: authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)}, nil
+	out := &loginOutput{}
+	out.Body.UserID = user.ID
+	out.Body.Pending = []string{}
+	out.SetCookie = authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)
+	return out, nil
 }
 
 // ── Refresh ───────────────────────────────────────────────────────────────────

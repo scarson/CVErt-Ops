@@ -133,3 +133,20 @@ SELECT EXISTS(
     JOIN organizations o ON o.id = om.org_id
     WHERE om.user_id = $1 AND o.mfa_required_all = true
 ) AS required;
+
+-- name: AllUserOrgsAllowRememberDevice :one
+-- Check whether all orgs the user belongs to allow remember-device tokens.
+-- If any org disallows, the result is false (most-restrictive wins).
+SELECT NOT EXISTS(
+    SELECT 1 FROM org_members om
+    JOIN organizations o ON o.id = om.org_id
+    WHERE om.user_id = $1 AND o.mfa_remember_device_allowed = false
+) AS allowed;
+
+-- name: MinRememberDeviceDays :one
+-- Get the minimum remember-device retention across all orgs the user belongs to.
+-- Used to set the cookie expiry to the most-restrictive value.
+SELECT COALESCE(MIN(o.mfa_remember_device_days), 30)::int AS days
+FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1;

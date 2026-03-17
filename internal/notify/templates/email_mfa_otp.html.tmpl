@@ -1,0 +1,12 @@
+{{define "body"}}
+<!DOCTYPE html>
+<html>
+<body style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <h2>Verification Code</h2>
+  <p>Your CVErt Ops verification code is:</p>
+  <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; text-align: center; padding: 20px; background: #f0f0f0; border-radius: 8px;">{{.Code}}</p>
+  <p>This code expires in {{.ExpiresIn}}.</p>
+  <p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
+</body>
+</html>
+{{end}}

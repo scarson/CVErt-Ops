@@ -13,6 +13,23 @@ import (
 	"github.com/google/uuid"
 )
 
+const allUserOrgsAllowRememberDevice = `-- name: AllUserOrgsAllowRememberDevice :one
+SELECT NOT EXISTS(
+    SELECT 1 FROM org_members om
+    JOIN organizations o ON o.id = om.org_id
+    WHERE om.user_id = $1 AND o.mfa_remember_device_allowed = false
+) AS allowed
+`
+
+// Check whether all orgs the user belongs to allow remember-device tokens.
+// If any org disallows, the result is false (most-restrictive wins).
+func (q *Queries) AllUserOrgsAllowRememberDevice(ctx context.Context, userID uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, allUserOrgsAllowRememberDevice, userID)
+	var allowed bool
+	err := row.Scan(&allowed)
+	return allowed, err
+}
+
 const countMFACredentialsByUser = `-- name: CountMFACredentialsByUser :one
 SELECT COUNT(*) FROM mfa_credentials WHERE user_id = $1
 `
@@ -508,6 +525,22 @@ UPDATE mfa_recovery_codes SET used_at = now() WHERE id = $1
 func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, markRecoveryCodeUsed, id)
 	return err
+}
+
+const minRememberDeviceDays = `-- name: MinRememberDeviceDays :one
+SELECT COALESCE(MIN(o.mfa_remember_device_days), 30)::int AS days
+FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1
+`
+
+// Get the minimum remember-device retention across all orgs the user belongs to.
+// Used to set the cookie expiry to the most-restrictive value.
+func (q *Queries) MinRememberDeviceDays(ctx context.Context, userID uuid.UUID) (int32, error) {
+	row := q.db.QueryRowContext(ctx, minRememberDeviceDays, userID)
+	var days int32
+	err := row.Scan(&days)
+	return days, err
 }
 
 const updateMFACredentialLastUsed = `-- name: UpdateMFACredentialLastUsed :exec

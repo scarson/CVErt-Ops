@@ -227,6 +227,7 @@ func (srv *Server) Handler() http.Handler {
 	api := humachi.New(apiRouter, humaConfig)
 	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
+	registerMFARoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────

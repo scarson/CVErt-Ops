@@ -575,3 +575,33 @@ func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) 
 	}
 	return isOwner, nil
 }
+
+// AllUserOrgsAllowRememberDevice checks whether all orgs the user belongs to
+// allow remember-device tokens. If any org disallows, returns false.
+func (s *Store) AllUserOrgsAllowRememberDevice(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var allowed bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		allowed, err = q.AllUserOrgsAllowRememberDevice(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("all orgs allow remember device: %w", err)
+	}
+	return allowed, nil
+}
+
+// MinRememberDeviceDays returns the minimum remember-device retention days
+// across all orgs the user belongs to. Uses most-restrictive org setting.
+func (s *Store) MinRememberDeviceDays(ctx context.Context, userID uuid.UUID) (int32, error) {
+	var days int32
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		days, err = q.MinRememberDeviceDays(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("min remember device days: %w", err)
+	}
+	return days, nil
+}

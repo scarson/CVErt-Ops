@@ -168,6 +168,23 @@ func (s *Store) CleanupAICacheBatch(ctx context.Context, cutoff time.Time, batch
 	return n, nil
 }
 
+// CleanupSecurityEvents deletes up to batchSize rows older than cutoff.
+func (s *Store) CleanupSecurityEvents(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	var n int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CleanupSecurityEvents(ctx, generated.CleanupSecurityEventsParams{
+			Cutoff:    cutoff,
+			BatchSize: int32(batchSize), //nolint:gosec // G115: batch sizes are always small
+		})
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("cleanup security_events: %w", err)
+	}
+	return n, nil
+}
+
 // CleanupAIUsageCounters deletes up to batchSize daily usage rows older than cutoff date.
 func (s *Store) CleanupAIUsageCounters(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	var n int64

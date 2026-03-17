@@ -34,7 +34,7 @@ func csrfProtect(next http.Handler) http.Handler {
 		}
 
 		if r.Header.Get("X-Requested-By") != "CVErt-Ops" {
-			http.Error(w, "CSRF check failed: X-Requested-By header required", http.StatusForbidden)
+			writeProblem(w, http.StatusForbidden, "CSRF check failed: X-Requested-By header required")
 			return
 		}
 

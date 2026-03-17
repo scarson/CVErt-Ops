@@ -113,7 +113,7 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second request: %v", err)
 	}
-	resp2.Body.Close() //nolint:errcheck,gosec // G104: body close in test
+	defer resp2.Body.Close() //nolint:errcheck
 
 	if resp2.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("second request: got status %d, want 429", resp2.StatusCode)
@@ -121,6 +121,7 @@ func TestAuthRateLimit_RetryAfterHeader(t *testing.T) {
 	if ra := resp2.Header.Get("Retry-After"); ra == "" {
 		t.Error("rate-limited response missing Retry-After header")
 	}
+	assertRFC9457Response(t, resp2, http.StatusTooManyRequests)
 }
 
 // TestClientIPMiddleware_SetsContextIP verifies that clientIPMiddleware

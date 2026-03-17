@@ -138,6 +138,13 @@ func (s *Scheduler) maybeEnqueue(ctx context.Context, entry FeedScheduleEntry) {
 			return
 		}
 
+		// Skip if paused.
+		if state.PausedAt != nil {
+			s.jobsSkipped.WithLabelValues(entry.FeedName, "paused").Inc()
+			slog.Debug("feed paused", "feed", entry.FeedName, "paused_at", *state.PausedAt)
+			return
+		}
+
 		// Skip if not yet due.
 		if state.LastSuccessAt != nil && state.LastSuccessAt.Add(entry.Interval).After(time.Now()) {
 			s.jobsSkipped.WithLabelValues(entry.FeedName, "not_due").Inc()

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -40,11 +41,6 @@ type savedSearchEntry struct {
 	IsShared  bool            `json:"is_shared"`
 	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`
-}
-
-type savedSearchExecuteResponse struct {
-	Results []CVEItem `json:"results"`
-	Cursor  string    `json:"cursor,omitempty"`
 }
 
 // savedSearchToEntry converts a store row to an API response entry.
@@ -83,37 +79,42 @@ func validateDSL(queryJSON json.RawMessage) (string, int) {
 func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	var req createSavedSearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 
 	if req.Name == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name is required", Location: "body.name", Value: ""})
 		return
 	}
 	if len(req.Name) > 255 {
-		http.Error(w, "name must not exceed 255 characters", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "name must not exceed 255 characters", Location: "body.name", Value: req.Name})
 		return
 	}
 	if req.NlQuery != nil && len(*req.NlQuery) > 1000 {
-		http.Error(w, "nl_query must not exceed 1000 characters", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "nl_query must not exceed 1000 characters", Location: "body.nl_query", Value: *req.NlQuery})
 		return
 	}
 
 	if len(req.QueryJSON) == 0 {
-		http.Error(w, "query_json is required", http.StatusBadRequest)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "query_json is required", Location: "body.query_json", Value: ""})
 		return
 	}
 
 	if errMsg, status := validateDSL(req.QueryJSON); errMsg != "" {
-		http.Error(w, errMsg, status)
+		writeProblemWithErrors(w, status, "validation failed",
+			&huma.ErrorDetail{Message: errMsg, Location: "body.query_json"})
 		return
 	}
 
@@ -126,11 +127,12 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "create saved search", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
 	ssEntry := savedSearchToEntry(row)
+	writeLocation(w, r, row.ID.String())
 	writeJSON(w, http.StatusCreated, ssEntry)
 	srv.auditLog(r, audit.Entry{
 		OrgID:      orgID,
@@ -147,7 +149,7 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 func (srv *Server) listSavedSearchesHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
@@ -157,16 +159,19 @@ func (srv *Server) listSavedSearchesHandler(w http.ResponseWriter, r *http.Reque
 		visibility = "all"
 	}
 	if visibility != "private" && visibility != "shared" && visibility != "all" {
-		http.Error(w, "visibility must be private, shared, or all", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "visibility must be private, shared, or all")
 		return
 	}
 
-	limit := parseIntParam(r.URL.Query().Get("limit"), 200, 1, 200)
+	limit, ok := parseLimitParam(w, r, 200, 200)
+	if !ok {
+		return
+	}
 
 	rows, err := srv.store.ListSavedSearches(r.Context(), orgID, userID, visibility, limit)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "list saved searches", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -174,14 +179,14 @@ func (srv *Server) listSavedSearchesHandler(w http.ResponseWriter, r *http.Reque
 	for i := range rows {
 		entries = append(entries, savedSearchToEntry(&rows[i]))
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeList(w, entries, "")
 }
 
 // getSavedSearchHandler handles GET /api/v1/orgs/{org_id}/saved-searches/{id}.
 func (srv *Server) getSavedSearchHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
@@ -189,24 +194,24 @@ func (srv *Server) getSavedSearchHandler(w http.ResponseWriter, r *http.Request)
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	row, err := srv.store.GetSavedSearch(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get saved search", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	// Private access control: non-shared searches are only visible to the creator.
 	if !row.IsShared && row.UserID.Valid && row.UserID.UUID != userID {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -217,7 +222,7 @@ func (srv *Server) getSavedSearchHandler(w http.ResponseWriter, r *http.Request)
 func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
@@ -226,7 +231,7 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -234,11 +239,11 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	existing, err := srv.store.GetSavedSearch(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get saved search for patch", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if existing == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -246,13 +251,13 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 
 	// RBAC: private → only creator; shared → creator OR admin+.
 	if !canModifySavedSearch(existing, userID, role) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		writeProblem(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
 	var req patchSavedSearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if errDetail := decodeJSON(r, &req); errDetail != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
 		return
 	}
 
@@ -269,23 +274,27 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 
 	if req.Name != nil {
 		if *req.Name == "" {
-			http.Error(w, "name must not be empty", http.StatusBadRequest)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "name must not be empty", Location: "body.name", Value: ""})
 			return
 		}
 		if len(*req.Name) > 255 {
-			http.Error(w, "name must not exceed 255 characters", http.StatusUnprocessableEntity)
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "name must not exceed 255 characters", Location: "body.name", Value: *req.Name})
 			return
 		}
 		params.Name = *req.Name
 	}
 	if req.NlQuery != nil && len(*req.NlQuery) > 1000 {
-		http.Error(w, "nl_query must not exceed 1000 characters", http.StatusUnprocessableEntity)
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "nl_query must not exceed 1000 characters", Location: "body.nl_query", Value: *req.NlQuery})
 		return
 	}
 	if req.QueryJSON != nil {
 		// Validate the provided DSL.
 		if errMsg, status := validateDSL(*req.QueryJSON); errMsg != "" {
-			http.Error(w, errMsg, status)
+			writeProblemWithErrors(w, status, "validation failed",
+				&huma.ErrorDetail{Message: errMsg, Location: "body.query_json"})
 			return
 		}
 		params.QueryJSON = *req.QueryJSON
@@ -300,11 +309,11 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	updated, err := srv.store.UpdateSavedSearch(r.Context(), orgID, id, params)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update saved search", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if updated == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -326,7 +335,7 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 func (srv *Server) deleteSavedSearchHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
@@ -335,7 +344,7 @@ func (srv *Server) deleteSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
@@ -343,22 +352,22 @@ func (srv *Server) deleteSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	existing, err := srv.store.GetSavedSearch(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get saved search for delete", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if existing == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if !canModifySavedSearch(existing, userID, role) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		writeProblem(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
 	if err := srv.store.SoftDeleteSavedSearch(r.Context(), orgID, id); err != nil {
 		slog.ErrorContext(r.Context(), "soft delete saved search", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -378,7 +387,7 @@ func (srv *Server) deleteSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
@@ -386,57 +395,60 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 	idStr := chi.URLParam(r, "id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeProblem(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
 	row, err := srv.store.GetSavedSearch(r.Context(), orgID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "get saved search for execute", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if row == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	// Private access control.
 	if !row.IsShared && row.UserID.Valid && row.UserID.UUID != userID {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	// Parse pagination params from query string.
 	cursor := r.URL.Query().Get("cursor")
-	limit := parseIntParam(r.URL.Query().Get("limit"), 25, 1, 100)
+	limit, ok2 := parseLimitParam(w, r, 25, 100)
+	if !ok2 {
+		return
+	}
 
 	// Parse, validate, compile DSL.
 	rule, parseErr := dsl.Parse(row.QueryJSON)
 	if parseErr != nil {
 		slog.ErrorContext(r.Context(), "saved search: dsl parse", "error", parseErr)
-		http.Error(w, "saved search has invalid query", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "saved search has invalid query")
 		return
 	}
 
 	valErrs, _, _ := dsl.Validate(rule, false)
 	if hasBlockingErrors(valErrs) {
 		slog.ErrorContext(r.Context(), "saved search: dsl validation failed", "errors", valErrs)
-		http.Error(w, "saved search has invalid query", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "saved search has invalid query")
 		return
 	}
 
 	compiled, compileErr := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
 	if compileErr != nil {
 		slog.ErrorContext(r.Context(), "saved search: dsl compile", "error", compileErr)
-		http.Error(w, "saved search has invalid query", http.StatusUnprocessableEntity)
+		writeProblem(w, http.StatusUnprocessableEntity, "saved search has invalid query")
 		return
 	}
 
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
 	if execErr != nil {
 		slog.ErrorContext(r.Context(), "saved search: execute dsl query", "error", execErr)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -445,10 +457,7 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 		items[i] = cveToItem(c)
 	}
 
-	writeJSON(w, http.StatusOK, savedSearchExecuteResponse{
-		Results: items,
-		Cursor:  nextCursor,
-	})
+	writeList(w, items, nextCursor)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────

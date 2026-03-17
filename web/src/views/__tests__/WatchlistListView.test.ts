@@ -18,8 +18,17 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockGET = vi.fn()
+const mockDELETE = vi.fn()
+
+vi.mock('@/lib/api/client', () => ({
+  default: {
+    GET: (...args: unknown[]) => mockGET(...args),
+    POST: vi.fn(),
+    PATCH: vi.fn(),
+    DELETE: (...args: unknown[]) => mockDELETE(...args),
+  },
+}))
 
 const TEST_ORG_ID = '00000000-0000-0000-0000-000000000001'
 
@@ -36,31 +45,27 @@ function makeWatchlist(overrides: Record<string, unknown> = {}) {
 }
 
 function mockListSuccess(items = [makeWatchlist()], nextCursor?: string) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ items, next_cursor: nextCursor }),
+  mockGET.mockResolvedValueOnce({
+    data: { items, next_cursor: nextCursor },
+    error: undefined,
   })
 }
 
 function mockListError() {
-  mockFetch.mockResolvedValueOnce({
-    ok: false,
-    status: 500,
-    json: () => Promise.resolve({ detail: 'Internal Server Error' }),
+  mockGET.mockResolvedValueOnce({
+    data: undefined,
+    error: { status: 500, detail: 'Internal Server Error' },
   })
 }
 
 function mockDeleteSuccess() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 204,
-    json: () => Promise.resolve(null),
+  mockDELETE.mockResolvedValueOnce({
+    data: undefined,
+    error: undefined,
   })
 }
 
 // Dialog/AlertDialog content renders via portal to document.body.
-// We use attachTo: document.body and query the DOM directly for portaled content.
 function findTestId(id: string): HTMLElement | null {
   return document.querySelector(`[data-testid="${id}"]`)
 }
@@ -84,6 +89,8 @@ describe('WatchlistListView', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     vi.clearAllMocks()
+    mockGET.mockReset()
+    mockDELETE.mockReset()
 
     const auth = useAuthStore()
     auth.activeOrgId = TEST_ORG_ID
@@ -95,7 +102,7 @@ describe('WatchlistListView', () => {
 
   describe('loading state', () => {
     it('shows loading indicator while fetching', async () => {
-      mockFetch.mockImplementation(() => new Promise(() => {}))
+      mockGET.mockImplementation(() => new Promise(() => {}))
       await mountView()
 
       expect(wrapper.text()).toContain('Loading')
@@ -281,7 +288,7 @@ describe('WatchlistListView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
+      mockDELETE.mockReset()
       mockDeleteSuccess()
 
       await wrapper.find('[data-testid="delete-watchlist-btn"]').trigger('click')
@@ -293,10 +300,10 @@ describe('WatchlistListView', () => {
       confirmBtn!.click()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/watchlists/wl-del`,
+      expect(mockDELETE).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists/{id}',
         expect.objectContaining({
-          method: 'DELETE',
+          params: { path: { org_id: TEST_ORG_ID, id: 'wl-del' } },
         }),
       )
     })
@@ -309,7 +316,7 @@ describe('WatchlistListView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
+      mockDELETE.mockReset()
       mockDeleteSuccess()
 
       // Click delete on second row
@@ -335,11 +342,10 @@ describe('WatchlistListView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        json: () => Promise.resolve({ detail: 'Server error' }),
+      mockDELETE.mockReset()
+      mockDELETE.mockResolvedValueOnce({
+        data: undefined,
+        error: { status: 500, detail: 'Server error' },
       })
 
       await wrapper.find('[data-testid="delete-watchlist-btn"]').trigger('click')
@@ -364,16 +370,18 @@ describe('WatchlistListView', () => {
       await mountView()
       await flushPromises()
 
-      mockFetch.mockClear()
+      mockGET.mockClear()
       const ORG_B_ID = '00000000-0000-0000-0000-000000000002'
       mockListSuccess([makeWatchlist({ name: 'Org B List' })])
 
       auth.activeOrgId = ORG_B_ID
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${ORG_B_ID}/watchlists`,
-        expect.objectContaining({ method: 'GET' }),
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists',
+        expect.objectContaining({
+          params: { path: { org_id: ORG_B_ID } },
+        }),
       )
     })
   })
@@ -384,10 +392,10 @@ describe('WatchlistListView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `/api/v1/orgs/${TEST_ORG_ID}/watchlists`,
+      expect(mockGET).toHaveBeenCalledWith(
+        '/orgs/{org_id}/watchlists',
         expect.objectContaining({
-          method: 'GET',
+          params: { path: { org_id: TEST_ORG_ID } },
         }),
       )
     })

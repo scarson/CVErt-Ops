@@ -70,6 +70,21 @@ func doUpdateGroup(t *testing.T, ctx context.Context, ts *httptest.Server, acces
 	return resp
 }
 
+// doUpdateGroupRaw calls PATCH /api/v1/orgs/{orgID}/groups/{groupID} with a raw JSON body.
+// Allows sending partial payloads for pointer DTO testing.
+func doUpdateGroupRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, groupID, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID+"/groups/"+groupID, bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("update group raw: %v", err)
+	}
+	return resp
+}
+
 // doDeleteGroup calls DELETE /api/v1/orgs/{orgID}/groups/{groupID}.
 func doDeleteGroup(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, groupID string) *http.Response {
 	t.Helper()
@@ -217,12 +232,14 @@ func TestListGroups_Success(t *testing.T) {
 		t.Fatalf("list groups: got %d, want 200", listResp.StatusCode)
 	}
 
-	var out []map[string]any
-	if err := json.NewDecoder(listResp.Body).Decode(&out); err != nil {
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(out) != 2 {
-		t.Errorf("got %d groups, want 2", len(out))
+	if len(envelope.Items) != 2 {
+		t.Errorf("got %d groups, want 2", len(envelope.Items))
 	}
 }
 
@@ -341,12 +358,14 @@ func TestDeleteGroup_SoftDelete(t *testing.T) {
 	// Group should no longer appear in list.
 	listResp := doListGroups(t, ctx, ts, accessToken, aliceReg.OrgID)
 	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
-	var out []map[string]any
-	if err := json.NewDecoder(listResp.Body).Decode(&out); err != nil {
+	var listEnvelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listEnvelope); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("after soft-delete, got %d groups, want 0", len(out))
+	if len(listEnvelope.Items) != 0 {
+		t.Errorf("after soft-delete, got %d groups, want 0", len(listEnvelope.Items))
 	}
 
 	// GET should return 404.
@@ -402,18 +421,20 @@ func TestGroupMembers_AddListRemove(t *testing.T) {
 		t.Fatalf("list group members: got %d, want 200", listResp.StatusCode)
 	}
 
-	var members []struct {
-		UserID string `json:"user_id"`
-		Email  string `json:"email"`
+	var membersEnvelope struct {
+		Items []struct {
+			UserID string `json:"user_id"`
+			Email  string `json:"email"`
+		} `json:"items"`
 	}
-	if err := json.NewDecoder(listResp.Body).Decode(&members); err != nil {
+	if err := json.NewDecoder(listResp.Body).Decode(&membersEnvelope); err != nil {
 		t.Fatalf("decode members: %v", err)
 	}
-	if len(members) != 1 {
-		t.Fatalf("got %d members, want 1", len(members))
+	if len(membersEnvelope.Items) != 1 {
+		t.Fatalf("got %d members, want 1", len(membersEnvelope.Items))
 	}
-	if members[0].UserID != bobReg.UserID {
-		t.Errorf("member user_id = %q, want %q", members[0].UserID, bobReg.UserID)
+	if membersEnvelope.Items[0].UserID != bobReg.UserID {
+		t.Errorf("member user_id = %q, want %q", membersEnvelope.Items[0].UserID, bobReg.UserID)
 	}
 
 	// Remove Bob from the group.
@@ -426,12 +447,14 @@ func TestGroupMembers_AddListRemove(t *testing.T) {
 	// List should now be empty.
 	listResp2 := doListGroupMembers(t, ctx, ts, accessToken, aliceReg.OrgID, group.ID)
 	defer listResp2.Body.Close() //nolint:errcheck,gosec // G104
-	var members2 []map[string]any
-	if err := json.NewDecoder(listResp2.Body).Decode(&members2); err != nil {
+	var members2Envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp2.Body).Decode(&members2Envelope); err != nil {
 		t.Fatalf("decode members2: %v", err)
 	}
-	if len(members2) != 0 {
-		t.Errorf("after remove, got %d members, want 0", len(members2))
+	if len(members2Envelope.Items) != 0 {
+		t.Errorf("after remove, got %d members, want 0", len(members2Envelope.Items))
 	}
 }
 
@@ -589,7 +612,71 @@ func TestAddGroupMember_Duplicate(t *testing.T) {
 	}
 }
 
-// TestCreateGroup_EmptyName verifies that POST /groups with empty name returns 400.
+// TestDeleteGroup_NonExistent verifies that DELETE /groups/{id} returns 404 for a
+// non-existent group, not a silent 204.
+func TestDeleteGroup_NonExistent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doDeleteGroup(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("delete non-existent group: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestAddGroupMember_NonExistentGroup verifies that adding a member to a non-existent
+// group returns 404, not 500 from an FK violation.
+func TestAddGroupMember_NonExistentGroup(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doAddGroupMember(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID, aliceReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("add member to non-existent group: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestRemoveGroupMember_NonExistentGroup verifies that removing a member from a
+// non-existent group returns 404, not a silent 204.
+func TestRemoveGroupMember_NonExistentGroup(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doRemoveGroupMember(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID, aliceReg.UserID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("remove member from non-existent group: got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestCreateGroup_EmptyName verifies that POST /groups with empty name returns 422
+// with RFC 9457 problem details and field-level error location.
 func TestCreateGroup_EmptyName(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -603,7 +690,266 @@ func TestCreateGroup_EmptyName(t *testing.T) {
 
 	resp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "", "Description")
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	errs, ok := problem["errors"].([]any)
+	if !ok || len(errs) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	err0, _ := errs[0].(map[string]any)
+	if err0["location"] != "body.name" {
+		t.Errorf("errors[0].location = %v, want body.name", err0["location"])
+	}
+}
+
+// ── Contract tests ────────────────────────────────────────────────────────────
+
+// doCreateGroupRaw calls POST /api/v1/orgs/{orgID}/groups with a raw JSON body.
+func doCreateGroupRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/groups", bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("create group raw: %v", err)
+	}
+	return resp
+}
+
+// TestCreateGroup_MalformedJSON verifies that POST /groups with invalid JSON returns 400
+// with application/problem+json content type.
+func TestCreateGroup_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateGroupRaw(t, ctx, ts, accessToken, aliceReg.OrgID, "{bad json")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name: got %d, want 400", resp.StatusCode)
+		t.Errorf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestCreateGroup_LocationHeader verifies that POST /groups returns a Location header.
+func TestCreateGroup_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	resp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "Eng", "")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create group: got %d, want 201", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header on 201 response")
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantSuffix := "/groups/" + out.ID
+	if len(loc) < len(wantSuffix) || loc[len(loc)-len(wantSuffix):] != wantSuffix {
+		t.Errorf("Location = %q, want suffix %q", loc, wantSuffix)
+	}
+}
+
+// TestListGroups_Envelope verifies that GET /groups returns {items: [...]} envelope.
+func TestListGroups_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	r1 := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "Eng", "")
+	defer r1.Body.Close() //nolint:errcheck,gosec // G104
+
+	listResp := doListGroups(t, ctx, ts, accessToken, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list groups: got %d, want 200", listResp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(envelope.Items) != 1 {
+		t.Errorf("got %d items, want 1", len(envelope.Items))
+	}
+}
+
+// TestUpdateGroup_OmittedNamePreserved verifies that PATCH with only description
+// preserves the existing name (pointer DTO behavior).
+func TestUpdateGroup_OmittedNamePreserved(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "Original", "desc")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Send PATCH with only description, omitting name entirely.
+	updateResp := doUpdateGroupRaw(t, ctx, ts, accessToken, aliceReg.OrgID, created.ID, `{"description":"updated desc"}`)
+	defer updateResp.Body.Close() //nolint:errcheck,gosec // G104
+	if updateResp.StatusCode != http.StatusOK {
+		t.Fatalf("update: got %d, want 200", updateResp.StatusCode)
+	}
+
+	var out struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(updateResp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Name != "Original" {
+		t.Errorf("name = %q, want %q (should be preserved)", out.Name, "Original")
+	}
+	if out.Description != "updated desc" {
+		t.Errorf("description = %q, want %q", out.Description, "updated desc")
+	}
+}
+
+// TestUpdateGroup_EmptyName verifies that PATCH with an empty name string returns 422.
+func TestUpdateGroup_EmptyName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "Eng", "")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	updateResp := doUpdateGroupRaw(t, ctx, ts, accessToken, aliceReg.OrgID, created.ID, `{"name":""}`)
+	defer updateResp.Body.Close() //nolint:errcheck,gosec // G104
+	if updateResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", updateResp.StatusCode)
+	}
+	if ct := updateResp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestGetGroup_NotFound_ProblemJSON verifies that GET /groups/{id} for an unknown UUID
+// returns 404 with application/problem+json content type.
+func TestGetGroup_NotFound_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	fakeGroupID := uuid.New().String()
+	resp := doGetGroup(t, ctx, ts, accessToken, aliceReg.OrgID, fakeGroupID)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("get non-existent group: got %d, want 404", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestListGroupMembers_Envelope verifies that GET /groups/{id}/members returns
+// {items: [...]} envelope.
+func TestListGroupMembers_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateGroup(t, ctx, ts, accessToken, aliceReg.OrgID, "Eng", "")
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	listResp := doListGroupMembers(t, ctx, ts, accessToken, aliceReg.OrgID, created.ID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list members: got %d, want 200", listResp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Items should be an empty array (not null).
+	if envelope.Items == nil {
+		t.Error("items should be an empty array, not null")
 	}
 }

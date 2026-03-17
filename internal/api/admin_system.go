@@ -5,6 +5,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,11 +19,11 @@ func (srv *Server) adminReindexHandler(w http.ResponseWriter, r *http.Request) {
 	jobID, err := srv.store.EnqueueJob(r.Context(), "system_reindex", 0, nil, &lockKey, 1, nil)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "admin reindex: enqueue", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if jobID == uuid.Nil {
-		http.Error(w, "reindex job already pending", http.StatusConflict)
+		writeProblem(w, http.StatusConflict, "reindex job already pending")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"job_id": jobID.String()})
@@ -98,12 +99,35 @@ func (srv *Server) adminConfigHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, redacted)
 }
 
+// adminAuditCursor is the opaque cursor for admin audit log pagination.
+type adminAuditCursor struct {
+	T  time.Time `json:"t"`
+	ID string    `json:"id"`
+}
+
 // adminAuditLogHandler handles GET /api/v1/admin/audit-log.
-// Cross-org audit log listing with optional filters and keyset pagination.
+// Cross-org audit log listing with optional filters and opaque cursor pagination.
 func (srv *Server) adminAuditLogHandler(w http.ResponseWriter, r *http.Request) {
-	limit, afterTime, afterID, ok := parseKeysetParams(w, r)
+	limit, ok := parseLimitParam(w, r, 50, 200)
 	if !ok {
 		return
+	}
+
+	var afterTime *time.Time
+	var afterID *uuid.UUID
+	if c := r.URL.Query().Get("cursor"); c != "" {
+		var cur adminAuditCursor
+		if err := decodePageCursor(c, &cur); err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		afterTime = &cur.T
+		id, err := uuid.Parse(cur.ID)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		afterID = &id
 	}
 
 	q := r.URL.Query()
@@ -118,7 +142,7 @@ func (srv *Server) adminAuditLogHandler(w http.ResponseWriter, r *http.Request) 
 	if orgIDStr := q.Get("org_id"); orgIDStr != "" {
 		id, err := uuid.Parse(orgIDStr)
 		if err != nil {
-			http.Error(w, "invalid org_id", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid org_id")
 			return
 		}
 		params.OrgID = &id
@@ -127,7 +151,7 @@ func (srv *Server) adminAuditLogHandler(w http.ResponseWriter, r *http.Request) 
 	if actorIDStr := q.Get("actor_id"); actorIDStr != "" {
 		id, err := uuid.Parse(actorIDStr)
 		if err != nil {
-			http.Error(w, "invalid actor_id", http.StatusBadRequest)
+			writeProblem(w, http.StatusBadRequest, "invalid actor_id")
 			return
 		}
 		params.ActorID = &id
@@ -136,19 +160,18 @@ func (srv *Server) adminAuditLogHandler(w http.ResponseWriter, r *http.Request) 
 	entries, err := srv.store.AdminListAuditEntries(r.Context(), params)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "admin audit log", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	hasMore := len(entries) > limit
-	if hasMore {
+	var nextCursor string
+	if len(entries) > limit {
 		entries = entries[:limit]
+		last := entries[len(entries)-1]
+		nextCursor = encodePageCursor(adminAuditCursor{T: last.CreatedAt, ID: last.ID.String()})
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    entries,
-		"has_more": hasMore,
-	})
+	writeList(w, entries, nextCursor)
 }
 
 // redactSecret returns "***" for non-empty secrets, empty string otherwise.

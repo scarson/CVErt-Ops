@@ -239,6 +239,43 @@ func TestCSRF_WrongHeaderValue(t *testing.T) {
 	}
 }
 
+// TestCSRF_ErrorFormat_RFC9457 verifies that the CSRF rejection response uses
+// RFC 9457 Problem Details format (application/problem+json).
+func TestCSRF_ErrorFormat_RFC9457(t *testing.T) {
+	t.Parallel()
+	handler := csrfProtect(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/test", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: "fake-token"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("CSRF rejection: got %d, want 403", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	}
+	var problem struct {
+		Status int    `json:"status"`
+		Title  string `json:"title"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem+json: %v", err)
+	}
+	if problem.Status != http.StatusForbidden {
+		t.Errorf("problem.status = %d, want %d", problem.Status, http.StatusForbidden)
+	}
+	if problem.Title == "" {
+		t.Error("problem.title is empty")
+	}
+	if problem.Detail == "" {
+		t.Error("problem.detail is empty")
+	}
+}
+
 // TestCSRF_NoCookieBypassesCheck verifies that requests without an
 // access_token cookie bypass the CSRF check for all state-changing methods.
 func TestCSRF_NoCookieBypassesCheck(t *testing.T) {

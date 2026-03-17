@@ -76,3 +76,12 @@ groups:
         annotations:
           summary: "DB connection pool utilization exceeds 90%"
           description: "{{ $value | humanizePercentage }} of database connections are acquired. Consider increasing max_conns or investigating slow queries."
+
+      - alert: SecurityCriticalEvent
+        expr: rate(cvertops_security_events_total{severity="critical"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Critical security event detected
+          description: "A critical security event was recorded: {{ $labels.event_type }}."

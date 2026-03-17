@@ -513,6 +513,46 @@ func TestCleanupAIUsageCounters_DailyOnly(t *testing.T) {
 	}
 }
 
+func TestCleanupSecurityEvents(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	oldTime := now.Add(-100 * 24 * time.Hour)
+	recentTime := now.Add(-10 * 24 * time.Hour)
+
+	for _, ts := range []time.Time{oldTime, oldTime, recentTime} {
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO security_events (event_type, severity, created_at)
+			 VALUES ($1, $2, $3)`,
+			"auth.login_failed", "info", ts,
+		); err != nil {
+			t.Fatalf("seed security_events: %v", err)
+		}
+	}
+
+	cutoff := now.Add(-50 * 24 * time.Hour)
+	n, err := db.CleanupSecurityEvents(ctx, cutoff, 100)
+	if err != nil {
+		t.Fatalf("CleanupSecurityEvents: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted = %d, want 2", n)
+	}
+
+	// Recent event should survive.
+	var remaining int
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM security_events",
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("remaining = %d, want 1", remaining)
+	}
+}
+
 func TestCleanup_BatchSizeLimit(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

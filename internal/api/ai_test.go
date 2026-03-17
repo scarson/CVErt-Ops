@@ -667,39 +667,6 @@ func TestNLSearchHandler_1000CharQueryAccepted(t *testing.T) {
 	}
 }
 
-// ── parseIntParam unit tests ─────────────────────────────────────────────────
-
-func TestParseIntParam(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name       string
-		input      string
-		defaultVal int
-		min        int
-		max        int
-		want       int
-	}{
-		{"empty returns default", "", 25, 1, 100, 25},
-		{"valid in range", "50", 25, 1, 100, 50},
-		{"at min boundary", "1", 25, 1, 100, 1},
-		{"at max boundary", "100", 25, 1, 100, 100},
-		{"below min clamped", "0", 25, 1, 100, 1},
-		{"above max clamped", "101", 25, 1, 100, 100},
-		{"negative clamped to min", "-5", 25, 1, 100, 1},
-		{"non-numeric returns default", "abc", 25, 1, 100, 25},
-		{"float returns default", "3.14", 25, 1, 100, 25},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parseIntParam(tc.input, tc.defaultVal, tc.min, tc.max)
-			if got != tc.want {
-				t.Errorf("parseIntParam(%q, %d, %d, %d) = %d, want %d",
-					tc.input, tc.defaultVal, tc.min, tc.max, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestSummarizeHandler_CacheHit(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -1065,5 +1032,42 @@ func TestNLSearchHandler_ProTierQuota(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("request %d: got %d, want 200", i, resp.StatusCode)
 		}
+	}
+}
+
+// TestNLSearchHandler_EmptyResultsArray verifies that NL search with zero
+// matching CVEs returns results as an empty JSON array ([]), not null.
+func TestNLSearchHandler_EmptyResultsArray(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// No CVEs seeded — the mock DSL matches severity in [critical, high],
+	// so zero results are expected.
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nlsearch-empty@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlsearch-empty@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{"query":"critical CVEs"}`
+	resp := doNLSearch(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody json.RawMessage
+		json.NewDecoder(resp.Body).Decode(&errBody) //nolint:errcheck,gosec
+		t.Fatalf("nl-search: got %d, want 200; body: %s", resp.StatusCode, errBody)
+	}
+
+	// Decode raw JSON to check results is [] not null.
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	resultsJSON := string(raw["results"])
+	if resultsJSON != "[]" {
+		t.Errorf("results should be empty array [], got %s", resultsJSON)
 	}
 }

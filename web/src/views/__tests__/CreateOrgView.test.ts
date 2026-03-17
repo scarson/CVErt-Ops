@@ -18,10 +18,12 @@ vi.mock('vue-router', () => ({
   },
 }))
 
+const mockPOST = vi.fn()
+
 vi.mock('@/lib/api/client', () => ({
   default: {
     GET: vi.fn(),
-    POST: vi.fn(),
+    POST: (...args: unknown[]) => mockPOST(...args),
   },
 }))
 
@@ -33,16 +35,11 @@ async function mountCreateOrg() {
 }
 
 describe('CreateOrgView', () => {
-  let mockFetch: ReturnType<typeof vi.fn>
-
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
     vi.clearAllMocks()
-
-    // Mock global fetch for the raw API call (not in openapi-fetch schema).
-    mockFetch = vi.fn()
-    vi.stubGlobal('fetch', mockFetch)
+    mockPOST.mockReset()
   })
 
   describe('rendering', () => {
@@ -67,7 +64,7 @@ describe('CreateOrgView', () => {
       vi.spyOn(auth, 'setActiveOrg')
 
       let resolvePost: (value: unknown) => void
-      mockFetch.mockImplementation(
+      mockPOST.mockImplementation(
         () => new Promise((resolve) => { resolvePost = resolve }),
       )
 
@@ -81,18 +78,16 @@ describe('CreateOrgView', () => {
       expect(submitButton.attributes('disabled')).toBeDefined()
 
       resolvePost!({
-        ok: true,
-        status: 201,
-        json: () => Promise.resolve({ org_id: 'org-1', name: 'My Org' }),
+        data: { org_id: 'org-1', name: 'My Org' },
+        error: undefined,
       })
       await flushPromises()
     })
 
     it('calls API and navigates on success', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        status: 201,
-        json: () => Promise.resolve({ org_id: 'org-1', name: 'My Org' }),
+      mockPOST.mockResolvedValue({
+        data: { org_id: 'org-1', name: 'My Org' },
+        error: undefined,
       })
 
       const auth = useAuthStore()
@@ -105,10 +100,10 @@ describe('CreateOrgView', () => {
       await wrapper.find('form').trigger('submit')
       await flushPromises()
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/v1/orgs',
+      expect(mockPOST).toHaveBeenCalledWith(
+        '/orgs',
         expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ name: 'My Org' }),
+          body: { name: 'My Org' },
         }),
       )
 
@@ -119,11 +114,26 @@ describe('CreateOrgView', () => {
   })
 
   describe('error handling', () => {
-    it('shows error on API failure', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 500,
-        text: () => Promise.resolve('internal error'),
+    it('shows RFC 9457 detail message on API failure', async () => {
+      mockPOST.mockResolvedValue({
+        data: undefined,
+        error: { status: 422, detail: 'validation failed' },
+      })
+
+      const wrapper = await mountCreateOrg()
+
+      await wrapper.find('#org-name').setValue('My Org')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('validation failed')
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('shows fallback error when response has no detail', async () => {
+      mockPOST.mockResolvedValue({
+        data: undefined,
+        error: { status: 500 },
       })
 
       const wrapper = await mountCreateOrg()

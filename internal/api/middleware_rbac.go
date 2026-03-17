@@ -21,27 +21,27 @@ func (srv *Server) RequireOrgRole(minRole Role) func(http.Handler) http.Handler 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 			if !ok {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 
 			orgID, err := uuid.Parse(chi.URLParam(r, "org_id"))
 			if err != nil {
-				http.Error(w, "invalid org_id", http.StatusBadRequest)
+				writeProblem(w, http.StatusBadRequest, "invalid org_id")
 				return
 			}
 
 			// API keys are scoped to their org — reject if the request targets a different org.
 			if apiKeyOrgID, ok := r.Context().Value(ctxAPIKeyOrgID).(uuid.UUID); ok {
 				if apiKeyOrgID != orgID {
-					http.Error(w, "api key not valid for this organization", http.StatusForbidden)
+					writeProblem(w, http.StatusForbidden, "api key not valid for this organization")
 					return
 				}
 			}
 
 			roleStr, err := srv.store.GetOrgMemberRole(r.Context(), orgID, userID)
 			if err != nil || roleStr == nil {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				writeProblem(w, http.StatusForbidden, "forbidden")
 				return
 			}
 
@@ -55,7 +55,7 @@ func (srv *Server) RequireOrgRole(minRole Role) func(http.Handler) http.Handler 
 			}
 
 			if effectiveRole < minRole {
-				http.Error(w, "forbidden", http.StatusForbidden)
+				writeProblem(w, http.StatusForbidden, "forbidden")
 				return
 			}
 

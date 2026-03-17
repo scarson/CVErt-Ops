@@ -409,3 +409,242 @@ func TestExecuteDSLQuery_AppliesPostFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestExecuteDSLQuery_PostFilterPagination(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 30 CVEs with controlled timestamps and descriptions.
+	// 10 contain "buffer overflow" (matching the PostFilter regex).
+	// 20 do not match.
+	base := time.Now()
+	for i := range 30 {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		desc := "unrelated vulnerability in some library"
+		if i%3 == 0 {
+			// i=0,3,6,9,12,15,18,21,24,27 → 10 matching CVEs
+			desc = "buffer overflow in network stack"
+		}
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-FP%02d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+			DescriptionPrimary:    desc,
+		})
+	}
+
+	// Compile a rule matching severity=high, then attach a regex PostFilter
+	// that only keeps CVEs with "buffer overflow" in the description.
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	compiled.PostFilters = []dsl.PostFilter{
+		{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
+	}
+
+	// limit=15: SQL fetches 16 rows (limit+1). Of those 16, only ~5-6 match
+	// the PostFilter. The pagination decision must use the pre-filter count
+	// (16 > 15 → has next page) rather than the post-filter count.
+	results, nextCursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 15)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+
+	// SQL fetches 16 rows (indices 0-15). Of those, i%3==0 matches: 0,3,6,9,12,15 → 6 results.
+	if len(results) != 6 {
+		t.Fatalf("expected 6 PostFilter-matching results, got %d", len(results))
+	}
+
+	// The critical assertion: nextCursor must be non-empty because there are
+	// more rows in the DB beyond the first SQL fetch of 16.
+	if nextCursor == "" {
+		t.Error("expected non-empty nextCursor: PostFilter reduced results below limit, " +
+			"but more unfiltered rows exist in the database")
+	}
+}
+
+func TestExecuteDSLQuery_PostFilterLastPage(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 5 CVEs: 2 match "buffer overflow", 3 do not.
+	// With limit=10, SQL fetches all 5 (< limit+1), so this is the last page.
+	base := time.Now()
+	for i := range 5 {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		desc := "unrelated vulnerability"
+		if i == 1 || i == 3 {
+			desc = "buffer overflow in parser"
+		}
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-LP%02d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+			DescriptionPrimary:    desc,
+		})
+	}
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	compiled.PostFilters = []dsl.PostFilter{
+		{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
+	}
+
+	results, nextCursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 10)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+
+	// PostFilter should keep 2 results.
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+
+	// This IS the last page (only 5 rows total, limit=10). No spurious cursor.
+	if nextCursor != "" {
+		t.Errorf("expected empty cursor on last page with PostFilter, got %q", nextCursor)
+	}
+}
+
+func TestExecuteDSLQuery_PostFilterAllFiltered(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed 20 CVEs: none in the first limit+1 rows match the PostFilter regex,
+	// but more rows exist in the DB. This exercises the preFetchCursorRow fallback
+	// when PostFilter removes ALL visible rows.
+	base := time.Now()
+	for i := range 20 {
+		ts := base.Add(-time.Duration(i) * time.Minute)
+		desc := "unrelated vulnerability in some library"
+		// Only the last few CVEs match — they won't appear in the first page fetch.
+		if i >= 18 {
+			desc = "buffer overflow in network stack"
+		}
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2024-AF%02d", i), "high", &testutil.SeedCVEOpts{
+			DateModifiedCanonical: &ts,
+			DescriptionPrimary:    desc,
+		})
+	}
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	compiled.PostFilters = []dsl.PostFilter{
+		{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
+	}
+
+	// limit=5: SQL fetches 6 rows (limit+1). None of the first 6 rows (indices 0-5)
+	// match "buffer overflow", so PostFilter removes ALL of them. But preFetchCount
+	// is 6 > 5, so a cursor must be emitted using the preFetchCursorRow fallback.
+	results, nextCursor, err := s.ExecuteDSLQuery(ctx, compiled, "", 5)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+
+	// All rows on this page were filtered out.
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results (all filtered), got %d", len(results))
+	}
+
+	// Cursor must be non-empty — more rows exist in the DB beyond this fetch.
+	if nextCursor == "" {
+		t.Error("expected non-empty nextCursor when PostFilter removes all rows but more DB rows exist")
+	}
+}
+
+func TestExecuteDSLQuery_PostFilterCaseInsensitive(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Seed a CVE with mixed-case description.
+	s.SeedTestCVE(t, "CVE-2024-CI01", "high", &testutil.SeedCVEOpts{
+		DescriptionPrimary: "Critical Buffer Overflow in Chrome",
+	})
+
+	// Compile a rule matching severity=high, then attach regex PostFilters.
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"high"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	t.Run("lowercase regex matches mixed-case description", func(t *testing.T) {
+		// The alert evaluator uses lower(cves.description_primary) in SQL,
+		// so a lowercase regex should match mixed-case text in PostFilter too.
+		compiled.PostFilters = []dsl.PostFilter{
+			{Negate: false, Pattern: regexp.MustCompile("buffer overflow")},
+		}
+
+		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("got %d results, want 1: lowercase regex should match mixed-case description", len(results))
+		}
+		if results[0].CveID != "CVE-2024-CI01" {
+			t.Errorf("CveID = %q, want CVE-2024-CI01", results[0].CveID)
+		}
+	})
+
+	t.Run("lowercase regex matches lowered target text", func(t *testing.T) {
+		// "critical buffer" (lowercase) should match because the target text
+		// is lowered before matching, matching the alert evaluator's lower() semantics.
+		compiled.PostFilters = []dsl.PostFilter{
+			{Negate: false, Pattern: regexp.MustCompile("critical buffer")},
+		}
+
+		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("got %d results, want 1: lowercase regex should match lowered target", len(results))
+		}
+	})
+
+	t.Run("mixed-case regex does not match lowered target", func(t *testing.T) {
+		// "Critical Buffer" has uppercase letters. The target text is lowered to
+		// "critical buffer overflow in chrome", so "Critical" (uppercase C) should
+		// NOT match. This proves we lowercase the target, not the regex.
+		compiled.PostFilters = []dsl.PostFilter{
+			{Negate: false, Pattern: regexp.MustCompile("Critical Buffer")},
+		}
+
+		results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery: %v", err)
+		}
+		if len(results) != 0 {
+			t.Fatalf("got %d results, want 0: mixed-case regex should not match lowered target", len(results))
+		}
+	})
+}

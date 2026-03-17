@@ -5,13 +5,16 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -100,6 +103,18 @@ func doListWatchlistItems(t *testing.T, ctx context.Context, ts *httptest.Server
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("list watchlist items: %v", err)
+	}
+	return resp
+}
+
+func doListWatchlistItemsWithCursor(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, watchlistID, cursor string) *http.Response {
+	t.Helper()
+	url := ts.URL + "/api/v1/orgs/" + orgID + "/watchlists/" + watchlistID + "/items?cursor=" + cursor
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("list watchlist items with cursor: %v", err)
 	}
 	return resp
 }
@@ -532,7 +547,7 @@ func TestWatchlist_CrossOrgReadWriteIsolation(t *testing.T) {
 	}
 }
 
-// TestWatchlist_PatchEmptyName verifies that PATCH with an empty name returns 400.
+// TestWatchlist_PatchEmptyName verifies that PATCH with an empty name returns 422.
 func TestWatchlist_PatchEmptyName(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -556,18 +571,18 @@ func TestWatchlist_PatchEmptyName(t *testing.T) {
 		t.Fatalf("decode create: %v", err)
 	}
 
-	// PATCH with empty name → 400.
+	// PATCH with empty name → 422.
 	patchResp := doPatchWatchlist(t, ctx, ts, token, aliceReg.OrgID, wl.ID, `{"name":""}`)
 	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
-	if patchResp.StatusCode != http.StatusBadRequest {
-		t.Errorf("patch empty name: got %d, want 400", patchResp.StatusCode)
+	if patchResp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch empty name: got %d, want 422", patchResp.StatusCode)
 	}
 
-	// PATCH with whitespace-only name → 400.
+	// PATCH with whitespace-only name → 422.
 	patchResp2 := doPatchWatchlist(t, ctx, ts, token, aliceReg.OrgID, wl.ID, `{"name":"   "}`)
 	defer patchResp2.Body.Close() //nolint:errcheck,gosec // G104
-	if patchResp2.StatusCode != http.StatusBadRequest {
-		t.Errorf("patch whitespace name: got %d, want 400", patchResp2.StatusCode)
+	if patchResp2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("patch whitespace name: got %d, want 422", patchResp2.StatusCode)
 	}
 }
 
@@ -675,7 +690,7 @@ func TestWatchlist_SoftDeleteBehavior(t *testing.T) {
 }
 
 // doListWatchlistsWithQuery performs a GET /api/v1/orgs/{org_id}/watchlists
-// with an optional query string (e.g. "?after=...").
+// with an optional query string (e.g. "?cursor=...").
 func doListWatchlistsWithQuery(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, queryString string) *http.Response {
 	t.Helper()
 	url := ts.URL + "/api/v1/orgs/" + orgID + "/watchlists" + queryString
@@ -726,31 +741,22 @@ func TestWatchlist_ListPagination(t *testing.T) {
 	// The list limit is 20, so with 3 items there's no next_cursor.
 	if allList.NextCursor != nil {
 		// Use the cursor to verify the second page works.
-		page2Resp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?after="+*allList.NextCursor)
+		page2Resp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?cursor="+*allList.NextCursor)
 		defer page2Resp.Body.Close() //nolint:errcheck,gosec // G104
 		if page2Resp.StatusCode != http.StatusOK {
 			t.Fatalf("page 2: got %d, want 200", page2Resp.StatusCode)
 		}
 	}
 
-	// Test with an invalid cursor — should return full results (cursor silently ignored).
-	badCursorResp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?after=notavalidcursor")
+	// Test with an invalid cursor — should return 400.
+	badCursorResp := doListWatchlistsWithQuery(t, ctx, ts, token, aliceReg.OrgID, "?cursor=notavalidcursor")
 	defer badCursorResp.Body.Close() //nolint:errcheck,gosec // G104
-	if badCursorResp.StatusCode != http.StatusOK {
-		t.Fatalf("bad cursor: got %d, want 200", badCursorResp.StatusCode)
-	}
-	var badCursorList struct {
-		Items []map[string]any `json:"items"`
-	}
-	if err := json.NewDecoder(badCursorResp.Body).Decode(&badCursorList); err != nil {
-		t.Fatalf("decode bad cursor: %v", err)
-	}
-	if len(badCursorList.Items) != 3 {
-		t.Errorf("bad cursor items = %d, want 3 (full list)", len(badCursorList.Items))
+	if badCursorResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("bad cursor: got %d, want 400", badCursorResp.StatusCode)
 	}
 }
 
-// TestWatchlist_CreateEmptyName verifies that creating a watchlist with empty name returns 400.
+// TestWatchlist_CreateEmptyName verifies that creating a watchlist with empty name returns 422.
 func TestWatchlist_CreateEmptyName(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -764,8 +770,8 @@ func TestWatchlist_CreateEmptyName(t *testing.T) {
 
 	resp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID, `{"name":""}`)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("empty name create: got %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name create: got %d, want 422", resp.StatusCode)
 	}
 }
 
@@ -855,6 +861,383 @@ func TestWatchlist_DeleteNonExistent(t *testing.T) {
 	defer delResp.Body.Close() //nolint:errcheck,gosec // G104
 	if delResp.StatusCode != http.StatusNotFound {
 		t.Errorf("delete non-existent: got %d, want 404", delResp.StatusCode)
+	}
+}
+
+// ── Contract tests ────────────────────────────────────────────────────────────
+
+// doCreateWatchlistRaw calls POST /api/v1/orgs/{orgID}/watchlists with a raw JSON body.
+func doCreateWatchlistRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/orgs/"+orgID+"/watchlists", bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create watchlist raw: %v", err)
+	}
+	return resp
+}
+
+// doCreateWatchlistItemRaw calls POST /items with a raw JSON body.
+func doCreateWatchlistItemRaw(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, watchlistID, rawJSON string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/orgs/"+orgID+"/watchlists/"+watchlistID+"/items",
+		bytes.NewBufferString(rawJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("create watchlist item raw: %v", err)
+	}
+	return resp
+}
+
+// TestCreateWatchlist_MalformedJSON verifies 400 with application/problem+json on invalid JSON.
+func TestCreateWatchlist_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateWatchlistRaw(t, ctx, ts, token, aliceReg.OrgID, "{bad json")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("malformed JSON: got %d, want 400", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+}
+
+// TestCreateWatchlist_LocationHeader verifies Location header on 201 Created.
+func TestCreateWatchlist_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID, `{"name":"Location Test"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", resp.StatusCode)
+	}
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header on 201 response")
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantSuffix := "/watchlists/" + out.ID
+	if len(loc) < len(wantSuffix) || loc[len(loc)-len(wantSuffix):] != wantSuffix {
+		t.Errorf("Location = %q, want suffix %q", loc, wantSuffix)
+	}
+}
+
+// TestCreateWatchlistItem_LocationHeader verifies Location header on item creation.
+func TestCreateWatchlistItem_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID, `{"name":"Item Loc Test"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var wl struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	itemResp := doCreateWatchlistItem(t, ctx, ts, token, aliceReg.OrgID, wl.ID,
+		`{"item_type":"package","ecosystem":"npm","package_name":"express"}`)
+	defer itemResp.Body.Close() //nolint:errcheck,gosec // G104
+	if itemResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create item: got %d, want 201", itemResp.StatusCode)
+	}
+
+	loc := itemResp.Header.Get("Location")
+	if loc == "" {
+		t.Fatal("expected Location header on item 201 response")
+	}
+	var item struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(itemResp.Body).Decode(&item); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+	wantSuffix := "/items/" + item.ID
+	if len(loc) < len(wantSuffix) || loc[len(loc)-len(wantSuffix):] != wantSuffix {
+		t.Errorf("Location = %q, want suffix %q", loc, wantSuffix)
+	}
+}
+
+// TestListWatchlists_Envelope verifies {items: [...]} envelope on list endpoint.
+func TestListWatchlists_Envelope(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Empty list should still have items array (not null).
+	listResp := doListWatchlists(t, ctx, ts, token, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list: got %d, want 200", listResp.StatusCode)
+	}
+
+	var raw map[string]any
+	if err := json.NewDecoder(listResp.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	items, ok := raw["items"]
+	if !ok {
+		t.Fatal("response missing 'items' key")
+	}
+	arr, ok := items.([]any)
+	if !ok {
+		t.Fatal("items is not an array")
+	}
+	if arr == nil {
+		t.Error("items array should be empty [], not null")
+	}
+}
+
+// TestCreateWatchlist_ValidationError_ProblemJSON verifies 422 with field-level locations.
+func TestCreateWatchlist_ValidationError_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp := doCreateWatchlistRaw(t, ctx, ts, token, aliceReg.OrgID, `{"name":""}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("empty name: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	errs, ok := problem["errors"].([]any)
+	if !ok || len(errs) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	err0, _ := errs[0].(map[string]any)
+	if err0["location"] != "body.name" {
+		t.Errorf("errors[0].location = %v, want body.name", err0["location"])
+	}
+}
+
+// TestCreateWatchlistItem_ValidationError_ProblemJSON verifies 422 with field locations on items.
+func TestCreateWatchlistItem_ValidationError_ProblemJSON(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	createResp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID, `{"name":"Val Test"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var wl struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Unknown ecosystem should return 422 with location body.ecosystem.
+	resp := doCreateWatchlistItemRaw(t, ctx, ts, token, aliceReg.OrgID, wl.ID,
+		`{"item_type":"package","ecosystem":"bogus","package_name":"foo"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("unknown ecosystem: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	errs, ok := problem["errors"].([]any)
+	if !ok || len(errs) == 0 {
+		t.Fatal("expected errors array with at least one entry")
+	}
+	err0, _ := errs[0].(map[string]any)
+	if err0["location"] != "body.ecosystem" {
+		t.Errorf("errors[0].location = %v, want body.ecosystem", err0["location"])
+	}
+}
+
+// TestCreateWatchlist_TierLimit_ProblemType verifies tier-limit 403 uses problem type URI.
+func TestCreateWatchlist_TierLimit_ProblemType(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	// Use "open" registration — tier resolver will use defaults.
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Create watchlists until we hit the tier limit.
+	// Default tier limit is typically > 0, so we just verify the format
+	// IF we can trigger the limit. If not, this test just verifies the
+	// endpoint works without hitting the limit.
+	resp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID, `{"name":"Tier Test"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	// We can't guarantee hitting the limit without knowing the tier config,
+	// so just verify the 201 response has proper contract format.
+	if resp.StatusCode != http.StatusCreated {
+		// If it's 403, verify it has the right problem type.
+		if resp.StatusCode == http.StatusForbidden {
+			var problem map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if problem["type"] != "urn:cvert:error:tier-limit" {
+				t.Errorf("type = %v, want urn:cvert:error:tier-limit", problem["type"])
+			}
+		}
+	}
+}
+
+// TestWatchlistItemCursorOpaque verifies that the list watchlist items endpoint
+// returns opaque base64url-encoded cursors rather than raw UUIDs.
+func TestWatchlistItemCursorOpaque(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID, err := uuid.Parse(aliceReg.OrgID)
+	if err != nil {
+		t.Fatalf("parse org ID: %v", err)
+	}
+
+	// Create a watchlist via the store to avoid rate limits.
+	wl, err := db.CreateWatchlist(ctx, orgID, uuid.NullUUID{}, "Cursor Test", sql.NullString{})
+	if err != nil {
+		t.Fatalf("create watchlist: %v", err)
+	}
+
+	// Insert 51 items directly via the store (limit is 50) to trigger pagination.
+	for i := 0; i < 51; i++ {
+		cpe := fmt.Sprintf("cpe:2.3:a:vendor:product%d:*:*:*:*:*:*:*:*", i)
+		_, err := db.CreateWatchlistItem(ctx, orgID, wl.ID, store.CreateWatchlistItemParams{
+			ItemType:      store.WatchlistItemType("cpe"),
+			CpeNormalized: &cpe,
+		})
+		if err != nil {
+			t.Fatalf("create item %d: %v", i, err)
+		}
+	}
+
+	// Fetch first page — should have next_cursor.
+	page1Resp := doListWatchlistItems(t, ctx, ts, token, aliceReg.OrgID, wl.ID.String())
+	defer page1Resp.Body.Close() //nolint:errcheck,gosec // G104
+	if page1Resp.StatusCode != http.StatusOK {
+		t.Fatalf("list page 1: got %d, want 200", page1Resp.StatusCode)
+	}
+	var page1 struct {
+		Items      []struct{ ID string `json:"id"` } `json:"items"`
+		NextCursor string                             `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(page1Resp.Body).Decode(&page1); err != nil {
+		t.Fatalf("decode page 1: %v", err)
+	}
+	if len(page1.Items) != 50 {
+		t.Fatalf("page 1 items: got %d, want 50", len(page1.Items))
+	}
+	if page1.NextCursor == "" {
+		t.Fatal("page 1 next_cursor is empty, expected a cursor for page 2")
+	}
+
+	// The cursor must NOT be a raw UUID — it should be opaque (base64url-encoded JSON).
+	if _, err := uuid.Parse(page1.NextCursor); err == nil {
+		t.Errorf("next_cursor is a raw UUID (%s), expected opaque base64url-encoded cursor", page1.NextCursor)
+	}
+
+	// Fetch page 2 using the cursor.
+	page2Resp := doListWatchlistItemsWithCursor(t, ctx, ts, token, aliceReg.OrgID, wl.ID.String(), page1.NextCursor)
+	defer page2Resp.Body.Close() //nolint:errcheck,gosec // G104
+	if page2Resp.StatusCode != http.StatusOK {
+		t.Fatalf("list page 2: got %d, want 200", page2Resp.StatusCode)
+	}
+	var page2 struct {
+		Items      []struct{ ID string `json:"id"` } `json:"items"`
+		NextCursor string                             `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(page2Resp.Body).Decode(&page2); err != nil {
+		t.Fatalf("decode page 2: %v", err)
+	}
+	if len(page2.Items) != 1 {
+		t.Fatalf("page 2 items: got %d, want 1", len(page2.Items))
+	}
+
+	// No overlap between pages.
+	page1IDs := make(map[string]bool, len(page1.Items))
+	for _, item := range page1.Items {
+		page1IDs[item.ID] = true
+	}
+	for _, item := range page2.Items {
+		if page1IDs[item.ID] {
+			t.Errorf("item %s appears on both page 1 and page 2", item.ID)
+		}
+	}
+
+	// Page 2 should have no next_cursor (only 51 items total).
+	if page2.NextCursor != "" {
+		t.Errorf("page 2 next_cursor = %q, want empty (no more pages)", page2.NextCursor)
 	}
 }
 

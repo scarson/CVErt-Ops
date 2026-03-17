@@ -75,6 +75,14 @@ DELETE FROM ai_usage_counters auc
 USING doomed
 WHERE auc.org_id = doomed.org_id AND auc.feature = doomed.feature AND auc.date = doomed.date;
 
+-- name: CleanupSecurityEvents :execrows
+WITH doomed AS (
+    SELECT id FROM security_events
+    WHERE created_at < @cutoff::timestamptz
+    ORDER BY created_at LIMIT @batch_size::int
+)
+DELETE FROM security_events se USING doomed WHERE se.id = doomed.id;
+
 -- name: CleanupAuditLog :execrows
 WITH doomed AS (
     SELECT id FROM audit_log

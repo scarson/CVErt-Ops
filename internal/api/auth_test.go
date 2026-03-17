@@ -329,6 +329,79 @@ func TestLoginOAuthOnlyAccount(t *testing.T) {
 	}
 }
 
+func TestLoginDisabledUser(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "disabled@example.com", "test-password-1234")
+
+	// Disable the user via admin store method.
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user_id: %v", err)
+	}
+	if _, err := db.AdminDisableUser(ctx, userID); err != nil {
+		t.Fatalf("AdminDisableUser: %v", err)
+	}
+
+	// Login with correct credentials should return 401 (same as nonexistent user).
+	resp := doLogin(t, ctx, ts, "disabled@example.com", "test-password-1234")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("disabled user login: got %d, want 401", resp.StatusCode)
+	}
+
+	// Verify the error message matches the nonexistent-user response.
+	var errBody struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if errBody.Detail != "invalid credentials" {
+		t.Errorf("error detail = %q, want %q", errBody.Detail, "invalid credentials")
+	}
+
+	// Verify no auth cookies were set.
+	if cookieValue(resp, "access_token") != "" {
+		t.Error("access_token cookie should not be set for disabled user")
+	}
+	if cookieValue(resp, "refresh_token") != "" {
+		t.Error("refresh_token cookie should not be set for disabled user")
+	}
+}
+
+func TestLoginDisabledUser_RecordsLockoutFailure(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "disabled-lockout@example.com", "test-password-1234")
+
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user_id: %v", err)
+	}
+	if _, err := db.AdminDisableUser(ctx, userID); err != nil {
+		t.Fatalf("AdminDisableUser: %v", err)
+	}
+
+	// Multiple login attempts on a disabled account should trigger lockout.
+	for i := 0; i < 6; i++ {
+		resp := doLogin(t, ctx, ts, "disabled-lockout@example.com", "test-password-1234")
+		resp.Body.Close() //nolint:errcheck,gosec // G104
+	}
+
+	// Verify lockout was recorded (the lockout manager should have failures).
+	allowed, _ := srv.lockout.Check(ctx, "disabled-lockout@example.com")
+	if allowed {
+		t.Error("expected lockout after repeated disabled-user login attempts")
+	}
+}
+
 // ── Task 27: Refresh + Logout ─────────────────────────────────────────────────
 
 func TestRefreshRotates(t *testing.T) {
@@ -369,7 +442,7 @@ func TestRefreshRotates(t *testing.T) {
 	}
 
 	// Verify old JTI is marked used in DB.
-	oldClaims, err := auth.ParseRefreshToken(oldRefreshToken, []byte("regtestsecret"))
+	oldClaims, err := auth.ParseRefreshToken(oldRefreshToken, []byte("regtestsecret"), nil)
 	if err != nil {
 		t.Fatalf("parse old refresh token: %v", err)
 	}
@@ -436,7 +509,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 	resp1.Body.Close()                //nolint:errcheck,gosec // G104
 
 	// Backdate used_at to simulate grace window expiry.
-	oldClaims, err := auth.ParseRefreshToken(firstRefreshToken, []byte("regtestsecret"))
+	oldClaims, err := auth.ParseRefreshToken(firstRefreshToken, []byte("regtestsecret"), nil)
 	if err != nil {
 		t.Fatalf("parse refresh token: %v", err)
 	}
@@ -1190,6 +1263,107 @@ func TestAcceptInvitation_ConcurrentAccept(t *testing.T) {
 		if code != http.StatusOK {
 			t.Errorf("accept[%d]: got %d, want 200", i, code)
 		}
+	}
+}
+
+// ── force_password_reset handler tests ────────────────────────────────────────
+
+func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "forcereset-clear@example.com", "test-old-password-1")
+
+	// Set force_password_reset flag via admin store method.
+	user, err := db.GetUserByEmail(ctx, "forcereset-clear@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	// Verify flag is set.
+	status, err := db.GetUserAuthStatus(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get auth status: %v", err)
+	}
+	if !status.ForcePasswordReset {
+		t.Fatal("force_password_reset should be true before password change")
+	}
+
+	// Login and change password.
+	loginResp := doLogin(t, ctx, ts, "forcereset-clear@example.com", "test-old-password-1")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	body := `{"current_password":"test-old-password-1","new_password":"test-new-password-1"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("change-password: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("change-password: got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify flag is cleared.
+	status, err = db.GetUserAuthStatus(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get auth status after change: %v", err)
+	}
+	if status.ForcePasswordReset {
+		t.Error("force_password_reset should be false after password change")
+	}
+}
+
+func TestMe_IncludesForcePasswordReset(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "forcereset-me@example.com", "test-password-1234")
+
+	// Set force_password_reset flag.
+	user, err := db.GetUserByEmail(ctx, "forcereset-me@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "forcereset-me@example.com", "test-password-1234")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	accessToken := cookieValue(loginResp, "access_token")
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("get me: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get me: got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		ForcePasswordReset bool `json:"force_password_reset"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode me response: %v", err)
+	}
+	if !body.ForcePasswordReset {
+		t.Error("force_password_reset should be true in /auth/me response")
 	}
 }
 

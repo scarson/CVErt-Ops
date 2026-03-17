@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -294,6 +295,156 @@ func (s *Store) CountUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID) 
 	})
 	if err != nil {
 		return 0, fmt.Errorf("count unused recovery codes: %w", err)
+	}
+	return n, nil
+}
+
+// --- MFA Challenge Operations (Email OTP + Remember Device) ---
+
+// CreateEmailOTPChallenge stores a new email OTP challenge for the user.
+// Deletes any existing email OTP challenge first to enforce single-active-code.
+func (s *Store) CreateEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, expiresAt time.Time) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if _, err := q.DeleteEmailOTPChallenges(ctx, userID); err != nil {
+			return err
+		}
+		_, err := q.CreateMFAChallenge(ctx, generated.CreateMFAChallengeParams{
+			UserID:        userID,
+			ChallengeType: "email_otp",
+			TokenHash:     codeHash,
+			ExpiresAt:     expiresAt,
+		})
+		return err
+	})
+}
+
+// VerifyEmailOTPChallenge atomically looks up the active email OTP challenge,
+// increments attempts, checks the hash, and deletes on success or exhaustion.
+// Returns true if the code matched and the challenge was valid.
+func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, maxAttempts int32) (bool, error) {
+	var matched bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		challenge, err := q.GetActiveEmailOTPChallengeForUpdate(ctx, userID)
+		if errors.Is(err, sql.ErrNoRows) {
+			matched = false
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		attempts, err := q.IncrementChallengeAttempts(ctx, challenge.ID)
+		if err != nil {
+			return err
+		}
+
+		if challenge.TokenHash == codeHash {
+			// Correct code — delete the challenge and report success.
+			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
+				return err
+			}
+			matched = true
+			return nil
+		}
+
+		// Wrong code — delete if max attempts reached.
+		if attempts >= maxAttempts {
+			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
+				return err
+			}
+		}
+		matched = false
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("verify email otp challenge: %w", err)
+	}
+	return matched, nil
+}
+
+// CreateRememberDeviceToken stores a remember-device token for the user.
+func (s *Store) CreateRememberDeviceToken(ctx context.Context, userID uuid.UUID, tokenHash string, expiresAt time.Time) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		_, err := q.CreateMFAChallenge(ctx, generated.CreateMFAChallengeParams{
+			UserID:        userID,
+			ChallengeType: "remember_device",
+			TokenHash:     tokenHash,
+			ExpiresAt:     expiresAt,
+		})
+		return err
+	})
+}
+
+// ValidateRememberDeviceToken checks whether a valid (non-expired) remember-device
+// token exists for the given user and token hash.
+func (s *Store) ValidateRememberDeviceToken(ctx context.Context, userID uuid.UUID, tokenHash string) (bool, error) {
+	var valid bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		_, err := q.GetRememberDeviceToken(ctx, generated.GetRememberDeviceTokenParams{
+			UserID:    userID,
+			TokenHash: tokenHash,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			valid = false
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		valid = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("validate remember device token: %w", err)
+	}
+	return valid, nil
+}
+
+// DeleteRememberDeviceTokens removes all remember-device tokens for a user.
+func (s *Store) DeleteRememberDeviceTokens(ctx context.Context, userID uuid.UUID) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		_, err := q.DeleteRememberDeviceTokens(ctx, userID)
+		return err
+	})
+}
+
+// DeleteAllUserChallenges removes all challenges (email OTP + remember-device) for a user.
+func (s *Store) DeleteAllUserChallenges(ctx context.Context, userID uuid.UUID) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		_, err := q.DeleteAllUserChallenges(ctx, userID)
+		return err
+	})
+}
+
+// CountRecentEmailOTPChallenges returns the number of email OTP challenges created
+// after the given timestamp, for rate limiting.
+func (s *Store) CountRecentEmailOTPChallenges(ctx context.Context, userID uuid.UUID, since time.Time) (int64, error) {
+	var n int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountRecentEmailOTPChallenges(ctx, generated.CountRecentEmailOTPChallengesParams{
+			UserID:    userID,
+			CreatedAt: since,
+		})
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("count recent email otp challenges: %w", err)
+	}
+	return n, nil
+}
+
+// DeleteExpiredChallenges removes all challenges past their expiry time.
+// Returns the number of rows deleted.
+func (s *Store) DeleteExpiredChallenges(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		n, err = q.DeleteExpiredChallenges(ctx)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("delete expired challenges: %w", err)
 	}
 	return n, nil
 }

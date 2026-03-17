@@ -4,11 +4,14 @@ package store_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -604,5 +607,370 @@ func TestRecoveryCode_CascadeOnUserDelete(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("count = %d after user delete, want 0", count)
+	}
+}
+
+// --- MFA Challenge Tests ---
+
+// hashCode returns the SHA-256 hex digest of a string (matches store's hashing for email OTP).
+func hashCode(code string) string {
+	h := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(h[:])
+}
+
+func TestMFAChallenge_CreateAndVerifyEmailOTP(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-happy@example.com", "OTP Happy", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	code := "123456"
+	codeHash := hashCode(code)
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, codeHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
+	}
+	if !ok {
+		t.Error("expected verification to succeed")
+	}
+}
+
+func TestMFAChallenge_SingleActiveCode(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-single@example.com", "OTP Single", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	code1 := hashCode("111111")
+	code2 := hashCode("222222")
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, code1, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge (first): %v", err)
+	}
+
+	// Creating a second challenge should delete the first.
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, code2, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge (second): %v", err)
+	}
+
+	// Old code should fail.
+	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code1, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (old): %v", err)
+	}
+	if ok {
+		t.Error("expected old code to fail after new code created")
+	}
+
+	// New code should succeed.
+	ok, err = s.VerifyEmailOTPChallenge(ctx, user.ID, code2, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (new): %v", err)
+	}
+	if !ok {
+		t.Error("expected new code to succeed")
+	}
+}
+
+func TestMFAChallenge_ExpiredCode(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-expired@example.com", "OTP Expired", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	code := hashCode("123456")
+	// Already expired.
+	expiresAt := time.Now().Add(-1 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, code, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
+	}
+	if ok {
+		t.Error("expected expired code verification to fail")
+	}
+}
+
+func TestMFAChallenge_AttemptExhaustion(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-exhaust@example.com", "OTP Exhaust", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	correctHash := hashCode("123456")
+	wrongHash := hashCode("000000")
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, correctHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	// 3 wrong attempts (maxAttempts=3).
+	for i := 0; i < 3; i++ {
+		ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+		if err != nil {
+			t.Fatalf("VerifyEmailOTPChallenge (wrong %d): %v", i+1, err)
+		}
+		if ok {
+			t.Errorf("wrong attempt %d should fail", i+1)
+		}
+	}
+
+	// Now even the correct code should fail — challenge deleted after max attempts.
+	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (correct after exhaust): %v", err)
+	}
+	if ok {
+		t.Error("expected correct code to fail after attempt exhaustion")
+	}
+}
+
+func TestMFAChallenge_RateLimiting(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-rate@example.com", "OTP Rate", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	since := time.Now().Add(-1 * time.Hour)
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	// No challenges yet.
+	count, err := s.CountRecentEmailOTPChallenges(ctx, user.ID, since)
+	if err != nil {
+		t.Fatalf("CountRecentEmailOTPChallenges: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+
+	// Create a few challenges.
+	for i := 0; i < 3; i++ {
+		err = s.CreateEmailOTPChallenge(ctx, user.ID, hashCode("code"+string(rune('0'+i))), expiresAt)
+		if err != nil {
+			t.Fatalf("CreateEmailOTPChallenge (%d): %v", i, err)
+		}
+	}
+
+	// Count should reflect all created (CreateEmailOTPChallenge deletes previous email_otp,
+	// but only active ones — the deleted ones are gone). Since each create deletes existing
+	// email_otp challenges first, only 1 should remain.
+	count, err = s.CountRecentEmailOTPChallenges(ctx, user.ID, since)
+	if err != nil {
+		t.Fatalf("CountRecentEmailOTPChallenges: %v", err)
+	}
+	// Only 1 active email_otp challenge should exist (each create deletes previous).
+	if count != 1 {
+		t.Errorf("count = %d, want 1", count)
+	}
+
+	// A window in the far future should yield 0.
+	futureCount, err := s.CountRecentEmailOTPChallenges(ctx, user.ID, time.Now().Add(1*time.Hour))
+	if err != nil {
+		t.Fatalf("CountRecentEmailOTPChallenges (future): %v", err)
+	}
+	if futureCount != 0 {
+		t.Errorf("futureCount = %d, want 0", futureCount)
+	}
+}
+
+func TestMFAChallenge_RememberDeviceToken(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-remember@example.com", "OTP Remember", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	tokenHash := hashCode("random-device-token")
+	expiresAt := time.Now().Add(30 * 24 * time.Hour)
+
+	err = s.CreateRememberDeviceToken(ctx, user.ID, tokenHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateRememberDeviceToken: %v", err)
+	}
+
+	// Validate succeeds.
+	ok, err := s.ValidateRememberDeviceToken(ctx, user.ID, tokenHash)
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken: %v", err)
+	}
+	if !ok {
+		t.Error("expected token validation to succeed")
+	}
+
+	// Delete and revalidate.
+	err = s.DeleteRememberDeviceTokens(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("DeleteRememberDeviceTokens: %v", err)
+	}
+
+	ok, err = s.ValidateRememberDeviceToken(ctx, user.ID, tokenHash)
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken (after delete): %v", err)
+	}
+	if ok {
+		t.Error("expected token validation to fail after deletion")
+	}
+}
+
+func TestMFAChallenge_ExpiredRememberDevice(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-remember-exp@example.com", "OTP RememberExp", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	tokenHash := hashCode("expired-device-token")
+	expiresAt := time.Now().Add(-1 * time.Minute) // Already expired.
+
+	err = s.CreateRememberDeviceToken(ctx, user.ID, tokenHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateRememberDeviceToken: %v", err)
+	}
+
+	ok, err := s.ValidateRememberDeviceToken(ctx, user.ID, tokenHash)
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken: %v", err)
+	}
+	if ok {
+		t.Error("expected expired token validation to fail")
+	}
+}
+
+func TestMFAChallenge_DeleteExpired(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-cleanup@example.com", "OTP Cleanup", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Create an expired challenge.
+	expiredHash := hashCode("expired-code")
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, expiredHash, time.Now().Add(-1*time.Minute))
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge (expired): %v", err)
+	}
+
+	// Create a valid challenge (different user to avoid single-active-code deletion).
+	user2, err := s.CreateUser(ctx, "otp-cleanup2@example.com", "OTP Cleanup2", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (2): %v", err)
+	}
+	validHash := hashCode("valid-code")
+	err = s.CreateEmailOTPChallenge(ctx, user2.ID, validHash, time.Now().Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge (valid): %v", err)
+	}
+
+	// Run cleanup.
+	deleted, err := s.DeleteExpiredChallenges(ctx)
+	if err != nil {
+		t.Fatalf("DeleteExpiredChallenges: %v", err)
+	}
+	if deleted < 1 {
+		t.Errorf("deleted = %d, want >= 1", deleted)
+	}
+
+	// Valid challenge should still be verifiable.
+	ok, err := s.VerifyEmailOTPChallenge(ctx, user2.ID, validHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (valid after cleanup): %v", err)
+	}
+	if !ok {
+		t.Error("expected valid challenge to survive cleanup")
+	}
+}
+
+func TestMFAChallenge_ConcurrentVerification(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-concurrent@example.com", "OTP Concurrent", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codeHash := hashCode("123456")
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, codeHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	barrier := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]bool, 2)
+
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-barrier
+			ok, verifyErr := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
+			if verifyErr != nil {
+				t.Errorf("goroutine %d: VerifyEmailOTPChallenge: %v", idx, verifyErr)
+				return
+			}
+			results[idx] = ok
+		}(i)
+	}
+	close(barrier)
+	wg.Wait()
+
+	successCount := 0
+	for _, ok := range results {
+		if ok {
+			successCount++
+		}
+	}
+	if successCount != 1 {
+		t.Errorf("concurrent verification: %d successes, want exactly 1 (results: %v)", successCount, results)
 	}
 }

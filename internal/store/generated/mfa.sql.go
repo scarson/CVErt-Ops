@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -23,6 +24,24 @@ func (q *Queries) CountMFACredentialsByUser(ctx context.Context, userID uuid.UUI
 	return count, err
 }
 
+const countRecentEmailOTPChallenges = `-- name: CountRecentEmailOTPChallenges :one
+SELECT COUNT(*) FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp'
+  AND created_at > $2
+`
+
+type CountRecentEmailOTPChallengesParams struct {
+	UserID    uuid.UUID
+	CreatedAt time.Time
+}
+
+func (q *Queries) CountRecentEmailOTPChallenges(ctx context.Context, arg CountRecentEmailOTPChallengesParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countRecentEmailOTPChallenges, arg.UserID, arg.CreatedAt)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnusedRecoveryCodes = `-- name: CountUnusedRecoveryCodes :one
 SELECT COUNT(*) FROM mfa_recovery_codes
 WHERE user_id = $1 AND used_at IS NULL
@@ -33,6 +52,39 @@ func (q *Queries) CountUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createMFAChallenge = `-- name: CreateMFAChallenge :one
+INSERT INTO mfa_challenges (user_id, challenge_type, token_hash, expires_at)
+VALUES ($1, $2, $3, $4)
+RETURNING id, user_id, challenge_type, token_hash, attempts, expires_at, created_at
+`
+
+type CreateMFAChallengeParams struct {
+	UserID        uuid.UUID
+	ChallengeType string
+	TokenHash     string
+	ExpiresAt     time.Time
+}
+
+func (q *Queries) CreateMFAChallenge(ctx context.Context, arg CreateMFAChallengeParams) (MfaChallenge, error) {
+	row := q.db.QueryRowContext(ctx, createMFAChallenge,
+		arg.UserID,
+		arg.ChallengeType,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	var i MfaChallenge
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChallengeType,
+		&i.TokenHash,
+		&i.Attempts,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const createMFACredential = `-- name: CreateMFACredential :one
@@ -101,6 +153,52 @@ func (q *Queries) DeleteAllRecoveryCodes(ctx context.Context, userID uuid.UUID) 
 	return result.RowsAffected()
 }
 
+const deleteAllUserChallenges = `-- name: DeleteAllUserChallenges :execrows
+DELETE FROM mfa_challenges WHERE user_id = $1
+`
+
+func (q *Queries) DeleteAllUserChallenges(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAllUserChallenges, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteChallenge = `-- name: DeleteChallenge :exec
+DELETE FROM mfa_challenges WHERE id = $1
+`
+
+func (q *Queries) DeleteChallenge(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, deleteChallenge, id)
+	return err
+}
+
+const deleteEmailOTPChallenges = `-- name: DeleteEmailOTPChallenges :execrows
+DELETE FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp'
+`
+
+func (q *Queries) DeleteEmailOTPChallenges(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteEmailOTPChallenges, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteExpiredChallenges = `-- name: DeleteExpiredChallenges :execrows
+DELETE FROM mfa_challenges WHERE expires_at < now()
+`
+
+func (q *Queries) DeleteExpiredChallenges(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteExpiredChallenges)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteMFACredential = `-- name: DeleteMFACredential :execrows
 DELETE FROM mfa_credentials WHERE user_id = $1 AND method = $2
 `
@@ -116,6 +214,62 @@ func (q *Queries) DeleteMFACredential(ctx context.Context, arg DeleteMFACredenti
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const deleteRememberDeviceTokens = `-- name: DeleteRememberDeviceTokens :execrows
+DELETE FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'remember_device'
+`
+
+func (q *Queries) DeleteRememberDeviceTokens(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteRememberDeviceTokens, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const getActiveEmailOTPChallenge = `-- name: GetActiveEmailOTPChallenge :one
+SELECT id, user_id, challenge_type, token_hash, attempts, expires_at, created_at FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+LIMIT 1
+`
+
+func (q *Queries) GetActiveEmailOTPChallenge(ctx context.Context, userID uuid.UUID) (MfaChallenge, error) {
+	row := q.db.QueryRowContext(ctx, getActiveEmailOTPChallenge, userID)
+	var i MfaChallenge
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChallengeType,
+		&i.TokenHash,
+		&i.Attempts,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getActiveEmailOTPChallengeForUpdate = `-- name: GetActiveEmailOTPChallengeForUpdate :one
+SELECT id, user_id, challenge_type, token_hash, attempts, expires_at, created_at FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+LIMIT 1
+FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) GetActiveEmailOTPChallengeForUpdate(ctx context.Context, userID uuid.UUID) (MfaChallenge, error) {
+	row := q.db.QueryRowContext(ctx, getActiveEmailOTPChallengeForUpdate, userID)
+	var i MfaChallenge
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChallengeType,
+		&i.TokenHash,
+		&i.Attempts,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getMFACredentialByUserAndMethod = `-- name: GetMFACredentialByUserAndMethod :one
@@ -180,6 +334,33 @@ func (q *Queries) GetMFACredentialsByUserID(ctx context.Context, userID uuid.UUI
 	return items, nil
 }
 
+const getRememberDeviceToken = `-- name: GetRememberDeviceToken :one
+SELECT id, user_id, challenge_type, token_hash, attempts, expires_at, created_at FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'remember_device'
+  AND token_hash = $2 AND expires_at > now()
+LIMIT 1
+`
+
+type GetRememberDeviceTokenParams struct {
+	UserID    uuid.UUID
+	TokenHash string
+}
+
+func (q *Queries) GetRememberDeviceToken(ctx context.Context, arg GetRememberDeviceTokenParams) (MfaChallenge, error) {
+	row := q.db.QueryRowContext(ctx, getRememberDeviceToken, arg.UserID, arg.TokenHash)
+	var i MfaChallenge
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ChallengeType,
+		&i.TokenHash,
+		&i.Attempts,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getUnusedRecoveryCodeByHash = `-- name: GetUnusedRecoveryCodeByHash :one
 SELECT id, user_id, code_hash, used_at, created_at FROM mfa_recovery_codes
 WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL
@@ -225,6 +406,19 @@ func (q *Queries) GetUnusedRecoveryCodeByHashForUpdate(ctx context.Context, arg 
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const incrementChallengeAttempts = `-- name: IncrementChallengeAttempts :one
+UPDATE mfa_challenges SET attempts = attempts + 1
+WHERE id = $1
+RETURNING attempts
+`
+
+func (q *Queries) IncrementChallengeAttempts(ctx context.Context, id uuid.UUID) (int32, error) {
+	row := q.db.QueryRowContext(ctx, incrementChallengeAttempts, id)
+	var attempts int32
+	err := row.Scan(&attempts)
+	return attempts, err
 }
 
 const markRecoveryCodeUsed = `-- name: MarkRecoveryCodeUsed :exec

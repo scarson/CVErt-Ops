@@ -51,3 +51,52 @@ WHERE user_id = $1 AND used_at IS NULL;
 
 -- name: DeleteAllRecoveryCodes :execrows
 DELETE FROM mfa_recovery_codes WHERE user_id = $1;
+
+-- name: CreateMFAChallenge :one
+INSERT INTO mfa_challenges (user_id, challenge_type, token_hash, expires_at)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: GetActiveEmailOTPChallenge :one
+SELECT * FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+LIMIT 1;
+
+-- name: GetActiveEmailOTPChallengeForUpdate :one
+SELECT * FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+
+-- name: IncrementChallengeAttempts :one
+UPDATE mfa_challenges SET attempts = attempts + 1
+WHERE id = $1
+RETURNING attempts;
+
+-- name: DeleteEmailOTPChallenges :execrows
+DELETE FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp';
+
+-- name: DeleteAllUserChallenges :execrows
+DELETE FROM mfa_challenges WHERE user_id = $1;
+
+-- name: DeleteRememberDeviceTokens :execrows
+DELETE FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'remember_device';
+
+-- name: GetRememberDeviceToken :one
+SELECT * FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'remember_device'
+  AND token_hash = $2 AND expires_at > now()
+LIMIT 1;
+
+-- name: CountRecentEmailOTPChallenges :one
+SELECT COUNT(*) FROM mfa_challenges
+WHERE user_id = $1 AND challenge_type = 'email_otp'
+  AND created_at > $2;
+
+-- name: DeleteExpiredChallenges :execrows
+DELETE FROM mfa_challenges WHERE expires_at < now();
+
+-- name: DeleteChallenge :exec
+DELETE FROM mfa_challenges WHERE id = $1;

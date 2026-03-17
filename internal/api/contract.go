@@ -140,7 +140,8 @@ func parseLimitParam(w http.ResponseWriter, r *http.Request, defaultLimit, maxLi
 	if s == "" {
 		return defaultLimit, true
 	}
-	limit, err := strconv.Atoi(s)
+	v, err := strconv.ParseInt(s, 10, 32)
+	limit := int(v)
 	if err != nil || limit < 1 || limit > maxLimit {
 		writeProblem(w, http.StatusBadRequest,
 			fmt.Sprintf("invalid limit: must be 1-%d", maxLimit))

@@ -118,7 +118,7 @@ Coverage data:
 Analyze every function: 0% → classify risk; 1-99% → identify uncovered branches;
 100% security functions → audit assertion quality.
 
-Output file: dev/test-coverage-reports/<date>-<slug>-subagent-triage.md
+Output file: dev/test-coverage-reports/<date>-<slug>-triage.md
 Return ONLY: file path, counts by severity, top 3 findings, any production bugs.
 DO NOT write code.
 ```
@@ -134,7 +134,7 @@ For every API handler and security-critical function:
 - Store-layer independence (§4E)
 Also: assertion quality audit (§5) for covered security code.
 
-Output file: dev/test-coverage-reports/<date>-<slug>-subagent-semantic.md
+Output file: dev/test-coverage-reports/<date>-<slug>-semantic.md
 Return ONLY: file path, counts by severity, top 3 findings, any production bugs.
 DO NOT write code.
 ```

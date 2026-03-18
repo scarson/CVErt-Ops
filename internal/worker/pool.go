@@ -39,6 +39,13 @@ const (
 	maxJobDuration = 10 * time.Minute
 )
 
+// PeriodicTask runs on a fixed interval alongside the job queue polling.
+type PeriodicTask struct {
+	Name     string
+	Interval time.Duration
+	Fn       func(ctx context.Context) error
+}
+
 // Pool manages a set of goroutine workers that claim and execute jobs from
 // the job_queue table. One polling goroutine runs per registered queue; a
 // shared stale-lock recovery goroutine resets stuck jobs. Per-queue concurrency
@@ -49,6 +56,7 @@ type Pool struct {
 	mu          sync.RWMutex
 	handlers    map[string]Handler
 	concurrency map[string]int
+	periodic    []PeriodicTask
 }
 
 // New creates a Pool backed by s. A random workerID is generated at construction
@@ -66,6 +74,14 @@ func New(s JobStore) *Pool {
 // Must be called before Start.
 func (p *Pool) Register(queue string, h Handler) {
 	p.RegisterWithConcurrency(queue, h, 1)
+}
+
+// RegisterPeriodic adds a periodic task that runs alongside the job queues.
+// Must be called before Start.
+func (p *Pool) RegisterPeriodic(task PeriodicTask) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.periodic = append(p.periodic, task)
 }
 
 // RegisterWithConcurrency associates h with the named queue and allows up to
@@ -103,6 +119,16 @@ func (p *Pool) Start(ctx context.Context) {
 	wg.Go(func() {
 		p.runStaleRecovery(ctx)
 	})
+
+	p.mu.RLock()
+	tasks := make([]PeriodicTask, len(p.periodic))
+	copy(tasks, p.periodic)
+	p.mu.RUnlock()
+	for _, task := range tasks {
+		wg.Go(func() {
+			p.runPeriodic(ctx, task)
+		})
+	}
 
 	wg.Wait()
 	slog.Info("worker pool stopped", "worker_id", p.workerID)
@@ -211,6 +237,35 @@ func (p *Pool) safeExecute(ctx context.Context, h Handler, payload []byte) (err 
 		}
 	}()
 	return h(ctx, payload)
+}
+
+// runPeriodic runs a single PeriodicTask on its configured interval until ctx
+// is cancelled. Errors are logged, never returned.
+func (p *Pool) runPeriodic(ctx context.Context, task PeriodicTask) {
+	ticker := time.NewTicker(task.Interval)
+	defer ticker.Stop()
+
+	slog.Info("periodic task started", "task", task.Name, "interval", task.Interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("periodic task stopping", "task", task.Name)
+			return
+		case <-ticker.C:
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("periodic task panic", "task", task.Name,
+							"error", r, "stack", string(debug.Stack()))
+					}
+				}()
+				if err := task.Fn(ctx); err != nil {
+					slog.Error("periodic task error", "task", task.Name, "error", err)
+				}
+			}()
+		}
+	}
 }
 
 // runStaleRecovery periodically resets jobs stuck in 'running' state. Uses

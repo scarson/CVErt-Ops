@@ -227,6 +227,7 @@ func (srv *Server) Handler() http.Handler {
 	api := humachi.New(apiRouter, humaConfig)
 	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
+	registerMFARoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
@@ -292,12 +293,17 @@ func (srv *Server) Handler() http.Handler {
 			r.Get("/", srv.getOrgHandler)
 			r.Get("/tier", srv.getOrgTierHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
+			r.With(srv.RequireOrgRole(RoleOwner)).Patch("/mfa-settings", srv.adminUpdateOrgMFASettingsHandler)
 
 			// Member management
 			r.Route("/members", func(r chi.Router) {
 				r.Get("/", srv.listMembersHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/{user_id}", srv.updateMemberRoleHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeMemberHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/reset-mfa", srv.adminResetMFAHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/force-password-reset", srv.adminForcePasswordResetHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/require-mfa", srv.adminRequireMFAHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}/require-mfa", srv.adminUnrequireMFAHandler)
 			})
 
 			// Invitation management

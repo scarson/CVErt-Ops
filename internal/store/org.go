@@ -36,6 +36,23 @@ func (s *Store) UpdateOrg(ctx context.Context, id uuid.UUID, name string) (*gene
 	return &row, nil
 }
 
+// UpdateOrgMFASettings updates the MFA-related columns on the org.
+func (s *Store) UpdateOrgMFASettings(ctx context.Context, id uuid.UUID, requiredAll, rememberDeviceAllowed bool, rememberDeviceDays int32) (*generated.Organization, error) {
+	row, err := s.q.UpdateOrgMFASettings(ctx, generated.UpdateOrgMFASettingsParams{
+		ID:                       id,
+		MfaRequiredAll:           requiredAll,
+		MfaRememberDeviceAllowed: rememberDeviceAllowed,
+		MfaRememberDeviceDays:    rememberDeviceDays,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update org mfa settings: %w", err)
+	}
+	return &row, nil
+}
+
 // CreateOrgWithOwner atomically creates a new org and adds ownerID as owner.
 // Uses RLS bypass since no org context exists at creation time.
 func (s *Store) CreateOrgWithOwner(ctx context.Context, name string, ownerID uuid.UUID) (*generated.Organization, error) {

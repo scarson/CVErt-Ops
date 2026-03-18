@@ -4,6 +4,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/secure"
+	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -206,15 +209,55 @@ func (srv *Server) registerHandler(ctx context.Context, input *registerInput) (*
 
 // loginInput is the request body for POST /auth/login.
 type loginInput struct {
-	Body struct {
+	MFADeviceToken string `cookie:"mfa_device_token" doc:"Remember-device token (optional)"`
+	Body           struct {
 		Email    string `json:"email"    format:"email" maxLength:"254"  doc:"User email"`
 		Password string `json:"password" minLength:"16" maxLength:"1024" doc:"Password"`
 	}
 }
 
-// loginOutput returns auth cookies (no JSON body needed).
+// loginOutput returns auth cookies and MFA pending state.
 type loginOutput struct {
 	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		UserID  uuid.UUID `json:"user_id"           doc:"Authenticated user ID"`
+		Pending []string  `json:"pending"            doc:"Remaining auth steps (empty = fully authenticated)"`
+		Methods []string  `json:"methods,omitempty"   doc:"Available MFA methods (only when pending contains mfa_challenge)"`
+	}
+}
+
+// sha256Hex returns the hex-encoded SHA-256 hash of s.
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// pendingTokenCookies creates the mfa_pending_token Set-Cookie header.
+func pendingTokenCookies(token string, secure bool, ttl time.Duration) []string {
+	c := &http.Cookie{
+		Name:     "mfa_pending_token",
+		Value:    token,
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(ttl.Seconds()),
+	}
+	return []string{c.String()}
+}
+
+// clearPendingTokenCookie expires the mfa_pending_token cookie.
+func clearPendingTokenCookie(secure bool) string {
+	c := &http.Cookie{
+		Name:     "mfa_pending_token",
+		Value:    "",
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	}
+	return c.String()
 }
 
 // loginHandler handles POST /api/v1/auth/login.
@@ -352,7 +395,108 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	// Successful login — reset lockout counter.
 	srv.lockout.RecordSuccess(ctx, input.Body.Email)
 
-	// Issue tokens.
+	// ── MFA / restricted session checks ──────────────────────────────
+	var pending []string
+	var methods []string
+
+	hasMFA, err := srv.store.UserHasMFACredentials(ctx, user.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "login: check MFA credentials", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	if hasMFA {
+		// Check remember-device cookie before requiring MFA challenge.
+		skipMFA := false
+		if input.MFADeviceToken != "" {
+			tokenHash := sha256Hex(input.MFADeviceToken)
+			valid, valErr := srv.store.ValidateRememberDeviceToken(ctx, user.ID, tokenHash)
+			if valErr != nil {
+				slog.WarnContext(ctx, "login: check device token", "error", valErr)
+			}
+			if valid {
+				skipMFA = true
+				if srv.eventWriter != nil {
+					srv.eventWriter.Write(ctx, secure.Event{
+						Type:     secure.EventMFARememberDeviceUsed,
+						Severity: secure.SeverityInfo,
+						ActorIP:  clientIP(ctx),
+						UserID:   &user.ID,
+					})
+				}
+			}
+		}
+		if !skipMFA {
+			pending = append(pending, "mfa_challenge")
+			creds, credErr := srv.store.GetMFACredentialsByUserID(ctx, user.ID)
+			if credErr != nil {
+				slog.ErrorContext(ctx, "login: get MFA methods", "error", credErr)
+				return nil, huma.Error500InternalServerError("internal error")
+			}
+			for _, c := range creds {
+				methods = append(methods, c.Method)
+			}
+		}
+	}
+
+	if user.ForcePasswordReset {
+		pending = append(pending, "password_reset")
+	}
+
+	if !hasMFA {
+		isSiteAdmin, saErr := srv.store.IsSiteAdmin(ctx, user.ID)
+		if saErr != nil {
+			slog.ErrorContext(ctx, "login: check site admin", "error", saErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		mfaCfg := store.MFAConfig{
+			RequiredSiteAdmins: srv.cfg.MFARequiredSiteAdmins,
+			RequiredOrgOwners:  srv.cfg.MFARequiredOrgOwners,
+		}
+		required, mfaErr := srv.store.UserMFARequired(ctx, user.ID, isSiteAdmin, mfaCfg)
+		if mfaErr != nil {
+			slog.ErrorContext(ctx, "login: check MFA mandate", "error", mfaErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if required {
+			pending = append(pending, "mfa_enrollment_required")
+		}
+	}
+
+	// Non-fatal — last_login_at is informational only.
+	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
+		slog.WarnContext(ctx, "login: update last login", "error", err)
+	}
+
+	if len(pending) > 0 {
+		// Issue restricted pending token instead of full auth tokens.
+		pendingToken, ptErr := auth.IssuePendingToken(
+			secret, user.ID, int(user.TokenVersion),
+			pending, methods, srv.cfg.MFAPendingTokenTTL,
+		)
+		if ptErr != nil {
+			slog.ErrorContext(ctx, "login: issue pending token", "error", ptErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthLoginSuccess,
+				Severity:   secure.SeverityInfo,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: input.Body.Email,
+				UserID:     &user.ID,
+				Details:    map[string]any{"pending": pending},
+			})
+		}
+		out := &loginOutput{}
+		out.Body.UserID = user.ID
+		out.Body.Pending = pending
+		out.Body.Methods = methods
+		out.SetCookie = pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+		return out, nil
+	}
+
+	// No pending items — issue full access + refresh tokens.
 	jti := uuid.New()
 	accessToken, err := auth.IssueAccessToken(secret, user.ID, int(user.TokenVersion), accessTokenTTL)
 	if err != nil {
@@ -369,11 +513,6 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
-	// Non-fatal — last_login_at is informational only.
-	if err := srv.store.UpdateLastLogin(ctx, user.ID); err != nil {
-		slog.WarnContext(ctx, "login: update last login", "error", err)
-	}
-
 	if srv.eventWriter != nil {
 		srv.eventWriter.Write(ctx, secure.Event{
 			Type:       secure.EventAuthLoginSuccess,
@@ -384,7 +523,11 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		})
 	}
 
-	return &loginOutput{SetCookie: authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)}, nil
+	out := &loginOutput{}
+	out.Body.UserID = user.ID
+	out.Body.Pending = []string{}
+	out.SetCookie = authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)
+	return out, nil
 }
 
 // ── Refresh ───────────────────────────────────────────────────────────────────
@@ -609,31 +752,63 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 
 // ── Change password ───────────────────────────────────────────────────────────
 
-// changePasswordInput reads the access token cookie and the password change body.
+// changePasswordInput reads the access token or pending token cookie and the
+// password change body. In restricted session mode (force_password_reset via
+// pending token), current_password is optional.
 type changePasswordInput struct {
-	AccessToken string `cookie:"access_token" doc:"Access token cookie"`
-	Body        struct {
-		CurrentPassword string `json:"current_password" minLength:"1"  maxLength:"1024" doc:"Current password"`
-		NewPassword     string `json:"new_password"     minLength:"16" maxLength:"1024" doc:"New password (min 16 characters)"`
+	AccessToken     string `cookie:"access_token"       doc:"Access token cookie"`
+	MFAPendingToken string `cookie:"mfa_pending_token"   doc:"Pending token cookie (restricted session)"`
+	Body            struct {
+		CurrentPassword *string `json:"current_password,omitempty" maxLength:"1024" doc:"Current password (required in normal mode, optional in restricted mode)"`
+		NewPassword     string  `json:"new_password"               minLength:"16" maxLength:"1024" doc:"New password (min 16 characters)"`
 	}
 }
 
-// changePasswordOutput has no body — 200 on success.
-type changePasswordOutput struct{}
+// changePasswordOutput returns tokens when completing a restricted session.
+type changePasswordOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		Pending []string `json:"pending,omitempty" doc:"Remaining pending items (if any)"`
+	}
+}
 
 // changePasswordHandler handles POST /api/v1/auth/change-password.
-// Verifies the current password, hashes the new one, and increments token_version
-// to invalidate all active refresh tokens.
+// Supports two modes:
+//   - Normal: access_token + current_password → verify old password, set new one.
+//   - Restricted: mfa_pending_token with "password_reset" → skip current_password
+//     (password may be compromised). Issues full tokens or reissues pending token.
 func (srv *Server) changePasswordHandler(ctx context.Context, input *changePasswordInput) (*changePasswordOutput, error) {
-	if input.AccessToken == "" {
+	var (
+		userID        uuid.UUID
+		pendingClaims *auth.PendingClaims
+		isRestricted  bool
+	)
+
+	// Resolve auth context: access token or pending token with "password_reset".
+	if input.AccessToken != "" {
+		claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+		if err == nil {
+			userID = claims.UserID
+		}
+	}
+	if userID == uuid.Nil && input.MFAPendingToken != "" {
+		claims, err := auth.ParsePendingToken(input.MFAPendingToken, []byte(srv.cfg.JWTSecret))
+		if err == nil {
+			for _, p := range claims.Pending {
+				if p == "password_reset" {
+					userID = claims.UserID
+					pendingClaims = claims
+					isRestricted = true
+					break
+				}
+			}
+		}
+	}
+	if userID == uuid.Nil {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
-	if err != nil {
-		return nil, huma.Error401Unauthorized("invalid or expired access token")
-	}
 
-	user, err := srv.store.GetUserByID(ctx, claims.UserID)
+	user, err := srv.store.GetUserByID(ctx, userID)
 	if err != nil || user == nil {
 		slog.ErrorContext(ctx, "change-password: get user", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -642,21 +817,27 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		return nil, huma.Error400BadRequest("account uses OAuth authentication — password change not supported")
 	}
 
-	// Verify current password (argon2 semaphore, sequential — not simultaneous).
-	if !srv.acquireArgon2() {
-		return nil, huma.Error503ServiceUnavailable("server busy, please retry")
-	}
-	var ok bool
-	func() {
-		defer srv.releaseArgon2()
-		ok, err = auth.VerifyPassword(input.Body.CurrentPassword, user.PasswordHash.String)
-	}()
-	if err != nil {
-		slog.ErrorContext(ctx, "change-password: verify", "error", err)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if !ok {
-		return nil, huma.Error401Unauthorized("current password incorrect")
+	// In normal mode, verify current password. In restricted mode, skip — the
+	// password may be compromised (admin forced reset).
+	if !isRestricted {
+		if input.Body.CurrentPassword == nil || *input.Body.CurrentPassword == "" {
+			return nil, huma.Error422UnprocessableEntity("current_password is required")
+		}
+		if !srv.acquireArgon2() {
+			return nil, huma.Error503ServiceUnavailable("server busy, please retry")
+		}
+		var ok bool
+		func() {
+			defer srv.releaseArgon2()
+			ok, err = auth.VerifyPassword(*input.Body.CurrentPassword, user.PasswordHash.String)
+		}()
+		if err != nil {
+			slog.ErrorContext(ctx, "change-password: verify", "error", err)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if !ok {
+			return nil, huma.Error401Unauthorized("current password incorrect")
+		}
 	}
 
 	// Hash the new password.
@@ -685,18 +866,68 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		// Non-fatal — password is already changed.
 	}
 
+	// Delete remember-device tokens (password change invalidates them).
+	if err := srv.store.DeleteRememberDeviceTokens(ctx, user.ID); err != nil {
+		slog.WarnContext(ctx, "change-password: delete device tokens", "error", err)
+	}
+
 	if srv.eventWriter != nil {
+		method := "change_password"
+		if isRestricted {
+			method = "forced_reset"
+		}
 		srv.eventWriter.Write(ctx, secure.Event{
 			Type:       secure.EventAuthPasswordChanged,
 			Severity:   secure.SeverityInfo,
 			ActorIP:    clientIP(ctx),
 			ActorEmail: user.Email,
 			UserID:     &user.ID,
-			Details:    map[string]any{"method": "change_password"},
+			Details:    map[string]any{"method": method},
 		})
+		if isRestricted {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventAuthPasswordResetForcedCompleted,
+				Severity: secure.SeverityInfo,
+				ActorIP:  clientIP(ctx),
+				UserID:   &user.ID,
+			})
+		}
 	}
 
-	return &changePasswordOutput{}, nil
+	out := &changePasswordOutput{}
+
+	// In restricted session, progress the pending token.
+	if isRestricted && pendingClaims != nil {
+		remaining := removePendingItem(pendingClaims.Pending, "password_reset")
+		if len(remaining) > 0 {
+			token, ptErr := auth.IssuePendingToken(
+				[]byte(srv.cfg.JWTSecret), userID, pendingClaims.TokenVersion,
+				remaining, nil, srv.cfg.MFAPendingTokenTTL,
+			)
+			if ptErr != nil {
+				slog.ErrorContext(ctx, "change-password: reissue pending token", "error", ptErr)
+				return nil, huma.Error500InternalServerError("internal error")
+			}
+			out.Body.Pending = remaining
+			out.SetCookie = pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+			return out, nil
+		}
+
+		// All pending items cleared — re-read user (token_version was incremented).
+		user, err = srv.store.GetUserByID(ctx, userID)
+		if err != nil || user == nil {
+			slog.ErrorContext(ctx, "change-password: re-read user", "error", err)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		cookies, tokErr := srv.issueFullAuthTokens(ctx, user)
+		if tokErr != nil {
+			return nil, tokErr
+		}
+		out.SetCookie = cookies
+		out.SetCookie = append(out.SetCookie, clearPendingTokenCookie(srv.cfg.CookieSecure))
+	}
+
+	return out, nil
 }
 
 // ── Invitations (public + authenticated) ──────────────────────────────────────

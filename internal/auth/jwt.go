@@ -198,3 +198,47 @@ func ParsePendingToken(tokenStr string, secret []byte) (*PendingClaims, error) {
 	}
 	return claims, nil
 }
+
+// EnrollmentClaims holds the claims for a short-lived MFA enrollment token.
+// Contains an encrypted TOTP secret that is provisional until the user
+// confirms enrollment with a valid code.
+type EnrollmentClaims struct {
+	jwt.RegisteredClaims
+	UserID    uuid.UUID `json:"sub"`
+	SecretEnc []byte    `json:"sec"` // AES-256-GCM encrypted TOTP secret
+}
+
+// IssueEnrollmentToken creates a short-lived JWT containing the encrypted TOTP
+// secret. The secret is NOT stored in the DB until the user confirms enrollment.
+func IssueEnrollmentToken(secret []byte, userID uuid.UUID, secretEnc []byte, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := EnrollmentClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+		UserID:    userID,
+		SecretEnc: secretEnc,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(secret)
+	if err != nil {
+		return "", fmt.Errorf("sign enrollment token: %w", err)
+	}
+	return signed, nil
+}
+
+// ParseEnrollmentToken validates and parses an HS256 MFA enrollment token.
+func ParseEnrollmentToken(tokenStr string, secret []byte) (*EnrollmentClaims, error) {
+	claims := &EnrollmentClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
+		return secret, nil
+	},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("parse enrollment token: %w", err)
+	}
+	return claims, nil
+}

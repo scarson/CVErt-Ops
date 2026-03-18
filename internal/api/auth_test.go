@@ -80,6 +80,7 @@ func newRegisterServer(t *testing.T, db *testutil.TestDB, regMode string) (*Serv
 		JWTSecret:           "regtestsecret",
 		RegistrationMode:    regMode,
 		Argon2MaxConcurrent: 5,
+		MFAPendingTokenTTL:  5 * time.Minute,
 	}
 	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
@@ -1294,17 +1295,21 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 		t.Fatal("force_password_reset should be true before password change")
 	}
 
-	// Login and change password.
+	// Login — with force_password_reset, login returns a pending token.
 	loginResp := doLogin(t, ctx, ts, "forcereset-clear@example.com", "test-old-password-1")
 	loginResp.Body.Close() //nolint:errcheck,gosec // G104
-	accessToken := cookieValue(loginResp, "access_token")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie from login with force_password_reset")
+	}
 
-	body := `{"current_password":"test-old-password-1","new_password":"test-new-password-1"}`
+	// Change password using restricted session (pending token, no current_password).
+	body := `{"new_password":"test-new-password-1"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1324,7 +1329,7 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 	}
 }
 
-func TestMe_IncludesForcePasswordReset(t *testing.T) {
+func TestLogin_IncludesForcePasswordReset(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -1341,29 +1346,31 @@ func TestMe_IncludesForcePasswordReset(t *testing.T) {
 		t.Fatalf("set force_password_reset: %v", err)
 	}
 
+	// Login returns a pending token with "password_reset" in pending array.
 	loginResp := doLogin(t, ctx, ts, "forcereset-me@example.com", "test-password-1234")
-	loginResp.Body.Close() //nolint:errcheck,gosec // G104
-	accessToken := cookieValue(loginResp, "access_token")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
-	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
-	if err != nil {
-		t.Fatalf("get me: %v", err)
+	body := parseLoginBody(t, loginResp)
+	if len(body.Pending) == 0 {
+		t.Fatal("expected non-empty pending array for force_password_reset user")
 	}
-	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get me: got %d, want 200", resp.StatusCode)
+	found := false
+	for _, p := range body.Pending {
+		if p == "password_reset" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'password_reset' in pending, got %v", body.Pending)
 	}
 
-	var body struct {
-		ForcePasswordReset bool `json:"force_password_reset"`
+	// Should issue pending token (not access token).
+	if cookieValue(loginResp, "mfa_pending_token") == "" {
+		t.Error("expected mfa_pending_token cookie for force_password_reset user")
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode me response: %v", err)
-	}
-	if !body.ForcePasswordReset {
-		t.Error("force_password_reset should be true in /auth/me response")
+	if cookieValue(loginResp, "access_token") != "" {
+		t.Error("should NOT issue access_token when force_password_reset is set")
 	}
 }
 

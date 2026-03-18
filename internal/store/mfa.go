@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -338,7 +339,7 @@ func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 			return err
 		}
 
-		if challenge.TokenHash == codeHash {
+		if subtle.ConstantTimeCompare([]byte(challenge.TokenHash), []byte(codeHash)) == 1 {
 			// Correct code — delete the challenge and report success.
 			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
 				return err
@@ -536,7 +537,7 @@ func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdm
 
 	// Layer 2a: site config — org owners must have MFA.
 	if cfg.RequiredOrgOwners {
-		isOwner, err := s.isOrgOwner(ctx, userID)
+		isOwner, err := s.IsOrgOwner(ctx, userID)
 		if err != nil {
 			return false, fmt.Errorf("check org owner: %w", err)
 		}
@@ -562,8 +563,8 @@ func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdm
 	return hasReq, nil
 }
 
-// isOrgOwner checks whether a user has the 'owner' role in any org.
-func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
+// IsOrgOwner checks whether a user has the 'owner' role in any org.
+func (s *Store) IsOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
 	var isOwner bool
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
@@ -574,4 +575,34 @@ func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) 
 		return false, fmt.Errorf("is org owner: %w", err)
 	}
 	return isOwner, nil
+}
+
+// AllUserOrgsAllowRememberDevice checks whether all orgs the user belongs to
+// allow remember-device tokens. If any org disallows, returns false.
+func (s *Store) AllUserOrgsAllowRememberDevice(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var allowed bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		allowed, err = q.AllUserOrgsAllowRememberDevice(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("all orgs allow remember device: %w", err)
+	}
+	return allowed, nil
+}
+
+// MinRememberDeviceDays returns the minimum remember-device retention days
+// across all orgs the user belongs to. Uses most-restrictive org setting.
+func (s *Store) MinRememberDeviceDays(ctx context.Context, userID uuid.UUID) (int32, error) {
+	var days int32
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		days, err = q.MinRememberDeviceDays(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("min remember device days: %w", err)
+	}
+	return days, nil
 }

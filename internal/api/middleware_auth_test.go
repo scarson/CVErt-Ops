@@ -491,3 +491,44 @@ func TestRequireAuthenticated_ForcePasswordReset_AllowsMe(t *testing.T) {
 		t.Error("handler was not reached — middleware blocked /auth/me")
 	}
 }
+
+// TestRequireAuthenticated_ForcePasswordReset_AllowsMFARoutes verifies that
+// a user with force_password_reset=true can access /auth/mfa/* routes.
+func TestRequireAuthenticated_ForcePasswordReset_AllowsMFARoutes(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "forcereset-mfa@example.com", "ForceResetMFA", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	var reached bool
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/mfa/methods", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("force_password_reset on /auth/mfa/methods: got %d, want 200", rec.Code)
+	}
+	if !reached {
+		t.Error("handler was not reached — middleware blocked /auth/mfa/methods")
+	}
+}

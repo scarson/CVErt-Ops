@@ -1490,7 +1490,7 @@ func TestEnrollment_RejectsOutOfOrderPending(t *testing.T) {
 	pendingToken, err := auth.IssuePendingToken(
 		srv.jwtSecret(),
 		userID,
-		0,
+		1,
 		[]string{"password_reset", "mfa_enrollment_required"},
 		nil,
 		5*time.Minute,
@@ -1525,10 +1525,11 @@ func TestEnrollment_AcceptsCorrectOrder(t *testing.T) {
 	}
 
 	// Create a pending token where mfa_enrollment_required is the first (and only) step.
+	// token_version=1 matches the DB default for a freshly registered user.
 	pendingToken, err := auth.IssuePendingToken(
 		srv.jwtSecret(),
 		userID,
-		0,
+		1,
 		[]string{"mfa_enrollment_required"},
 		nil,
 		5*time.Minute,
@@ -1547,5 +1548,49 @@ func TestEnrollment_AcceptsCorrectOrder(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("correct order pending: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestEnrollment_RejectsStaleTokenVersion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "stale-tv-enroll@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token with token_version=1 (matching the freshly registered user).
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	// Increment token_version (simulating admin MFA reset).
+	if _, err := srv.store.IncrementTokenVersion(ctx, userID); err != nil {
+		t.Fatalf("increment token version: %v", err)
+	}
+
+	// Attempt enrollment with the now-stale pending token.
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("stale token_version: got %d, want 401", resp.StatusCode)
 	}
 }

@@ -525,7 +525,7 @@ type mfaTOTPSetupOutput struct {
 // short-lived enrollment cookie. The secret is NOT persisted to the DB
 // until the user confirms with a valid code.
 func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupInput) (*mfaTOTPSetupOutput, error) {
-	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	userID, err := srv.resolveEnrollmentUserID(ctx, input.AccessToken, input.MFAPendingToken)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +610,7 @@ type mfaTOTPConfirmOutput struct {
 // Validates the TOTP code against the provisional secret from the enrollment
 // cookie, then persists the credential and generates recovery codes.
 func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConfirmInput) (*mfaTOTPConfirmOutput, error) {
-	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	userID, err := srv.resolveEnrollmentUserID(ctx, input.AccessToken, input.MFAPendingToken)
 	if err != nil {
 		return nil, err
 	}
@@ -719,7 +719,7 @@ type mfaEmailOTPSetupOutput struct {
 // mfaEmailOTPSetupHandler handles POST /auth/mfa/email-otp/setup.
 // Sends a verification code to the user's email address.
 func (srv *Server) mfaEmailOTPSetupHandler(ctx context.Context, input *mfaEmailOTPSetupInput) (*mfaEmailOTPSetupOutput, error) {
-	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	userID, err := srv.resolveEnrollmentUserID(ctx, input.AccessToken, input.MFAPendingToken)
 	if err != nil {
 		return nil, err
 	}
@@ -793,7 +793,7 @@ type mfaEmailOTPConfirmOutput struct {
 // mfaEmailOTPConfirmHandler handles POST /auth/mfa/email-otp/confirm.
 // Verifies the email OTP code and creates the email_otp credential.
 func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmailOTPConfirmInput) (*mfaEmailOTPConfirmOutput, error) {
-	userID, err := srv.resolveEnrollmentUserID(input.AccessToken, input.MFAPendingToken)
+	userID, err := srv.resolveEnrollmentUserID(ctx, input.AccessToken, input.MFAPendingToken)
 	if err != nil {
 		return nil, err
 	}
@@ -1147,7 +1147,7 @@ func (srv *Server) generateFirstEnrollmentRecoveryCodes(ctx context.Context, use
 
 // resolveEnrollmentUserID extracts the user ID from either an access token
 // or a pending enrollment token. Returns 401 if neither is valid.
-func (srv *Server) resolveEnrollmentUserID(accessToken, pendingToken string) (uuid.UUID, error) {
+func (srv *Server) resolveEnrollmentUserID(ctx context.Context, accessToken, pendingToken string) (uuid.UUID, error) {
 	secret := srv.jwtSecret()
 
 	// Try access token first (fully authenticated user).
@@ -1162,6 +1162,14 @@ func (srv *Server) resolveEnrollmentUserID(accessToken, pendingToken string) (uu
 	if pendingToken != "" {
 		claims, err := auth.ParsePendingToken(pendingToken, secret)
 		if err == nil && len(claims.Pending) > 0 && claims.Pending[0] == "mfa_enrollment_required" {
+			// Validate token_version against DB (prevents stale tokens after admin actions).
+			user, err := srv.store.GetUserByID(ctx, claims.UserID)
+			if err != nil || user == nil {
+				return uuid.Nil, huma.Error401Unauthorized("authentication required")
+			}
+			if int(user.TokenVersion) != claims.TokenVersion {
+				return uuid.Nil, huma.Error401Unauthorized("session invalidated — please log in again")
+			}
 			return claims.UserID, nil
 		}
 	}

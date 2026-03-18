@@ -146,7 +146,7 @@ Present the validated findings to Sam. Structure the presentation as:
 
 ## Phase 4: Write Fix Plan
 
-After Sam has provided input, invoke `/writing-plans` to create an implementation plan for the selected issues.
+After Sam has provided input, invoke `/writing-plans` to create an implementation plan for the selected issues. The plan file MUST be saved to `dev/plans/<date>-<slug>-remediation-plan.md` (e.g., `dev/plans/2026-03-18-health-review-remediation-plan.md`).
 
 When `/writing-plans` presents execution options, **include a recommendation** for which approach would be most effective. The three options are: (1) subagent-driven in this session, (2) parallel session with `/executing-plans` in a worktree, or (3) Agent Teams for multi-agent parallel execution. Base the recommendation on: how much context this session has consumed, whether the plan is self-contained enough for a fresh session, how many tasks are parallelizable vs sequential, and whether any tasks are risky enough to warrant focused attention rather than parallel dispatch. Explain the reasoning concisely.
 

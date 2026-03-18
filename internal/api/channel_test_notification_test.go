@@ -49,12 +49,12 @@ func TestChannelTest_Webhook_Unreachable(t *testing.T) {
 	}
 	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
 
-	// Test the channel — should return 200 with success=false.
+	// Test the channel — should return 502 with success=false when delivery fails.
 	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusBadGateway {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("test channel: got %d, body: %s, want 200", resp.StatusCode, body)
+		t.Fatalf("test channel: got %d, body: %s, want 502", resp.StatusCode, body)
 	}
 
 	var result struct {
@@ -102,12 +102,12 @@ func TestChannelTest_Email(t *testing.T) {
 	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
 
 	// Test the email channel — will fail because SMTP is not configured in tests,
-	// but should return 200 with success=false (not 500).
+	// should return 502 with success=false (not 500).
 	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusBadGateway {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("test email channel: got %d, body: %s, want 200", resp.StatusCode, body)
+		t.Fatalf("test email channel: got %d, body: %s, want 502", resp.StatusCode, body)
 	}
 
 	var result struct {

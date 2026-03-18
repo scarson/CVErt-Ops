@@ -288,6 +288,7 @@ func (srv *Server) Handler() http.Handler {
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())
+		r.Use(noCacheMiddleware)
 		r.Post("/", srv.createOrgHandler)
 
 		r.Route("/{org_id}", func(r chi.Router) {

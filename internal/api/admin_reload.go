@@ -28,7 +28,7 @@ func (srv *Server) adminReloadConfigHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	newCfg, err := config.LoadFromSecretsFile(secretsFile)
+	newCfg, err := config.LoadFromSecretsFile(secretsFile, srv.configHolder.Load())
 	if err != nil {
 		slog.WarnContext(r.Context(), "admin reload-config: invalid secrets file", "error", err)
 		writeProblem(w, http.StatusBadRequest, err.Error())

@@ -55,7 +55,7 @@ func (h *Holder) Store(cfg *ReloadableConfig) {
 // LoadFromSecretsFile parses a secrets file (one KEY=VALUE per line) and returns
 // a ReloadableConfig. Comments (#) and blank lines are skipped. Returns an error
 // on invalid values so the caller can keep the previous config.
-func LoadFromSecretsFile(path string) (*ReloadableConfig, error) {
+func LoadFromSecretsFile(path string, baseline *ReloadableConfig) (*ReloadableConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open secrets file: %w", err)
@@ -79,7 +79,14 @@ func LoadFromSecretsFile(path string) (*ReloadableConfig, error) {
 		return nil, fmt.Errorf("read secrets file: %w", err)
 	}
 
-	rc := &ReloadableConfig{}
+	// Start from a copy of the baseline so absent fields keep their current values.
+	var rc *ReloadableConfig
+	if baseline != nil {
+		base := *baseline
+		rc = &base
+	} else {
+		rc = &ReloadableConfig{}
+	}
 
 	// JWT secrets.
 	if v, ok := kv["JWT_SECRET"]; ok && v != "" {
@@ -111,13 +118,25 @@ func LoadFromSecretsFile(path string) (*ReloadableConfig, error) {
 		rc.SSOEncryptionKeyPrev = key
 	}
 
-	// String fields.
-	rc.LogLevel = kv["LOG_LEVEL"]
-	rc.SMTPHost = kv["SMTP_HOST"]
-	rc.SMTPFrom = kv["SMTP_FROM"]
-	rc.SMTPUsername = kv["SMTP_USERNAME"]
-	rc.SMTPPassword = kv["SMTP_PASSWORD"]
-	rc.SIEMSyslogAddr = kv["SIEM_SYSLOG_ADDR"]
+	// String fields — only overwrite when present in the file.
+	if v, ok := kv["LOG_LEVEL"]; ok {
+		rc.LogLevel = v
+	}
+	if v, ok := kv["SMTP_HOST"]; ok {
+		rc.SMTPHost = v
+	}
+	if v, ok := kv["SMTP_FROM"]; ok {
+		rc.SMTPFrom = v
+	}
+	if v, ok := kv["SMTP_USERNAME"]; ok {
+		rc.SMTPUsername = v
+	}
+	if v, ok := kv["SMTP_PASSWORD"]; ok {
+		rc.SMTPPassword = v
+	}
+	if v, ok := kv["SIEM_SYSLOG_ADDR"]; ok {
+		rc.SIEMSyslogAddr = v
+	}
 
 	// SMTP port.
 	if v, ok := kv["SMTP_PORT"]; ok && v != "" {

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoadFromSecretsFile_ValidFile(t *testing.T) {
@@ -33,7 +36,7 @@ func TestLoadFromSecretsFile_ValidFile(t *testing.T) {
 	}, "\n")
 
 	path := writeTemp(t, content)
-	rc, err := LoadFromSecretsFile(path)
+	rc, err := LoadFromSecretsFile(path, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +90,7 @@ func TestLoadFromSecretsFile_InvalidJWTSecret(t *testing.T) {
 	content := "JWT_SECRET=short"
 	path := writeTemp(t, content)
 
-	_, err := LoadFromSecretsFile(path)
+	_, err := LoadFromSecretsFile(path, nil)
 	if err == nil {
 		t.Fatal("expected error for short JWT secret")
 	}
@@ -101,7 +104,7 @@ func TestLoadFromSecretsFile_InvalidSSOKey(t *testing.T) {
 	content := "SSO_ENCRYPTION_KEY=not-valid-hex-at-all"
 	path := writeTemp(t, content)
 
-	_, err := LoadFromSecretsFile(path)
+	_, err := LoadFromSecretsFile(path, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid SSO key")
 	}
@@ -115,7 +118,7 @@ func TestLoadFromSecretsFile_SSOKeyWrongLength(t *testing.T) {
 	content := "SSO_ENCRYPTION_KEY=" + strings.Repeat("ab", 16)
 	path := writeTemp(t, content)
 
-	_, err := LoadFromSecretsFile(path)
+	_, err := LoadFromSecretsFile(path, nil)
 	if err == nil {
 		t.Fatal("expected error for wrong-length SSO key")
 	}
@@ -132,7 +135,7 @@ func TestLoadFromSecretsFile_CommentsAndBlankLines(t *testing.T) {
 	}, "\n")
 
 	path := writeTemp(t, content)
-	rc, err := LoadFromSecretsFile(path)
+	rc, err := LoadFromSecretsFile(path, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +151,7 @@ func TestLoadFromSecretsFile_InvalidSIEMFormat(t *testing.T) {
 	content := "SIEM_SYSLOG_FORMAT=xml"
 	path := writeTemp(t, content)
 
-	_, err := LoadFromSecretsFile(path)
+	_, err := LoadFromSecretsFile(path, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid SIEM format")
 	}
@@ -161,7 +164,7 @@ func TestLoadFromSecretsFile_InvalidSMTPPort(t *testing.T) {
 	content := "SMTP_PORT=notanumber"
 	path := writeTemp(t, content)
 
-	_, err := LoadFromSecretsFile(path)
+	_, err := LoadFromSecretsFile(path, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid SMTP port")
 	}
@@ -169,7 +172,7 @@ func TestLoadFromSecretsFile_InvalidSMTPPort(t *testing.T) {
 
 func TestLoadFromSecretsFile_EmptyFile(t *testing.T) {
 	path := writeTemp(t, "")
-	rc, err := LoadFromSecretsFile(path)
+	rc, err := LoadFromSecretsFile(path, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +183,7 @@ func TestLoadFromSecretsFile_EmptyFile(t *testing.T) {
 }
 
 func TestLoadFromSecretsFile_MissingFile(t *testing.T) {
-	_, err := LoadFromSecretsFile("/nonexistent/file/path")
+	_, err := LoadFromSecretsFile("/nonexistent/file/path", nil)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -288,6 +291,60 @@ func TestConfigHolder_ConcurrentLoadStore(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// writeTempSecretsFile writes content to a temp file and returns its path.
+// The file is automatically cleaned up when t finishes.
+func writeTempSecretsFile(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "secrets-*.env")
+	require.NoError(t, err)
+	_, err = f.WriteString(content)
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	return f.Name()
+}
+
+func TestLoadFromSecretsFile_MergesOntoBaseline(t *testing.T) {
+	// Create a baseline with SMTP and SSO populated.
+	baseline := &ReloadableConfig{
+		JWTSecret:        []byte("original-jwt-secret-at-least-32-bytes!!"),
+		SMTPHost:         "smtp.example.com",
+		SMTPPort:         587,
+		SMTPFrom:         "noreply@example.com",
+		SMTPUsername:     "user",
+		SMTPPassword:     "pass",
+		SSOEncryptionKey: [32]byte{1, 2, 3}, // non-zero
+		SIEMSyslogAddr:   "udp://siem:514",
+		LogLevel:         "info",
+	}
+	// Secrets file only contains JWT_SECRET.
+	tmpFile := writeTempSecretsFile(t, "JWT_SECRET=new-jwt-secret-at-least-32-bytes!!")
+
+	got, err := LoadFromSecretsFile(tmpFile, baseline)
+	require.NoError(t, err)
+	// JWT_SECRET was overwritten:
+	assert.Equal(t, []byte("new-jwt-secret-at-least-32-bytes!!"), got.JWTSecret)
+	// ALL other fields preserved from baseline:
+	assert.Equal(t, "smtp.example.com", got.SMTPHost)
+	assert.Equal(t, 587, got.SMTPPort)
+	assert.Equal(t, "noreply@example.com", got.SMTPFrom)
+	assert.Equal(t, "user", got.SMTPUsername)
+	assert.Equal(t, "pass", got.SMTPPassword)
+	assert.Equal(t, [32]byte{1, 2, 3}, got.SSOEncryptionKey)
+	assert.Equal(t, "udp://siem:514", got.SIEMSyslogAddr)
+	assert.Equal(t, "info", got.LogLevel)
+}
+
+func TestLoadFromSecretsFile_NilBaselineCreatesFromScratch(t *testing.T) {
+	// When baseline is nil (first startup before holder is seeded),
+	// absent fields default to zero values.
+	tmpFile := writeTempSecretsFile(t, "JWT_SECRET=new-jwt-secret-at-least-32-bytes!!")
+
+	got, err := LoadFromSecretsFile(tmpFile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("new-jwt-secret-at-least-32-bytes!!"), got.JWTSecret)
+	assert.Equal(t, "", got.SMTPHost) // zero since no baseline
 }
 
 func writeTemp(t *testing.T, content string) string {

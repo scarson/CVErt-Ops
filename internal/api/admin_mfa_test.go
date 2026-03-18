@@ -283,6 +283,73 @@ func TestAdminUnrequireMFA(t *testing.T) {
 	}
 }
 
+func TestAdminRequireMFASelfTarget(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Owner tries to require MFA on themselves — expect 400.
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + actors.ownerID.String() + "/require-mfa"
+	req := authedRequest(t, ctx, http.MethodPost, url, "", actors.ownerCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("require-mfa self: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("self require-mfa: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAdminRequireMFAAdminTargetsAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Add a second admin.
+	admin2Result := doRegister(t, ctx, ts, "mfa-admin2@example.com", "admin2-password-12345") //nolint:gosec // G101: test credentials
+	admin2ID := uuid.MustParse(admin2Result.UserID)
+	if err := srv.store.CreateOrgMember(ctx, actors.orgID, admin2ID, "admin"); err != nil {
+		t.Fatalf("add admin2 to org: %v", err)
+	}
+
+	// Admin tries to require MFA for another admin — expect 403 (same level).
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + admin2ID.String() + "/require-mfa"
+	req := authedRequest(t, ctx, http.MethodPost, url, "", actors.adminCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("require-mfa admin→admin: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("admin require-mfa for admin: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminUnrequireMFASelfTarget(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+	actors := setupAdminMFATest(t, ctx, srv, ts)
+
+	// Owner tries to unrequire MFA on themselves — expect 400.
+	url := ts.URL + "/api/v1/orgs/" + actors.orgID.String() + "/members/" + actors.ownerID.String() + "/require-mfa"
+	req := authedRequest(t, ctx, http.MethodDelete, url, "", actors.ownerCookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("unrequire-mfa self: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("self unrequire-mfa: got %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestAdminRequireMFAByMember(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

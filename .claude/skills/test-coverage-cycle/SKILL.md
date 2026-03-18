@@ -228,6 +228,8 @@ Write to `dev/test-coverage-reports/<date>-<slug>-consolidated.md`:
 - [Cross-cutting patterns, systematic gaps, assertion quality patterns]
 ```
 
+After writing the consolidated report, update your private journal with key observations: what coverage patterns emerged, which gaps were most surprising, what the false-positive rate looked like, and any insights about the codebase's testing health.
+
 ---
 
 ## Phase 5: Test Gap Analysis

@@ -181,6 +181,8 @@ Write the consolidated report to `dev/bug-hunts/<date>-<slug>-consolidated.md` u
 **Recommendation:** <fix in this cycle or document for later>
 ```
 
+After writing the consolidated report, update your private journal with key observations: what patterns emerged across hunters, which findings surprised you, what the false-positive rate looked like, and any insights about the codebase's risk profile.
+
 ---
 
 ## Phase 4: Test Gap Analysis

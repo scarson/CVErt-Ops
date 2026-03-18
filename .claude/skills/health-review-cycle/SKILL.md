@@ -116,6 +116,8 @@ Write to `dev/health-reviews/<date>-<slug>-validated.md`:
 **Where tracked:** <plan file, bug hunt report, or pitfalls doc>
 ```
 
+After writing the validated report, update your private journal with key observations: what patterns emerged across dimensions, which findings surprised you, what the false-positive rate looked like, and any insights about the project's overall health.
+
 ---
 
 ## Phase 3: Present to User

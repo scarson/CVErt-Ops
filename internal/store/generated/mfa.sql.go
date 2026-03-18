@@ -347,6 +347,30 @@ func (q *Queries) GetMFACredentialByUserAndMethod(ctx context.Context, arg GetMF
 	return i, err
 }
 
+const getMFACredentialByUserAndMethodForUpdate = `-- name: GetMFACredentialByUserAndMethodForUpdate :one
+SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 AND method = $2 FOR UPDATE
+`
+
+type GetMFACredentialByUserAndMethodForUpdateParams struct {
+	UserID uuid.UUID
+	Method string
+}
+
+func (q *Queries) GetMFACredentialByUserAndMethodForUpdate(ctx context.Context, arg GetMFACredentialByUserAndMethodForUpdateParams) (MfaCredential, error) {
+	row := q.db.QueryRowContext(ctx, getMFACredentialByUserAndMethodForUpdate, arg.UserID, arg.Method)
+	var i MfaCredential
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Method,
+		&i.SecretEnc,
+		&i.LastUsedStep,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getMFACredentialsByUserID = `-- name: GetMFACredentialsByUserID :many
 
 SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at

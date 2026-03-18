@@ -7,6 +7,9 @@ SELECT * FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at;
 -- name: GetMFACredentialByUserAndMethod :one
 SELECT * FROM mfa_credentials WHERE user_id = $1 AND method = $2;
 
+-- name: GetMFACredentialByUserAndMethodForUpdate :one
+SELECT * FROM mfa_credentials WHERE user_id = $1 AND method = $2 FOR UPDATE;
+
 -- name: CreateMFACredential :one
 INSERT INTO mfa_credentials (user_id, method, secret_enc)
 VALUES ($1, $2, $3)

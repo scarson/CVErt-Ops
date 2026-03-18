@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -1682,5 +1683,195 @@ func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
 	}
 	if !pendingCleared {
 		t.Error("expected mfa_pending_token cookie to be cleared (MaxAge < 0)")
+	}
+}
+
+func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	now := time.Now()
+	code, err := totp.GenerateCode(secret, now)
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// First verify — should succeed.
+	loginResp1 := doLogin(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
+	pt1 := cookieValue(loginResp1, "mfa_pending_token")
+	loginResp1.Body.Close() //nolint:errcheck,gosec
+
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
+	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt1})
+	resp1, err := ts.Client().Do(req1) //nolint:gosec
+	if err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+	resp1.Body.Close() //nolint:errcheck,gosec
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first verify: got %d, want 200", resp1.StatusCode)
+	}
+
+	// Verify that lastUsedStep was stored as currentStep + skew (maxStep).
+	// This ensures even codes valid for adjacent time steps are blocked.
+	cred, err := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	if err != nil {
+		t.Fatalf("get credential: %v", err)
+	}
+	if !cred.LastUsedStep.Valid {
+		t.Fatal("expected last_used_step to be set after verify")
+	}
+	currentStep := now.Unix() / 30
+	expectedMaxStep := currentStep + int64(totpValidateOpts.Skew) //nolint:gosec // G115: Skew is a small constant (1), no overflow risk
+	if cred.LastUsedStep.Int64 != expectedMaxStep {
+		t.Errorf("last_used_step = %d, want %d (currentStep %d + skew %d)",
+			cred.LastUsedStep.Int64, expectedMaxStep, currentStep, totpValidateOpts.Skew)
+	}
+
+	// Second verify with same code — should fail (replay blocked by skew-aware step).
+	loginResp2 := doLogin(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
+	pt2 := cookieValue(loginResp2, "mfa_pending_token")
+	loginResp2.Body.Close() //nolint:errcheck,gosec
+
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt2})
+	resp2, err := ts.Client().Do(req2) //nolint:gosec
+	if err != nil {
+		t.Fatalf("second verify: %v", err)
+	}
+	resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replay with skew window: got %d, want 401", resp2.StatusCode)
+	}
+}
+
+func TestTOTP_ConcurrentReplay(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "concurrent-replay@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// Get two pending tokens for two concurrent login attempts.
+	loginResp1 := doLogin(t, ctx, ts, "concurrent-replay@example.com", "test-password-1234")
+	pt1 := cookieValue(loginResp1, "mfa_pending_token")
+	loginResp1.Body.Close() //nolint:errcheck,gosec
+
+	loginResp2 := doLogin(t, ctx, ts, "concurrent-replay@example.com", "test-password-1234")
+	pt2 := cookieValue(loginResp2, "mfa_pending_token")
+	loginResp2.Body.Close() //nolint:errcheck,gosec
+
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
+
+	// Barrier pattern: both goroutines block until ready is closed.
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+
+	for i, pt := range []string{pt1, pt2} {
+		wg.Add(1)
+		go func(idx int, pendingToken string) {
+			defer wg.Done()
+			<-ready // block until barrier opens
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+				ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+			resp, reqErr := ts.Client().Do(req) //nolint:gosec
+			if reqErr != nil {
+				t.Errorf("goroutine %d: request error: %v", idx, reqErr)
+				return
+			}
+			resp.Body.Close() //nolint:errcheck,gosec
+			results[idx] = resp.StatusCode
+		}(i, pt)
+	}
+
+	close(ready) // release both goroutines simultaneously
+	wg.Wait()
+
+	// Exactly one should succeed (200), one should fail (401).
+	successes := 0
+	failures := 0
+	for _, status := range results {
+		switch status {
+		case http.StatusOK:
+			successes++
+		case http.StatusUnauthorized:
+			failures++
+		default:
+			t.Errorf("unexpected status code: %d", status)
+		}
+	}
+	if successes != 1 || failures != 1 {
+		t.Errorf("concurrent replay: got %d successes and %d failures, want 1 and 1 (statuses: %v)",
+			successes, failures, results)
+	}
+}
+
+// TestTOTP_VerifyAndUpdateTOTPStep_Store tests the atomic store method directly.
+func TestTOTP_VerifyAndUpdateTOTPStep_Store(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "store-step@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	// First call with step 100 — should succeed.
+	ok, err := srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 100)
+	if err != nil {
+		t.Fatalf("first VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected first VerifyAndUpdateTOTPStep to return true")
+	}
+
+	// Same step — should fail (replay).
+	ok, err = srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 100)
+	if err != nil {
+		t.Fatalf("replay VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if ok {
+		t.Fatal("expected replay VerifyAndUpdateTOTPStep to return false")
+	}
+
+	// Lower step — should also fail.
+	ok, err = srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 99)
+	if err != nil {
+		t.Fatalf("lower step VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if ok {
+		t.Fatal("expected lower step VerifyAndUpdateTOTPStep to return false")
+	}
+
+	// Higher step — should succeed.
+	ok, err = srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 101)
+	if err != nil {
+		t.Fatalf("higher step VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected higher step VerifyAndUpdateTOTPStep to return true")
 	}
 }

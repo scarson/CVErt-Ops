@@ -5,7 +5,6 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -391,15 +390,15 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 		return false, nil
 	}
 
-	// Replay prevention: check last_used_step.
-	currentStep := now.Unix() / 30
-	if cred.LastUsedStep.Valid && cred.LastUsedStep.Int64 >= currentStep {
-		return false, nil // replay
+	// Atomic replay prevention with FOR UPDATE lock.
+	// Store maxStep = currentStep + skew to block replays across the entire acceptance window.
+	maxStep := (now.Unix() / 30) + int64(totpValidateOpts.Skew) //nolint:gosec // G115: Skew is a small constant (1), no overflow risk
+	fresh, stepErr := srv.store.VerifyAndUpdateTOTPStep(ctx, userID, maxStep)
+	if stepErr != nil {
+		return false, fmt.Errorf("totp step check: %w", stepErr)
 	}
-
-	// Update last_used_step.
-	if err := srv.store.UpdateMFACredentialLastUsed(ctx, cred.ID, sql.NullInt64{Int64: currentStep, Valid: true}); err != nil {
-		slog.WarnContext(ctx, "mfa: update TOTP last_used_step", "error", err)
+	if !fresh {
+		return false, nil // replay
 	}
 
 	return true, nil

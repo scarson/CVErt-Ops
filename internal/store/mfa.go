@@ -84,6 +84,39 @@ func (s *Store) UpdateMFACredentialLastUsed(ctx context.Context, id uuid.UUID, l
 	})
 }
 
+// VerifyAndUpdateTOTPStep atomically checks and updates the TOTP last_used_step.
+// Uses FOR UPDATE to prevent concurrent replay. Returns true if the step
+// is fresh (not replayed). The maxStep parameter should be currentStep + skew
+// to account for the TOTP validation window.
+func (s *Store) VerifyAndUpdateTOTPStep(ctx context.Context, userID uuid.UUID, maxStep int64) (bool, error) {
+	var ok bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		cred, err := q.GetMFACredentialByUserAndMethodForUpdate(ctx, generated.GetMFACredentialByUserAndMethodForUpdateParams{
+			UserID: userID,
+			Method: "totp",
+		})
+		if err != nil {
+			return err
+		}
+		if cred.LastUsedStep.Valid && cred.LastUsedStep.Int64 >= maxStep {
+			ok = false
+			return nil
+		}
+		if err := q.UpdateMFACredentialLastUsed(ctx, generated.UpdateMFACredentialLastUsedParams{
+			ID:           cred.ID,
+			LastUsedStep: sql.NullInt64{Int64: maxStep, Valid: true},
+		}); err != nil {
+			return err
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("verify totp step: %w", err)
+	}
+	return ok, nil
+}
+
 // DeleteMFACredential removes a single MFA credential by user and method.
 // Returns the number of rows deleted.
 func (s *Store) DeleteMFACredential(ctx context.Context, userID uuid.UUID, method string) (int64, error) {

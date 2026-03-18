@@ -217,7 +217,25 @@ This appendix is the persistent record. It MUST be written to the plan file — 
 
 ---
 
-## Phase 5: Commit Reports
+## Phase 5: Plan Review Cycle
+
+Before committing, rigorously review the fix plan for subagent-readiness.
+
+Carefully review the plan from multiple perspectives and revise/refine as appropriate. Repeat this review loop (you must do a minimum of three review rounds; if you still find substantive issues in the third review, keep going with additional rounds until there are no findings) until you're confident there aren't any more issues. Specifically consider:
+
+- **Ambiguity:** Are there task descriptions where a subagent could reasonably interpret the instructions two different ways? Eliminate every instance.
+- **Context gaps:** Would a subagent starting fresh (no conversation history) have everything it needs to complete each task correctly? Check for implicit assumptions.
+- **Unclear instructions:** Are there vague directives like "fix the issue" or "handle this correctly" instead of specific behavioral descriptions?
+- **Undesirable interpretation latitude:** Are there areas where a subagent might "improve" or "enhance" beyond scope? Add explicit "do NOT" boundaries where needed.
+- **Cross-task dependencies:** Are ordering constraints clearly stated? Would a subagent working on Task 3 know it depends on Task 1 completing first?
+- **Testing pitfalls:** Review the plan against `dev/testing-pitfalls.md` — could any planned test additions fall into documented pitfalls? Add warnings to relevant tasks.
+- **Implementation pitfalls:** Review the plan against `dev/implementation-pitfalls.md` — could any planned fixes fall into documented pitfalls?
+
+After completing the review cycle, update your private journal with observations about the plan quality and any patterns in the issues you found.
+
+---
+
+## Phase 6: Commit Reports
 
 Stage and commit all health review cycle artifacts:
 

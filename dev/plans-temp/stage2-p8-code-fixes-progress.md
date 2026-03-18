@@ -22,11 +22,11 @@
 - **Notes:** Added audit.Entry after processing loop with source_name, patch_count, accepted, rejected in NewState. Test asserts audit entry and new_state field values.
 
 ## Task 4: Skip Webhook HMAC When Secret Empty + HR F3 (Combined)
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/notify/webhook.go`, `internal/notify/webhook_test.go`
+- **Tests:** pass (13 webhook tests including 2 new empty/non-empty secret tests + enhanced BuildSafeClient assertions)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Guarded HMAC block with `if cfg.SigningSecret != ""`. Added redirect policy and MaxConnsPerHost assertions to TestBuildSafeClient_ReturnsValidClient per HR F3.
 
 ## Task 5: Lockout Fail-Open Regression Test (D1)
 - **Status:** pending

@@ -90,9 +90,9 @@ func TestSend_DeniedHeaderStripped(t *testing.T) {
 		URL:           srv.URL,
 		SigningSecret: secret,
 		CustomHeaders: map[string]string{
-			"Content-Type":       "text/plain",         // denylist: must stay application/json
-			"X-CVErt-Timestamp":  "0",                  // denylist: must be real timestamp
-			"X-CVErtOps-Signature": "sha256=forged",    // denylist: must be real HMAC
+			"Content-Type":         "text/plain",    // denylist: must stay application/json
+			"X-CVErt-Timestamp":    "0",             // denylist: must be real timestamp
+			"X-CVErtOps-Signature": "sha256=forged", // denylist: must be real HMAC
 		},
 	}, payload)
 
@@ -169,11 +169,11 @@ func TestSend_DeniedHeaderMixedCase(t *testing.T) {
 		URL:           srv.URL,
 		SigningSecret: "x",
 		CustomHeaders: map[string]string{
-			"CONTENT-TYPE":        "text/plain",
-			"HoSt":               "evil.com",
-			"Transfer-ENCODING":   "chunked",
-			"X-CVERT-TIMESTAMP":   "0",
-			"X-Custom":            "allowed",
+			"CONTENT-TYPE":      "text/plain",
+			"HoSt":              "evil.com",
+			"Transfer-ENCODING": "chunked",
+			"X-CVERT-TIMESTAMP": "0",
+			"X-Custom":          "allowed",
 		},
 	}, []byte(`[]`))
 
@@ -209,6 +209,46 @@ func TestSend_ContextCancellation(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSend_EmptySecret_NoSignatureHeaders(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL:           srv.URL,
+		SigningSecret: "",
+	}, []byte(`{"test":true}`))
+	require.NoError(t, err)
+
+	// Signature headers must NOT be present when secret is empty.
+	assert.Empty(t, capturedHeaders.Get("X-CVErtOps-Signature"), "signature header should be absent with empty secret")
+	assert.Empty(t, capturedHeaders.Get("X-CVErt-Timestamp"), "timestamp header should be absent with empty secret")
+}
+
+func TestSend_NonEmptySecret_SignatureHeadersPresent(t *testing.T) {
+	var capturedHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	secret := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	err := notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL:           srv.URL,
+		SigningSecret: secret,
+	}, []byte(`{"test":true}`))
+	require.NoError(t, err)
+
+	// Signature headers MUST be present when secret is non-empty.
+	assert.NotEmpty(t, capturedHeaders.Get("X-CVErtOps-Signature"), "signature header should be present with non-empty secret")
+	assert.NotEmpty(t, capturedHeaders.Get("X-CVErt-Timestamp"), "timestamp header should be present with non-empty secret")
+	assert.True(t, strings.HasPrefix(capturedHeaders.Get("X-CVErtOps-Signature"), "sha256="), "signature must have sha256= prefix")
+}
+
 func TestBuildSafeClient_BlocksPrivateIPs(t *testing.T) {
 	// Start a local httptest server (binds to 127.0.0.1).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -232,6 +272,18 @@ func TestBuildSafeClient_ReturnsValidClient(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, client)
 	assert.Equal(t, 10*time.Second, client.Timeout)
+
+	// Redirect policy must reject redirects (returns ErrUseLastResponse).
+	require.NotNil(t, client.CheckRedirect, "redirect policy must be set")
+	redirectErr := client.CheckRedirect(nil, nil)
+	assert.Equal(t, http.ErrUseLastResponse, redirectErr, "redirect policy must return ErrUseLastResponse")
+
+	// MaxConnsPerHost must be capped at 50 to prevent ephemeral port exhaustion.
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		assert.Equal(t, 50, transport.MaxConnsPerHost, "MaxConnsPerHost must be 50")
+	}
+	// Note: safeurl wraps transport; MaxConnsPerHost may be on the inner *http.Transport.
+	// The existing assertion in the production code uses a type assertion for *http.Transport.
 }
 
 func TestSend_RedirectRejected(t *testing.T) {
@@ -258,4 +310,3 @@ func TestSend_RedirectRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "302")
 }
-

@@ -111,7 +111,7 @@ Execute in this order for minimal file conflicts:
 | 2 | P8 | Task 9 | Admin config secret redaction test |
 | 3 | P8 | Task 10 | Admin user management tests |
 | 4 | P8 | Task 11 | Admin audit log + deliveries tests |
-| 5 | P8+HR | Task 12 + Task 17 + HR D3 | **Combined:** All modify `middleware_auth_test.go` — revoked key, disabled user, pending token, checkAdminMFAPermission |
+| 5 | P8+HR | Task 12 + Task 17 + HR D3 | **Combined:** All modify `middleware_auth_test.go` — see unified description below |
 | 6 | P8 | Task 13 | Login handler critical paths |
 | 7 | P8 | Task 14 | Refresh handler theft detection |
 | 8 | P8 | Task 15 | MFA handler coverage |
@@ -130,6 +130,23 @@ Execute in this order for minimal file conflicts:
 **Removed tasks:**
 - **HR F5** (webhook safeurl integration test) — subsumed by P8 Task 6 in Stage 2
 
+#### Stage 4, Step 5 — Unified Task Description (P8 Task 12 + P8 Task 17 + HR D3)
+
+All three tasks modify `middleware_auth_test.go`. Execute as a single unit in one pass:
+
+1. **P8 Task 12 — Revoked API key returns 401:** Add a test that creates an API key, revokes it via the store, then sends a request with the revoked key and asserts 401. See P8 plan Task 12 for full details.
+2. **P8 Task 17 — Disabled user + checkAdminMFAPermission:** Add tests for (a) a request from a disabled user (`disabled_at IS NOT NULL`) returns 403, (b) `checkAdminMFAPermission` returns 403 when caller lacks MFA admin role. See P8 plan Task 17 for full details.
+3. **HR D3 — Pending token rejection:** Add a test that presents a pending/restricted JWT token to a non-pending endpoint and asserts 401. The middleware must reject tokens with `typ: "pending"` on endpoints that require full access tokens. See HR plan Task D3 for full details.
+
+**Scope boundary:** Do NOT refactor middleware code in this step — test-only changes to `middleware_auth_test.go`. If a test reveals a production bug, document it and raise it; do not fix it inline.
+
+**File:** `internal/api/middleware_auth_test.go` (all additions in this single file)
+
+#### Stage 4 — Cross-stage file dependency warnings
+
+- **`admin_mfa_test.go`:** P11 Task 4 (Stage 3) adds tests to this file. P8 Task 16 (Stage 4, step 9) also adds tests. The Stage 4 subagent must read the file as-is (after Stage 3 merged) before adding tests — do NOT assume the file matches the `dev` branch state at the start of the overall remediation.
+- **`auth_test.go`:** P11 Task 6 (Stage 3) adds tests to this file. P8 Tasks 13 and 14 (Stage 4, steps 6–7) also add tests. Same rule: read the file as-is after Stage 3, not from a stale checkout.
+
 ---
 
 ### Stage 5: Final Cleanup
@@ -138,6 +155,8 @@ Execute in this order for minimal file conflicts:
 2. Verify no remaining lint issues: `golangci-lint run`
 3. Run full test suite: `go test ./... -count=1`
 4. Run frontend checks: `cd web && npm run test:unit && npm run type-check && npm run lint`
+
+**If any test or lint check fails in steps 2–4:** Fix the issue before proceeding to the next step. Do NOT skip failures — they indicate a regression introduced during remediation.
 
 ---
 
@@ -157,7 +176,7 @@ Execute in this order for minimal file conflicts:
 | `middleware_auth_test.go` | P8 Task 12 → P8 Task 17 → HR D3 (combined in Stage 4, step 5) |
 | `webhook_test.go` | P8 Task 4 + HR F3 (combined in Stage 2, step 4) |
 | `admin_mfa_test.go` | P11 Task 4 (Stage 3) → P8 Task 16 (Stage 4) |
-| `auth_test.go` | P8 Task 13 → P8 Task 14 → P11 Task 6 (Stages 3–4) |
+| `auth_test.go` | P11 Task 6 (Stage 3) → P8 Task 13 → P8 Task 14 (Stage 4) |
 | `main.go` | HR C1 + E4 (Stage 1) → P8 Task 6 + HR E5 (Stage 2) |
 | `jwt_test.go` | P11 Task 2 (Stage 3) |
 | `pool_test.go` | HR A1 (Stage 1) → P8 Task 21 (Stage 4) |
@@ -183,4 +202,6 @@ Each stage can be its own worktree session:
 | 5 | Stage 5 | Cleanup | On `dev` directly |
 
 Sessions 1 and 2 produce code changes that must merge to `dev` before sessions 3 and 4 start.
-Sessions 3 and 4 are test-only and could potentially run in parallel if file conflicts are resolved (they share `admin_mfa_test.go` and `auth_test.go`).
+Sessions 3 and 4 share `admin_mfa_test.go` and `auth_test.go` — they MUST run sequentially (Stage 3 first, then Stage 4). Do NOT attempt to parallelize them.
+
+**Precedence rule:** When the task ordering in an individual plan (HR, P8, or P11) conflicts with the ordering in this sequencing document, this document takes precedence. Specifically: P8's internal batch ordering (Batches 2–5) is preserved within Stage 4 but is interleaved with HR tasks per the Stage 4 table above.

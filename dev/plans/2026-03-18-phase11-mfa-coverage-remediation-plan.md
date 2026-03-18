@@ -63,6 +63,10 @@ Since `eventWriter` is a concrete `*secure.EventWriter`, the simplest zero-produ
 
 This avoids any production code changes. The test queries `security_events` after the handler completes. The `EventWriter.Stop()` call ensures all async goroutines have flushed before assertions run.
 
+**Scope boundary:** Do NOT modify `internal/secure/writer.go` — this task adds test infrastructure only. If the existing EventWriter's API doesn't support what you need, document the limitation and work around it in test code.
+
+**⚠️ `testing-pitfalls.md` §16 (test infrastructure hygiene):** Every call to `secure.NewEventWriter`, `db.Store` methods, and test setup functions MUST check errors with `require.NoError(t, err)`. Do NOT discard errors with `_ =`. A nil EventWriter from a failed constructor will cause nil pointer panics deep in test code with misleading stack traces.
+
 ### Implementation
 
 1. **Add `newMFAServerWithEvents` helper** to `internal/api/auth_mfa_test.go`:
@@ -189,6 +193,8 @@ For code bugs: write failing test → fix code → verify green.
 Access, refresh, and pending tokens all have comprehensive security test suites: round-trip, expiry rejection, wrong secret, alg:none, RS256 confusion. `ParseEnrollmentToken` at 76.9% coverage only has the dual-key rotation test (`TestParseEnrollmentToken_DualKey` at line 867). The enrollment token carries the encrypted TOTP secret — algorithm confusion attacks could allow forging enrollment tokens.
 
 ### Implementation
+
+**Dependency on HR D2:** This task tests `ParseEnrollmentToken`, which HR D2 refactored into a generic helper (`parseTokenWithRotation`). The public API (`auth.ParseEnrollmentToken`, `auth.IssueEnrollmentToken`) should be unchanged — HR D2 is an internal refactoring. If the public function signatures changed, read `internal/auth/jwt.go` to find the current names before writing tests. Do NOT test the internal generic helper directly — test through the public `ParseEnrollmentToken` API.
 
 Copy the pattern from the pending token security tests (lines 660-817 in `jwt_test.go`). Add these tests in the enrollment token section after the existing `TestParseEnrollmentToken_DualKey`:
 
@@ -411,7 +417,7 @@ The existing test file (`admin_mfa_test.go`) has:
 - `TestAdminUnrequireMFA` + self-target only
 - `TestAdminUpdateOrgMFASettings` + member denied
 
-Admin MFA endpoints use `newMFAServer` which has no event writer. New tests that need event assertions should use `newMFAServerWithEvents` from Task 1.
+Admin MFA endpoints use `newMFAServer` which has no event writer. New tests that need event assertions should use the event-writer-equipped server helper from Task 1 (expected name: `newMFAServerWithEvents` — but read `auth_mfa_test.go` to find the actual helper name Task 1 created, as it may differ).
 
 The route registration (server.go lines 306-309) shows all 5 admin MFA endpoints use `RequireOrgRole(RoleAdmin)` middleware.
 

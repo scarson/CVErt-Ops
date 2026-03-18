@@ -105,6 +105,8 @@ w.Header().Set("Retry-After", "60")
 
 Match the same pattern used by `authRateLimit()` in `ratelimit.go:89`.
 
+**Scope boundary:** Only modify `middleware_tier.go` (the per-org rate limiter). Do NOT also add `Retry-After` to the IP rate limiter in `ratelimit.go` — that is a separate middleware with different semantics.
+
 **Step 3: Run tests and commit**
 
 ```bash
@@ -225,6 +227,8 @@ In the `app` service section, add a `ports` entry mapping 9090 to 9090 on the in
 
 If compose.prod.yml is an override, just add the port mapping. If `compose.yml` doesn't have an `app` service with `ports`, you may need to add it there.
 
+**Scope boundary:** This task is Docker config only. Do NOT modify the Go application code, the metrics endpoint, or the Prometheus metric definitions. The `/metrics` endpoint already exists and works — this just makes it reachable from outside the container.
+
 **Step 3: Commit**
 
 ```bash
@@ -257,7 +261,11 @@ Create a middleware function `rejectAPIKeyQueryParams` that:
 
 In `server.go`, add the middleware early in the chain (before auth middleware) on the API router. It should apply to all `/api/v1/` routes.
 
-**Step 4: Run tests and commit**
+**Step 4: Write an enforcement test** (per `implementation-pitfalls.md` §8.1)
+
+Add a test that exercises the full HTTP stack (not just the middleware function in isolation) to verify the middleware is actually wired. Send a request to a real API endpoint (e.g., `GET /api/v1/cves`) with `?api_key=test` and assert 400. This catches the case where the middleware is implemented but not registered.
+
+**Step 5: Run tests and commit**
 
 ```bash
 go test ./internal/api/... -run TestRejectAPIKeyQuery -count=1 -v
@@ -317,6 +325,8 @@ git commit -m "fix(alert): add panic recovery to evaluator.bypassTx matching sto
 **Files:**
 - Modify: `internal/alert/evaluator.go`
 - Test: existing tests must still pass
+
+**⚠️ Prescriptive code below is a GUIDE, not a specification.** The `batchConfig` struct and `evaluateBatchPath` function below are based on analysis of the evaluator code at the time the plan was written. The actual field names, function signatures, and internal structure of `EvaluateBatch` and `EvaluateEPSS` may have drifted since then. Read the actual code first. Adapt the concept (extract shared logic into a config-driven helper) to the code as you find it — do NOT force the code to match the snippet below if it doesn't fit naturally.
 
 **Step 1: Identify the common pattern**
 
@@ -449,6 +459,10 @@ Add a test that:
 This test should pass with the current code but will verify the pagination doesn't break anything.
 
 Also add a test that specifically verifies the pagination: seed 2500 CVEs, evaluate, verify all were processed. With page size 1000, this exercises 3 pages.
+
+**⚠️ Pitfall warnings:**
+- `implementation-pitfalls.md` §1.8: Do NOT use `defer rows.Close()` inside the pagination loop — use explicit `rows.Close()` at each iteration. `defer` is function-scoped, not loop-scoped.
+- `testing-pitfalls.md` §14: The test MUST verify multi-page processing. Seed enough CVEs (>1 page) and assert ALL were evaluated, not just the first page.
 
 **Step 2: Add pagination to candidate fetching**
 
@@ -591,8 +605,10 @@ git commit -m "fix(cmd): await delivery worker shutdown before closing DB pool"
 
 Add a test that:
 1. Creates an EventWriter with a mock store that blocks on insert (e.g., uses a channel to control when inserts complete)
-2. Fires more Write calls than the concurrency limit
+2. Fires more Write calls than the concurrency limit (>50 concurrent)
 3. Asserts that extra calls don't spawn additional goroutines (they're dropped or queued)
+4. **`testing-pitfalls.md` §2 (bounded growth):** Verify the goroutine count is bounded. After firing 100+ concurrent Write calls, the goroutine delta must be ≤50 (the semaphore capacity). Use `runtime.NumGoroutine()` before and after to assert this.
+5. **`testing-pitfalls.md` §2 (resource release on panic):** Verify that if a write panics, the semaphore slot is still released. Add a test case with a panicking store mock.
 
 **Step 2: Add semaphore and timeout to EventWriter**
 
@@ -656,12 +672,31 @@ func (w *EventWriter) Stop() {
 }
 ```
 
-**Step 4: Run tests and commit**
+**Step 4: Add Prometheus counter for DB write failures (AU-5 compliance)**
+
+The security event writer already imports `internal/metrics` and uses `metrics.SecurityEventsDropped.Inc()`. Add a counter for actual DB insert failures:
+
+1. In `internal/metrics/security.go`, add:
+```go
+var SecurityEventsWriteFailed = promauto.NewCounter(prometheus.CounterOpts{
+    Name: "cvertops_security_events_write_failed_total",
+    Help: "Security events that failed to write to the database.",
+})
+```
+
+2. In `writer.go`, at the DB insert error handler (line ~93 after the slog.Error call), add:
+```go
+metrics.SecurityEventsWriteFailed.Inc()
+```
+
+This satisfies NIST SP 800-53 AU-5's "alert personnel" requirement — operators configure Alertmanager rules on this counter. See `dev/research-findings/auditing-gaps.md` for the full rationale.
+
+**Step 5: Run tests and commit**
 
 ```bash
 go test ./internal/secure/... -count=1 -v
-git add internal/secure/writer.go internal/secure/writer_test.go
-git commit -m "fix(secure): bound event writer goroutines with semaphore and add write timeout"
+git add internal/secure/writer.go internal/secure/writer_test.go internal/metrics/security.go
+git commit -m "fix(secure): bound event writer goroutines with semaphore, add write timeout and failure metric"
 ```
 
 **Review Group C** — review shutdown paths in main.go holistically. Verify the ordering: delivery worker drain → metrics shutdown → HTTP shutdown → DB close.
@@ -681,15 +716,21 @@ git commit -m "fix(secure): bound event writer goroutines with semaphore and add
 
 `registerCVERoutes(api, srv.store)` is called on the huma API instance at `server.go:234`. The huma API is mounted on `apiRouter` which has CSRF middleware but NOT `RequireAuthenticated`. CVE routes need authentication but do NOT need org context (CVEs are global).
 
-**Step 2: Add auth middleware to CVE routes**
+**Step 2: Add auth middleware to CVE routes — USE HUMA OPERATION MIDDLEWARE**
 
 The CVE routes use huma registration on `apiRouter`. Currently `registerCVERoutes(api, srv.store)` is called at `server.go:234` on the main huma API instance, which means CVE routes inherit the apiRouter's middleware chain but NOT `RequireAuthenticated` (which is only on the org-scoped chi sub-router).
 
-**Required approach:** Use huma's middleware support to add authentication to CVE operations. Huma supports `Middlewares` in the `huma.Operation` struct. Add the `RequireAuthenticated` middleware to each CVE operation registration in `registerCVERoutes`.
+**Required approach:** Use huma's native per-Operation `Middlewares` field (`huma.Operation.Middlewares`). This keeps CVE endpoints in huma (preserving OpenAPI 3.1 auto-generation) while adding auth.
 
-Alternatively, restructure the router so CVE routes are on a chi sub-router with `RequireAuthenticated`, then mount huma on that sub-router. But this changes the URL path resolution — test carefully.
+The `Middlewares` field is type `huma.Middlewares` = `[]func(ctx huma.Context, next func(huma.Context))`. This is a different signature from the chi middleware `RequireAuthenticated()` returns (`func(http.Handler) http.Handler`). You need a thin adapter:
 
-**Whichever approach you choose, verify:**
+1. **Create `requireAuthHuma`** on `*Server` that wraps the existing chi-style `RequireAuthenticated()` into a huma middleware. Read `humachi.Context` implementation in the module cache to understand how to extract the `http.ResponseWriter` and `*http.Request` from a `huma.Context`, and how to create a new `huma.Context` for the `next` call after auth injects context values.
+2. **Pass `srv` to `registerCVERoutes`** — change the signature from `registerCVERoutes(api huma.API, s *store.Store)` to `registerCVERoutes(api huma.API, srv *Server)` so it can access `srv.requireAuthHuma()`. Update the call site in `server.go:234`.
+3. **Add `Middlewares: huma.Middlewares{srv.requireAuthHuma()}` to each `huma.Operation`** in `registerCVERoutes`.
+
+Do NOT restructure the router. Do NOT move CVE routes to a chi sub-router. Do NOT create new chi handlers. The huma approach is cleaner and preserves OpenAPI generation.
+
+**Verify after implementation:**
 1. `GET /api/v1/cves` without auth returns 401
 2. `GET /api/v1/cves` with a valid JWT cookie returns 200
 3. `GET /api/v1/cves` with a valid API key Bearer token returns 200
@@ -697,6 +738,8 @@ Alternatively, restructure the router so CVE routes are on a chi sub-router with
 5. Auth/MFA/OAuth routes remain unauthenticated (they're the login flow)
 
 **Do NOT** add org middleware to CVE routes — CVEs are global, not org-scoped. Only `RequireAuthenticated` (user identity), not `RequireOrgRole`.
+**Do NOT** add RBAC role checks to CVE endpoints — any authenticated user (viewer, member, admin, owner) can access CVE data. This is authentication only, not authorization.
+**Do NOT** refactor the router structure beyond what's needed to add auth — keep changes minimal.
 
 **Step 3: Fix the stale comment**
 
@@ -704,7 +747,9 @@ In `cves.go:22`, change "All endpoints are public read-only — auth middleware 
 
 **Step 4: Update all CVE tests — this is the highest-impact step**
 
-**WARNING:** Every existing CVE test will break because they currently make unauthenticated requests. You MUST update every test in `internal/api/cves_test.go` (and any other file that calls CVE endpoints) to include authentication. Use the existing test helper pattern for creating a test user and getting an auth cookie — search for `doLogin` or `loginCookie` in other `*_test.go` files in `internal/api/` for the established pattern.
+**WARNING:** Every existing CVE test will break because they currently make unauthenticated requests. You MUST update every test in `internal/api/cves_test.go` (and any other file that calls CVE endpoints) to include authentication.
+
+**How to find the auth pattern:** Run `grep -n 'doLogin\|loginCookie\|loginAs\|authCookie' internal/api/*_test.go` to find the established test helper for creating a test user and getting an auth cookie. Use the same pattern in every CVE test. Key files likely needing auth: `cves_test.go`, `search_test.go` (if it calls CVE search endpoints).
 
 Expect ~10-20 tests to need auth setup. Do NOT skip any — a test that passes only because it was excluded is worse than a test that fails.
 
@@ -1186,7 +1231,11 @@ if err != nil {
 }
 ```
 
-Create breakers per feed in the ingest handler initialization, stored in a `map[string]*gobreaker.CircuitBreaker`. Default: 5 consecutive failures, 5-minute timeout.
+Create breakers per feed in the ingest handler initialization, stored in a `map[string]*gobreaker.CircuitBreaker[struct{}]`. Default: 5 consecutive failures, 5-minute timeout.
+
+**⚠️ Pitfall warning** (`implementation-pitfalls.md` §10.4): The `NewBreaker` constructor must NOT make any network calls or test connectivity. It only stores configuration. The circuit breaker's state starts as closed (all requests pass through).
+
+**Scope boundary:** Do NOT add retry logic, bulkheads, timeouts, or other resilience patterns beyond the circuit breaker. Do NOT modify feed adapter code (`internal/feed/`) — only the orchestration layer in `internal/ingest/`.
 
 **Step 4: Add metrics**
 
@@ -1359,10 +1408,12 @@ git commit -m "test(notify): add safeurl SSRF blocking test in delivery path"
 
 Before changing behavior, search for all callers of `dbutil.NullString`:
 ```bash
-rg 'dbutil\.NullString' --type go
+rg 'dbutil\.NullString\|sql\.NullString' --type go
 ```
 
-Determine if any caller INTENTIONALLY depends on empty-string → NULL. If the merge pipeline is the primary caller and empty strings are never valid source data, the current behavior may be correct by convention.
+List every file and call site. Determine if any caller INTENTIONALLY depends on empty-string → NULL. If the merge pipeline is the primary caller and empty strings are never valid source data, the current behavior may be correct by convention.
+
+**Likely files** (verify with the grep): `internal/merge/`, `internal/feed/`, `internal/store/`, `internal/api/`. Focus on API response structs where `NullString` is serialized to JSON — those are the most visible to users.
 
 **Step 2: If change is warranted**
 

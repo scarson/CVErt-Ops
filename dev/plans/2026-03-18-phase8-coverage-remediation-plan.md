@@ -26,6 +26,8 @@ This plan is part of a coordinated three-plan remediation. See `dev\plans\2026-0
 - **Stage 2:** Batch 1 (Tasks 1–8) — production code fixes. Runs after HR Stage 1 code fixes.
 - **Stage 4:** Batches 2–5 (Tasks 9–23+) — test coverage additions. Interleaved with HR test tasks.
 
+**Ordering precedence:** For Stage 4 task ordering, the sequencing document takes precedence over the batch ordering in this plan. The batches below define logical grouping, but the actual execution order interleaves HR test tasks per the sequencing doc's Stage 4 table.
+
 **Tasks merged with Health Review plan:**
 - **Task 4** (webhook HMAC fix): Also apply HR F3 (TestBuildSafeClient assertions) in the same pass. Both modify `webhook_test.go`.
 - **Task 6** (safeurl wrap): Also apply HR E5 (feed body size limit) in the same pass. Both modify the feed client in `main.go`. Compose transports: safeurl (inner) → body size limit (outer).
@@ -138,6 +140,33 @@ Expected: All pass — no existing test should break since all existing cursor c
 - Create or modify: `internal/api/audit_integration_test.go` — add `TestAuditIntegration_Groups`
 
 **Context:** Every other mutating handler group (channels, alert_rules, watchlists, saved_searches, sso, orgs) has audit logging. Groups has zero. The pattern: call `srv.auditLog(r, audit.Entry{...})` after the successful mutation. See `channels.go` for the pattern — each mutation gets an `Action` string, `EntityType: "group"` or `"group_member"`, and `EntityID` set to the group's UUID.
+
+**⚠️ Audit logging design:** `srv.auditLog` is fire-and-forget (async write via the event writer). It does NOT participate in the handler's database transaction — it runs after the mutation commits. If the audit write fails, the mutation still succeeds. This satisfies NIST SP 800-53 AU-5 (all baselines) and IEC 62443 CR 2.10 (continue operating + alert). It does NOT satisfy AU-10 Non-repudiation (HIGH baseline only) for security-critical mutations — that is a future design phase item. Do NOT wrap audit calls in the handler's transaction. Match the existing `channels.go` pattern exactly.
+
+See `dev/research-findings/auditing-gaps.md` for the full standards analysis and remediation path.
+
+**Step 0 (prerequisite): Add Prometheus counter for audit write failures**
+
+Before adding new audit calls, add a failure counter to the audit writer so failures are observable (NIST AU-5 compliance — see `dev/research-findings/auditing-gaps.md`):
+
+1. Create `internal/metrics/audit.go`:
+```go
+package metrics
+
+import (
+    "github.com/prometheus/client_golang/prometheus"
+    "github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var AuditWriteFailures = promauto.NewCounter(prometheus.CounterOpts{
+    Name: "cvertops_audit_write_failures_total",
+    Help: "Audit log entries that failed to write to the database.",
+})
+```
+
+2. In `internal/audit/writer.go`, add `import "github.com/scarson/cvert-ops/internal/metrics"` and add `metrics.AuditWriteFailures.Inc()` at both error sites (marshal failure ~line 67, insert failure ~line 72).
+
+This is a one-time prerequisite — Tasks 3, 7, 8 benefit automatically.
 
 **Step 1: Read the existing audit integration test pattern**
 
@@ -287,8 +316,12 @@ if cfg.SigningSecret != "" {
 
 The test needs to simulate a DB error from `GetLoginLockoutState`. Since `lockoutManager` takes a `store` interface, you'll need to check what interface methods it uses and either use a mock or trigger a real DB error.
 
-Read `lockout.go` to understand the store interface dependency. The test should:
-1. Create a lockout manager with a store that returns an error from `GetLoginLockoutState`
+Read `lockout.go` to understand the store interface dependency. Determine what interface `lockoutManager` depends on (likely a subset of `*store.Store` methods). Then:
+
+**How to simulate the DB error:** If `lockoutManager` accepts an interface (check the constructor), create a test-only struct that implements only `GetLoginLockoutState` and returns `fmt.Errorf("simulated DB failure")`. If it takes a concrete `*store.Store`, you'll need to use a testcontainer DB and force a failure (e.g., close the DB pool before calling Check). Read the constructor to determine which approach works.
+
+The test should:
+1. Create a lockout manager with a store/interface that returns an error from `GetLoginLockoutState`
 2. Call `Check()` with any email
 3. Assert `allowed == true` (fail-open behavior)
 4. Add a comment: `// Regression: lockout must fail open on DB errors — rate limiter is secondary defense`
@@ -339,9 +372,13 @@ NOTE: Check what `notify.BuildSafeClient()` returns and whether it's reusable. I
 
 Replace `feedClient := &http.Client{Timeout: 5 * time.Minute}` with a safeurl-wrapped client. Check how `notify.BuildSafeClient()` works and reuse the pattern. Import `doyensec/safeurl` if needed.
 
+**⚠️ Merged with HR E5:** Also implement `maxBodyTransport` (body size limit) as an outer wrapper. Transport composition order: `safeurl.Transport` (inner, handles SSRF) → `maxBodyTransport` (outer, adds `io.LimitReader` on response body). The body limit should be configurable (default: 512MB for bulk feed archives). See HR plan Task E5 for the `maxBodyTransport` implementation details.
+
+**Scope boundary:** Do NOT modify any feed adapter code in `internal/feed/`. Only modify the client construction in `cmd/cvert-ops/main.go`. The adapters receive the client via dependency injection and don't need to change.
+
 **Step 4: Run tests, commit**
 
-**Pitfall check:** tp§8 "Production client configuration exercised in tests"
+**Pitfall check:** `testing-pitfalls.md` §8 — "Production client configuration exercised in tests." The SSRF test in Step 2 exercises the production safeurl client. Verify it uses the SAME client construction path as main.go — not a separately-constructed test client that might have different settings.
 
 ---
 
@@ -517,8 +554,10 @@ func TestAdminConfigHandler_SecretsRedacted(t *testing.T) {
     var body map[string]any
     json.NewDecoder(resp.Body).Decode(&body)
 
-    // Verify secrets are redacted, not exposed
-    secretFields := []string{"jwt_secret", "database_url", "database_url_migrate", "smtp_password", "sso_encryption_key"}
+    // Verify ALL secrets are redacted, not exposed.
+    // This list must match every field that redactSecret() is called on in adminConfigHandler.
+    // Read admin_system.go to verify completeness — if any new secret field was added, add it here.
+    secretFields := []string{"jwt_secret", "jwt_secret_previous", "database_url", "database_url_migrate", "smtp_password", "sso_encryption_key", "gemini_api_key", "encryption_key", "encryption_key_previous"}
     for _, field := range secretFields {
         val, ok := body[field].(string)
         if ok && val != "" {
@@ -641,11 +680,13 @@ Understand: revoked-key security event emission, disabled-user rejection, org me
 
 **Step 2: Write tests for uncovered paths**
 
-1. `TestLogin_DisabledUser_Rejected` — disable user, attempt login, assert appropriate error (not 500)
+1. `TestLogin_DisabledUser_Rejected` — disable user (`disabled_at IS NOT NULL`), attempt login, assert appropriate error (not 500). **`testing-pitfalls.md` §13:** Verify the disabled check fires in the login handler itself, not just middleware — the login handler runs before auth middleware.
 2. `TestLogin_MFAEnrollmentRequired_PendingToken` — if org requires MFA and user has none, login returns pending token with MFA enrollment step (read the handler to understand the exact response shape)
 3. `TestLogin_RememberDeviceCookie` — if remember-device cookie is present and valid, MFA step is skipped
 
 NOTE: These tests require understanding the MFA flow. Read the handler fully before writing tests. If MFA enrollment requires complex setup, focus on the disabled-user path first (simplest and most security-critical).
+
+**Pitfall check:** `testing-pitfalls.md` §13 — Admin flag enforcement at all entry points. Verify `disabled_at` is checked in the login handler, not only in middleware (middleware runs on authenticated requests; login is unauthenticated).
 
 **Step 3: Run tests, commit**
 
@@ -665,6 +706,8 @@ Understand the token theft detection mechanism: when a refresh token is reused a
 
 1. `TestRefresh_TokenTheftDetection` — use a refresh token, then use the OLD (pre-rotation) token again. Assert that the second use is rejected AND triggers a security response (session invalidation or security event).
 2. `TestRefresh_GraceWindow` — if a grace window exists, verify that a slightly-old token within the grace period is accepted, but beyond the window is rejected.
+
+**Pitfall check:** `testing-pitfalls.md` §11 — "Multi-step restricted session state consistency." If the refresh handler mutates DB state (e.g., incrementing `token_version`), verify the newly issued token reflects the post-mutation state.
 
 **Step 3: Run tests, commit**
 

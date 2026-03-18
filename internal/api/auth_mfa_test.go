@@ -1594,3 +1594,93 @@ func TestEnrollment_RejectsStaleTokenVersion(t *testing.T) {
 		t.Errorf("stale token_version: got %d, want 401", resp.StatusCode)
 	}
 }
+
+func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "enroll-tokens@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token with mfa_enrollment_required as the only step.
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	// Setup TOTP using the pending token.
+	setupCookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", setupCookies)
+	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if setupResp.StatusCode != http.StatusOK {
+		t.Fatalf("setup: got %d, want 200", setupResp.StatusCode)
+	}
+	var setupBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(setupResp.Body).Decode(&setupBody); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	setupResp.Body.Close() //nolint:errcheck,gosec
+
+	// Generate valid TOTP code.
+	code, err := totp.GenerateCode(setupBody.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// Confirm enrollment with both the enroll token and the pending token.
+	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
+	confirmCookies := []*http.Cookie{
+		{Name: "mfa_enroll_token", Value: enrollToken},
+		{Name: "mfa_pending_token", Value: pendingToken},
+	}
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: got %d, want 200", confirmResp.StatusCode)
+	}
+
+	// Assert access_token and refresh_token cookies are set.
+	accessToken := cookieValue(confirmResp, "access_token")
+	refreshToken := cookieValue(confirmResp, "refresh_token")
+	if accessToken == "" {
+		t.Error("expected access_token cookie after enrollment completion, got empty")
+	}
+	if refreshToken == "" {
+		t.Error("expected refresh_token cookie after enrollment completion, got empty")
+	}
+
+	// Assert the pending token cookie is cleared.
+	var pendingCleared bool
+	for _, c := range confirmResp.Cookies() {
+		if c.Name == "mfa_pending_token" && c.MaxAge < 0 {
+			pendingCleared = true
+			break
+		}
+	}
+	if !pendingCleared {
+		t.Error("expected mfa_pending_token cookie to be cleared (MaxAge < 0)")
+	}
+}

@@ -698,7 +698,11 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 
 	// If this was a restricted enrollment session, clear mfa_enrollment_required.
 	if input.MFAPendingToken != "" {
-		cookies := srv.clearEnrollmentPending(input.MFAPendingToken)
+		cookies, clearErr := srv.clearEnrollmentPending(ctx, input.MFAPendingToken)
+		if clearErr != nil {
+			slog.ErrorContext(ctx, "totp-confirm: clear enrollment pending", "error", clearErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
 		out.SetCookie = append(out.SetCookie, cookies...)
 	}
 
@@ -847,7 +851,12 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 
 	// If this was a restricted enrollment session, clear mfa_enrollment_required.
 	if input.MFAPendingToken != "" {
-		out.SetCookie = srv.clearEnrollmentPending(input.MFAPendingToken)
+		cookies, clearErr := srv.clearEnrollmentPending(ctx, input.MFAPendingToken)
+		if clearErr != nil {
+			slog.ErrorContext(ctx, "email-otp-confirm: clear enrollment pending", "error", clearErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		out.SetCookie = cookies
 	}
 
 	return out, nil
@@ -1220,24 +1229,35 @@ func clearEnrollmentCookie(secure bool) string {
 
 // clearEnrollmentPending removes "mfa_enrollment_required" from the pending
 // token and reissues it. If no items remain, issues full auth tokens.
-func (srv *Server) clearEnrollmentPending(pendingToken string) []string {
+func (srv *Server) clearEnrollmentPending(ctx context.Context, pendingToken string) ([]string, error) {
 	claims, err := auth.ParsePendingToken(pendingToken, srv.jwtSecret())
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("parse pending token: %w", err)
 	}
 	remaining := removePendingItem(claims.Pending, "mfa_enrollment_required")
 	if len(remaining) > 0 {
 		secret := srv.jwtSecret()
 		token, err := auth.IssuePendingToken(secret, claims.UserID, claims.TokenVersion, remaining, nil, srv.cfg.MFAPendingTokenTTL)
 		if err != nil {
-			slog.Error("mfa: reissue pending after enrollment", "error", err)
-			return nil
+			slog.ErrorContext(ctx, "mfa: reissue pending after enrollment", "error", err)
+			return nil, fmt.Errorf("reissue pending token: %w", err)
 		}
-		return pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+		return pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL), nil
 	}
-	// All pending items cleared — but we can't issue full tokens here because
-	// we don't have the user object. The client should re-login.
-	return []string{clearPendingTokenCookie(srv.cfg.CookieSecure)}
+
+	// All pending items cleared — issue full auth tokens.
+	user, err := srv.store.GetUserByID(ctx, claims.UserID)
+	if err != nil || user == nil {
+		slog.ErrorContext(ctx, "mfa: enrollment complete, re-read user", "error", err)
+		return nil, fmt.Errorf("re-read user: %w", err)
+	}
+	authCookies, tokErr := srv.issueFullAuthTokens(ctx, user)
+	if tokErr != nil {
+		return nil, tokErr
+	}
+	// Clear both enrollment and pending cookies, add auth cookies.
+	cookies := append(authCookies, clearPendingTokenCookie(srv.cfg.CookieSecure))
+	return cookies, nil
 }
 
 // buildMFARequiredReasons returns the list of reasons why MFA is required

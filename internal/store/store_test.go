@@ -87,13 +87,29 @@ func TestOrgTx_CommitsOnSuccess(t *testing.T) {
 		t.Fatalf("setup: CreateOrg: %v", err)
 	}
 
-	// Insert a row within OrgTx — it should persist after commit.
+	// Insert a watchlist within OrgTx — it should persist after commit.
 	err = s.AppStore.OrgTx(ctx, org.ID, func(tx pgx.Tx) error {
-		_, txErr := tx.Exec(ctx, "SELECT 1") // trivial operation
+		_, txErr := tx.Exec(ctx,
+			"INSERT INTO watchlists (id, org_id, name, created_at, updated_at) VALUES (gen_random_uuid(), $1, 'commit-test', now(), now())",
+			org.ID,
+		)
 		return txErr
 	})
 	if err != nil {
 		t.Fatalf("OrgTx(success): %v", err)
+	}
+
+	// Verify the row persisted after commit by querying outside the transaction.
+	var count int
+	err = s.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM watchlists WHERE org_id = $1 AND name = 'commit-test'",
+		org.ID,
+	).Scan(&count)
+	if err != nil {
+		t.Fatalf("verify watchlist: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 watchlist row after OrgTx commit, got %d", count)
 	}
 }
 

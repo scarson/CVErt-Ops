@@ -32,7 +32,8 @@ const (
 	staleCheckInterval = 1 * time.Minute
 
 	// staleThreshold is the age at which a 'running' job is considered stuck.
-	staleThreshold = 5 * time.Minute
+	// Must be >= maxJobDuration so a job isn't reclaimed before its allowed runtime expires.
+	staleThreshold = 10 * time.Minute
 
 	// maxJobDuration caps how long a single job can run. Prevents unbounded
 	// shutdown hangs when in-flight jobs use context.WithoutCancel.
@@ -165,10 +166,10 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 				inflight.Go(func() {
 					defer func() { <-sem }()
 					// Detach from parent shutdown signal so in-flight DB writes
-				// complete, but cap each job to prevent unbounded shutdown hangs.
-				jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxJobDuration)
-				defer cancel()
-				p.processOne(jobCtx, queue)
+					// complete, but cap each job to prevent unbounded shutdown hangs.
+					jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxJobDuration)
+					defer cancel()
+					p.processOne(jobCtx, queue)
 				})
 			default:
 				// all concurrency slots occupied, skip this tick

@@ -5,7 +5,6 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -84,13 +83,7 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 					strings.HasSuffix(path, "/auth/logout") ||
 					strings.Contains(path, "/auth/mfa/")
 				if !allowed {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusForbidden)
-					_ = json.NewEncoder(w).Encode(map[string]string{
-						"title":  "Password change required",
-						"detail": "Your password must be changed before continuing",
-						"type":   "password_change_required",
-					})
+					writeProblemTyped(w, http.StatusForbidden, "password_change_required", "Your password must be changed before continuing")
 					return
 				}
 			}

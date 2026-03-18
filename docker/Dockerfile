@@ -37,6 +37,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /cvert-ops /cvert-ops
 
 EXPOSE 8080
+EXPOSE 9090
 
 # Run as the built-in nonroot user (uid 65532).
 USER nonroot:nonroot

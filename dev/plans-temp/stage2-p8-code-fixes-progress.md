@@ -29,11 +29,11 @@
 - **Notes:** Guarded HMAC block with `if cfg.SigningSecret != ""`. Added redirect policy and MaxConnsPerHost assertions to TestBuildSafeClient_ReturnsValidClient per HR F3.
 
 ## Task 5: Lockout Fail-Open Regression Test (D1)
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/lockout_test.go`
+- **Tests:** pass (9 lockout tests including new fail-open regression)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Created failingLockoutStore mock that returns errors from all methods. Test verifies Check() returns allowed=true on DB error (fail-open). Documents design decision per lockout.go:53-54.
 
 ## Task 6: Wrap Feed Client in SafeURL + HR E5 (Combined)
 - **Status:** pending

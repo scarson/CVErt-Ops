@@ -22,11 +22,11 @@
 - **Notes:** N8 already covered by existing TestRecoveryCode_VerifyUsedCode. Docker Desktop named pipe issue prevents running store tests.
 
 ## Task 4: Admin MFA Test Gaps
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/admin_mfa_test.go`
+- **Tests:** go vet passes; 15 tests added (SC2: cross-org 5 subtests, SC3: 4 negative cases, SC6: site admin + viewer, SC7: 2 full side-effect tests, C2: 3 unrequire RBAC, SC1: 3 event assertions)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Site admin test adds SA as member-role to org then proves SA bypass in checkAdminMFAPermission. RequireOrgRole has no SA bypass.
 
 ## Task 5: MFA Verify/Challenge Tests
 - **Status:** pending

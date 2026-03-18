@@ -41,18 +41,27 @@ Produce a **scope summary**:
 
 Run coverage in the main session. This data is the shared baseline for all subsequent analysis.
 
+**Use a scope-specific filename in `dev/coverage/`** to avoid clobbering other concurrent coverage runs and keep the project root clean. The directory is already gitignored via the `*.out` glob.
+
 ```bash
+mkdir -p dev/coverage
+# Use the scope slug from Phase 1 + timestamp (supports before/after comparisons)
+COVER_FILE="dev/coverage/coverage-<slug>-$(date +%Y%m%d-%H%M%S).out"
+
 # Adjust -coverpkg to include adjacent packages that scoped code calls
-go test -coverprofile=coverage.out \
+# Timeout: 600s minimum — each DB test spins its own testcontainer, and
+# concurrent agents competing for container resources make this worse.
+# A full-suite run that times out forces re-runs in segments, taking longer overall.
+go test -coverprofile="$COVER_FILE" \
   -coverpkg=./internal/... \
-  -count=1 -timeout=300s \
+  -count=1 -timeout=600s \
   ./internal/...
 ```
 
 Then extract per-function coverage:
 
 ```bash
-go tool cover -func=coverage.out
+go tool cover -func="$COVER_FILE"
 ```
 
 Save both outputs. Note any test failures — failed packages still generate partial coverage. Do NOT exclude failing packages.

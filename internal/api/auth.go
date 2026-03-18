@@ -792,7 +792,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		}
 	}
 	if userID == uuid.Nil && input.MFAPendingToken != "" {
-		claims, err := auth.ParsePendingToken(input.MFAPendingToken, srv.jwtSecret())
+		claims, err := auth.ParsePendingToken(input.MFAPendingToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 		if err == nil {
 			for _, p := range claims.Pending {
 				if p == "password_reset" {

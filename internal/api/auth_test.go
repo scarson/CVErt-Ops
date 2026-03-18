@@ -1442,7 +1442,7 @@ func TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion(t *te
 	}
 
 	// Decode the reissued pending token and check token_version.
-	reissuedClaims, parseErr := auth.ParsePendingToken(reissuedToken, []byte(cfg.JWTSecret))
+	reissuedClaims, parseErr := auth.ParsePendingToken(reissuedToken, []byte(cfg.JWTSecret), nil)
 	if parseErr != nil {
 		t.Fatalf("parse reissued pending token: %v", parseErr)
 	}

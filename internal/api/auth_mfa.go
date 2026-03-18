@@ -315,7 +315,7 @@ func (srv *Server) validatePendingToken(tokenStr string, expectedStep string) (*
 	if tokenStr == "" {
 		return nil, fmt.Errorf("missing pending token")
 	}
-	claims, err := auth.ParsePendingToken(tokenStr, srv.jwtSecret())
+	claims, err := auth.ParsePendingToken(tokenStr, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +619,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	if input.MFAEnrollToken == "" {
 		return nil, huma.Error401Unauthorized("enrollment token required — call setup first")
 	}
-	enrollClaims, err := auth.ParseEnrollmentToken(input.MFAEnrollToken, srv.jwtSecret())
+	enrollClaims, err := auth.ParseEnrollmentToken(input.MFAEnrollToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired enrollment token")
 	}
@@ -1169,7 +1169,7 @@ func (srv *Server) resolveEnrollmentUserID(ctx context.Context, accessToken, pen
 
 	// Fall back to pending enrollment token.
 	if pendingToken != "" {
-		claims, err := auth.ParsePendingToken(pendingToken, secret)
+		claims, err := auth.ParsePendingToken(pendingToken, secret, srv.jwtPreviousSecretBytes())
 		if err == nil && len(claims.Pending) > 0 && claims.Pending[0] == "mfa_enrollment_required" {
 			// Validate token_version against DB (prevents stale tokens after admin actions).
 			user, err := srv.store.GetUserByID(ctx, claims.UserID)
@@ -1230,7 +1230,7 @@ func clearEnrollmentCookie(secure bool) string {
 // clearEnrollmentPending removes "mfa_enrollment_required" from the pending
 // token and reissues it. If no items remain, issues full auth tokens.
 func (srv *Server) clearEnrollmentPending(ctx context.Context, pendingToken string) ([]string, error) {
-	claims, err := auth.ParsePendingToken(pendingToken, srv.jwtSecret())
+	claims, err := auth.ParsePendingToken(pendingToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return nil, fmt.Errorf("parse pending token: %w", err)
 	}

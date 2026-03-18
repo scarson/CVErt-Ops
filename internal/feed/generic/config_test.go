@@ -218,6 +218,53 @@ func TestValidateConfig_InvalidPaginationType(t *testing.T) {
 	assert.Contains(t, err.Error(), "pagination")
 }
 
+func TestValidateConfig_CursorPaginationMissingCursorParam(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Name: "test-feed", URL: "http://example.com", Format: "json",
+		Pagination: PaginationConfig{Type: "cursor", CursorPath: "meta.next"},
+		Mapping:    MappingConfig{Root: "items", Fields: map[string]string{"cve_id": "id"}},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cursor_param is required")
+}
+
+func TestValidateConfig_CursorPaginationMissingCursorPath(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Name: "test-feed", URL: "http://example.com", Format: "json",
+		Pagination: PaginationConfig{Type: "cursor", CursorParam: "after"},
+		Mapping:    MappingConfig{Root: "items", Fields: map[string]string{"cve_id": "id"}},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cursor_path is required")
+}
+
+func TestValidateConfig_OffsetPaginationMissingPageParam(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Name: "test-feed", URL: "http://example.com", Format: "json",
+		Pagination: PaginationConfig{Type: "offset"},
+		Mapping:    MappingConfig{Root: "items", Fields: map[string]string{"cve_id": "id"}},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "page_param is required")
+}
+
+func TestValidateConfig_CursorPaginationComplete(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		Name: "test-feed", URL: "http://example.com", Format: "json",
+		Pagination: PaginationConfig{Type: "cursor", CursorParam: "after", CursorPath: "meta.next"},
+		Mapping:    MappingConfig{Root: "items", Fields: map[string]string{"cve_id": "id"}},
+	}
+	err := cfg.Validate()
+	assert.NoError(t, err, "cursor pagination with all required fields should pass")
+}
+
 func TestValidateConfig_InvalidAuthType(t *testing.T) {
 	t.Parallel()
 	cfg := &Config{

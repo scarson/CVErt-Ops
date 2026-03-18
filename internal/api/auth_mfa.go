@@ -633,7 +633,8 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 		slog.ErrorContext(ctx, "totp-confirm: encryption key", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}
-	secretBytes, err := crypto.Decrypt(encKey, enrollClaims.SecretEnc)
+	prevKey := srv.ssoEncryptionKeyPrevious()
+	secretBytes, err := crypto.DecryptWithFallback(encKey, prevKey, enrollClaims.SecretEnc)
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: decrypt secret", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")

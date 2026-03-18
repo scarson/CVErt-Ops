@@ -17,7 +17,7 @@ func main() {
 	url := fmt.Sprintf("http://localhost%s/healthz", addr)
 
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(url) //nolint:noctx // healthcheck binary — no parent context
+	resp, err := client.Get(url) //nolint:noctx,gosec // G704: URL is localhost-only, not user input; no parent context
 	if err != nil {
 		os.Exit(1)
 	}

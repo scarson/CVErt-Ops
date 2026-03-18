@@ -51,9 +51,9 @@ WHERE
     ($3::text IS NULL OR actor_email = $3) AND
     ($4::timestamptz IS NULL OR created_at >= $4) AND
     ($5::timestamptz IS NULL OR created_at <= $5) AND
-    ($6::timestamptz IS NULL OR created_at < $6)
+    ($6::timestamptz IS NULL OR (created_at < $6 OR (created_at = $6 AND id < $7)))
 ORDER BY created_at DESC, id DESC
-LIMIT $7
+LIMIT $8
 `
 
 type ListSecurityEventsParams struct {
@@ -63,6 +63,7 @@ type ListSecurityEventsParams struct {
 	Column4 time.Time
 	Column5 time.Time
 	Column6 time.Time
+	ID      uuid.UUID
 	Limit   int32
 }
 
@@ -74,6 +75,7 @@ func (q *Queries) ListSecurityEvents(ctx context.Context, arg ListSecurityEvents
 		arg.Column4,
 		arg.Column5,
 		arg.Column6,
+		arg.ID,
 		arg.Limit,
 	)
 	if err != nil {

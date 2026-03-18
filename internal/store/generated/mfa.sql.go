@@ -347,6 +347,30 @@ func (q *Queries) GetMFACredentialByUserAndMethod(ctx context.Context, arg GetMF
 	return i, err
 }
 
+const getMFACredentialByUserAndMethodForUpdate = `-- name: GetMFACredentialByUserAndMethodForUpdate :one
+SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 AND method = $2 FOR UPDATE
+`
+
+type GetMFACredentialByUserAndMethodForUpdateParams struct {
+	UserID uuid.UUID
+	Method string
+}
+
+func (q *Queries) GetMFACredentialByUserAndMethodForUpdate(ctx context.Context, arg GetMFACredentialByUserAndMethodForUpdateParams) (MfaCredential, error) {
+	row := q.db.QueryRowContext(ctx, getMFACredentialByUserAndMethodForUpdate, arg.UserID, arg.Method)
+	var i MfaCredential
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Method,
+		&i.SecretEnc,
+		&i.LastUsedStep,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getMFACredentialsByUserID = `-- name: GetMFACredentialsByUserID :many
 
 SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at
@@ -600,4 +624,64 @@ func (q *Queries) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (b
 	var required bool
 	err := row.Scan(&required)
 	return required, err
+}
+
+const userMFARequiredOrgNames = `-- name: UserMFARequiredOrgNames :many
+SELECT o.name FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1 AND o.mfa_required_all = true AND o.deleted_at IS NULL
+`
+
+// Returns org names where the user is a member and org has mfa_required_all=true.
+func (q *Queries) UserMFARequiredOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, userMFARequiredOrgNames, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userMFARequirementOrgNames = `-- name: UserMFARequirementOrgNames :many
+SELECT o.name FROM mfa_requirements mr
+JOIN organizations o ON o.id = mr.org_id
+WHERE mr.user_id = $1 AND o.deleted_at IS NULL
+`
+
+// Returns org names from the mfa_requirements table for this user.
+func (q *Queries) UserMFARequirementOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, userMFARequirementOrgNames, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

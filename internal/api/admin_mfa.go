@@ -51,31 +51,9 @@ func (srv *Server) adminResetMFAHandler(w http.ResponseWriter, r *http.Request) 
 		return // response already written
 	}
 
-	// Delete all MFA state.
-	if _, err := srv.store.DeleteAllMFACredentials(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin reset-mfa: delete credentials", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := srv.store.DeleteAllRecoveryCodes(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin reset-mfa: delete recovery codes", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := srv.store.DeleteAllUserChallenges(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin reset-mfa: delete challenges", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if err := srv.store.DeleteRememberDeviceTokens(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin reset-mfa: delete device tokens", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	// Invalidate all sessions.
-	if _, err := srv.store.IncrementTokenVersion(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin reset-mfa: increment token version", "error", err)
+	// Atomically delete all MFA state and invalidate sessions.
+	if _, err := srv.store.ResetUserMFA(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin reset-mfa: reset", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}

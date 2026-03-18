@@ -7,6 +7,9 @@ SELECT * FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at;
 -- name: GetMFACredentialByUserAndMethod :one
 SELECT * FROM mfa_credentials WHERE user_id = $1 AND method = $2;
 
+-- name: GetMFACredentialByUserAndMethodForUpdate :one
+SELECT * FROM mfa_credentials WHERE user_id = $1 AND method = $2 FOR UPDATE;
+
 -- name: CreateMFACredential :one
 INSERT INTO mfa_credentials (user_id, method, secret_enc)
 VALUES ($1, $2, $3)
@@ -133,6 +136,18 @@ SELECT EXISTS(
     JOIN organizations o ON o.id = om.org_id
     WHERE om.user_id = $1 AND o.mfa_required_all = true
 ) AS required;
+
+-- name: UserMFARequiredOrgNames :many
+-- Returns org names where the user is a member and org has mfa_required_all=true.
+SELECT o.name FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1 AND o.mfa_required_all = true AND o.deleted_at IS NULL;
+
+-- name: UserMFARequirementOrgNames :many
+-- Returns org names from the mfa_requirements table for this user.
+SELECT o.name FROM mfa_requirements mr
+JOIN organizations o ON o.id = mr.org_id
+WHERE mr.user_id = $1 AND o.deleted_at IS NULL;
 
 -- name: AllUserOrgsAllowRememberDevice :one
 -- Check whether all orgs the user belongs to allow remember-device tokens.

@@ -507,7 +507,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
 	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
 	resp1, _ := ts.Client().Do(req1) //nolint:gosec // G704 false positive
-	resp1.Body.Close()                //nolint:errcheck,gosec // G104
+	resp1.Body.Close()               //nolint:errcheck,gosec // G104
 
 	// Backdate used_at to simulate grace window expiry.
 	oldClaims, err := auth.ParseRefreshToken(firstRefreshToken, []byte("regtestsecret"), nil)
@@ -1371,6 +1371,93 @@ func TestLogin_IncludesForcePasswordReset(t *testing.T) {
 	}
 	if cookieValue(loginResp, "access_token") != "" {
 		t.Error("should NOT issue access_token when force_password_reset is set")
+	}
+}
+
+func TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Use MFA-aware config with site-admin MFA required so the first user
+	// (who becomes site admin) gets mfa_enrollment_required in pending.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:             "tvfresh-secret-at-least-32-bytes",
+		RegistrationMode:      "open",
+		Argon2MaxConcurrent:   5,
+		MFAPendingTokenTTL:    5 * time.Minute,
+		MFARequiredSiteAdmins: true,
+		SSOEncryptionKey:      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	doRegister(t, ctx, ts, "tvfresh@example.com", "test-old-password-1")
+
+	// Set force_password_reset so login produces pending=["password_reset","mfa_enrollment_required"].
+	user, err := db.GetUserByEmail(ctx, "tvfresh@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+	originalTV := user.TokenVersion
+
+	// Login — should get pending token with both password_reset and mfa_enrollment_required.
+	loginResp := doLogin(t, ctx, ts, "tvfresh@example.com", "test-old-password-1")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie from login")
+	}
+
+	// Change password using restricted session — removes "password_reset" from pending,
+	// but "mfa_enrollment_required" remains, so the handler reissues a pending token.
+	body := `{"new_password":"test-new-password-1"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("change-password: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := json.Marshal(resp.Body) //nolint:errcheck // diagnostic
+		t.Fatalf("change-password: got %d, want 200; body=%s", resp.StatusCode, respBody)
+	}
+
+	// Extract the reissued pending token from the response.
+	reissuedToken := cookieValue(resp, "mfa_pending_token")
+	if reissuedToken == "" {
+		t.Fatal("expected reissued mfa_pending_token cookie after change-password")
+	}
+
+	// Decode the reissued pending token and check token_version.
+	reissuedClaims, parseErr := auth.ParsePendingToken(reissuedToken, []byte(cfg.JWTSecret), nil)
+	if parseErr != nil {
+		t.Fatalf("parse reissued pending token: %v", parseErr)
+	}
+
+	// Re-read user from DB to get post-increment token_version.
+	freshUser, err := db.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("re-read user: %v", err)
+	}
+	expectedTV := int(freshUser.TokenVersion)
+	if expectedTV <= int(originalTV) {
+		t.Fatalf("token_version should have been incremented: original=%d, current=%d", originalTV, expectedTV)
+	}
+	if reissuedClaims.TokenVersion != expectedTV {
+		t.Errorf("reissued pending token tv=%d, want %d (fresh from DB after password change)", reissuedClaims.TokenVersion, expectedTV)
 	}
 }
 

@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 
+	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/crypto"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -925,6 +927,88 @@ func TestEmailOTPSetup(t *testing.T) {
 	}
 }
 
+func TestEnrollmentCookie_Path(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	doRegister(t, ctx, ts, "cookie-path@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "cookie-path@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("totp setup: got %d, want 200", resp.StatusCode)
+	}
+
+	// The mfa_enroll_token cookie must have path /api/v1/auth/mfa.
+	var enrollCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "mfa_enroll_token" {
+			enrollCookie = c
+			break
+		}
+	}
+	if enrollCookie == nil {
+		t.Fatal("mfa_enroll_token cookie not set")
+	}
+	if enrollCookie.Path != "/api/v1/auth/mfa" {
+		t.Errorf("enrollment cookie path: got %q, want %q", enrollCookie.Path, "/api/v1/auth/mfa")
+	}
+}
+
+func TestEmailOTPSetup_ReissuesPendingTokenTTL(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "email-reissue@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token with mfa_enrollment_required.
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("email otp setup: got %d, want 200", resp.StatusCode)
+	}
+
+	// The response should include a reissued mfa_pending_token cookie with fresh TTL.
+	reissuedPT := cookieValue(resp, "mfa_pending_token")
+	if reissuedPT == "" {
+		t.Fatal("mfa_pending_token cookie not reissued in email OTP setup response")
+	}
+}
+
 func TestEmailOTPConfirm(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -1129,6 +1213,65 @@ func TestMFAMethodsListEmpty(t *testing.T) {
 	}
 	if body.Required {
 		t.Error("expected required=false")
+	}
+}
+
+func TestMFAMethods_RequiredReasons_StructuredFormat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "reasons@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Login first (before MFA mandate) to get access token.
+	loginResp := doLogin(t, ctx, ts, "reasons@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	// Set org-level MFA mandate AFTER login so the access token is valid.
+	if _, err := db.Pool().Exec(ctx, "UPDATE organizations SET mfa_required_all = true WHERE id = $1", orgID); err != nil {
+		t.Fatalf("set mfa_required_all: %v", err)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		ts.URL+"/api/v1/auth/mfa/methods", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("methods list: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("methods list: got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Required        bool `json:"required"`
+		RequiredReasons []struct {
+			Source  string `json:"source"`
+			OrgName string `json:"org_name"`
+		} `json:"required_reasons"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !body.Required {
+		t.Fatal("expected required=true")
+	}
+	if len(body.RequiredReasons) != 1 {
+		t.Fatalf("expected 1 required_reason, got %d: %v", len(body.RequiredReasons), body.RequiredReasons)
+	}
+	if body.RequiredReasons[0].Source != "org_policy" {
+		t.Errorf("expected source=org_policy, got %q", body.RequiredReasons[0].Source)
+	}
+	if body.RequiredReasons[0].OrgName != "reasons's Organization" {
+		t.Errorf("expected org_name=%q, got %q", "reasons's Organization", body.RequiredReasons[0].OrgName)
 	}
 }
 
@@ -1467,5 +1610,409 @@ func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
 	}
 	if valid {
 		t.Error("device token should be invalidated after password change")
+	}
+}
+
+// ── Enrollment pending order enforcement ─────────────────────────────────────
+
+func TestEnrollment_RejectsOutOfOrderPending(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "order-reject@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token where password_reset comes BEFORE mfa_enrollment_required.
+	// The enrollment endpoint should reject this because mfa_enrollment_required is not Pending[0].
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"password_reset", "mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("out-of-order pending: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestEnrollment_AcceptsCorrectOrder(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "order-accept@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token where mfa_enrollment_required is the first (and only) step.
+	// token_version=1 matches the DB default for a freshly registered user.
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("correct order pending: got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestEnrollment_RejectsStaleTokenVersion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "stale-tv-enroll@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token with token_version=1 (matching the freshly registered user).
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	// Increment token_version (simulating admin MFA reset).
+	if _, err := srv.store.IncrementTokenVersion(ctx, userID); err != nil {
+		t.Fatalf("increment token version: %v", err)
+	}
+
+	// Attempt enrollment with the now-stale pending token.
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("stale token_version: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "enroll-tokens@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token with mfa_enrollment_required as the only step.
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	// Setup TOTP using the pending token.
+	setupCookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", setupCookies)
+	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if setupResp.StatusCode != http.StatusOK {
+		t.Fatalf("setup: got %d, want 200", setupResp.StatusCode)
+	}
+	var setupBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(setupResp.Body).Decode(&setupBody); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	setupResp.Body.Close() //nolint:errcheck,gosec
+
+	// Generate valid TOTP code.
+	code, err := totp.GenerateCode(setupBody.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// Confirm enrollment with both the enroll token and the pending token.
+	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
+	confirmCookies := []*http.Cookie{
+		{Name: "mfa_enroll_token", Value: enrollToken},
+		{Name: "mfa_pending_token", Value: pendingToken},
+	}
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: got %d, want 200", confirmResp.StatusCode)
+	}
+
+	// Assert access_token and refresh_token cookies are set.
+	accessToken := cookieValue(confirmResp, "access_token")
+	refreshToken := cookieValue(confirmResp, "refresh_token")
+	if accessToken == "" {
+		t.Error("expected access_token cookie after enrollment completion, got empty")
+	}
+	if refreshToken == "" {
+		t.Error("expected refresh_token cookie after enrollment completion, got empty")
+	}
+
+	// Assert the pending token cookie is cleared.
+	var pendingCleared bool
+	for _, c := range confirmResp.Cookies() {
+		if c.Name == "mfa_pending_token" && c.MaxAge < 0 {
+			pendingCleared = true
+			break
+		}
+	}
+	if !pendingCleared {
+		t.Error("expected mfa_pending_token cookie to be cleared (MaxAge < 0)")
+	}
+}
+
+func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	now := time.Now()
+	code, err := totp.GenerateCode(secret, now)
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// First verify — should succeed.
+	loginResp1 := doLogin(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
+	pt1 := cookieValue(loginResp1, "mfa_pending_token")
+	loginResp1.Body.Close() //nolint:errcheck,gosec
+
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
+	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt1})
+	resp1, err := ts.Client().Do(req1) //nolint:gosec
+	if err != nil {
+		t.Fatalf("first verify: %v", err)
+	}
+	resp1.Body.Close() //nolint:errcheck,gosec
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("first verify: got %d, want 200", resp1.StatusCode)
+	}
+
+	// Verify that lastUsedStep was stored as currentStep + skew (maxStep).
+	// This ensures even codes valid for adjacent time steps are blocked.
+	cred, err := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
+	if err != nil {
+		t.Fatalf("get credential: %v", err)
+	}
+	if !cred.LastUsedStep.Valid {
+		t.Fatal("expected last_used_step to be set after verify")
+	}
+	currentStep := now.Unix() / 30
+	expectedMaxStep := currentStep + int64(totpValidateOpts.Skew) //nolint:gosec // G115: Skew is a small constant (1), no overflow risk
+	if cred.LastUsedStep.Int64 != expectedMaxStep {
+		t.Errorf("last_used_step = %d, want %d (currentStep %d + skew %d)",
+			cred.LastUsedStep.Int64, expectedMaxStep, currentStep, totpValidateOpts.Skew)
+	}
+
+	// Second verify with same code — should fail (replay blocked by skew-aware step).
+	loginResp2 := doLogin(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
+	pt2 := cookieValue(loginResp2, "mfa_pending_token")
+	loginResp2.Body.Close() //nolint:errcheck,gosec
+
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt2})
+	resp2, err := ts.Client().Do(req2) //nolint:gosec
+	if err != nil {
+		t.Fatalf("second verify: %v", err)
+	}
+	resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("replay with skew window: got %d, want 401", resp2.StatusCode)
+	}
+}
+
+func TestTOTP_ConcurrentReplay(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "concurrent-replay@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// Get two pending tokens for two concurrent login attempts.
+	loginResp1 := doLogin(t, ctx, ts, "concurrent-replay@example.com", "test-password-1234")
+	pt1 := cookieValue(loginResp1, "mfa_pending_token")
+	loginResp1.Body.Close() //nolint:errcheck,gosec
+
+	loginResp2 := doLogin(t, ctx, ts, "concurrent-replay@example.com", "test-password-1234")
+	pt2 := cookieValue(loginResp2, "mfa_pending_token")
+	loginResp2.Body.Close() //nolint:errcheck,gosec
+
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
+
+	// Barrier pattern: both goroutines block until ready is closed.
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]int, 2)
+
+	for i, pt := range []string{pt1, pt2} {
+		wg.Add(1)
+		go func(idx int, pendingToken string) {
+			defer wg.Done()
+			<-ready // block until barrier opens
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+				ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+			resp, reqErr := ts.Client().Do(req) //nolint:gosec
+			if reqErr != nil {
+				t.Errorf("goroutine %d: request error: %v", idx, reqErr)
+				return
+			}
+			resp.Body.Close() //nolint:errcheck,gosec
+			results[idx] = resp.StatusCode
+		}(i, pt)
+	}
+
+	close(ready) // release both goroutines simultaneously
+	wg.Wait()
+
+	// Exactly one should succeed (200), one should fail (401).
+	successes := 0
+	failures := 0
+	for _, status := range results {
+		switch status {
+		case http.StatusOK:
+			successes++
+		case http.StatusUnauthorized:
+			failures++
+		default:
+			t.Errorf("unexpected status code: %d", status)
+		}
+	}
+	if successes != 1 || failures != 1 {
+		t.Errorf("concurrent replay: got %d successes and %d failures, want 1 and 1 (statuses: %v)",
+			successes, failures, results)
+	}
+}
+
+// TestTOTP_VerifyAndUpdateTOTPStep_Store tests the atomic store method directly.
+func TestTOTP_VerifyAndUpdateTOTPStep_Store(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "store-step@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	// First call with step 100 — should succeed.
+	ok, err := srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 100)
+	if err != nil {
+		t.Fatalf("first VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected first VerifyAndUpdateTOTPStep to return true")
+	}
+
+	// Same step — should fail (replay).
+	ok, err = srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 100)
+	if err != nil {
+		t.Fatalf("replay VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if ok {
+		t.Fatal("expected replay VerifyAndUpdateTOTPStep to return false")
+	}
+
+	// Lower step — should also fail.
+	ok, err = srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 99)
+	if err != nil {
+		t.Fatalf("lower step VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if ok {
+		t.Fatal("expected lower step VerifyAndUpdateTOTPStep to return false")
+	}
+
+	// Higher step — should succeed.
+	ok, err = srv.store.VerifyAndUpdateTOTPStep(ctx, userID, 101)
+	if err != nil {
+		t.Fatalf("higher step VerifyAndUpdateTOTPStep: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected higher step VerifyAndUpdateTOTPStep to return true")
 	}
 }

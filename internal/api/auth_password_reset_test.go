@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -382,5 +383,227 @@ func TestResetPassword_ConcurrentUse(t *testing.T) {
 	}
 	if successes != 1 {
 		t.Fatalf("expected exactly 1 success, got %d (status codes: %v)", successes, results)
+	}
+}
+
+// newPasswordResetMFAServer creates a Server + httptest.Server with MFA config
+// for testing MFA gating in the password reset flow.
+func newPasswordResetMFAServer(t *testing.T) (*testutil.TestDB, *Server, *httptest.Server) {
+	t.Helper()
+	db := testutil.NewTestDB(t)
+	cfg := &config.Config{ //nolint:exhaustruct,gosec // test: only relevant fields; G101 false positive on test secret
+		JWTSecret:               "resetmfa-test-secret-32-bytes!!",
+		RegistrationMode:        "open",
+		Argon2MaxConcurrent:     5,
+		PasswordResetTokenTTL:   1 * time.Hour,
+		PasswordResetMaxPerHour: 3,
+		SMTPHost:                "localhost",
+		SMTPPort:                1025,
+		SMTPFrom:                "test@example.com",
+		ExternalURL:             "http://localhost:8080",
+		MFAPendingTokenTTL:      5 * time.Minute,
+		SSOEncryptionKey:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // 64 hex chars = 32 bytes
+	}
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	return db, srv, ts
+}
+
+// createResetToken inserts a password reset token directly in the DB and returns
+// the hex-encoded plaintext token for use in the reset endpoint.
+func createResetToken(t *testing.T, ctx context.Context, db *testutil.TestDB, userID uuid.UUID) string {
+	t.Helper()
+	tokenBytes := make([]byte, 32)
+	for i := range tokenBytes {
+		tokenBytes[i] = byte(i + 1) // non-zero deterministic bytes
+	}
+	tokenHex := hex.EncodeToString(tokenBytes)
+	tokenHash := sha256.Sum256(tokenBytes)
+	expiresAt := time.Now().Add(1 * time.Hour)
+	if err := db.CreatePasswordResetToken(ctx, userID, tokenHash[:], expiresAt); err != nil {
+		t.Fatalf("CreatePasswordResetToken: %v", err)
+	}
+	return tokenHex
+}
+
+// doResetPassword calls POST /api/v1/auth/reset-password and returns the response.
+// Caller must close resp.Body.
+func doResetPassword(t *testing.T, ctx context.Context, ts *httptest.Server, tokenHex, newPassword string) *http.Response {
+	t.Helper()
+	body := fmt.Sprintf(`{"token":%q,"new_password":%q}`, tokenHex, newPassword)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/reset-password", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("reset request: %v", err)
+	}
+	return resp
+}
+
+func TestResetPassword_WithMFAEnrolled_ReturnsPendingToken(t *testing.T) {
+	t.Parallel()
+	db, srv, ts := newPasswordResetMFAServer(t)
+	ctx := context.Background()
+
+	// Register user and enroll TOTP.
+	reg := doRegister(t, ctx, ts, "resetmfa@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+	enrollTOTP(t, ctx, srv, userID)
+
+	// Create a reset token and complete password reset.
+	tokenHex := createResetToken(t, ctx, db, userID)
+	resp := doResetPassword(t, ctx, ts, tokenHex, "brand-new-password-123")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody json.RawMessage
+		json.NewDecoder(resp.Body).Decode(&errBody) //nolint:errcheck,gosec // diagnostic decode
+		t.Fatalf("reset: got %d, want 200. body: %s", resp.StatusCode, errBody)
+	}
+
+	// Parse response body — must have pending=["mfa_challenge"] and methods=["totp"].
+	var body struct {
+		Pending []string `json:"pending"`
+		Methods []string `json:"methods"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Pending) != 1 || body.Pending[0] != "mfa_challenge" {
+		t.Errorf("pending = %v, want [mfa_challenge]", body.Pending)
+	}
+	if len(body.Methods) != 1 || body.Methods[0] != "totp" {
+		t.Errorf("methods = %v, want [totp]", body.Methods)
+	}
+
+	// Must have mfa_pending_token cookie.
+	if cookieValue(resp, "mfa_pending_token") == "" {
+		t.Error("mfa_pending_token cookie not set")
+	}
+	// Must NOT have access/refresh tokens.
+	if cookieValue(resp, "access_token") != "" {
+		t.Error("access_token cookie should not be set during MFA gating")
+	}
+	if cookieValue(resp, "refresh_token") != "" {
+		t.Error("refresh_token cookie should not be set during MFA gating")
+	}
+}
+
+func TestResetPassword_NoMFA_Mandated_ReturnsPendingToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Create server with site-wide MFA mandate for site admins.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:               "resetmfa-mandate-secret-32bytes",
+		RegistrationMode:        "open",
+		Argon2MaxConcurrent:     5,
+		PasswordResetTokenTTL:   1 * time.Hour,
+		PasswordResetMaxPerHour: 3,
+		SMTPHost:                "localhost",
+		SMTPPort:                1025,
+		SMTPFrom:                "test@example.com",
+		ExternalURL:             "http://localhost:8080",
+		MFAPendingTokenTTL:      5 * time.Minute,
+		MFARequiredSiteAdmins:   true,
+		SSOEncryptionKey:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	// Register user — first user becomes site admin.
+	reg := doRegister(t, ctx, ts, "mandatemfa@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+	// Mark user as site admin via raw SQL.
+	if _, saErr := db.Pool().Exec(ctx, "UPDATE users SET is_site_admin = true WHERE id = $1", userID); saErr != nil {
+		t.Fatalf("set site admin: %v", saErr)
+	}
+
+	// Create reset token and complete password reset.
+	tokenHex := createResetToken(t, ctx, db, userID)
+	resp := doResetPassword(t, ctx, ts, tokenHex, "brand-new-password-123")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody json.RawMessage
+		json.NewDecoder(resp.Body).Decode(&errBody) //nolint:errcheck,gosec
+		t.Fatalf("reset: got %d, want 200. body: %s", resp.StatusCode, errBody)
+	}
+
+	var body struct {
+		Pending []string `json:"pending"`
+		Methods []string `json:"methods"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Pending) != 1 || body.Pending[0] != "mfa_enrollment_required" {
+		t.Errorf("pending = %v, want [mfa_enrollment_required]", body.Pending)
+	}
+
+	// Must have mfa_pending_token cookie.
+	if cookieValue(resp, "mfa_pending_token") == "" {
+		t.Error("mfa_pending_token cookie not set")
+	}
+}
+
+func TestResetPassword_NoMFA_NotRequired_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	db, _, ts := newPasswordResetMFAServer(t)
+	ctx := context.Background()
+
+	// Register user (no MFA enrolled, no mandate).
+	reg := doRegister(t, ctx, ts, "nomfa-reset@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create reset token and complete password reset.
+	tokenHex := createResetToken(t, ctx, db, userID)
+	resp := doResetPassword(t, ctx, ts, tokenHex, "brand-new-password-123")
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+
+	if resp.StatusCode != http.StatusOK {
+		var errBody json.RawMessage
+		json.NewDecoder(resp.Body).Decode(&errBody) //nolint:errcheck,gosec
+		t.Fatalf("reset: got %d, want 200. body: %s", resp.StatusCode, errBody)
+	}
+
+	var body struct {
+		Pending []string `json:"pending"`
+		Methods []string `json:"methods"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Pending) != 0 {
+		t.Errorf("pending = %v, want empty (no MFA required)", body.Pending)
+	}
+
+	// Must NOT have mfa_pending_token cookie.
+	if cookieValue(resp, "mfa_pending_token") != "" {
+		t.Error("mfa_pending_token cookie should not be set when no MFA required")
+	}
+	// Must NOT have access/refresh tokens (password reset doesn't start a session).
+	if cookieValue(resp, "access_token") != "" {
+		t.Error("access_token cookie should not be set from password reset")
 	}
 }

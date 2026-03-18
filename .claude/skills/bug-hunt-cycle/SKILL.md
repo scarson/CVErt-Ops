@@ -99,6 +99,8 @@ Wait for all three to complete before proceeding.
 
 Read all three reports (both from agent responses and the files in `dev/bug-hunts/`). Build a unified findings list.
 
+**COMPLETENESS REQUIREMENT:** You MUST account for every single finding from every hunter report. Before starting cross-validation, enumerate all findings across all 3 reports. Every finding must appear in the consolidated report as one of: confirmed bug, design decision, false positive, or out-of-scope. **You do NOT get to decide what's "too minor" to include — that's Sam's decision in Phase 5.** Silently dropping findings defeats the entire purpose of the bug hunt.
+
 ### 3a. Deduplicate
 
 Many findings will overlap. Group findings that describe the same underlying issue. Note consensus — "all three found this" is a strong signal; "only one found this" needs extra scrutiny.
@@ -180,6 +182,8 @@ Write the consolidated report to `dev/bug-hunts/<date>-<slug>-consolidated.md` u
 **Blast radius:** <what would need to change>
 **Recommendation:** <fix in this cycle or document for later>
 ```
+
+**COMPLETENESS CHECK:** Before moving on, re-read every hunter report and verify that every finding is accounted for in the consolidated report. Count the findings: the total of confirmed + design decisions + false positives + out-of-scope MUST equal or exceed the total unique findings across all hunter reports. If any are missing, add them now.
 
 After writing the consolidated report, update your private journal with key observations: what patterns emerged across hunters, which findings surprised you, what the false-positive rate looked like, and any insights about the codebase's risk profile.
 

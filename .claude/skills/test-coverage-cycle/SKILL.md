@@ -151,6 +151,8 @@ Wait for all agents to complete before proceeding.
 
 Read all reports (subagent files + your own matrix/cross-handler analysis). Build a unified findings list.
 
+**COMPLETENESS REQUIREMENT:** You MUST account for every single finding from every report (subagent triage, subagent semantic, your own security matrix, and cross-handler analysis). Before starting cross-validation, enumerate all findings. Every finding must appear in the consolidated report as one of: confirmed gap/bug, design decision, false positive, nice-to-have, or out-of-scope. **You do NOT get to decide what's "too minor" to include — that's Sam's decision in Phase 6.** Silently dropping findings defeats the entire purpose of the coverage review.
+
 ### 4a. Verify every finding
 
 For each gap or bug reported:
@@ -236,6 +238,8 @@ Write to `dev/test-coverage-reports/<date>-<slug>-consolidated.md`:
 ## Key Observations
 - [Cross-cutting patterns, systematic gaps, assertion quality patterns]
 ```
+
+**COMPLETENESS CHECK:** Before moving on, re-read every subagent report and your own analysis, then verify that every finding is accounted for in the consolidated report. Count the findings: the total of confirmed + design decisions + false positives + nice-to-have + out-of-scope MUST equal or exceed the total unique findings across all reports. If any are missing, add them now.
 
 After writing the consolidated report, update your private journal with key observations: what coverage patterns emerged, which gaps were most surprising, what the false-positive rate looked like, and any insights about the codebase's testing health.
 

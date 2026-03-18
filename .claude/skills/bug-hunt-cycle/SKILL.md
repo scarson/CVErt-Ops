@@ -232,6 +232,16 @@ The plan will be executed via `/subagent-driven-development` or `/executing-plan
    2. Verify test coverage of the fix (are error paths tested? edge cases?)
    3. Run `go test ./...` (or relevant subset) and confirm green
    ```
+   Every logical group of tasks MUST include this review loop:
+   ```
+   After every logical group of tasks:
+   You MUST carefully review the batch of work from multiple perspectives
+   and revise/refine as appropriate. Repeat this review loop (you must do
+   a minimum of three review rounds; if you still find substantive issues
+   in the third review, keep going with additional rounds until there are
+   no findings) until you're confident there aren't any more issues. Then
+   update your private journal and continue onto the next tasks.
+   ```
 
 5. **Review against `dev/testing-pitfalls.md`.** Read it yourself and check whether any of the planned fixes could fall into documented testing pitfalls. If so, add explicit warnings to the relevant task descriptions.
 

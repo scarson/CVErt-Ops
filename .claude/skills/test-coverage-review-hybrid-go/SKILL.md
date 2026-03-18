@@ -406,7 +406,8 @@ another test without dedicated assertion), conditional assertions (if status == 
 - Key observations: assertion quality issues, systematic gaps, TOCTOU windows
 
 ## Output Location
-Write your FULL analysis to: dev/test-coverage-reports/subagent-{scope-name}-findings.md
+Write your FULL analysis to: dev/test-coverage-reports/YYYY-MM-DD-{scope-name}-subagent-findings.md
+(Replace YYYY-MM-DD with today's date. ALL reports MUST have a date prefix.)
 Return to the main agent ONLY:
 1. The file path you wrote to
 2. Counts: N security-critical, N correctness, N nice-to-have, N assertion quality

@@ -81,6 +81,8 @@ Determine the scope size from the function count:
 
 Launch the hybrid coverage review. The methodology is in `.claude/skills/test-coverage-review-hybrid-go/SKILL.md` — this is the most thorough coverage skill, combining Go coverage tools with semantic code analysis.
 
+**FILE NAMING:** ALL report files in `dev/test-coverage-reports/` MUST be prefixed with the date (`YYYY-MM-DD`). Determine today's date before dispatching subagents and substitute it into every output file path. Files without a date prefix are unacceptable — they become impossible to distinguish across runs.
+
 ### Small scopes (<100 functions)
 
 Launch **one subagent** that runs the full hybrid review:
@@ -116,7 +118,7 @@ Coverage data:
 Analyze every function: 0% → classify risk; 1-99% → identify uncovered branches;
 100% security functions → audit assertion quality.
 
-Output file: dev/test-coverage-reports/subagent-<slug>-triage.md
+Output file: dev/test-coverage-reports/<date>-<slug>-subagent-triage.md
 Return ONLY: file path, counts by severity, top 3 findings, any production bugs.
 DO NOT write code.
 ```
@@ -132,7 +134,7 @@ For every API handler and security-critical function:
 - Store-layer independence (§4E)
 Also: assertion quality audit (§5) for covered security code.
 
-Output file: dev/test-coverage-reports/subagent-<slug>-semantic.md
+Output file: dev/test-coverage-reports/<date>-<slug>-subagent-semantic.md
 Return ONLY: file path, counts by severity, top 3 findings, any production bugs.
 DO NOT write code.
 ```

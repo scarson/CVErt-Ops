@@ -258,7 +258,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	apiSrv.AddHealthCheck(deliveryWorker.Healthy)
-	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	deliveryDone := make(chan struct{})
+	go func() {
+		deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+		close(deliveryDone)
+	}()
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
@@ -346,6 +350,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
+	// Wait for delivery worker to drain in-flight deliveries before DB close.
+	select {
+	case <-deliveryDone:
+		slog.Info("delivery worker stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("delivery worker did not stop within shutdown timeout")
+	}
+
 	slog.Info("server stopped")
 	return nil
 }
@@ -443,7 +456,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}, smtpCfg, cfg.ExternalURL)
 	alertEval.SetDispatcher(dispatcher)
 	deliveryWorker.SetDispatcher(dispatcher)
-	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	deliveryDone := make(chan struct{})
+	go func() {
+		deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+		close(deliveryDone)
+	}()
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
@@ -488,6 +505,15 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Wait for delivery worker to drain in-flight deliveries before DB close.
+	select {
+	case <-deliveryDone:
+		slog.Info("delivery worker stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("delivery worker did not stop within shutdown timeout")
+	}
+
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("metrics server shutdown error", "error", err)
 	}

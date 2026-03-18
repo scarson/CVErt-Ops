@@ -21,3 +21,9 @@ var SecurityEventsDropped = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "cvertops_security_events_dropped_total",
 	Help: "Security events dropped by rate limiter.",
 })
+
+// SecurityEventsWriteFailed counts security events that failed to write to the database.
+var SecurityEventsWriteFailed = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "cvertops_security_events_write_failed_total",
+	Help: "Security events that failed to write to the database.",
+})

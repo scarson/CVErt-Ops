@@ -96,6 +96,7 @@ require (
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/sony/gobreaker/v2 v2.4.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/testcontainers/testcontainers-go v0.41.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

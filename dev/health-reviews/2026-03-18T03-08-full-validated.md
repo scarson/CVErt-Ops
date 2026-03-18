@@ -136,13 +136,7 @@
 **Blast radius:** One constant change in `pool.go`.
 **Fix approach:** Set `staleThreshold >= maxJobDuration` (e.g., both 10 minutes, or stale at 12 minutes).
 
-### I17. Dual HTTP framework (huma vs chi) creates inconsistent API surface
-**Severity:** MAJOR
-**Dimensions:** Code Quality, Architecture, API Design
-**Location:** `internal/api/` — CVE routes via huma, all other routes via chi, plus `openapi_spec.go` (1734 lines)
-**Evidence:** Two handler paradigms with different validation, error formatting (application/json vs application/problem+json), and documentation strategies. The 1734-line openapi_spec.go manually duplicates type definitions for chi-backed routes. The `password_change_required` response at middleware_auth.go:87-94 uses inline `json.NewEncoder` with a raw map that omits the `status` field, deviating from both patterns.
-**Blast radius:** Large — incremental migration of chi handlers to huma would touch most handler files. Not a quick fix.
-**Fix approach:** Long-term: migrate chi handlers to huma incrementally. Short-term: fix the `password_change_required` response to use `writeProblem`.
+### ~~I17.~~ Reclassified to Known/Already Tracked (K7) — see below
 
 ### I18. Inconsistent pagination — 6 list endpoints have no pagination
 **Severity:** MINOR (downgraded from MAJOR — most affected collections are naturally small)
@@ -325,9 +319,13 @@
 
 ## Known / Already Tracked
 
-### K1. Dual HTTP framework (huma vs chi) inconsistency
+### K1. Dual HTTP framework (huma vs chi) — architectural reality, mitigated
 **Flagged by:** Code Quality, Architecture, API Design (all 3 agents)
-**Where tracked:** March 10 health review M6, M8. Incremental huma migration is a known long-term effort.
+**Where tracked:** March 10 health review M6, M8. Addressed via `dev/plans/2026-03-15-phase9-stage3-api-contract-convergence-plan.md` — Chi handlers now produce RFC 9457 errors via shared helpers, list endpoints use `{items, next_cursor}` envelopes, and openapi_spec.go provides spec coverage. The dual framework is a known architectural choice that's been mitigated. Remaining inconsistencies (like `password_change_required` bypassing writeProblem — see I20) are spot fixes, not architectural problems.
+
+### K7. Dual HTTP framework — error format convergence already completed
+**Flagged by:** Code Quality, Architecture, API Design (formerly I17)
+**Where tracked:** `dev/plans/2026-03-15-phase9-stage3-api-contract-convergence-plan.md` (Phase 9 Stage 3). Chi handlers were converged to RFC 9457 format, list envelopes standardized, OpenAPI spec coverage added via spec-only Huma declarations. The `password_change_required` response (I20) is a spot that was missed during convergence.
 
 ### K2. serve/worker command duplication
 **Flagged by:** Architecture, Ops Readiness

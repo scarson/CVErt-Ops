@@ -927,6 +927,88 @@ func TestEmailOTPSetup(t *testing.T) {
 	}
 }
 
+func TestEnrollmentCookie_Path(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	doRegister(t, ctx, ts, "cookie-path@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "cookie-path@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("totp setup: got %d, want 200", resp.StatusCode)
+	}
+
+	// The mfa_enroll_token cookie must have path /api/v1/auth/mfa.
+	var enrollCookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "mfa_enroll_token" {
+			enrollCookie = c
+			break
+		}
+	}
+	if enrollCookie == nil {
+		t.Fatal("mfa_enroll_token cookie not set")
+	}
+	if enrollCookie.Path != "/api/v1/auth/mfa" {
+		t.Errorf("enrollment cookie path: got %q, want %q", enrollCookie.Path, "/api/v1/auth/mfa")
+	}
+}
+
+func TestEmailOTPSetup_ReissuesPendingTokenTTL(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "email-reissue@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token with mfa_enrollment_required.
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		1,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("email otp setup: got %d, want 200", resp.StatusCode)
+	}
+
+	// The response should include a reissued mfa_pending_token cookie with fresh TTL.
+	reissuedPT := cookieValue(resp, "mfa_pending_token")
+	if reissuedPT == "" {
+		t.Fatal("mfa_pending_token cookie not reissued in email OTP setup response")
+	}
+}
+
 func TestEmailOTPConfirm(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

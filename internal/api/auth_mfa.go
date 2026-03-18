@@ -787,7 +787,22 @@ func (srv *Server) mfaEmailOTPSetupHandler(ctx context.Context, input *mfaEmailO
 		slog.WarnContext(ctx, "email-otp-setup: send email", "error", err)
 	}
 
-	return &mfaEmailOTPSetupOutput{}, nil
+	out := &mfaEmailOTPSetupOutput{}
+
+	// Reissue the pending token with fresh TTL to prevent expiry during setup-confirm window.
+	if input.MFAPendingToken != "" {
+		claims, parseErr := auth.ParsePendingToken(input.MFAPendingToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
+		if parseErr == nil {
+			cookies, reissueErr := srv.reissuePendingTokenCookies(claims)
+			if reissueErr != nil {
+				slog.ErrorContext(ctx, "email-otp-setup: reissue pending token", "error", reissueErr)
+			} else {
+				out.SetCookie = append(out.SetCookie, cookies...)
+			}
+		}
+	}
+
+	return out, nil
 }
 
 type mfaEmailOTPConfirmInput struct {
@@ -1223,7 +1238,7 @@ func enrollmentTokenCookies(token string, secure bool) []string {
 	c := &http.Cookie{
 		Name:     "mfa_enroll_token",
 		Value:    token,
-		Path:     "/api/v1/auth",
+		Path:     "/api/v1/auth/mfa",
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
@@ -1237,7 +1252,7 @@ func clearEnrollmentCookie(secure bool) string {
 	c := &http.Cookie{
 		Name:     "mfa_enroll_token",
 		Value:    "",
-		Path:     "/api/v1/auth",
+		Path:     "/api/v1/auth/mfa",
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,

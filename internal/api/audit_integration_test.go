@@ -858,6 +858,89 @@ func TestAuditIntegration_Reports(t *testing.T) {
 	})
 }
 
+// ── API Keys ─────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_APIKeys(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-ak@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-ak@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	var keyID string
+
+	t.Run("Create", func(t *testing.T) {
+		resp := doCreateAPIKey(t, ctx, ts, token, reg.OrgID, "Audit Key", "viewer")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+		var key createAPIKeyResponse
+		json.NewDecoder(resp.Body).Decode(&key) //nolint:errcheck,gosec // G104: test
+		keyID = key.ID
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "api_key", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for api_key create")
+		}
+		if entry.EntityID != keyID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, keyID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Fatal("expected new_state to be populated")
+		}
+
+		// SECURITY: verify raw key and hash are NOT in new_state.
+		var state map[string]any
+		if err := json.Unmarshal(entry.NewState, &state); err != nil {
+			t.Fatalf("unmarshal new_state: %v", err)
+		}
+		if _, ok := state["raw_key"]; ok {
+			t.Error("SECURITY: raw_key must NOT be in audit new_state")
+		}
+		if _, ok := state["key_hash"]; ok {
+			t.Error("SECURITY: key_hash must NOT be in audit new_state")
+		}
+		if state["name"] != "Audit Key" {
+			t.Errorf("name: got %v, want Audit Key", state["name"])
+		}
+		if state["role"] != "viewer" {
+			t.Errorf("role: got %v, want viewer", state["role"])
+		}
+	})
+
+	t.Run("Revoke", func(t *testing.T) {
+		if keyID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doRevokeAPIKey(t, ctx, ts, token, reg.OrgID, keyID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("revoke: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "api_key", "revoke")
+		if entry == nil {
+			t.Fatal("no audit entry for api_key revoke")
+		}
+		if entry.EntityID != keyID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, keyID)
+		}
+	})
+}
+
 // ── Ingest ────────────────────────────────────────────────────────────────────
 
 func TestAuditIntegration_Ingest(t *testing.T) {

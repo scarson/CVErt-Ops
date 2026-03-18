@@ -50,8 +50,8 @@
 - **Notes:** Added audit.Entry calls to all 5 mutating handlers: create, update (patch), delete, bind channel, unbind channel. Test covers create/update/delete (bind/unbind not tested due to needing a channel created first — existing pattern suffices).
 
 ## Task 8: Audit Logging: API Keys Handler
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/apikeys.go`, `internal/api/audit_integration_test.go`
+- **Tests:** compilation verified (Docker Desktop API timeout prevents integration tests)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Added audit.Entry calls to create (action=create, entity_type=api_key) and revoke (action=revoke, entity_type=api_key). NewState explicitly excludes raw_key and key_hash — only name, role, expires_at. Test includes SECURITY assertions verifying raw_key and key_hash are absent from audit state.

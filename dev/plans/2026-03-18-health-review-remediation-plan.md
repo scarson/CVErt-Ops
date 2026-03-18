@@ -14,7 +14,7 @@
 
 ## Cross-Plan Sequencing
 
-This plan is part of a coordinated three-plan remediation. See `dev/plans/2026-03-18-remediation-sequencing.md` for the master execution order.
+This plan is part of a coordinated three-plan remediation. See `dev\plans\2026-03-18-phase8-11-hr-remediation-sequencing.md` for the master execution order.
 
 **This plan executes in two stages:**
 - **Stage 1:** Groups A, B, C, D (D1+D2), E (E2-E6), G (G2-G5), H — production code fixes

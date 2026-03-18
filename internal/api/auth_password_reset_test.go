@@ -391,7 +391,7 @@ func TestResetPassword_ConcurrentUse(t *testing.T) {
 func newPasswordResetMFAServer(t *testing.T) (*testutil.TestDB, *Server, *httptest.Server) {
 	t.Helper()
 	db := testutil.NewTestDB(t)
-	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+	cfg := &config.Config{ //nolint:exhaustruct,gosec // test: only relevant fields; G101 false positive on test secret
 		JWTSecret:               "resetmfa-test-secret-32-bytes!!",
 		RegistrationMode:        "open",
 		Argon2MaxConcurrent:     5,

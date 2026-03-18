@@ -433,6 +433,7 @@ Use these proactively — don't wait to be asked.
 |-------|-------------|
 | `bug-hunt-cycle` | Full bug hunt → cross-validate → fix plan. Use when finishing a phase or auditing code |
 | `coverage-cycle` | Full coverage review → cross-validate → fix plan. Use when finishing a phase or auditing tests |
+| `health-review-cycle` | Full health review cycle → cross-validate → fix plan. Use periodically or before milestones |
 | `schema-review` | Before writing any migration SQL — audit the design first |
 | `migration` | After schema-review passes — generates the actual SQL migration files |
 | `feed-adapter` | Before scaffolding a new feed adapter |

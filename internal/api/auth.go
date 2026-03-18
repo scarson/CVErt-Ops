@@ -900,8 +900,14 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	if isRestricted && pendingClaims != nil {
 		remaining := removePendingItem(pendingClaims.Pending, "password_reset")
 		if len(remaining) > 0 {
+			// Re-read user to get the incremented token_version.
+			freshUser, ruErr := srv.store.GetUserByID(ctx, userID)
+			if ruErr != nil || freshUser == nil {
+				slog.ErrorContext(ctx, "change-password: re-read user for tv", "error", ruErr)
+				return nil, huma.Error500InternalServerError("internal error")
+			}
 			token, ptErr := auth.IssuePendingToken(
-				srv.jwtSecret(), userID, pendingClaims.TokenVersion,
+				srv.jwtSecret(), userID, int(freshUser.TokenVersion),
 				remaining, nil, srv.cfg.MFAPendingTokenTTL,
 			)
 			if ptErr != nil {

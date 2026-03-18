@@ -41,17 +41,19 @@ You MUST carefully review the work across ALL batches from multiple perspectives
 
 ## Task Grouping Strategy
 
-Tasks are grouped by file-conflict risk. Tasks within a group may touch the same files and MUST be executed sequentially. Groups that touch disjoint files CAN be parallelized.
+Tasks are grouped by file-conflict risk. Tasks within a group may touch the same files and MUST be executed sequentially. Groups that touch disjoint files CAN be parallelized — **BUT read the dependency notes carefully before parallelizing.**
 
-- **Group A** (Tasks 1-4): `internal/api/auth.go`, `internal/api/auth_mfa.go` — pending token and enrollment flow fixes
-- **Group B** (Task 5): `internal/api/auth_password_reset.go` — MFA bypass fix (independent file)
-- **Group C** (Task 6): `internal/store/org.go` — transaction helper fix (independent file)
-- **Group D** (Task 7): `internal/api/admin_mfa.go`, `internal/store/mfa.go` — admin reset atomicity
-- **Group E** (Tasks 8-9): `internal/api/auth_mfa.go`, `internal/store/mfa.go`, `internal/store/queries/mfa.sql` — TOTP replay + email OTP exhaustion (overlaps Group A on auth_mfa.go — must run AFTER Group A)
-- **Group F** (Task 10): `internal/auth/jwt.go` — dual-key rotation (independent file)
-- **Group G** (Tasks 11-12): `internal/api/auth_mfa.go` — minor fixes (overlaps Groups A/E — must run AFTER both)
+- **Group B** (Task 1): `internal/api/auth_password_reset.go` — MFA bypass fix (independent file, safe to parallelize)
+- **Group C** (Task 2): `internal/store/org.go` — transaction helper fix (independent file, safe to parallelize)
+- **Group A** (Tasks 3-6): `internal/api/auth.go`, `internal/api/auth_mfa.go` — pending token and enrollment flow fixes
+- **Group D** (Task 7): `internal/api/admin_mfa.go`, `internal/store/mfa.go` — admin reset atomicity (independent from A, safe to parallelize with A)
+- **Group F** (Task 8): `internal/auth/jwt.go` + caller updates in `auth_mfa.go` and `auth.go` — dual-key rotation. **NOT independent**: Task 8 updates `ParsePendingToken` callers in `resolveEnrollmentUserID` and `clearEnrollmentPending`, which are modified by Tasks 4-6. **MUST run AFTER Group A.**
+- **Group E** (Tasks 9-10): `internal/api/auth_mfa.go`, `internal/store/mfa.go`, `internal/store/queries/mfa.sql` — TOTP replay + email OTP exhaustion. Overlaps Group A on `auth_mfa.go` — **MUST run AFTER Groups A and F** (Task 8 also modifies `auth_mfa.go` callers).
+- **Group G** (Tasks 11-12): `internal/api/auth_mfa.go` — minor fixes. Overlaps Groups A/E/F — **MUST run AFTER all of them.**
 
-**Recommended execution order:** B → C → A → D → F → E → G (or parallel where noted)
+**Recommended execution order:** B → C → A → D → F → E → G
+
+**NOTE for subagents:** Line numbers referenced in tasks are from the ORIGINAL source code at plan-writing time. Earlier tasks WILL shift line numbers. Always use grep to find the current location of functions/code blocks rather than relying on line numbers from this plan.
 
 ---
 
@@ -90,7 +92,7 @@ After password change succeeds:
 
 Add tests to `internal/api/auth_password_reset_test.go`:
 
-1. `TestResetPassword_WithMFAEnrolled_ReturnsPendingToken` — register user, enroll TOTP, request password reset, complete reset → response must include `pending: ["mfa_challenge"]`, `methods: ["totp"]`, and a `mfa_pending_token` Set-Cookie header. Must NOT include access/refresh tokens.
+1. `TestResetPassword_WithMFAEnrolled_ReturnsPendingToken` — register user, enroll TOTP (use the `enrollTOTP` helper in `internal/api/auth_mfa_test.go:48`), request password reset, complete reset → response must include `pending: ["mfa_challenge"]`, `methods: ["totp"]`, and a `mfa_pending_token` Set-Cookie header. Must NOT include access/refresh tokens.
 
 2. `TestResetPassword_NoMFA_Mandated_ReturnsPendingToken` — register user, set site-wide MFA requirement, request password reset, complete reset → response must include `pending: ["mfa_enrollment_required"]` and a `mfa_pending_token` Set-Cookie header.
 
@@ -104,8 +106,20 @@ Expected: FAIL — current handler returns no pending/methods fields and no pend
 **Step 3: Implement the fix**
 
 Modify `resetPasswordHandler` in `internal/api/auth_password_reset.go`:
-- Change `resetPasswordOutput` struct to include `SetCookie []string`, `Body.Pending []string`, and `Body.Methods []string` (matching `loginOutput` pattern)
-- After `UpdatePasswordHash` succeeds, add the same MFA gating logic as `loginHandler` (auth.go:398-464):
+
+First, replace the empty struct with the full response struct (matching `loginOutput` in `auth.go:220-227`):
+```go
+// resetPasswordOutput returns MFA gating status after password reset.
+type resetPasswordOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		Pending []string `json:"pending"          doc:"Remaining auth steps (empty = no MFA required)"`
+		Methods []string `json:"methods,omitempty" doc:"Available MFA methods (only when pending contains mfa_challenge)"`
+	}
+}
+```
+
+Then in the handler, after `UpdatePasswordHash` succeeds, add the same MFA gating logic as `loginHandler` (auth.go:398-464):
   - Call `srv.store.UserHasMFACredentials(ctx, tok.UserID)` — if true, build `pending = ["mfa_challenge"]` and get enrolled methods
   - Else call `srv.store.UserMFARequired(ctx, tok.UserID, isSiteAdmin, mfaCfg)` — if true, `pending = ["mfa_enrollment_required"]`
   - If `len(pending) > 0`: re-read user via `GetUserByID` to get current `token_version` (it was just incremented), issue pending token, set cookies
@@ -396,7 +410,11 @@ if len(claims.Pending) > 0 && claims.Pending[0] == "mfa_enrollment_required" {
 }
 ```
 
-Note: `resolveEnrollmentUserID` currently takes `(accessToken, pendingToken string)` but needs `context.Context` for the DB call. Update the signature to `(ctx context.Context, accessToken, pendingToken string)` and update all callers.
+Note: `resolveEnrollmentUserID` currently takes `(accessToken, pendingToken string)` but needs `context.Context` for the DB call. Update the signature to `(ctx context.Context, accessToken, pendingToken string)` and update ALL 4 callers — each already has `ctx` available from the huma handler parameter:
+- `mfaTOTPSetupHandler` (grep for `resolveEnrollmentUserID` near line 528)
+- `mfaTOTPConfirmHandler` (near line 613)
+- `mfaEmailOTPSetupHandler` (near line 721)
+- `mfaEmailOTPConfirmHandler` (near line 795)
 
 **Step 4: Run tests**
 
@@ -473,7 +491,36 @@ if len(remaining) == 0 {
 }
 ```
 
-Update all callers to pass `ctx` and handle the error return.
+Update both callers to pass `ctx` and handle the error return. There are exactly 2 callers:
+
+**Caller 1 — `mfaTOTPConfirmHandler`** (near line 700):
+```go
+// Before:
+cookies := srv.clearEnrollmentPending(input.MFAPendingToken)
+out.SetCookie = append(out.SetCookie, cookies...)
+// After:
+cookies, clearErr := srv.clearEnrollmentPending(ctx, input.MFAPendingToken)
+if clearErr != nil {
+	slog.ErrorContext(ctx, "totp-confirm: clear enrollment pending", "error", clearErr)
+	return nil, huma.Error500InternalServerError("internal error")
+}
+out.SetCookie = append(out.SetCookie, cookies...)
+```
+
+**Caller 2 — `mfaEmailOTPConfirmHandler`** (near line 849):
+```go
+// Before:
+out.SetCookie = srv.clearEnrollmentPending(input.MFAPendingToken)
+// After:
+cookies, clearErr := srv.clearEnrollmentPending(ctx, input.MFAPendingToken)
+if clearErr != nil {
+	slog.ErrorContext(ctx, "email-otp-confirm: clear enrollment pending", "error", clearErr)
+	return nil, huma.Error500InternalServerError("internal error")
+}
+out.SetCookie = cookies
+```
+
+Return 500 on error — the user successfully enrolled MFA but we can't issue tokens, so failing loudly is correct (they can retry login).
 
 **Step 4: Run tests**
 
@@ -664,11 +711,18 @@ if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
 
 Do the same for `ParseEnrollmentToken`.
 
-Update all callers:
-- `validatePendingToken` in `auth_mfa.go` and `auth.go` — pass `jwtPreviousSecret(srv.cfg)` as second arg
-- `resolveEnrollmentUserID` — pass previous secret
-- `clearEnrollmentPending` — pass previous secret
-- Any other callers found via grep
+Update ALL callers. Use `grep -n ParsePendingToken internal/api/` and `grep -n ParseEnrollmentToken internal/api/` to find current locations (line numbers will have shifted from earlier tasks).
+
+**`ParsePendingToken` callers (4 total):**
+1. `validatePendingToken` in `auth_mfa.go` — pass `jwtPreviousSecret(srv.cfg)` as second arg
+2. `changePasswordHandler` in `auth.go` — direct call, pass `jwtPreviousSecret(srv.cfg)`
+3. `resolveEnrollmentUserID` in `auth_mfa.go` — **already modified by Tasks 4-5**: add previous secret param to the `ParsePendingToken` call inside the modified function
+4. `clearEnrollmentPending` in `auth_mfa.go` — **already modified by Task 6**: add previous secret param
+
+**`ParseEnrollmentToken` callers (1 total):**
+1. `mfaTOTPConfirmHandler` in `auth_mfa.go` — pass `jwtPreviousSecret(srv.cfg)`
+
+**IMPORTANT:** Tasks 4-6 have already modified `resolveEnrollmentUserID` and `clearEnrollmentPending`. Do NOT rewrite those functions — only add the `jwtPreviousSecret(srv.cfg)` parameter to the `ParsePendingToken` call within them.
 
 **Step 4: Run tests**
 
@@ -722,8 +776,12 @@ Add tests to `internal/api/auth_mfa_test.go`:
 
 `TestTOTP_ConcurrentReplay`:
 1. Enroll TOTP for a user
-2. Launch two goroutines that simultaneously attempt to verify the same valid code
-3. Assert exactly one succeeds — the `FOR UPDATE` lock ensures serialization
+2. Generate a valid code for the current time step
+3. Use the **barrier pattern** from `testing-pitfalls.md` §1: create `ready := make(chan struct{})`, start two goroutines that each block on `<-ready`, then `close(ready)` to release both simultaneously. `sync.WaitGroup` alone does NOT guarantee simultaneous execution.
+4. Both goroutines attempt to verify the same valid code
+5. Assert exactly one succeeds, one fails — the `FOR UPDATE` lock ensures serialization
+
+Note: `totpValidateOpts.Skew` is `1`, meaning the library accepts codes for time steps `currentStep-1`, `currentStep`, and `currentStep+1`. The `maxStep` stored is `currentStep + 1`.
 
 **Step 2: Run tests to verify they fail**
 
@@ -797,7 +855,11 @@ if !fresh {
 return true, nil
 ```
 
-Remove the old `UpdateMFACredentialLastUsed` call and the separate `GetMFACredentialByUserAndMethod` call. The credential for decryption still needs to be fetched outside the lock transaction (the encrypted secret is needed before the step check). Keep the existing `GetMFACredentialByUserAndMethod` for secret retrieval, then use `VerifyAndUpdateTOTPStep` for the atomic step check.
+Remove the old `UpdateMFACredentialLastUsed` call and the old step-check code (the `if cred.LastUsedStep.Valid` block). **KEEP** the existing `GetMFACredentialByUserAndMethod` call at the top of `verifyTOTP` — it retrieves the encrypted secret for TOTP validation.
+
+**Why two credential fetches is intentional:** The first fetch (`GetMFACredentialByUserAndMethod`) reads the encrypted secret for TOTP validation — no lock needed. The second fetch (`GetMFACredentialByUserAndMethodForUpdate` inside `VerifyAndUpdateTOTPStep`) acquires a `FOR UPDATE` lock for the atomic step check+update. Do NOT try to combine them into one method — the decrypt step must complete before the step check, and holding a `FOR UPDATE` lock during TOTP validation would unnecessarily block concurrent legitimate requests.
+
+**Why `withBypassTx`:** The `mfa_credentials` table has no RLS policies (it's user-scoped, not org-scoped). `withBypassTx` is the correct helper per `implementation-pitfalls.md` §2.17.
 
 **Step 6: Run tests**
 
@@ -857,21 +919,27 @@ func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 
 In the wrong-code branch, when `attempts >= maxAttempts`, set `exhausted = true`.
 
-Update the handler (`verifyEmailOTP` in `auth_mfa.go`) to accept the new return, and emit `EventMFAChallengeExhausted` when `exhausted` is true:
+Update the **private helper function** `verifyEmailOTP` (in `auth_mfa.go`, currently at line 409-413 — use grep to find current location). This function is called by `mfaVerifyHandler`, NOT a handler itself. Its return type stays `(bool, error)` — it absorbs the exhaustion event internally:
+
 ```go
-matched, exhausted, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
-if err != nil {
-	return false, err
+// verifyEmailOTP validates an email OTP code against the active challenge.
+func (srv *Server) verifyEmailOTP(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
+	codeHash := sha256Hex(code)
+	maxAttempts := int32(srv.cfg.MFAChallengeMaxAttempts) //nolint:gosec // G115: config value, bounded by env default (3)
+	matched, exhausted, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
+	if err != nil {
+		return false, err
+	}
+	if exhausted && srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAChallengeExhausted,
+			Severity: secure.SeverityWarning,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+		})
+	}
+	return matched, nil
 }
-if exhausted && srv.eventWriter != nil {
-	srv.eventWriter.Write(ctx, secure.Event{
-		Type:     secure.EventMFAChallengeExhausted,
-		Severity: secure.SeverityWarning,
-		ActorIP:  clientIP(ctx),
-		UserID:   &userID,
-	})
-}
-return matched, nil
 ```
 
 **Step 4: Run tests**
@@ -919,7 +987,24 @@ B11 — Change `enrollmentTokenCookies` and `clearEnrollmentCookie`:
 Path: "/api/v1/auth/mfa",
 ```
 
-B10 — In `mfaEmailOTPSetupHandler`, when the user has a pending enrollment session, reissue the pending token with fresh TTL in the response (mirror `mfaChallengeHandler:134-141`). This requires passing the pending token through to the handler and calling `reissuePendingTokenCookies`.
+B10 — In `mfaEmailOTPSetupHandler`, when the user has a pending enrollment session (check if `input.MFAPendingToken != ""`), reissue the pending token with fresh TTL. The input struct already has `MFAPendingToken` — no new parameter needed.
+
+Mirror `mfaChallengeHandler` (grep for `reissuePendingTokenCookies` to see the pattern):
+```go
+// After the email OTP send succeeds, before returning:
+if input.MFAPendingToken != "" {
+	claims, parseErr := auth.ParsePendingToken(input.MFAPendingToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+	if parseErr == nil {
+		cookies, reissueErr := srv.reissuePendingTokenCookies(claims)
+		if reissueErr != nil {
+			slog.ErrorContext(ctx, "email-otp-setup: reissue pending token", "error", reissueErr)
+		} else {
+			out.SetCookie = append(out.SetCookie, cookies...)
+		}
+	}
+}
+```
+Note: by this point in execution, `ParsePendingToken` will have been updated (Task 8) to accept a `previousSecret` parameter. Use `jwtPreviousSecret(srv.cfg)` as the second argument.
 
 **Step 3: Run tests**
 
@@ -962,7 +1047,58 @@ token with fresh TTL to prevent expiry during the setup-confirm window."
 
 **Step 2: Implement the fix**
 
-Define a struct:
+**Approach: Add NEW store methods that return org context. Do NOT modify the existing `UserInMFARequiredOrg` and `UserHasMFARequirement` methods** — they return `bool` and are used by `UserMFARequired` (the 3-layer enforcement check). Changing their return types would break that caller. Instead, add parallel "with names" queries.
+
+**Step 2a: Add SQL queries** to `internal/store/queries/mfa.sql`:
+
+```sql
+-- name: UserMFARequiredOrgNames :many
+-- Returns org names where the user is a member and org has mfa_required_all=true.
+SELECT o.name FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1 AND o.mfa_required_all = true AND o.deleted_at IS NULL;
+
+-- name: UserMFARequirementOrgNames :many
+-- Returns org names from the mfa_requirements table for this user.
+SELECT o.name FROM mfa_requirements mr
+JOIN organizations o ON o.id = mr.org_id
+WHERE mr.user_id = $1 AND o.deleted_at IS NULL;
+```
+
+Run: `sqlc generate`
+
+**Step 2b: Add store methods** to `internal/store/mfa.go`:
+
+```go
+func (s *Store) UserMFARequiredOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		names, err = q.UserMFARequiredOrgNames(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mfa required org names: %w", err)
+	}
+	return names, nil
+}
+
+func (s *Store) UserMFARequirementOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		names, err = q.UserMFARequirementOrgNames(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mfa requirement org names: %w", err)
+	}
+	return names, nil
+}
+```
+
+**Step 2c: Define the struct and refactor `buildMFARequiredReasons`:**
+
 ```go
 type mfaRequiredReason struct {
 	Source  string `json:"source"   doc:"Reason source (site_admin, org_owner, org_policy, per_member, db_error)"`
@@ -970,11 +1106,14 @@ type mfaRequiredReason struct {
 }
 ```
 
-Change `RequiredReasons` field from `[]string` to `[]mfaRequiredReason`.
+Change `RequiredReasons` field in `mfaMethodsOutput` from `[]string` to `[]mfaRequiredReason`.
 
-Refactor `buildMFARequiredReasons` to return `[]mfaRequiredReason`. For `org_policy` and `per_member` reasons, the store methods need to return org names. Check if `UserInMFARequiredOrg` and `UserHasMFARequirement` can be modified to return org info, or add new queries that join with the `organizations` table.
-
-For `site_admin` and `org_owner` reasons, `OrgName` is empty (these are user-level, not org-specific).
+Refactor `buildMFARequiredReasons` to return `[]mfaRequiredReason`:
+- `site_admin` → `{Source: "site_admin"}` (no org name)
+- `org_owner` → `{Source: "org_owner"}` (no org name — it's a role-based rule, not org-specific)
+- `org_policy` → call `UserMFARequiredOrgNames` and emit one entry per org: `{Source: "org_policy", OrgName: name}`
+- `per_member` → call `UserMFARequirementOrgNames` and emit one entry per org: `{Source: "per_member", OrgName: name}`
+- `db_error` → `{Source: "db_error"}` (unchanged)
 
 **Step 3: Run tests**
 
@@ -986,12 +1125,14 @@ Run: `go test ./internal/api/... -count=1` — no regressions.
 **Step 4: Commit**
 
 ```bash
-git add internal/api/auth_mfa.go internal/api/auth_mfa_test.go internal/store/mfa.go internal/store/queries/mfa.sql internal/store/generated/
+git add internal/api/auth_mfa.go internal/api/auth_mfa_test.go internal/store/mfa.go internal/store/mfa_test.go internal/store/queries/mfa.sql internal/store/generated/
 git commit -m "fix(api): change required_reasons to structured objects per design spec (B12)
 
 API now returns required_reasons as [{source, org_name}] instead of
-flat strings. Users in multiple orgs can identify which org mandates
-MFA. No frontend consumers existed — safe API contract change."
+flat strings. Added UserMFARequiredOrgNames and UserMFARequirementOrgNames
+store methods (new queries, existing bool methods unchanged). Users in
+multiple orgs can identify which org mandates MFA. No frontend consumers
+existed — safe API contract change."
 ```
 
 **Review checkpoint — Group G complete.**
@@ -1016,7 +1157,7 @@ The following `dev/testing-pitfalls.md` sections are directly relevant to this f
 
 | Section | Relevant Tasks | What to Watch For |
 |---------|---------------|-------------------|
-| §1 (Concurrency) | Task 9 (TOTP replay) | Concurrent TOTP verification must serialize via FOR UPDATE |
-| §3 (Error Path) | Task 1 (password reset) | Anti-enumeration: don't leak MFA status via different error codes |
-| §7 (Transaction) | Tasks 2, 7 | Transaction helper compliance, defined event constants emitted |
-| §11 (Security) | Tasks 3-6, 8 | Token version validation, step ordering, session integrity |
+| §1 (Concurrency) | Task 9 (TOTP replay B9+D3) | Concurrent TOTP verification must serialize via FOR UPDATE; use barrier pattern |
+| §3 (Error Path) | Task 1 (password reset B1) | Anti-enumeration: password reset already requires valid token, so MFA status exposure is acceptable (same as login) |
+| §7 (Transaction) | Task 2 (org store B6), Task 7 (admin reset B7), Task 10 (email OTP B8) | Transaction helper compliance, defined event constants emitted |
+| §11 (Security) | Tasks 3-6 (B2-B5), Task 8 (D2) | Token version validation, step ordering, session integrity, dual-key rotation |

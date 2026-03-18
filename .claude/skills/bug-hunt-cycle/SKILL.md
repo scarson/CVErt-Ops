@@ -99,6 +99,8 @@ Wait for all three to complete before proceeding.
 
 Read all three reports (both from agent responses and the files in `dev/bug-hunts/`). Build a unified findings list.
 
+**COMPLETENESS REQUIREMENT:** You MUST account for every single finding from every hunter report. Before starting cross-validation, enumerate all findings across all 3 reports. Every finding must appear in the consolidated report as one of: confirmed bug, design decision, false positive, or out-of-scope. **You do NOT get to decide what's "too minor" to include — that's Sam's decision in Phase 5.** Silently dropping findings defeats the entire purpose of the bug hunt.
+
 ### 3a. Deduplicate
 
 Many findings will overlap. Group findings that describe the same underlying issue. Note consensus — "all three found this" is a strong signal; "only one found this" needs extra scrutiny.
@@ -181,6 +183,8 @@ Write the consolidated report to `dev/bug-hunts/<date>-<slug>-consolidated.md` u
 **Recommendation:** <fix in this cycle or document for later>
 ```
 
+**COMPLETENESS CHECK:** Before moving on, re-read every hunter report and verify that every finding is accounted for in the consolidated report. Count the findings: the total of confirmed + design decisions + false positives + out-of-scope MUST equal or exceed the total unique findings across all hunter reports. If any are missing, add them now.
+
 After writing the consolidated report, update your private journal with key observations: what patterns emerged across hunters, which findings surprised you, what the false-positive rate looked like, and any insights about the codebase's risk profile.
 
 ---
@@ -253,7 +257,9 @@ Present the findings to Sam. Structure the presentation as:
 
 ## Phase 6: Write Fix Plan
 
-After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed bugs + any out-of-scope bugs Sam chose to include.
+After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed bugs + any out-of-scope bugs Sam chose to include. The plan file MUST be saved to `dev/plans/<date>-<slug>-remediation-plan.md` (e.g., `dev/plans/2026-03-18-phase11-mfa-bug-hunt-remediation-plan.md`).
+
+When `/writing-plans` presents execution options, **include a recommendation** for which approach would be most effective. The three options are: (1) subagent-driven in this session, (2) parallel session with `/executing-plans` in a worktree, or (3) Agent Teams for multi-agent parallel execution. Base the recommendation on: how much context this session has consumed, whether the plan is self-contained enough for a fresh session, how many tasks are parallelizable vs sequential, and whether any tasks are risky enough to warrant focused attention rather than parallel dispatch. Explain the reasoning concisely.
 
 ### Critical requirements for the plan
 

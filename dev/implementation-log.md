@@ -1975,3 +1975,94 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
   added RLS store tests for `mfa_requirements`
 
 ---
+
+## Phase 11 MFA — Bug Hunt Remediation
+
+> **Date:** 2026-03-18
+> **Commits:** `c427225`..`15551e4` on `fix/phase11-mfa-bug-hunt` (PR #52, merged to dev)
+> **Plan:** `dev/plans/2026-03-17-phase11-mfa-bug-hunt-remediation.md`
+> **Source:** `dev/bug-hunts/2026-03-17-phase11-mfa-consolidated.md`
+
+### What was built
+
+| Fix | Files | Description |
+|---|---|---|
+| B1 (critical): Password reset MFA bypass | `auth_password_reset.go` | Forgot-password flow now checks MFA enrollment/mandate, issues pending token when MFA required |
+| B2: Stale token_version in pending token | `auth.go` | Re-reads user after `UpdatePasswordHash` for post-increment `token_version` |
+| B3: Enrollment pending order enforcement | `auth_mfa.go` | `resolveEnrollmentUserID` checks `Pending[0]` instead of scanning entire array |
+| B4: token_version validation in enrollment | `auth_mfa.go` | `resolveEnrollmentUserID` validates `token_version` against DB; added `ctx` parameter + updated 4 callers |
+| B5: Full auth tokens on enrollment completion | `auth_mfa.go` | `clearEnrollmentPending` issues access/refresh tokens when all pending items cleared |
+| B6: Transaction helper compliance | `org.go` | `UpdateOrg` and `UpdateOrgMFASettings` wrapped in `withBypassTx` |
+| B7: Atomic admin MFA reset | `mfa.go`, `admin_mfa.go` | New `ResetUserMFA` store method wraps all deletions + version increment in single tx; removed redundant `DeleteRememberDeviceTokens` |
+| B8: Dead event constant | `mfa.go`, `auth_mfa.go` | `VerifyEmailOTPChallenge` returns `exhausted bool`; handler emits `EventMFAChallengeExhausted` |
+| B9+D3: TOTP replay prevention | `mfa.sql`, `mfa.go`, `auth_mfa.go` | `FOR UPDATE` lock + `maxStep = currentStep + skew` closes 30s replay window |
+| B10+B11: Cookie path + TTL refresh | `auth_mfa.go` | Enrollment cookie path narrowed to `/api/v1/auth/mfa`; email OTP setup reissues pending token |
+| B12: Structured required_reasons | `mfa.sql`, `mfa.go`, `auth_mfa.go` | Returns `[{source, org_name}]` objects; new `UserMFARequiredOrgNames`/`UserMFARequirementOrgNames` queries |
+| D2: Dual-key JWT rotation | `jwt.go`, `auth_mfa.go`, `auth.go` | `ParsePendingToken`/`ParseEnrollmentToken` accept `previousSecret` for zero-downtime rotation |
+
+### Key implementation decisions
+
+- **Two-fetch pattern for TOTP replay prevention** — unlocked read for TOTP validation, then `FOR UPDATE` locked read-modify-write for step check. Avoids holding lock during TOTP crypto.
+- **`withBypassTx` for all new store methods** — `mfa_credentials`, `mfa_challenges`, `mfa_requirements` tables have no RLS; `withBypassTx` is correct per §2.17.
+- **Parallel org-name queries for B12** — existing `UserInMFARequiredOrg`/`UserHasMFARequirement` return `bool` and are used by `UserMFARequired`. New queries return org names without changing existing method signatures.
+- **Barrier pattern for concurrent TOTP test** — `ready := make(chan struct{})` + goroutines block on `<-ready` + `close(ready)` per `testing-pitfalls.md` §1.
+
+### Gotchas discovered
+
+- **Stale LSP diagnostics in worktrees** — VSCode gopls reported compilation errors (wrong arg counts, undefined methods) that didn't exist — `go build` and `go vet` passed clean every time. The worktree's gopls instance lagged behind file changes. Learned to always verify with `go build` before investigating diagnostic errors.
+- **`CreateOrg` also bypasses transaction helpers** — Task 2 implementer discovered `CreateOrg` (line 19-25) uses `s.q` directly, same as `UpdateOrg`/`UpdateOrgMFASettings`. Noted for future fix but out of scope.
+
+### Quality checks
+
+- **go build ./...:** Clean (verified in worktree)
+- **golangci-lint:** 0 issues
+- **Tests:** Full suite green — 34 packages pass (`go test ./internal/... ./cmd/...`)
+- **New tests:** ~1,600 lines across `auth_password_reset_test.go`, `auth_test.go`, `auth_mfa_test.go`, `mfa_test.go`, `jwt_test.go`
+
+---
+
+## Phase 8E (Secure) — Bug Hunt Remediation
+
+> **Date:** 2026-03-18
+> **Commits:** `2192617`..`2e0b523` on `fix/phase8e-bug-hunt-remediation` (PR #51, squash-merged to dev)
+> **Plan:** `dev/plans/2026-03-17-phase8e-bug-hunt-remediation.md`
+> **Source:** `dev/bug-hunts/2026-03-17-phase8e-consolidated.md`
+
+### What was built
+
+| Fix | Files | Description |
+|---|---|---|
+| B1: Config holder wiring (JWT) | `middleware_auth.go`, `auth.go`, `auth_mfa.go`, `auth_email_verification.go`, `oauth_*.go` | `jwtSecret()` and `jwtPreviousSecretBytes()` methods on `*Server` read from `configHolder` with fallback to `srv.cfg` — 26 call sites updated |
+| B1: Config holder wiring (SSO) | `sso.go`, `admin_doctor.go` | `ssoEncryptionKey()` and `ssoEncryptionKeyPrevious()` read from `configHolder`; doctor handler wired to reflect current rotated state |
+| B2: Secrets file merge | `reloadable.go`, `reload.go` | `LoadFromSecretsFile` accepts baseline `*ReloadableConfig`; partial files merge instead of full-replace; 6 string field guards added |
+| B3+D4: SIEM syslog wiring | `config.go`, `reloadable.go`, `writer.go`, `main.go` | `SIEM_SYSLOG_ADDR`/`SIEM_SYSLOG_FORMAT` env vars; `SyslogWriter` wired at startup; `atomic.Pointer[SyslogWriter]` for race safety |
+| B4: TOTP enrollment decrypt | `auth_mfa.go` | Enrollment confirm uses `DecryptWithFallback` for key rotation |
+| B5+B6: Admin reload | `admin_reload.go`, `server.go`, `main.go` | Handler uses `ReloadConfig` (SIGHUP parity); error response sanitized |
+| D3: GCM error gating | `aes.go` | `DecryptWithFallback` only falls back on GCM auth errors, not structural errors |
+| O1: sqlc query sync | `security_events.sql` | Composite cursor `(created_at, id)` matches hand-written query |
+| O2: SSO hex warning | `reloadable.go` | `slog.Warn` on invalid SSO hex at startup instead of silent zero |
+
+### Key implementation decisions
+
+- **Choke-point helpers for config holder** — rather than passing `configHolder` to 26 call sites, two methods (`jwtSecret()`, `jwtPreviousSecretBytes()`) on `*Server` act as choke points. SSO has the same pattern. Fallback to `srv.cfg` ensures existing tests pass without modification.
+- **Pointer comparison for reload failure detection** — `ReloadConfig` doesn't return errors (recovers panics). Admin handler detects failure by comparing `configHolder.Load()` before and after. Works because `LoadFromSecretsFile` always allocates a fresh `*ReloadableConfig`.
+- **Deep-copy byte slices in baseline merge** — struct value copy shares `[]byte` backing arrays. Added explicit `append([]byte(nil), ...)` for `JWTSecret` and `JWTSecretPrevious` to prevent latent mutation issues.
+- **`isGCMAuthError` string matching** — Go's `crypto/cipher` has no sentinel error for GCM auth failure. Matching on our own `"gcm decrypt:"` prefix from `Decrypt` is reliable since we control both sides.
+- **Feed rescan wiring deferred** — both SIGHUP and admin handler pass `nil` for rescan. Full integration (creating `generic.Loader`, updating worker pool factory) is future work.
+
+### Gotchas discovered
+
+- **Unconditional string field assignments break merge** — `rc.SMTPHost = kv["SMTP_HOST"]` returns `""` for absent keys, zeroing the baseline. Only fields with `if v, ok` guards are safe. Caught during plan review, not during implementation.
+- **Stale LSP diagnostics in worktrees** — gopls repeatedly reported phantom compilation errors (wrong arg counts, undefined methods) that `go build` showed were non-existent. Every diagnostic was stale. Always verify with `go build` before investigating.
+- **`web/dist/` missing in worktrees** — gitignored, so not copied. Placeholder `index.html` needed for `embed.go` to compile.
+- **Double-close risk with syslog** — `EventWriter.Stop()` closes syslog; a `defer sw.Close()` in `main.go` would double-close. Only one owner should close.
+
+### Quality checks
+
+- **go build ./...:** Clean
+- **golangci-lint:** 0 issues
+- **Tests:** config (27), crypto (12), secure, API (full suite 223s) — all pass
+- **New tests:** Hot-reload JWT test, 5 SSO config holder tests, admin rescan + error sanitization tests, TOTP key rotation test, GCM error gating test, concurrent SetSyslog race test, baseline merge tests
+- **Code review:** 2 rounds — Round 1 found byte slice shallow copy (fixed); Round 2 (different angles) found no issues
+
+---

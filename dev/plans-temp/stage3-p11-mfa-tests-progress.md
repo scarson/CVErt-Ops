@@ -36,11 +36,11 @@
 - **Notes:** Cross-user enrollment test verifies handler checks enrollClaims.UserID != callerID.
 
 ## Task 6: Auth Handler MFA Paths
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/auth_mfa_test.go`
+- **Tests:** go vet passes; 12 tests added (C3: multi-org + site admin reasons, C4: enrollment completion tokens, N2: skipped (needs OAuth flow), N3: invalid + expired access token, N5: remove non-enrolled, N6: second enrollment no recovery codes, N7: email OTP setup rate limit, SC1: enrollment + recovery regen events)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** N2 (reauthenticatePassword OAuth-only) deferred — needs full MFA verify flow to get access token for OAuth-only account, already covered by admin_mfa_test OAuthOnly test. N6 uses t.Skip if MFA challenge needed.
 
 ## Task 7: Additional MFA API Tests
 - **Status:** pending

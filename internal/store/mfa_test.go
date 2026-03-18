@@ -1812,3 +1812,51 @@ func TestUserMFARequired_MultipleOrgsOneMFARequired(t *testing.T) {
 		t.Error("expected MFA required when any org requires MFA")
 	}
 }
+
+func TestUpdateOrgMFASettings(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := s.CreateOrg(ctx, "MFA Settings Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// Verify defaults.
+	if org.MfaRequiredAll {
+		t.Error("MfaRequiredAll default should be false")
+	}
+	if !org.MfaRememberDeviceAllowed {
+		t.Error("MfaRememberDeviceAllowed default should be true")
+	}
+
+	t.Run("update all settings", func(t *testing.T) {
+		updated, err := s.UpdateOrgMFASettings(ctx, org.ID, true, true, 14)
+		if err != nil {
+			t.Fatalf("UpdateOrgMFASettings: %v", err)
+		}
+		if updated == nil {
+			t.Fatal("UpdateOrgMFASettings returned nil")
+		}
+		if !updated.MfaRequiredAll {
+			t.Error("MfaRequiredAll should be true")
+		}
+		if !updated.MfaRememberDeviceAllowed {
+			t.Error("MfaRememberDeviceAllowed should be true")
+		}
+		if updated.MfaRememberDeviceDays != 14 {
+			t.Errorf("MfaRememberDeviceDays = %d, want 14", updated.MfaRememberDeviceDays)
+		}
+	})
+
+	t.Run("non-existent org returns nil", func(t *testing.T) {
+		result, err := s.UpdateOrgMFASettings(ctx, uuid.New(), true, true, 7)
+		if err != nil {
+			t.Fatalf("UpdateOrgMFASettings(not found): %v", err)
+		}
+		if result != nil {
+			t.Error("expected nil for non-existent org")
+		}
+	})
+}

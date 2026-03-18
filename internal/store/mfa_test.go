@@ -713,7 +713,7 @@ func TestMFAChallenge_CreateAndVerifyEmailOTP(t *testing.T) {
 		t.Fatalf("CreateEmailOTPChallenge: %v", err)
 	}
 
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestMFAChallenge_SingleActiveCode(t *testing.T) {
 	}
 
 	// Old code should fail.
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code1, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code1, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (old): %v", err)
 	}
@@ -757,7 +757,7 @@ func TestMFAChallenge_SingleActiveCode(t *testing.T) {
 	}
 
 	// New code should succeed.
-	ok, err = s.VerifyEmailOTPChallenge(ctx, user.ID, code2, 3)
+	ok, _, err = s.VerifyEmailOTPChallenge(ctx, user.ID, code2, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (new): %v", err)
 	}
@@ -785,7 +785,7 @@ func TestMFAChallenge_ExpiredCode(t *testing.T) {
 		t.Fatalf("CreateEmailOTPChallenge: %v", err)
 	}
 
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
 	}
@@ -815,7 +815,7 @@ func TestMFAChallenge_AttemptExhaustion(t *testing.T) {
 
 	// 3 wrong attempts (maxAttempts=3).
 	for i := 0; i < 3; i++ {
-		ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+		ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
 		if err != nil {
 			t.Fatalf("VerifyEmailOTPChallenge (wrong %d): %v", i+1, err)
 		}
@@ -825,12 +825,71 @@ func TestMFAChallenge_AttemptExhaustion(t *testing.T) {
 	}
 
 	// Now even the correct code should fail — challenge deleted after max attempts.
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (correct after exhaust): %v", err)
 	}
 	if ok {
 		t.Error("expected correct code to fail after attempt exhaustion")
+	}
+}
+
+func TestStore_VerifyEmailOTP_ExhaustedReturnsBool(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-exhaust-bool@example.com", "OTP Exhaust Bool", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	correctHash := hashCode("123456")
+	wrongHash := hashCode("000000")
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, correctHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	// First two wrong attempts (maxAttempts=3) — not yet exhausted.
+	for i := 0; i < 2; i++ {
+		matched, exhausted, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+		if err != nil {
+			t.Fatalf("VerifyEmailOTPChallenge (wrong %d): %v", i+1, err)
+		}
+		if matched {
+			t.Errorf("wrong attempt %d should not match", i+1)
+		}
+		if exhausted {
+			t.Errorf("wrong attempt %d should not be exhausted yet", i+1)
+		}
+	}
+
+	// Third wrong attempt — should be exhausted.
+	matched, exhausted, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (final wrong): %v", err)
+	}
+	if matched {
+		t.Error("final wrong attempt should not match")
+	}
+	if !exhausted {
+		t.Error("final wrong attempt should return exhausted=true")
+	}
+
+	// After exhaustion, correct code should fail (challenge deleted) and not be exhausted
+	// (no challenge to exhaust).
+	matched, exhausted, err = s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (correct after exhaust): %v", err)
+	}
+	if matched {
+		t.Error("expected correct code to fail after attempt exhaustion")
+	}
+	if exhausted {
+		t.Error("expected exhausted=false when no challenge exists")
 	}
 }
 
@@ -993,7 +1052,7 @@ func TestMFAChallenge_DeleteExpired(t *testing.T) {
 	}
 
 	// Valid challenge should still be verifiable.
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user2.ID, validHash, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user2.ID, validHash, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (valid after cleanup): %v", err)
 	}
@@ -1029,7 +1088,7 @@ func TestMFAChallenge_ConcurrentVerification(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			<-barrier
-			ok, verifyErr := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
+			ok, _, verifyErr := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
 			if verifyErr != nil {
 				t.Errorf("goroutine %d: VerifyEmailOTPChallenge: %v", idx, verifyErr)
 				return
@@ -1078,7 +1137,7 @@ func TestMFAChallenge_DeleteAllUserChallenges(t *testing.T) {
 	}
 
 	// Email OTP should fail (no challenge).
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, hashCode("123456"), 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, hashCode("123456"), 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
 	}
@@ -1810,5 +1869,147 @@ func TestUserMFARequired_MultipleOrgsOneMFARequired(t *testing.T) {
 	}
 	if !required {
 		t.Error("expected MFA required when any org requires MFA")
+	}
+}
+
+func TestUpdateOrgMFASettings(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := s.CreateOrg(ctx, "MFA Settings Org")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+
+	// Verify defaults.
+	if org.MfaRequiredAll {
+		t.Error("MfaRequiredAll default should be false")
+	}
+	if !org.MfaRememberDeviceAllowed {
+		t.Error("MfaRememberDeviceAllowed default should be true")
+	}
+
+	t.Run("update all settings", func(t *testing.T) {
+		updated, err := s.UpdateOrgMFASettings(ctx, org.ID, true, true, 14)
+		if err != nil {
+			t.Fatalf("UpdateOrgMFASettings: %v", err)
+		}
+		if updated == nil {
+			t.Fatal("UpdateOrgMFASettings returned nil")
+		}
+		if !updated.MfaRequiredAll {
+			t.Error("MfaRequiredAll should be true")
+		}
+		if !updated.MfaRememberDeviceAllowed {
+			t.Error("MfaRememberDeviceAllowed should be true")
+		}
+		if updated.MfaRememberDeviceDays != 14 {
+			t.Errorf("MfaRememberDeviceDays = %d, want 14", updated.MfaRememberDeviceDays)
+		}
+	})
+
+	t.Run("non-existent org returns nil", func(t *testing.T) {
+		result, err := s.UpdateOrgMFASettings(ctx, uuid.New(), true, true, 7)
+		if err != nil {
+			t.Fatalf("UpdateOrgMFASettings(not found): %v", err)
+		}
+		if result != nil {
+			t.Error("expected nil for non-existent org")
+		}
+	})
+}
+
+func TestStore_ResetUserMFA(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "reset-mfa@example.com", "Reset MFA", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Record initial token_version.
+	initialUser, err := s.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	initialVersion := initialUser.TokenVersion
+
+	// Enroll TOTP credential.
+	if _, err := s.CreateMFACredential(ctx, user.ID, "totp", []byte("encrypted-secret")); err != nil {
+		t.Fatalf("CreateMFACredential: %v", err)
+	}
+
+	// Generate recovery codes.
+	if _, err := s.GenerateRecoveryCodes(ctx, user.ID); err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	// Create an email OTP challenge.
+	codeHash := sha256.Sum256([]byte("123456"))
+	if err := s.CreateEmailOTPChallenge(ctx, user.ID, hex.EncodeToString(codeHash[:]), time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	// Create a remember-device token.
+	tokenHash := sha256.Sum256([]byte("device-token"))
+	if err := s.CreateRememberDeviceToken(ctx, user.ID, hex.EncodeToString(tokenHash[:]), time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("CreateRememberDeviceToken: %v", err)
+	}
+
+	// Verify setup: user should have MFA state.
+	hasCreds, err := s.UserHasMFACredentials(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFACredentials: %v", err)
+	}
+	if !hasCreds {
+		t.Fatal("expected user to have MFA credentials before reset")
+	}
+	unusedCodes, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes: %v", err)
+	}
+	if unusedCodes == 0 {
+		t.Fatal("expected user to have recovery codes before reset")
+	}
+
+	// Call ResetUserMFA.
+	newVersion, err := s.ResetUserMFA(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ResetUserMFA: %v", err)
+	}
+
+	// Assert: token_version incremented by 1.
+	if newVersion != initialVersion+1 {
+		t.Errorf("token_version = %d, want %d", newVersion, initialVersion+1)
+	}
+
+	// Assert: no credentials.
+	hasCreds, err = s.UserHasMFACredentials(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFACredentials after reset: %v", err)
+	}
+	if hasCreds {
+		t.Error("expected no MFA credentials after reset")
+	}
+
+	// Assert: no recovery codes.
+	unusedCodes, err = s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes after reset: %v", err)
+	}
+	if unusedCodes != 0 {
+		t.Errorf("expected 0 recovery codes after reset, got %d", unusedCodes)
+	}
+
+	// Assert: no challenges (email OTP + remember device both gone).
+	valid, err := s.ValidateRememberDeviceToken(ctx, user.ID, hex.EncodeToString(tokenHash[:]))
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken after reset: %v", err)
+	}
+	if valid {
+		t.Error("expected remember-device token to be deleted after reset")
 	}
 }

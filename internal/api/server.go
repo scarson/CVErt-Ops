@@ -41,6 +41,7 @@ type ServerDeps struct {
 	AuditWriter           *audit.Writer
 	EventWriter           *secure.EventWriter
 	ConfigHolder          *config.Holder
+	RescanFunc            func() // called after successful config reload
 	ExpectedSchemaVersion int
 	VersionInfo           VersionInfo
 }
@@ -51,25 +52,26 @@ type Server struct {
 	cfg                   *config.Config
 	argon2Sem             chan struct{}
 	rateLimiter           *ipRateLimiter
-	ghOAuth               *oauth2.Config   // nil when GitHub OAuth is not configured
-	ghAPIBaseURL          string           // GitHub REST API base URL; overridable in tests
-	googleOIDC            *oidc.Provider   // nil when Google OIDC is not configured
-	googleOAuth           *oauth2.Config   // nil when Google OIDC is not configured
-	orgRL                 *orgRateLimiter  // per-org API rate limiter
-	tierCache             *tierCache       // short-lived cache for org tier + overrides
-	oidcProviders         sync.Map         // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
-	alertCache            *alert.RuleCache // nil when alert evaluation is not configured
-	alertEvaluator        *alert.Evaluator // nil when alert evaluation is not configured
-	llm                   ai.LLMClient     // nil when AI features are not configured
-	auditWriter           *audit.Writer    // nil when audit logging is not configured
+	ghOAuth               *oauth2.Config      // nil when GitHub OAuth is not configured
+	ghAPIBaseURL          string              // GitHub REST API base URL; overridable in tests
+	googleOIDC            *oidc.Provider      // nil when Google OIDC is not configured
+	googleOAuth           *oauth2.Config      // nil when Google OIDC is not configured
+	orgRL                 *orgRateLimiter     // per-org API rate limiter
+	tierCache             *tierCache          // short-lived cache for org tier + overrides
+	oidcProviders         sync.Map            // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
+	alertCache            *alert.RuleCache    // nil when alert evaluation is not configured
+	alertEvaluator        *alert.Evaluator    // nil when alert evaluation is not configured
+	llm                   ai.LLMClient        // nil when AI features are not configured
+	auditWriter           *audit.Writer       // nil when audit logging is not configured
 	eventWriter           *secure.EventWriter // async security event recording
-	lockout               *lockoutManager  // brute-force login protection
-	configHolder          *config.Holder   // hot-reloadable config for admin reload endpoint
-	bootstrapMu           sync.Mutex       // serializes first-user bootstrap in invite-only mode
-	expectedSchemaVersion int              // migration version for /readyz check
-	versionInfo           VersionInfo      // build metadata for /admin/version
-	healthChecks          []func() bool    // extra readiness checks (e.g., delivery worker)
-	humaAPI               huma.API         // production huma API instance for spec merging
+	lockout               *lockoutManager     // brute-force login protection
+	configHolder          *config.Holder      // hot-reloadable config for admin reload endpoint
+	rescanFunc            func()              // feed config rescan on hot-reload
+	bootstrapMu           sync.Mutex          // serializes first-user bootstrap in invite-only mode
+	expectedSchemaVersion int                 // migration version for /readyz check
+	versionInfo           VersionInfo         // build metadata for /admin/version
+	healthChecks          []func() bool       // extra readiness checks (e.g., delivery worker)
+	humaAPI               huma.API            // production huma API instance for spec merging
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
@@ -107,6 +109,7 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		llm:                   deps.LLM,
 		auditWriter:           deps.AuditWriter,
 		configHolder:          deps.ConfigHolder,
+		rescanFunc:            deps.RescanFunc,
 		expectedSchemaVersion: deps.ExpectedSchemaVersion,
 		versionInfo:           deps.VersionInfo,
 	}
@@ -227,6 +230,7 @@ func (srv *Server) Handler() http.Handler {
 	api := humachi.New(apiRouter, humaConfig)
 	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
+	registerMFARoutes(api, srv)
 	registerCVERoutes(api, srv.store)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
@@ -292,12 +296,17 @@ func (srv *Server) Handler() http.Handler {
 			r.Get("/", srv.getOrgHandler)
 			r.Get("/tier", srv.getOrgTierHandler)
 			r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.updateOrgHandler)
+			r.With(srv.RequireOrgRole(RoleOwner)).Patch("/mfa-settings", srv.adminUpdateOrgMFASettingsHandler)
 
 			// Member management
 			r.Route("/members", func(r chi.Router) {
 				r.Get("/", srv.listMembersHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/{user_id}", srv.updateMemberRoleHandler)
 				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}", srv.removeMemberHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/reset-mfa", srv.adminResetMFAHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/force-password-reset", srv.adminForcePasswordResetHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Post("/{user_id}/require-mfa", srv.adminRequireMFAHandler)
+				r.With(srv.RequireOrgRole(RoleAdmin)).Delete("/{user_id}/require-mfa", srv.adminUnrequireMFAHandler)
 			})
 
 			// Invitation management
@@ -450,7 +459,6 @@ func (srv *Server) Handler() http.Handler {
 
 	return r
 }
-
 
 // AddHealthCheck registers an extra readiness check for the /readyz endpoint.
 // Must be called before Handler() — not safe for concurrent use.

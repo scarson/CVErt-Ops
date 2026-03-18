@@ -25,15 +25,50 @@ func (s *Store) CreateOrg(ctx context.Context, name string) (*generated.Organiza
 }
 
 // UpdateOrg updates the org name. Returns (nil, nil) if the org is not found or soft-deleted.
+// Uses withBypassTx — organizations table has no RLS; caller updates the org itself.
 func (s *Store) UpdateOrg(ctx context.Context, id uuid.UUID, name string) (*generated.Organization, error) {
-	row, err := s.q.UpdateOrg(ctx, generated.UpdateOrgParams{ID: id, Name: name})
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	var result *generated.Organization
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.UpdateOrg(ctx, generated.UpdateOrgParams{ID: id, Name: name})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("update org: %w", err)
 	}
-	return &row, nil
+	return result, nil
+}
+
+// UpdateOrgMFASettings updates the MFA-related columns on the org.
+// Uses withBypassTx — organizations table has no RLS; caller updates the org itself.
+func (s *Store) UpdateOrgMFASettings(ctx context.Context, id uuid.UUID, requiredAll, rememberDeviceAllowed bool, rememberDeviceDays int32) (*generated.Organization, error) {
+	var result *generated.Organization
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.UpdateOrgMFASettings(ctx, generated.UpdateOrgMFASettingsParams{
+			ID:                       id,
+			MfaRequiredAll:           requiredAll,
+			MfaRememberDeviceAllowed: rememberDeviceAllowed,
+			MfaRememberDeviceDays:    rememberDeviceDays,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("update org mfa settings: %w", err)
+	}
+	return result, nil
 }
 
 // CreateOrgWithOwner atomically creates a new org and adds ownerID as owner.

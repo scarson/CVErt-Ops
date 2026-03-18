@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,7 +31,7 @@ type Event struct {
 type EventWriter struct {
 	store       *store.Store
 	rateLimiter *eventRateLimiter
-	syslog      *SyslogWriter
+	syslog      atomic.Pointer[SyslogWriter]
 	wg          sync.WaitGroup
 }
 
@@ -45,8 +46,9 @@ func NewEventWriter(s *store.Store) *EventWriter {
 
 // SetSyslog attaches an optional SyslogWriter. When set, non-rate-limited
 // events are forwarded to the syslog endpoint in addition to the database.
+// Safe for concurrent use with Write.
 func (w *EventWriter) SetSyslog(sw *SyslogWriter) {
-	w.syslog = sw
+	w.syslog.Store(sw)
 }
 
 // Write records a security event asynchronously. If the rate limit for the
@@ -94,8 +96,8 @@ func (w *EventWriter) Write(ctx context.Context, event Event) {
 		}
 
 		// Forward to syslog independently of DB result.
-		if w.syslog != nil {
-			if sErr := w.syslog.Send(event); sErr != nil {
+		if sw := w.syslog.Load(); sw != nil {
+			if sErr := sw.Send(event); sErr != nil {
 				slog.Error("security event syslog send failed",
 					"event_type", event.Type,
 					"error", sErr,
@@ -110,8 +112,8 @@ func (w *EventWriter) Write(ctx context.Context, event Event) {
 func (w *EventWriter) Stop() {
 	w.rateLimiter.Stop()
 	w.wg.Wait()
-	if w.syslog != nil {
-		if err := w.syslog.Close(); err != nil {
+	if sw := w.syslog.Load(); sw != nil {
+		if err := sw.Close(); err != nil {
 			slog.Error("syslog close failed", "error", err)
 		}
 	}

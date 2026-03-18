@@ -492,6 +492,45 @@ func (q *Queries) UpdateOrg(ctx context.Context, arg UpdateOrgParams) (Organizat
 	return i, err
 }
 
+const updateOrgMFASettings = `-- name: UpdateOrgMFASettings :one
+UPDATE organizations SET
+    mfa_required_all = $2,
+    mfa_remember_device_allowed = $3,
+    mfa_remember_device_days = $4
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at, mfa_required_all, mfa_remember_device_allowed, mfa_remember_device_days
+`
+
+type UpdateOrgMFASettingsParams struct {
+	ID                       uuid.UUID
+	MfaRequiredAll           bool
+	MfaRememberDeviceAllowed bool
+	MfaRememberDeviceDays    int32
+}
+
+func (q *Queries) UpdateOrgMFASettings(ctx context.Context, arg UpdateOrgMFASettingsParams) (Organization, error) {
+	row := q.db.QueryRowContext(ctx, updateOrgMFASettings,
+		arg.ID,
+		arg.MfaRequiredAll,
+		arg.MfaRememberDeviceAllowed,
+		arg.MfaRememberDeviceDays,
+	)
+	var i Organization
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.CreatedAt,
+		&i.DeletedAt,
+		&i.Tier,
+		&i.TierOverrides,
+		&i.SuspendedAt,
+		&i.MfaRequiredAll,
+		&i.MfaRememberDeviceAllowed,
+		&i.MfaRememberDeviceDays,
+	)
+	return i, err
+}
+
 const updateOrgMemberRole = `-- name: UpdateOrgMemberRole :exec
 UPDATE org_members SET role = $3, updated_at = now()
 WHERE org_id = $1 AND user_id = $2

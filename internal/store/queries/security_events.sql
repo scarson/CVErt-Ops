@@ -11,6 +11,6 @@ WHERE
     ($3::text IS NULL OR actor_email = $3) AND
     ($4::timestamptz IS NULL OR created_at >= $4) AND
     ($5::timestamptz IS NULL OR created_at <= $5) AND
-    ($6::timestamptz IS NULL OR created_at < $6)
+    ($6::timestamptz IS NULL OR (created_at < $6 OR (created_at = $6 AND id < $7)))
 ORDER BY created_at DESC, id DESC
-LIMIT $7;
+LIMIT $8;

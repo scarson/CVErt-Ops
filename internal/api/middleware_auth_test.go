@@ -491,3 +491,102 @@ func TestRequireAuthenticated_ForcePasswordReset_AllowsMe(t *testing.T) {
 		t.Error("handler was not reached — middleware blocked /auth/me")
 	}
 }
+
+// TestRequireAuthenticated_ForcePasswordReset_AllowsMFARoutes verifies that
+// a user with force_password_reset=true can access /auth/mfa/* routes.
+func TestRequireAuthenticated_ForcePasswordReset_AllowsMFARoutes(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "forcereset-mfa@example.com", "ForceResetMFA", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	var reached bool
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/mfa/methods", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("force_password_reset on /auth/mfa/methods: got %d, want 200", rec.Code)
+	}
+	if !reached {
+		t.Error("handler was not reached — middleware blocked /auth/mfa/methods")
+	}
+}
+
+// TestRequireAuthenticated_ReadsFromConfigHolder verifies that JWT parsing reads
+// from the hot-reloadable configHolder, not from the static startup config.
+func TestRequireAuthenticated_ReadsFromConfigHolder(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "hotreload@example.com", "HotReload", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	// Server starts with JWTSecret="original-secret-at-startup".
+	originalSecret := "original-secret-at-startup!!!!!"
+	newSecret := "rotated-secret-after-reload!!!!!"
+
+	// Seed the configHolder with the original secret.
+	holder := config.NewHolder(&config.ReloadableConfig{
+		JWTSecret: []byte(originalSecret),
+	})
+	cfg := &config.Config{JWTSecret: originalSecret} //nolint:exhaustruct // test: only JWT secret needed
+	srv, _ := NewServer(db.Store, cfg, ServerDeps{ConfigHolder: holder})
+	t.Cleanup(srv.Close)
+
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Issue a token with the NEW secret (not yet known to the server).
+	token, err := auth.IssueAccessToken([]byte(newSecret), user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	// Request with the new-secret token BEFORE reload → should fail.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("before reload: got %d, want 401", rec.Code)
+	}
+
+	// Hot-reload: update configHolder with the new secret.
+	holder.Store(&config.ReloadableConfig{
+		JWTSecret: []byte(newSecret),
+	})
+
+	// Same token AFTER reload → should succeed.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("after reload: got %d, want 200", rec.Code)
+	}
+}

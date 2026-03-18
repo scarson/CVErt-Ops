@@ -8,18 +8,23 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // DecryptWithFallback tries decrypting with currentKey first. If GCM
 // authentication fails and previousKey is non-zero, it retries with
 // previousKey. This supports seamless encryption key rotation.
+// Structural errors (truncated ciphertext, invalid key) fail immediately
+// without attempting fallback.
 func DecryptWithFallback(currentKey, previousKey [32]byte, data []byte) ([]byte, error) {
 	plaintext, err := Decrypt(currentKey, data)
 	if err == nil {
 		return plaintext, nil
 	}
 
-	if previousKey != [32]byte{} {
+	// Only fall back on GCM authentication failure (wrong key).
+	// Structural errors (truncated ciphertext, invalid key) fail fast.
+	if previousKey != [32]byte{} && isGCMAuthError(err) {
 		plaintext, err2 := Decrypt(previousKey, data)
 		if err2 == nil {
 			return plaintext, nil
@@ -28,6 +33,12 @@ func DecryptWithFallback(currentKey, previousKey [32]byte, data []byte) ([]byte,
 	}
 
 	return nil, err
+}
+
+// isGCMAuthError returns true if the error is a GCM authentication tag mismatch,
+// which indicates the ciphertext was encrypted with a different key.
+func isGCMAuthError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "gcm decrypt:")
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM with a random nonce.

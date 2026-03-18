@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -81,6 +82,39 @@ func (s *Store) UpdateMFACredentialLastUsed(ctx context.Context, id uuid.UUID, l
 			LastUsedStep: lastUsedStep,
 		})
 	})
+}
+
+// VerifyAndUpdateTOTPStep atomically checks and updates the TOTP last_used_step.
+// Uses FOR UPDATE to prevent concurrent replay. Returns true if the step
+// is fresh (not replayed). The maxStep parameter should be currentStep + skew
+// to account for the TOTP validation window.
+func (s *Store) VerifyAndUpdateTOTPStep(ctx context.Context, userID uuid.UUID, maxStep int64) (bool, error) {
+	var ok bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		cred, err := q.GetMFACredentialByUserAndMethodForUpdate(ctx, generated.GetMFACredentialByUserAndMethodForUpdateParams{
+			UserID: userID,
+			Method: "totp",
+		})
+		if err != nil {
+			return err
+		}
+		if cred.LastUsedStep.Valid && cred.LastUsedStep.Int64 >= maxStep {
+			ok = false
+			return nil
+		}
+		if err := q.UpdateMFACredentialLastUsed(ctx, generated.UpdateMFACredentialLastUsedParams{
+			ID:           cred.ID,
+			LastUsedStep: sql.NullInt64{Int64: maxStep, Valid: true},
+		}); err != nil {
+			return err
+		}
+		ok = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("verify totp step: %w", err)
+	}
+	return ok, nil
 }
 
 // DeleteMFACredential removes a single MFA credential by user and method.
@@ -299,6 +333,34 @@ func (s *Store) CountUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID) 
 	return n, nil
 }
 
+// ResetUserMFA atomically removes all MFA state for a user and increments
+// token_version to invalidate all sessions. All operations run in a single
+// transaction to prevent inconsistent intermediate states.
+func (s *Store) ResetUserMFA(ctx context.Context, userID uuid.UUID) (int32, error) {
+	var newVersion int32
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if _, err := q.DeleteAllMFACredentials(ctx, userID); err != nil {
+			return err
+		}
+		if _, err := q.DeleteAllRecoveryCodes(ctx, userID); err != nil {
+			return err
+		}
+		if _, err := q.DeleteAllUserChallenges(ctx, userID); err != nil {
+			return err
+		}
+		var err error
+		newVersion, err = q.IncrementTokenVersion(ctx, userID)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("reset user mfa: %w", err)
+	}
+	return newVersion, nil
+}
+
 // --- MFA Challenge Operations (Email OTP + Remember Device) ---
 
 // CreateEmailOTPChallenge stores a new email OTP challenge for the user.
@@ -320,13 +382,12 @@ func (s *Store) CreateEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 
 // VerifyEmailOTPChallenge atomically looks up the active email OTP challenge,
 // increments attempts, checks the hash, and deletes on success or exhaustion.
-// Returns true if the code matched and the challenge was valid.
-func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, maxAttempts int32) (bool, error) {
-	var matched bool
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+// Returns matched=true if the code was correct, exhausted=true if max attempts
+// were reached (challenge deleted).
+func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, maxAttempts int32) (matched bool, exhausted bool, err error) {
+	err = s.withBypassTx(ctx, func(q *generated.Queries) error {
 		challenge, err := q.GetActiveEmailOTPChallengeForUpdate(ctx, userID)
 		if errors.Is(err, sql.ErrNoRows) {
-			matched = false
 			return nil
 		}
 		if err != nil {
@@ -338,7 +399,7 @@ func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 			return err
 		}
 
-		if challenge.TokenHash == codeHash {
+		if subtle.ConstantTimeCompare([]byte(challenge.TokenHash), []byte(codeHash)) == 1 {
 			// Correct code — delete the challenge and report success.
 			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
 				return err
@@ -352,14 +413,14 @@ func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
 				return err
 			}
+			exhausted = true
 		}
-		matched = false
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("verify email otp challenge: %w", err)
+		return false, false, fmt.Errorf("verify email otp challenge: %w", err)
 	}
-	return matched, nil
+	return matched, exhausted, nil
 }
 
 // CreateRememberDeviceToken stores a remember-device token for the user.
@@ -518,6 +579,34 @@ func (s *Store) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (boo
 	return required, nil
 }
 
+// UserMFARequiredOrgNames returns org names where the user is a member and org has mfa_required_all=true.
+func (s *Store) UserMFARequiredOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		names, err = q.UserMFARequiredOrgNames(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mfa required org names: %w", err)
+	}
+	return names, nil
+}
+
+// UserMFARequirementOrgNames returns org names from the mfa_requirements table for this user.
+func (s *Store) UserMFARequirementOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		names, err = q.UserMFARequirementOrgNames(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mfa requirement org names: %w", err)
+	}
+	return names, nil
+}
+
 // MFAConfig holds the site-level config fields needed for the mandate check.
 type MFAConfig struct {
 	RequiredSiteAdmins bool
@@ -536,7 +625,7 @@ func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdm
 
 	// Layer 2a: site config — org owners must have MFA.
 	if cfg.RequiredOrgOwners {
-		isOwner, err := s.isOrgOwner(ctx, userID)
+		isOwner, err := s.IsOrgOwner(ctx, userID)
 		if err != nil {
 			return false, fmt.Errorf("check org owner: %w", err)
 		}
@@ -562,8 +651,8 @@ func (s *Store) UserMFARequired(ctx context.Context, userID uuid.UUID, isSiteAdm
 	return hasReq, nil
 }
 
-// isOrgOwner checks whether a user has the 'owner' role in any org.
-func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
+// IsOrgOwner checks whether a user has the 'owner' role in any org.
+func (s *Store) IsOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) {
 	var isOwner bool
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
@@ -574,4 +663,34 @@ func (s *Store) isOrgOwner(ctx context.Context, userID uuid.UUID) (bool, error) 
 		return false, fmt.Errorf("is org owner: %w", err)
 	}
 	return isOwner, nil
+}
+
+// AllUserOrgsAllowRememberDevice checks whether all orgs the user belongs to
+// allow remember-device tokens. If any org disallows, returns false.
+func (s *Store) AllUserOrgsAllowRememberDevice(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var allowed bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		allowed, err = q.AllUserOrgsAllowRememberDevice(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("all orgs allow remember device: %w", err)
+	}
+	return allowed, nil
+}
+
+// MinRememberDeviceDays returns the minimum remember-device retention days
+// across all orgs the user belongs to. Uses most-restrictive org setting.
+func (s *Store) MinRememberDeviceDays(ctx context.Context, userID uuid.UUID) (int32, error) {
+	var days int32
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		days, err = q.MinRememberDeviceDays(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("min remember device days: %w", err)
+	}
+	return days, nil
 }

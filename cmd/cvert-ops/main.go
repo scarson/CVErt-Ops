@@ -202,12 +202,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	eventWriter := secure.NewEventWriter(st)
 	defer eventWriter.Stop()
 
+	// Wire SIEM syslog forwarding if configured.
+	if cfg.SIEMSyslogAddr != "" {
+		sw, sErr := secure.NewSyslogWriter(cfg.SIEMSyslogAddr, cfg.SIEMSyslogFormat)
+		if sErr != nil {
+			slog.Error("SIEM syslog initialization failed — events will only go to database", "error", sErr)
+		} else if sw != nil {
+			eventWriter.SetSyslog(sw)
+			// Do NOT defer sw.Close() here — EventWriter.Stop() already closes it.
+			slog.Info("SIEM syslog forwarding enabled", "addr", cfg.SIEMSyslogAddr, "format", cfg.SIEMSyslogFormat)
+		}
+	}
+
 	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
 		AlertCache:            alertCache,
 		AlertEvaluator:        alertEval,
 		LLM:                   llm,
 		EventWriter:           eventWriter,
 		ConfigHolder:          configHolder,
+		RescanFunc:            nil, // Feed rescan wiring is future work.
 		ExpectedSchemaVersion: expectedSchemaVersion,
 		VersionInfo: api.VersionInfo{
 			Version:   version,
@@ -252,6 +265,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	workerPool.RegisterPeriodic(worker.PeriodicTask{
+		Name:     "mfa-challenge-cleanup",
+		Interval: 1 * time.Hour,
+		Fn: func(ctx context.Context) error {
+			deleted, err := st.DeleteExpiredChallenges(ctx)
+			if err != nil {
+				return err
+			}
+			if deleted > 0 {
+				slog.InfoContext(ctx, "mfa: cleaned expired challenges", "count", deleted)
+			}
+			return nil
+		},
+	})
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
 		if len(genericConfigs) > 0 {
@@ -419,6 +446,20 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	workerPool.RegisterPeriodic(worker.PeriodicTask{
+		Name:     "mfa-challenge-cleanup",
+		Interval: 1 * time.Hour,
+		Fn: func(ctx context.Context) error {
+			deleted, err := st.DeleteExpiredChallenges(ctx)
+			if err != nil {
+				return err
+			}
+			if deleted > 0 {
+				slog.InfoContext(ctx, "mfa: cleaned expired challenges", "count", deleted)
+			}
+			return nil
+		},
+	})
 	if cfg.FeedSchedulerEnabled {
 		feedScheduler := ingest.NewScheduler(st)
 		if len(genericConfigs) > 0 {

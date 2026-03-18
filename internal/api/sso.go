@@ -67,8 +67,15 @@ type discoverResponse struct {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-// ssoEncryptionKey parses the hex-encoded 32-byte SSO encryption key from config.
+// ssoEncryptionKey returns the 32-byte SSO encryption key, preferring the
+// hot-reloadable config holder over the startup config.
 func (srv *Server) ssoEncryptionKey() ([32]byte, error) {
+	if srv.configHolder != nil {
+		if rc := srv.configHolder.Load(); rc != nil && rc.SSOEncryptionKey != [32]byte{} {
+			return rc.SSOEncryptionKey, nil
+		}
+	}
+	// Fallback to startup config (hex decode).
 	var key [32]byte
 	raw, err := hex.DecodeString(srv.cfg.SSOEncryptionKey)
 	if err != nil {
@@ -81,9 +88,15 @@ func (srv *Server) ssoEncryptionKey() ([32]byte, error) {
 	return key, nil
 }
 
-// ssoEncryptionKeyPrevious parses the hex-encoded previous SSO encryption key
-// from config. Returns zero-value key if unset (no previous key configured).
+// ssoEncryptionKeyPrevious returns the previous SSO encryption key for rotation,
+// preferring the hot-reloadable config holder. Returns zero-value key if unset.
 func (srv *Server) ssoEncryptionKeyPrevious() [32]byte {
+	if srv.configHolder != nil {
+		if rc := srv.configHolder.Load(); rc != nil {
+			return rc.SSOEncryptionKeyPrev
+		}
+	}
+	// Fallback to startup config.
 	var key [32]byte
 	if srv.cfg.SSOEncryptionKeyPrevious == "" {
 		return key

@@ -7,6 +7,9 @@ SELECT * FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at;
 -- name: GetMFACredentialByUserAndMethod :one
 SELECT * FROM mfa_credentials WHERE user_id = $1 AND method = $2;
 
+-- name: GetMFACredentialByUserAndMethodForUpdate :one
+SELECT * FROM mfa_credentials WHERE user_id = $1 AND method = $2 FOR UPDATE;
+
 -- name: CreateMFACredential :one
 INSERT INTO mfa_credentials (user_id, method, secret_enc)
 VALUES ($1, $2, $3)
@@ -133,3 +136,32 @@ SELECT EXISTS(
     JOIN organizations o ON o.id = om.org_id
     WHERE om.user_id = $1 AND o.mfa_required_all = true
 ) AS required;
+
+-- name: UserMFARequiredOrgNames :many
+-- Returns org names where the user is a member and org has mfa_required_all=true.
+SELECT o.name FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1 AND o.mfa_required_all = true AND o.deleted_at IS NULL;
+
+-- name: UserMFARequirementOrgNames :many
+-- Returns org names from the mfa_requirements table for this user.
+SELECT o.name FROM mfa_requirements mr
+JOIN organizations o ON o.id = mr.org_id
+WHERE mr.user_id = $1 AND o.deleted_at IS NULL;
+
+-- name: AllUserOrgsAllowRememberDevice :one
+-- Check whether all orgs the user belongs to allow remember-device tokens.
+-- If any org disallows, the result is false (most-restrictive wins).
+SELECT NOT EXISTS(
+    SELECT 1 FROM org_members om
+    JOIN organizations o ON o.id = om.org_id
+    WHERE om.user_id = $1 AND o.mfa_remember_device_allowed = false
+) AS allowed;
+
+-- name: MinRememberDeviceDays :one
+-- Get the minimum remember-device retention across all orgs the user belongs to.
+-- Used to set the cookie expiry to the most-restrictive value.
+SELECT COALESCE(MIN(o.mfa_remember_device_days), 30)::int AS days
+FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1;

@@ -13,6 +13,23 @@ import (
 	"github.com/google/uuid"
 )
 
+const allUserOrgsAllowRememberDevice = `-- name: AllUserOrgsAllowRememberDevice :one
+SELECT NOT EXISTS(
+    SELECT 1 FROM org_members om
+    JOIN organizations o ON o.id = om.org_id
+    WHERE om.user_id = $1 AND o.mfa_remember_device_allowed = false
+) AS allowed
+`
+
+// Check whether all orgs the user belongs to allow remember-device tokens.
+// If any org disallows, the result is false (most-restrictive wins).
+func (q *Queries) AllUserOrgsAllowRememberDevice(ctx context.Context, userID uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, allUserOrgsAllowRememberDevice, userID)
+	var allowed bool
+	err := row.Scan(&allowed)
+	return allowed, err
+}
+
 const countMFACredentialsByUser = `-- name: CountMFACredentialsByUser :one
 SELECT COUNT(*) FROM mfa_credentials WHERE user_id = $1
 `
@@ -330,6 +347,30 @@ func (q *Queries) GetMFACredentialByUserAndMethod(ctx context.Context, arg GetMF
 	return i, err
 }
 
+const getMFACredentialByUserAndMethodForUpdate = `-- name: GetMFACredentialByUserAndMethodForUpdate :one
+SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 AND method = $2 FOR UPDATE
+`
+
+type GetMFACredentialByUserAndMethodForUpdateParams struct {
+	UserID uuid.UUID
+	Method string
+}
+
+func (q *Queries) GetMFACredentialByUserAndMethodForUpdate(ctx context.Context, arg GetMFACredentialByUserAndMethodForUpdateParams) (MfaCredential, error) {
+	row := q.db.QueryRowContext(ctx, getMFACredentialByUserAndMethodForUpdate, arg.UserID, arg.Method)
+	var i MfaCredential
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Method,
+		&i.SecretEnc,
+		&i.LastUsedStep,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
 const getMFACredentialsByUserID = `-- name: GetMFACredentialsByUserID :many
 
 SELECT id, user_id, method, secret_enc, last_used_step, created_at, last_used_at FROM mfa_credentials WHERE user_id = $1 ORDER BY created_at
@@ -510,6 +551,22 @@ func (q *Queries) MarkRecoveryCodeUsed(ctx context.Context, id uuid.UUID) error 
 	return err
 }
 
+const minRememberDeviceDays = `-- name: MinRememberDeviceDays :one
+SELECT COALESCE(MIN(o.mfa_remember_device_days), 30)::int AS days
+FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1
+`
+
+// Get the minimum remember-device retention across all orgs the user belongs to.
+// Used to set the cookie expiry to the most-restrictive value.
+func (q *Queries) MinRememberDeviceDays(ctx context.Context, userID uuid.UUID) (int32, error) {
+	row := q.db.QueryRowContext(ctx, minRememberDeviceDays, userID)
+	var days int32
+	err := row.Scan(&days)
+	return days, err
+}
+
 const updateMFACredentialLastUsed = `-- name: UpdateMFACredentialLastUsed :exec
 UPDATE mfa_credentials
 SET last_used_step = $2, last_used_at = now()
@@ -567,4 +624,64 @@ func (q *Queries) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (b
 	var required bool
 	err := row.Scan(&required)
 	return required, err
+}
+
+const userMFARequiredOrgNames = `-- name: UserMFARequiredOrgNames :many
+SELECT o.name FROM org_members om
+JOIN organizations o ON o.id = om.org_id
+WHERE om.user_id = $1 AND o.mfa_required_all = true AND o.deleted_at IS NULL
+`
+
+// Returns org names where the user is a member and org has mfa_required_all=true.
+func (q *Queries) UserMFARequiredOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, userMFARequiredOrgNames, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userMFARequirementOrgNames = `-- name: UserMFARequirementOrgNames :many
+SELECT o.name FROM mfa_requirements mr
+JOIN organizations o ON o.id = mr.org_id
+WHERE mr.user_id = $1 AND o.deleted_at IS NULL
+`
+
+// Returns org names from the mfa_requirements table for this user.
+func (q *Queries) UserMFARequirementOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, userMFARequirementOrgNames, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/secure"
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // formatTTL converts a duration to a human-readable string for email templates.
@@ -175,8 +176,14 @@ type resetPasswordInput struct {
 	}
 }
 
-// resetPasswordOutput has no body — 200 on success.
-type resetPasswordOutput struct{}
+// resetPasswordOutput returns MFA gating status after password reset.
+type resetPasswordOutput struct {
+	SetCookie []string `header:"Set-Cookie"`
+	Body      struct {
+		Pending []string `json:"pending"          doc:"Remaining auth steps (empty = no MFA required)"`
+		Methods []string `json:"methods,omitempty" doc:"Available MFA methods (only when pending contains mfa_challenge)"`
+	}
+}
 
 // resetPasswordHandler handles POST /api/v1/auth/reset-password.
 func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswordInput) (*resetPasswordOutput, error) {
@@ -233,5 +240,67 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 		})
 	}
 
-	return &resetPasswordOutput{}, nil
+	// ── MFA gating (mirrors login handler logic) ─────────────────────
+	var pending []string
+	var methods []string
+
+	hasMFA, err := srv.store.UserHasMFACredentials(ctx, tok.UserID)
+	if err != nil {
+		slog.ErrorContext(ctx, "reset-password: check MFA credentials", "error", err)
+		return nil, huma.Error500InternalServerError("internal error")
+	}
+
+	if hasMFA {
+		pending = append(pending, "mfa_challenge")
+		creds, credErr := srv.store.GetMFACredentialsByUserID(ctx, tok.UserID)
+		if credErr != nil {
+			slog.ErrorContext(ctx, "reset-password: get MFA methods", "error", credErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		for _, c := range creds {
+			methods = append(methods, c.Method)
+		}
+	} else {
+		isSiteAdmin, saErr := srv.store.IsSiteAdmin(ctx, tok.UserID)
+		if saErr != nil {
+			slog.ErrorContext(ctx, "reset-password: check site admin", "error", saErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		mfaCfg := store.MFAConfig{
+			RequiredSiteAdmins: srv.cfg.MFARequiredSiteAdmins,
+			RequiredOrgOwners:  srv.cfg.MFARequiredOrgOwners,
+		}
+		required, mfaErr := srv.store.UserMFARequired(ctx, tok.UserID, isSiteAdmin, mfaCfg)
+		if mfaErr != nil {
+			slog.ErrorContext(ctx, "reset-password: check MFA mandate", "error", mfaErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		if required {
+			pending = append(pending, "mfa_enrollment_required")
+		}
+	}
+
+	out := &resetPasswordOutput{}
+	out.Body.Pending = pending
+	out.Body.Methods = methods
+
+	if len(pending) > 0 {
+		// Re-read user to get the post-increment token_version.
+		user, userErr := srv.store.GetUserByID(ctx, tok.UserID)
+		if userErr != nil || user == nil {
+			slog.ErrorContext(ctx, "reset-password: get user for pending token", "error", userErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		pendingToken, ptErr := auth.IssuePendingToken(
+			srv.jwtSecret(), user.ID, int(user.TokenVersion),
+			pending, methods, srv.cfg.MFAPendingTokenTTL,
+		)
+		if ptErr != nil {
+			slog.ErrorContext(ctx, "reset-password: issue pending token", "error", ptErr)
+			return nil, huma.Error500InternalServerError("internal error")
+		}
+		out.SetCookie = pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+	}
+
+	return out, nil
 }

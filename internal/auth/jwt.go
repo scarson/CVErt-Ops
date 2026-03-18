@@ -183,18 +183,99 @@ func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pendin
 	return signed, nil
 }
 
-// ParsePendingToken validates and parses an HS256 pending session token.
-// Returns an error if the token is expired, uses a wrong algorithm, or is invalid.
-func ParsePendingToken(tokenStr string, secret []byte) (*PendingClaims, error) {
+// ParsePendingToken validates and parses an HS256 pending session token using
+// dual-key verification for zero-downtime secret rotation. It tries activeSecret
+// first. On signature failure only (not expiry or claims errors), it retries with
+// previousSecret if non-nil.
+func ParsePendingToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*PendingClaims, error) {
 	claims := &PendingClaims{}
 	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
-		return secret, nil
+		return activeSecret, nil
 	},
 		jwt.WithValidMethods([]string{"HS256"}),
 		jwt.WithExpirationRequired(),
 	)
-	if err != nil {
-		return nil, fmt.Errorf("parse pending token: %w", err)
+	if err == nil {
+		return claims, nil
 	}
-	return claims, nil
+
+	// Only try previous key on signature error — not expiry, not claims.
+	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		fallbackClaims := &PendingClaims{}
+		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
+			return previousSecret, nil
+		},
+			jwt.WithValidMethods([]string{"HS256"}),
+			jwt.WithExpirationRequired(),
+		)
+		if err2 == nil {
+			return fallbackClaims, nil
+		}
+		return nil, fmt.Errorf("parse pending token: %w", err2)
+	}
+
+	return nil, fmt.Errorf("parse pending token: %w", err)
+}
+
+// EnrollmentClaims holds the claims for a short-lived MFA enrollment token.
+// Contains an encrypted TOTP secret that is provisional until the user
+// confirms enrollment with a valid code.
+type EnrollmentClaims struct {
+	jwt.RegisteredClaims
+	UserID    uuid.UUID `json:"sub"`
+	SecretEnc []byte    `json:"sec"` // AES-256-GCM encrypted TOTP secret
+}
+
+// IssueEnrollmentToken creates a short-lived JWT containing the encrypted TOTP
+// secret. The secret is NOT stored in the DB until the user confirms enrollment.
+func IssueEnrollmentToken(secret []byte, userID uuid.UUID, secretEnc []byte, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := EnrollmentClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
+		},
+		UserID:    userID,
+		SecretEnc: secretEnc,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(secret)
+	if err != nil {
+		return "", fmt.Errorf("sign enrollment token: %w", err)
+	}
+	return signed, nil
+}
+
+// ParseEnrollmentToken validates and parses an HS256 MFA enrollment token using
+// dual-key verification for zero-downtime secret rotation. It tries activeSecret
+// first. On signature failure only (not expiry or claims errors), it retries with
+// previousSecret if non-nil.
+func ParseEnrollmentToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*EnrollmentClaims, error) {
+	claims := &EnrollmentClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
+		return activeSecret, nil
+	},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+	)
+	if err == nil {
+		return claims, nil
+	}
+
+	// Only try previous key on signature error — not expiry, not claims.
+	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		fallbackClaims := &EnrollmentClaims{}
+		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
+			return previousSecret, nil
+		},
+			jwt.WithValidMethods([]string{"HS256"}),
+			jwt.WithExpirationRequired(),
+		)
+		if err2 == nil {
+			return fallbackClaims, nil
+		}
+		return nil, fmt.Errorf("parse enrollment token: %w", err2)
+	}
+
+	return nil, fmt.Errorf("parse enrollment token: %w", err)
 }

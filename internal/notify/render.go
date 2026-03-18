@@ -58,6 +58,12 @@ type EmailVerificationData struct {
 	ExpiresIn string // e.g., "24 hours"
 }
 
+// MFAOTPData holds template data for MFA verification code emails.
+type MFAOTPData struct {
+	Code      string
+	ExpiresIn string // e.g., "10 minutes"
+}
+
 // InvitationData holds template data for invitation emails.
 type InvitationData struct {
 	OrgName     string
@@ -79,6 +85,8 @@ var (
 	verifyText  *texttpl.Template
 	inviteHTML  *htmltpl.Template
 	inviteText  *texttpl.Template
+	mfaOTPHTML  *htmltpl.Template
+	mfaOTPText  *texttpl.Template
 )
 
 func init() {
@@ -92,6 +100,8 @@ func init() {
 	verifyText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_verification.txt.tmpl"))
 	inviteHTML = htmltpl.Must(htmltpl.New("").Funcs(htmltpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_invitation.html.tmpl"))
 	inviteText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_invitation.txt.tmpl"))
+	mfaOTPHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_mfa_otp.html.tmpl"))
+	mfaOTPText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_mfa_otp.txt.tmpl"))
 }
 
 // RenderAlert renders an alert notification email. Returns subject, HTML body, and plaintext body.
@@ -117,6 +127,11 @@ func RenderEmailVerification(data EmailVerificationData) (string, string, string
 // RenderInvitation renders an invitation email. Returns subject, HTML body, and plaintext body.
 func RenderInvitation(data InvitationData) (string, string, string, error) {
 	return renderPair(inviteHTML, inviteText, data)
+}
+
+// RenderMFAOTP renders an MFA verification code email. Returns subject, HTML body, and plaintext body.
+func RenderMFAOTP(data MFAOTPData) (string, string, string, error) {
+	return renderPair(mfaOTPHTML, mfaOTPText, data)
 }
 
 func renderPair(html *htmltpl.Template, text *texttpl.Template, data any) (string, string, string, error) {

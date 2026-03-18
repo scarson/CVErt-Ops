@@ -671,7 +671,7 @@ func TestPendingTokenRoundTrip(t *testing.T) {
 		t.Fatalf("IssuePendingToken: %v", err)
 	}
 
-	claims, err := auth.ParsePendingToken(tokenStr, secret)
+	claims, err := auth.ParsePendingToken(tokenStr, secret, nil)
 	if err != nil {
 		t.Fatalf("ParsePendingToken: %v", err)
 	}
@@ -710,7 +710,7 @@ func TestPendingTokenNilPendingAndMethods(t *testing.T) {
 		t.Fatalf("IssuePendingToken: %v", err)
 	}
 
-	claims, err := auth.ParsePendingToken(tokenStr, secret)
+	claims, err := auth.ParsePendingToken(tokenStr, secret, nil)
 	if err != nil {
 		t.Fatalf("ParsePendingToken: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestPendingTokenEmptyPending(t *testing.T) {
 		t.Fatalf("IssuePendingToken: %v", err)
 	}
 
-	claims, err := auth.ParsePendingToken(tokenStr, secret)
+	claims, err := auth.ParsePendingToken(tokenStr, secret, nil)
 	if err != nil {
 		t.Fatalf("ParsePendingToken: %v", err)
 	}
@@ -753,7 +753,7 @@ func TestPendingTokenRejectsExpired(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
-	_, err = auth.ParsePendingToken(tokenStr, secret)
+	_, err = auth.ParsePendingToken(tokenStr, secret, nil)
 	if err == nil {
 		t.Error("expected error for expired pending token, got nil")
 	}
@@ -773,7 +773,7 @@ func TestPendingTokenRejectsWrongAlgorithm(t *testing.T) {
 	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	tampered := fakeHeader + "." + parts[1] + "." + parts[2]
 
-	_, err = auth.ParsePendingToken(tampered, secret)
+	_, err = auth.ParsePendingToken(tampered, secret, nil)
 	if err == nil {
 		t.Error("expected error for RS256 algorithm on pending token, got nil")
 	}
@@ -793,7 +793,7 @@ func TestPendingTokenRejectsAlgNone(t *testing.T) {
 	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
 	tampered := fakeHeader + "." + parts[1] + "."
 
-	_, err = auth.ParsePendingToken(tampered, secret)
+	_, err = auth.ParsePendingToken(tampered, secret, nil)
 	if err == nil {
 		t.Error("expected error for alg:none pending token, got nil")
 	}
@@ -810,8 +810,79 @@ func TestPendingTokenRejectsWrongSecret(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
-	_, err = auth.ParsePendingToken(tokenStr, wrongSecret)
+	_, err = auth.ParsePendingToken(tokenStr, wrongSecret, nil)
 	if err == nil {
 		t.Error("expected error for wrong secret on pending token, got nil")
+	}
+}
+
+// ── Dual-key rotation tests (pending token) ─────────────────────────────────
+
+func TestParsePendingToken_DualKey(t *testing.T) {
+	t.Parallel()
+	oldSecret := []byte("old-secret-32-bytes-minimum-aaaa")
+	newSecret := []byte("new-secret-32-bytes-minimum-bbbb")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	// Issue token with old secret (pre-rotation).
+	tokenStr, err := auth.IssuePendingToken(oldSecret, userID, 1, []string{"mfa_challenge"}, []string{"totp"}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// Parse with new secret as active + old secret as previous — should succeed.
+	claims, err := auth.ParsePendingToken(tokenStr, newSecret, oldSecret)
+	if err != nil {
+		t.Fatalf("ParsePendingToken with dual key should succeed: %v", err)
+	}
+	if claims.UserID != userID {
+		t.Errorf("UserID = %v, want %v", claims.UserID, userID)
+	}
+	if len(claims.Pending) != 1 || claims.Pending[0] != "mfa_challenge" {
+		t.Errorf("Pending = %v, want [mfa_challenge]", claims.Pending)
+	}
+}
+
+func TestParsePendingToken_DualKey_ExpiredStillFails(t *testing.T) {
+	t.Parallel()
+	oldSecret := []byte("old-secret-32-bytes-minimum-aaaa")
+	newSecret := []byte("new-secret-32-bytes-minimum-bbbb")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+
+	// Issue an expired token with old secret.
+	tokenStr, err := auth.IssuePendingToken(oldSecret, userID, 1, []string{"mfa_challenge"}, nil, -1*time.Second)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// Expired token must fail even with dual-key — only signature errors trigger fallback, not expiry.
+	_, err = auth.ParsePendingToken(tokenStr, newSecret, oldSecret)
+	if err == nil {
+		t.Fatal("expected error for expired pending token with dual key, got nil")
+	}
+}
+
+// ── Dual-key rotation tests (enrollment token) ─────────────────────────────
+
+func TestParseEnrollmentToken_DualKey(t *testing.T) {
+	t.Parallel()
+	oldSecret := []byte("old-secret-32-bytes-minimum-aaaa")
+	newSecret := []byte("new-secret-32-bytes-minimum-bbbb")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secretEnc := []byte("encrypted-totp-secret-placeholder")
+
+	// Issue enrollment token with old secret (pre-rotation).
+	tokenStr, err := auth.IssueEnrollmentToken(oldSecret, userID, secretEnc, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// Parse with new secret as active + old secret as previous — should succeed.
+	claims, err := auth.ParseEnrollmentToken(tokenStr, newSecret, oldSecret)
+	if err != nil {
+		t.Fatalf("ParseEnrollmentToken with dual key should succeed: %v", err)
+	}
+	if claims.UserID != userID {
+		t.Errorf("UserID = %v, want %v", claims.UserID, userID)
 	}
 }

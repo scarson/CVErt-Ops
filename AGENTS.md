@@ -218,6 +218,10 @@ go run ./cmd/cvert-ops serve         # run server (HTTP + worker)
 go run ./cmd/cvert-ops worker        # run standalone worker
 go run ./cmd/cvert-ops migrate       # run migrations programmatically
 go run ./cmd/cvert-ops import-bulk   # bulk-import CVE data from file
+go run ./cmd/cvert-ops doctor        # run system health checks
+go run ./cmd/cvert-ops quota         # manage AI quota
+go run ./cmd/cvert-ops validate      # validate feed configurations
+go run ./cmd/cvert-ops rotate        # rotate encryption key
 go test ./...                        # run all Go tests
 go test ./internal/store/... -count=1  # run store tests (needs test DB)
 go test -run TestFoo ./internal/...  # run a specific test
@@ -261,19 +265,19 @@ Mailpit UI: http://localhost:8025
 | AI | Google Gemini via `google.golang.org/genai` behind `LLMClient` interface |
 | Logging | slog (stdlib) |
 | Config | caarlos0/env/v11 |
-| CLI | cobra (subcommands: serve, worker, migrate) |
+| CLI | cobra (subcommands: serve, worker, migrate, import-bulk, doctor, quota, validate, rotate) |
 | SSRF | doyensec/safeurl for all outbound webhooks |
 | Metrics | prometheus/client_golang at /metrics |
 | Frontend | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue (reka-ui) |
 | Frontend state | Pinia + VueUse |
 | Frontend API | openapi-fetch (typed from OpenAPI schema) |
-| Frontend test | Vitest + happy-dom + @vue/test-utils |
+| Frontend test | Vitest + jsdom + @vue/test-utils |
 | Frontend lint | oxlint + eslint + prettier |
 
 ## Architecture (Key Points)
 
 **Data model**
-- Single binary: HTTP server + worker pool via cobra subcommands (`serve`, `worker`, `migrate`, `import-bulk`); no external queue
+- Single binary: HTTP server + worker pool via cobra subcommands (`serve`, `worker`, `migrate`, `import-bulk`, `doctor`, `quota`, `validate`, `rotate`); no external queue
 - CVE corpus is global/shared; all tenant data is org-scoped — every org-scoped store method MUST take `orgID` as a parameter
 - `cve_search_index(cve_id, fts_document tsvector)` is a separate 1:1 table — never put FTS on `cves`; GIN rewrites on every timestamp/score update cause severe write amplification
 - `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: normalize CVSS vectors to canonical spec metric order; sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
@@ -378,14 +382,18 @@ internal/audit/      # audit logging
 internal/auth/       # JWT, OAuth, API keys, argon2id
 internal/config/     # caarlos0/env config structs
 internal/crypto/     # cryptographic helpers
+internal/dbutil/     # nullable type conversion helpers (database/sql)
+internal/doctor/     # system health check framework (CLI + API)
 internal/feed/       # feed adapters (nvd, mitre, kev, osv, ghsa, epss, vendor)
 internal/ingest/     # feed ingestion orchestrator
+internal/log/        # context-aware slog helpers (request correlation)
 internal/merge/      # CVE merge pipeline
 internal/metrics/    # Prometheus counters/histograms
 internal/notify/     # notification channels + delivery
 internal/report/     # report generation
 internal/retention/  # data retention policies
 internal/search/     # FTS + facets
+internal/secure/     # security event pipeline (async writer + rate limiting)
 internal/store/      # repository layer (sqlc + squirrel)
 internal/testutil/   # shared test helpers
 internal/tier/       # subscription tier logic
@@ -423,6 +431,9 @@ Use these proactively — don't wait to be asked.
 
 | Skill | When to use |
 |-------|-------------|
+| `bug-hunt-cycle` | Full bug hunt → cross-validate → fix plan. Use when finishing a phase or auditing code |
+| `coverage-cycle` | Full coverage review → cross-validate → fix plan. Use when finishing a phase or auditing tests |
+| `health-review-cycle` | Full health review cycle → cross-validate → fix plan. Use periodically or before milestones |
 | `schema-review` | Before writing any migration SQL — audit the design first |
 | `migration` | After schema-review passes — generates the actual SQL migration files |
 | `feed-adapter` | Before scaffolding a new feed adapter |
@@ -430,6 +441,7 @@ Use these proactively — don't wait to be asked.
 | `plan-check` | Before merging any feature — specify the PLAN.md section |
 | `security-review` | Before merging auth, webhook, tenant-isolation, or public API code |
 | `dependency-check` | Before adding any new dependency or specifying one in a plan |
+| `implementation-log` | When finishing a phase or feature block — appends a structured entry |
 | `project-health-review` | Periodic critical review — adversarial multi-agent quality assessment |
 
 **Subagents** (if your environment supports them):

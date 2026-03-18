@@ -531,13 +531,8 @@ func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupI
 	}
 
 	// Check not already enrolled.
-	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
-	if existErr != nil {
-		slog.ErrorContext(ctx, "totp-setup: check existing", "error", existErr)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if existing != nil {
-		return nil, huma.Error409Conflict("TOTP already enrolled")
+	if err := srv.checkNotAlreadyEnrolled(ctx, userID, "totp", "totp-setup"); err != nil {
+		return nil, err
 	}
 
 	// Look up user email for the TOTP account name.
@@ -664,13 +659,8 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	}
 
 	// Check not already enrolled (race condition guard).
-	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
-	if existErr != nil {
-		slog.ErrorContext(ctx, "totp-confirm: check existing", "error", existErr)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if existing != nil {
-		return nil, huma.Error409Conflict("TOTP already enrolled")
+	if err := srv.checkNotAlreadyEnrolled(ctx, userID, "totp", "totp-confirm"); err != nil {
+		return nil, err
 	}
 
 	// Re-encrypt secret for DB storage (enrollment cookie used same key, but
@@ -699,27 +689,8 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 
 	out := &mfaTOTPConfirmOutput{}
 
-	// Generate recovery codes on first enrollment.
-	credCount, countErr := srv.store.CountMFACredentialsByUser(ctx, userID)
-	if countErr != nil {
-		slog.ErrorContext(ctx, "totp-confirm: count credentials", "error", countErr)
-	} else if credCount == 1 {
-		codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
-		if err != nil {
-			slog.ErrorContext(ctx, "totp-confirm: generate recovery codes", "error", err)
-			// Non-fatal: credential is persisted, codes can be generated later.
-		} else {
-			out.Body.RecoveryCodes = codes
-			if srv.eventWriter != nil {
-				srv.eventWriter.Write(ctx, secure.Event{
-					Type:     secure.EventMFARecoveryCodesGenerated,
-					Severity: secure.SeverityInfo,
-					ActorIP:  clientIP(ctx),
-					UserID:   &userID,
-				})
-			}
-		}
-	}
+	// Generate recovery codes on first enrollment (non-fatal).
+	out.Body.RecoveryCodes = srv.generateFirstEnrollmentRecoveryCodes(ctx, userID, "totp-confirm")
 
 	// Clear enrollment cookie.
 	out.SetCookie = []string{clearEnrollmentCookie(srv.cfg.CookieSecure)}
@@ -753,13 +724,8 @@ func (srv *Server) mfaEmailOTPSetupHandler(ctx context.Context, input *mfaEmailO
 	}
 
 	// Check not already enrolled.
-	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
-	if existErr != nil {
-		slog.ErrorContext(ctx, "email-otp-setup: check existing", "error", existErr)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if existing != nil {
-		return nil, huma.Error409Conflict("email OTP already enrolled")
+	if err := srv.checkNotAlreadyEnrolled(ctx, userID, "email_otp", "email-otp-setup"); err != nil {
+		return nil, err
 	}
 
 	user, err := srv.store.GetUserByID(ctx, userID)
@@ -832,13 +798,8 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 	}
 
 	// Check not already enrolled.
-	existing, existErr := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "email_otp")
-	if existErr != nil {
-		slog.ErrorContext(ctx, "email-otp-confirm: check existing", "error", existErr)
-		return nil, huma.Error500InternalServerError("internal error")
-	}
-	if existing != nil {
-		return nil, huma.Error409Conflict("email OTP already enrolled")
+	if err := srv.checkNotAlreadyEnrolled(ctx, userID, "email_otp", "email-otp-confirm"); err != nil {
+		return nil, err
 	}
 
 	// Verify the code.
@@ -880,26 +841,8 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 
 	out := &mfaEmailOTPConfirmOutput{}
 
-	// Generate recovery codes on first enrollment.
-	credCount, countErr := srv.store.CountMFACredentialsByUser(ctx, userID)
-	if countErr != nil {
-		slog.ErrorContext(ctx, "email-otp-confirm: count credentials", "error", countErr)
-	} else if credCount == 1 {
-		codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
-		if err != nil {
-			slog.ErrorContext(ctx, "email-otp-confirm: generate recovery codes", "error", err)
-		} else {
-			out.Body.RecoveryCodes = codes
-			if srv.eventWriter != nil {
-				srv.eventWriter.Write(ctx, secure.Event{
-					Type:     secure.EventMFARecoveryCodesGenerated,
-					Severity: secure.SeverityInfo,
-					ActorIP:  clientIP(ctx),
-					UserID:   &userID,
-				})
-			}
-		}
-	}
+	// Generate recovery codes on first enrollment (non-fatal).
+	out.Body.RecoveryCodes = srv.generateFirstEnrollmentRecoveryCodes(ctx, userID, "email-otp-confirm")
 
 	// If this was a restricted enrollment session, clear mfa_enrollment_required.
 	if input.MFAPendingToken != "" {
@@ -1155,6 +1098,48 @@ func (srv *Server) reauthenticatePassword(ctx context.Context, userID uuid.UUID,
 		return nil, huma.Error401Unauthorized("current password incorrect")
 	}
 	return user, nil
+}
+
+// checkNotAlreadyEnrolled returns an error if the user already has a credential
+// for the given method. Returns nil if enrollment can proceed.
+func (srv *Server) checkNotAlreadyEnrolled(ctx context.Context, userID uuid.UUID, method, logPrefix string) error {
+	existing, err := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, method)
+	if err != nil {
+		slog.ErrorContext(ctx, logPrefix+": check existing", "error", err)
+		return huma.Error500InternalServerError("internal error")
+	}
+	if existing != nil {
+		return huma.Error409Conflict(method + " already enrolled")
+	}
+	return nil
+}
+
+// generateFirstEnrollmentRecoveryCodes generates recovery codes if this is the
+// user's first MFA enrollment (credential count == 1). Returns the codes, or
+// nil if this isn't the first enrollment or if generation fails (non-fatal).
+func (srv *Server) generateFirstEnrollmentRecoveryCodes(ctx context.Context, userID uuid.UUID, logPrefix string) []string {
+	credCount, countErr := srv.store.CountMFACredentialsByUser(ctx, userID)
+	if countErr != nil {
+		slog.ErrorContext(ctx, logPrefix+": count credentials", "error", countErr)
+		return nil
+	}
+	if credCount != 1 {
+		return nil
+	}
+	codes, err := srv.store.GenerateRecoveryCodes(ctx, userID)
+	if err != nil {
+		slog.ErrorContext(ctx, logPrefix+": generate recovery codes", "error", err)
+		return nil
+	}
+	if srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFARecoveryCodesGenerated,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+		})
+	}
+	return codes
 }
 
 // ── Enrollment/Management Helpers ────────────────────────────────────────────

@@ -29,7 +29,7 @@ func TestBuildFeedClient_BlocksPrivateIPs(t *testing.T) {
 
 	// safeurl must block requests to 127.0.0.1 (private IP).
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
-	_, sendErr := client.Do(req) //nolint:bodyclose // error expected before response
+	_, sendErr := client.Do(req) //nolint:bodyclose,gosec // G704: test framework URL, not user input; error expected before response
 	require.Error(t, sendErr, "safeurl client must block requests to private IPs")
 }
 
@@ -71,7 +71,7 @@ func TestMaxBodyTransport_LimitsResponseBody(t *testing.T) {
 	largeBody := strings.Repeat("x", 2048)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(largeBody)) //nolint:errcheck
+		w.Write([]byte(largeBody)) //nolint:errcheck,gosec // G104: test handler, discard errors irrelevant
 	}))
 	defer srv.Close()
 
@@ -85,7 +85,7 @@ func TestMaxBodyTransport_LimitsResponseBody(t *testing.T) {
 	}
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
-	resp, err := limited.Do(req)
+	resp, err := limited.Do(req) //nolint:gosec // G704: test framework URL, not user input
 	require.NoError(t, err)
 	defer resp.Body.Close() //nolint:errcheck
 

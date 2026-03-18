@@ -767,6 +767,57 @@ func TestAuditIntegration_Groups(t *testing.T) {
 	})
 }
 
+// ── Ingest ────────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_Ingest(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-ingest@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-ingest@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	body := `{"source_name":"my-audit-scanner","patches":[
+		{"cve_id":"CVE-2026-9001","description":"Audit test CVE 1"},
+		{"cve_id":"CVE-2026-9002","description":"Audit test CVE 2"}
+	]}`
+	resp := doIngest(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("ingest: got %d, want 202", resp.StatusCode)
+	}
+
+	aw.Flush()
+
+	entry := findAuditEntry(t, db, orgID, "ingest", "create")
+	if entry == nil {
+		t.Fatal("no audit entry for ingest create")
+	}
+	if !entry.Success {
+		t.Error("expected success=true")
+	}
+	if entry.NewState == nil {
+		t.Fatal("expected new_state to be populated")
+	}
+
+	var state map[string]any
+	if err := json.Unmarshal(entry.NewState, &state); err != nil {
+		t.Fatalf("unmarshal new_state: %v", err)
+	}
+	if state["source_name"] != "my-audit-scanner" {
+		t.Errorf("source_name: got %v, want my-audit-scanner", state["source_name"])
+	}
+	// patch_count should be 2.
+	if pc, ok := state["patch_count"].(float64); !ok || pc != 2 {
+		t.Errorf("patch_count: got %v, want 2", state["patch_count"])
+	}
+}
+
 // ── Nil-safe audit writer ────────────────────────────────────────────────────
 
 func TestAuditLog_NilWriter(t *testing.T) {

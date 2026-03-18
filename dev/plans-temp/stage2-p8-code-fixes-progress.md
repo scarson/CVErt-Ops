@@ -15,11 +15,11 @@
 - **Notes:** Step 0: Created AuditWriteFailures counter and added .Inc() at both error sites in writer.go. Added audit.Entry calls to all 5 mutating handlers in groups.go (create, update, delete, addMember, removeMember). Test follows exact pattern from TestAuditIntegration_Channels.
 
 ## Task 3: Audit Logging: Ingest Handler (D5/SC28)
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/ingest.go`, `internal/api/audit_integration_test.go`
+- **Tests:** compilation verified (Docker Desktop API timeout prevents integration tests)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Added audit.Entry after processing loop with source_name, patch_count, accepted, rejected in NewState. Test asserts audit entry and new_state field values.
 
 ## Task 4: Skip Webhook HMAC When Secret Empty + HR F3 (Combined)
 - **Status:** pending

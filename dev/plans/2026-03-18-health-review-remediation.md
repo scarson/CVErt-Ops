@@ -12,6 +12,27 @@
 
 ---
 
+## Cross-Plan Sequencing
+
+This plan is part of a coordinated three-plan remediation. See `dev/plans/2026-03-18-remediation-sequencing.md` for the master execution order.
+
+**This plan executes in two stages:**
+- **Stage 1:** Groups A, B, C, D (D1+D2), E (E2-E6), G (G2-G5), H — production code fixes
+- **Stage 4:** Groups D3, F (F1-F4), G6 — test and frontend tasks (interleaved with P8 coverage)
+
+**Tasks moved or merged with other plans:**
+- **E5 (feed body size limit)** → merged into P8 Task 6 (Stage 2). Both modify the feed client in main.go. Apply safeurl + body limit together.
+- **F3 (TestBuildSafeClient assertions)** → combined with P8 Task 4 (Stage 2). Both modify webhook_test.go.
+- **F5 (webhook safeurl integration test)** → **REMOVED**, subsumed by P8 Task 6 which wraps the feed client with safeurl and adds an SSRF test.
+- **D3 (pending token rejection test)** → combined with P8 Tasks 12+17 (Stage 4). All modify middleware_auth_test.go.
+
+**Dependencies this plan creates for other plans:**
+- HR C2 (security event writer changes) must complete before P11 Task 1 (event writer test infrastructure)
+- HR D2 (JWT refactor) must complete before P11 Task 2 (enrollment token tests)
+- HR G5 (testChannel 502) must complete before P8 Task 16 (cross-org channel tests)
+
+---
+
 ## Standing Rules
 
 BEFORE starting any task:

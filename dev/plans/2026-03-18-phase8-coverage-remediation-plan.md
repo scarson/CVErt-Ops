@@ -18,6 +18,27 @@
 
 ---
 
+## Cross-Plan Sequencing
+
+This plan is part of a coordinated three-plan remediation. See `dev/plans/2026-03-18-remediation-sequencing.md` for the master execution order.
+
+**This plan executes in two stages:**
+- **Stage 2:** Batch 1 (Tasks 1–8) — production code fixes. Runs after HR Stage 1 code fixes.
+- **Stage 4:** Batches 2–5 (Tasks 9–23+) — test coverage additions. Interleaved with HR test tasks.
+
+**Tasks merged with Health Review plan:**
+- **Task 4** (webhook HMAC fix): Also apply HR F3 (TestBuildSafeClient assertions) in the same pass. Both modify `webhook_test.go`.
+- **Task 6** (safeurl wrap): Also apply HR E5 (feed body size limit) in the same pass. Both modify the feed client in `main.go`. Compose transports: safeurl (inner) → body size limit (outer).
+
+**Tasks combined in Stage 4:**
+- **Tasks 12 + 17** (middleware_auth_test.go): Also apply HR D3 (pending token rejection test) in the same pass.
+
+**Dependencies from Health Review (must be complete before this plan starts):**
+- HR G5 (testChannelHandler returns 502) must be done before Task 16 (cross-org channel tests) — tests should assert against the corrected status code.
+- HR C1 + E4 (main.go changes) must be done before Task 6 modifies main.go.
+
+---
+
 ## Pre-Implementation Requirements (ALL agents)
 
 **BEFORE writing ANY code, you MUST complete ALL of these steps in order:**

@@ -14,6 +14,22 @@
 
 ---
 
+## Cross-Plan Sequencing
+
+This plan is part of a coordinated three-plan remediation. See `dev/plans/2026-03-18-remediation-sequencing.md` for the master execution order.
+
+**This plan executes as Stage 3** — after HR code fixes (Stage 1) and P8 code fixes (Stage 2).
+
+**Dependencies from Health Review (must be complete before this plan starts):**
+- **HR C2** changed `secure/writer.go` — added a semaphore (capacity 50) and per-write timeout (10s). The `Write()` method now drops events when at capacity instead of spawning unbounded goroutines. **Task 1 (event writer test infrastructure) must account for this:** the semaphore capacity is high enough that tests should never hit the limit, but if a test somehow floods >50 concurrent events, some will be dropped and `flushAndQueryEvents` will find fewer events than expected. Keep test event volumes low (<10 per test) and this is a non-issue.
+- **HR D2** refactored `ParseEnrollmentToken` (and all other Parse* functions) into a generic `parseTokenWithRotation` helper. The public API (`ParseEnrollmentToken(tokenStr, activeSecret, previousSecret)`) is unchanged. **Task 2 tests validate the refactored code** — if any test fails, it indicates a regression from the refactor.
+
+**File conflicts with Phase 8 plan:**
+- `admin_mfa_test.go`: This plan's Task 4 and P8 Task 16 both add tests. This plan runs first (Stage 3). P8 runs in Stage 4.
+- `auth_test.go`: P8 Tasks 13+14 and this plan's Task 6 both add tests. Sequential execution — this plan's Task 6 first, P8 follows.
+
+---
+
 ## Task 1: Event Writer Test Infrastructure (SC1 foundation)
 
 **Findings closed:** SC1 (partial — infrastructure only; individual event assertions are in Tasks 4-7)

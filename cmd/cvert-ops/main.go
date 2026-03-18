@@ -42,6 +42,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
 	"github.com/scarson/cvert-ops/internal/feed/generic"
 	"github.com/scarson/cvert-ops/internal/ingest"
@@ -174,7 +175,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
 	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
-	feedClient := &http.Client{Timeout: 5 * time.Minute}
+	feedClient, err := feed.BuildFeedClient(5*time.Minute, 0)
+	if err != nil {
+		slog.Error("build feed client", "error", err)
+		os.Exit(1)
+	}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
@@ -405,7 +410,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
 	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
-	feedClient := &http.Client{Timeout: 5 * time.Minute}
+	feedClient, err := feed.BuildFeedClient(5*time.Minute, 0)
+	if err != nil {
+		slog.Error("build feed client", "error", err)
+		os.Exit(1)
+	}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)

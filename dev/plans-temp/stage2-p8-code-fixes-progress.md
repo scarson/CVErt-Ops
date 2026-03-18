@@ -36,11 +36,11 @@
 - **Notes:** Created failingLockoutStore mock that returns errors from all methods. Test verifies Check() returns allowed=true on DB error (fail-open). Documents design decision per lockout.go:53-54.
 
 ## Task 6: Wrap Feed Client in SafeURL + HR E5 (Combined)
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/feed/client.go` (new), `internal/feed/client_test.go` (new), `cmd/cvert-ops/main.go`
+- **Tests:** pass (5 tests: SSRF blocking, timeout, default body limit, custom body limit, body truncation)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Created BuildFeedClient in internal/feed/client.go with transport composition: safeurl (inner) -> maxBodyTransport (outer, 512MB default). Both feedClient sites in main.go (serve and worker commands) now use BuildFeedClient. All 11 feed sub-package test suites pass.
 
 ## Task 7: Audit Logging: Reports Handler
 - **Status:** pending

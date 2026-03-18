@@ -25,13 +25,14 @@ Uses Go's built-in coverage tools for objective line-level data, then layers sem
 Run coverage across target packages. Always use `-coverpkg` to capture cross-package coverage (e.g., handler tests that exercise store code).
 
 ```bash
-# Full project
-go test -coverprofile=coverage.out -coverpkg=./internal/... -count=1 -timeout=300s ./internal/...
+# Full project — 600s minimum: each DB test spins its own testcontainer,
+# and concurrent agents competing for container resources make this worse.
+go test -coverprofile=coverage.out -coverpkg=./internal/... -count=1 -timeout=600s ./internal/...
 
 # Scoped to specific packages
 go test -coverprofile=coverage.out \
   -coverpkg=./internal/feed/...,./internal/merge/... \
-  -count=1 -timeout=300s \
+  -count=1 -timeout=600s \
   ./internal/feed/... ./internal/merge/...
 ```
 
@@ -279,7 +280,8 @@ Subagents MUST write their full analysis to a temp file and return only a compac
 Subagent instruction (append to prompt template):
 
 ## Output Location
-Write your FULL analysis to: dev/test-coverage-reports/subagent-{scope-name}-findings.md
+Write your FULL analysis to: dev/test-coverage-reports/YYYY-MM-DD-{scope-name}-findings.md
+(Replace YYYY-MM-DD with today's date. ALL reports MUST have a date prefix.)
 Return to the main agent ONLY:
 1. The file path you wrote to
 2. Counts: N security-critical, N correctness, N nice-to-have, N assertion quality
@@ -397,7 +399,8 @@ another test without dedicated assertion), conditional assertions (if status == 
 - Key observations: assertion quality issues, systematic gaps, TOCTOU windows
 
 ## Output Location
-Write your FULL analysis to: dev/test-coverage-reports/subagent-{scope-name}-findings.md
+Write your FULL analysis to: dev/test-coverage-reports/YYYY-MM-DD-{scope-name}-findings.md
+(Replace YYYY-MM-DD with today's date. ALL reports MUST have a date prefix.)
 Return to the main agent ONLY:
 1. The file path you wrote to
 2. Counts: N security-critical, N correctness, N nice-to-have, N assertion quality

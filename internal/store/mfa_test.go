@@ -1860,3 +1860,97 @@ func TestUpdateOrgMFASettings(t *testing.T) {
 		}
 	})
 }
+
+func TestStore_ResetUserMFA(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "reset-mfa@example.com", "Reset MFA", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Record initial token_version.
+	initialUser, err := s.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	initialVersion := initialUser.TokenVersion
+
+	// Enroll TOTP credential.
+	if _, err := s.CreateMFACredential(ctx, user.ID, "totp", []byte("encrypted-secret")); err != nil {
+		t.Fatalf("CreateMFACredential: %v", err)
+	}
+
+	// Generate recovery codes.
+	if _, err := s.GenerateRecoveryCodes(ctx, user.ID); err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+
+	// Create an email OTP challenge.
+	codeHash := sha256.Sum256([]byte("123456"))
+	if err := s.CreateEmailOTPChallenge(ctx, user.ID, hex.EncodeToString(codeHash[:]), time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	// Create a remember-device token.
+	tokenHash := sha256.Sum256([]byte("device-token"))
+	if err := s.CreateRememberDeviceToken(ctx, user.ID, hex.EncodeToString(tokenHash[:]), time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("CreateRememberDeviceToken: %v", err)
+	}
+
+	// Verify setup: user should have MFA state.
+	hasCreds, err := s.UserHasMFACredentials(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFACredentials: %v", err)
+	}
+	if !hasCreds {
+		t.Fatal("expected user to have MFA credentials before reset")
+	}
+	unusedCodes, err := s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes: %v", err)
+	}
+	if unusedCodes == 0 {
+		t.Fatal("expected user to have recovery codes before reset")
+	}
+
+	// Call ResetUserMFA.
+	newVersion, err := s.ResetUserMFA(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ResetUserMFA: %v", err)
+	}
+
+	// Assert: token_version incremented by 1.
+	if newVersion != initialVersion+1 {
+		t.Errorf("token_version = %d, want %d", newVersion, initialVersion+1)
+	}
+
+	// Assert: no credentials.
+	hasCreds, err = s.UserHasMFACredentials(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserHasMFACredentials after reset: %v", err)
+	}
+	if hasCreds {
+		t.Error("expected no MFA credentials after reset")
+	}
+
+	// Assert: no recovery codes.
+	unusedCodes, err = s.CountUnusedRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("CountUnusedRecoveryCodes after reset: %v", err)
+	}
+	if unusedCodes != 0 {
+		t.Errorf("expected 0 recovery codes after reset, got %d", unusedCodes)
+	}
+
+	// Assert: no challenges (email OTP + remember device both gone).
+	valid, err := s.ValidateRememberDeviceToken(ctx, user.ID, hex.EncodeToString(tokenHash[:]))
+	if err != nil {
+		t.Fatalf("ValidateRememberDeviceToken after reset: %v", err)
+	}
+	if valid {
+		t.Error("expected remember-device token to be deleted after reset")
+	}
+}

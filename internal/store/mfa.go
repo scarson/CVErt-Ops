@@ -300,6 +300,34 @@ func (s *Store) CountUnusedRecoveryCodes(ctx context.Context, userID uuid.UUID) 
 	return n, nil
 }
 
+// ResetUserMFA atomically removes all MFA state for a user and increments
+// token_version to invalidate all sessions. All operations run in a single
+// transaction to prevent inconsistent intermediate states.
+func (s *Store) ResetUserMFA(ctx context.Context, userID uuid.UUID) (int32, error) {
+	var newVersion int32
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if _, err := q.DeleteAllMFACredentials(ctx, userID); err != nil {
+			return err
+		}
+		if _, err := q.DeleteAllRecoveryCodes(ctx, userID); err != nil {
+			return err
+		}
+		if _, err := q.DeleteAllUserChallenges(ctx, userID); err != nil {
+			return err
+		}
+		var err error
+		newVersion, err = q.IncrementTokenVersion(ctx, userID)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("reset user mfa: %w", err)
+	}
+	return newVersion, nil
+}
+
 // --- MFA Challenge Operations (Email OTP + Remember Device) ---
 
 // CreateEmailOTPChallenge stores a new email OTP challenge for the user.

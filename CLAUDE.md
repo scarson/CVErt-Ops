@@ -231,6 +231,10 @@ go run ./cmd/cvert-ops serve         # run server (HTTP + worker)
 go run ./cmd/cvert-ops worker        # run standalone worker
 go run ./cmd/cvert-ops migrate       # run migrations programmatically
 go run ./cmd/cvert-ops import-bulk   # bulk-import CVE data from file
+go run ./cmd/cvert-ops doctor        # run system health checks
+go run ./cmd/cvert-ops quota         # manage AI quota
+go run ./cmd/cvert-ops validate      # validate feed configurations
+go run ./cmd/cvert-ops rotate        # rotate encryption key
 go test ./...                        # run all Go tests
 go test ./internal/store/... -count=1  # run store tests (needs test DB)
 go test -run TestFoo ./internal/...  # run a specific test
@@ -286,7 +290,7 @@ Mailpit UI: http://localhost:8025
 ## Architecture (Key Points)
 
 **Data model**
-- Single binary: HTTP server + worker pool via cobra subcommands (`serve`, `worker`, `migrate`, `import-bulk`); no external queue
+- Single binary: HTTP server + worker pool via cobra subcommands (`serve`, `worker`, `migrate`, `import-bulk`, `doctor`, `quota`, `validate`, `rotate`); no external queue
 - CVE corpus is global/shared; all tenant data is org-scoped — every org-scoped store method MUST take `orgID` as a parameter
 - `cve_search_index(cve_id, fts_document tsvector)` is a separate 1:1 table — never put FTS on `cves`; GIN rewrites on every timestamp/score update cause severe write amplification
 - `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: normalize CVSS vectors to canonical spec metric order; sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
@@ -391,14 +395,18 @@ internal/audit/      # audit logging
 internal/auth/       # JWT, OAuth, API keys, argon2id
 internal/config/     # caarlos0/env config structs
 internal/crypto/     # cryptographic helpers
+internal/dbutil/     # nullable type conversion helpers (database/sql)
+internal/doctor/     # system health check framework (CLI + API)
 internal/feed/       # feed adapters (nvd, mitre, kev, osv, ghsa, epss, vendor)
 internal/ingest/     # feed ingestion orchestrator
+internal/log/        # context-aware slog helpers (request correlation)
 internal/merge/      # CVE merge pipeline
 internal/metrics/    # Prometheus counters/histograms
 internal/notify/     # notification channels + delivery
 internal/report/     # report generation
 internal/retention/  # data retention policies
 internal/search/     # FTS + facets
+internal/secure/     # security event pipeline (async writer + rate limiting)
 internal/store/      # repository layer (sqlc + squirrel)
 internal/testutil/   # shared test helpers
 internal/tier/       # subscription tier logic

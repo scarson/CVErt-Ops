@@ -144,7 +144,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// SIGHUP handler for config hot-reload (Unix only).
 	// This is a SEPARATE signal handler — do NOT add SIGHUP to the NotifyContext above.
-	stopSIGHUP := config.StartSIGHUPHandler(configHolder, cfg.SecretsFile, nil)
+	stopSIGHUP := config.StartSIGHUPHandler(configHolder, cfg.SecretsFile, logLevelReloadCallback(configHolder))
 	defer stopSIGHUP()
 
 	st := store.New(db)
@@ -258,7 +258,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	apiSrv.AddHealthCheck(deliveryWorker.Healthy)
-	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	deliveryDone := make(chan struct{})
+	go func() {
+		deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+		close(deliveryDone)
+	}()
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
@@ -346,6 +350,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
+	// Wait for delivery worker to drain in-flight deliveries before DB close.
+	select {
+	case <-deliveryDone:
+		slog.Info("delivery worker stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("delivery worker did not stop within shutdown timeout")
+	}
+
 	slog.Info("server stopped")
 	return nil
 }
@@ -443,7 +456,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}, smtpCfg, cfg.ExternalURL)
 	alertEval.SetDispatcher(dispatcher)
 	deliveryWorker.SetDispatcher(dispatcher)
-	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	deliveryDone := make(chan struct{})
+	go func() {
+		deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+		close(deliveryDone)
+	}()
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
@@ -488,6 +505,15 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Wait for delivery worker to drain in-flight deliveries before DB close.
+	select {
+	case <-deliveryDone:
+		slog.Info("delivery worker stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("delivery worker did not stop within shutdown timeout")
+	}
+
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("metrics server shutdown error", "error", err)
 	}
@@ -792,22 +818,44 @@ func validateConfig(cfg *config.Config) error {
 const expectedSchemaVersion = 39
 
 // newLogger creates a slog.Logger based on the configured log level and format.
-func newLogger(cfg *config.Config) *slog.Logger {
-	level := slog.LevelInfo
-	switch cfg.LogLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	}
+// logLevel is the dynamic log level used by the global logger.
+// Updated at startup and on config reload via SIGHUP.
+var logLevel slog.LevelVar
 
-	opts := &slog.HandlerOptions{Level: level}
+func newLogger(cfg *config.Config) *slog.Logger {
+	logLevel.Set(parseLogLevel(cfg.LogLevel))
+
+	opts := &slog.HandlerOptions{Level: &logLevel}
 	if cfg.LogFormat == "text" || cfg.IsDevelopment() {
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+// parseLogLevel converts a string level name to an slog.Level.
+func parseLogLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// logLevelReloadCallback returns a function suitable for the rescan parameter
+// of StartSIGHUPHandler. It reads the log level from the config holder and
+// updates the global log level.
+func logLevelReloadCallback(holder *config.Holder) func() {
+	return func() {
+		if rc := holder.Load(); rc != nil && rc.LogLevel != "" {
+			logLevel.Set(parseLogLevel(rc.LogLevel))
+			slog.Info("log level updated", "level", rc.LogLevel)
+		}
+	}
 }
 
 // poolStatter adapts *pgxpool.Pool to the metrics.PoolStatter interface.

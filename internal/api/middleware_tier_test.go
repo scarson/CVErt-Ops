@@ -95,7 +95,7 @@ func TestTierMiddleware_ResolverHasCorrectTier(t *testing.T) {
 	// For now, verify the middleware doesn't break org-scoped requests.
 	if resp.StatusCode == http.StatusOK {
 		var body struct {
-			Tier   string `json:"tier"`
+			Tier   string                     `json:"tier"`
 			Limits map[string]json.RawMessage `json:"limits"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -153,7 +153,18 @@ func TestOrgRateLimitMiddleware_BurstCapped(t *testing.T) {
 	}
 
 	// 11th request should be rate-limited (burst exhausted at frozen time).
-	if code := makeReq(); code != http.StatusTooManyRequests {
-		t.Errorf("request 11: got %d, want 429 (burst should be 10, not 60)", code)
+	// Also verify the Retry-After header is present.
+	ctx := context.WithValue(context.Background(), ctxOrgID, orgID)
+	ctx = context.WithValue(ctx, ctxTierResolver, resolver)
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("request 11: got %d, want 429 (burst should be 10, not 60)", rec.Code)
+	}
+	if ra := rec.Header().Get("Retry-After"); ra == "" {
+		t.Error("rate-limited response missing Retry-After header")
+	} else if ra != "60" {
+		t.Errorf("Retry-After = %q, want %q", ra, "60")
 	}
 }

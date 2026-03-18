@@ -122,99 +122,98 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 // EvaluateBatch evaluates all active non-EPSS-only rules against CVEs modified since the
 // last batch cursor. Advances the cursor only after all rules have been attempted.
 func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
-	start := time.Now()
-	cursor, err := e.readCursor(ctx, batchFeedName)
-	if err != nil {
-		return fmt.Errorf("read batch cursor: %w", err)
-	}
-	batchTime := time.Now().UTC()
-
-	candidateIDs, err := e.getCVEsModifiedSince(ctx, cursor)
-	if err != nil {
-		return fmt.Errorf("get modified CVEs: %w", err)
-	}
-	if len(candidateIDs) == 0 {
-		return e.writeCursor(ctx, batchFeedName, batchTime)
-	}
-
-	rules, err := e.rules.ListActiveRulesForEvaluation(ctx)
-	if err != nil {
-		return fmt.Errorf("list rules for batch: %w", err)
-	}
-
-	var totalMatches int
-	for i := range rules {
-		rule := &rules[i]
-		compiled, compErr := e.loadAndCompileRule(rule)
-		if compErr != nil {
-			e.log.Error("compile rule for batch", "rule_id", rule.ID, "err", compErr)
-			continue
-		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
-		if evalErr != nil {
-			e.log.Error("evaluate rule batch", "rule_id", rule.ID, "err", evalErr)
-		}
-		totalMatches += matchCount
-		status, errMsg := runStatus(partial, evalErr)
-		if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, "batch"); runErr == nil {
-			_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
-		}
-	}
-
-	metrics.AlertRulesEvaluatedTotal.WithLabelValues("batch").Add(float64(len(rules)))
-	metrics.AlertMatchesTotal.WithLabelValues("batch").Add(float64(totalMatches))
-	metrics.AlertEvaluationDuration.WithLabelValues("batch").Observe(time.Since(start).Seconds())
-
-	return e.writeCursor(ctx, batchFeedName, batchTime)
+	return e.evaluateBatchPath(ctx, batchConfig{
+		feedName:      batchFeedName,
+		metricsLabel:  "batch",
+		getCandidates: e.getCVEsModifiedSince,
+		listRules:     e.rules.ListActiveRulesForEvaluation,
+	})
 }
 
 // EvaluateEPSS evaluates all active rules with EPSS conditions against CVEs whose EPSS
 // score has been updated since the last EPSS cursor.
 func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
+	return e.evaluateBatchPath(ctx, batchConfig{
+		feedName:      epssFeedName,
+		metricsLabel:  "epss",
+		getCandidates: e.getCVEsEPSSUpdatedSince,
+		listRules:     e.rules.ListActiveRulesForEPSS,
+	})
+}
+
+const candidatePageSize = 1000
+
+// batchConfig parameterizes the shared batch/EPSS evaluation loop.
+type batchConfig struct {
+	feedName      string
+	metricsLabel  string
+	getCandidates func(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error)
+	listRules     func(ctx context.Context) ([]store.AlertRuleRow, error)
+}
+
+// evaluateBatchPath implements the shared evaluation loop for both EvaluateBatch and
+// EvaluateEPSS. Reads cursor, fetches paginated candidates, runs all rules against
+// each page, records metrics, then advances the cursor only after all pages complete.
+func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) error {
 	start := time.Now()
-	cursor, err := e.readCursor(ctx, epssFeedName)
+	cursor, err := e.readCursor(ctx, cfg.feedName)
 	if err != nil {
-		return fmt.Errorf("read epss cursor: %w", err)
+		return fmt.Errorf("read %s cursor: %w", cfg.feedName, err)
 	}
 	batchTime := time.Now().UTC()
 
-	candidateIDs, err := e.getCVEsEPSSUpdatedSince(ctx, cursor)
+	rules, err := cfg.listRules(ctx)
 	if err != nil {
-		return fmt.Errorf("get EPSS-updated CVEs: %w", err)
-	}
-	if len(candidateIDs) == 0 {
-		return e.writeCursor(ctx, epssFeedName, batchTime)
-	}
-
-	rules, err := e.rules.ListActiveRulesForEPSS(ctx)
-	if err != nil {
-		return fmt.Errorf("list rules for EPSS: %w", err)
+		return fmt.Errorf("list rules for %s: %w", cfg.feedName, err)
 	}
 
 	var totalMatches int
-	for i := range rules {
-		rule := &rules[i]
-		compiled, compErr := e.loadAndCompileRule(rule)
-		if compErr != nil {
-			e.log.Error("compile rule for EPSS", "rule_id", rule.ID, "err", compErr)
-			continue
+	var totalRuleRuns int
+	var afterID string
+
+	for {
+		candidateIDs, pageErr := cfg.getCandidates(ctx, cursor, afterID, candidatePageSize)
+		if pageErr != nil {
+			return fmt.Errorf("get %s candidates: %w", cfg.feedName, pageErr)
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
-		if evalErr != nil {
-			e.log.Error("evaluate rule EPSS", "rule_id", rule.ID, "err", evalErr)
+		if len(candidateIDs) == 0 {
+			break
 		}
-		totalMatches += matchCount
-		status, errMsg := runStatus(partial, evalErr)
-		if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, "epss"); runErr == nil {
-			_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
+
+		for i := range rules {
+			rule := &rules[i]
+			compiled, compErr := e.loadAndCompileRule(rule)
+			if compErr != nil {
+				e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
+				continue
+			}
+			matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
+			if evalErr != nil {
+				e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
+			}
+			totalMatches += matchCount
+			totalRuleRuns++
+			status, errMsg := runStatus(partial, evalErr)
+			if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, cfg.metricsLabel); runErr == nil {
+				_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
+			}
+		}
+
+		// Advance keyset cursor to last ID in this page.
+		afterID = candidateIDs[len(candidateIDs)-1]
+
+		// If this page was smaller than the page size, we've reached the end.
+		if len(candidateIDs) < candidatePageSize {
+			break
 		}
 	}
 
-	metrics.AlertRulesEvaluatedTotal.WithLabelValues("epss").Add(float64(len(rules)))
-	metrics.AlertMatchesTotal.WithLabelValues("epss").Add(float64(totalMatches))
-	metrics.AlertEvaluationDuration.WithLabelValues("epss").Observe(time.Since(start).Seconds())
+	metrics.AlertRulesEvaluatedTotal.WithLabelValues(cfg.metricsLabel).Add(float64(totalRuleRuns))
+	metrics.AlertMatchesTotal.WithLabelValues(cfg.metricsLabel).Add(float64(totalMatches))
+	metrics.AlertEvaluationDuration.WithLabelValues(cfg.metricsLabel).Observe(time.Since(start).Seconds())
 
-	return e.writeCursor(ctx, epssFeedName, batchTime)
+	// Cursor is written only after ALL pages have been processed.
+	return e.writeCursor(ctx, cfg.feedName, batchTime)
 }
 
 // EvaluateActivation runs the activation scan for a newly created rule. Iterates the full
@@ -547,6 +546,12 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 		return fmt.Errorf("begin bypass tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+	}()
 	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
 		return fmt.Errorf("set bypass_rls: %w", err)
 	}
@@ -561,42 +566,77 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 	return tx.Commit()
 }
 
-// getCVEsModifiedSince returns all non-rejected CVE IDs modified after since.
-// When since is zero, returns all non-rejected CVEs (first-run baseline).
-func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time) ([]string, error) {
+// getCVEsModifiedSince returns a page of non-rejected CVE IDs modified after since,
+// ordered by cve_id ASC for keyset pagination. afterID is the last CVE ID from
+// the previous page (empty string for the first page).
+func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	var (
 		rows *sql.Rows
 		err  error
 	)
-	if since.IsZero() {
+	switch {
+	case since.IsZero() && afterID == "":
 		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves WHERE lower(status) NOT IN ('rejected', 'withdrawn')`)
-	} else {
+			`SELECT cve_id FROM cves
+			 WHERE lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $1`, limit)
+	case since.IsZero():
+		rows, err = e.db.QueryContext(ctx,
+			`SELECT cve_id FROM cves
+			 WHERE cve_id > $1
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
+	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_modified_canonical > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')`, since)
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
+	default:
+		rows, err = e.db.QueryContext(ctx,
+			`SELECT cve_id FROM cves
+			 WHERE date_modified_canonical > $1
+			   AND cve_id > $2
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
 }
 
-// getCVEsEPSSUpdatedSince returns all non-rejected CVE IDs whose EPSS score was updated
-// after since. When since is zero, returns all non-rejected CVEs with an EPSS score.
-func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time) ([]string, error) {
+// getCVEsEPSSUpdatedSince returns a page of non-rejected CVE IDs whose EPSS score was
+// updated after since, ordered by cve_id ASC for keyset pagination.
+func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	var (
 		rows *sql.Rows
 		err  error
 	)
-	if since.IsZero() {
+	switch {
+	case since.IsZero() && afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE epss_score IS NOT NULL
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')`)
-	} else {
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $1`, limit)
+	case since.IsZero():
+		rows, err = e.db.QueryContext(ctx,
+			`SELECT cve_id FROM cves
+			 WHERE cve_id > $1
+			   AND epss_score IS NOT NULL
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
+	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_epss_updated > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')`, since)
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
+	default:
+		rows, err = e.db.QueryContext(ctx,
+			`SELECT cve_id FROM cves
+			 WHERE date_epss_updated > $1
+			   AND cve_id > $2
+			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
 }

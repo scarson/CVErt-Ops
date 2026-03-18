@@ -22,6 +22,7 @@ type JobStore interface {
 	CompleteJob(ctx context.Context, id uuid.UUID) error
 	FailJob(ctx context.Context, id uuid.UUID, errMsg string) error
 	RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) (int, error)
+	CountPendingJobs(ctx context.Context) (int64, error)
 }
 
 const (
@@ -32,7 +33,8 @@ const (
 	staleCheckInterval = 1 * time.Minute
 
 	// staleThreshold is the age at which a 'running' job is considered stuck.
-	staleThreshold = 5 * time.Minute
+	// Must be >= maxJobDuration so a job isn't reclaimed before its allowed runtime expires.
+	staleThreshold = 10 * time.Minute
 
 	// maxJobDuration caps how long a single job can run. Prevents unbounded
 	// shutdown hangs when in-flight jobs use context.WithoutCancel.
@@ -165,10 +167,10 @@ func (p *Pool) runQueue(ctx context.Context, queue string) {
 				inflight.Go(func() {
 					defer func() { <-sem }()
 					// Detach from parent shutdown signal so in-flight DB writes
-				// complete, but cap each job to prevent unbounded shutdown hangs.
-				jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxJobDuration)
-				defer cancel()
-				p.processOne(jobCtx, queue)
+					// complete, but cap each job to prevent unbounded shutdown hangs.
+					jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxJobDuration)
+					defer cancel()
+					p.processOne(jobCtx, queue)
 				})
 			default:
 				// all concurrency slots occupied, skip this tick
@@ -290,6 +292,11 @@ func (p *Pool) runStaleRecovery(ctx context.Context) {
 			}
 			if n > 0 {
 				slog.Info("reclaimed stale jobs", "count", n)
+			}
+
+			// Report pending job count as a Prometheus gauge.
+			if count, countErr := p.store.CountPendingJobs(ctx); countErr == nil {
+				metrics.WorkerJobsPending.Set(float64(count))
 			}
 		}
 	}

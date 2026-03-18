@@ -31,7 +31,7 @@ type alertEventCursor struct {
 
 // listAlertEventsHandler handles GET /api/v1/orgs/{org_id}/alert-events.
 // Optional filters: ?rule_id=, ?cve_id=, ?last_match_state=, ?since=.
-// Cursor-based pagination on (first_fired_at DESC, id DESC) via ?after= cursor.
+// Cursor-based pagination on (first_fired_at DESC, id DESC) via ?cursor= parameter.
 func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {

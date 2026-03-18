@@ -25,6 +25,12 @@ var WorkerJobsCompletedTotal = promauto.NewCounterVec(
 	[]string{"job_type", "status"},
 )
 
+// WorkerJobsPending is the current number of pending jobs in the queue.
+var WorkerJobsPending = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "cvertops_worker_jobs_pending",
+	Help: "Number of pending jobs in the queue.",
+})
+
 // WorkerJobDuration observes job execution latency, labeled by job type.
 var WorkerJobDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{

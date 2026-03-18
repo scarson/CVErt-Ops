@@ -6,7 +6,9 @@ import (
 	"database/sql"
 )
 
-// NullString converts a string to sql.NullString; empty string maps to NULL.
+// NullString converts a Go string to sql.NullString. An empty string is treated
+// as NULL (Valid=false). Use NullStringPtr when empty strings should be preserved
+// as distinct from NULL.
 func NullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }

@@ -400,13 +400,23 @@ func TestRequireAuthenticated_ForcePasswordReset_BlocksNonAuthEndpoints(t *testi
 		t.Errorf("force_password_reset on non-auth endpoint: got %d, want 403", rec.Code)
 	}
 
-	// Verify the response body contains the expected error type.
-	var body map[string]string
+	// Verify RFC 9457 response format.
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	}
+	var body struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["type"] != "password_change_required" {
-		t.Errorf("error type = %q, want %q", body["type"], "password_change_required")
+	if body.Type != "password_change_required" {
+		t.Errorf("error type = %q, want %q", body.Type, "password_change_required")
+	}
+	if body.Status != http.StatusForbidden {
+		t.Errorf("error status = %d, want %d", body.Status, http.StatusForbidden)
 	}
 }
 

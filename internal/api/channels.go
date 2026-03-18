@@ -151,7 +151,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	writeLocation(w, r, row.ID.String())
 	if req.Type == "webhook" {
 		writeJSON(w, http.StatusCreated, channelCreateEntry{
-			channelEntry: entry,
+			channelEntry:  entry,
 			SigningSecret: secret,
 		})
 	} else {
@@ -515,10 +515,12 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := testChannelResponse{Success: testErr == nil}
+	status := http.StatusOK
 	if testErr != nil {
 		resp.Error = testErr.Error()
+		status = http.StatusBadGateway
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, status, resp)
 }
 
 func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) error {

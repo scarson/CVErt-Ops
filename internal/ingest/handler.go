@@ -5,12 +5,16 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sony/gobreaker/v2"
+
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/metrics"
@@ -74,10 +78,34 @@ func HandlerWithFactoryAndAlerts(st *store.Store, client *http.Client, mergeFn M
 // eval and hashReader are optional; when both are non-nil, realtime alert evaluation
 // fires after merges that change material_hash.
 func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator, hashReader CVEHashReader) worker.Handler {
+	// Per-feed circuit breakers, lazily created on first use.
+	var breakerMu sync.Mutex
+	breakers := make(map[string]*gobreaker.CircuitBreaker[struct{}])
+
+	getBreaker := func(feedName string) *gobreaker.CircuitBreaker[struct{}] {
+		breakerMu.Lock()
+		defer breakerMu.Unlock()
+		if cb, ok := breakers[feedName]; ok {
+			return cb
+		}
+		cb := feed.NewBreaker(feedName, feed.DefaultBreakerFailures, feed.DefaultBreakerTimeout)
+		breakers[feedName] = cb
+		return cb
+	}
+
 	return func(ctx context.Context, payload json.RawMessage) error {
 		var p Payload
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("unmarshal feed ingest payload: %w", err)
+		}
+
+		// Check circuit breaker — skip this feed if open.
+		cb := getBreaker(p.FeedName)
+		if _, cbErr := cb.Execute(func() (struct{}, error) { return struct{}{}, nil }); cbErr != nil {
+			if errors.Is(cbErr, gobreaker.ErrOpenState) || errors.Is(cbErr, gobreaker.ErrTooManyRequests) {
+				slog.Warn("feed circuit breaker open, skipping", "feed", p.FeedName)
+				return nil
+			}
 		}
 
 		start := time.Now()

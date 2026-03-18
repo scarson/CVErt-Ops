@@ -886,3 +886,107 @@ func TestParseEnrollmentToken_DualKey(t *testing.T) {
 		t.Errorf("UserID = %v, want %v", claims.UserID, userID)
 	}
 }
+
+// ── Enrollment token security tests ─────────────────────────────────────────
+
+func TestEnrollmentTokenRoundTrip(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secretEnc := []byte("encrypted-totp-secret-placeholder")
+
+	tokenStr, err := auth.IssueEnrollmentToken(secret, userID, secretEnc, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("IssueEnrollmentToken: %v", err)
+	}
+
+	claims, err := auth.ParseEnrollmentToken(tokenStr, secret, nil)
+	if err != nil {
+		t.Fatalf("ParseEnrollmentToken: %v", err)
+	}
+	if claims.UserID != userID {
+		t.Errorf("UserID = %v, want %v", claims.UserID, userID)
+	}
+	if string(claims.SecretEnc) != string(secretEnc) {
+		t.Errorf("SecretEnc = %q, want %q", claims.SecretEnc, secretEnc)
+	}
+}
+
+func TestEnrollmentTokenRejectsExpired(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secretEnc := []byte("encrypted-totp-secret-placeholder")
+
+	tokenStr, err := auth.IssueEnrollmentToken(secret, userID, secretEnc, -1*time.Second)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	_, err = auth.ParseEnrollmentToken(tokenStr, secret, nil)
+	if err == nil {
+		t.Error("expected error for expired enrollment token, got nil")
+	}
+}
+
+func TestEnrollmentTokenRejectsWrongSecret(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	wrongSecret := []byte("wrong-secret-32-bytes-minimum-bb")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secretEnc := []byte("encrypted-totp-secret-placeholder")
+
+	tokenStr, err := auth.IssueEnrollmentToken(secret, userID, secretEnc, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	_, err = auth.ParseEnrollmentToken(tokenStr, wrongSecret, nil)
+	if err == nil {
+		t.Error("expected error for wrong secret, got nil")
+	}
+}
+
+func TestEnrollmentTokenRejectsAlgNone(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secretEnc := []byte("encrypted-totp-secret-placeholder")
+
+	tokenStr, err := auth.IssueEnrollmentToken(secret, userID, secretEnc, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// Replace header with alg:none — a classic JWT bypass attack.
+	parts := strings.SplitN(tokenStr, ".", 3)
+	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	tampered := fakeHeader + "." + parts[1] + "."
+
+	_, err = auth.ParseEnrollmentToken(tampered, secret, nil)
+	if err == nil {
+		t.Error("expected error for alg:none enrollment token, got nil")
+	}
+}
+
+func TestEnrollmentTokenRejectsWrongAlgorithm(t *testing.T) {
+	t.Parallel()
+	secret := []byte("test-secret-32-bytes-minimum-aaaa")
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	secretEnc := []byte("encrypted-totp-secret-placeholder")
+
+	tokenStr, err := auth.IssueEnrollmentToken(secret, userID, secretEnc, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// Replace header to claim RS256 — WithValidMethods(["HS256"]) must reject this.
+	parts := strings.SplitN(tokenStr, ".", 3)
+	fakeHeader := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	tampered := fakeHeader + "." + parts[1] + "." + parts[2]
+
+	_, err = auth.ParseEnrollmentToken(tampered, secret, nil)
+	if err == nil {
+		t.Error("expected error for RS256 enrollment token, got nil")
+	}
+}

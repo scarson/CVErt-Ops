@@ -8,11 +8,11 @@
 - **Notes:** Added `newMFAServerWithEvents` helper, `flushAndQueryEvents` helper, and `TestEventWriterInfrastructure_SmokeTest`. EventWriter.Stop() uses sync.Once internally so double-call from t.Cleanup is safe. Added `secure` import.
 
 ## Task 2: JWT Enrollment Token Security Tests
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/auth/jwt_test.go`
+- **Tests:** pass (5/5 — round trip, expired, wrong secret, alg:none, RS256)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Pure unit tests, no Docker needed. Tests the public ParseEnrollmentToken API.
 
 ## Task 3: Store Direct MFA Tests
 - **Status:** pending

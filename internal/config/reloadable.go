@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -184,12 +185,21 @@ func LoadFromConfig(cfg *Config) *ReloadableConfig {
 		SIEMSyslogFormat:  cfg.SIEMSyslogFormat,
 	}
 
-	// Decode hex SSO keys from Config (best-effort; invalid keys stay zeroed).
-	if key, err := decodeHexKey(cfg.SSOEncryptionKey, "SSO_ENCRYPTION_KEY"); err == nil {
-		rc.SSOEncryptionKey = key
+	// Decode hex SSO keys from Config. Warn on invalid non-empty values so
+	// operators notice misconfiguration at startup.
+	if cfg.SSOEncryptionKey != "" {
+		if key, err := decodeHexKey(cfg.SSOEncryptionKey, "SSO_ENCRYPTION_KEY"); err == nil {
+			rc.SSOEncryptionKey = key
+		} else {
+			slog.Warn("invalid SSO_ENCRYPTION_KEY — SSO encryption will not work", "error", err)
+		}
 	}
-	if key, err := decodeHexKey(cfg.SSOEncryptionKeyPrevious, "SSO_ENCRYPTION_KEY_PREVIOUS"); err == nil {
-		rc.SSOEncryptionKeyPrev = key
+	if cfg.SSOEncryptionKeyPrevious != "" {
+		if key, err := decodeHexKey(cfg.SSOEncryptionKeyPrevious, "SSO_ENCRYPTION_KEY_PREVIOUS"); err == nil {
+			rc.SSOEncryptionKeyPrev = key
+		} else {
+			slog.Warn("invalid SSO_ENCRYPTION_KEY_PREVIOUS — dual-key rotation will not work", "error", err)
+		}
 	}
 
 	return rc

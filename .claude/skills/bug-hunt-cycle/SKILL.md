@@ -259,6 +259,8 @@ Present the findings to Sam. Structure the presentation as:
 
 After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed bugs + any out-of-scope bugs Sam chose to include.
 
+When `/writing-plans` presents execution options, **include a recommendation** for which approach would be most effective. The three options are: (1) subagent-driven in this session, (2) parallel session with `/executing-plans` in a worktree, or (3) Agent Teams for multi-agent parallel execution. Base the recommendation on: how much context this session has consumed, whether the plan is self-contained enough for a fresh session, how many tasks are parallelizable vs sequential, and whether any tasks are risky enough to warrant focused attention rather than parallel dispatch. Explain the reasoning concisely.
+
 ### Critical requirements for the plan
 
 The plan will be executed via `/subagent-driven-development` or `/executing-plans`. Subagents are powerful but fail in predictable ways. The plan MUST be written to prevent these failures:

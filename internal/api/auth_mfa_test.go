@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 
+	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/crypto"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -1467,5 +1468,84 @@ func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
 	}
 	if valid {
 		t.Error("device token should be invalidated after password change")
+	}
+}
+
+// ── Enrollment pending order enforcement ─────────────────────────────────────
+
+func TestEnrollment_RejectsOutOfOrderPending(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "order-reject@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token where password_reset comes BEFORE mfa_enrollment_required.
+	// The enrollment endpoint should reject this because mfa_enrollment_required is not Pending[0].
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		0,
+		[]string{"password_reset", "mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("out-of-order pending: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestEnrollment_AcceptsCorrectOrder(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "order-accept@example.com", "test-password-1234")
+	userID, err := uuid.Parse(reg.UserID)
+	if err != nil {
+		t.Fatalf("parse user ID: %v", err)
+	}
+
+	// Create a pending token where mfa_enrollment_required is the first (and only) step.
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(),
+		userID,
+		0,
+		[]string{"mfa_enrollment_required"},
+		nil,
+		5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("correct order pending: got %d, want 200", resp.StatusCode)
 	}
 }

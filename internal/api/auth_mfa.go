@@ -1161,12 +1161,8 @@ func (srv *Server) resolveEnrollmentUserID(accessToken, pendingToken string) (uu
 	// Fall back to pending enrollment token.
 	if pendingToken != "" {
 		claims, err := auth.ParsePendingToken(pendingToken, secret)
-		if err == nil {
-			for _, p := range claims.Pending {
-				if p == "mfa_enrollment_required" {
-					return claims.UserID, nil
-				}
-			}
+		if err == nil && len(claims.Pending) > 0 && claims.Pending[0] == "mfa_enrollment_required" {
+			return claims.UserID, nil
 		}
 	}
 

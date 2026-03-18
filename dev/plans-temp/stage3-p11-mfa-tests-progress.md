@@ -29,11 +29,11 @@
 - **Notes:** Site admin test adds SA as member-role to org then proves SA bypass in checkAdminMFAPermission. RequireOrgRole has no SA bypass.
 
 ## Task 5: MFA Verify/Challenge Tests
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/auth_mfa_test.go`
+- **Tests:** go vet passes; 10 tests added (SC4: 3 email OTP confirm errors, SC5: pending-as-access, SC12: cross-user enrollment, A4: wrong code no cookies, A5: wrong-key + expired pending, SC1: 2 verify events)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** Cross-user enrollment test verifies handler checks enrollClaims.UserID != callerID.
 
 ## Task 6: Auth Handler MFA Paths
 - **Status:** pending

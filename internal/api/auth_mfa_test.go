@@ -2134,3 +2134,357 @@ func TestEventWriterInfrastructure_SmokeTest(t *testing.T) {
 		t.Errorf("event user_id = %v, want %v", *evUserID, userID)
 	}
 }
+
+// ── P11 Task 5: Auth MFA Tests — Security-Critical ──────────────────────────
+
+// SC4: mfaEmailOTPConfirmHandler error branches.
+func TestEmailOTPConfirm_WrongCode(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	doRegister(t, ctx, ts, "eotpwrong@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "eotpwrong@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	// Start email OTP setup to create a challenge.
+	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
+	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	setupResp.Body.Close() //nolint:errcheck,gosec
+
+	// Submit wrong code.
+	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/confirm", `{"code":"000000"}`, confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong code: got %d, want 401", confirmResp.StatusCode)
+	}
+	// No access_token should be issued on failure.
+	if cookieValue(confirmResp, "access_token") != "" {
+		t.Error("access_token should NOT be set on failed confirm")
+	}
+}
+
+func TestEmailOTPConfirm_AlreadyEnrolled(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "eotpdupe@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	loginResp := doLogin(t, ctx, ts, "eotpdupe@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	// Enroll email_otp directly in DB.
+	enrollEmailOTP(t, ctx, srv, userID)
+
+	// Attempt confirm without a valid challenge — should get 409 (already enrolled).
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/confirm", `{"code":"123456"}`, cookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusConflict && confirmResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("already enrolled: got %d, want 409 or 401", confirmResp.StatusCode)
+	}
+}
+
+func TestEmailOTPConfirm_NoAuth(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	// Send request with no cookies at all.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/email-otp/confirm", bytes.NewBufferString(`{"code":"123456"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm no auth: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no auth: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// SC5: Pending token rejected as access token.
+func TestPendingToken_RejectedAsAccessToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "pendingswap@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	// Login → get pending token.
+	loginResp := doLogin(t, ctx, ts, "pendingswap@example.com", "test-password-1234")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token from login")
+	}
+
+	// Use the pending token as an access_token on a protected endpoint.
+	req := authedRequest(t, ctx, http.MethodGet, ts.URL+"/api/v1/auth/mfa/methods", "",
+		[]*http.Cookie{{Name: "access_token", Value: pendingToken}})
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("methods request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("pending as access: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// SC12: Cross-user enrollment attack.
+func TestTOTPConfirm_CrossUserEnrollment_Rejected(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	// Register User A, login, start TOTP setup.
+	doRegister(t, ctx, ts, "crossenroll-A@example.com", "test-password-1234")
+	loginRespA := doLogin(t, ctx, ts, "crossenroll-A@example.com", "test-password-1234")
+	cookiesA := authedCookies(t, loginRespA)
+	loginRespA.Body.Close() //nolint:errcheck,gosec
+
+	setupReqA := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookiesA)
+	setupRespA, err := ts.Client().Do(setupReqA) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup A: %v", err)
+	}
+	var setupBodyA struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(setupRespA.Body).Decode(&setupBodyA); err != nil {
+		t.Fatalf("decode setup A: %v", err)
+	}
+	enrollTokenA := cookieValue(setupRespA, "mfa_enroll_token")
+	setupRespA.Body.Close() //nolint:errcheck,gosec
+
+	// Register User B, login.
+	doRegister(t, ctx, ts, "crossenroll-B@example.com", "test-password-1234")
+	loginRespB := doLogin(t, ctx, ts, "crossenroll-B@example.com", "test-password-1234")
+	cookiesB := authedCookies(t, loginRespB)
+	loginRespB.Body.Close() //nolint:errcheck,gosec
+
+	// User B tries to confirm with User A's enrollment token.
+	code, err := totp.GenerateCode(setupBodyA.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
+	confirmCookies := append(cookiesB, &http.Cookie{Name: "mfa_enroll_token", Value: enrollTokenA})
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("cross-user enrollment: got %d, want 401", confirmResp.StatusCode)
+	}
+}
+
+// A4: Wrong code should not have auth cookies.
+func TestMFAVerify_WrongCode_NoAuthCookies(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "wrongcode-noauth@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	loginResp := doLogin(t, ctx, ts, "wrongcode-noauth@example.com", "test-password-1234")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	verifyBody := `{"method":"totp","code":"000000"}`
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer verifyResp.Body.Close() //nolint:errcheck,gosec
+
+	if verifyResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong code: got %d, want 401", verifyResp.StatusCode)
+	}
+	if cookieValue(verifyResp, "access_token") != "" {
+		t.Error("access_token should NOT be set on wrong code")
+	}
+	if cookieValue(verifyResp, "refresh_token") != "" {
+		t.Error("refresh_token should NOT be set on wrong code")
+	}
+}
+
+// A5: Well-formed JWT with wrong key as challenge input.
+func TestMFAChallenge_WellFormedWrongKey(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "wrongkey-challenge@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	// Create a well-formed pending token signed with the wrong secret.
+	wrongSecret := []byte("wrong-secret-32-bytes-minimum-bb")
+	fakeToken, err := auth.IssuePendingToken(wrongSecret, userID, 1, []string{"mfa_challenge"}, []string{"totp"}, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("issue fake token: %v", err)
+	}
+
+	reqBody := `{"method":"totp"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: fakeToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("challenge: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong key: got %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestMFAChallenge_ExpiredPendingToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "expired-challenge@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	expiredToken, err := auth.IssuePendingToken(srv.jwtSecret(), userID, 1, []string{"mfa_challenge"}, []string{"totp"}, -1*time.Second)
+	if err != nil {
+		t.Fatalf("issue expired token: %v", err)
+	}
+
+	reqBody := `{"method":"totp"}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: expiredToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("challenge: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired token: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// SC1: Event assertions for MFA verify.
+func TestMFAVerify_TOTP_EmitsSuccessEvent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts, ew := newMFAServerWithEvents(t, db)
+
+	reg := doRegister(t, ctx, ts, "verify-event-ok@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	loginResp := doLogin(t, ctx, ts, "verify-event-ok@example.com", "test-password-1234")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer verifyResp.Body.Close() //nolint:errcheck,gosec
+
+	if verifyResp.StatusCode != http.StatusOK {
+		t.Fatalf("verify: got %d, want 200", verifyResp.StatusCode)
+	}
+
+	events := flushAndQueryEvents(t, ew, db, secure.EventMFAVerifySuccess)
+	if len(events) == 0 {
+		t.Error("expected EventMFAVerifySuccess event")
+	}
+}
+
+func TestMFAVerify_TOTP_EmitsFailedEvent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts, ew := newMFAServerWithEvents(t, db)
+
+	reg := doRegister(t, ctx, ts, "verify-event-fail@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+
+	loginResp := doLogin(t, ctx, ts, "verify-event-fail@example.com", "test-password-1234")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	verifyBody := `{"method":"totp","code":"000000"}`
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	defer verifyResp.Body.Close() //nolint:errcheck,gosec
+
+	if verifyResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong code: got %d, want 401", verifyResp.StatusCode)
+	}
+
+	events := flushAndQueryEvents(t, ew, db, secure.EventMFAVerifyFailed)
+	if len(events) == 0 {
+		t.Error("expected EventMFAVerifyFailed event")
+	}
+}

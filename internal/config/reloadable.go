@@ -81,9 +81,12 @@ func LoadFromSecretsFile(path string, baseline *ReloadableConfig) (*ReloadableCo
 	}
 
 	// Start from a copy of the baseline so absent fields keep their current values.
+	// Deep-copy []byte slices so old and new configs don't share backing arrays.
 	var rc *ReloadableConfig
 	if baseline != nil {
 		base := *baseline
+		base.JWTSecret = append([]byte(nil), baseline.JWTSecret...)
+		base.JWTSecretPrevious = append([]byte(nil), baseline.JWTSecretPrevious...)
 		rc = &base
 	} else {
 		rc = &ReloadableConfig{}

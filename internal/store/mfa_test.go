@@ -2013,3 +2013,431 @@ func TestStore_ResetUserMFA(t *testing.T) {
 		t.Error("expected remember-device token to be deleted after reset")
 	}
 }
+
+// ── Direct store method tests (P11 Task 3) ──────────────────────────────────
+
+func TestStore_VerifyAndUpdateTOTPStep_Direct(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "totp-step-direct@example.com", "TOTP Step", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	_, err = tdb.CreateMFACredential(ctx, user.ID, "totp", []byte("encrypted-secret"))
+	if err != nil {
+		t.Fatalf("CreateMFACredential: %v", err)
+	}
+
+	// Fresh step — should succeed.
+	ok, err := tdb.VerifyAndUpdateTOTPStep(ctx, user.ID, 100)
+	if err != nil {
+		t.Fatalf("VerifyAndUpdateTOTPStep(100): %v", err)
+	}
+	if !ok {
+		t.Fatal("expected fresh step 100 to return true")
+	}
+
+	// Same step — replay, should fail.
+	ok, err = tdb.VerifyAndUpdateTOTPStep(ctx, user.ID, 100)
+	if err != nil {
+		t.Fatalf("VerifyAndUpdateTOTPStep(100 replay): %v", err)
+	}
+	if ok {
+		t.Fatal("expected replay step 100 to return false")
+	}
+
+	// Lower step — replay, should fail.
+	ok, err = tdb.VerifyAndUpdateTOTPStep(ctx, user.ID, 50)
+	if err != nil {
+		t.Fatalf("VerifyAndUpdateTOTPStep(50 lower): %v", err)
+	}
+	if ok {
+		t.Fatal("expected lower step 50 to return false")
+	}
+
+	// Higher step — should succeed.
+	ok, err = tdb.VerifyAndUpdateTOTPStep(ctx, user.ID, 101)
+	if err != nil {
+		t.Fatalf("VerifyAndUpdateTOTPStep(101): %v", err)
+	}
+	if !ok {
+		t.Fatal("expected higher step 101 to return true")
+	}
+}
+
+func TestStore_UserMFARequiredOrgNames_Direct(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "orgnames-direct@example.com", "OrgNames", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	org, err := tdb.CreateOrg(ctx, "TestOrg")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	// Set mfa_required_all=true via UpdateOrgMFASettings.
+	_, err = tdb.UpdateOrgMFASettings(ctx, org.ID, true, true, 30)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings: %v", err)
+	}
+
+	names, err := tdb.UserMFARequiredOrgNames(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserMFARequiredOrgNames: %v", err)
+	}
+	if len(names) != 1 || names[0] != "TestOrg" {
+		t.Errorf("UserMFARequiredOrgNames = %v, want [TestOrg]", names)
+	}
+
+	// Add second org without MFA requirement.
+	org2, err := tdb.CreateOrg(ctx, "OtherOrg")
+	if err != nil {
+		t.Fatalf("CreateOrg (2): %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org2.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember (2): %v", err)
+	}
+
+	names, err = tdb.UserMFARequiredOrgNames(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserMFARequiredOrgNames (2): %v", err)
+	}
+	if len(names) != 1 || names[0] != "TestOrg" {
+		t.Errorf("UserMFARequiredOrgNames = %v, want [TestOrg]", names)
+	}
+}
+
+func TestStore_UserMFARequirementOrgNames_Direct(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "reqnames-direct@example.com", "ReqNames", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	owner, err := tdb.CreateUser(ctx, "reqnames-owner@example.com", "ReqOwner", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser (owner): %v", err)
+	}
+	org, err := tdb.CreateOrg(ctx, "ReqOrg")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("CreateOrgMember (owner): %v", err)
+	}
+
+	// Create per-member requirement.
+	if err := tdb.CreateMFARequirement(ctx, org.ID, user.ID, owner.ID); err != nil {
+		t.Fatalf("CreateMFARequirement: %v", err)
+	}
+
+	names, err := tdb.UserMFARequirementOrgNames(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserMFARequirementOrgNames: %v", err)
+	}
+	if len(names) != 1 || names[0] != "ReqOrg" {
+		t.Errorf("UserMFARequirementOrgNames = %v, want [ReqOrg]", names)
+	}
+
+	// Add second org without per-member requirement — should still just have ReqOrg.
+	org2, err := tdb.CreateOrg(ctx, "NoReqOrg")
+	if err != nil {
+		t.Fatalf("CreateOrg (2): %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, org2.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember (2): %v", err)
+	}
+
+	names, err = tdb.UserMFARequirementOrgNames(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("UserMFARequirementOrgNames (2): %v", err)
+	}
+	if len(names) != 1 || names[0] != "ReqOrg" {
+		t.Errorf("UserMFARequirementOrgNames = %v, want [ReqOrg]", names)
+	}
+}
+
+func TestStore_AllUserOrgsAllowRememberDevice_Direct(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "remember-direct@example.com", "Remember", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	orgA, err := tdb.CreateOrg(ctx, "RememberOrgA")
+	if err != nil {
+		t.Fatalf("CreateOrg A: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgA.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember A: %v", err)
+	}
+
+	// Default org: remember_device_allowed defaults to true.
+	allowed, err := tdb.AllUserOrgsAllowRememberDevice(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("AllUserOrgsAllowRememberDevice: %v", err)
+	}
+	if !allowed {
+		t.Error("expected remember device to be allowed with default org settings")
+	}
+
+	// Add second org with remember_device_allowed=false.
+	orgB, err := tdb.CreateOrg(ctx, "RememberOrgB")
+	if err != nil {
+		t.Fatalf("CreateOrg B: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgB.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember B: %v", err)
+	}
+	_, err = tdb.UpdateOrgMFASettings(ctx, orgB.ID, false, false, 30)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings B: %v", err)
+	}
+
+	// Most-restrictive wins: one org says false → result is false.
+	allowed, err = tdb.AllUserOrgsAllowRememberDevice(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("AllUserOrgsAllowRememberDevice (2): %v", err)
+	}
+	if allowed {
+		t.Error("expected remember device disallowed when one org has it off")
+	}
+}
+
+func TestStore_MinRememberDeviceDays_Direct(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "mindays-direct@example.com", "MinDays", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	orgA, err := tdb.CreateOrg(ctx, "MinDaysOrgA")
+	if err != nil {
+		t.Fatalf("CreateOrg A: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgA.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember A: %v", err)
+	}
+	// Set orgA to 30 days.
+	_, err = tdb.UpdateOrgMFASettings(ctx, orgA.ID, false, true, 30)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings A: %v", err)
+	}
+
+	days, err := tdb.MinRememberDeviceDays(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("MinRememberDeviceDays: %v", err)
+	}
+	if days != 30 {
+		t.Errorf("MinRememberDeviceDays = %d, want 30", days)
+	}
+
+	// Add second org with 14 days — MIN should return 14.
+	orgB, err := tdb.CreateOrg(ctx, "MinDaysOrgB")
+	if err != nil {
+		t.Fatalf("CreateOrg B: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgB.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember B: %v", err)
+	}
+	_, err = tdb.UpdateOrgMFASettings(ctx, orgB.ID, false, true, 14)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings B: %v", err)
+	}
+
+	days, err = tdb.MinRememberDeviceDays(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("MinRememberDeviceDays (2): %v", err)
+	}
+	if days != 14 {
+		t.Errorf("MinRememberDeviceDays = %d, want 14", days)
+	}
+}
+
+func TestStore_RememberDevice_MultiOrg_MostRestrictive(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "multiorg-remember@example.com", "MultiRemember", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	orgA, err := tdb.CreateOrg(ctx, "MultiRemA")
+	if err != nil {
+		t.Fatalf("CreateOrg A: %v", err)
+	}
+	orgB, err := tdb.CreateOrg(ctx, "MultiRemB")
+	if err != nil {
+		t.Fatalf("CreateOrg B: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgA.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember A: %v", err)
+	}
+	if err := tdb.CreateOrgMember(ctx, orgB.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember B: %v", err)
+	}
+
+	// Org A: allowed=true, days=30. Org B: allowed=true, days=14.
+	_, err = tdb.UpdateOrgMFASettings(ctx, orgA.ID, false, true, 30)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings A: %v", err)
+	}
+	_, err = tdb.UpdateOrgMFASettings(ctx, orgB.ID, false, true, 14)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings B: %v", err)
+	}
+
+	allowed, err := tdb.AllUserOrgsAllowRememberDevice(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("AllUserOrgsAllowRememberDevice: %v", err)
+	}
+	if !allowed {
+		t.Error("expected remember device allowed when both orgs allow it")
+	}
+	days, err := tdb.MinRememberDeviceDays(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("MinRememberDeviceDays: %v", err)
+	}
+	if days != 14 {
+		t.Errorf("MinRememberDeviceDays = %d, want 14", days)
+	}
+
+	// Update Org B to disallow remember device.
+	_, err = tdb.UpdateOrgMFASettings(ctx, orgB.ID, false, false, 14)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings B (disable): %v", err)
+	}
+
+	allowed, err = tdb.AllUserOrgsAllowRememberDevice(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("AllUserOrgsAllowRememberDevice (2): %v", err)
+	}
+	if allowed {
+		t.Error("expected remember device disallowed when one org has it off")
+	}
+	days, err = tdb.MinRememberDeviceDays(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("MinRememberDeviceDays (2): %v", err)
+	}
+	if days != 14 {
+		t.Errorf("MinRememberDeviceDays = %d, want 14", days)
+	}
+}
+
+func TestStore_UserMFARequired_RequiredOrgOwners_NonOwner(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := tdb.CreateOrg(ctx, "NonOwnerOrg")
+	if err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	user, err := tdb.CreateUser(ctx, "nonowner-mfa@example.com", "NonOwner", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Add user as member, NOT owner.
+	if err := tdb.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("CreateOrgMember: %v", err)
+	}
+
+	// RequiredOrgOwners=true but user is not an owner — should return false.
+	cfg := store.MFAConfig{RequiredSiteAdmins: false, RequiredOrgOwners: true}
+	required, err := tdb.UserMFARequired(ctx, user.ID, false, cfg)
+	if err != nil {
+		t.Fatalf("UserMFARequired: %v", err)
+	}
+	if required {
+		t.Error("expected MFA NOT required for non-owner with RequiredOrgOwners=true")
+	}
+}
+
+func TestStore_RecoveryCode_GenerateAndVerify_RoundTrip(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := tdb.CreateUser(ctx, "rc-roundtrip@example.com", "RC Roundtrip", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	codes, err := tdb.GenerateRecoveryCodes(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GenerateRecoveryCodes: %v", err)
+	}
+	if len(codes) != 10 {
+		t.Fatalf("expected 10 codes, got %d", len(codes))
+	}
+
+	// Verify first code.
+	ok, remaining, err := tdb.VerifyRecoveryCode(ctx, user.ID, codes[0])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (first): %v", err)
+	}
+	if !ok {
+		t.Fatal("expected first code verification to succeed")
+	}
+	if remaining != 9 {
+		t.Errorf("remaining after first = %d, want 9", remaining)
+	}
+
+	// Verify second code.
+	ok, remaining, err = tdb.VerifyRecoveryCode(ctx, user.ID, codes[1])
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (second): %v", err)
+	}
+	if !ok {
+		t.Fatal("expected second code verification to succeed")
+	}
+	if remaining != 8 {
+		t.Errorf("remaining after second = %d, want 8", remaining)
+	}
+
+	// Verify invalid code.
+	ok, remaining, err = tdb.VerifyRecoveryCode(ctx, user.ID, "xxxxx-xxxxx")
+	if err != nil {
+		t.Fatalf("VerifyRecoveryCode (invalid): %v", err)
+	}
+	if ok {
+		t.Fatal("expected invalid code verification to fail")
+	}
+	if remaining != 8 {
+		t.Errorf("remaining after invalid = %d, want 8", remaining)
+	}
+}
+
+func TestStore_UpdateOrgMFASettings_OrgNotFound(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Non-existent org — should return (nil, nil).
+	result, err := tdb.UpdateOrgMFASettings(ctx, uuid.New(), true, true, 30)
+	if err != nil {
+		t.Fatalf("UpdateOrgMFASettings: unexpected error %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result for non-existent org, got %+v", result)
+	}
+}

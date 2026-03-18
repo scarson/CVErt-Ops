@@ -349,3 +349,43 @@ func TestRenderInvitation_BasicOutput(t *testing.T) {
 		t.Error("text body missing invite URL")
 	}
 }
+
+// ── MFA OTP Email Rendering (P11 Task 7 SC9) ───────────────────────────────
+
+func TestRenderMFAOTP_BasicOutput(t *testing.T) {
+	subject, html, text, err := RenderMFAOTP(MFAOTPData{Code: "123456", ExpiresIn: "10 minutes"})
+	if err != nil {
+		t.Fatalf("RenderMFAOTP: %v", err)
+	}
+	if subject == "" {
+		t.Error("subject is empty")
+	}
+	if html == "" {
+		t.Error("HTML body is empty")
+	}
+	if text == "" {
+		t.Error("text body is empty")
+	}
+	if !strings.Contains(html, "123456") {
+		t.Error("HTML body missing code")
+	}
+	if !strings.Contains(html, "10 minutes") {
+		t.Error("HTML body missing expiry")
+	}
+	if !strings.Contains(text, "123456") {
+		t.Error("text body missing code")
+	}
+	if !strings.Contains(text, "10 minutes") {
+		t.Error("text body missing expiry")
+	}
+}
+
+func TestRenderMFAOTP_SubjectSanitization(t *testing.T) {
+	subject, _, _, err := RenderMFAOTP(MFAOTPData{Code: "654321", ExpiresIn: "5 minutes"})
+	if err != nil {
+		t.Fatalf("RenderMFAOTP: %v", err)
+	}
+	if strings.Contains(subject, "\r") || strings.Contains(subject, "\n") {
+		t.Errorf("subject contains CRLF (header injection risk): %q", subject)
+	}
+}

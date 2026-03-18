@@ -767,6 +767,97 @@ func TestAuditIntegration_Groups(t *testing.T) {
 	})
 }
 
+// ── Reports ──────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_Reports(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-rpt@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-rpt@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	var reportID string
+
+	t.Run("Create", func(t *testing.T) {
+		body := `{"name":"Audit Report","scheduled_time":"09:00","timezone":"UTC"}`
+		resp := doCreateReport(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+		var rpt reportEntry
+		json.NewDecoder(resp.Body).Decode(&rpt) //nolint:errcheck,gosec // G104: test
+		reportID = rpt.ID
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "report", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for report create")
+		}
+		if entry.EntityID != reportID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, reportID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		if reportID == "" {
+			t.Skip("depends on Create")
+		}
+		body := `{"name":"Updated Report"}`
+		resp := doPatchReport(t, ctx, ts, token, reg.OrgID, reportID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("update: got %d, want 200", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "report", "update")
+		if entry == nil {
+			t.Fatal("no audit entry for report update")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		if reportID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doDeleteReport(t, ctx, ts, token, reg.OrgID, reportID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "report", "delete")
+		if entry == nil {
+			t.Fatal("no audit entry for report delete")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated for delete")
+		}
+	})
+}
+
 // ── Ingest ────────────────────────────────────────────────────────────────────
 
 func TestAuditIntegration_Ingest(t *testing.T) {

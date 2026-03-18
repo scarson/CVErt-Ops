@@ -180,6 +180,8 @@ func LoadFromConfig(cfg *Config) *ReloadableConfig {
 		SMTPUsername:      cfg.SMTPUsername,
 		SMTPPassword:      cfg.SMTPPassword,
 		SMTPTLS:           cfg.SMTPTLS,
+		SIEMSyslogAddr:    cfg.SIEMSyslogAddr,
+		SIEMSyslogFormat:  cfg.SIEMSyslogFormat,
 	}
 
 	// Decode hex SSO keys from Config (best-effort; invalid keys stay zeroed).

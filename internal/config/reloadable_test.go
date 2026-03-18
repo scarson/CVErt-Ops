@@ -202,6 +202,8 @@ func TestLoadFromConfig(t *testing.T) {
 		SMTPUsername:             "user",
 		SMTPPassword:             "pass",
 		SMTPTLS:                  true,
+		SIEMSyslogAddr:           "udp://splunk:514",
+		SIEMSyslogFormat:         "cef",
 	}
 
 	rc := LoadFromConfig(cfg)
@@ -225,6 +227,12 @@ func TestLoadFromConfig(t *testing.T) {
 	}
 	if !rc.SMTPTLS {
 		t.Error("SMTPTLS should be true")
+	}
+	if rc.SIEMSyslogAddr != "udp://splunk:514" {
+		t.Errorf("SIEMSyslogAddr = %q, want %q", rc.SIEMSyslogAddr, "udp://splunk:514")
+	}
+	if rc.SIEMSyslogFormat != "cef" {
+		t.Errorf("SIEMSyslogFormat = %q, want %q", rc.SIEMSyslogFormat, "cef")
 	}
 }
 

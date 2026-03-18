@@ -408,7 +408,19 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 func (srv *Server) verifyEmailOTP(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
 	codeHash := sha256Hex(code)
 	maxAttempts := int32(srv.cfg.MFAChallengeMaxAttempts) //nolint:gosec // G115: config value, bounded by env default (3)
-	return srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
+	matched, exhausted, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
+	if err != nil {
+		return false, err
+	}
+	if exhausted && srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAChallengeExhausted,
+			Severity: secure.SeverityWarning,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+		})
+	}
+	return matched, nil
 }
 
 // generateEmailOTPCode generates a cryptographically random 6-digit code.
@@ -809,10 +821,18 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 	// Verify the code.
 	codeHash := sha256Hex(input.Body.Code)
 	maxAttempts := int32(srv.cfg.MFAChallengeMaxAttempts) //nolint:gosec // G115: config value, bounded by env default (3)
-	matched, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
+	matched, exhausted, err := srv.store.VerifyEmailOTPChallenge(ctx, userID, codeHash, maxAttempts)
 	if err != nil {
 		slog.ErrorContext(ctx, "email-otp-confirm: verify", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
+	}
+	if exhausted && srv.eventWriter != nil {
+		srv.eventWriter.Write(ctx, secure.Event{
+			Type:     secure.EventMFAChallengeExhausted,
+			Severity: secure.SeverityWarning,
+			ActorIP:  clientIP(ctx),
+			UserID:   &userID,
+		})
 	}
 	if !matched {
 		if srv.eventWriter != nil {

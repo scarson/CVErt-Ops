@@ -382,13 +382,12 @@ func (s *Store) CreateEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 
 // VerifyEmailOTPChallenge atomically looks up the active email OTP challenge,
 // increments attempts, checks the hash, and deletes on success or exhaustion.
-// Returns true if the code matched and the challenge was valid.
-func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, maxAttempts int32) (bool, error) {
-	var matched bool
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+// Returns matched=true if the code was correct, exhausted=true if max attempts
+// were reached (challenge deleted).
+func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, maxAttempts int32) (matched bool, exhausted bool, err error) {
+	err = s.withBypassTx(ctx, func(q *generated.Queries) error {
 		challenge, err := q.GetActiveEmailOTPChallengeForUpdate(ctx, userID)
 		if errors.Is(err, sql.ErrNoRows) {
-			matched = false
 			return nil
 		}
 		if err != nil {
@@ -414,14 +413,14 @@ func (s *Store) VerifyEmailOTPChallenge(ctx context.Context, userID uuid.UUID, c
 			if err := q.DeleteChallenge(ctx, challenge.ID); err != nil {
 				return err
 			}
+			exhausted = true
 		}
-		matched = false
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("verify email otp challenge: %w", err)
+		return false, false, fmt.Errorf("verify email otp challenge: %w", err)
 	}
-	return matched, nil
+	return matched, exhausted, nil
 }
 
 // CreateRememberDeviceToken stores a remember-device token for the user.

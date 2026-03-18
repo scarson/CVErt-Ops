@@ -713,7 +713,7 @@ func TestMFAChallenge_CreateAndVerifyEmailOTP(t *testing.T) {
 		t.Fatalf("CreateEmailOTPChallenge: %v", err)
 	}
 
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestMFAChallenge_SingleActiveCode(t *testing.T) {
 	}
 
 	// Old code should fail.
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code1, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code1, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (old): %v", err)
 	}
@@ -757,7 +757,7 @@ func TestMFAChallenge_SingleActiveCode(t *testing.T) {
 	}
 
 	// New code should succeed.
-	ok, err = s.VerifyEmailOTPChallenge(ctx, user.ID, code2, 3)
+	ok, _, err = s.VerifyEmailOTPChallenge(ctx, user.ID, code2, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (new): %v", err)
 	}
@@ -785,7 +785,7 @@ func TestMFAChallenge_ExpiredCode(t *testing.T) {
 		t.Fatalf("CreateEmailOTPChallenge: %v", err)
 	}
 
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, code, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
 	}
@@ -815,7 +815,7 @@ func TestMFAChallenge_AttemptExhaustion(t *testing.T) {
 
 	// 3 wrong attempts (maxAttempts=3).
 	for i := 0; i < 3; i++ {
-		ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+		ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
 		if err != nil {
 			t.Fatalf("VerifyEmailOTPChallenge (wrong %d): %v", i+1, err)
 		}
@@ -825,12 +825,71 @@ func TestMFAChallenge_AttemptExhaustion(t *testing.T) {
 	}
 
 	// Now even the correct code should fail — challenge deleted after max attempts.
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (correct after exhaust): %v", err)
 	}
 	if ok {
 		t.Error("expected correct code to fail after attempt exhaustion")
+	}
+}
+
+func TestStore_VerifyEmailOTP_ExhaustedReturnsBool(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := s.CreateUser(ctx, "otp-exhaust-bool@example.com", "OTP Exhaust Bool", "$argon2id$stub", 2)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	correctHash := hashCode("123456")
+	wrongHash := hashCode("000000")
+	expiresAt := time.Now().Add(10 * time.Minute)
+
+	err = s.CreateEmailOTPChallenge(ctx, user.ID, correctHash, expiresAt)
+	if err != nil {
+		t.Fatalf("CreateEmailOTPChallenge: %v", err)
+	}
+
+	// First two wrong attempts (maxAttempts=3) — not yet exhausted.
+	for i := 0; i < 2; i++ {
+		matched, exhausted, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+		if err != nil {
+			t.Fatalf("VerifyEmailOTPChallenge (wrong %d): %v", i+1, err)
+		}
+		if matched {
+			t.Errorf("wrong attempt %d should not match", i+1)
+		}
+		if exhausted {
+			t.Errorf("wrong attempt %d should not be exhausted yet", i+1)
+		}
+	}
+
+	// Third wrong attempt — should be exhausted.
+	matched, exhausted, err := s.VerifyEmailOTPChallenge(ctx, user.ID, wrongHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (final wrong): %v", err)
+	}
+	if matched {
+		t.Error("final wrong attempt should not match")
+	}
+	if !exhausted {
+		t.Error("final wrong attempt should return exhausted=true")
+	}
+
+	// After exhaustion, correct code should fail (challenge deleted) and not be exhausted
+	// (no challenge to exhaust).
+	matched, exhausted, err = s.VerifyEmailOTPChallenge(ctx, user.ID, correctHash, 3)
+	if err != nil {
+		t.Fatalf("VerifyEmailOTPChallenge (correct after exhaust): %v", err)
+	}
+	if matched {
+		t.Error("expected correct code to fail after attempt exhaustion")
+	}
+	if exhausted {
+		t.Error("expected exhausted=false when no challenge exists")
 	}
 }
 
@@ -993,7 +1052,7 @@ func TestMFAChallenge_DeleteExpired(t *testing.T) {
 	}
 
 	// Valid challenge should still be verifiable.
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user2.ID, validHash, 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user2.ID, validHash, 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge (valid after cleanup): %v", err)
 	}
@@ -1029,7 +1088,7 @@ func TestMFAChallenge_ConcurrentVerification(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			<-barrier
-			ok, verifyErr := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
+			ok, _, verifyErr := s.VerifyEmailOTPChallenge(ctx, user.ID, codeHash, 3)
 			if verifyErr != nil {
 				t.Errorf("goroutine %d: VerifyEmailOTPChallenge: %v", idx, verifyErr)
 				return
@@ -1078,7 +1137,7 @@ func TestMFAChallenge_DeleteAllUserChallenges(t *testing.T) {
 	}
 
 	// Email OTP should fail (no challenge).
-	ok, err := s.VerifyEmailOTPChallenge(ctx, user.ID, hashCode("123456"), 3)
+	ok, _, err := s.VerifyEmailOTPChallenge(ctx, user.ID, hashCode("123456"), 3)
 	if err != nil {
 		t.Fatalf("VerifyEmailOTPChallenge: %v", err)
 	}

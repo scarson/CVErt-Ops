@@ -183,7 +183,60 @@ Write the consolidated report to `dev/bug-hunts/<date>-<slug>-consolidated.md` u
 
 ---
 
-## Phase 4: Present to User
+## Phase 4: Test Gap Analysis
+
+For each **confirmed bug**, reflect on why existing tests didn't catch it. This phase improves the project's testing safety net — not just the code.
+
+### 4a. Why didn't tests catch this?
+
+For each confirmed bug, answer:
+
+1. **Do tests exist** for the code path where the bug lives? If not, why not — was it an oversight, or was the code path considered untestable?
+2. **If tests exist**, why didn't they catch it? Common reasons:
+   - Tests only cover the happy path
+   - Tests mock the component where the bug actually lives
+   - Tests assert on the wrong thing (e.g., "no error returned" instead of "correct value produced")
+   - Test inputs don't exercise the edge case
+   - Integration between components isn't tested (unit tests pass individually but the composition is broken)
+3. **What test would have caught this?** Briefly describe the test — input, expected behavior, why it would fail against the buggy code. (This feeds into the fix plan in Phase 6.)
+
+### 4b. Review against `dev/testing-pitfalls.md`
+
+Read `dev/testing-pitfalls.md` and check each confirmed bug's test gap against the documented pitfalls:
+
+- **Pitfall already covers this scenario** — the test gap exists because the pitfall guidance wasn't followed. Note which pitfall applies. No doc update needed, but flag it in the fix plan so the subagent knows to follow that specific pitfall.
+- **Pitfall doesn't cover this scenario** — the bug reveals a testing blind spot not yet documented. Draft a candidate addition to `dev/testing-pitfalls.md`.
+
+### 4c. Update `dev/testing-pitfalls.md` if warranted
+
+For each candidate addition from 4b, assess whether it's **generalizable** — would this pitfall apply to future code in this project, or is it a one-off specific to this bug?
+
+- **Generalizable:** Write the addition to `dev/testing-pitfalls.md`. Follow the existing format and conventions in the file. Keep it concise — a pitfall entry should be actionable, not a narrative.
+- **One-off:** Don't update the file. Instead, include a specific testing note in the fix plan task for this bug.
+
+### 4d. Add test gap summary to consolidated report
+
+Append a section to `dev/bug-hunts/<date>-<slug>-consolidated.md`:
+
+```markdown
+---
+
+## Test Gap Analysis
+
+### B1. <Bug title>
+**Why missed:** <reason tests didn't catch it>
+**Pitfall coverage:** <"covered by pitfall X — not followed" or "new pitfall added" or "one-off — noted in fix plan">
+**Catch test:** <brief description of the test that would have caught it>
+
+(Repeat for each confirmed bug)
+
+### Testing Pitfalls Updates
+- <List any additions made to dev/testing-pitfalls.md, or "None">
+```
+
+---
+
+## Phase 5: Present to User
 
 Present the findings to Sam. Structure the presentation as:
 
@@ -192,11 +245,11 @@ Present the findings to Sam. Structure the presentation as:
 3. **Design decisions** — present each one with enough context for an informed decision. Think through each decision point in the context of the overall project architecture (PLAN.md, research.md). Make recommendations where you have a well-reasoned opinion, but be clear about what's a recommendation vs what's a clear correct answer.
 4. **Out-of-scope bugs with larger blast radius** — for each, ask: include in fix plan, or document for later?
 
-**Wait for Sam's input on all design decisions and scope questions before proceeding to Phase 5.**
+**Wait for Sam's input on all design decisions and scope questions before proceeding to Phase 6.**
 
 ---
 
-## Phase 5: Write Fix Plan
+## Phase 6: Write Fix Plan
 
 After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed bugs + any out-of-scope bugs Sam chose to include.
 
@@ -267,12 +320,13 @@ This appendix is the persistent record. It MUST be written to the plan file — 
 
 ---
 
-## Phase 6: Commit Reports
+## Phase 7: Commit Reports
 
 Stage and commit all bug hunt artifacts:
 
 ```bash
 git add dev/bug-hunts/<date>-<slug>-*.md
-git add dev/plans/<plan-file>  # if the plan was written
+git add dev/plans/<plan-file>            # if the plan was written
+git add dev/testing-pitfalls.md          # if updated in Phase 4
 git commit -m "docs(bug-hunt): <slug> — consolidated findings and fix plan"
 ```

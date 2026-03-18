@@ -162,7 +162,7 @@ Classify each finding as:
 For confirmed bugs (not just coverage gaps — actual code bugs found by semantic analysis):
 - What other code calls/uses the buggy code?
 - Would the fix require changes outside the scoped packages?
-- Flag larger-scope fixes explicitly for user decision in Phase 5.
+- Flag larger-scope fixes explicitly for user decision in Phase 6.
 
 ### 4c. Write consolidated report
 
@@ -230,7 +230,60 @@ Write to `dev/test-coverage-reports/<date>-<slug>-consolidated.md`:
 
 ---
 
-## Phase 5: Present to User
+## Phase 5: Test Gap Analysis
+
+For each **confirmed production bug** and each **confirmed security-critical gap**, reflect on why existing tests didn't catch it. Coverage gaps with 0% coverage are self-explanatory (no tests exist) — focus this analysis on the more interesting cases: bugs in covered code, security gaps where tests exist but verify the wrong property, and partial coverage where the uncovered branch is the dangerous one.
+
+### 5a. Why didn't tests catch this?
+
+For each confirmed production bug and security-critical gap, answer:
+
+1. **Do tests exist** for this code path? If coverage is >0%, tests exist — so why didn't they catch the problem?
+2. **If tests exist**, what went wrong? Common reasons:
+   - Tests assert on the wrong property (e.g., "no error" instead of "correct tenant isolation")
+   - Tests use mocked dependencies that hide the real behavior
+   - Tests only exercise the positive case — the negative security case is untested
+   - Assertion quality is weak (execution-only tests that don't verify outcomes)
+   - Tests cover the function but not the specific branch where the bug lives
+3. **What test would have caught this?** Briefly describe — this feeds directly into the fix plan in Phase 7.
+
+### 5b. Review against `dev/testing-pitfalls.md`
+
+Read `dev/testing-pitfalls.md` and check each gap against the documented pitfalls:
+
+- **Pitfall already covers this scenario** — the gap exists because the pitfall guidance wasn't followed. Note which pitfall applies. No doc update needed, but flag it in the fix plan so the subagent knows to follow that specific pitfall.
+- **Pitfall doesn't cover this scenario** — the gap reveals a testing blind spot not yet documented. Draft a candidate addition to `dev/testing-pitfalls.md`.
+
+### 5c. Update `dev/testing-pitfalls.md` if warranted
+
+For each candidate addition from 5b, assess whether it's **generalizable** — would this pitfall apply to future code in this project, or is it a one-off specific to this finding?
+
+- **Generalizable:** Write the addition to `dev/testing-pitfalls.md`. Follow the existing format and conventions in the file. Keep it concise — a pitfall entry should be actionable, not a narrative.
+- **One-off:** Don't update the file. Instead, include a specific testing note in the fix plan task for this finding.
+
+### 5d. Add test gap summary to consolidated report
+
+Append a section to `dev/test-coverage-reports/<date>-<slug>-consolidated.md`:
+
+```markdown
+---
+
+## Test Gap Analysis
+
+### <Finding ID>. <Title>
+**Why missed:** <reason tests didn't catch it>
+**Pitfall coverage:** <"covered by pitfall X — not followed" or "new pitfall added" or "one-off — noted in fix plan">
+**Catch test:** <brief description of the test that would have caught it>
+
+(Repeat for each analyzed finding — skip 0%-coverage gaps where the answer is simply "no tests")
+
+### Testing Pitfalls Updates
+- <List any additions made to dev/testing-pitfalls.md, or "None">
+```
+
+---
+
+## Phase 6: Present to User
 
 Present the findings to Sam. Structure the presentation as:
 
@@ -240,11 +293,11 @@ Present the findings to Sam. Structure the presentation as:
 4. **Design decisions** — present each with enough context for an informed decision. Think through each in the context of PLAN.md and project architecture. Make recommendations where you have a well-reasoned opinion.
 5. **Out-of-scope / larger-blast-radius items** — for each, ask: include in fix plan, or document for later?
 
-**Wait for Sam's input on all design decisions and scope questions before proceeding to Phase 6.**
+**Wait for Sam's input on all design decisions and scope questions before proceeding to Phase 7.**
 
 ---
 
-## Phase 6: Write Fix Plan
+## Phase 7: Write Fix Plan
 
 After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed gaps + production bugs + any out-of-scope items Sam chose to include.
 
@@ -327,12 +380,13 @@ This appendix is the persistent record. It MUST be written to the plan file — 
 
 ---
 
-## Phase 7: Commit Reports
+## Phase 8: Commit Reports
 
 Stage and commit all coverage cycle artifacts:
 
 ```bash
 git add dev/test-coverage-reports/<date>-<slug>-*.md
-git add dev/plans/<plan-file>  # if the plan was written
+git add dev/plans/<plan-file>            # if the plan was written
+git add dev/testing-pitfalls.md          # if updated in Phase 5
 git commit -m "docs(coverage): <slug> — consolidated findings and fix plan"
 ```

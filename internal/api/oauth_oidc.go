@@ -254,7 +254,7 @@ func (srv *Server) oidcCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue JWT access + refresh tokens.
-	jwtSecret := []byte(srv.cfg.JWTSecret)
+	jwtSecret := srv.jwtSecret()
 	jti := uuid.New()
 	accessToken, err := auth.IssueAccessToken(jwtSecret, user.ID, int(user.TokenVersion), accessTokenTTL)
 	if err != nil {
@@ -327,7 +327,7 @@ func (srv *Server) oidcLinkCallbackHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "unauthorized — must be logged in to link identity", http.StatusUnauthorized)
 		return
 	}
-	jwtClaims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+	jwtClaims, err := auth.ParseAccessToken(cookie.Value, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

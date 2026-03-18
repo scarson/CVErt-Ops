@@ -266,7 +266,7 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	if err := srv.checkAuthRateLimit(ctx); err != nil {
 		return nil, err
 	}
-	secret := []byte(srv.cfg.JWTSecret)
+	secret := srv.jwtSecret()
 
 	user, err := srv.store.GetUserByEmail(ctx, input.Body.Email)
 	if err != nil {
@@ -552,8 +552,8 @@ func (srv *Server) refreshHandler(ctx context.Context, input *refreshInput) (*re
 		return nil, huma.Error401Unauthorized("refresh token required")
 	}
 
-	secret := []byte(srv.cfg.JWTSecret)
-	claims, err := auth.ParseRefreshToken(input.RefreshToken, secret, jwtPreviousSecret(srv.cfg))
+	secret := srv.jwtSecret()
+	claims, err := auth.ParseRefreshToken(input.RefreshToken, secret, srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired refresh token")
 	}
@@ -667,7 +667,7 @@ type logoutOutput struct {
 // Marks the refresh token as used (no replacement) and clears auth cookies.
 func (srv *Server) logoutHandler(ctx context.Context, input *logoutInput) (*logoutOutput, error) {
 	if input.RefreshToken != "" {
-		claims, err := auth.ParseRefreshToken(input.RefreshToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+		claims, err := auth.ParseRefreshToken(input.RefreshToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 		if err == nil {
 			// Mark the token used with itself as the "replacement" to close the chain.
 			if err := srv.store.MarkRefreshTokenUsed(ctx, claims.JTI, claims.JTI); err != nil {
@@ -710,7 +710,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+	claims, err := auth.ParseAccessToken(input.AccessToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}
@@ -786,13 +786,13 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 
 	// Resolve auth context: access token or pending token with "password_reset".
 	if input.AccessToken != "" {
-		claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+		claims, err := auth.ParseAccessToken(input.AccessToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 		if err == nil {
 			userID = claims.UserID
 		}
 	}
 	if userID == uuid.Nil && input.MFAPendingToken != "" {
-		claims, err := auth.ParsePendingToken(input.MFAPendingToken, []byte(srv.cfg.JWTSecret))
+		claims, err := auth.ParsePendingToken(input.MFAPendingToken, srv.jwtSecret())
 		if err == nil {
 			for _, p := range claims.Pending {
 				if p == "password_reset" {
@@ -901,7 +901,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		remaining := removePendingItem(pendingClaims.Pending, "password_reset")
 		if len(remaining) > 0 {
 			token, ptErr := auth.IssuePendingToken(
-				[]byte(srv.cfg.JWTSecret), userID, pendingClaims.TokenVersion,
+				srv.jwtSecret(), userID, pendingClaims.TokenVersion,
 				remaining, nil, srv.cfg.MFAPendingTokenTTL,
 			)
 			if ptErr != nil {
@@ -990,7 +990,7 @@ func (srv *Server) acceptInvitationHandler(ctx context.Context, input *acceptInv
 	if input.AccessToken == "" {
 		return nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(input.AccessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+	claims, err := auth.ParseAccessToken(input.AccessToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired access token")
 	}

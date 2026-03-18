@@ -159,7 +159,7 @@ func (srv *Server) googleCallbackHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	// 8. Issue JWT access + refresh tokens.
-	secret := []byte(srv.cfg.JWTSecret)
+	secret := srv.jwtSecret()
 	jti := uuid.New()
 	accessToken, err := auth.IssueAccessToken(secret, user.ID, int(user.TokenVersion), accessTokenTTL)
 	if err != nil {

@@ -26,13 +26,13 @@ type WebhookConfig struct {
 
 // deniedHeaders are custom header keys that callers must not override.
 var deniedHeaders = map[string]bool{
-	"host":                          true,
-	"content-type":                  true,
-	"content-length":                true,
-	"transfer-encoding":             true,
-	"connection":                    true,
-	"x-cvert-timestamp":             true,
-	"x-cvertops-signature":          true,
+	"host":                           true,
+	"content-type":                   true,
+	"content-length":                 true,
+	"transfer-encoding":              true,
+	"connection":                     true,
+	"x-cvert-timestamp":              true,
+	"x-cvertops-signature":           true,
 	"x-cvertops-signature-secondary": true,
 }
 
@@ -53,17 +53,20 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	}
 
 	// HMAC-SHA256 over "timestamp.body" with primary signing secret.
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	mac := hmac.New(sha256.New, []byte(cfg.SigningSecret))
-	mac.Write([]byte(ts + "." + string(payload)))
-	req.Header.Set("X-CVErt-Timestamp", ts)
-	req.Header.Set("X-CVErtOps-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
-	// If a secondary secret is set (rotation grace period), emit an additional signature.
-	// Recipients can verify against either secret during the transition window.
-	if cfg.SigningSecretSecondary != "" {
-		mac2 := hmac.New(sha256.New, []byte(cfg.SigningSecretSecondary))
-		mac2.Write([]byte(ts + "." + string(payload)))
-		req.Header.Set("X-CVErtOps-Signature-Secondary", "sha256="+hex.EncodeToString(mac2.Sum(nil)))
+	// When no secret is configured, omit signature headers entirely.
+	if cfg.SigningSecret != "" {
+		ts := strconv.FormatInt(time.Now().Unix(), 10)
+		mac := hmac.New(sha256.New, []byte(cfg.SigningSecret))
+		mac.Write([]byte(ts + "." + string(payload)))
+		req.Header.Set("X-CVErt-Timestamp", ts)
+		req.Header.Set("X-CVErtOps-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		// If a secondary secret is set (rotation grace period), emit an additional signature.
+		// Recipients can verify against either secret during the transition window.
+		if cfg.SigningSecretSecondary != "" {
+			mac2 := hmac.New(sha256.New, []byte(cfg.SigningSecretSecondary))
+			mac2.Write([]byte(ts + "." + string(payload)))
+			req.Header.Set("X-CVErtOps-Signature-Secondary", "sha256="+hex.EncodeToString(mac2.Sum(nil)))
+		}
 	}
 
 	resp, err := client.Do(req) //nolint:gosec // G107: SSRF is enforced architecturally by the safeurl-wrapped client injected at startup

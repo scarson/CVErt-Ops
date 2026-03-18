@@ -11,6 +11,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/audit"
 )
 
 // groupEntry is the JSON representation of a group in responses.
@@ -80,6 +81,15 @@ func (srv *Server) createGroupHandler(w http.ResponseWriter, r *http.Request) {
 		Name:        group.Name,
 		Description: group.Description,
 		CreatedAt:   group.CreatedAt.Format(time.RFC3339),
+	})
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "group",
+		EntityID:   group.ID.String(),
+		EntityName: group.Name,
+		Success:    true,
+		NewState:   map[string]any{"name": group.Name, "description": group.Description},
 	})
 }
 
@@ -218,6 +228,16 @@ func (srv *Server) updateGroupHandler(w http.ResponseWriter, r *http.Request) {
 		Description: group.Description,
 		CreatedAt:   group.CreatedAt.Format(time.RFC3339),
 	})
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "group",
+		EntityID:   groupID.String(),
+		EntityName: group.Name,
+		Success:    true,
+		OldState:   map[string]any{"name": existing.Name, "description": existing.Description},
+		NewState:   map[string]any{"name": group.Name, "description": group.Description},
+	})
 }
 
 // deleteGroupHandler handles DELETE /api/v1/orgs/{org_id}/groups/{group_id}.
@@ -252,6 +272,15 @@ func (srv *Server) deleteGroupHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "group",
+		EntityID:   groupID.String(),
+		EntityName: current.Name,
+		Success:    true,
+		OldState:   map[string]any{"name": current.Name, "description": current.Description},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -333,6 +362,15 @@ func (srv *Server) addGroupMemberHandler(w http.ResponseWriter, r *http.Request)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "add",
+		EntityType: "group_member",
+		EntityID:   groupID.String(),
+		EntityName: group.Name,
+		Success:    true,
+		NewState:   map[string]any{"user_id": userID.String(), "group_id": groupID.String()},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -374,5 +412,14 @@ func (srv *Server) removeGroupMemberHandler(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "remove",
+		EntityType: "group_member",
+		EntityID:   groupID.String(),
+		EntityName: group.Name,
+		Success:    true,
+		OldState:   map[string]any{"user_id": userID.String(), "group_id": groupID.String()},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }

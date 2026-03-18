@@ -628,6 +628,370 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 	})
 }
 
+// ── Groups ────────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_Groups(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-gr@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "audit-gr-bob@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-gr@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+
+	// Add bob to org so we can add him to the group.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "member"); err != nil {
+		t.Fatalf("create org member: %v", err)
+	}
+
+	var groupID string
+
+	t.Run("Create", func(t *testing.T) {
+		resp := doCreateGroup(t, ctx, ts, token, reg.OrgID, "Audit Group", "test group")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+		var g groupEntry
+		json.NewDecoder(resp.Body).Decode(&g) //nolint:errcheck,gosec // G104: test
+		groupID = g.ID
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for group create")
+		}
+		if entry.EntityID != groupID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, groupID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doUpdateGroup(t, ctx, ts, token, reg.OrgID, groupID, "Updated Group", "updated desc")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("update: got %d, want 200", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group", "update")
+		if entry == nil {
+			t.Fatal("no audit entry for group update")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("AddMember", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doAddGroupMember(t, ctx, ts, token, reg.OrgID, groupID, bobReg.UserID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("add member: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group_member", "add")
+		if entry == nil {
+			t.Fatal("no audit entry for group_member add")
+		}
+		if entry.EntityID != groupID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, groupID)
+		}
+	})
+
+	t.Run("RemoveMember", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doRemoveGroupMember(t, ctx, ts, token, reg.OrgID, groupID, bobReg.UserID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("remove member: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group_member", "remove")
+		if entry == nil {
+			t.Fatal("no audit entry for group_member remove")
+		}
+		if entry.EntityID != groupID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, groupID)
+		}
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doDeleteGroup(t, ctx, ts, token, reg.OrgID, groupID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group", "delete")
+		if entry == nil {
+			t.Fatal("no audit entry for group delete")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated for delete")
+		}
+	})
+}
+
+// ── Reports ──────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_Reports(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-rpt@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-rpt@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	var reportID string
+
+	t.Run("Create", func(t *testing.T) {
+		body := `{"name":"Audit Report","scheduled_time":"09:00","timezone":"UTC"}`
+		resp := doCreateReport(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+		var rpt reportEntry
+		json.NewDecoder(resp.Body).Decode(&rpt) //nolint:errcheck,gosec // G104: test
+		reportID = rpt.ID
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "report", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for report create")
+		}
+		if entry.EntityID != reportID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, reportID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		if reportID == "" {
+			t.Skip("depends on Create")
+		}
+		body := `{"name":"Updated Report"}`
+		resp := doPatchReport(t, ctx, ts, token, reg.OrgID, reportID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("update: got %d, want 200", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "report", "update")
+		if entry == nil {
+			t.Fatal("no audit entry for report update")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		if reportID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doDeleteReport(t, ctx, ts, token, reg.OrgID, reportID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "report", "delete")
+		if entry == nil {
+			t.Fatal("no audit entry for report delete")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated for delete")
+		}
+	})
+}
+
+// ── API Keys ─────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_APIKeys(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-ak@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-ak@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	var keyID string
+
+	t.Run("Create", func(t *testing.T) {
+		resp := doCreateAPIKey(t, ctx, ts, token, reg.OrgID, "Audit Key", "viewer")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+		var key createAPIKeyResponse
+		json.NewDecoder(resp.Body).Decode(&key) //nolint:errcheck,gosec // G104: test
+		keyID = key.ID
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "api_key", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for api_key create")
+		}
+		if entry.EntityID != keyID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, keyID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Fatal("expected new_state to be populated")
+		}
+
+		// SECURITY: verify raw key and hash are NOT in new_state.
+		var state map[string]any
+		if err := json.Unmarshal(entry.NewState, &state); err != nil {
+			t.Fatalf("unmarshal new_state: %v", err)
+		}
+		if _, ok := state["raw_key"]; ok {
+			t.Error("SECURITY: raw_key must NOT be in audit new_state")
+		}
+		if _, ok := state["key_hash"]; ok {
+			t.Error("SECURITY: key_hash must NOT be in audit new_state")
+		}
+		if state["name"] != "Audit Key" {
+			t.Errorf("name: got %v, want Audit Key", state["name"])
+		}
+		if state["role"] != "viewer" {
+			t.Errorf("role: got %v, want viewer", state["role"])
+		}
+	})
+
+	t.Run("Revoke", func(t *testing.T) {
+		if keyID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doRevokeAPIKey(t, ctx, ts, token, reg.OrgID, keyID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("revoke: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "api_key", "revoke")
+		if entry == nil {
+			t.Fatal("no audit entry for api_key revoke")
+		}
+		if entry.EntityID != keyID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, keyID)
+		}
+	})
+}
+
+// ── Ingest ────────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_Ingest(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-ingest@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-ingest@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	body := `{"source_name":"my-audit-scanner","patches":[
+		{"cve_id":"CVE-2026-9001","description":"Audit test CVE 1"},
+		{"cve_id":"CVE-2026-9002","description":"Audit test CVE 2"}
+	]}`
+	resp := doIngest(t, ctx, ts, token, reg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("ingest: got %d, want 202", resp.StatusCode)
+	}
+
+	aw.Flush()
+
+	entry := findAuditEntry(t, db, orgID, "ingest", "create")
+	if entry == nil {
+		t.Fatal("no audit entry for ingest create")
+	}
+	if !entry.Success {
+		t.Error("expected success=true")
+	}
+	if entry.NewState == nil {
+		t.Fatal("expected new_state to be populated")
+	}
+
+	var state map[string]any
+	if err := json.Unmarshal(entry.NewState, &state); err != nil {
+		t.Fatalf("unmarshal new_state: %v", err)
+	}
+	if state["source_name"] != "my-audit-scanner" {
+		t.Errorf("source_name: got %v, want my-audit-scanner", state["source_name"])
+	}
+	// patch_count should be 2.
+	if pc, ok := state["patch_count"].(float64); !ok || pc != 2 {
+		t.Errorf("patch_count: got %v, want 2", state["patch_count"])
+	}
+}
+
 // ── Nil-safe audit writer ────────────────────────────────────────────────────
 
 func TestAuditLog_NilWriter(t *testing.T) {

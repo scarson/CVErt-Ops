@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/store"
 )
@@ -21,10 +22,10 @@ import (
 
 type createReportBody struct {
 	Name              string   `json:"name"`
-	ScheduledTime     string   `json:"scheduled_time"`      // "HH:MM" or "HH:MM:SS"
-	Timezone          string   `json:"timezone"`             // IANA timezone
-	SeverityThreshold *string  `json:"severity_threshold"`   // nil = all severities
-	WatchlistIDs      []string `json:"watchlist_ids"`        // nil = all watchlists
+	ScheduledTime     string   `json:"scheduled_time"`     // "HH:MM" or "HH:MM:SS"
+	Timezone          string   `json:"timezone"`           // IANA timezone
+	SeverityThreshold *string  `json:"severity_threshold"` // nil = all severities
+	WatchlistIDs      []string `json:"watchlist_ids"`      // nil = all watchlists
 	SendOnEmpty       *bool    `json:"send_on_empty"`
 	AISummary         *bool    `json:"ai_summary"`
 }
@@ -170,6 +171,15 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	writeLocation(w, r, row.ID.String())
 	writeJSON(w, http.StatusCreated, reportToEntry(*row))
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "report",
+		EntityID:   row.ID.String(),
+		EntityName: row.Name,
+		Success:    true,
+		NewState:   map[string]any{"name": row.Name, "scheduled_time": row.ScheduledTime, "timezone": row.Timezone},
+	})
 }
 
 // getReportHandler handles GET /api/v1/orgs/{org_id}/reports/{id}.
@@ -344,6 +354,16 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, reportToEntry(*updated))
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "update",
+		EntityType: "report",
+		EntityID:   id.String(),
+		EntityName: updated.Name,
+		Success:    true,
+		OldState:   map[string]any{"name": current.Name, "scheduled_time": current.ScheduledTime, "status": current.Status},
+		NewState:   map[string]any{"name": updated.Name, "scheduled_time": updated.ScheduledTime, "status": updated.Status},
+	})
 }
 
 // deleteReportHandler handles DELETE /api/v1/orgs/{org_id}/reports/{id}.
@@ -373,6 +393,15 @@ func (srv *Server) deleteReportHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "delete",
+		EntityType: "report",
+		EntityID:   id.String(),
+		EntityName: existing.Name,
+		Success:    true,
+		OldState:   map[string]any{"name": existing.Name, "scheduled_time": existing.ScheduledTime},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -423,6 +452,15 @@ func (srv *Server) bindChannelToReportHandler(w http.ResponseWriter, r *http.Req
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "bind",
+		EntityType: "report_channel_binding",
+		EntityID:   reportID.String(),
+		EntityName: report.Name,
+		Success:    true,
+		NewState:   map[string]any{"report_id": reportID.String(), "channel_id": channelID.String()},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -448,6 +486,14 @@ func (srv *Server) unbindChannelFromReportHandler(w http.ResponseWriter, r *http
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "unbind",
+		EntityType: "report_channel_binding",
+		EntityID:   reportID.String(),
+		Success:    true,
+		OldState:   map[string]any{"report_id": reportID.String(), "channel_id": channelID.String()},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

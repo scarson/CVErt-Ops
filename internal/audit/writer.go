@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -63,11 +64,13 @@ func (w *Writer) Log(ctx context.Context, entry Entry) {
 
 		storeEntry, err := w.buildStoreEntry(entry)
 		if err != nil {
+			metrics.AuditWriteFailures.Inc()
 			w.log.Error("audit log marshal", "err", err, "entity_type", entry.EntityType, "action", entry.Action)
 			return
 		}
 
 		if err := w.store.InsertAuditEntry(ctx, storeEntry); err != nil {
+			metrics.AuditWriteFailures.Inc()
 			w.log.Error("audit log insert", "err", err, "entity_type", entry.EntityType, "action", entry.Action)
 		}
 	}()

@@ -19,6 +19,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/crypto"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -2014,5 +2015,122 @@ func TestTOTP_VerifyAndUpdateTOTPStep_Store(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("expected higher step VerifyAndUpdateTOTPStep to return true")
+	}
+}
+
+// ── Event Writer Test Infrastructure ─────────────────────────────────────────
+
+// newMFAServerWithEvents creates a test server with a real EventWriter backed
+// by the test DB. After test actions, call ew.Stop() to wait for async writes,
+// then query the security_events table to verify event emission.
+func newMFAServerWithEvents(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server, *secure.EventWriter) {
+	t.Helper()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:               "mfa-test-secret-at-least-32-bytes",
+		RegistrationMode:        "open",
+		Argon2MaxConcurrent:     5,
+		MFAEmailOTPTTL:          10 * time.Minute,
+		MFAEmailOTPMaxPerHour:   5,
+		MFAChallengeMaxAttempts: 3,
+		MFAPendingTokenTTL:      5 * time.Minute,
+		SSOEncryptionKey:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	ew := secure.NewEventWriter(db.Store)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{EventWriter: ew})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	return srv, ts, ew
+}
+
+// flushAndQueryEvents waits for all async event writes to complete, then
+// queries the security_events table for events matching the given type.
+func flushAndQueryEvents(t *testing.T, ew *secure.EventWriter, db *testutil.TestDB, eventType string) []map[string]any {
+	t.Helper()
+	ew.Stop() // waits for all pending goroutines (safe to call multiple times via sync.Once)
+	rows, err := db.Pool().Query(context.Background(),
+		"SELECT event_type, severity, actor_ip, actor_email, user_id, org_id, details FROM security_events WHERE event_type = $1 ORDER BY created_at",
+		eventType)
+	if err != nil {
+		t.Fatalf("query security_events: %v", err)
+	}
+	defer rows.Close()
+	var events []map[string]any
+	for rows.Next() {
+		var evType, severity, actorIP, actorEmail string
+		var userID, orgID *uuid.UUID
+		var details map[string]any
+		if err := rows.Scan(&evType, &severity, &actorIP, &actorEmail, &userID, &orgID, &details); err != nil {
+			t.Fatalf("scan security_event: %v", err)
+		}
+		events = append(events, map[string]any{
+			"event_type":  evType,
+			"severity":    severity,
+			"actor_ip":    actorIP,
+			"actor_email": actorEmail,
+			"user_id":     userID,
+			"org_id":      orgID,
+			"details":     details,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows iteration: %v", err)
+	}
+	return events
+}
+
+func TestEventWriterInfrastructure_SmokeTest(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts, ew := newMFAServerWithEvents(t, db)
+
+	// Register user and enroll TOTP.
+	reg := doRegister(t, ctx, ts, "event-smoke@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	// Login to get pending token.
+	loginResp := doLogin(t, ctx, ts, "event-smoke@example.com", "test-password-1234")
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	// Submit correct TOTP code via POST /auth/mfa/verify.
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	verifyBody := fmt.Sprintf(`{"method":"totp","code":%q}`, code)
+	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("verify request: %v", err)
+	}
+	defer verifyResp.Body.Close() //nolint:errcheck,gosec
+
+	if verifyResp.StatusCode != http.StatusOK {
+		t.Fatalf("verify: got %d, want 200", verifyResp.StatusCode)
+	}
+
+	// Flush events and verify EventMFAVerifySuccess was recorded.
+	events := flushAndQueryEvents(t, ew, db, secure.EventMFAVerifySuccess)
+	if len(events) == 0 {
+		t.Fatal("expected at least 1 EventMFAVerifySuccess event, got 0")
+	}
+	ev := events[0]
+	if ev["event_type"] != secure.EventMFAVerifySuccess {
+		t.Errorf("event_type = %q, want %q", ev["event_type"], secure.EventMFAVerifySuccess)
+	}
+	evUserID, ok := ev["user_id"].(*uuid.UUID)
+	if !ok || evUserID == nil {
+		t.Error("event user_id should be non-nil")
+	} else if *evUserID != userID {
+		t.Errorf("event user_id = %v, want %v", *evUserID, userID)
 	}
 }

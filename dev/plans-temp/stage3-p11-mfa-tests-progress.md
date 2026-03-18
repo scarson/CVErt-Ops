@@ -1,0 +1,50 @@
+# Stage 3: P11 MFA Tests — Progress Log
+
+## Task 1: Event Writer Test Infrastructure
+- **Status:** completed
+- **Files modified:** `internal/api/auth_mfa_test.go`
+- **Tests:** go vet passes; Docker Desktop named pipe issue prevents test execution (system-level, not code-level)
+- **Commit:** pending
+- **Notes:** Added `newMFAServerWithEvents` helper, `flushAndQueryEvents` helper, and `TestEventWriterInfrastructure_SmokeTest`. EventWriter.Stop() uses sync.Once internally so double-call from t.Cleanup is safe. Added `secure` import.
+
+## Task 2: JWT Enrollment Token Security Tests
+- **Status:** pending
+- **Files modified:** (pending)
+- **Tests:** pending
+- **Commit:** pending
+- **Notes:**
+
+## Task 3: Store Direct MFA Tests
+- **Status:** pending
+- **Files modified:** (pending)
+- **Tests:** pending
+- **Commit:** pending
+- **Notes:**
+
+## Task 4: Admin MFA Test Gaps
+- **Status:** pending
+- **Files modified:** (pending)
+- **Tests:** pending
+- **Commit:** pending
+- **Notes:**
+
+## Task 5: MFA Verify/Challenge Tests
+- **Status:** pending
+- **Files modified:** (pending)
+- **Tests:** pending
+- **Commit:** pending
+- **Notes:**
+
+## Task 6: Auth Handler MFA Paths
+- **Status:** pending
+- **Files modified:** (pending)
+- **Tests:** pending
+- **Commit:** pending
+- **Notes:**
+
+## Task 7: Additional MFA API Tests
+- **Status:** pending
+- **Files modified:** (pending)
+- **Tests:** pending
+- **Commit:** pending
+- **Notes:**

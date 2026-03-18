@@ -15,11 +15,11 @@
 - **Notes:** Pure unit tests, no Docker needed. Tests the public ParseEnrollmentToken API.
 
 ## Task 3: Store Direct MFA Tests
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/store/mfa_test.go`
+- **Tests:** go vet passes; 11 tests added (C1: 5 direct store tests, SC8: multi-org, SC11: non-owner negative, N8: skipped (already exists as TestRecoveryCode_VerifyUsedCode), N9: round trip, N10: org not found)
 - **Commit:** pending
-- **Notes:**
+- **Notes:** N8 already covered by existing TestRecoveryCode_VerifyUsedCode. Docker Desktop named pipe issue prevents running store tests.
 
 ## Task 4: Admin MFA Test Gaps
 - **Status:** pending

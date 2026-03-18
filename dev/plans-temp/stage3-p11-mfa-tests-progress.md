@@ -43,8 +43,8 @@
 - **Notes:** N2 (reauthenticatePassword OAuth-only) deferred — needs full MFA verify flow to get access token for OAuth-only account, already covered by admin_mfa_test OAuthOnly test. N6 uses t.Skip if MFA challenge needed.
 
 ## Task 7: Additional MFA API Tests
-- **Status:** pending
-- **Files modified:** (pending)
-- **Tests:** pending
+- **Status:** completed
+- **Files modified:** `internal/api/auth_test.go`, `internal/notify/render_test.go`
+- **Tests:** go vet passes; RenderMFAOTP tests pass (2/2). Token reuse event test compiles clean. formatTTL already fully covered by existing format_ttl_test.go.
 - **Commit:** pending
-- **Notes:**
+- **Notes:** N1 (formatTTL) already covered by format_ttl_test.go — not duplicated. C5 refresh grace/theft tests already well-covered by existing TestRefreshGraceWindow and TestRefreshTheftDetection. Added token reuse event emission test (C5 Task 4). SC9 MFA OTP email render tests added.

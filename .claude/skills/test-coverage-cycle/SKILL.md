@@ -1,5 +1,5 @@
 ---
-name: coverage-cycle
+name: test-coverage-cycle
 description: Full test coverage cycle — run hybrid coverage review, cross-validate findings, present design decisions, and write a fix plan. Use when finishing a phase or auditing test coverage for a body of work.
 argument-hint: "<scope, e.g. 'Phase 9', 'PR 45', 'internal/feed/'>"
 ---

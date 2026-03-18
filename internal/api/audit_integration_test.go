@@ -628,6 +628,145 @@ func TestAuditIntegration_SavedSearches(t *testing.T) {
 	})
 }
 
+// ── Groups ────────────────────────────────────────────────────────────────────
+
+func TestAuditIntegration_Groups(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts, aw := newAuditServer(t, db)
+	reg := doRegister(t, ctx, ts, "audit-gr@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "audit-gr-bob@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "audit-gr@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	orgID, _ := uuid.Parse(reg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+
+	// Add bob to org so we can add him to the group.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "member"); err != nil {
+		t.Fatalf("create org member: %v", err)
+	}
+
+	var groupID string
+
+	t.Run("Create", func(t *testing.T) {
+		resp := doCreateGroup(t, ctx, ts, token, reg.OrgID, "Audit Group", "test group")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", resp.StatusCode)
+		}
+		var g groupEntry
+		json.NewDecoder(resp.Body).Decode(&g) //nolint:errcheck,gosec // G104: test
+		groupID = g.ID
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group", "create")
+		if entry == nil {
+			t.Fatal("no audit entry for group create")
+		}
+		if entry.EntityID != groupID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, groupID)
+		}
+		if !entry.Success {
+			t.Error("expected success=true")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("Update", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doUpdateGroup(t, ctx, ts, token, reg.OrgID, groupID, "Updated Group", "updated desc")
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("update: got %d, want 200", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group", "update")
+		if entry == nil {
+			t.Fatal("no audit entry for group update")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated")
+		}
+		if entry.NewState == nil {
+			t.Error("expected new_state to be populated")
+		}
+	})
+
+	t.Run("AddMember", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doAddGroupMember(t, ctx, ts, token, reg.OrgID, groupID, bobReg.UserID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("add member: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group_member", "add")
+		if entry == nil {
+			t.Fatal("no audit entry for group_member add")
+		}
+		if entry.EntityID != groupID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, groupID)
+		}
+	})
+
+	t.Run("RemoveMember", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doRemoveGroupMember(t, ctx, ts, token, reg.OrgID, groupID, bobReg.UserID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("remove member: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group_member", "remove")
+		if entry == nil {
+			t.Fatal("no audit entry for group_member remove")
+		}
+		if entry.EntityID != groupID {
+			t.Errorf("entity_id: got %s, want %s", entry.EntityID, groupID)
+		}
+	})
+
+	t.Run("Delete", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("depends on Create")
+		}
+		resp := doDeleteGroup(t, ctx, ts, token, reg.OrgID, groupID)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete: got %d, want 204", resp.StatusCode)
+		}
+
+		aw.Flush()
+
+		entry := findAuditEntry(t, db, orgID, "group", "delete")
+		if entry == nil {
+			t.Fatal("no audit entry for group delete")
+		}
+		if entry.OldState == nil {
+			t.Error("expected old_state to be populated for delete")
+		}
+	})
+}
+
 // ── Nil-safe audit writer ────────────────────────────────────────────────────
 
 func TestAuditLog_NilWriter(t *testing.T) {

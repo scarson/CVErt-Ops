@@ -11,6 +11,46 @@ import (
 	"github.com/google/uuid"
 )
 
+// parseTokenWithRotation tries activeSecret first; on signature error only
+// (not expiry or claims errors), retries with previousSecret if non-nil.
+// newClaims must return a fresh zero-value claims struct for each parse attempt,
+// because jwt.ParseWithClaims populates the struct in-place.
+func parseTokenWithRotation[T jwt.Claims](
+	tokenStr string,
+	newClaims func() T,
+	activeSecret, previousSecret []byte,
+	label string,
+) (T, error) {
+	claims := newClaims()
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
+		return activeSecret, nil
+	},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+	)
+	if err == nil {
+		return claims, nil
+	}
+
+	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
+		fallback := newClaims()
+		_, err2 := jwt.ParseWithClaims(tokenStr, fallback, func(_ *jwt.Token) (any, error) {
+			return previousSecret, nil
+		},
+			jwt.WithValidMethods([]string{"HS256"}),
+			jwt.WithExpirationRequired(),
+		)
+		if err2 == nil {
+			return fallback, nil
+		}
+		var zero T
+		return zero, fmt.Errorf("parse %s token: %w", label, err2)
+	}
+
+	var zero T
+	return zero, fmt.Errorf("parse %s token: %w", label, err)
+}
+
 // AccessClaims holds the claims embedded in an access token.
 type AccessClaims struct {
 	jwt.RegisteredClaims
@@ -48,33 +88,7 @@ func IssueAccessToken(secret []byte, userID uuid.UUID, tokenVersion int, ttl tim
 // On signature failure only (not expiry or claims errors), it retries with
 // previousSecret if non-nil. Signing always uses activeSecret via IssueAccessToken.
 func ParseAccessToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*AccessClaims, error) {
-	claims := &AccessClaims{}
-	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
-		return activeSecret, nil
-	},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithExpirationRequired(),
-	)
-	if err == nil {
-		return claims, nil
-	}
-
-	// Only try previous key on signature error — not expiry, not claims.
-	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-		fallbackClaims := &AccessClaims{}
-		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
-			return previousSecret, nil
-		},
-			jwt.WithValidMethods([]string{"HS256"}),
-			jwt.WithExpirationRequired(),
-		)
-		if err2 == nil {
-			return fallbackClaims, nil
-		}
-		return nil, fmt.Errorf("parse access token: %w", err2)
-	}
-
-	return nil, fmt.Errorf("parse access token: %w", err)
+	return parseTokenWithRotation(tokenStr, func() *AccessClaims { return &AccessClaims{} }, activeSecret, previousSecret, "access")
 }
 
 // RefreshClaims holds the claims embedded in a refresh token.
@@ -116,33 +130,7 @@ func IssueRefreshToken(secret []byte, userID uuid.UUID, tokenVersion int, jti uu
 // On signature failure only (not expiry or claims errors), it retries with
 // previousSecret if non-nil.
 func ParseRefreshToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*RefreshClaims, error) {
-	claims := &RefreshClaims{}
-	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
-		return activeSecret, nil
-	},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithExpirationRequired(),
-	)
-	if err == nil {
-		return claims, nil
-	}
-
-	// Only try previous key on signature error — not expiry, not claims.
-	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-		fallbackClaims := &RefreshClaims{}
-		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
-			return previousSecret, nil
-		},
-			jwt.WithValidMethods([]string{"HS256"}),
-			jwt.WithExpirationRequired(),
-		)
-		if err2 == nil {
-			return fallbackClaims, nil
-		}
-		return nil, fmt.Errorf("parse refresh token: %w", err2)
-	}
-
-	return nil, fmt.Errorf("parse refresh token: %w", err)
+	return parseTokenWithRotation(tokenStr, func() *RefreshClaims { return &RefreshClaims{} }, activeSecret, previousSecret, "refresh")
 }
 
 // PendingClaims holds the claims for a restricted session token issued when
@@ -188,33 +176,7 @@ func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pendin
 // first. On signature failure only (not expiry or claims errors), it retries with
 // previousSecret if non-nil.
 func ParsePendingToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*PendingClaims, error) {
-	claims := &PendingClaims{}
-	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
-		return activeSecret, nil
-	},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithExpirationRequired(),
-	)
-	if err == nil {
-		return claims, nil
-	}
-
-	// Only try previous key on signature error — not expiry, not claims.
-	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-		fallbackClaims := &PendingClaims{}
-		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
-			return previousSecret, nil
-		},
-			jwt.WithValidMethods([]string{"HS256"}),
-			jwt.WithExpirationRequired(),
-		)
-		if err2 == nil {
-			return fallbackClaims, nil
-		}
-		return nil, fmt.Errorf("parse pending token: %w", err2)
-	}
-
-	return nil, fmt.Errorf("parse pending token: %w", err)
+	return parseTokenWithRotation(tokenStr, func() *PendingClaims { return &PendingClaims{} }, activeSecret, previousSecret, "pending")
 }
 
 // EnrollmentClaims holds the claims for a short-lived MFA enrollment token.
@@ -251,31 +213,5 @@ func IssueEnrollmentToken(secret []byte, userID uuid.UUID, secretEnc []byte, ttl
 // first. On signature failure only (not expiry or claims errors), it retries with
 // previousSecret if non-nil.
 func ParseEnrollmentToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*EnrollmentClaims, error) {
-	claims := &EnrollmentClaims{}
-	_, err := jwt.ParseWithClaims(tokenStr, claims, func(_ *jwt.Token) (any, error) {
-		return activeSecret, nil
-	},
-		jwt.WithValidMethods([]string{"HS256"}),
-		jwt.WithExpirationRequired(),
-	)
-	if err == nil {
-		return claims, nil
-	}
-
-	// Only try previous key on signature error — not expiry, not claims.
-	if previousSecret != nil && errors.Is(err, jwt.ErrTokenSignatureInvalid) {
-		fallbackClaims := &EnrollmentClaims{}
-		_, err2 := jwt.ParseWithClaims(tokenStr, fallbackClaims, func(_ *jwt.Token) (any, error) {
-			return previousSecret, nil
-		},
-			jwt.WithValidMethods([]string{"HS256"}),
-			jwt.WithExpirationRequired(),
-		)
-		if err2 == nil {
-			return fallbackClaims, nil
-		}
-		return nil, fmt.Errorf("parse enrollment token: %w", err2)
-	}
-
-	return nil, fmt.Errorf("parse enrollment token: %w", err)
+	return parseTokenWithRotation(tokenStr, func() *EnrollmentClaims { return &EnrollmentClaims{} }, activeSecret, previousSecret, "enrollment")
 }

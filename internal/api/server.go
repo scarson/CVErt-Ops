@@ -232,7 +232,7 @@ func (srv *Server) Handler() http.Handler {
 	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
 	registerMFARoutes(api, srv)
-	registerCVERoutes(api, srv.store)
+	registerCVERoutes(api, srv)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
 	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)

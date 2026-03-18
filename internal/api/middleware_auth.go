@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/secure"
 )
@@ -145,4 +147,26 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	ctx = context.WithValue(ctx, ctxAPIKeyOrgID, key.OrgID)
 	next.ServeHTTP(w, r.WithContext(ctx))
 	return true
+}
+
+// requireAuthHuma adapts the chi-style RequireAuthenticated middleware into
+// a huma.Middlewares-compatible function for use in huma.Operation.Middlewares.
+// This allows CVE endpoints (registered via huma) to require authentication
+// without restructuring the router.
+func (srv *Server) requireAuthHuma() func(huma.Context, func(huma.Context)) {
+	chiMW := srv.RequireAuthenticated()
+	return func(ctx huma.Context, next func(huma.Context)) {
+		r, w := humachi.Unwrap(ctx)
+		// Run the chi-style auth middleware. If it calls next.ServeHTTP,
+		// auth succeeded and we call the huma next. If it writes a response
+		// (401/403) and returns without calling next, we stop.
+		var called bool
+		chiMW(http.HandlerFunc(func(_ http.ResponseWriter, authedR *http.Request) {
+			called = true
+			// Propagate context values set by RequireAuthenticated (ctxUserID etc.)
+			next(huma.WithContext(ctx, authedR.Context()))
+		})).ServeHTTP(w, r)
+
+		_ = called // if !called, auth middleware already wrote the error response
+	}
 }

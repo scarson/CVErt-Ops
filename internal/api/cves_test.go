@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/scarson/cvert-ops/internal/config"
-	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -477,19 +475,17 @@ func checkBoolPtr(t *testing.T, name string, got, want *bool) {
 
 // ── HTTP-level CVE handler tests ──────────────────────────────────────────
 
-// newCVETestServer builds a Server + httptest.Server backed by a real or nil
-// store for CVE handler tests. CVE endpoints are public (no auth needed).
-func newCVETestServer(t *testing.T, s *store.Store) *httptest.Server {
+// newCVETestServer builds a Server + httptest.Server backed by a real TestDB.
+// Returns the test server and a JWT access token for an authenticated user.
+func newCVETestServer(t *testing.T, db *testutil.TestDB) (*httptest.Server, string) {
 	t.Helper()
-	cfg := &config.Config{Argon2MaxConcurrent: 5} //nolint:exhaustruct // test: only relevant fields set
-	apiSrv, err := NewServer(s, cfg, ServerDeps{})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	t.Cleanup(apiSrv.Close)
-	ts := httptest.NewServer(apiSrv.Handler())
-	t.Cleanup(ts.Close)
-	return ts
+	_, ts := newRegisterServer(t, db, "open")
+	ctx := context.Background()
+	_ = doRegister(t, ctx, ts, "cve-test@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "cve-test@example.com", "test-password-1234")
+	token := cookieValue(loginResp, "access_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec // test
+	return ts, token
 }
 
 // cveListResponse mirrors the JSON response from GET /api/v1/cves.
@@ -519,10 +515,11 @@ type cveSourcesResponse struct {
 func TestListCVEs_EmptyDB(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -559,7 +556,7 @@ func TestListCVEs_EmptyDB(t *testing.T) {
 func TestListCVEs_WithSeededData(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	// Seed CVEs with distinct modification dates so ordering is deterministic.
@@ -573,6 +570,7 @@ func TestListCVEs_WithSeededData(t *testing.T) {
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -616,7 +614,7 @@ func TestListCVEs_WithSeededData(t *testing.T) {
 func TestListCVEs_SeverityFilter(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	db.SeedTestCVE(t, "CVE-2026-1001", "CRITICAL", nil)
@@ -624,6 +622,7 @@ func TestListCVEs_SeverityFilter(t *testing.T) {
 	db.SeedTestCVE(t, "CVE-2026-1003", "CRITICAL", nil)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?severity=CRITICAL", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -664,7 +663,7 @@ func TestListCVEs_SeverityFilter(t *testing.T) {
 func TestListCVEs_ResponseShape(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	cvss := 9.1
@@ -677,6 +676,7 @@ func TestListCVEs_ResponseShape(t *testing.T) {
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -740,12 +740,13 @@ func TestListCVEs_ResponseShape(t *testing.T) {
 func TestGetCVE_Exists(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	db.SeedTestCVE(t, "CVE-2026-3001", "MEDIUM", nil)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves/CVE-2026-3001", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -790,10 +791,11 @@ func TestGetCVE_Exists(t *testing.T) {
 func TestGetCVE_NotFound(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves/CVE-9999-99999", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -813,12 +815,13 @@ func TestGetCVE_NotFound(t *testing.T) {
 func TestGetCVESources_Exists(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	db.SeedTestCVE(t, "CVE-2026-4001", "LOW", nil)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves/CVE-2026-4001/sources", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -846,10 +849,11 @@ func TestGetCVESources_Exists(t *testing.T) {
 func TestGetCVESources_NotFound(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves/CVE-9999-88888/sources", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -870,7 +874,7 @@ func TestGetCVESources_NotFound(t *testing.T) {
 func TestListCVEs_Pagination(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	// Seed 3 CVEs with distinct timestamps.
@@ -883,6 +887,7 @@ func TestListCVEs_Pagination(t *testing.T) {
 
 	// Page 1: limit=2, should get 2 items + next_cursor.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?limit=2", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -909,6 +914,7 @@ func TestListCVEs_Pagination(t *testing.T) {
 
 	// Page 2: use cursor, should get 1 item + no next_cursor.
 	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?limit=2&cursor="+page1.NextCursor, nil)
+	req2.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request page 2: %v", err)
 	}
@@ -938,10 +944,11 @@ func TestListCVEs_Pagination(t *testing.T) {
 func TestListCVEs_InvalidCursor(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
-	ts := newCVETestServer(t, db.Store)
+	ts, token := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?cursor=not-valid-base64!!!", nil)
+	req.Header.Set("Cookie", "access_token="+token)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -956,11 +963,11 @@ func TestListCVEs_InvalidCursor(t *testing.T) {
 	}
 }
 
-// TestListCVEs_NilStore verifies that CVE list returns 503 when the store is
-// nil, via the handler's nil-store guard.
-func TestListCVEs_NilStore(t *testing.T) {
+// TestListCVEs_Unauthenticated verifies that CVE list returns 401 without auth.
+func TestListCVEs_Unauthenticated(t *testing.T) {
 	t.Parallel()
-	ts := newCVETestServer(t, nil)
+	db := testutil.NewTestDB(t)
+	ts, _ := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves", nil)
@@ -969,20 +976,20 @@ func TestListCVEs_NilStore(t *testing.T) {
 	}
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
 	if err != nil {
-		t.Fatalf("GET /cves (nil store): %v", err)
+		t.Fatalf("GET /cves (no auth): %v", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated: got status %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }
 
-// TestGetCVE_NilStore verifies that CVE detail returns 503 when the store is
-// nil, via the handler's nil-store guard.
-func TestGetCVE_NilStore(t *testing.T) {
+// TestGetCVE_Unauthenticated verifies that CVE detail returns 401 without auth.
+func TestGetCVE_Unauthenticated(t *testing.T) {
 	t.Parallel()
-	ts := newCVETestServer(t, nil)
+	db := testutil.NewTestDB(t)
+	ts, _ := newCVETestServer(t, db)
 	ctx := context.Background()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves/CVE-2026-0001", nil)
@@ -991,11 +998,11 @@ func TestGetCVE_NilStore(t *testing.T) {
 	}
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
 	if err != nil {
-		t.Fatalf("GET /cves/CVE-2026-0001 (nil store): %v", err)
+		t.Fatalf("GET /cves/CVE-2026-0001 (no auth): %v", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated: got status %d, want %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }

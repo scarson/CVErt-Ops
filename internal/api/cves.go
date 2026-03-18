@@ -18,13 +18,15 @@ import (
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
-// registerCVERoutes wires up the three Phase 1 CVE endpoints on the huma API.
-// All endpoints are public read-only — auth middleware is added in Phase 2.
+// registerCVERoutes wires up the three CVE endpoints on the huma API.
+// All endpoints require authentication. CVE data is global (not org-scoped).
 //
-//   GET /cves           — paginated search with full filter set
-//   GET /cves/{cve_id}  — single CVE detail with child tables
-//   GET /cves/{cve_id}/sources — per-source normalized payloads
-func registerCVERoutes(api huma.API, s *store.Store) {
+//	GET /cves           — paginated search with full filter set
+//	GET /cves/{cve_id}  — single CVE detail with child tables
+//	GET /cves/{cve_id}/sources — per-source normalized payloads
+func registerCVERoutes(api huma.API, srv *Server) {
+	authMW := huma.Middlewares{srv.requireAuthHuma()}
+
 	huma.Register(api, huma.Operation{
 		OperationID: "list-cves",
 		Method:      http.MethodGet,
@@ -32,7 +34,8 @@ func registerCVERoutes(api huma.API, s *store.Store) {
 		Summary:     "Search CVEs",
 		Description: "Paginated CVE search with full-text search, facet filters, and keyset pagination.",
 		Tags:        []string{"CVEs"},
-	}, listCVEsHandler(s))
+		Middlewares: authMW,
+	}, listCVEsHandler(srv.store))
 
 	huma.Register(api, huma.Operation{
 		OperationID: "get-cve",
@@ -41,7 +44,8 @@ func registerCVERoutes(api huma.API, s *store.Store) {
 		Summary:     "Get CVE detail",
 		Description: "Returns the canonical CVE row with affected packages, CPEs, and references.",
 		Tags:        []string{"CVEs"},
-	}, getCVEHandler(s))
+		Middlewares: authMW,
+	}, getCVEHandler(srv.store))
 
 	huma.Register(api, huma.Operation{
 		OperationID: "get-cve-sources",
@@ -50,27 +54,28 @@ func registerCVERoutes(api huma.API, s *store.Store) {
 		Summary:     "Get CVE source payloads",
 		Description: "Returns per-source normalized payloads for a CVE, for cross-source comparison.",
 		Tags:        []string{"CVEs"},
-	}, getCVESourcesHandler(s))
+		Middlewares: authMW,
+	}, getCVESourcesHandler(srv.store))
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
 
 // CVEItem is the list-view representation of a CVE (no child tables).
 type CVEItem struct {
-	CVEID              string    `json:"cve_id"`
-	Status             *string   `json:"status,omitempty"`
-	DatePublished      *string   `json:"date_published,omitempty"` // RFC3339
-	DateModified       string    `json:"date_modified"`            // RFC3339
-	DateFirstSeen      string    `json:"date_first_seen"`          // RFC3339
-	DescriptionPrimary *string   `json:"description_primary,omitempty"`
-	Severity           *string   `json:"severity,omitempty"`
-	CVSSv3Score        *float64  `json:"cvss_v3_score,omitempty"`
-	CVSSv4Score        *float64  `json:"cvss_v4_score,omitempty"`
-	CVSSScoreDiverges  bool      `json:"cvss_score_diverges"`
-	CWEIDs             []string  `json:"cwe_ids"`
-	ExploitAvailable   bool      `json:"exploit_available"`
-	InCISAKEV          bool      `json:"in_cisa_kev"`
-	EPSSScore          *float64  `json:"epss_score,omitempty"`
+	CVEID              string   `json:"cve_id"`
+	Status             *string  `json:"status,omitempty"`
+	DatePublished      *string  `json:"date_published,omitempty"` // RFC3339
+	DateModified       string   `json:"date_modified"`            // RFC3339
+	DateFirstSeen      string   `json:"date_first_seen"`          // RFC3339
+	DescriptionPrimary *string  `json:"description_primary,omitempty"`
+	Severity           *string  `json:"severity,omitempty"`
+	CVSSv3Score        *float64 `json:"cvss_v3_score,omitempty"`
+	CVSSv4Score        *float64 `json:"cvss_v4_score,omitempty"`
+	CVSSScoreDiverges  bool     `json:"cvss_score_diverges"`
+	CWEIDs             []string `json:"cwe_ids"`
+	ExploitAvailable   bool     `json:"exploit_available"`
+	InCISAKEV          bool     `json:"in_cisa_kev"`
+	EPSSScore          *float64 `json:"epss_score,omitempty"`
 }
 
 // CVEDetail extends CVEItem with child-table data.
@@ -80,7 +85,7 @@ type CVEDetail struct {
 	CVSSv4Vector     *string                   `json:"cvss_v4_vector,omitempty"`
 	AffectedPackages []AffectedPackageResponse `json:"affected_packages"`
 	AffectedCPEs     []AffectedCPEResponse     `json:"affected_cpes"`
-	References       []ReferenceResponse        `json:"references"`
+	References       []ReferenceResponse       `json:"references"`
 }
 
 // AffectedPackageResponse is the API representation of a cve_affected_packages row.
@@ -209,10 +214,10 @@ type ListCVEsInput struct {
 	Ecosystem   string   `query:"ecosystem" doc:"Filter by affected package ecosystem; empty = no filter"`
 	PackageName string   `query:"package_name" doc:"Filter by affected package name (requires ecosystem); empty = no filter"`
 	// Boolean filters: "true", "false", or "" (no filter).
-	InCISAKEV   string `query:"in_cisa_kev" doc:"Filter by CISA KEV status: 'true', 'false', or empty for no filter"`
+	InCISAKEV    string `query:"in_cisa_kev" doc:"Filter by CISA KEV status: 'true', 'false', or empty for no filter"`
 	ExploitAvail string `query:"exploit_available" doc:"Filter by exploit availability: 'true', 'false', or empty for no filter"`
-	Cursor string `query:"cursor" doc:"Opaque pagination cursor returned in the previous response"`
-	Limit  int    `query:"limit" minimum:"1" maximum:"100" default:"25" doc:"Page size (max 100)"`
+	Cursor       string `query:"cursor" doc:"Opaque pagination cursor returned in the previous response"`
+	Limit        int    `query:"limit" minimum:"1" maximum:"100" default:"25" doc:"Page size (max 100)"`
 
 	// Optional numeric filters resolved from raw query string by Resolve.
 	// Not tagged with query: because huma panics on pointer types in query params.

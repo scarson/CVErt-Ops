@@ -19,7 +19,15 @@
 - Syslog: `internal/secure/syslog.go`, `internal/secure/writer.go`
 - Server: `internal/api/server.go`, `internal/api/middleware_auth.go`, `internal/api/sso.go`
 
-**CRITICAL — File Ownership:** This plan modifies `internal/api/middleware_auth.go`, `internal/api/sso.go`, `internal/api/admin_reload.go`, `internal/config/reloadable.go`, `internal/config/reload.go`, `internal/config/config.go`, `internal/crypto/aes.go`, `internal/api/auth_mfa.go`, `internal/store/queries/security_events.sql`, `internal/secure/writer.go`, and `cmd/cvert-ops/main.go`.
+**CRITICAL — File Ownership:** This plan modifies:
+- `internal/config/reloadable.go`, `internal/config/reload.go`, `internal/config/config.go`
+- `internal/api/admin_reload.go`, `internal/api/server.go`, `internal/api/middleware_auth.go`
+- `internal/api/auth.go`, `internal/api/auth_mfa.go`, `internal/api/auth_email_verification.go`
+- `internal/api/oauth_github.go`, `internal/api/oauth_google.go`, `internal/api/oauth_oidc.go`
+- `internal/api/sso.go`, `internal/api/admin_doctor.go`
+- `internal/crypto/aes.go`, `internal/secure/writer.go`
+- `internal/store/queries/security_events.sql`
+- `cmd/cvert-ops/main.go`
 
 ---
 
@@ -58,17 +66,33 @@ These three bugs touch `internal/config/` and `internal/api/admin_reload.go`. Fi
 
 **Step 1: Write failing tests**
 
-Add tests to `reloadable_test.go`:
+Add a `writeTempSecretsFile` test helper and two tests to `reloadable_test.go`:
 
 ```go
+// writeTempSecretsFile writes content to a temp file and returns its path.
+// The file is automatically cleaned up when t finishes.
+func writeTempSecretsFile(t *testing.T, content string) string {
+    t.Helper()
+    f, err := os.CreateTemp(t.TempDir(), "secrets-*.env")
+    require.NoError(t, err)
+    _, err = f.WriteString(content)
+    require.NoError(t, err)
+    require.NoError(t, f.Close())
+    return f.Name()
+}
+
 func TestLoadFromSecretsFile_MergesOntoBaseline(t *testing.T) {
     // Create a baseline with SMTP and SSO populated.
     baseline := &ReloadableConfig{
         JWTSecret:        []byte("original-jwt-secret-at-least-32-bytes!!"),
         SMTPHost:         "smtp.example.com",
         SMTPPort:         587,
+        SMTPFrom:         "noreply@example.com",
+        SMTPUsername:     "user",
+        SMTPPassword:     "pass",
         SSOEncryptionKey: [32]byte{1, 2, 3}, // non-zero
         SIEMSyslogAddr:   "udp://siem:514",
+        LogLevel:         "info",
     }
     // Secrets file only contains JWT_SECRET.
     tmpFile := writeTempSecretsFile(t, "JWT_SECRET=new-jwt-secret-at-least-32-bytes!!")
@@ -77,11 +101,15 @@ func TestLoadFromSecretsFile_MergesOntoBaseline(t *testing.T) {
     require.NoError(t, err)
     // JWT_SECRET was overwritten:
     assert.Equal(t, []byte("new-jwt-secret-at-least-32-bytes!!"), got.JWTSecret)
-    // Other fields preserved from baseline:
+    // ALL other fields preserved from baseline:
     assert.Equal(t, "smtp.example.com", got.SMTPHost)
     assert.Equal(t, 587, got.SMTPPort)
+    assert.Equal(t, "noreply@example.com", got.SMTPFrom)
+    assert.Equal(t, "user", got.SMTPUsername)
+    assert.Equal(t, "pass", got.SMTPPassword)
     assert.Equal(t, [32]byte{1, 2, 3}, got.SSOEncryptionKey)
     assert.Equal(t, "udp://siem:514", got.SIEMSyslogAddr)
+    assert.Equal(t, "info", got.LogLevel)
 }
 
 func TestLoadFromSecretsFile_NilBaselineCreatesFromScratch(t *testing.T) {
@@ -117,14 +145,46 @@ At the start of the function, instead of `rc := &ReloadableConfig{}`, do:
 // Start from a copy of the baseline so absent fields keep their current values.
 var rc *ReloadableConfig
 if baseline != nil {
-    copy := *baseline
-    rc = &copy
+    base := *baseline
+    rc = &base
 } else {
     rc = &ReloadableConfig{}
 }
 ```
 
-The rest of the function remains the same — it overwrites fields present in the file onto `rc`.
+**CRITICAL — Fix unconditional string field assignments.** The existing code has lines like `rc.SMTPHost = kv["SMTP_HOST"]` that always overwrite even when the key is absent (Go map lookup returns `""` for missing keys). These MUST be wrapped in `if _, ok` guards so that absent fields keep the baseline value. Change these lines:
+
+```go
+// BEFORE (unconditional — zeroes baseline):
+rc.LogLevel = kv["LOG_LEVEL"]
+rc.SMTPHost = kv["SMTP_HOST"]
+rc.SMTPFrom = kv["SMTP_FROM"]
+rc.SMTPUsername = kv["SMTP_USERNAME"]
+rc.SMTPPassword = kv["SMTP_PASSWORD"]
+rc.SIEMSyslogAddr = kv["SIEM_SYSLOG_ADDR"]
+
+// AFTER (conditional — only overwrite when present in file):
+if v, ok := kv["LOG_LEVEL"]; ok {
+    rc.LogLevel = v
+}
+if v, ok := kv["SMTP_HOST"]; ok {
+    rc.SMTPHost = v
+}
+if v, ok := kv["SMTP_FROM"]; ok {
+    rc.SMTPFrom = v
+}
+if v, ok := kv["SMTP_USERNAME"]; ok {
+    rc.SMTPUsername = v
+}
+if v, ok := kv["SMTP_PASSWORD"]; ok {
+    rc.SMTPPassword = v
+}
+if v, ok := kv["SIEM_SYSLOG_ADDR"]; ok {
+    rc.SIEMSyslogAddr = v
+}
+```
+
+The JWT, SSO, SMTP_PORT, SMTP_TLS, and SIEM_SYSLOG_FORMAT fields already use `if v, ok` guards — they are safe as-is.
 
 **Step 4: Update all callers of `LoadFromSecretsFile`**
 
@@ -145,6 +205,7 @@ There are exactly two callers:
    // After:
    newCfg, err := config.LoadFromSecretsFile(secretsFile, srv.configHolder.Load())
    ```
+   **Note:** Task 2 will completely rewrite this handler to use `config.ReloadConfig` instead. This edit is needed only for compilation between tasks.
 
 **Step 5: Run tests to verify they pass**
 
@@ -169,26 +230,31 @@ git commit -m "fix(config): merge secrets file onto baseline — partial files n
 
 **Context (bug B6):** Line 34 returns `err.Error()` to the client, potentially leaking file paths.
 
-**Step 1: Write failing test for rescan call**
+**Note:** Task 1 modified admin_reload.go to pass the new baseline param. This task replaces the entire handler — the Task 1 edit was needed only for intermediate compilation.
 
-Add to `admin_reload_test.go`:
+**Step 1: Write failing tests**
+
+Read `admin_reload_test.go` to understand the existing test patterns (server setup, request helpers, etc.). Add two tests using the EXISTING test infrastructure — do NOT create a `newTestServerWithRescan` helper. Instead, set `srv.rescanFunc` directly on the test server:
+
 ```go
 func TestAdminReloadConfig_CallsRescan(t *testing.T) {
-    // Set up server with a rescan function that sets a flag.
+    // Use the existing test server setup pattern in this file.
+    // After creating the test server (srv), set the rescan func:
     var rescanCalled atomic.Bool
-    srv := newTestServerWithRescan(t, func() { rescanCalled.Store(true) })
-    // Write a valid secrets file, POST /api/v1/admin/reload-config.
-    // Assert rescanCalled is true.
-}
-```
+    srv.rescanFunc = func() { rescanCalled.Store(true) }
 
-Add to `admin_reload_test.go`:
-```go
+    // Write a valid secrets file with at least JWT_SECRET (32+ bytes).
+    // Set srv.cfg.SecretsFile to its path.
+    // POST /api/v1/admin/reload-config as site admin.
+    // Assert HTTP 200.
+    // Assert rescanCalled.Load() == true.
+}
+
 func TestAdminReloadConfig_DoesNotLeakErrorDetails(t *testing.T) {
-    // Point CVERTOPS_SECRETS_FILE at a nonexistent path.
-    // POST /api/v1/admin/reload-config.
-    // Assert response body does NOT contain the file path.
-    // Assert response body contains a generic message.
+    // Point srv.cfg.SecretsFile at a nonexistent path like "/tmp/no-such-file-xyz.env".
+    // POST /api/v1/admin/reload-config as site admin.
+    // Assert response body does NOT contain "/tmp/no-such-file" (no path leak).
+    // Assert response body contains "check server logs" (generic message).
 }
 ```
 
@@ -202,7 +268,7 @@ In `server.go`, add a field to `ServerDeps` and `Server`:
 RescanFunc func() // called after successful config reload
 
 // In Server:
-rescanFunc func{} // feed config rescan on hot-reload
+rescanFunc func() // feed config rescan on hot-reload
 ```
 
 Wire it in `NewServer`:
@@ -210,12 +276,11 @@ Wire it in `NewServer`:
 srv.rescanFunc = deps.RescanFunc
 ```
 
-In `main.go`, pass the rescan function when creating `ServerDeps`:
+In `main.go`, pass `nil` for `RescanFunc` in `ServerDeps` for now:
 ```go
-// In runServe, after the feedLoader is available:
-RescanFunc: feedLoader.Rescan, // nil if no feeds dir configured
+RescanFunc: nil, // Feed rescan wiring is future work — see note below.
 ```
-If `feedLoader` doesn't exist (no `FeedsDir`), pass nil.
+**Note:** The current SIGHUP handler at `main.go:147` also passes `nil` for rescan. Full feed-rescan integration (creating a `generic.Loader`, updating the worker pool factory with new configs) is out of scope for this fix. The fix here achieves path parity: admin handler uses `ReloadConfig` just like SIGHUP. Both currently pass `nil` for rescan.
 
 Rewrite `adminReloadConfigHandler` to use `ReloadConfig`:
 ```go
@@ -258,7 +323,7 @@ func (srv *Server) adminReloadConfigHandler(w http.ResponseWriter, r *http.Reque
 }
 ```
 
-**Important nuance:** `ReloadConfig` recovers panics and logs errors — it doesn't return an error. We detect failure by comparing the `configHolder` pointer before and after. If the pointer is the same object, reload failed (ReloadConfig only calls `Store` on success).
+**Important nuance:** `ReloadConfig` (in `internal/config/reload.go`) recovers panics and logs errors — it doesn't return an error. We detect failure by comparing the `configHolder` pointer before and after. This works because `ReloadConfig` only calls `holder.Store(newCfg)` on success, and `newCfg` is always a freshly allocated `*ReloadableConfig` (never the same pointer as the current config). If reload fails (file error, parse error, panic), the pointer stays the same. Read `reload.go` to verify this behavior before implementing.
 
 **Step 4: Run tests to verify they pass**
 
@@ -292,8 +357,7 @@ This is the largest fix — changing ~30 call sites to read from the hot-reloada
 ### Task 3: Wire JWT helpers to read from configHolder
 
 **Files:**
-- Modify: `internal/api/middleware_auth.go` — change `jwtPreviousSecret` helper
-- Modify: `internal/api/server.go` — add `jwtSecret()` and `jwtPreviousSecretBytes()` methods on `Server`
+- Modify: `internal/api/middleware_auth.go` — replace `jwtPreviousSecret(cfg)` with `jwtSecret()` and `jwtPreviousSecretBytes()` methods on `*Server`
 - Modify: `internal/api/middleware_auth_test.go` — add hot-reload test
 - Modify: `internal/api/auth.go` — update all `secret := []byte(srv.cfg.JWTSecret)` call sites
 - Modify: `internal/api/auth_mfa.go` — update all JWT secret call sites
@@ -408,6 +472,8 @@ git commit -m "fix(auth): JWT handlers read from configHolder — hot-reload now
 
 ### Task 4: Wire SSO encryption helpers to read from configHolder
 
+**Depends on:** Task 3 — the `admin_doctor.go` changes call `srv.jwtSecret()` and `srv.jwtPreviousSecretBytes()` which are created in Task 3. Task 3 MUST be completed first.
+
 **Files:**
 - Modify: `internal/api/sso.go` — change `ssoEncryptionKey()` and `ssoEncryptionKeyPrevious()`
 - Modify: `internal/api/admin_doctor.go` — wire doctor checks to configHolder
@@ -460,18 +526,70 @@ func (srv *Server) ssoEncryptionKeyPrevious() [32]byte {
 }
 ```
 
-Also update `admin_doctor.go` — the doctor checks should read from the holder too. Currently it passes `srv.cfg.JWTSecret` etc. to `StandardChecksConfig`. Read the current code and update it to pass from the config holder when available.
+Also update `admin_doctor.go` — the doctor checks should read from the holder too. Currently it passes `srv.cfg.JWTSecret` etc. to `StandardChecksConfig`. Change the fields that are now available from the config holder:
 
-**Step 2: Run tests**
+```go
+// In doctorHandler, build StandardChecksConfig using the new helpers.
+// IMPORTANT: For SSO keys, only pass the hex string if the key is non-zero.
+// hex.EncodeToString on a zero [32]byte produces "00000..." which would
+// falsely indicate SSO is configured.
+func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
+    ssoKey, ssoErr := srv.ssoEncryptionKey()
+    ssoPrev := srv.ssoEncryptionKeyPrevious()
+
+    var ssoKeyHex, ssoPrevHex string
+    if ssoErr == nil && ssoKey != [32]byte{} {
+        ssoKeyHex = hex.EncodeToString(ssoKey[:])
+    }
+    if ssoPrev != ([32]byte{}) {
+        ssoPrevHex = hex.EncodeToString(ssoPrev[:])
+    }
+
+    var jwtPrevStr string
+    if prev := srv.jwtPreviousSecretBytes(); prev != nil {
+        jwtPrevStr = string(prev)
+    }
+
+    checks := doctor.StandardChecks(doctor.StandardChecksConfig{
+        DB:                       srv.store.Pool(),
+        ExpectedSchemaVersion:    srv.expectedSchemaVersion,
+        SSOEncryptionKey:         ssoKeyHex,
+        SSOEncryptionKeyPrevious: ssoPrevHex,
+        JWTSecret:                string(srv.jwtSecret()),
+        JWTSecretPrevious:        jwtPrevStr,
+        SMTPHost:                 srv.cfg.SMTPHost,
+        SMTPPort:                 srv.cfg.SMTPPort,
+        SMTPUsername:             srv.cfg.SMTPUsername,
+        CORSAllowedOrigins:      srv.cfg.CORSAllowedOrigins,
+        CookieAuth:               true,
+        ServerAddr:               "http://" + srv.cfg.ListenAddr,
+    })
+    // ... rest of handler unchanged ...
+```
+
+Note: `SMTPHost`/`SMTPPort`/`SMTPUsername` still read from `srv.cfg` because doctor checks are for startup validation — they don't need hot-reload values. Only the crypto keys (JWT/SSO) need to reflect the current rotated state.
+
+**Step 2: Write test for SSO helper reading from config holder**
+
+Add to an SSO test file (or `sso_test.go` if it exists):
+```go
+func TestSSOEncryptionKey_ReadsFromConfigHolder(t *testing.T) {
+    // Create server with a configHolder containing a known SSO key.
+    // Call srv.ssoEncryptionKey() and assert it returns the holder's key,
+    // not the startup config's key.
+}
+```
+
+**Step 3: Run tests**
 
 Run: `go test ./internal/api/... -count=1`
 Expected: PASS
 
-**Step 3: Verify no remaining references**
+**Step 4: Verify no remaining references**
 
 Grep `internal/api/` for `srv.cfg.SSOEncryptionKey` — should only remain in test files or fallback paths within the helpers themselves.
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
 git add internal/api/sso.go internal/api/admin_doctor.go
@@ -543,7 +661,7 @@ func (w *EventWriter) SetSyslog(sw *SyslogWriter) {
 }
 ```
 
-Update the read in `Write` goroutine:
+Update the read in `Write` goroutine (around line 97):
 ```go
 // Forward to syslog independently of DB result.
 if sw := w.syslog.Load(); sw != nil {
@@ -552,6 +670,19 @@ if sw := w.syslog.Load(); sw != nil {
             "event_type", event.Type,
             "error", sErr,
         )
+    }
+}
+```
+
+Update the `Stop()` method (around line 113) — it also reads `w.syslog` directly:
+```go
+func (w *EventWriter) Stop() {
+    w.rateLimiter.Stop()
+    w.wg.Wait()
+    if sw := w.syslog.Load(); sw != nil {
+        if err := sw.Close(); err != nil {
+            slog.Error("syslog close failed", "error", err)
+        }
     }
 }
 ```
@@ -567,7 +698,8 @@ if cfg.SIEMSyslogAddr != "" {
         slog.Error("SIEM syslog initialization failed — events will only go to database", "error", sErr)
     } else if sw != nil {
         eventWriter.SetSyslog(sw)
-        defer sw.Close()
+        // Do NOT defer sw.Close() here — EventWriter.Stop() already closes it.
+        // Double-close would attempt to close an already-closed net.Conn.
         slog.Info("SIEM syslog forwarding enabled", "addr", cfg.SIEMSyslogAddr, "format", cfg.SIEMSyslogFormat)
     }
 }
@@ -578,12 +710,40 @@ if cfg.SIEMSyslogAddr != "" {
 In `writer_test.go`:
 ```go
 func TestEventWriter_SetSyslogConcurrent(t *testing.T) {
-    // Run with -race flag.
-    // Create EventWriter, spawn goroutines calling Write,
-    // concurrently call SetSyslog with a new SyslogWriter.
-    // Must not race.
+    // This test verifies no data race between SetSyslog and Write.
+    // Run the entire test suite with: go test -race ./internal/secure/...
+    st := store.NewForTest(t) // or however the test store is created
+    ew := NewEventWriter(st)
+    defer ew.Stop()
+
+    // Start 10 goroutines writing events.
+    var wg sync.WaitGroup
+    for i := 0; i < 10; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for j := 0; j < 50; j++ {
+                ew.Write(context.Background(), Event{
+                    Type:     "test_event",
+                    Severity: SeverityInfo,
+                    ActorIP:  "127.0.0.1",
+                })
+            }
+        }()
+    }
+
+    // Concurrently call SetSyslog multiple times.
+    // Use nil SyslogWriter — we're testing the atomic access, not syslog behavior.
+    for i := 0; i < 20; i++ {
+        ew.SetSyslog(nil)
+    }
+
+    wg.Wait()
+    // If we get here without -race detector firing, the test passes.
 }
 ```
+
+If the project doesn't have a `store.NewForTest` helper, read existing `writer_test.go` or `secure` package tests to find how the store is set up in tests. Adapt accordingly.
 
 **Step 6: Run tests**
 
@@ -706,6 +866,8 @@ func isGCMAuthError(err error) bool {
 
 Add `"strings"` to the import list.
 
+**Known tradeoff:** `isGCMAuthError` uses string matching on our own error wrapping prefix (`"gcm decrypt:"`). This is acceptable because (a) we control the `Decrypt` function that produces these errors, (b) Go's `crypto/cipher` package doesn't export a sentinel error for GCM auth failure, and (c) the only other realistic error from `Decrypt` is `"ciphertext too short"` which has a clearly different prefix. If the error wrapping in `Decrypt` is ever changed, `isGCMAuthError` must be updated to match.
+
 **Step 3: Run tests**
 
 Run: `go test ./internal/crypto/... -v`
@@ -746,6 +908,8 @@ LIMIT $8;
 **Step 2: Regenerate**
 
 Run: `sqlc generate`
+
+This will regenerate `security_events.sql.go` with a new function signature (8 params instead of 7 — the new cursor_id param). The generated function is not called by any production code (the hand-written `ListSecurityEvents` method is the canonical implementation), so no callers need updating.
 
 **Step 3: Verify the generated code compiles**
 
@@ -795,6 +959,8 @@ if cfg.SSOEncryptionKeyPrevious != "" {
 ```
 
 Only warn when the field is non-empty but invalid. Empty is fine (means "not configured").
+
+Add `"log/slog"` to the import list in `reloadable.go` — it doesn't currently import slog.
 
 **Step 2: Run tests**
 

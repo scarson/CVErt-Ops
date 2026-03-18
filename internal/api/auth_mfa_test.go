@@ -1216,6 +1216,65 @@ func TestMFAMethodsListEmpty(t *testing.T) {
 	}
 }
 
+func TestMFAMethods_RequiredReasons_StructuredFormat(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "reasons@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(reg.OrgID)
+
+	// Login first (before MFA mandate) to get access token.
+	loginResp := doLogin(t, ctx, ts, "reasons@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	// Set org-level MFA mandate AFTER login so the access token is valid.
+	if _, err := db.Pool().Exec(ctx, "UPDATE organizations SET mfa_required_all = true WHERE id = $1", orgID); err != nil {
+		t.Fatalf("set mfa_required_all: %v", err)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		ts.URL+"/api/v1/auth/mfa/methods", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := ts.Client().Do(req) //nolint:gosec
+	if err != nil {
+		t.Fatalf("methods list: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("methods list: got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Required        bool `json:"required"`
+		RequiredReasons []struct {
+			Source  string `json:"source"`
+			OrgName string `json:"org_name"`
+		} `json:"required_reasons"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if !body.Required {
+		t.Fatal("expected required=true")
+	}
+	if len(body.RequiredReasons) != 1 {
+		t.Fatalf("expected 1 required_reason, got %d: %v", len(body.RequiredReasons), body.RequiredReasons)
+	}
+	if body.RequiredReasons[0].Source != "org_policy" {
+		t.Errorf("expected source=org_policy, got %q", body.RequiredReasons[0].Source)
+	}
+	if body.RequiredReasons[0].OrgName != "reasons's Organization" {
+		t.Errorf("expected org_name=%q, got %q", "reasons's Organization", body.RequiredReasons[0].OrgName)
+	}
+}
+
 func TestMFARemoveMethod(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

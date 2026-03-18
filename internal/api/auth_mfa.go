@@ -907,12 +907,18 @@ type mfaMethodEntry struct {
 	CreatedAt time.Time `json:"created_at" doc:"When this method was enrolled"`
 }
 
+// mfaRequiredReason describes why MFA is required for a user.
+type mfaRequiredReason struct {
+	Source  string `json:"source"             doc:"Reason source (site_admin, org_owner, org_policy, per_member, db_error)"`
+	OrgName string `json:"org_name,omitempty" doc:"Org name (for org_policy and per_member reasons)"`
+}
+
 type mfaMethodsOutput struct {
 	Body struct {
-		Methods                []mfaMethodEntry `json:"methods"`
-		RecoveryCodesRemaining int              `json:"recovery_codes_remaining"`
-		Required               bool             `json:"required"          doc:"Whether MFA is required for this user"`
-		RequiredReasons        []string         `json:"required_reasons"  doc:"Why MFA is required (site_admin, org_owner, org_policy, per_member)"`
+		Methods                []mfaMethodEntry    `json:"methods"`
+		RecoveryCodesRemaining int                 `json:"recovery_codes_remaining"`
+		Required               bool                `json:"required"          doc:"Whether MFA is required for this user"`
+		RequiredReasons        []mfaRequiredReason `json:"required_reasons"  doc:"Why MFA is required"`
 	}
 }
 
@@ -1297,8 +1303,8 @@ func (srv *Server) clearEnrollmentPending(ctx context.Context, pendingToken stri
 // buildMFARequiredReasons returns the list of reasons why MFA is required
 // for this user (empty if not required). Fail-closed: DB errors add a
 // "db_error" reason so MFA appears mandatory when status is unknown.
-func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID) []string {
-	var reasons []string
+func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID) []mfaRequiredReason {
+	var reasons []mfaRequiredReason
 	var dbErr bool
 
 	isSiteAdmin, err := srv.store.IsSiteAdmin(ctx, userID)
@@ -1308,7 +1314,7 @@ func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID
 	}
 
 	if srv.cfg.MFARequiredSiteAdmins && isSiteAdmin {
-		reasons = append(reasons, "site_admin")
+		reasons = append(reasons, mfaRequiredReason{Source: "site_admin"})
 	}
 
 	if srv.cfg.MFARequiredOrgOwners {
@@ -1318,33 +1324,33 @@ func (srv *Server) buildMFARequiredReasons(ctx context.Context, userID uuid.UUID
 			dbErr = true
 		}
 		if isOwner {
-			reasons = append(reasons, "org_owner")
+			reasons = append(reasons, mfaRequiredReason{Source: "org_owner"})
 		}
 	}
 
-	inReqOrg, err := srv.store.UserInMFARequiredOrg(ctx, userID)
+	orgPolicyNames, err := srv.store.UserMFARequiredOrgNames(ctx, userID)
 	if err != nil {
 		slog.WarnContext(ctx, "mfa-reasons: check org-wide", "error", err)
 		dbErr = true
 	}
-	if inReqOrg {
-		reasons = append(reasons, "org_policy")
+	for _, name := range orgPolicyNames {
+		reasons = append(reasons, mfaRequiredReason{Source: "org_policy", OrgName: name})
 	}
 
-	hasReq, err := srv.store.UserHasMFARequirement(ctx, userID)
+	perMemberNames, err := srv.store.UserMFARequirementOrgNames(ctx, userID)
 	if err != nil {
 		slog.WarnContext(ctx, "mfa-reasons: check per-member", "error", err)
 		dbErr = true
 	}
-	if hasReq {
-		reasons = append(reasons, "per_member")
+	for _, name := range perMemberNames {
+		reasons = append(reasons, mfaRequiredReason{Source: "per_member", OrgName: name})
 	}
 
 	// Fail-closed: if any DB check failed and no explicit reason was found,
 	// report MFA as required so the UI doesn't show "not required" when we
 	// can't determine the real status.
 	if dbErr && len(reasons) == 0 {
-		reasons = append(reasons, "db_error")
+		reasons = append(reasons, mfaRequiredReason{Source: "db_error"})
 	}
 
 	return reasons

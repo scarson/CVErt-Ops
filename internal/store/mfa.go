@@ -579,6 +579,34 @@ func (s *Store) UserInMFARequiredOrg(ctx context.Context, userID uuid.UUID) (boo
 	return required, nil
 }
 
+// UserMFARequiredOrgNames returns org names where the user is a member and org has mfa_required_all=true.
+func (s *Store) UserMFARequiredOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		names, err = q.UserMFARequiredOrgNames(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mfa required org names: %w", err)
+	}
+	return names, nil
+}
+
+// UserMFARequirementOrgNames returns org names from the mfa_requirements table for this user.
+func (s *Store) UserMFARequirementOrgNames(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	var names []string
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		names, err = q.UserMFARequirementOrgNames(ctx, userID)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mfa requirement org names: %w", err)
+	}
+	return names, nil
+}
+
 // MFAConfig holds the site-level config fields needed for the mandate check.
 type MFAConfig struct {
 	RequiredSiteAdmins bool

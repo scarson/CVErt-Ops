@@ -34,8 +34,8 @@ go.work.sum
 
 # Claude Code — personal local settings (credentials, personal permissions)
 .claude/settings.local.json
-# Claude Code hooks (personal guardrail scripts)
-.claude/hooks/
+# Claude Code hooks — track shared hooks, ignore personal guardrails
+.claude/hooks/bash-guard.sh
 # MCP local overrides (personal servers, alternate credentials)
 .mcp.local.json
 

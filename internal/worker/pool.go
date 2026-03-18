@@ -22,6 +22,7 @@ type JobStore interface {
 	CompleteJob(ctx context.Context, id uuid.UUID) error
 	FailJob(ctx context.Context, id uuid.UUID, errMsg string) error
 	RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) (int, error)
+	CountPendingJobs(ctx context.Context) (int64, error)
 }
 
 const (
@@ -291,6 +292,11 @@ func (p *Pool) runStaleRecovery(ctx context.Context) {
 			}
 			if n > 0 {
 				slog.Info("reclaimed stale jobs", "count", n)
+			}
+
+			// Report pending job count as a Prometheus gauge.
+			if count, countErr := p.store.CountPendingJobs(ctx); countErr == nil {
+				metrics.WorkerJobsPending.Set(float64(count))
 			}
 		}
 	}

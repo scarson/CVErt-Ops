@@ -19,10 +19,10 @@ import (
 type fakeJobStore struct {
 	mu sync.Mutex
 
-	claimFn   func(ctx context.Context, queue, workerID string) (*store.Job, error)
+	claimFn    func(ctx context.Context, queue, workerID string) (*store.Job, error)
 	completeFn func(ctx context.Context, id uuid.UUID) error
-	failFn    func(ctx context.Context, id uuid.UUID, errMsg string) error
-	recoverFn func(ctx context.Context, staleAfter time.Duration) (int, error)
+	failFn     func(ctx context.Context, id uuid.UUID, errMsg string) error
+	recoverFn  func(ctx context.Context, staleAfter time.Duration) (int, error)
 }
 
 func (f *fakeJobStore) ClaimJob(ctx context.Context, queue, workerID string) (*store.Job, error) {
@@ -58,6 +58,10 @@ func (f *fakeJobStore) RecoverStaleJobs(ctx context.Context, staleAfter time.Dur
 	if f.recoverFn != nil {
 		return f.recoverFn(ctx, staleAfter)
 	}
+	return 0, nil
+}
+
+func (f *fakeJobStore) CountPendingJobs(_ context.Context) (int64, error) {
 	return 0, nil
 }
 

@@ -315,3 +315,31 @@ Per-section cross-references (from xref agent):
 - Section 4 (API) → testing-pitfalls.md §4 (Validation Symmetry), §3 (Error Paths)
 - Section 5 (Notify) → testing-pitfalls.md §8 (External Dependencies), §14 (Delivery)
 - Section 6 (Arch) → testing-pitfalls.md §5 (Configuration), §13 (Feature Flags)
+
+---
+
+## Part 8: Final Decisions (Post-Review with Sam)
+
+### Section Assignment Adjustments
+1. **Split 1.5 (r.Context):** Handler-side "use WithoutCancel" stays in Section 4 (API). Goroutine lifecycle extensions (join points, shutdown coordination, semaphore controls from NP-H2/H3) go to Section 6 (Architecture).
+2. **Move 4.3 (token_version global logout)** → Section 6 (Architecture). Documented system limitation, not notification-specific.
+3. **Move 4.11 (LLM prompt injection)** → Section 6 (Architecture). AI integration concern.
+
+### Cross-Reference Approach
+Each section gets a **"See Also" block** after the last entry, before the review checklist. Max 3-5 entries. One line each using stable domain-prefixed IDs. Low-maintenance fixed block.
+
+Example:
+```
+### See Also
+- AUTH agents spawning background work: see API-3 (r.Context background goroutines)
+- DB transaction helpers used in handlers: see DB-17 (transaction helper selection)
+```
+
+### Table-Only Finding Expansion: Tiered Approach
+- **Full Flaw/Why/Fix/Lesson:** When the failure mode is non-obvious or the fix requires architectural understanding (e.g., alias split-brain, webhook redirect SSRF, EPSS staging lifecycle, concurrent refresh theft detection)
+- **Condensed paragraph:** When the fix is a one-line pattern substitution and the why is self-evident (e.g., "use time.NewTicker not time.After", "JWT_SECRET missing must fatal", "pg_trgm extension required")
+
+Heuristic: if an implementing agent could correctly apply the fix from just the table row without understanding the failure mode, condensed is fine. If they'd need to understand WHY to apply it correctly, expand fully.
+
+### Verification Items
+6 items dispatched to targeted verification agents. Results will be folded into final section content.

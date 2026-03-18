@@ -58,17 +58,21 @@ Follow the exact structure used by existing entries. The format varies slightly 
 - Keep entries concise — this is a reference log, not a narrative
 - Use commit messages, PR descriptions, and the plan file as source material — don't fabricate details
 
-## Step 3: Run quality checks
+## Step 3: Quality check results
 
-Before writing the entry, run the actual quality checks so you can report real results:
+The "Quality checks" section must report **real** results, not assumptions. But these checks are slow — don't re-run them if they've already passed in this session.
+
+**Check the conversation history first.** If `go build ./...`, `golangci-lint run`, and `go test ./...` have all been run in this conversation (e.g., by `/finishing-a-development-branch`, `/verification-before-completion`, or manual invocation) and their most recent results were clean, use those results directly. Cite them as-is.
+
+**Only re-run checks that are stale or missing.** A check is stale if code has been committed since it last ran. Run only the stale/missing ones:
 
 ```bash
-go build ./...
-golangci-lint run
-go test ./...
+go build ./...         # skip if clean build already in conversation
+golangci-lint run      # skip if clean lint already in conversation
+go test ./...          # skip if all tests passed already in conversation
 ```
 
-Report the real output, not assumptions.
+If you cannot verify that checks have been run, run them — never fabricate results.
 
 ## Step 4: Append the entry
 

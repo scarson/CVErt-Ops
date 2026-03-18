@@ -24,14 +24,14 @@ import (
 func newMFAServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Server) {
 	t.Helper()
 	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
-		JWTSecret:              "mfa-test-secret-at-least-32-bytes",
-		RegistrationMode:       "open",
-		Argon2MaxConcurrent:    5,
-		MFAEmailOTPTTL:         10 * time.Minute,
-		MFAEmailOTPMaxPerHour:  5,
+		JWTSecret:               "mfa-test-secret-at-least-32-bytes",
+		RegistrationMode:        "open",
+		Argon2MaxConcurrent:     5,
+		MFAEmailOTPTTL:          10 * time.Minute,
+		MFAEmailOTPMaxPerHour:   5,
 		MFAChallengeMaxAttempts: 3,
-		MFAPendingTokenTTL:     5 * time.Minute,
-		SSOEncryptionKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // 64 hex chars = 32 bytes
+		MFAPendingTokenTTL:      5 * time.Minute,
+		SSOEncryptionKey:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", // 64 hex chars = 32 bytes
 	}
 	srv, err := NewServer(db.Store, cfg, ServerDeps{})
 	if err != nil {
@@ -831,6 +831,72 @@ func TestTOTPDoubleEnrollment(t *testing.T) {
 
 	if setupResp.StatusCode != http.StatusConflict {
 		t.Fatalf("double enrollment: got %d, want 409", setupResp.StatusCode)
+	}
+}
+
+func TestTOTPConfirmDecryptsWithPreviousKey(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// Use the standard old key for setup.
+	oldKeyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" // 64 hex chars = 32 bytes
+	srv, ts := newMFAServer(t, db)                                                  // uses oldKeyHex as SSOEncryptionKey
+
+	doRegister(t, ctx, ts, "totp-rotate@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "totp-rotate@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	// Call setup — enrollment token's SecretEnc is encrypted with oldKey.
+	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var setupBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(setupResp.Body).Decode(&setupBody); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	setupResp.Body.Close() //nolint:errcheck,gosec
+
+	// Rotate keys: new current key, previous = old key.
+	newKeyHex := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	srv.cfg.SSOEncryptionKey = newKeyHex
+	srv.cfg.SSOEncryptionKeyPrevious = oldKeyHex
+
+	// Generate valid TOTP code from the plaintext secret.
+	code, err := totp.GenerateCode(setupBody.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+
+	// Confirm enrollment — must decrypt with fallback to previous key.
+	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
+	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusOK {
+		body, _ := json.Marshal(confirmResp.Status)
+		t.Fatalf("totp confirm after key rotation: got %d (%s), want 200", confirmResp.StatusCode, string(body))
+	}
+
+	var confirmOut struct {
+		RecoveryCodes []string `json:"recovery_codes"`
+	}
+	if err := json.NewDecoder(confirmResp.Body).Decode(&confirmOut); err != nil {
+		t.Fatalf("decode confirm: %v", err)
+	}
+	if len(confirmOut.RecoveryCodes) != 10 {
+		t.Errorf("expected 10 recovery codes, got %d", len(confirmOut.RecoveryCodes))
 	}
 }
 

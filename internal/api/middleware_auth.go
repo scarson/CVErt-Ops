@@ -11,17 +11,33 @@ import (
 	"strings"
 
 	"github.com/scarson/cvert-ops/internal/auth"
-	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/secure"
 )
 
-// jwtPreviousSecret returns the previous JWT secret as bytes for key rotation,
-// or nil if no previous secret is configured.
-func jwtPreviousSecret(cfg *config.Config) []byte {
-	if cfg.JWTSecretPrevious == "" {
+// jwtSecret returns the active JWT signing/verification secret.
+// Reads from the hot-reloadable config holder if available;
+// falls back to the startup config.
+func (srv *Server) jwtSecret() []byte {
+	if srv.configHolder != nil {
+		if rc := srv.configHolder.Load(); rc != nil && len(rc.JWTSecret) > 0 {
+			return rc.JWTSecret
+		}
+	}
+	return []byte(srv.cfg.JWTSecret)
+}
+
+// jwtPreviousSecretBytes returns the previous JWT secret for dual-key
+// rotation, or nil if no previous secret is configured.
+func (srv *Server) jwtPreviousSecretBytes() []byte {
+	if srv.configHolder != nil {
+		if rc := srv.configHolder.Load(); rc != nil && len(rc.JWTSecretPrevious) > 0 {
+			return rc.JWTSecretPrevious
+		}
+	}
+	if srv.cfg.JWTSecretPrevious == "" {
 		return nil
 	}
-	return []byte(cfg.JWTSecretPrevious)
+	return []byte(srv.cfg.JWTSecretPrevious)
 }
 
 // RequireAuthenticated returns a middleware that requires a valid JWT access-token
@@ -45,7 +61,7 @@ func (srv *Server) RequireAuthenticated() func(http.Handler) http.Handler {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			claims, err := auth.ParseAccessToken(cookie.Value, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+			claims, err := auth.ParseAccessToken(cookie.Value, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 			if err != nil {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
 				return

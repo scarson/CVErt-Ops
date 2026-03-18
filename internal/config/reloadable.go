@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -55,7 +56,7 @@ func (h *Holder) Store(cfg *ReloadableConfig) {
 // LoadFromSecretsFile parses a secrets file (one KEY=VALUE per line) and returns
 // a ReloadableConfig. Comments (#) and blank lines are skipped. Returns an error
 // on invalid values so the caller can keep the previous config.
-func LoadFromSecretsFile(path string) (*ReloadableConfig, error) {
+func LoadFromSecretsFile(path string, baseline *ReloadableConfig) (*ReloadableConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open secrets file: %w", err)
@@ -79,7 +80,17 @@ func LoadFromSecretsFile(path string) (*ReloadableConfig, error) {
 		return nil, fmt.Errorf("read secrets file: %w", err)
 	}
 
-	rc := &ReloadableConfig{}
+	// Start from a copy of the baseline so absent fields keep their current values.
+	// Deep-copy []byte slices so old and new configs don't share backing arrays.
+	var rc *ReloadableConfig
+	if baseline != nil {
+		base := *baseline
+		base.JWTSecret = append([]byte(nil), baseline.JWTSecret...)
+		base.JWTSecretPrevious = append([]byte(nil), baseline.JWTSecretPrevious...)
+		rc = &base
+	} else {
+		rc = &ReloadableConfig{}
+	}
 
 	// JWT secrets.
 	if v, ok := kv["JWT_SECRET"]; ok && v != "" {
@@ -111,13 +122,25 @@ func LoadFromSecretsFile(path string) (*ReloadableConfig, error) {
 		rc.SSOEncryptionKeyPrev = key
 	}
 
-	// String fields.
-	rc.LogLevel = kv["LOG_LEVEL"]
-	rc.SMTPHost = kv["SMTP_HOST"]
-	rc.SMTPFrom = kv["SMTP_FROM"]
-	rc.SMTPUsername = kv["SMTP_USERNAME"]
-	rc.SMTPPassword = kv["SMTP_PASSWORD"]
-	rc.SIEMSyslogAddr = kv["SIEM_SYSLOG_ADDR"]
+	// String fields — only overwrite when present in the file.
+	if v, ok := kv["LOG_LEVEL"]; ok {
+		rc.LogLevel = v
+	}
+	if v, ok := kv["SMTP_HOST"]; ok {
+		rc.SMTPHost = v
+	}
+	if v, ok := kv["SMTP_FROM"]; ok {
+		rc.SMTPFrom = v
+	}
+	if v, ok := kv["SMTP_USERNAME"]; ok {
+		rc.SMTPUsername = v
+	}
+	if v, ok := kv["SMTP_PASSWORD"]; ok {
+		rc.SMTPPassword = v
+	}
+	if v, ok := kv["SIEM_SYSLOG_ADDR"]; ok {
+		rc.SIEMSyslogAddr = v
+	}
 
 	// SMTP port.
 	if v, ok := kv["SMTP_PORT"]; ok && v != "" {
@@ -161,14 +184,25 @@ func LoadFromConfig(cfg *Config) *ReloadableConfig {
 		SMTPUsername:      cfg.SMTPUsername,
 		SMTPPassword:      cfg.SMTPPassword,
 		SMTPTLS:           cfg.SMTPTLS,
+		SIEMSyslogAddr:    cfg.SIEMSyslogAddr,
+		SIEMSyslogFormat:  cfg.SIEMSyslogFormat,
 	}
 
-	// Decode hex SSO keys from Config (best-effort; invalid keys stay zeroed).
-	if key, err := decodeHexKey(cfg.SSOEncryptionKey, "SSO_ENCRYPTION_KEY"); err == nil {
-		rc.SSOEncryptionKey = key
+	// Decode hex SSO keys from Config. Warn on invalid non-empty values so
+	// operators notice misconfiguration at startup.
+	if cfg.SSOEncryptionKey != "" {
+		if key, err := decodeHexKey(cfg.SSOEncryptionKey, "SSO_ENCRYPTION_KEY"); err == nil {
+			rc.SSOEncryptionKey = key
+		} else {
+			slog.Warn("invalid SSO_ENCRYPTION_KEY — SSO encryption will not work", "error", err)
+		}
 	}
-	if key, err := decodeHexKey(cfg.SSOEncryptionKeyPrevious, "SSO_ENCRYPTION_KEY_PREVIOUS"); err == nil {
-		rc.SSOEncryptionKeyPrev = key
+	if cfg.SSOEncryptionKeyPrevious != "" {
+		if key, err := decodeHexKey(cfg.SSOEncryptionKeyPrevious, "SSO_ENCRYPTION_KEY_PREVIOUS"); err == nil {
+			rc.SSOEncryptionKeyPrev = key
+		} else {
+			slog.Warn("invalid SSO_ENCRYPTION_KEY_PREVIOUS — dual-key rotation will not work", "error", err)
+		}
 	}
 
 	return rc

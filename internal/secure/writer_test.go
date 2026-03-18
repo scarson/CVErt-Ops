@@ -4,6 +4,7 @@ package secure_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -100,6 +101,45 @@ func TestSecurityEventWriter_DifferentKeysNotLimited(t *testing.T) {
 	if count != 20 {
 		t.Errorf("expected 20 events, got %d", count)
 	}
+}
+
+func TestSecurityEventWriter_SetSyslogRaceSafe(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ew := secure.NewEventWriter(db.Store)
+	defer ew.Stop()
+
+	ctx := context.Background()
+	const goroutines = 20
+
+	// Start multiple goroutines calling Write concurrently.
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				ew.Write(ctx, secure.Event{
+					Type:     secure.EventAuthLoginFailed,
+					Severity: secure.SeverityInfo,
+					ActorIP:  "10.0.0.99",
+				})
+			}
+		}()
+	}
+
+	// Concurrently call SetSyslog while writes are in flight.
+	// Use nil to avoid needing a real syslog connection — the point is
+	// to exercise the concurrent access path under the race detector.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 100 {
+			ew.SetSyslog(nil)
+		}
+	}()
+
+	wg.Wait()
+	// If no race detector fires, the test passes.
 }
 
 // countSecurityEvents returns the total number of rows in security_events.

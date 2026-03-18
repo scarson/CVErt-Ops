@@ -13,7 +13,8 @@ import (
 )
 
 // adminReloadConfigHandler handles POST /api/v1/admin/reload-config.
-// Re-reads the secrets file and atomically updates the config holder.
+// Re-reads the secrets file and atomically updates the config holder via
+// config.ReloadConfig, which also calls the feed rescan function on success.
 // Does not accept secrets in the request body (avoids leaking secrets in HTTP logs).
 func (srv *Server) adminReloadConfigHandler(w http.ResponseWriter, r *http.Request) {
 	secretsFile := srv.cfg.SecretsFile
@@ -28,15 +29,16 @@ func (srv *Server) adminReloadConfigHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	newCfg, err := config.LoadFromSecretsFile(secretsFile)
-	if err != nil {
-		slog.WarnContext(r.Context(), "admin reload-config: invalid secrets file", "error", err)
-		writeProblem(w, http.StatusBadRequest, err.Error())
+	// Use ReloadConfig for parity with SIGHUP handler (includes rescan).
+	oldCfg := srv.configHolder.Load()
+	config.ReloadConfig(srv.configHolder, secretsFile, srv.rescanFunc)
+	newCfg := srv.configHolder.Load()
+
+	// If the pointer didn't change, reload failed — config was kept.
+	if oldCfg == newCfg {
+		writeProblem(w, http.StatusBadRequest, "config reload failed: check server logs for details")
 		return
 	}
-
-	srv.configHolder.Store(newCfg)
-	slog.InfoContext(r.Context(), "config reloaded via admin API")
 
 	if srv.eventWriter != nil {
 		callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)

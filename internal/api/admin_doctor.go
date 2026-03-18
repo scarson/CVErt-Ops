@@ -3,6 +3,7 @@
 package api
 
 import (
+	"encoding/hex"
 	"net/http"
 
 	"github.com/scarson/cvert-ops/internal/doctor"
@@ -10,18 +11,34 @@ import (
 
 // doctorHandler runs all doctor checks and returns results as JSON.
 func (srv *Server) doctorHandler(w http.ResponseWriter, r *http.Request) {
+	ssoKey, ssoErr := srv.ssoEncryptionKey()
+	ssoPrev := srv.ssoEncryptionKeyPrevious()
+
+	var ssoKeyHex, ssoPrevHex string
+	if ssoErr == nil && ssoKey != [32]byte{} {
+		ssoKeyHex = hex.EncodeToString(ssoKey[:])
+	}
+	if ssoPrev != ([32]byte{}) {
+		ssoPrevHex = hex.EncodeToString(ssoPrev[:])
+	}
+
+	var jwtPrevStr string
+	if prev := srv.jwtPreviousSecretBytes(); prev != nil {
+		jwtPrevStr = string(prev)
+	}
+
 	checks := doctor.StandardChecks(doctor.StandardChecksConfig{
 		DB:                       srv.store.Pool(),
 		ExpectedSchemaVersion:    srv.expectedSchemaVersion,
-		SSOEncryptionKey:         srv.cfg.SSOEncryptionKey,
-		SSOEncryptionKeyPrevious: srv.cfg.SSOEncryptionKeyPrevious,
-		JWTSecret:                srv.cfg.JWTSecret,
-		JWTSecretPrevious:        srv.cfg.JWTSecretPrevious,
+		SSOEncryptionKey:         ssoKeyHex,
+		SSOEncryptionKeyPrevious: ssoPrevHex,
+		JWTSecret:                string(srv.jwtSecret()),
+		JWTSecretPrevious:        jwtPrevStr,
 		SMTPHost:                 srv.cfg.SMTPHost,
 		SMTPPort:                 srv.cfg.SMTPPort,
 		SMTPUsername:             srv.cfg.SMTPUsername,
-		CORSAllowedOrigins:      srv.cfg.CORSAllowedOrigins,
-		CookieAuth:               true, // always cookie-based auth with web SPA
+		CORSAllowedOrigins:       srv.cfg.CORSAllowedOrigins,
+		CookieAuth:               true,
 		ServerAddr:               "http://" + srv.cfg.ListenAddr,
 	})
 

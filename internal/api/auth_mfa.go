@@ -33,8 +33,8 @@ const enrollmentTokenTTL = 5 * time.Minute
 // login verification and enrollment confirmation.
 var totpValidateOpts = totp.ValidateOpts{
 	Period:    30,
-	Skew:     1,
-	Digits:   6,
+	Skew:      1,
+	Digits:    6,
 	Algorithm: otp.AlgorithmSHA1,
 }
 
@@ -261,7 +261,7 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 
 	if len(remaining) > 0 {
 		// More steps needed — reissue pending token with remaining items.
-		secret := []byte(srv.cfg.JWTSecret)
+		secret := srv.jwtSecret()
 		// Methods are no longer relevant after MFA challenge is cleared.
 		pendingToken, ptErr := auth.IssuePendingToken(
 			secret, claims.UserID, claims.TokenVersion,
@@ -315,7 +315,7 @@ func (srv *Server) validatePendingToken(tokenStr string, expectedStep string) (*
 	if tokenStr == "" {
 		return nil, fmt.Errorf("missing pending token")
 	}
-	claims, err := auth.ParsePendingToken(tokenStr, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParsePendingToken(tokenStr, srv.jwtSecret())
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +327,7 @@ func (srv *Server) validatePendingToken(tokenStr string, expectedStep string) (*
 
 // reissuePendingTokenCookies reissues the pending token with a fresh TTL.
 func (srv *Server) reissuePendingTokenCookies(claims *auth.PendingClaims) ([]string, error) {
-	secret := []byte(srv.cfg.JWTSecret)
+	secret := srv.jwtSecret()
 	token, err := auth.IssuePendingToken(
 		secret, claims.UserID, claims.TokenVersion,
 		claims.Pending, claims.Methods, srv.cfg.MFAPendingTokenTTL,
@@ -340,7 +340,7 @@ func (srv *Server) reissuePendingTokenCookies(claims *auth.PendingClaims) ([]str
 
 // issueFullAuthTokens creates and returns access + refresh token cookies.
 func (srv *Server) issueFullAuthTokens(ctx context.Context, user *generated.User) ([]string, error) {
-	secret := []byte(srv.cfg.JWTSecret)
+	secret := srv.jwtSecret()
 	jti := uuid.New()
 	accessToken, err := auth.IssueAccessToken(secret, user.ID, int(user.TokenVersion), accessTokenTTL)
 	if err != nil {
@@ -576,7 +576,7 @@ func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupI
 	}
 
 	// Issue enrollment token (short-lived JWT containing encrypted secret).
-	jwtSecret := []byte(srv.cfg.JWTSecret)
+	jwtSecret := srv.jwtSecret()
 	enrollToken, err := auth.IssueEnrollmentToken(jwtSecret, userID, secretEnc, enrollmentTokenTTL)
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-setup: issue enrollment token", "error", err)
@@ -591,10 +591,10 @@ func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupI
 }
 
 type mfaTOTPConfirmInput struct {
-	AccessToken       string `cookie:"access_token"`
-	MFAPendingToken   string `cookie:"mfa_pending_token"`
-	MFAEnrollToken    string `cookie:"mfa_enroll_token"`
-	Body              struct {
+	AccessToken     string `cookie:"access_token"`
+	MFAPendingToken string `cookie:"mfa_pending_token"`
+	MFAEnrollToken  string `cookie:"mfa_enroll_token"`
+	Body            struct {
 		Code string `json:"code" minLength:"6" maxLength:"6" doc:"6-digit TOTP code from authenticator app"`
 	}
 }
@@ -619,7 +619,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	if input.MFAEnrollToken == "" {
 		return nil, huma.Error401Unauthorized("enrollment token required — call setup first")
 	}
-	enrollClaims, err := auth.ParseEnrollmentToken(input.MFAEnrollToken, []byte(srv.cfg.JWTSecret))
+	enrollClaims, err := auth.ParseEnrollmentToken(input.MFAEnrollToken, srv.jwtSecret())
 	if err != nil {
 		return nil, huma.Error401Unauthorized("invalid or expired enrollment token")
 	}
@@ -633,7 +633,8 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 		slog.ErrorContext(ctx, "totp-confirm: encryption key", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}
-	secretBytes, err := crypto.Decrypt(encKey, enrollClaims.SecretEnc)
+	prevKey := srv.ssoEncryptionKeyPrevious()
+	secretBytes, err := crypto.DecryptWithFallback(encKey, prevKey, enrollClaims.SecretEnc)
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: decrypt secret", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -1147,11 +1148,11 @@ func (srv *Server) generateFirstEnrollmentRecoveryCodes(ctx context.Context, use
 // resolveEnrollmentUserID extracts the user ID from either an access token
 // or a pending enrollment token. Returns 401 if neither is valid.
 func (srv *Server) resolveEnrollmentUserID(accessToken, pendingToken string) (uuid.UUID, error) {
-	secret := []byte(srv.cfg.JWTSecret)
+	secret := srv.jwtSecret()
 
 	// Try access token first (fully authenticated user).
 	if accessToken != "" {
-		claims, err := auth.ParseAccessToken(accessToken, secret, jwtPreviousSecret(srv.cfg))
+		claims, err := auth.ParseAccessToken(accessToken, secret, srv.jwtPreviousSecretBytes())
 		if err == nil {
 			return claims.UserID, nil
 		}
@@ -1178,7 +1179,7 @@ func (srv *Server) resolveAccessTokenUserID(accessToken string) (uuid.UUID, erro
 	if accessToken == "" {
 		return uuid.Nil, huma.Error401Unauthorized("authentication required")
 	}
-	claims, err := auth.ParseAccessToken(accessToken, []byte(srv.cfg.JWTSecret), jwtPreviousSecret(srv.cfg))
+	claims, err := auth.ParseAccessToken(accessToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
 		return uuid.Nil, huma.Error401Unauthorized("invalid or expired access token")
 	}
@@ -1216,13 +1217,13 @@ func clearEnrollmentCookie(secure bool) string {
 // clearEnrollmentPending removes "mfa_enrollment_required" from the pending
 // token and reissues it. If no items remain, issues full auth tokens.
 func (srv *Server) clearEnrollmentPending(pendingToken string) []string {
-	claims, err := auth.ParsePendingToken(pendingToken, []byte(srv.cfg.JWTSecret))
+	claims, err := auth.ParsePendingToken(pendingToken, srv.jwtSecret())
 	if err != nil {
 		return nil
 	}
 	remaining := removePendingItem(claims.Pending, "mfa_enrollment_required")
 	if len(remaining) > 0 {
-		secret := []byte(srv.cfg.JWTSecret)
+		secret := srv.jwtSecret()
 		token, err := auth.IssuePendingToken(secret, claims.UserID, claims.TokenVersion, remaining, nil, srv.cfg.MFAPendingTokenTTL)
 		if err != nil {
 			slog.Error("mfa: reissue pending after enrollment", "error", err)

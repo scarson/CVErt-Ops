@@ -59,12 +59,12 @@ type Config struct {
 	LockoutDuration  time.Duration `env:"LOCKOUT_DURATION"  envDefault:"15m"`
 
 	// ── Auth — MFA ──────────────────────────────────────────────────────────
-	MFARequiredSiteAdmins  bool          `env:"MFA_REQUIRED_SITE_ADMINS"   envDefault:"false"`
-	MFARequiredOrgOwners   bool          `env:"MFA_REQUIRED_ORG_OWNERS"    envDefault:"false"`
-	MFAEmailOTPTTL         time.Duration `env:"MFA_EMAIL_OTP_TTL"          envDefault:"10m"`
-	MFAEmailOTPMaxPerHour  int           `env:"MFA_EMAIL_OTP_MAX_PER_HOUR" envDefault:"5"`
+	MFARequiredSiteAdmins   bool          `env:"MFA_REQUIRED_SITE_ADMINS"   envDefault:"false"`
+	MFARequiredOrgOwners    bool          `env:"MFA_REQUIRED_ORG_OWNERS"    envDefault:"false"`
+	MFAEmailOTPTTL          time.Duration `env:"MFA_EMAIL_OTP_TTL"          envDefault:"10m"`
+	MFAEmailOTPMaxPerHour   int           `env:"MFA_EMAIL_OTP_MAX_PER_HOUR" envDefault:"5"`
 	MFAChallengeMaxAttempts int           `env:"MFA_CHALLENGE_MAX_ATTEMPTS" envDefault:"3"`
-	MFAPendingTokenTTL     time.Duration `env:"MFA_PENDING_TOKEN_TTL"      envDefault:"5m"`
+	MFAPendingTokenTTL      time.Duration `env:"MFA_PENDING_TOKEN_TTL"      envDefault:"5m"`
 
 	// ── CORS ─────────────────────────────────────────────────────────────────
 	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
@@ -104,6 +104,10 @@ type Config struct {
 	AICacheSummarizeTTL        time.Duration `env:"AI_CACHE_SUMMARIZE_TTL"          envDefault:"24h"`
 	AILogRetentionDays         int           `env:"AI_LOG_RETENTION_DAYS"            envDefault:"90"`
 	GeminiMock                 bool          `env:"GEMINI_MOCK"                     envDefault:"false"`
+
+	// ── SIEM — Syslog forwarding ────────────────────────────────────────────────
+	SIEMSyslogAddr   string `env:"SIEM_SYSLOG_ADDR"`                     // e.g., "udp://splunk:514"; empty = disabled
+	SIEMSyslogFormat string `env:"SIEM_SYSLOG_FORMAT" envDefault:"json"` // "json" or "cef"
 
 	// ── Secrets file (SIGHUP reload) ─────────────────────────────────────────────
 	SecretsFile string `env:"CVERTOPS_SECRETS_FILE"`
@@ -189,6 +193,8 @@ func (c *Config) LogValue() slog.Value {
 		slog.String("nvd_api_key", masked(c.NVDAPIKey)),
 		slog.String("sso_encryption_key", masked(c.SSOEncryptionKey)),
 		slog.String("sso_encryption_key_previous", masked(c.SSOEncryptionKeyPrevious)),
+		slog.String("siem_syslog_addr", c.SIEMSyslogAddr),
+		slog.String("siem_syslog_format", c.SIEMSyslogFormat),
 	)
 }
 

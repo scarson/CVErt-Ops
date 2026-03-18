@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -912,6 +913,122 @@ func newAuditSSOServer(t *testing.T, db *testutil.TestDB) (*Server, *httptest.Se
 	w := audit.NewWriter(db.Store, slog.Default())
 	srv.auditWriter = w
 	return srv, ts, w
+}
+
+// ── Config holder integration ────────────────────────────────────────────────
+
+func TestSSOEncryptionKey_ReadsFromConfigHolder(t *testing.T) {
+	t.Parallel()
+
+	// The holder has a different key than srv.cfg.
+	holderKey := [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
+	startupKey := [32]byte{99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+		99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99}
+
+	holder := config.NewHolder(&config.ReloadableConfig{
+		SSOEncryptionKey: holderKey,
+	})
+	cfg := &config.Config{ //nolint:exhaustruct // test: only SSO key needed
+		SSOEncryptionKey: hex.EncodeToString(startupKey[:]),
+	}
+	srv, _ := NewServer(nil, cfg, ServerDeps{ConfigHolder: holder})
+	t.Cleanup(srv.Close)
+
+	got, err := srv.ssoEncryptionKey()
+	if err != nil {
+		t.Fatalf("ssoEncryptionKey: %v", err)
+	}
+	if got != holderKey {
+		t.Errorf("ssoEncryptionKey returned startup key, want holder key")
+	}
+}
+
+func TestSSOEncryptionKey_FallsBackToStartupConfig(t *testing.T) {
+	t.Parallel()
+
+	startupKey := [32]byte{42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+		42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42}
+
+	// No config holder — should fall back to startup config.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only SSO key needed
+		SSOEncryptionKey: hex.EncodeToString(startupKey[:]),
+	}
+	srv, _ := NewServer(nil, cfg, ServerDeps{})
+	t.Cleanup(srv.Close)
+
+	got, err := srv.ssoEncryptionKey()
+	if err != nil {
+		t.Fatalf("ssoEncryptionKey: %v", err)
+	}
+	if got != startupKey {
+		t.Errorf("ssoEncryptionKey should fall back to startup config when no holder")
+	}
+}
+
+func TestSSOEncryptionKey_FallsBackWhenHolderHasZeroKey(t *testing.T) {
+	t.Parallel()
+
+	startupKey := [32]byte{42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+		42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42}
+
+	// Holder has zero-value SSO key — should fall back to startup config.
+	holder := config.NewHolder(&config.ReloadableConfig{})
+	cfg := &config.Config{ //nolint:exhaustruct // test: only SSO key needed
+		SSOEncryptionKey: hex.EncodeToString(startupKey[:]),
+	}
+	srv, _ := NewServer(nil, cfg, ServerDeps{ConfigHolder: holder})
+	t.Cleanup(srv.Close)
+
+	got, err := srv.ssoEncryptionKey()
+	if err != nil {
+		t.Fatalf("ssoEncryptionKey: %v", err)
+	}
+	if got != startupKey {
+		t.Errorf("ssoEncryptionKey should fall back to startup config when holder has zero key")
+	}
+}
+
+func TestSSOEncryptionKeyPrevious_ReadsFromConfigHolder(t *testing.T) {
+	t.Parallel()
+
+	holderPrevKey := [32]byte{10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160,
+		170, 180, 190, 200, 210, 220, 230, 240, 250, 1, 2, 3, 4, 5, 6, 7}
+	startupPrevKey := [32]byte{88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88,
+		88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88, 88}
+
+	holder := config.NewHolder(&config.ReloadableConfig{
+		SSOEncryptionKeyPrev: holderPrevKey,
+	})
+	cfg := &config.Config{ //nolint:exhaustruct // test: only SSO prev key needed
+		SSOEncryptionKeyPrevious: hex.EncodeToString(startupPrevKey[:]),
+	}
+	srv, _ := NewServer(nil, cfg, ServerDeps{ConfigHolder: holder})
+	t.Cleanup(srv.Close)
+
+	got := srv.ssoEncryptionKeyPrevious()
+	if got != holderPrevKey {
+		t.Errorf("ssoEncryptionKeyPrevious returned startup key, want holder key")
+	}
+}
+
+func TestSSOEncryptionKeyPrevious_FallsBackToStartupConfig(t *testing.T) {
+	t.Parallel()
+
+	startupPrevKey := [32]byte{77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77,
+		77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77, 77}
+
+	// No config holder — should fall back to startup config.
+	cfg := &config.Config{ //nolint:exhaustruct // test: only SSO prev key needed
+		SSOEncryptionKeyPrevious: hex.EncodeToString(startupPrevKey[:]),
+	}
+	srv, _ := NewServer(nil, cfg, ServerDeps{})
+	t.Cleanup(srv.Close)
+
+	got := srv.ssoEncryptionKeyPrevious()
+	if got != startupPrevKey {
+		t.Errorf("ssoEncryptionKeyPrevious should fall back to startup config when no holder")
+	}
 }
 
 func TestAudit_SSOOperations(t *testing.T) {

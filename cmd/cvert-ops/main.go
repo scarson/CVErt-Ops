@@ -202,12 +202,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	eventWriter := secure.NewEventWriter(st)
 	defer eventWriter.Stop()
 
+	// Wire SIEM syslog forwarding if configured.
+	if cfg.SIEMSyslogAddr != "" {
+		sw, sErr := secure.NewSyslogWriter(cfg.SIEMSyslogAddr, cfg.SIEMSyslogFormat)
+		if sErr != nil {
+			slog.Error("SIEM syslog initialization failed — events will only go to database", "error", sErr)
+		} else if sw != nil {
+			eventWriter.SetSyslog(sw)
+			// Do NOT defer sw.Close() here — EventWriter.Stop() already closes it.
+			slog.Info("SIEM syslog forwarding enabled", "addr", cfg.SIEMSyslogAddr, "format", cfg.SIEMSyslogFormat)
+		}
+	}
+
 	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
 		AlertCache:            alertCache,
 		AlertEvaluator:        alertEval,
 		LLM:                   llm,
 		EventWriter:           eventWriter,
 		ConfigHolder:          configHolder,
+		RescanFunc:            nil, // Feed rescan wiring is future work.
 		ExpectedSchemaVersion: expectedSchemaVersion,
 		VersionInfo: api.VersionInfo{
 			Version:   version,

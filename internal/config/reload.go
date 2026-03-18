@@ -20,7 +20,7 @@ func ReloadConfig(holder *Holder, secretsFile string, rescan func()) {
 		return
 	}
 
-	newCfg, err := LoadFromSecretsFile(secretsFile)
+	newCfg, err := LoadFromSecretsFile(secretsFile, holder.Load())
 	if err != nil {
 		slog.Error("config reload failed — keeping current config", "error", err)
 		return

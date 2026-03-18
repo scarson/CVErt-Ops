@@ -5,6 +5,7 @@ package crypto
 import (
 	"bytes"
 	"crypto/rand"
+	"strings"
 	"testing"
 )
 
@@ -200,6 +201,27 @@ func TestDecryptWithFallback_NoPreviousKey(t *testing.T) {
 	}
 	if !bytes.Equal(got, plaintext) {
 		t.Errorf("plaintext mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestDecryptWithFallback_TruncatedCiphertext_NoFallback(t *testing.T) {
+	t.Parallel()
+	// Data too short for a nonce (< 12 bytes). This is a structural error,
+	// not a GCM auth failure. Fallback to previous key should NOT be attempted.
+	currentKey := [32]byte{1}
+	previousKey := [32]byte{2}
+	shortData := []byte("short")
+
+	_, err := DecryptWithFallback(currentKey, previousKey, shortData)
+	if err == nil {
+		t.Fatal("DecryptWithFallback succeeded on truncated ciphertext, want error")
+	}
+	if !strings.Contains(err.Error(), "ciphertext too short") {
+		t.Errorf("expected 'ciphertext too short' error, got: %v", err)
+	}
+	// Fallback should NOT have been attempted, so "both keys failed" should be absent.
+	if strings.Contains(err.Error(), "both keys failed") {
+		t.Errorf("fallback was attempted on structural error; got: %v", err)
 	}
 }
 

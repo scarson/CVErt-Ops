@@ -208,6 +208,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		LLM:                   llm,
 		EventWriter:           eventWriter,
 		ConfigHolder:          configHolder,
+		RescanFunc:            nil, // Feed rescan wiring is future work.
 		ExpectedSchemaVersion: expectedSchemaVersion,
 		VersionInfo: api.VersionInfo{
 			Version:   version,

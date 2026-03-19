@@ -23,6 +23,30 @@ func (q *Queries) AcceptInvitation(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const countActiveOrgMembers = `-- name: CountActiveOrgMembers :one
+SELECT COUNT(*)::int FROM org_members
+WHERE org_id = $1 AND deactivated_at IS NULL
+`
+
+func (q *Queries) CountActiveOrgMembers(ctx context.Context, orgID uuid.UUID) (int32, error) {
+	row := q.db.QueryRowContext(ctx, countActiveOrgMembers, orgID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countActiveOrgOwners = `-- name: CountActiveOrgOwners :one
+SELECT COUNT(*)::int FROM org_members
+WHERE org_id = $1 AND role = 'owner' AND deactivated_at IS NULL
+`
+
+func (q *Queries) CountActiveOrgOwners(ctx context.Context, orgID uuid.UUID) (int32, error) {
+	row := q.db.QueryRowContext(ctx, countActiveOrgOwners, orgID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countAlertRulesByOrg = `-- name: CountAlertRulesByOrg :one
 SELECT COUNT(*) FROM alert_rules WHERE org_id = $1 AND deleted_at IS NULL
 `
@@ -150,6 +174,21 @@ func (q *Queries) CreateOrgMember(ctx context.Context, arg CreateOrgMemberParams
 	return err
 }
 
+const deactivateOrgMember = `-- name: DeactivateOrgMember :exec
+UPDATE org_members SET deactivated_at = now(), updated_at = now()
+WHERE org_id = $1 AND user_id = $2
+`
+
+type DeactivateOrgMemberParams struct {
+	OrgID  uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeactivateOrgMember(ctx context.Context, arg DeactivateOrgMemberParams) error {
+	_, err := q.db.ExecContext(ctx, deactivateOrgMember, arg.OrgID, arg.UserID)
+	return err
+}
+
 const deleteOrgInvitation = `-- name: DeleteOrgInvitation :execresult
 DELETE FROM org_invitations WHERE id = $1 AND org_id = $2
 `
@@ -242,6 +281,49 @@ func (q *Queries) GetOrgInvitationByID(ctx context.Context, arg GetOrgInvitation
 		&i.ExpiresAt,
 		&i.AcceptedAt,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getOrgMemberFull = `-- name: GetOrgMemberFull :one
+SELECT om.org_id, om.user_id, om.role, om.created_at, om.updated_at,
+       om.deactivated_at, om.scim_exempt,
+       u.email, u.display_name
+FROM org_members om
+JOIN users u ON u.id = om.user_id
+WHERE om.org_id = $1 AND om.user_id = $2
+`
+
+type GetOrgMemberFullParams struct {
+	OrgID  uuid.UUID
+	UserID uuid.UUID
+}
+
+type GetOrgMemberFullRow struct {
+	OrgID         uuid.UUID
+	UserID        uuid.UUID
+	Role          string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	DeactivatedAt sql.NullTime
+	ScimExempt    bool
+	Email         string
+	DisplayName   string
+}
+
+func (q *Queries) GetOrgMemberFull(ctx context.Context, arg GetOrgMemberFullParams) (GetOrgMemberFullRow, error) {
+	row := q.db.QueryRowContext(ctx, getOrgMemberFull, arg.OrgID, arg.UserID)
+	var i GetOrgMemberFullRow
+	err := row.Scan(
+		&i.OrgID,
+		&i.UserID,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeactivatedAt,
+		&i.ScimExempt,
+		&i.Email,
+		&i.DisplayName,
 	)
 	return i, err
 }
@@ -468,6 +550,21 @@ func (q *Queries) ListUserOrgs(ctx context.Context, userID uuid.UUID) ([]ListUse
 	return items, nil
 }
 
+const reactivateOrgMember = `-- name: ReactivateOrgMember :exec
+UPDATE org_members SET deactivated_at = NULL, updated_at = now()
+WHERE org_id = $1 AND user_id = $2
+`
+
+type ReactivateOrgMemberParams struct {
+	OrgID  uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) ReactivateOrgMember(ctx context.Context, arg ReactivateOrgMemberParams) error {
+	_, err := q.db.ExecContext(ctx, reactivateOrgMember, arg.OrgID, arg.UserID)
+	return err
+}
+
 const updateOrg = `-- name: UpdateOrg :one
 UPDATE organizations SET name = $2 WHERE id = $1 AND deleted_at IS NULL
 RETURNING id, name, created_at, deleted_at, tier, tier_overrides, suspended_at, mfa_required_all, mfa_remember_device_allowed, mfa_remember_device_days
@@ -548,6 +645,22 @@ type UpdateOrgMemberRoleParams struct {
 
 func (q *Queries) UpdateOrgMemberRole(ctx context.Context, arg UpdateOrgMemberRoleParams) error {
 	_, err := q.db.ExecContext(ctx, updateOrgMemberRole, arg.OrgID, arg.UserID, arg.Role)
+	return err
+}
+
+const updateOrgMemberSCIMExempt = `-- name: UpdateOrgMemberSCIMExempt :exec
+UPDATE org_members SET scim_exempt = $3, updated_at = now()
+WHERE org_id = $1 AND user_id = $2
+`
+
+type UpdateOrgMemberSCIMExemptParams struct {
+	OrgID      uuid.UUID
+	UserID     uuid.UUID
+	ScimExempt bool
+}
+
+func (q *Queries) UpdateOrgMemberSCIMExempt(ctx context.Context, arg UpdateOrgMemberSCIMExemptParams) error {
+	_, err := q.db.ExecContext(ctx, updateOrgMemberSCIMExempt, arg.OrgID, arg.UserID, arg.ScimExempt)
 	return err
 }
 

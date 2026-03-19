@@ -5,8 +5,6 @@ package api
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -96,19 +94,4 @@ func (srv *Server) fireSCIMEvent(ctx context.Context, eventType string, orgID *u
 			OrgID:    orgID,
 		})
 	}
-}
-
-// writeSCIMError writes a SCIM-formatted error response (RFC 7644 §3.12).
-func writeSCIMError(w http.ResponseWriter, status int, scimType, detail string) {
-	w.Header().Set("Content-Type", "application/scim+json")
-	w.WriteHeader(status)
-	resp := map[string]any{
-		"schemas": []string{"urn:ietf:params:scim:api:messages:2.0:Error"},
-		"status":  fmt.Sprintf("%d", status),
-		"detail":  detail,
-	}
-	if scimType != "" {
-		resp["scimType"] = scimType
-	}
-	_ = json.NewEncoder(w).Encode(resp)
 }

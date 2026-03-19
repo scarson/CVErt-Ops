@@ -19,3 +19,9 @@
 - **Description:** Added tests for all 5 admin user handlers
 - **Tests:** 7 tests: list pagination, disable success, self-disable prevention, enable after disable, reset-password, site admin auth enforcement (all 5 endpoints)
 - **Files:** `internal/api/admin_users_test.go` (new)
+
+### Step 4: P8 Task 11 — Admin audit log + deliveries tests
+- **Status:** Complete
+- **Description:** Added tests for admin audit log and deliveries list endpoints
+- **Tests:** 5 tests: audit log list, filter by entity_type, auth enforcement, deliveries list, deliveries auth enforcement
+- **Files:** `internal/api/admin_system_test.go` (appended)

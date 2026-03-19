@@ -189,3 +189,202 @@ func TestRedactSecret(t *testing.T) {
 		t.Errorf("redactSecret(empty) = %q, want empty", got)
 	}
 }
+
+func TestAdminAuditLog_BasicList(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	admin, err := db.CreateUser(ctx, "audit-admin@example.com", "AuditAdmin", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.SetFirstSiteAdmin(ctx, admin.ID); err != nil {
+		t.Fatalf("set site admin: %v", err)
+	}
+
+	secret := "test-jwt-secret-admin-audit"
+	token, err := auth.IssueAccessToken([]byte(secret), admin.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/audit-log", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Items      []json.RawMessage `json:"items"`
+		NextCursor string            `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// Fresh DB may have 0 entries — just verify the response structure is valid.
+	if body.Items == nil {
+		t.Error("items should not be nil (expected empty array)")
+	}
+}
+
+func TestAdminAuditLog_FilterByEntityType(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	admin, err := db.CreateUser(ctx, "audit-filter-admin@example.com", "AuditFilterAdmin", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.SetFirstSiteAdmin(ctx, admin.ID); err != nil {
+		t.Fatalf("set site admin: %v", err)
+	}
+
+	secret := "test-jwt-secret-admin-audit-filter"
+	token, err := auth.IssueAccessToken([]byte(secret), admin.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	// Filter by a specific entity type.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
+		ts.URL+"/api/v1/admin/audit-log?entity_type=channel", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestAdminAuditLog_RequiresSiteAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "nonadmin-audit@example.com", "Regular", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	secret := "test-jwt-secret-admin-audit-nonadmin"
+	token, err := auth.IssueAccessToken([]byte(secret), user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/audit-log", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminDeliveries_BasicList(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	admin, err := db.CreateUser(ctx, "deliveries-admin@example.com", "DeliveriesAdmin", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.SetFirstSiteAdmin(ctx, admin.ID); err != nil {
+		t.Fatalf("set site admin: %v", err)
+	}
+
+	secret := "test-jwt-secret-admin-deliveries-list"
+	token, err := auth.IssueAccessToken([]byte(secret), admin.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/deliveries", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Items      []json.RawMessage `json:"items"`
+		NextCursor string            `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Items == nil {
+		t.Error("items should not be nil")
+	}
+}
+
+func TestAdminDeliveries_RequiresSiteAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "nonadmin-deliveries@example.com", "Regular", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	secret := "test-jwt-secret-deliveries-nonadmin"
+	token, err := auth.IssueAccessToken([]byte(secret), user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/deliveries", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin: got %d, want 403", resp.StatusCode)
+	}
+}

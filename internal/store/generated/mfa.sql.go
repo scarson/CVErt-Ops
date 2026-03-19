@@ -283,6 +283,7 @@ func (q *Queries) DeleteRememberDeviceTokens(ctx context.Context, userID uuid.UU
 const getActiveEmailOTPChallenge = `-- name: GetActiveEmailOTPChallenge :one
 SELECT id, user_id, challenge_type, token_hash, attempts, expires_at, created_at FROM mfa_challenges
 WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+ORDER BY created_at DESC
 LIMIT 1
 `
 
@@ -304,6 +305,7 @@ func (q *Queries) GetActiveEmailOTPChallenge(ctx context.Context, userID uuid.UU
 const getActiveEmailOTPChallengeForUpdate = `-- name: GetActiveEmailOTPChallengeForUpdate :one
 SELECT id, user_id, challenge_type, token_hash, attempts, expires_at, created_at FROM mfa_challenges
 WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+ORDER BY created_at DESC
 LIMIT 1
 FOR UPDATE SKIP LOCKED
 `

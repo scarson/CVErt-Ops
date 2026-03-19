@@ -63,11 +63,13 @@ RETURNING *;
 -- name: GetActiveEmailOTPChallenge :one
 SELECT * FROM mfa_challenges
 WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+ORDER BY created_at DESC
 LIMIT 1;
 
 -- name: GetActiveEmailOTPChallengeForUpdate :one
 SELECT * FROM mfa_challenges
 WHERE user_id = $1 AND challenge_type = 'email_otp' AND expires_at > now()
+ORDER BY created_at DESC
 LIMIT 1
 FOR UPDATE SKIP LOCKED;
 

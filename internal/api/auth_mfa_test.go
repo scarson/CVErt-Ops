@@ -2913,13 +2913,6 @@ func TestTOTPConfirm_SecondEnrollment_NoRecoveryCodes(t *testing.T) {
 
 // N7: Email OTP setup rate limit.
 func TestEmailOTPSetup_RateLimit(t *testing.T) {
-	// CreateEmailOTPChallenge deletes all existing email_otp challenges before
-	// inserting a new one, so CountRecentEmailOTPChallenges never accumulates
-	// beyond 1. The rate limit can never trigger. This needs a production fix:
-	// either track send count in a separate counter table, or stop deleting
-	// old challenges before creating new ones.
-	t.Skip("known bug: CreateEmailOTPChallenge deletes previous challenges, defeating the rate-limit counter")
-
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()

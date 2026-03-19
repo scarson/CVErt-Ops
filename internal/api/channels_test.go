@@ -1539,3 +1539,38 @@ func TestCrossOrg_ChannelAccess(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateChannel_DuplicateName verifies that creating a channel with a name
+// already used in the same org returns 409 Conflict.
+func TestCreateChannel_DuplicateName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp1 := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("create 1: got %d, want 201", resp1.StatusCode)
+	}
+
+	resp2 := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate name create: got %d, want 409", resp2.StatusCode)
+	}
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if !strings.Contains(problem.Detail, "already exists") {
+		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
+	}
+}

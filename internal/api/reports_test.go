@@ -782,10 +782,17 @@ func TestCreateReport_DuplicateName(t *testing.T) {
 
 	resp2 := doCreateReport(t, ctx, ts, token, reg.OrgID, validReportBody)
 	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
-	// DB partial unique index `scheduled_reports_name_uq` prevents duplicate names
-	// within the same org. Handler returns 500 (unique violation not caught as 409).
-	if resp2.StatusCode == http.StatusCreated {
-		t.Error("create duplicate name: should be rejected (unique constraint)")
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate name create: got %d, want 409", resp2.StatusCode)
+	}
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if !strings.Contains(problem.Detail, "already exists") {
+		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
 	}
 }
 

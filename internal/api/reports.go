@@ -165,6 +165,10 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 
 	row, err := srv.store.CreateScheduledReport(r.Context(), orgID, params)
 	if err != nil {
+		if isUniqueViolation(err) {
+			writeProblem(w, http.StatusConflict, "a report with this name already exists")
+			return
+		}
 		slog.ErrorContext(r.Context(), "create scheduled report", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return

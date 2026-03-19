@@ -456,6 +456,18 @@ func (srv *Server) Handler() http.Handler {
 		})
 	})
 
+	// ── SCIM v2 endpoints (chi, separate auth — machine-to-machine) ─────────
+	apiRouter.Route("/orgs/{org_id}/scim/v2", func(r chi.Router) {
+		r.Use(srv.requireSCIMAuth)
+		r.Use(srv.scimRateLimit())
+		r.Post("/Groups", srv.scimCreateGroup)
+		r.Get("/Groups", srv.scimListGroups)
+		r.Get("/Groups/{id}", srv.scimGetGroup)
+		r.Put("/Groups/{id}", srv.scimReplaceGroup)
+		r.Patch("/Groups/{id}", srv.scimPatchGroup)
+		r.Delete("/Groups/{id}", srv.scimDeleteGroup)
+	})
+
 	r.Mount("/api/v1", apiRouter)
 
 	// ── SPA fallback (serves embedded frontend) ─────────────────────────────

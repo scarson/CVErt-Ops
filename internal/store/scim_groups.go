@@ -83,6 +83,30 @@ func (s *Store) GetSCIMGroupByExternalID(ctx context.Context, orgID uuid.UUID, e
 	return result, nil
 }
 
+// GetSCIMGroupByDisplayName returns the SCIM group matching (org_id, display_name),
+// or (nil, nil) if not found.
+func (s *Store) GetSCIMGroupByDisplayName(ctx context.Context, orgID uuid.UUID, displayName string) (*generated.ScimGroup, error) {
+	var result *generated.ScimGroup
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		row, err := q.GetSCIMGroupByDisplayName(ctx, generated.GetSCIMGroupByDisplayNameParams{
+			OrgID:       orgID,
+			DisplayName: displayName,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get scim group by display name: %w", err)
+	}
+	return result, nil
+}
+
 // ListSCIMGroups returns all SCIM groups for the org with member counts,
 // ordered by display_name.
 func (s *Store) ListSCIMGroups(ctx context.Context, orgID uuid.UUID) ([]generated.ListSCIMGroupsRow, error) {

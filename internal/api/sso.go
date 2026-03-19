@@ -454,6 +454,19 @@ func (srv *Server) deleteSSOHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block deletion if a SCIM config is linked to this SSO connection.
+	scimCfg, err := srv.store.LookupSCIMConfigBySSOConnectionID(r.Context(), current.ID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "sso delete: check scim config", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if scimCfg != nil {
+		writeProblem(w, http.StatusConflict,
+			"SSO connection has active SCIM provisioning. Disable and delete the SCIM configuration before removing SSO, or update the SSO connection in place.")
+		return
+	}
+
 	if err := srv.store.DeleteSSOConnection(r.Context(), orgID); err != nil {
 		slog.ErrorContext(r.Context(), "sso delete: store", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

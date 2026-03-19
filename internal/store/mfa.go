@@ -364,12 +364,12 @@ func (s *Store) ResetUserMFA(ctx context.Context, userID uuid.UUID) (int32, erro
 // --- MFA Challenge Operations (Email OTP + Remember Device) ---
 
 // CreateEmailOTPChallenge stores a new email OTP challenge for the user.
-// Deletes any existing email OTP challenge first to enforce single-active-code.
+// Previous challenges are left in place (expired rows are harmless since
+// verification filters on expires_at > now()) so that
+// CountRecentEmailOTPChallenges can count all requests within the rate
+// limit window.
 func (s *Store) CreateEmailOTPChallenge(ctx context.Context, userID uuid.UUID, codeHash string, expiresAt time.Time) error {
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {
-		if _, err := q.DeleteEmailOTPChallenges(ctx, userID); err != nil {
-			return err
-		}
 		_, err := q.CreateMFAChallenge(ctx, generated.CreateMFAChallengeParams{
 			UserID:        userID,
 			ChallengeType: "email_otp",

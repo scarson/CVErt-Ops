@@ -666,7 +666,7 @@ func TestPendingTokenRoundTrip(t *testing.T) {
 	methods := []string{"totp", "email_otp"}
 	ttl := 5 * time.Minute
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, tokenVersion, pending, methods, ttl)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, tokenVersion, pending, methods, nil, ttl)
 	if err != nil {
 		t.Fatalf("IssuePendingToken: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestPendingTokenNilPendingAndMethods(t *testing.T) {
 	secret := []byte("test-secret-32-bytes-minimum-aaaa")
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, nil, nil, 5*time.Minute)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, nil, nil, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("IssuePendingToken: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestPendingTokenEmptyPending(t *testing.T) {
 	secret := []byte("test-secret-32-bytes-minimum-aaaa")
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{}, nil, 5*time.Minute)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{}, nil, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("IssuePendingToken: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestPendingTokenRejectsExpired(t *testing.T) {
 	secret := []byte("test-secret-32-bytes-minimum-aaaa")
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, -1*time.Second)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, nil, -1*time.Second)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestPendingTokenRejectsWrongAlgorithm(t *testing.T) {
 	secret := []byte("test-secret-32-bytes-minimum-aaaa")
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, 5*time.Minute)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestPendingTokenRejectsAlgNone(t *testing.T) {
 	secret := []byte("test-secret-32-bytes-minimum-aaaa")
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, 5*time.Minute)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -805,7 +805,7 @@ func TestPendingTokenRejectsWrongSecret(t *testing.T) {
 	wrongSecret := []byte("wrong-secret-32-bytes-minimum-bb")
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
-	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, 5*time.Minute)
+	tokenStr, err := auth.IssuePendingToken(secret, userID, 1, []string{"mfa_challenge"}, nil, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -825,7 +825,7 @@ func TestParsePendingToken_DualKey(t *testing.T) {
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
 	// Issue token with old secret (pre-rotation).
-	tokenStr, err := auth.IssuePendingToken(oldSecret, userID, 1, []string{"mfa_challenge"}, []string{"totp"}, 5*time.Minute)
+	tokenStr, err := auth.IssuePendingToken(oldSecret, userID, 1, []string{"mfa_challenge"}, []string{"totp"}, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -850,7 +850,7 @@ func TestParsePendingToken_DualKey_ExpiredStillFails(t *testing.T) {
 	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 
 	// Issue an expired token with old secret.
-	tokenStr, err := auth.IssuePendingToken(oldSecret, userID, 1, []string{"mfa_challenge"}, nil, -1*time.Second)
+	tokenStr, err := auth.IssuePendingToken(oldSecret, userID, 1, []string{"mfa_challenge"}, nil, nil, -1*time.Second)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}

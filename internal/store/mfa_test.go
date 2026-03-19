@@ -923,16 +923,13 @@ func TestMFAChallenge_RateLimiting(t *testing.T) {
 		}
 	}
 
-	// Count should reflect all created (CreateEmailOTPChallenge deletes previous email_otp,
-	// but only active ones — the deleted ones are gone). Since each create deletes existing
-	// email_otp challenges first, only 1 should remain.
+	// All challenges accumulate for rate-limit counting.
 	count, err = s.CountRecentEmailOTPChallenges(ctx, user.ID, since)
 	if err != nil {
 		t.Fatalf("CountRecentEmailOTPChallenges: %v", err)
 	}
-	// Only 1 active email_otp challenge should exist (each create deletes previous).
-	if count != 1 {
-		t.Errorf("count = %d, want 1", count)
+	if count != 3 {
+		t.Errorf("count = %d, want 3", count)
 	}
 
 	// A window in the far future should yield 0.

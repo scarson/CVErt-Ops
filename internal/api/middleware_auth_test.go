@@ -705,7 +705,7 @@ func TestRequireAuthenticated_PendingToken_RejectedAsAccess(t *testing.T) {
 
 	secret := []byte("testsecret")
 	// Issue a pending token (not a full access token).
-	pendingToken, err := auth.IssuePendingToken(secret, user.ID, 1, []string{"mfa_challenge"}, []string{"totp"}, 15*time.Minute)
+	pendingToken, err := auth.IssuePendingToken(secret, user.ID, 1, []string{"mfa_challenge"}, []string{"totp"}, nil, 15*time.Minute)
 	if err != nil {
 		t.Fatalf("issue pending token: %v", err)
 	}

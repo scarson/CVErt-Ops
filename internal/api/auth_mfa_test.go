@@ -985,6 +985,7 @@ func TestEmailOTPSetup_ReissuesPendingTokenTTL(t *testing.T) {
 		1,
 		[]string{"mfa_enrollment_required"},
 		nil,
+		nil,
 		5*time.Minute,
 	)
 	if err != nil {
@@ -1636,6 +1637,7 @@ func TestEnrollment_RejectsOutOfOrderPending(t *testing.T) {
 		1,
 		[]string{"password_reset", "mfa_enrollment_required"},
 		nil,
+		nil,
 		5*time.Minute,
 	)
 	if err != nil {
@@ -1675,6 +1677,7 @@ func TestEnrollment_AcceptsCorrectOrder(t *testing.T) {
 		1,
 		[]string{"mfa_enrollment_required"},
 		nil,
+		nil,
 		5*time.Minute,
 	)
 	if err != nil {
@@ -1712,6 +1715,7 @@ func TestEnrollment_RejectsStaleTokenVersion(t *testing.T) {
 		userID,
 		1,
 		[]string{"mfa_enrollment_required"},
+		nil,
 		nil,
 		5*time.Minute,
 	)
@@ -1756,6 +1760,7 @@ func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
 		userID,
 		1,
 		[]string{"mfa_enrollment_required"},
+		nil,
 		nil,
 		5*time.Minute,
 	)
@@ -2365,7 +2370,7 @@ func TestMFAChallenge_WellFormedWrongKey(t *testing.T) {
 
 	// Create a well-formed pending token signed with the wrong secret.
 	wrongSecret := []byte("wrong-secret-32-bytes-minimum-bb")
-	fakeToken, err := auth.IssuePendingToken(wrongSecret, userID, 1, []string{"mfa_challenge"}, []string{"totp"}, 5*time.Minute)
+	fakeToken, err := auth.IssuePendingToken(wrongSecret, userID, 1, []string{"mfa_challenge"}, []string{"totp"}, nil, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("issue fake token: %v", err)
 	}
@@ -2396,7 +2401,7 @@ func TestMFAChallenge_ExpiredPendingToken(t *testing.T) {
 	userID, _ := uuid.Parse(reg.UserID)
 	enrollTOTP(t, ctx, srv, userID)
 
-	expiredToken, err := auth.IssuePendingToken(srv.jwtSecret(), userID, 1, []string{"mfa_challenge"}, []string{"totp"}, -1*time.Second)
+	expiredToken, err := auth.IssuePendingToken(srv.jwtSecret(), userID, 1, []string{"mfa_challenge"}, []string{"totp"}, nil, -1*time.Second)
 	if err != nil {
 		t.Fatalf("issue expired token: %v", err)
 	}
@@ -2494,14 +2499,8 @@ func TestMFAVerify_TOTP_EmitsFailedEvent(t *testing.T) {
 
 // ── P11 Task 6: Auth Handler MFA Paths ──────────────────────────────────────
 
-// C3: buildMFARequiredReasons multi-org.
+// C3: buildMFARequiredReasons multi-org — reasons embedded in pending token.
 func TestMFAMethods_RequiredReasons_MultiOrg(t *testing.T) {
-	// When org A has mfa_required_all=true and the user has no MFA enrolled,
-	// login returns mfa_pending_token (not access_token). The /auth/mfa/methods
-	// endpoint only accepts access tokens, so this test can't proceed until
-	// the endpoint is updated to also accept pending tokens.
-	t.Skip("known gap: /auth/mfa/methods requires access_token but MFA-required users only get pending tokens")
-
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -2525,7 +2524,6 @@ func TestMFAMethods_RequiredReasons_MultiOrg(t *testing.T) {
 	if err := srv.store.CreateOrgMember(ctx, orgB.ID, userID, "member"); err != nil {
 		t.Fatalf("CreateOrgMember B: %v", err)
 	}
-	// Need a user as the "requiredBy" — use the org-creating user.
 	adminUser, err := srv.store.CreateUser(ctx, "reasons-admin@example.com", "Admin", "$argon2id$stub", 2)
 	if err != nil {
 		t.Fatalf("CreateUser admin: %v", err)
@@ -2534,41 +2532,28 @@ func TestMFAMethods_RequiredReasons_MultiOrg(t *testing.T) {
 		t.Fatalf("CreateMFARequirement: %v", err)
 	}
 
+	// Login — user has no MFA enrolled but it's required, so login returns
+	// a pending token with mfa_enrollment_required + reasons in the claims.
 	loginResp := doLogin(t, ctx, ts, "reasons-multi@example.com", "test-password-1234")
-	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck,gosec
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
 
-	req := authedRequest(t, ctx, http.MethodGet, ts.URL+"/api/v1/auth/mfa/methods", "", cookies)
-	resp, err := ts.Client().Do(req) //nolint:gosec
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie")
+	}
+
+	// Parse the pending token to extract reasons.
+	claims, err := auth.ParsePendingToken(pendingToken, []byte(srv.cfg.JWTSecret), nil)
 	if err != nil {
-		t.Fatalf("methods: %v", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck,gosec
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("methods: got %d, want 200", resp.StatusCode)
+		t.Fatalf("parse pending token: %v", err)
 	}
 
-	var body struct {
-		Required        bool `json:"required"`
-		RequiredReasons []struct {
-			Source  string `json:"source"`
-			OrgName string `json:"org_name"`
-		} `json:"required_reasons"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !body.Required {
-		t.Error("expected required=true")
-	}
-	if len(body.RequiredReasons) < 2 {
-		t.Fatalf("expected at least 2 reasons, got %d", len(body.RequiredReasons))
+	if len(claims.Reasons) < 2 {
+		t.Fatalf("expected at least 2 reasons in pending token, got %d: %v", len(claims.Reasons), claims.Reasons)
 	}
 
-	// Verify org_policy and per_member sources exist.
 	var hasOrgPolicy, hasPerMember bool
-	for _, r := range body.RequiredReasons {
+	for _, r := range claims.Reasons {
 		if r.Source == "org_policy" {
 			hasOrgPolicy = true
 		}
@@ -2584,14 +2569,8 @@ func TestMFAMethods_RequiredReasons_MultiOrg(t *testing.T) {
 	}
 }
 
-// C3: Site admin required reasons.
+// C3: Site admin required reasons — reasons embedded in pending token.
 func TestMFAMethods_RequiredReasons_SiteAdmin(t *testing.T) {
-	// When MFARequiredSiteAdmins=true and the user has no MFA enrolled, login
-	// returns mfa_pending_token (not access_token). The /auth/mfa/methods
-	// endpoint only accepts access tokens, so this test can't proceed until
-	// the endpoint is updated to also accept pending tokens.
-	t.Skip("known gap: /auth/mfa/methods requires access_token but MFA-required users only get pending tokens")
-
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -2625,37 +2604,31 @@ func TestMFAMethods_RequiredReasons_SiteAdmin(t *testing.T) {
 		t.Fatalf("set site admin: %v", err)
 	}
 
+	// Login — site admin with no MFA enrolled gets a pending token with reasons.
 	loginResp := doLogin(t, ctx, ts, "sa-reasons@example.com", "test-password-1234")
-	cookies := authedCookies(t, loginResp)
-	loginResp.Body.Close() //nolint:errcheck,gosec
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
 
-	req := authedRequest(t, ctx, http.MethodGet, ts.URL+"/api/v1/auth/mfa/methods", "", cookies)
-	resp, err := ts.Client().Do(req) //nolint:gosec
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie")
+	}
+
+	claims, err := auth.ParsePendingToken(pendingToken, []byte(srv.cfg.JWTSecret), nil)
 	if err != nil {
-		t.Fatalf("methods: %v", err)
+		t.Fatalf("parse pending token: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck,gosec
 
-	var body struct {
-		Required        bool `json:"required"`
-		RequiredReasons []struct {
-			Source string `json:"source"`
-		} `json:"required_reasons"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if !body.Required {
-		t.Error("expected required=true for site admin")
+	if len(claims.Reasons) == 0 {
+		t.Fatal("expected at least 1 reason in pending token")
 	}
 	var hasSiteAdmin bool
-	for _, r := range body.RequiredReasons {
+	for _, r := range claims.Reasons {
 		if r.Source == "site_admin" {
 			hasSiteAdmin = true
 		}
 	}
 	if !hasSiteAdmin {
-		t.Error("expected a reason with source=site_admin")
+		t.Errorf("expected a reason with source=site_admin, got %v", claims.Reasons)
 	}
 }
 
@@ -2913,13 +2886,6 @@ func TestTOTPConfirm_SecondEnrollment_NoRecoveryCodes(t *testing.T) {
 
 // N7: Email OTP setup rate limit.
 func TestEmailOTPSetup_RateLimit(t *testing.T) {
-	// CreateEmailOTPChallenge deletes all existing email_otp challenges before
-	// inserting a new one, so CountRecentEmailOTPChallenges never accumulates
-	// beyond 1. The rate limit can never trigger. This needs a production fix:
-	// either track send count in a separate counter table, or stop deleting
-	// old challenges before creating new ones.
-	t.Skip("known bug: CreateEmailOTPChallenge deletes previous challenges, defeating the rate-limit counter")
-
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()

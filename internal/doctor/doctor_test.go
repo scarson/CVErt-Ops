@@ -397,6 +397,90 @@ func TestMigrationCheck_Dirty_ReturnsFail(t *testing.T) {
 	}
 }
 
+// ── RLSCheck ─────────────────────────────────────────────────────────────────
+
+func TestRLSCheck_Pass(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+
+	// All org-scoped tables should have RLS enabled in the test DB.
+	c := &RLSCheck{DB: db.Pool(), Tables: OrgScopedTables()}
+	status, msg, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusPass {
+		t.Errorf("RLS check: status = %q, want %q; message: %s", status, StatusPass, msg)
+	}
+}
+
+func TestRLSCheck_NilDB(t *testing.T) {
+	t.Parallel()
+	c := &RLSCheck{DB: nil, Tables: []string{"test"}}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusFail {
+		t.Errorf("RLS check nil DB: status = %q, want %q", status, StatusFail)
+	}
+}
+
+func TestRLSCheck_NoTables(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	c := &RLSCheck{DB: db.Pool(), Tables: nil}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusWarn {
+		t.Errorf("RLS check no tables: status = %q, want %q", status, StatusWarn)
+	}
+}
+
+func TestRLSCheck_MissingTable_Fail(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	// Include a table that doesn't exist — should report as missing.
+	c := &RLSCheck{DB: db.Pool(), Tables: []string{"nonexistent_table_xyz"}}
+	status, msg, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusFail {
+		t.Errorf("RLS check missing table: status = %q, want %q; message: %s", status, StatusFail, msg)
+	}
+}
+
+// ── EncryptionSentinelCheck ──────────────────────────────────────────────────
+
+func TestEncryptionSentinelCheck_NilDB(t *testing.T) {
+	t.Parallel()
+	c := &EncryptionSentinelCheck{DB: nil}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusFail {
+		t.Errorf("EncryptionSentinel nil DB: status = %q, want %q", status, StatusFail)
+	}
+}
+
+func TestEncryptionSentinelCheck_NoSentinel_Warn(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	// Fresh DB has no encryption sentinel — should warn.
+	c := &EncryptionSentinelCheck{DB: db.Pool(), Key: [32]byte{1}}
+	status, _, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != StatusWarn {
+		t.Errorf("EncryptionSentinel no sentinel: status = %q, want %q", status, StatusWarn)
+	}
+}
+
 // ── stub helpers ─────────────────────────────────────────────────────────────
 
 type stubCheck struct {

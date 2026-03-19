@@ -49,3 +49,26 @@
 - **Status:** Complete
 - **Tests:** TestCrossOrg_ChannelAccess (list, get, delete), TestCrossOrg_IngestAccess
 - **Files:** `internal/api/channels_test.go` (appended), `internal/api/ingest_test.go` (appended)
+
+### Step 10: P8 Task 18 — SSO handler encryption tests
+- **Status:** Complete (existing coverage sufficient)
+- **Description:** TestSSOConnection_SecretEncrypted, TestSSOEncryptionKeyPrevious_ReadsFromConfigHolder, TestSSOEncryptionKeyPrevious_FallsBackToStartupConfig, TestPatchSSO_EvictsOIDCProviderCache already cover encryption paths.
+
+### Step 11: P8 Task 19 — Doctor security checks
+- **Status:** Complete
+- **Tests:** TestRLSCheck_Pass, TestRLSCheck_NilDB, TestRLSCheck_NoTables, TestRLSCheck_MissingTable_Fail, TestEncryptionSentinelCheck_NilDB, TestEncryptionSentinelCheck_NoSentinel_Warn
+- **Files:** `internal/doctor/doctor_test.go` (appended)
+
+### Step 12: P8 Task 20 — Store security method tests
+- **Status:** Complete
+- **Tests:** TestLookupAPIKeyByHash_ReturnsRevokedKey (verifies revoked key lookup vs LookupAPIKey)
+- **Files:** `internal/store/apikey_test.go` (appended)
+
+### Step 13: P8 Task 21 — Worker periodic job tests
+- **Status:** Complete
+- **Tests:** TestRegisterPeriodic_ExecutesAtInterval, TestRegisterPeriodic_StopsOnContextCancel
+- **Files:** `internal/worker/pool_test.go` (appended)
+
+### Steps 14-15: P8 Tasks 22-23 — Generic feed + notify error paths
+- **Status:** Complete (existing coverage sufficient)
+- **Description:** Generic feed adapter has 25+ test functions covering error paths including HTTP 500, unreachable URL, non-JSON response, empty results, streaming/buffered parity. Notify package has extensive tests for digest, email, webhook, delivery worker.

@@ -354,3 +354,46 @@ func TestLookupAPIKey_NotFound(t *testing.T) {
 		t.Errorf("expected nil for non-existent hash, got %+v", got)
 	}
 }
+
+func TestLookupAPIKeyByHash_ReturnsRevokedKey(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "KeyByHashOrg")
+	user := s.MustCreateUser(t, ctx, "keybyhash@example.com", "KeyByHash", "", 0)
+
+	hash := "byhash_" + uuid.New().String()
+	key, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "ByHash Key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
+
+	if err := s.RevokeAPIKey(ctx, org.ID, key.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// LookupAPIKey should return nil (revoked keys excluded).
+	got, err := s.LookupAPIKey(ctx, hash)
+	if err != nil {
+		t.Fatalf("LookupAPIKey: %v", err)
+	}
+	if got != nil {
+		t.Error("LookupAPIKey should return nil for revoked key")
+	}
+
+	// LookupAPIKeyByHash should still return the key (includes revoked).
+	gotByHash, err := s.LookupAPIKeyByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("LookupAPIKeyByHash: %v", err)
+	}
+	if gotByHash == nil {
+		t.Fatal("LookupAPIKeyByHash should return revoked key")
+	}
+	if gotByHash.ID != key.ID {
+		t.Errorf("key ID = %v, want %v", gotByHash.ID, key.ID)
+	}
+	if !gotByHash.RevokedAt.Valid {
+		t.Error("RevokedAt should be set")
+	}
+}

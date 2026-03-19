@@ -683,3 +683,71 @@ func TestRunQueue_ConcurrencyOneIsSequential(t *testing.T) {
 		t.Errorf("max concurrent = %d, want 1 for default concurrency", got)
 	}
 }
+
+func TestRegisterPeriodic_ExecutesAtInterval(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeJobStore{})
+
+	var count atomic.Int32
+	p.RegisterPeriodic(PeriodicTask{
+		Name:     "test-periodic",
+		Interval: 50 * time.Millisecond,
+		Fn: func(ctx context.Context) error {
+			count.Add(1)
+			return nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.Start(ctx)
+		close(done)
+	}()
+
+	// Wait enough time for at least 2 executions.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	got := count.Load()
+	if got < 2 {
+		t.Errorf("periodic task executed %d times, want at least 2", got)
+	}
+}
+
+func TestRegisterPeriodic_StopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+	p := New(&fakeJobStore{})
+
+	var count atomic.Int32
+	p.RegisterPeriodic(PeriodicTask{
+		Name:     "stop-test",
+		Interval: 20 * time.Millisecond,
+		Fn: func(ctx context.Context) error {
+			count.Add(1)
+			return nil
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		p.Start(ctx)
+		close(done)
+	}()
+
+	// Let it run briefly then cancel.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	countAtCancel := count.Load()
+	// After cancel, no more executions should happen.
+	time.Sleep(100 * time.Millisecond)
+	countAfterWait := count.Load()
+
+	if countAfterWait != countAtCancel {
+		t.Errorf("periodic task ran after cancel: before=%d, after=%d", countAtCancel, countAfterWait)
+	}
+}

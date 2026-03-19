@@ -1488,3 +1488,39 @@ Wave 6:  [29]  ||  [30]
               ↓
 Wave 7:  [31]
 ```
+
+---
+
+## Appendix: Autonomous Decisions Made During Execution
+
+These decisions were made by Claude during overnight execution (Sam asleep) per the instruction "make a reasonable decision yourself and clearly document the decision point."
+
+### D1: `SCIMRateLimit` config type — `float64` vs `int`
+
+**Context:** Wave 1 defined `SCIMRateLimit int`, Wave 3 Lane A defined `SCIMRateLimit float64`.
+**Decision:** Kept `float64` because `golang.org/x/time/rate.Limit` is typed `float64`. Using `int` would require a cast at every usage site.
+**Risk:** None — both parse from the same env var, and the default `50` works for both types.
+
+### D2: `withBypassTx` for SCIM group methods without `orgID` parameter
+
+**Context:** Wave 2 Lane B noted that `GetSCIMGroup(id)`, `DeleteSCIMGroup(id)`, and similar methods don't take `orgID` as a parameter, making `withOrgTx` impossible.
+**Decision:** Used `withBypassTx` for these methods, matching the existing `GetSSOConnectionByID` pattern. RLS still protects at the DB level since queries filter by `id` (UUID PK).
+**Risk:** Low — the SCIM auth middleware verifies org ownership before these methods are called.
+
+### D3: `writeSCIMError` duplicate resolution
+
+**Context:** Wave 3 Lane A (middleware_scim.go) and Lane C (scim_types.go) independently implemented `writeSCIMError`.
+**Decision:** Kept the scim_types.go version (canonical location for SCIM response helpers). Removed the duplicate from middleware_scim.go.
+**Risk:** None — both implementations were identical.
+
+### D4: Wave 6 worktree isolation failure
+
+**Context:** Wave 6 agents were launched in worktrees that branched from `origin/dev`, which only had Wave 1 code. Waves 2-5 were on local `dev` but not pushed.
+**Decision:** After Sam pushed dev to origin, relaunched the E2E test agent without worktree isolation (directly on dev). Handled Task 30 (audit verification) directly as orchestrator.
+**Risk:** Non-worktree agents can't be rolled back as cleanly, but test-only changes are safe.
+
+### D5: Suppressed audit entries for exempt users
+
+**Context:** Wave 6 Lane B added `scimAuditLog` calls at exempt-user skip points with `metadata: {"source": "scim", "suppressed": true, "reason": "scim_exempt"}`. This wasn't in the original plan.
+**Decision:** Accepted — provides audit trail visibility for suppressed operations, which is valuable for compliance. Design doc §2 already specified this metadata pattern.
+**Risk:** None — purely additive audit entries.

@@ -75,7 +75,9 @@ func TestVerifyEmail_ValidToken(t *testing.T) {
 
 	doRegister(t, ctx, ts, "verify-valid@example.com", "test-password-1234")
 	user, err := db.GetUserByEmail(ctx, "verify-valid@example.com")
-tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 
 	// Create a verification token directly in DB.
 	tokenBytes := make([]byte, 32)
@@ -121,7 +123,9 @@ func TestVerifyEmail_ExpiredToken(t *testing.T) {
 
 	doRegister(t, ctx, ts, "verify-expired@example.com", "test-password-1234")
 	user, err := db.GetUserByEmail(ctx, "verify-expired@example.com")
-tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 
 	tokenBytes := []byte("expired-email-verify-token-32ch!")
 	tokenHex := hex.EncodeToString(tokenBytes)
@@ -151,7 +155,9 @@ func TestVerifyEmail_UsedToken(t *testing.T) {
 
 	doRegister(t, ctx, ts, "verify-used@example.com", "test-password-1234")
 	user, err := db.GetUserByEmail(ctx, "verify-used@example.com")
-tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 
 	tokenBytes := []byte("used-email-verify-token-32chars!")
 	tokenHex := hex.EncodeToString(tokenBytes)
@@ -283,7 +289,9 @@ func TestResendVerification_RateLimit(t *testing.T) {
 	// Registration creates 1 implicit token.
 	doRegister(t, ctx, ts, "resend-ratelimit@example.com", "test-password-1234")
 	user, err := db.GetUserByEmail(ctx, "resend-ratelimit@example.com")
-tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 
 	loginResp := doLogin(t, ctx, ts, "resend-ratelimit@example.com", "test-password-1234")
 	defer loginResp.Body.Close() //nolint:errcheck,gosec
@@ -368,7 +376,9 @@ func TestResendVerification_SMTPFailure(t *testing.T) {
 
 	// Mark email unverified (registration may have created it but not verified).
 	user, err := db.GetUserByEmail(ctx, "smtp-fail@example.com")
-tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 	if user == nil {
 		t.Fatal("user not created despite SMTP failure")
 	}
@@ -413,7 +423,9 @@ func TestResendVerification_AlreadyVerified(t *testing.T) {
 
 	doRegister(t, ctx, ts, "already-verified@example.com", "test-password-1234")
 	user, err := db.GetUserByEmail(ctx, "already-verified@example.com")
-tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 
 	// Mark as verified.
 	if err := db.SetEmailVerified(ctx, user.ID); err != nil {

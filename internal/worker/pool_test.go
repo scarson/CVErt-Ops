@@ -692,7 +692,7 @@ func TestRegisterPeriodic_ExecutesAtInterval(t *testing.T) {
 	p.RegisterPeriodic(PeriodicTask{
 		Name:     "test-periodic",
 		Interval: 50 * time.Millisecond,
-		Fn: func(ctx context.Context) error {
+		Fn: func(_ context.Context) error {
 			count.Add(1)
 			return nil
 		},
@@ -724,7 +724,7 @@ func TestRegisterPeriodic_StopsOnContextCancel(t *testing.T) {
 	p.RegisterPeriodic(PeriodicTask{
 		Name:     "stop-test",
 		Interval: 20 * time.Millisecond,
-		Fn: func(ctx context.Context) error {
+		Fn: func(_ context.Context) error {
 			count.Add(1)
 			return nil
 		},

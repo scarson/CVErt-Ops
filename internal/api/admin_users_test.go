@@ -301,7 +301,7 @@ func TestAdminUsers_RequiresSiteAdmin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s %s: request: %v", ep.method, ep.path, err)
 		}
-		resp.Body.Close() //nolint:errcheck
+		resp.Body.Close() //nolint:errcheck,gosec // G104: test code, error irrelevant
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("%s %s: got %d, want 403", ep.method, ep.path, resp.StatusCode)
 		}

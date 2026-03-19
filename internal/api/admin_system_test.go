@@ -34,7 +34,7 @@ func TestAdminConfigHandler_SecretsRedacted(t *testing.T) {
 		t.Fatalf("issue token: %v", err)
 	}
 
-	cfg := &config.Config{ //nolint:exhaustruct // test: only fields needed for redaction
+	cfg := &config.Config{ //nolint:exhaustruct,gosec // test: only fields needed for redaction; G101 false positive on test fixture URLs
 		JWTSecret:          jwtSecret,
 		DatabaseURL:        "postgres://user:pass@localhost/db",
 		DatabaseURLMigrate: "postgres://admin:secret@localhost/db",

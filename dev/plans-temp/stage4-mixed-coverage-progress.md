@@ -32,3 +32,20 @@
 - **Tests:** 4 new tests: revoked API key 401, disabled user API key 401, disabled user JWT 401, pending token rejection probe
 - **Note:** Pending token test documents current behavior — ParseAccessToken does not reject pending tokens structurally (both use HS256 + same claims shape). The test logs a warning if the pending token is accepted.
 - **Files:** `internal/api/middleware_auth_test.go` (appended)
+
+### Step 6: P8 Task 13 — Login handler critical paths
+- **Status:** Complete (existing coverage sufficient)
+- **Description:** Reviewed existing login handler tests — disabled user, force_password_reset, MFA enrollment paths are already covered by TestLoginDisabledUser, TestLoginDisabledUser_RecordsLockoutFailure, TestLogin_IncludesForcePasswordReset, TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion. No additional tests needed.
+
+### Step 7: P8 Task 14 — Refresh handler theft detection
+- **Status:** Complete (existing coverage sufficient)
+- **Description:** TestRefreshTheftDetection, TestRefreshGraceWindow, TestRefresh_TokenReuse_EmitsSecurityEvent already cover theft detection, grace window, and security event emission. No additional tests needed.
+
+### Step 8: P8 Task 15 — MFA handler coverage
+- **Status:** Complete (existing coverage sufficient from Stage 3)
+- **Description:** Stage 3 P11 Tasks added comprehensive MFA tests including buildMFARequiredReasons multi-org + site-admin, clearEnrollmentPending token issuance, EmailOTPConfirm error branches, sendMFAOTPEmail, MFA remove method. All SC6-SC10 paths are covered.
+
+### Step 9: P8 Task 16 — Cross-org isolation tests
+- **Status:** Complete
+- **Tests:** TestCrossOrg_ChannelAccess (list, get, delete), TestCrossOrg_IngestAccess
+- **Files:** `internal/api/channels_test.go` (appended), `internal/api/ingest_test.go` (appended)

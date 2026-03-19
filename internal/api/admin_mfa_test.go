@@ -652,9 +652,16 @@ func TestAdminMFAReset_SiteAdmin_CanTargetAdmin(t *testing.T) {
 	enrollTOTP(t, ctx, srv, adminID)
 
 	// Register site admin and add to org as member.
+	// The first registered user (owner) is auto-promoted to site admin by BootstrapFirstUserOrg.
+	// Clear that before promoting the intended site admin — unique constraint allows only one.
+	ownerID := uuid.MustParse(ownerResult.UserID)
+	_, err := db.Pool().Exec(ctx, "UPDATE users SET is_site_admin = false WHERE id = $1", ownerID)
+	if err != nil {
+		t.Fatalf("clear owner site admin: %v", err)
+	}
 	saResult := doRegister(t, ctx, ts, "sa-siteadmin@example.com", "siteadmin-password-12345")
 	saID := uuid.MustParse(saResult.UserID)
-	_, err := db.Pool().Exec(ctx, "UPDATE users SET is_site_admin = true WHERE id = $1", saID)
+	_, err = db.Pool().Exec(ctx, "UPDATE users SET is_site_admin = true WHERE id = $1", saID)
 	if err != nil {
 		t.Fatalf("set site admin: %v", err)
 	}

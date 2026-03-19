@@ -401,9 +401,9 @@ func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	// Recoverer catches the nil-pointer panic and returns 500.
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	// Handler detects nil store and returns 503 Service Unavailable.
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}
 
 	// Verify the server is still alive after the panic (not crashed).

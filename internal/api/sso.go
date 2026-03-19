@@ -592,6 +592,10 @@ func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	domain := strings.ToLower(parts[1])
 
+	if srv.store == nil {
+		writeProblem(w, http.StatusServiceUnavailable, "service unavailable")
+		return
+	}
 	row, err := srv.store.LookupSSOByDomain(r.Context(), domain)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "discover: lookup", "error", err)

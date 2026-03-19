@@ -7,3 +7,9 @@
 - **Description:** Fixed 384+ discarded store method errors across 27 test files
 - **Approach:** Created `MustCreateOrg`, `MustCreateUser`, `MustCreateGroup`, `MustGetCVE` helpers on `testutil.TestDB` for the 3 most common patterns (333 occurrences), then fixed remaining 51 manually with inline error checks
 - **Files modified:** `internal/testutil/must.go` (new), 27 `*_test.go` files across store, api, notify, merge, retention, cmd packages
+
+### Step 2: P8 Task 9 — Admin config secret redaction test
+- **Status:** Complete
+- **Description:** Added tests for `adminConfigHandler` secret redaction and `redactSecret` function
+- **Tests:** 4 tests: secrets redacted to "***", empty secrets stay empty, non-admin gets 403, unit test for redactSecret
+- **Files:** `internal/api/admin_system_test.go` (new)

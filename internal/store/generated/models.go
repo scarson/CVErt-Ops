@@ -321,11 +321,12 @@ type Group struct {
 }
 
 type GroupMember struct {
-	ID        uuid.UUID
-	OrgID     uuid.UUID
-	GroupID   uuid.UUID
-	UserID    uuid.UUID
-	CreatedAt time.Time
+	ID          uuid.UUID
+	OrgID       uuid.UUID
+	GroupID     uuid.UUID
+	UserID      uuid.UUID
+	CreatedAt   time.Time
+	ScimManaged bool
 }
 
 type JobQueue struct {
@@ -424,11 +425,13 @@ type OrgInvitation struct {
 }
 
 type OrgMember struct {
-	OrgID     uuid.UUID
-	UserID    uuid.UUID
-	Role      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	OrgID         uuid.UUID
+	UserID        uuid.UUID
+	Role          string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	DeactivatedAt sql.NullTime
+	ScimExempt    bool
 }
 
 type Organization struct {
@@ -499,6 +502,36 @@ type ScheduledReport struct {
 	DeletedAt         sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+}
+
+type ScimConfig struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	SsoConnectionID uuid.UUID
+	Enabled         bool
+	TokenHash       string
+	TokenPrefix     string
+	DefaultRole     string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type ScimGroup struct {
+	ID            uuid.UUID
+	OrgID         uuid.UUID
+	ExternalID    sql.NullString
+	DisplayName   string
+	MappedRole    sql.NullString
+	MappedGroupID uuid.NullUUID
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type ScimGroupMember struct {
+	ScimGroupID uuid.UUID
+	UserID      uuid.UUID
+	OrgID       uuid.UUID
+	CreatedAt   time.Time
 }
 
 type SecurityEvent struct {

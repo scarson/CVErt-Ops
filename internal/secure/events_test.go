@@ -45,6 +45,17 @@ func TestEventSeverityMapIsExhaustive(t *testing.T) {
 		EventMFAOrgRequireAllDisabled,
 		EventAuthPasswordResetForced,
 		EventAuthPasswordResetForcedCompleted,
+		// SCIM provisioning events
+		EventSCIMAuthFailed,
+		EventSCIMAuthOrgMismatch,
+		EventSCIMAuthDisabled,
+		EventSCIMTokenCreated,
+		EventSCIMTokenRotated,
+		EventSCIMUserProvisioned,
+		EventSCIMUserDeprovisioned,
+		EventSCIMSoleOwnerProtected,
+		EventSCIMExemptSuppressed,
+		EventSCIMRateLimited,
 	}
 	for _, e := range allEvents {
 		if _, ok := Severity(e); !ok {

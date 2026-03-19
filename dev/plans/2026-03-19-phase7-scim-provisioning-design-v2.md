@@ -1,18 +1,32 @@
-# Phase 7 — SCIM 2.0 User & Group Provisioning: Design
+# Phase 7 — SCIM 2.0 User & Group Provisioning: Design (v2)
 
-**Date:** 2026-03-01
+**Date:** 2026-03-19 (revised from 2026-03-01 original)
 **Scope:** SCIM 2.0 service provider for automated user/group provisioning from enterprise IdPs
 **PLAN.md refs:** §7.2 (SSO), §6 (RLS/multi-tenancy), §7.3 (RBAC)
-**Depends on:** Phase 5D (Generic OIDC — `sso_connections` table, tier gating, audit log)
-**Library:** `marcelom97/scimgateway` v1.0.0 (MIT, embeddable `http.Handler`, slog integration)
+**Depends on:** Phase 5D (Generic OIDC — `sso_connections` table, tier gating, audit log), Phase 6B (MFA)
 
-**For Claude:** CRITICAL NOTE (2026-03-19): This design was never implemented and is maintained for historical reference only. It's superseded by dev\plans\2026-03-19-phase7-scim-provisioning-design-v2.md and dev\plans\2026-03-19-phase7-scim-implementation-plan-v2.md.
+## Revision Summary (v1 → v2)
+
+| # | Change | Reason |
+|---|--------|--------|
+| 1 | **Dropped `marcelom97/scimgateway`** — implement SCIM handlers directly as chi handlers | Library has 0 importers, 16 stars, 6 weeks old. Unacceptable supply chain risk for a security product's identity provisioning layer. |
+| 2 | **Migration numbers 000042–000046** (was 000029–000032) | 13 migrations added since original plan. Latest is 000041. |
+| 3 | **Added security events** (`secure.EventWriter`) for SCIM auth and provisioning | Original plan only covered audit log and slog. Security events pipeline (`internal/secure/`) was missing — critical for SOC monitoring and syslog forwarding. |
+| 4 | **Added audit_log entity types** migration | `scim_config` and `scim_group` need to be added to the `action` CHECK constraint. Also need migration for `entity_type` values. |
+| 5 | **Specified slog structured attributes** | Standard fields for all SCIM log lines: `org_id`, `scim_config_id`, `operation`, `resource_type`. Request ID coverage via existing `middleware_request_id.go`. |
+| 6 | **MFA interaction: explicitly not applicable** | SCIM-provisioned users are federated SSO users. MFA enforcement is delegated to the IdP. |
+| 7 | **Documented three-level access denial hierarchy** | `users.disabled_at` (auth middleware) → `users.locked_at` (auth middleware) → `org_members.deactivated_at` (RBAC middleware). |
+| 8 | **Changed `ON DELETE CASCADE` to `ON DELETE RESTRICT`** on `scim_configs.sso_connection_id` | Prevents silent destruction of SCIM config when admin deletes SSO to reconfigure. SSO delete handler returns 409 when SCIM config exists. |
+| 9 | **Added SCIM rate limiter config** | Configurable via `SCIM_RATE_LIMIT` env var (default 50 req/sec). |
+| 10 | **SCIM endpoints use chi handlers** (not huma) | SCIM wire protocol (RFC 7644 error format, `application/scim+json`, SCIM PATCH ops, ListResponse envelope) is incompatible with huma's conventions. Same pattern as SSO callback handlers. |
+
+---
 
 ## Scope Decisions
 
 | Item | Decision |
 |------|----------|
-| Library choice | `marcelom97/scimgateway` — most feature-complete Go SCIM library, v1.0 shipped Feb 2026, slog integration matches stack. Switching cost low if maintainer disappears (clean handler boundary). |
+| Implementation approach | Direct chi handlers implementing RFC 7643/7644. No third-party SCIM library. SCIM is a REST API with specific JSON schemas — we already have chi for routing and our own store layer for business logic. |
 | SCIM + invitations | SCIM bypasses invitation system. SCIM-provisioned users are auto-created and added to org directly. Invitations remain for non-SCIM orgs. |
 | Deprovisioning | Soft-deactivate: `org_members.deactivated_at` timestamp. User can't access org but data associations preserved. Re-provisioning reactivates. |
 | User deactivation scope | General feature, not SCIM-exclusive. Admins can manually deactivate/reactivate via member PATCH. SCIM automates it. |
@@ -24,6 +38,7 @@
 | Notification group sync | Included. `group_members.scim_managed` flag tracks source. SCIM removal only affects SCIM-managed memberships. |
 | User identity matching | `externalId` is the durable key (via `user_identities`). Email is a one-time initial matching heuristic only. |
 | Tier gating | Enterprise-only (same gate as SSO). |
+| MFA interaction | Not applicable. SCIM-provisioned users authenticate via federated SSO; MFA enforcement is delegated to the IdP. CVErt Ops MFA infrastructure (TOTP, email OTP) only applies to locally-authenticated users. |
 
 ---
 
@@ -36,7 +51,7 @@
 CREATE TABLE IF NOT EXISTS scim_configs (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id            UUID NOT NULL UNIQUE REFERENCES organizations(id) ON DELETE CASCADE,
-    sso_connection_id UUID NOT NULL UNIQUE REFERENCES sso_connections(id) ON DELETE CASCADE,
+    sso_connection_id UUID NOT NULL UNIQUE REFERENCES sso_connections(id) ON DELETE RESTRICT,
     enabled           BOOLEAN NOT NULL DEFAULT false,
     token_hash        TEXT NOT NULL,          -- sha256 of bearer token
     token_prefix      TEXT NOT NULL,          -- first 8 chars for display/identification
@@ -125,16 +140,30 @@ ALTER TABLE org_members ADD COLUMN scim_exempt BOOLEAN NOT NULL DEFAULT false;
 
 -- group_members: SCIM sync source tracking
 ALTER TABLE group_members ADD COLUMN scim_managed BOOLEAN NOT NULL DEFAULT false;
+
+-- audit_log: expand entity_type CHECK to include SCIM types
+-- (see migration 000044 for exact ALTER)
 ```
 
 ### Schema Design Notes
 
 - `scim_configs` is 1:1 with `sso_connections` — SCIM requires SSO. Token stored separately from API keys (different auth semantics: no user, no RBAC role, SCIM-specific middleware).
-- `scim_groups` references `organizations(id)` directly, NOT `scim_configs(id)`. If SCIM config is deleted (via SSO connection cascade), admin-configured group mappings survive for potential re-setup.
+- **`ON DELETE RESTRICT`** on `sso_connection_id` — prevents silent destruction of SCIM config when SSO is deleted. SSO delete handler checks for attached SCIM config and returns 409 with actionable message: "Disable and delete the SCIM configuration first, or update the SSO connection in place." Admins should use PATCH to reconfigure SSO rather than delete+recreate.
+- `scim_groups` references `organizations(id)` directly, NOT `scim_configs(id)`. If SCIM config is deleted, admin-configured group mappings survive for potential re-setup.
 - `org_members.deactivated_at` is a general feature — admin-settable via member PATCH, SCIM-automatable. `RequireOrgRole` middleware checks `deactivated_at IS NULL`.
 - `org_members.scim_exempt` prevents SCIM from modifying the user's membership state. Admin-managed only.
 - `group_members.scim_managed` tracks whether a notification group membership was created by SCIM sync. SCIM removal only deletes `scim_managed = true` rows; manually-added memberships are preserved.
 - `mapped_role` excludes `owner` — owner assignment is always manual.
+
+### Access Denial Hierarchy (three independent layers)
+
+| Layer | Column | Checked in | Scope | Effect |
+|-------|--------|-----------|-------|--------|
+| 1 | `users.disabled_at` | `RequireAuthenticated` middleware | All orgs | Blocks all auth attempts site-wide |
+| 2 | `users.locked_at` | `RequireAuthenticated` middleware | All orgs | Temporary brute-force lockout |
+| 3 | `org_members.deactivated_at` | `RequireOrgRole` middleware | Per-org | Blocks access to specific org |
+
+Each layer is independent. A user can be locked out (layer 2) but not deactivated in any org (layer 3). SCIM only interacts with layer 3.
 
 ---
 
@@ -159,12 +188,15 @@ Mounted on `/api/v1/orgs/{org_id}/scim/v2/*` only. Separate from `RequireAuthent
 5. subtle.ConstantTimeCompare on hash (401 if mismatch)
 6. Verify config.org_id == URL org_id (401 — defense-in-depth)
 7. Verify config.enabled == true (403 if disabled)
-8. Inject org_id and scim_config_id into request context (downstream handlers need config_id for identity provider string 'scim:{config_id}' and audit logging)
+8. Fire security event on failure (scim.auth_failed / scim.auth_org_mismatch / scim.auth_disabled)
+9. Inject org_id and scim_config_id into request context
 ```
+
+Context keys: `ctxSCIMConfigID` added to `internal/api/context.go` (next iota value after `ctxTierResolver`).
 
 ### Rate Limiting
 
-Separate SCIM rate limiter: 50 req/sec per org. Not shared with per-org API rate limiter (which is 1-17 req/sec depending on tier — below Entra ID's 25 req/sec gallery minimum).
+Separate SCIM rate limiter: configurable via `SCIM_RATE_LIMIT` env var, default 50 req/sec per org. Not shared with per-org API rate limiter (which is 1-17 req/sec depending on tier — below Entra ID's 25 req/sec gallery minimum).
 
 ### Token Rotation
 
@@ -176,10 +208,25 @@ SCIM operations: `actor_id = NULL`, `actor_email = NULL` (system action). SCIM c
 
 For exempt user suppression: `metadata` includes `{"source": "scim", "suppressed": true, "reason": "scim_exempt"}`.
 
+### SSO Delete Protection
+
+When admin attempts to delete an SSO connection via `DELETE /api/v1/orgs/{org_id}/sso`:
+- If a `scim_configs` row exists for this SSO connection → **409 Conflict**:
+  ```json
+  {
+    "type": "https://cvert-ops.dev/errors/sso-has-scim",
+    "title": "SSO connection has active SCIM provisioning",
+    "detail": "This SSO connection is used by SCIM provisioning. Disable and delete the SCIM configuration before removing SSO, or update the SSO connection in place.",
+    "status": 409
+  }
+  ```
+- This forces explicit ordering: disable SCIM → delete SCIM config → delete SSO. Or better: PATCH SSO to update in place.
+
 ### Lifecycle Edge Cases
 
 - **SCIM disabled** (`enabled = false`): 403 on all SCIM endpoints. Users keep current roles/state. Re-enable restores sync with same token.
-- **SSO connection deleted**: `scim_configs` cascade-deletes (token invalidated). `scim_groups` survive (reference org directly). Users keep current roles. Group mappings preserved.
+- **SSO connection deleted**: Blocked by FK RESTRICT if SCIM config exists. Admin must delete SCIM config first.
+- **SCIM config deleted (admin explicit)**: Token invalidated. `scim_groups` survive (reference org directly). Users keep current roles. Group mappings preserved.
 - **SCIM re-enabled after disable**: Same token works. IdP resumes sync on next cycle (~40 min).
 
 ---
@@ -465,11 +512,13 @@ When a SCIM group has a non-null `mapped_group_id`, membership changes propagate
 
 **Source tracking:** `group_members.scim_managed BOOLEAN NOT NULL DEFAULT false` tracks whether a notification group membership was created by SCIM sync.
 
+**Soft-delete guard:** Before inserting into `group_members`, verify the target group exists and `deleted_at IS NULL`. The `groups` table uses soft-delete; `ON DELETE SET NULL` on `scim_groups.mapped_group_id` only fires on hard-delete. A SCIM sync to a soft-deleted notification group is a no-op.
+
 **Sync rules:**
 
 | Event | Action |
 |-------|--------|
-| SCIM adds user to group with `mapped_group_id` | If user not in notification group: INSERT `group_members` with `scim_managed = true`. If already a member with `scim_managed = false`: no-op (manual membership takes precedence). |
+| SCIM adds user to group with `mapped_group_id` | If target group is soft-deleted: no-op. If user not in notification group: INSERT `group_members` with `scim_managed = true`. If already a member with `scim_managed = false`: no-op (manual membership takes precedence). |
 | SCIM removes user from group | If `scim_managed = true` AND no other SCIM group with same `mapped_group_id` includes user: DELETE from notification group. If `scim_managed = false`: no-op (admin owns it). |
 | Admin manually adds user to notification group | INSERT with `scim_managed = false`. If already exists from SCIM: no change to flag. |
 | Admin manually removes user from notification group | DELETE regardless of `scim_managed` (admin override). |
@@ -491,11 +540,11 @@ If count > 0, keep the notification group membership.
 
 ---
 
-## 4. Microsoft Entra ID Compatibility
+## 4. Microsoft Entra ID & Okta Compatibility
 
 ### 4.1 SCIM Error Response Format
 
-All SCIM endpoints return errors using RFC 7644 §3.12 format, NOT our normal RFC 9457 Problem Details. The scimgateway library handles the response envelope; our handler code returns appropriate status codes and detail messages.
+All SCIM endpoints return errors using RFC 7644 §3.12 format, NOT RFC 9457 Problem Details. Our chi handlers are responsible for formatting error responses with `Content-Type: application/scim+json`.
 
 ```json
 {
@@ -542,16 +591,14 @@ All SCIM endpoints return errors using RFC 7644 §3.12 format, NOT our normal RF
 |----------|------------|-------------|-------|
 | `eq` | Both | `WHERE col = $1` | Core — every provisioning operation uses this |
 | `and` | Both | `AND` | Compound queries |
-| `sw` | Okta (import) | `WHERE col LIKE $1 \|\| '%'` | Deferred from MVP (§8). Documented here for reference. Uses BTREE index. Okta can fall back to `eq`, but supporting `sw` avoids user import edge cases. |
+| `sw` | Okta (import) | `WHERE col LIKE $1 \|\| '%'` | Deferred from MVP (§8). Documented here for reference. Uses BTREE index. |
 
-Unsupported operators (`ne`, `co`, `ew`, `gt`, `ge`, `lt`, `le`, `or`, `not`, `pr`) return 400 with `scimType: "invalidFilter"`. None are required by Entra ID or Okta for provisioning workflows.
+Unsupported operators (`ne`, `co`, `ew`, `gt`, `ge`, `lt`, `le`, `or`, `not`, `pr`) return 400 with `scimType: "invalidFilter"`.
 
 ### 4.4 Test Connection Behavior
 
-Both IdPs validate connectivity before enabling provisioning:
-
-- **Entra ID:** `GET /Users?filter=id eq "{random-guid}"` — must return 200 with `{"totalResults": 0, "Resources": []}`. Returning 404 fails the test.
-- **Okta:** `GET /Users?startIndex=1&count=1` — must return 200 with pagination envelope. An empty org returns `{"totalResults": 0, "Resources": []}`.
+- **Entra ID:** `GET /Users?filter=id eq "{random-guid}"` — must return 200 with `{"totalResults": 0, "Resources": []}`.
+- **Okta:** `GET /Users?startIndex=1&count=1` — must return 200 with pagination envelope.
 
 Both patterns work against our GET /Users implementation with no special-casing.
 
@@ -566,17 +613,15 @@ Values stored as received. No normalization:
 
 | Context | Requirement | Our limit |
 |---------|------------|-----------|
-| Entra ID gallery app | 25 req/sec minimum | 50 req/sec |
-| Entra ID custom enterprise app | No published minimum | 50 req/sec |
-| Okta (any) | No published minimum | 50 req/sec |
-
-The 25 req/sec requirement only applies to Entra ID gallery-listed apps. Self-hosted CVErt Ops deployments configure SCIM as a custom enterprise app. Our 50 req/sec limit provides headroom for both.
+| Entra ID gallery app | 25 req/sec minimum | 50 req/sec (configurable) |
+| Entra ID custom enterprise app | No published minimum | 50 req/sec (configurable) |
+| Okta (any) | No published minimum | 50 req/sec (configurable) |
 
 ### 4.7 Customer Configuration Guidance
 
-**Entra ID:** Recommend customers append `?aadOptscim062020` to the SCIM endpoint URL in their tenant config. This enables more spec-compliant behavior (lowercase ops, proper booleans, standard group member removal format). Our implementation handles both modes, but the flag reduces quirk surface.
+**Entra ID:** Recommend customers append `?aadOptscim062020` to the SCIM endpoint URL. This enables more spec-compliant behavior.
 
-**Okta:** Ensure SCIM 2.0 (not 1.1) is selected during integration setup. Use "HTTP Header" authentication type and enter the SCIM bearer token.
+**Okta:** Ensure SCIM 2.0 (not 1.1) is selected. Use "HTTP Header" authentication type.
 
 **Both:** The SCIM endpoint URL is `https://{host}/api/v1/orgs/{org_id}/scim/v2`. The `org_id` UUID is visible in org settings.
 
@@ -584,7 +629,7 @@ The 25 req/sec requirement only applies to Entra ID gallery-listed apps. Self-ho
 
 ## 5. API Endpoints
 
-### SCIM Endpoints (mounted under org path, SCIM auth middleware)
+### SCIM Endpoints (chi handlers, SCIM auth middleware)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -606,9 +651,9 @@ The 25 req/sec requirement only applies to Entra ID gallery-listed apps. Self-ho
 
 All SCIM endpoints require `requireSCIMAuth` middleware. Response `Content-Type: application/scim+json`. Input accepts both `application/scim+json` and `application/json` (Entra ID sends the latter).
 
-**Routing boundary:** SCIM endpoints are mounted as a raw `http.Handler` via scimgateway — they live outside huma's OpenAPI spec generation. SCIM discovery (ServiceProviderConfig, Schemas, ResourceTypes) serves that role instead. Admin management endpoints below go through huma normally.
+**Routing boundary:** SCIM endpoints are chi handlers — they live outside huma's OpenAPI spec generation. SCIM's wire protocol (RFC 7644 error format, `application/scim+json` content type, SCIM PATCH semantics, ListResponse envelope) is incompatible with huma's conventions. Same pattern as SSO callback handlers.
 
-**Middleware error format:** `requireSCIMAuth` generates 401/403 responses before scimgateway runs. These must use SCIM error format (RFC 7644 §3.12), not huma's RFC 9457 Problem Details. The middleware is responsible for formatting its own error responses with `Content-Type: application/scim+json`.
+**Request ID coverage:** SCIM routes must be mounted AFTER `middleware_request_id.go` in the middleware chain, so all SCIM requests get correlation IDs in slog output.
 
 ### Admin SCIM Management Endpoints (standard auth + RBAC)
 
@@ -620,19 +665,19 @@ All SCIM endpoints require `requireSCIMAuth` middleware. Response `Content-Type:
 | `/api/v1/orgs/{org_id}/sso/scim` | DELETE | owner | Delete SCIM config. SCIM groups and memberships survive (§2 lifecycle). 204. |
 | `/api/v1/orgs/{org_id}/sso/scim/rotate-token` | POST | owner | Rotate SCIM token |
 | `/api/v1/orgs/{org_id}/sso/scim/groups` | GET | admin+ | List SCIM groups with current mappings |
-| `/api/v1/orgs/{org_id}/sso/scim/groups/{id}/mapping` | PATCH | admin+ | Set mapped_role and/or mapped_group_id. App-layer validation: `mapped_group_id` must belong to same org (FK bypasses RLS). |
+| `/api/v1/orgs/{org_id}/sso/scim/groups/{id}/mapping` | PATCH | admin+ | Set mapped_role and/or mapped_group_id |
 
-All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group listing are admin+ — admins managing group mappings need visibility into SCIM status. Config creation, mutation, deletion, and token rotation are owner-only (security-critical).
+All admin endpoints are Enterprise-only (tier-gated via `requireEnterpriseTier`). Config read and group listing are admin+. Config creation, mutation, deletion, and token rotation are owner-only.
 
 **Admin endpoint response schemas:**
 
-- `POST /sso/scim` → `{id, org_id, enabled, default_role, token_prefix, token, created_at}` — `token` returned in cleartext this one time only, never stored or retrievable again. 201.
+- `POST /sso/scim` → `{id, org_id, enabled, default_role, token_prefix, token, created_at}` — `token` in cleartext once. 201.
 - `GET /sso/scim` → `{id, org_id, enabled, default_role, token_prefix, created_at, updated_at}` — no `token` field.
 - `PATCH /sso/scim` → returns updated config (same shape as GET). 200.
-- `DELETE /sso/scim` → 204, no body. Idempotent (204 even if config doesn't exist).
-- `POST /sso/scim/rotate-token` → `{token, token_prefix}` — new token in cleartext, same one-time-show pattern as POST creation. 200.
-- `GET /sso/scim/groups` → `{items: [{id, external_id, display_name, mapped_role, mapped_group_id, member_count, created_at}]}` — includes resolved member count for admin context.
-- `PATCH /sso/scim/groups/{id}/mapping` → returns updated SCIM group (same shape as GET groups item). 200.
+- `DELETE /sso/scim` → 204, no body.
+- `POST /sso/scim/rotate-token` → `{token, token_prefix}` — new token in cleartext. 200.
+- `GET /sso/scim/groups` → `{items: [{id, external_id, display_name, mapped_role, mapped_group_id, member_count, created_at}]}`.
+- `PATCH /sso/scim/groups/{id}/mapping` → returns updated SCIM group. 200.
 
 ### Existing Endpoint Modifications
 
@@ -640,45 +685,79 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 |----------|--------|
 | `PATCH /api/v1/orgs/{org_id}/members/{user_id}` | Add `active` (bool) and `scim_exempt` (bool) as patchable fields. `active` sets/clears `deactivated_at`. Both require admin+ role. |
 | `GET /api/v1/orgs/{org_id}/members` | Response includes `active` (bool), `deactivated_at` (nullable), `scim_exempt` (bool) fields. |
-| `RequireOrgRole` middleware | Add `deactivated_at IS NULL` check. Deactivated members get 403 with detail: "Your membership in this organization has been deactivated." |
-
-**Manual deactivation vs. SCIM reactivation:** If an admin deactivates a SCIM-provisioned user via the member PATCH without also setting `scim_exempt=true`, the next IdP sync will reactivate them (POST /Users is idempotent and clears `deactivated_at`). This is correct — SCIM is the source of truth for provisioning state. Admins who need manual override must set `scim_exempt=true`.
+| `RequireOrgRole` middleware | Add `deactivated_at IS NULL` check. Deactivated members get 403. |
+| `DELETE /api/v1/orgs/{org_id}/sso` | Add pre-flight check: if SCIM config exists for this SSO connection → 409 (§2 SSO Delete Protection). |
 
 ---
 
-## 6. Structured Logging (slog)
+## 6. Logging & Observability
+
+### Three logging layers for SCIM
+
+| Layer | System | Purpose | When to use |
+|-------|--------|---------|-------------|
+| **slog** (structured) | `log/slog` | Operational visibility for developers/ops | Every SCIM operation, request lifecycle |
+| **Audit log** | `internal/audit/` | Compliance trail visible to org admins | Business mutations (user/group/config changes) |
+| **Security events** | `internal/secure/` | SOC monitoring, syslog forwarding, anomaly detection | Auth failures, suspicious activity, rate limiting |
+
+### slog Events
+
+Every SCIM slog line MUST include these standard attributes: `org_id`, `scim_config_id`. Additional context-specific attributes as listed below.
 
 **SCIM protocol operations:**
 
-| Level | Event | Fields |
+| Level | Event | Additional Fields |
 |-------|-------|--------|
-| `Info` | SCIM user provisioned | `org_id`, `user_id`, `external_id`, `method` (created/linked/reactivated) |
-| `Info` | SCIM user deactivated | `org_id`, `user_id`, `external_id`, `source` (patch/put) |
-| `Info` | SCIM user reactivated | `org_id`, `user_id`, `external_id`, `source` (patch/put) |
-| `Info` | SCIM user attributes updated | `org_id`, `user_id`, `external_id`, `source` (patch/put), `changed_fields` (email/display_name/external_id) |
-| `Info` | SCIM user deprovisioned | `org_id`, `user_id`, `external_id` |
-| `Info` | SCIM group created | `org_id`, `scim_group_id`, `display_name` |
-| `Info` | SCIM group deleted | `org_id`, `scim_group_id`, `display_name`, `affected_user_count` |
-| `Info` | SCIM group membership changed | `org_id`, `scim_group_id`, `user_id`, `action` (add/remove) |
-| `Info` | Role recomputed from SCIM groups | `org_id`, `user_id`, `old_role`, `new_role` |
-| `Info` | Notification group membership synced | `org_id`, `user_id`, `group_id`, `action` (add/remove), `scim_group_id` |
-| `Warn` | SCIM operation suppressed (exempt user) | `org_id`, `user_id`, `operation`, `scim_config_id` |
-| `Warn` | SCIM sole-owner protection triggered | `org_id`, `user_id`, `operation` |
-| `Warn` | SCIM auth failed | `org_id`, `reason` (invalid_token/disabled/org_mismatch) |
-| `Debug` | SCIM request received | `org_id`, `method`, `path`, `scim_config_id` |
+| `Info` | SCIM user provisioned | `user_id`, `external_id`, `method` (created/linked/reactivated) |
+| `Info` | SCIM user deactivated | `user_id`, `external_id`, `source` (patch/put/delete) |
+| `Info` | SCIM user reactivated | `user_id`, `external_id`, `source` (patch/put/post) |
+| `Info` | SCIM user attributes updated | `user_id`, `external_id`, `source` (patch/put), `changed_fields` |
+| `Info` | SCIM user deprovisioned | `user_id`, `external_id` |
+| `Info` | SCIM group created | `scim_group_id`, `display_name` |
+| `Info` | SCIM group deleted | `scim_group_id`, `display_name`, `affected_user_count` |
+| `Info` | SCIM group membership changed | `scim_group_id`, `user_id`, `action` (add/remove) |
+| `Info` | Role recomputed from SCIM groups | `user_id`, `old_role`, `new_role` |
+| `Info` | Notification group membership synced | `user_id`, `group_id`, `action` (add/remove), `scim_group_id` |
+| `Warn` | SCIM operation suppressed (exempt user) | `user_id`, `operation` |
+| `Warn` | SCIM sole-owner protection triggered | `user_id`, `operation` |
+| `Warn` | SCIM auth failed | `reason` (invalid_token/disabled/org_mismatch) |
+| `Debug` | SCIM request received | `method`, `path` |
 
 **Admin management actions:**
 
-| Level | Event | Fields |
+| Level | Event | Additional Fields |
 |-------|-------|--------|
-| `Info` | SCIM config created | `org_id`, `scim_config_id`, `actor_id` |
-| `Info` | SCIM config enabled/disabled | `org_id`, `scim_config_id`, `enabled`, `actor_id` |
-| `Info` | SCIM config updated | `org_id`, `scim_config_id`, `changes`, `actor_id` |
-| `Info` | SCIM config deleted | `org_id`, `scim_config_id`, `actor_id` |
-| `Info` | SCIM token rotated | `org_id`, `scim_config_id`, `actor_id` |
-| `Info` | SCIM group mapping updated | `org_id`, `scim_group_id`, `mapped_role`, `mapped_group_id`, `actor_id` |
+| `Info` | SCIM config created | `actor_id` |
+| `Info` | SCIM config enabled/disabled | `enabled`, `actor_id` |
+| `Info` | SCIM config deleted | `actor_id` |
+| `Info` | SCIM token rotated | `actor_id` |
+| `Info` | SCIM group mapping updated | `scim_group_id`, `mapped_role`, `mapped_group_id`, `actor_id` |
 
-**Audit log:** Both categories generate audit log entries. SCIM protocol operations use `actor_id = NULL` with `metadata: {"source": "scim", "scim_config_id": "<uuid>"}` (system action, per §2). Admin management actions use the authenticated user's `actor_id` and standard audit log context (no `metadata.source: "scim"`).
+### Audit Log
+
+SCIM protocol operations: `actor_id = NULL` with `metadata: {"source": "scim", "scim_config_id": "<uuid>"}`.
+Admin management actions: authenticated user's `actor_id`.
+
+New entity types required: `scim_config`, `scim_group` (migration 000044 extends the `entity_type` CHECK, if one exists, or adds it).
+
+### Security Events (`secure.EventWriter`)
+
+New event type constants in `internal/secure/events.go`:
+
+| Event Type | Severity | Trigger |
+|------------|----------|---------|
+| `scim.auth_failed` | Warning | Invalid/missing bearer token |
+| `scim.auth_org_mismatch` | Warning | Token used on wrong org's endpoint |
+| `scim.auth_disabled` | Warning | Token used on disabled SCIM config |
+| `scim.token_created` | Info | New SCIM config/token provisioned |
+| `scim.token_rotated` | Info | Token rotated |
+| `scim.user_provisioned` | Info | New user created via SCIM |
+| `scim.user_deprovisioned` | Info | User deactivated via SCIM |
+| `scim.sole_owner_protected` | Warning | Attempt to deactivate sole owner |
+| `scim.exempt_suppressed` | Warning | Operation suppressed on exempt user |
+| `scim.rate_limited` | Warning | SCIM rate limit hit |
+
+Security events include `OrgID` and `ActorIP` (from the IdP's outbound IP). No `UserID` for auth failures. `Details` map includes `scim_config_id` where available.
 
 ---
 
@@ -697,6 +776,7 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestSCIMAuth_RateLimit` | SCIM rate limit independent of org API rate limit |
 | `TestSCIMAuth_TokenRotation` | Old token rejected after rotation |
 | `TestSCIMAuth_ErrorFormat` | Auth failures return SCIM error JSON (RFC 7644 §3.12), not RFC 9457 |
+| `TestSCIMAuth_SecurityEvent` | Auth failures fire `scim.auth_failed` security event |
 
 ### User Provisioning
 
@@ -713,6 +793,7 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestSCIMCreateUser_TierMemberLimit` | Exceeds limit → 403 |
 | `TestSCIMCreateUser_SCIMExempt_Deactivated` | Exempt user not reactivated, 200 returned |
 | `TestSCIMCreateUser_DefaultRole` | New user gets scim_configs.default_role |
+| `TestSCIMCreateUser_ConcurrentDuplicate` | Two concurrent provisions of same user — exactly one 201, other 200 |
 
 ### User Read/List
 
@@ -727,7 +808,7 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestSCIMListUsers_FilterByExternalId` | eq filter on externalId |
 | `TestSCIMListUsers_FilterById` | eq filter on id (Entra ID test connection) |
 | `TestSCIMListUsers_FilterByActive` | eq filter on active |
-| `TestSCIMListUsers_FilterAnd` | Compound filter (userName eq X and active eq true) |
+| `TestSCIMListUsers_FilterAnd` | Compound filter |
 | `TestSCIMListUsers_UnsupportedFilter` | Unsupported operator → 400 invalidFilter |
 | `TestSCIMListUsers_Pagination` | startIndex + count produce correct pages |
 | `TestSCIMListUsers_EmptyResult` | 200 with empty Resources[] (not 404) |
@@ -743,15 +824,14 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestSCIMReplaceUser_SoleOwner` | Deactivate sole owner → 400 |
 | `TestSCIMReplaceUser_NotFound` | 404 |
 | `TestSCIMReplaceUser_Reactivate` | active=true clears deactivated_at |
-| `TestSCIMReplaceUser_OmittedDisplayName` | Falls back to userName (email) per §3.3 defaults |
+| `TestSCIMReplaceUser_OmittedDisplayName` | Falls back to userName (email) |
 | `TestSCIMPatchUser_ReplaceActive` | PATCH active=false deactivates |
 | `TestSCIMPatchUser_CaseInsensitiveOp` | "Replace" and "replace" both work |
 | `TestSCIMPatchUser_StringBoolean` | "False" coerced to false |
 | `TestSCIMPatchUser_MultipleOps` | Multiple ops in single PATCH, atomic |
 | `TestSCIMPatchUser_SCIMExempt` | Returns current state, no modification |
 | `TestSCIMPatchUser_SoleOwner` | Cannot deactivate sole owner |
-| `TestSCIMPatchUser_InvalidPath` | Unrecognized attribute path → 400 invalidPath |
-| `TestSCIMUpdateUser_AttributeChangeLogged` | PUT/PATCH attribute changes (email, displayName) produce Info-level "SCIM user attributes updated" log with changed_fields |
+| `TestSCIMPatchUser_InvalidPath` | Unrecognized attribute → 400 invalidPath |
 
 ### User Deprovision
 
@@ -778,7 +858,7 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestSCIMReplaceGroup_MemberDiff` | Correctly diffs and syncs membership |
 | `TestSCIMDeleteGroup_CascadesMembers` | scim_group_members deleted |
 | `TestSCIMDeleteGroup_RecomputesRoles` | Affected users' roles recomputed |
-| `TestSCIMPatchGroup_EntraIdMemberRemoveFormat` | Value array format for member removal (Entra ID quirk) |
+| `TestSCIMPatchGroup_EntraIdMemberRemoveFormat` | Value array format (Entra ID quirk) |
 | `TestSCIMDeleteGroup_Idempotent` | Already-deleted group returns 204 |
 
 ### Role Recomputation
@@ -791,23 +871,24 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestRoleRecompute_NeverSetsOwner` | Owner role never assigned by SCIM |
 | `TestRoleRecompute_SCIMExempt_Skipped` | Exempt user's role unchanged |
 | `TestRoleRecompute_RemovedFromAllGroups` | Falls back to default_role |
-| `TestRoleRecompute_OwnerNotDowngraded` | Existing owner role preserved through recomputation |
-| `TestRoleRecompute_MappingChange_ImmediateEffect` | Admin changes mapped_role → existing members' roles recomputed immediately |
+| `TestRoleRecompute_OwnerNotDowngraded` | Existing owner role preserved |
+| `TestRoleRecompute_MappingChange_ImmediateEffect` | Admin changes mapped_role → roles recomputed immediately |
 
 ### Notification Group Sync
 
 | Test | Validates |
 |------|-----------|
 | `TestNotifSync_Add_NewMember` | Inserts with scim_managed=true |
-| `TestNotifSync_Add_AlreadyManualMember` | No change (manual takes precedence) |
+| `TestNotifSync_Add_AlreadyManualMember` | No change (manual precedence) |
 | `TestNotifSync_Remove_SCIMManaged` | Deletes scim_managed=true row |
 | `TestNotifSync_Remove_ManualMember` | No-op (admin owns it) |
 | `TestNotifSync_Remove_MultiMapping` | Keeps membership if other SCIM group maps same |
-| `TestNotifSync_AdminRemove_OverridesSCIM` | Admin delete removes regardless of scim_managed |
+| `TestNotifSync_AdminRemove_OverridesSCIM` | Admin delete removes regardless |
 | `TestNotifSync_GroupDelete_NoRemoval` | SCIM group delete does not remove notification members |
 | `TestNotifSync_ExemptUser_Skipped` | Exempt user not synced |
-| `TestNotifSync_MappingChange_ImmediateSync` | Admin sets mapped_group_id → existing members synced immediately |
-| `TestNotifSync_MappingChanged_OldGroupCleanedUp` | mapped_group_id changed → scim_managed members removed from old group, added to new |
+| `TestNotifSync_MappingChange_ImmediateSync` | Admin sets mapped_group_id → existing members synced |
+| `TestNotifSync_MappingChanged_OldGroupCleanedUp` | Old group's scim_managed members cleaned up |
+| `TestNotifSync_SoftDeletedTargetGroup` | mapped_group_id points to soft-deleted group → no-op |
 
 ### SCIM Config Management
 
@@ -815,7 +896,7 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 |------|-----------|
 | `TestSCIMConfig_Create` | Owner creates, token returned once |
 | `TestSCIMConfig_Create_RequiresSSO` | Fails without sso_connection |
-| `TestSCIMConfig_Create_EnterprisOnly` | Non-Enterprise → 403 |
+| `TestSCIMConfig_Create_EnterpriseOnly` | Non-Enterprise → 403 |
 | `TestSCIMConfig_Get_TokenMasked` | Token not in GET response |
 | `TestSCIMConfig_Enable_Disable` | PATCH enabled flag works |
 | `TestSCIMConfig_Delete` | Removes config, SCIM auth fails |
@@ -824,17 +905,19 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | `TestSCIMConfig_RBAC` | Non-owner → 403 for mutation; admin can GET |
 | `TestSCIMConfig_Create_Duplicate` | Second POST → 409 |
 | `TestSCIMConfig_Delete_Idempotent` | DELETE when no config → 204 |
+| `TestSCIMConfig_SSODelete_Blocked` | SSO delete when SCIM config exists → 409 |
 
 ### Group Mapping Admin
 
 | Test | Validates |
 |------|-----------|
-| `TestGroupMapping_SetRole` | mapped_role applied immediately to existing group members |
-| `TestGroupMapping_SetNotificationGroup` | mapped_group_id triggers immediate sync for existing members |
-| `TestGroupMapping_ClearMapping` | Null mapped_role stops role influence, roles recomputed to default |
+| `TestGroupMapping_SetRole` | mapped_role applied immediately |
+| `TestGroupMapping_SetNotificationGroup` | mapped_group_id triggers immediate sync |
+| `TestGroupMapping_ClearMapping` | Null mapped_role → roles recomputed to default |
 | `TestGroupMapping_AdminRBAC` | Requires admin+ |
-| `TestGroupMapping_CrossOrgGroupId` | mapped_group_id from different org → 400/404 |
-| `TestGroupMapping_ListGroups` | GET /sso/scim/groups returns groups with mappings and member counts |
+| `TestGroupMapping_CrossOrgGroupId` | mapped_group_id from different org → 400 |
+| `TestGroupMapping_SoftDeletedGroupId` | mapped_group_id to soft-deleted group → 400 |
+| `TestGroupMapping_ListGroups` | GET returns groups with mappings and member counts |
 
 ### Deactivation (General Feature)
 
@@ -851,12 +934,14 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 
 | Concern | How handled |
 |---------|------------|
-| RLS isolation | Every org-scoped test includes cross-org check |
+| RLS isolation | Every org-scoped test includes cross-org check via `AppStore` |
 | testcontainers-go | All Postgres integration tests |
 | Pristine output | SCIM errors captured and validated; suppression warnings expected and verified |
 | Test data isolation | Each test creates own org/user/data |
-| Audit logging | SCIM operations produce audit entries with correct metadata |
+| Audit logging | SCIM operations produce audit entries with correct metadata and entity types |
+| Security events | Auth failures and provisioning events verified in `security_events` table |
 | Content-Type | All SCIM responses use `application/scim+json` |
+| CSRF | SCIM endpoints exempt from CSRF (no cookie auth — Bearer token only) |
 
 ---
 
@@ -864,18 +949,17 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 
 | Item | Status |
 |------|--------|
-| SCIM bulk operations | Not supported (no major IdP requires). ServiceProviderConfig declares unsupported. |
+| SCIM bulk operations | Not supported. ServiceProviderConfig declares unsupported. |
 | SCIM sorting | Not supported. |
 | SCIM ETags | Not supported. |
-| Additional filter operators (sw, co, or) | MVP supports eq + and only. `sw` SQL mapping already documented in §4.3 — implementation-ready when needed. Add if Okta import feature requires. |
+| Additional filter operators (sw, co, or) | MVP supports eq + and only. `sw` SQL mapping documented in §4.3. |
 | Enterprise User schema extension | Not advertised. Add if customer demand exists. |
-| SAML 2.0 NameID matching | Deferred with SAML support (Phase 5 carry-forward). |
-| Domain ownership verification for SCIM | Deferred to SaaS phase (same as OIDC). |
-| scimgateway library replacement | If maintainer abandons: switch to elimity-com/scim or build from scratch. Handler boundary is clean. |
-| SCIM changePassword | Not planned. CVErt Ops uses OIDC/SSO for authentication, not passwords. ServiceProviderConfig declares unsupported. |
-| SCIM token expiration / TTL | Tokens currently never expire. Add configurable TTL or forced rotation policy for security hardening. Not MVP (adds IdP setup friction). |
-| SCIM provisioning observability | Add `last_sync_at` timestamp to config (updated on each SCIM request) and `provisioned_user_count`. Helps admins verify SCIM is working without digging through audit logs. |
-| Admin filter by provisioning source | `GET /members?provisioned_by=scim` — helps admins troubleshoot sync issues. Not needed for MVP. |
+| SAML 2.0 NameID matching | Deferred with SAML support. |
+| Domain ownership verification for SCIM | Deferred to SaaS phase. |
+| SCIM changePassword | Not planned. CVErt Ops uses OIDC/SSO for authentication. |
+| SCIM token expiration / TTL | Tokens currently never expire. Add configurable TTL for security hardening. Not MVP. |
+| SCIM provisioning observability | Add `last_sync_at` timestamp and `provisioned_user_count` to config. Not MVP. |
+| Admin filter by provisioning source | `GET /members?provisioned_by=scim`. Not MVP. |
 
 ---
 
@@ -892,3 +976,4 @@ All admin endpoints are Enterprise-only (tier-gated). SCIM config read and group
 | 7 | Missing FK on scim_group_members.org_id | Added REFERENCES organizations(id) |
 | 8 | No explicit indexes | Added all FK + query-pattern indexes |
 | 9 | Missing index on scim_groups(mapped_group_id) FK | Added BTREE index |
+| 10 | `ON DELETE CASCADE` on sso_connection_id silently destroys SCIM config | Changed to `ON DELETE RESTRICT` with 409 handler |

@@ -11,21 +11,21 @@ const (
 	EventAuthAccountUnlocked       = "auth.account_unlocked"
 	EventAuthPasswordResetReq      = "auth.password_reset_requested"
 	EventAuthPasswordChanged       = "auth.password_changed"
-	EventAuthTokenReuseDetected    = "auth.token_reuse_detected"    //nolint:gosec // G101 false positive: event type label, not a credential
-	EventAuthAPIKeyCreated         = "auth.api_key_created"         //nolint:gosec // G101 false positive: event type label, not a credential
+	EventAuthTokenReuseDetected    = "auth.token_reuse_detected"          //nolint:gosec // G101 false positive: event type label, not a credential
+	EventAuthAPIKeyCreated         = "auth.api_key_created"               //nolint:gosec // G101 false positive: event type label, not a credential
 	EventAuthAPIKeyUsedAfterRevoke = "auth.api_key_used_after_revocation" //nolint:gosec // G101 false positive: event type label, not a credential
 	EventAdminUserDisabled         = "admin.user_disabled"
 	EventAdminConfigReloaded       = "admin.config_reloaded"
 	EventAdminBulkRetryTriggered   = "admin.bulk_retry_triggered"
 
 	// MFA authentication events
-	EventMFAChallengeRequested  = "mfa.challenge_requested"
-	EventMFAVerifySuccess       = "mfa.verify_success"
-	EventMFAVerifyFailed        = "mfa.verify_failed"
-	EventMFAChallengeExhausted  = "mfa.challenge_exhausted"
-	EventMFAEmailOTPRateLimited = "mfa.email_otp_rate_limited"
+	EventMFAChallengeRequested   = "mfa.challenge_requested"
+	EventMFAVerifySuccess        = "mfa.verify_success"
+	EventMFAVerifyFailed         = "mfa.verify_failed"
+	EventMFAChallengeExhausted   = "mfa.challenge_exhausted"
+	EventMFAEmailOTPRateLimited  = "mfa.email_otp_rate_limited"
 	EventMFARememberDeviceIssued = "mfa.remember_device_issued"
-	EventMFARememberDeviceUsed  = "mfa.remember_device_used"
+	EventMFARememberDeviceUsed   = "mfa.remember_device_used"
 
 	// Recovery code events
 	EventMFARecoveryCodesGenerated = "mfa.recovery_codes_generated"
@@ -33,20 +33,26 @@ const (
 	EventMFARecoveryCodeFailed     = "mfa.recovery_code_failed"
 
 	// Enrollment/management events
-	EventMFAMethodEnrolled     = "mfa.method_enrolled"
-	EventMFAMethodRemoved      = "mfa.method_removed"
-	EventMFAAllMethodsRemoved  = "mfa.all_methods_removed"
-	EventMFAEnrollmentFailed   = "mfa.enrollment_failed"
-	EventMFADisableBlocked     = "mfa.disable_blocked"
+	EventMFAMethodEnrolled    = "mfa.method_enrolled"
+	EventMFAMethodRemoved     = "mfa.method_removed"
+	EventMFAAllMethodsRemoved = "mfa.all_methods_removed"
+	EventMFAEnrollmentFailed  = "mfa.enrollment_failed"
+	EventMFADisableBlocked    = "mfa.disable_blocked"
 
 	// Admin action events
-	EventMFAAdminReset            = "mfa.admin_reset"
-	EventMFAAdminRequireMember    = "mfa.admin_require_member"
-	EventMFAAdminUnrequireMember  = "mfa.admin_unrequire_member"
-	EventMFAOrgRequireAllEnabled  = "mfa.org_require_all_enabled"
-	EventMFAOrgRequireAllDisabled = "mfa.org_require_all_disabled"
+	EventMFAAdminReset                    = "mfa.admin_reset"
+	EventMFAAdminRequireMember            = "mfa.admin_require_member"
+	EventMFAAdminUnrequireMember          = "mfa.admin_unrequire_member"
+	EventMFAOrgRequireAllEnabled          = "mfa.org_require_all_enabled"
+	EventMFAOrgRequireAllDisabled         = "mfa.org_require_all_disabled"
 	EventAuthPasswordResetForced          = "auth.password_reset_forced"
 	EventAuthPasswordResetForcedCompleted = "auth.password_reset_forced_completed"
+
+	// SCIM provisioning events
+	EventSCIMAuthFailed      = "scim.auth_failed"
+	EventSCIMAuthOrgMismatch = "scim.auth_org_mismatch"
+	EventSCIMAuthDisabled    = "scim.auth_disabled"
+	EventSCIMRateLimited     = "scim.rate_limited"
 )
 
 // Severity levels for security events.
@@ -58,18 +64,18 @@ const (
 
 // eventSeverity maps each event type to its default severity level.
 var eventSeverity = map[string]string{
-	EventAuthLoginFailed:           SeverityInfo,
-	EventAuthLoginSuccess:          SeverityInfo,
-	EventAuthAccountLocked:         SeverityWarning,
-	EventAuthAccountUnlocked:       SeverityInfo,
-	EventAuthPasswordResetReq:      SeverityInfo,
-	EventAuthPasswordChanged:       SeverityInfo,
-	EventAuthTokenReuseDetected:    SeverityCritical,
-	EventAuthAPIKeyCreated:         SeverityInfo,
-	EventAuthAPIKeyUsedAfterRevoke: SeverityWarning,
-	EventAdminUserDisabled:         SeverityWarning,
-	EventAdminConfigReloaded:       SeverityInfo,
-	EventAdminBulkRetryTriggered:   SeverityInfo,
+	EventAuthLoginFailed:                  SeverityInfo,
+	EventAuthLoginSuccess:                 SeverityInfo,
+	EventAuthAccountLocked:                SeverityWarning,
+	EventAuthAccountUnlocked:              SeverityInfo,
+	EventAuthPasswordResetReq:             SeverityInfo,
+	EventAuthPasswordChanged:              SeverityInfo,
+	EventAuthTokenReuseDetected:           SeverityCritical,
+	EventAuthAPIKeyCreated:                SeverityInfo,
+	EventAuthAPIKeyUsedAfterRevoke:        SeverityWarning,
+	EventAdminUserDisabled:                SeverityWarning,
+	EventAdminConfigReloaded:              SeverityInfo,
+	EventAdminBulkRetryTriggered:          SeverityInfo,
 	EventMFAChallengeRequested:            SeverityInfo,
 	EventMFAVerifySuccess:                 SeverityInfo,
 	EventMFAVerifyFailed:                  SeverityWarning,
@@ -92,6 +98,10 @@ var eventSeverity = map[string]string{
 	EventMFAOrgRequireAllDisabled:         SeverityWarning,
 	EventAuthPasswordResetForced:          SeverityCritical,
 	EventAuthPasswordResetForcedCompleted: SeverityInfo,
+	EventSCIMAuthFailed:                   SeverityWarning,
+	EventSCIMAuthOrgMismatch:              SeverityCritical,
+	EventSCIMAuthDisabled:                 SeverityWarning,
+	EventSCIMRateLimited:                  SeverityWarning,
 }
 
 // Severity returns the default severity level for the given event type.

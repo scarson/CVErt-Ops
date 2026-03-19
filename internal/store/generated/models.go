@@ -501,6 +501,18 @@ type ScheduledReport struct {
 	UpdatedAt         time.Time
 }
 
+type ScimConfig struct {
+	ID              uuid.UUID
+	OrgID           uuid.UUID
+	SsoConnectionID uuid.UUID
+	Enabled         bool
+	TokenHash       string
+	TokenPrefix     string
+	DefaultRole     string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type SecurityEvent struct {
 	ID         uuid.UUID
 	EventType  string

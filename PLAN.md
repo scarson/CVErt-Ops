@@ -1559,7 +1559,7 @@ The CVErt Ops binary uses cobra for CLI subcommands:
 - `cvert-ops serve` (default) — runs HTTP server + worker pool in one process. Suitable for self-hosted single-instance deployments.
 - `cvert-ops worker` — runs standalone worker pool only. For SaaS scaling where API and workers run separately.
 - `cvert-ops migrate` — runs pending database migrations and exits.
-- `cvert-ops import-bulk` — imports a bulk data file for a given feed source (see section 17.1). Used for initial instance population; exits on completion.
+- `cvert-ops import-bulk` — imports a bulk data file for a given feed source (see section 17.1). Used for development seeding and airgapped deployments; exits on completion.
 
 **Graceful shutdown:**
 - On SIGTERM/SIGINT: stop accepting new HTTP requests and new jobs

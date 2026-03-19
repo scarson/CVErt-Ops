@@ -5,7 +5,6 @@ package ingest
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -100,12 +99,12 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 		}
 
 		// Check circuit breaker — skip this feed if open.
+		// Use State() instead of Execute() to avoid registering a success that
+		// resets ConsecutiveFailures and prevents the breaker from ever tripping.
 		cb := getBreaker(p.FeedName)
-		if _, cbErr := cb.Execute(func() (struct{}, error) { return struct{}{}, nil }); cbErr != nil {
-			if errors.Is(cbErr, gobreaker.ErrOpenState) || errors.Is(cbErr, gobreaker.ErrTooManyRequests) {
-				slog.Warn("feed circuit breaker open, skipping", "feed", p.FeedName)
-				return nil
-			}
+		if cb.State() == gobreaker.StateOpen {
+			slog.Warn("feed circuit breaker open, skipping", "feed", p.FeedName)
+			return nil
 		}
 
 		start := time.Now()

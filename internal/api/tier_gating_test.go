@@ -27,7 +27,10 @@ func TestTierGating_AlertRules_FreeLimit(t *testing.T) {
 	orgID, _ := uuid.Parse(reg.OrgID)
 
 	// Ensure org is on free tier (default).
-	tier, _, _ := db.GetOrgTier(ctx, orgID)
+	tier, _, err := db.GetOrgTier(ctx, orgID)
+	if err != nil {
+		t.Fatalf("setup: GetOrgTier: %v", err)
+	}
 	if tier != "free" {
 		t.Fatalf("expected free tier, got %q", tier)
 	}

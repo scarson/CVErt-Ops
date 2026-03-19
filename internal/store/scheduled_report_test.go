@@ -35,7 +35,7 @@ func TestCreateScheduledReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg1")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg1")
 
 	nextRun := time.Now().Add(24 * time.Hour).Truncate(time.Microsecond)
 	row, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
@@ -80,7 +80,7 @@ func TestGetScheduledReport_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg2")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg2")
 
 	got, err := s.GetScheduledReport(ctx, org.ID, uuid.New())
 	if err != nil {
@@ -96,7 +96,7 @@ func TestGetScheduledReport_Found(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg3")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg3")
 	created := mustCreateScheduledReport(t, s, ctx, org.ID, "MyReport")
 
 	got, err := s.GetScheduledReport(ctx, org.ID, created.ID)
@@ -116,7 +116,7 @@ func TestListScheduledReports(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg4")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg4")
 
 	mustCreateScheduledReport(t, s, ctx, org.ID, "Report-A")
 	mustCreateScheduledReport(t, s, ctx, org.ID, "Report-B")
@@ -139,7 +139,7 @@ func TestSoftDeleteScheduledReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg5")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg5")
 	created := mustCreateScheduledReport(t, s, ctx, org.ID, "ToDelete")
 
 	if err := s.SoftDeleteScheduledReport(ctx, org.ID, created.ID); err != nil {
@@ -170,7 +170,7 @@ func TestClaimDueReports(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg6")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg6")
 
 	// Create a report due now.
 	dueReport, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
@@ -229,7 +229,7 @@ func TestAdvanceReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportOrg7")
+	org := s.MustCreateOrg(t, ctx, "ReportOrg7")
 	created := mustCreateScheduledReport(t, s, ctx, org.ID, "ToAdvance")
 
 	lastRun := time.Now().Truncate(time.Microsecond)
@@ -262,7 +262,7 @@ func TestUpdateScheduledReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportUpdateOrg")
+	org := s.MustCreateOrg(t, ctx, "ReportUpdateOrg")
 	created := mustCreateScheduledReport(t, s, ctx, org.ID, "BeforeUpdate")
 
 	// Update name, timezone, severity_threshold, send_on_empty, ai_summary, status.
@@ -308,7 +308,7 @@ func TestUpdateScheduledReport_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportUpdateNFOrg")
+	org := s.MustCreateOrg(t, ctx, "ReportUpdateNFOrg")
 
 	result, err := s.UpdateScheduledReport(ctx, org.ID, uuid.New(), store.UpdateScheduledReportParams{
 		Name:          "Ghost",
@@ -330,7 +330,7 @@ func TestGetScheduledReportName(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ReportNameOrg")
+	org := s.MustCreateOrg(t, ctx, "ReportNameOrg")
 	created := mustCreateScheduledReport(t, s, ctx, org.ID, "NamedReport")
 
 	name, err := s.GetScheduledReportName(ctx, created.ID)
@@ -361,8 +361,8 @@ func TestScheduledReport_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "SRIsoA")
-	org2, _ := s.CreateOrg(ctx, "SRIsoB")
+	org1 := s.MustCreateOrg(t, ctx, "SRIsoA")
+	org2 := s.MustCreateOrg(t, ctx, "SRIsoB")
 	report := mustCreateScheduledReport(t, s, ctx, org1.ID, "Org1Report")
 
 	// Get with wrong org → nil.
@@ -427,7 +427,7 @@ func TestUpdateScheduledReport_SoftDeleted(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SRUpdDelOrg")
+	org := s.MustCreateOrg(t, ctx, "SRUpdDelOrg")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DeletedReport")
 
 	if err := s.SoftDeleteScheduledReport(ctx, org.ID, report.ID); err != nil {
@@ -455,7 +455,7 @@ func TestGetAlertRuleName_Found(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RuleNameOrg")
+	org := s.MustCreateOrg(t, ctx, "RuleNameOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "NamedRule")
 
 	name, err := s.GetAlertRuleName(ctx, rule.ID)

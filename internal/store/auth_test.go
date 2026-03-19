@@ -240,8 +240,12 @@ func TestCountUsers(t *testing.T) {
 		t.Errorf("CountUsers on empty DB = %d, want 0", n0)
 	}
 
-	_, _ = s.CreateUser(ctx, "count1@example.com", "Count1", "", 0)
-	_, _ = s.CreateUser(ctx, "count2@example.com", "Count2", "", 0)
+	if _, err := s.CreateUser(ctx, "count1@example.com", "Count1", "", 0); err != nil {
+		t.Fatalf("setup: CreateUser: %v", err)
+	}
+	if _, err := s.CreateUser(ctx, "count2@example.com", "Count2", "", 0); err != nil {
+		t.Fatalf("setup: CreateUser: %v", err)
+	}
 
 	n2, err := s.CountUsers(ctx)
 	if err != nil {
@@ -269,7 +273,10 @@ func TestUpdateLastLogin(t *testing.T) {
 		t.Fatalf("UpdateLastLogin: %v", err)
 	}
 
-	got, _ := s.GetUserByID(ctx, user.ID)
+	got, err := s.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
 	if !got.LastLoginAt.Valid {
 		t.Error("LastLoginAt should be set after UpdateLastLogin")
 	}
@@ -290,7 +297,10 @@ func TestUpdatePasswordHash(t *testing.T) {
 		t.Fatalf("UpdatePasswordHash: %v", err)
 	}
 
-	got, _ := s.GetUserByID(ctx, user.ID)
+	got, err := s.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID(after password change): %v", err)
+	}
 	if !got.PasswordHash.Valid || got.PasswordHash.String != "$argon2id$new" {
 		t.Errorf("PasswordHash = %v, want $argon2id$new", got.PasswordHash)
 	}
@@ -308,8 +318,8 @@ func TestUpsertUserIdentity_ConflictDifferentUser(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	user1, _ := s.CreateUser(ctx, "ident1@example.com", "IdentUser1", "", 0)
-	user2, _ := s.CreateUser(ctx, "ident2@example.com", "IdentUser2", "", 0)
+	user1 := s.MustCreateUser(t, ctx, "ident1@example.com", "IdentUser1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "ident2@example.com", "IdentUser2", "", 0)
 
 	// Link provider_user_id to user1.
 	err := s.UpsertUserIdentity(ctx, user1.ID, "github", "gh-conflict-99", "ident1@github.com")
@@ -343,7 +353,7 @@ func TestDeleteExpiredRefreshTokens(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	user, _ := s.CreateUser(ctx, "expire@example.com", "ExpireUser", "", 0)
+	user := s.MustCreateUser(t, ctx, "expire@example.com", "ExpireUser", "", 0)
 
 	// Create a token that expired over 60 seconds ago.
 	expiredJTI := uuid.New()
@@ -368,13 +378,19 @@ func TestDeleteExpiredRefreshTokens(t *testing.T) {
 	}
 
 	// The active token should still exist.
-	rt, _ := s.GetRefreshToken(ctx, activeJTI)
+	rt, err := s.GetRefreshToken(ctx, activeJTI)
+	if err != nil {
+		t.Fatalf("GetRefreshToken(active): %v", err)
+	}
 	if rt == nil {
 		t.Error("active token should not have been deleted")
 	}
 
 	// The expired token should be gone.
-	rt2, _ := s.GetRefreshToken(ctx, expiredJTI)
+	rt2, err := s.GetRefreshToken(ctx, expiredJTI)
+	if err != nil {
+		t.Fatalf("GetRefreshToken(expired): %v", err)
+	}
 	if rt2 != nil {
 		t.Error("expired token should have been deleted")
 	}

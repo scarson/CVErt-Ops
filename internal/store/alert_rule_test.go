@@ -36,7 +36,7 @@ func TestCreateAndGetAlertRule(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg1")
+	org := s.MustCreateOrg(t, ctx, "AROrg1")
 
 	r, err := s.CreateAlertRule(ctx, org.ID, store.CreateAlertRuleParams{
 		Name:             "Critical CVEs",
@@ -73,8 +73,8 @@ func TestGetAlertRule_WrongOrgReturnsNil(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AROrg2a")
-	org2, _ := s.CreateOrg(ctx, "AROrg2b")
+	org1 := s.MustCreateOrg(t, ctx, "AROrg2a")
+	org2 := s.MustCreateOrg(t, ctx, "AROrg2b")
 	r := mustCreateAlertRule(t, s, ctx, org1.ID, "Rule A")
 
 	got, err := s.GetAlertRule(ctx, org2.ID, r.ID)
@@ -91,7 +91,7 @@ func TestUpdateAlertRule(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg3")
+	org := s.MustCreateOrg(t, ctx, "AROrg3")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "Original")
 
 	updated, err := s.UpdateAlertRule(ctx, org.ID, r.ID, store.UpdateAlertRuleParams{
@@ -121,7 +121,7 @@ func TestSoftDeleteAlertRule(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg4")
+	org := s.MustCreateOrg(t, ctx, "AROrg4")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "DeleteMe")
 
 	if err := s.SoftDeleteAlertRule(ctx, org.ID, r.ID); err != nil {
@@ -142,14 +142,17 @@ func TestSetAlertRuleStatus(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg5")
+	org := s.MustCreateOrg(t, ctx, "AROrg5")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "StatusRule")
 
 	if err := s.SetAlertRuleStatus(ctx, org.ID, r.ID, "active"); err != nil {
 		t.Fatalf("SetAlertRuleStatus: %v", err)
 	}
 
-	got, _ := s.GetAlertRule(ctx, org.ID, r.ID)
+	got, err := s.GetAlertRule(ctx, org.ID, r.ID)
+	if err != nil {
+		t.Fatalf("GetAlertRule(after status change): %v", err)
+	}
 	if got == nil {
 		t.Fatal("GetAlertRule returned nil after status change")
 	}
@@ -163,7 +166,7 @@ func TestInsertAlertEvent_DeduplicatesOnConflict(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg6")
+	org := s.MustCreateOrg(t, ctx, "AROrg6")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "DedupeRule")
 
 	// First insert returns a new ID.
@@ -190,10 +193,12 @@ func TestResolveAlertEvent(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg7")
+	org := s.MustCreateOrg(t, ctx, "AROrg7")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "ResolveRule")
 
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0002", "hash2", false)
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0002", "hash2", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
 
 	// Before resolving: should appear in unresolved list.
 	unresolvedBefore, err := s.GetUnresolvedAlertEventCVEs(ctx, r.ID, org.ID)
@@ -222,7 +227,7 @@ func TestInsertAndUpdateAlertRuleRun(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg8")
+	org := s.MustCreateOrg(t, ctx, "AROrg8")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "RunRule")
 
 	run, err := s.InsertAlertRuleRun(ctx, r.ID, org.ID, "batch")
@@ -243,7 +248,7 @@ func TestListActiveRulesForEvaluation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg9")
+	org := s.MustCreateOrg(t, ctx, "AROrg9")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "ActiveRule")
 	_ = s.SetAlertRuleStatus(ctx, org.ID, r.ID, "active")
 
@@ -280,7 +285,7 @@ func TestListAlertRules_StatusFilter(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg10")
+	org := s.MustCreateOrg(t, ctx, "AROrg10")
 	r1 := mustCreateAlertRule(t, s, ctx, org.ID, "Draft1")
 	r2 := mustCreateAlertRule(t, s, ctx, org.ID, "Active1")
 	_ = s.SetAlertRuleStatus(ctx, org.ID, r2.ID, "active")
@@ -313,8 +318,8 @@ func TestListAlertRules_RLSIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "ARRLSOrg1")
-	org2, _ := s.CreateOrg(ctx, "ARRLSOrg2")
+	org1 := s.MustCreateOrg(t, ctx, "ARRLSOrg1")
+	org2 := s.MustCreateOrg(t, ctx, "ARRLSOrg2")
 	mustCreateAlertRule(t, s, ctx, org1.ID, "Org1-Rule")
 	mustCreateAlertRule(t, s, ctx, org2.ID, "Org2-Rule")
 
@@ -343,13 +348,17 @@ func TestListAlertEvents_RLSIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AERLSOrg1")
-	org2, _ := s.CreateOrg(ctx, "AERLSOrg2")
+	org1 := s.MustCreateOrg(t, ctx, "AERLSOrg1")
+	org2 := s.MustCreateOrg(t, ctx, "AERLSOrg2")
 	r1 := mustCreateAlertRule(t, s, ctx, org1.ID, "RLSEventRule1")
 	r2 := mustCreateAlertRule(t, s, ctx, org2.ID, "RLSEventRule2")
 
-	_, _ = s.InsertAlertEvent(ctx, org1.ID, r1.ID, "CVE-2024-0100", "rls1", false)
-	_, _ = s.InsertAlertEvent(ctx, org2.ID, r2.ID, "CVE-2024-0101", "rls2", false)
+	if _, err := s.InsertAlertEvent(ctx, org1.ID, r1.ID, "CVE-2024-0100", "rls1", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+	if _, err := s.InsertAlertEvent(ctx, org2.ID, r2.ID, "CVE-2024-0101", "rls2", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
 
 	events, err := s.AppStore.ListAlertEvents(ctx, org1.ID, store.ListAlertEventsParams{Limit: 10})
 	if err != nil {
@@ -368,13 +377,19 @@ func TestListAlertEvents_Filters(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg11")
+	org := s.MustCreateOrg(t, ctx, "AROrg11")
 	r1 := mustCreateAlertRule(t, s, ctx, org.ID, "EventRule1")
 	r2 := mustCreateAlertRule(t, s, ctx, org.ID, "EventRule2")
 
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r1.ID, "CVE-2024-0010", "h10", false)
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r1.ID, "CVE-2024-0011", "h11", false)
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r2.ID, "CVE-2024-0012", "h12", false)
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r1.ID, "CVE-2024-0010", "h10", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r1.ID, "CVE-2024-0011", "h11", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r2.ID, "CVE-2024-0012", "h12", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
 
 	// Filter by rule_id.
 	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
@@ -416,7 +431,7 @@ func TestListAlertRules_Pagination(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg12")
+	org := s.MustCreateOrg(t, ctx, "AROrg12")
 	for i := range 5 {
 		mustCreateAlertRule(t, s, ctx, org.ID, "PageRule-"+string(rune('a'+i)))
 	}
@@ -457,7 +472,7 @@ func TestUpdateAlertRule_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg13")
+	org := s.MustCreateOrg(t, ctx, "AROrg13")
 
 	updated, err := s.UpdateAlertRule(ctx, org.ID, uuid.New(), store.UpdateAlertRuleParams{
 		Name:       "Ghost",
@@ -478,7 +493,7 @@ func TestListActiveRulesForEPSS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg14")
+	org := s.MustCreateOrg(t, ctx, "AROrg14")
 
 	// Create an EPSS-conditioned active rule.
 	epssRule, err := s.CreateAlertRule(ctx, org.ID, store.CreateAlertRuleParams{
@@ -522,7 +537,7 @@ func TestInsertAlertEvent_DifferentMaterialHash(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg15")
+	org := s.MustCreateOrg(t, ctx, "AROrg15")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "DiffHashRule")
 
 	// Same (org, rule, cve) but different material_hash should create separate events.
@@ -551,11 +566,15 @@ func TestListAlertEvents_LastMatchStateFilter(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg16")
+	org := s.MustCreateOrg(t, ctx, "AROrg16")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "MatchStateRule")
 
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0030", "h30", false)
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0031", "h31", false)
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0030", "h30", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0031", "h31", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
 
 	// Resolve one event.
 	_ = s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0030")
@@ -598,10 +617,12 @@ func TestListAlertEvents_SinceFilter(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg17")
+	org := s.MustCreateOrg(t, ctx, "AROrg17")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "SinceRule")
 
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0040", "h40", false)
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0040", "h40", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
 
 	// Since = now() means only events from now onward — the just-inserted event should be excluded.
 	since := time.Now().Add(1 * time.Second)
@@ -622,13 +643,15 @@ func TestListAlertEvents_Pagination(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg18")
+	org := s.MustCreateOrg(t, ctx, "AROrg18")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "PageEventRule")
 
 	for i := range 5 {
 		cveID := "CVE-2024-005" + string(rune('0'+i))
 		hash := "ph" + string(rune('0'+i))
-		_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, hash, false)
+		if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, hash, false); err != nil {
+			t.Fatalf("setup: InsertAlertEvent: %v", err)
+		}
 	}
 
 	page1, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 3})
@@ -668,7 +691,7 @@ func TestSoftDeleteAlertRule_NotVisibleInList(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg19")
+	org := s.MustCreateOrg(t, ctx, "AROrg19")
 	r1 := mustCreateAlertRule(t, s, ctx, org.ID, "ActiveRule19")
 	r2 := mustCreateAlertRule(t, s, ctx, org.ID, "DeletedRule19")
 
@@ -699,7 +722,7 @@ func TestInsertAlertEvent_SuppressDelivery(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg20")
+	org := s.MustCreateOrg(t, ctx, "AROrg20")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "SuppressRule")
 
 	id, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0060", "h60", true)
@@ -710,7 +733,10 @@ func TestInsertAlertEvent_SuppressDelivery(t *testing.T) {
 		t.Fatal("expected non-nil event ID")
 	}
 
-	events, _ := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 10})
+	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListAlertEvents: %v", err)
+	}
 	found := false
 	for _, e := range events {
 		if e.ID == id {
@@ -730,7 +756,7 @@ func TestUpdateAlertRuleRun_WithError(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg21")
+	org := s.MustCreateOrg(t, ctx, "AROrg21")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "ErrorRunRule")
 
 	run, err := s.InsertAlertRuleRun(ctx, r.ID, org.ID, "batch")
@@ -749,7 +775,7 @@ func TestCreateAlertRule_WithWatchlistIds(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg22")
+	org := s.MustCreateOrg(t, ctx, "AROrg22")
 
 	r, err := s.CreateAlertRule(ctx, org.ID, store.CreateAlertRuleParams{
 		Name:         "Watchlist Rule",
@@ -771,9 +797,11 @@ func TestListAlertEvents_DefaultLimit(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AROrg23")
+	org := s.MustCreateOrg(t, ctx, "AROrg23")
 	r := mustCreateAlertRule(t, s, ctx, org.ID, "DefaultLimitRule")
-	_, _ = s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0070", "h70", false)
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, "CVE-2024-0070", "h70", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
 
 	// Limit = 0 should default to 100 (per ListAlertEvents implementation).
 	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 0})

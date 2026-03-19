@@ -93,8 +93,8 @@ func TestRequireOrgRole_InsufficientRole_403(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "RBACOrg2")
-	user, _ := db.CreateUser(ctx, "rbac_viewer@example.com", "RBACViewer", "", 0)
+	org := db.MustCreateOrg(t, ctx, "RBACOrg2")
+	user := db.MustCreateUser(t, ctx, "rbac_viewer@example.com", "RBACViewer", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "viewer")
 
 	token, _ := auth.IssueAccessToken([]byte("rbactestsecret2"), user.ID, 1, 15*time.Minute)
@@ -121,9 +121,9 @@ func TestRequireOrgRole_NotAMember_403(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "RBACOrg3")
+	org := db.MustCreateOrg(t, ctx, "RBACOrg3")
 	// user is deliberately NOT added to the org.
-	user, _ := db.CreateUser(ctx, "rbac_outsider@example.com", "RBACOutsider", "", 0)
+	user := db.MustCreateUser(t, ctx, "rbac_outsider@example.com", "RBACOutsider", "", 0)
 
 	token, _ := auth.IssueAccessToken([]byte("rbactestsecret3"), user.ID, 1, 15*time.Minute)
 
@@ -148,8 +148,8 @@ func TestRequireOrgRole_APIKeyRoleCapped_403(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "RBACOrg4")
-	user, _ := db.CreateUser(ctx, "rbac_keycap@example.com", "RBACKeyCap", "", 0)
+	org := db.MustCreateOrg(t, ctx, "RBACOrg4")
+	user := db.MustCreateUser(t, ctx, "rbac_keycap@example.com", "RBACKeyCap", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 
 	// API key role = viewer → capped below the org role (admin).
@@ -326,8 +326,8 @@ func TestRequireOrgRole_APIKeyRoleNotCapped(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "RBACOrg5")
-	user, _ := db.CreateUser(ctx, "rbac_keyhigh@example.com", "RBACKeyHigh", "", 0)
+	org := db.MustCreateOrg(t, ctx, "RBACOrg5")
+	user := db.MustCreateUser(t, ctx, "rbac_keyhigh@example.com", "RBACKeyHigh", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "member")
 
 	// API key role = admin → higher than the org role (member), so no capping.
@@ -364,9 +364,9 @@ func TestRequireOrgRole_APIKeyCrossOrg_403(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	orgA, _ := db.CreateOrg(ctx, "RBACOrgA")
-	orgB, _ := db.CreateOrg(ctx, "RBACOrgB")
-	user, _ := db.CreateUser(ctx, "rbac_crossorg@example.com", "RBACCrossOrg", "", 0)
+	orgA := db.MustCreateOrg(t, ctx, "RBACOrgA")
+	orgB := db.MustCreateOrg(t, ctx, "RBACOrgB")
+	user := db.MustCreateUser(t, ctx, "rbac_crossorg@example.com", "RBACCrossOrg", "", 0)
 	// User is a member of both orgs.
 	_ = db.CreateOrgMember(ctx, orgA.ID, user.ID, "admin")
 	_ = db.CreateOrgMember(ctx, orgB.ID, user.ID, "admin")
@@ -402,8 +402,8 @@ func TestRequireOrgRole_APIKeySameOrg_200(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "RBACOrgSame")
-	user, _ := db.CreateUser(ctx, "rbac_sameorg@example.com", "RBACSameOrg", "", 0)
+	org := db.MustCreateOrg(t, ctx, "RBACOrgSame")
+	user := db.MustCreateUser(t, ctx, "rbac_sameorg@example.com", "RBACSameOrg", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 
 	rawKey, keyHash, _ := auth.GenerateAPIKey()

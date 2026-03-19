@@ -34,7 +34,7 @@ func TestCreateNotificationChannel_SecretGenerated(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg1")
+	org := s.MustCreateOrg(t, ctx, "NCOrg1")
 
 	row, secret, err := s.CreateNotificationChannel(ctx, org.ID, "MyChannel", "webhook", webhookConfig("https://example.com/hook"))
 	if err != nil {
@@ -85,7 +85,7 @@ func TestGetNotificationChannelForDelivery_IncludesSecrets(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg2")
+	org := s.MustCreateOrg(t, ctx, "NCOrg2")
 	chanID, createdSecret := mustCreateNotificationChannel(t, s, ctx, org.ID, "DeliveryChannel")
 
 	got, err := s.GetNotificationChannelForDelivery(ctx, chanID)
@@ -111,7 +111,7 @@ func TestSoftDeleteNotificationChannel(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg3")
+	org := s.MustCreateOrg(t, ctx, "NCOrg3")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ToDelete")
 
 	// Verify it shows up in the list before deletion.
@@ -151,7 +151,7 @@ func TestRotateSigningSecret_MovesSecrets(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg4")
+	org := s.MustCreateOrg(t, ctx, "NCOrg4")
 	chanID, originalSecret := mustCreateNotificationChannel(t, s, ctx, org.ID, "RotateChannel")
 
 	// Rotate: old primary → secondary, new primary returned.
@@ -190,7 +190,7 @@ func TestUpdateNotificationChannel(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg5")
+	org := s.MustCreateOrg(t, ctx, "NCOrg5")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "Original")
 
 	updated, err := s.UpdateNotificationChannel(ctx, org.ID, chanID, store.UpdateNotificationChannelParams{
@@ -213,7 +213,7 @@ func TestChannelHasActiveBoundRules_NoRules(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg6")
+	org := s.MustCreateOrg(t, ctx, "NCOrg6")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "Unbound")
 
 	has, err := s.ChannelHasActiveBoundRules(ctx, org.ID, chanID)
@@ -230,7 +230,7 @@ func TestClearSecondarySecret(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg8")
+	org := s.MustCreateOrg(t, ctx, "NCOrg8")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ClearSecondaryChannel")
 
 	// Rotate to populate the secondary secret.
@@ -274,7 +274,7 @@ func TestChannelHasActiveBoundRules_WithActiveRule(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrg9")
+	org := s.MustCreateOrg(t, ctx, "NCOrg9")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "BoundChannel")
 
 	// Create an alert rule and set it to active.
@@ -313,8 +313,8 @@ func TestGetNotificationChannel_WrongOrgReturnsNil(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCOrg7a")
-	org2, _ := s.CreateOrg(ctx, "NCOrg7b")
+	org1 := s.MustCreateOrg(t, ctx, "NCOrg7a")
+	org2 := s.MustCreateOrg(t, ctx, "NCOrg7b")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1Channel")
 
 	got, err := s.GetNotificationChannel(ctx, org2.ID, chanID)
@@ -331,8 +331,8 @@ func TestListNotificationChannels_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCIsoListA")
-	org2, _ := s.CreateOrg(ctx, "NCIsoListB")
+	org1 := s.MustCreateOrg(t, ctx, "NCIsoListA")
+	org2 := s.MustCreateOrg(t, ctx, "NCIsoListB")
 	mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1OnlyChan")
 
 	// org2 must not see org1's channels.
@@ -350,8 +350,8 @@ func TestUpdateNotificationChannel_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCIsoUpdateA")
-	org2, _ := s.CreateOrg(ctx, "NCIsoUpdateB")
+	org1 := s.MustCreateOrg(t, ctx, "NCIsoUpdateA")
+	org2 := s.MustCreateOrg(t, ctx, "NCIsoUpdateB")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1UpdateChan")
 
 	// org2 must not be able to update org1's channel.
@@ -384,8 +384,8 @@ func TestSoftDeleteNotificationChannel_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCIsoDelA")
-	org2, _ := s.CreateOrg(ctx, "NCIsoDelB")
+	org1 := s.MustCreateOrg(t, ctx, "NCIsoDelA")
+	org2 := s.MustCreateOrg(t, ctx, "NCIsoDelB")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1DeleteChan")
 
 	// org2 must not be able to delete org1's channel (silent no-op).
@@ -408,8 +408,8 @@ func TestRotateSigningSecret_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCIsoRotateA")
-	org2, _ := s.CreateOrg(ctx, "NCIsoRotateB")
+	org1 := s.MustCreateOrg(t, ctx, "NCIsoRotateA")
+	org2 := s.MustCreateOrg(t, ctx, "NCIsoRotateB")
 	chanID, originalSecret := mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1RotateChan")
 
 	// org2 must not be able to rotate org1's secret.
@@ -439,8 +439,8 @@ func TestClearSecondarySecret_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCIsoClearA")
-	org2, _ := s.CreateOrg(ctx, "NCIsoClearB")
+	org1 := s.MustCreateOrg(t, ctx, "NCIsoClearA")
+	org2 := s.MustCreateOrg(t, ctx, "NCIsoClearB")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1ClearChan")
 
 	// Rotate to populate secondary.
@@ -471,8 +471,8 @@ func TestChannelHasActiveBoundRules_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "NCIsoHasRulesA")
-	org2, _ := s.CreateOrg(ctx, "NCIsoHasRulesB")
+	org1 := s.MustCreateOrg(t, ctx, "NCIsoHasRulesA")
+	org2 := s.MustCreateOrg(t, ctx, "NCIsoHasRulesB")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "Org1HasRulesChan")
 
 	// Create an active rule and bind the channel in org1.
@@ -522,7 +522,7 @@ func TestGetNotificationChannelForDelivery_SoftDeletedReturnsNil(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCIsoBypassSDOrg")
+	org := s.MustCreateOrg(t, ctx, "NCIsoBypassSDOrg")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "BypassSoftDeleteChan")
 
 	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
@@ -543,7 +543,7 @@ func TestGetNotificationChannelForDelivery_BypassRLSWorks(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCIsoBypassOrg")
+	org := s.MustCreateOrg(t, ctx, "NCIsoBypassOrg")
 	chanID, createdSecret := mustCreateNotificationChannel(t, s, ctx, org.ID, "BypassChan")
 
 	// GetNotificationChannelForDelivery uses bypassTx — no orgID required.
@@ -564,7 +564,7 @@ func TestUpdateNotificationChannel_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgUpdNF")
+	org := s.MustCreateOrg(t, ctx, "NCOrgUpdNF")
 
 	result, err := s.UpdateNotificationChannel(ctx, org.ID, uuid.New(), store.UpdateNotificationChannelParams{
 		Name:   "NewName",
@@ -583,7 +583,7 @@ func TestUpdateNotificationChannel_SoftDeleted(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgUpdSD")
+	org := s.MustCreateOrg(t, ctx, "NCOrgUpdSD")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UpdSDChan")
 
 	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
@@ -607,7 +607,7 @@ func TestRotateSigningSecret_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgRotNF")
+	org := s.MustCreateOrg(t, ctx, "NCOrgRotNF")
 
 	secret, err := s.RotateSigningSecret(ctx, org.ID, uuid.New())
 	if err != nil {
@@ -623,7 +623,7 @@ func TestRotateSigningSecret_SoftDeleted(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgRotSD")
+	org := s.MustCreateOrg(t, ctx, "NCOrgRotSD")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "RotSDChan")
 
 	if err := s.SoftDeleteNotificationChannel(ctx, org.ID, chanID); err != nil {
@@ -644,7 +644,7 @@ func TestSoftDeleteNotificationChannel_Idempotent(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgDelIdem")
+	org := s.MustCreateOrg(t, ctx, "NCOrgDelIdem")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "IdemDelChan")
 
 	// First delete.
@@ -663,7 +663,7 @@ func TestChannelHasActiveBoundRules_DraftDisabledExcluded(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgDraftDisable")
+	org := s.MustCreateOrg(t, ctx, "NCOrgDraftDisable")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DraftDisableChan")
 
 	// Create a rule in draft status (default from mustCreateAlertRule is 'activating').
@@ -714,7 +714,7 @@ func TestCreateNotificationChannel_EmailType_NoSecret(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "NCOrgEmail1")
+	org := s.MustCreateOrg(t, ctx, "NCOrgEmail1")
 
 	emailCfg, _ := json.Marshal(map[string]any{
 		"recipients": []string{"test@example.com"},

@@ -5,6 +5,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import client from '@/lib/api/client'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,16 +26,11 @@ const googleEnabled = ref(false)
 const hasOAuth = ref(false)
 
 onMounted(async () => {
-  try {
-    const resp = await fetch('/api/v1/auth/providers')
-    if (resp.ok) {
-      const data = await resp.json()
-      githubEnabled.value = data.github === true
-      googleEnabled.value = data.google === true
-      hasOAuth.value = githubEnabled.value || googleEnabled.value
-    }
-  } catch {
-    // Providers endpoint unavailable — hide OAuth buttons
+  const { data } = await client.GET('/auth/providers')
+  if (data) {
+    githubEnabled.value = data.github === true
+    googleEnabled.value = data.google === true
+    hasOAuth.value = githubEnabled.value || googleEnabled.value
   }
 })
 

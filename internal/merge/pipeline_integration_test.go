@@ -74,7 +74,7 @@ func TestIngest_MaterialHashDeterministic(t *testing.T) {
 		t.Fatalf("Ingest (second): %v", err)
 	}
 
-	cve2, _ := s.GetCVE(ctx, "CVE-2024-99901")
+	cve2 := s.MustGetCVE(t, ctx, "CVE-2024-99901")
 	if cve2.MaterialHash.String != hash1 {
 		t.Errorf("material_hash changed on identical re-ingest: %q → %q", hash1, cve2.MaterialHash.String)
 	}
@@ -101,7 +101,7 @@ func TestIngest_MaterialHashChangesOnMaterialChange(t *testing.T) {
 		t.Fatalf("Ingest (HIGH): %v", err)
 	}
 
-	cve1, _ := s.GetCVE(ctx, cveID)
+	cve1 := s.MustGetCVE(t, ctx, cveID)
 	hash1 := cve1.MaterialHash.String
 
 	// Change severity (material field) — hash must change.
@@ -112,7 +112,7 @@ func TestIngest_MaterialHashChangesOnMaterialChange(t *testing.T) {
 		t.Fatalf("Ingest (CRITICAL): %v", err)
 	}
 
-	cve2, _ := s.GetCVE(ctx, cveID)
+	cve2 := s.MustGetCVE(t, ctx, cveID)
 	if cve2.MaterialHash.String == hash1 {
 		t.Error("material_hash should change when severity changes (material field)")
 	}
@@ -360,7 +360,7 @@ func TestIngest_TombstoneRejectedCVE(t *testing.T) {
 	}
 
 	// Verify data is set.
-	cve1, _ := s.GetCVE(ctx, cveID)
+	cve1 := s.MustGetCVE(t, ctx, cveID)
 	if !cve1.CvssV3Score.Valid {
 		t.Fatal("CVSSv3Score should be set after first ingest")
 	}
@@ -376,7 +376,7 @@ func TestIngest_TombstoneRejectedCVE(t *testing.T) {
 		t.Fatalf("Ingest (rejected): %v", err)
 	}
 
-	cve2, _ := s.GetCVE(ctx, cveID)
+	cve2 := s.MustGetCVE(t, ctx, cveID)
 	if cve2 == nil {
 		t.Fatal("CVE not found after rejection")
 	}
@@ -425,7 +425,7 @@ func TestIngest_MultiSourceResolution(t *testing.T) {
 	}
 
 	// Verify resolved CVE has data from both sources.
-	cve, _ := s.GetCVE(ctx, cveID)
+	cve := s.MustGetCVE(t, ctx, cveID)
 	if cve == nil {
 		t.Fatal("CVE not found")
 	}
@@ -470,7 +470,10 @@ func TestIngest_ChildTableRewrite(t *testing.T) {
 
 	q := generated.New(s.DB())
 
-	refs1, _ := q.GetCVEReferences(ctx, cveID)
+	refs1, err := q.GetCVEReferences(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEReferences(first): %v", err)
+	}
 	if len(refs1) != 2 {
 		t.Fatalf("expected 2 references after first ingest, got %d", len(refs1))
 	}
@@ -488,7 +491,10 @@ func TestIngest_ChildTableRewrite(t *testing.T) {
 		t.Fatalf("Ingest (1 ref): %v", err)
 	}
 
-	refs2, _ := q.GetCVEReferences(ctx, cveID)
+	refs2, err := q.GetCVEReferences(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEReferences(second): %v", err)
+	}
 	if len(refs2) != 1 {
 		t.Errorf("expected 1 reference after re-ingest, got %d", len(refs2))
 	}
@@ -576,7 +582,7 @@ func TestIngest_AdvisoryLockAcquired(t *testing.T) {
 	}
 
 	// Verify the CVE was written (proving the lock was acquired and released).
-	cve, _ := s.GetCVE(ctx, cveID)
+	cve := s.MustGetCVE(t, ctx, cveID)
 	if cve == nil {
 		t.Error("CVE should exist — advisory lock acquisition + release succeeded")
 	}
@@ -802,11 +808,11 @@ func TestIngest_MigrateCVEPK_TargetExists(t *testing.T) {
 	}
 
 	// Verify both CVEs exist independently.
-	oldCVE, _ := s.GetCVE(ctx, oldID)
+	oldCVE := s.MustGetCVE(t, ctx, oldID)
 	if oldCVE == nil {
 		t.Fatal("GHSA CVE should exist before migration")
 	}
-	newCVE, _ := s.GetCVE(ctx, newID)
+	newCVE := s.MustGetCVE(t, ctx, newID)
 	if newCVE == nil {
 		t.Fatal("NVD CVE should exist before migration")
 	}
@@ -924,7 +930,7 @@ func TestIngest_MigrateCVEPK_AdvisoryLocksBothIDs(t *testing.T) {
 	}
 
 	// The new ID should exist after migration.
-	newCVE, _ := s.GetCVE(ctx, newID)
+	newCVE := s.MustGetCVE(t, ctx, newID)
 	if newCVE == nil {
 		t.Error("new CVE should exist after migration")
 	}
@@ -956,7 +962,7 @@ func TestIngest_NonMaterialFieldUpdateNotDropped(t *testing.T) {
 	}
 
 	// Verify CVE exists with packages but no description.
-	cve1, _ := s.GetCVE(ctx, cveID)
+	cve1 := s.MustGetCVE(t, ctx, cveID)
 	if cve1 == nil {
 		t.Fatal("CVE not found after first Ingest")
 	}
@@ -979,7 +985,7 @@ func TestIngest_NonMaterialFieldUpdateNotDropped(t *testing.T) {
 	}
 
 	// The material_hash should be unchanged (description is not material).
-	cve2, _ := s.GetCVE(ctx, cveID)
+	cve2 := s.MustGetCVE(t, ctx, cveID)
 	if cve2 == nil {
 		t.Fatal("CVE not found after second Ingest")
 	}

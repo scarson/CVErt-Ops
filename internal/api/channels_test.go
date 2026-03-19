@@ -1473,3 +1473,69 @@ func TestCreateChannel_TierLimit_ProblemType(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossOrg_ChannelAccess(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A with a channel.
+	aliceReg := doRegister(t, ctx, ts, "alice-ch@example.com", "test-password-1234")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice-ch@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, aliceToken, aliceReg.OrgID,
+		`{"name":"Alice Webhook","type":"webhook","config":{"url":"https://example.com/hook"}}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel: got %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Bob owns org B, tries to access Alice's channel.
+	doRegister(t, ctx, ts, "bob-ch@example.com", "test-password-1234")
+	bobLoginResp := doLogin(t, ctx, ts, "bob-ch@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	t.Run("list channels", func(t *testing.T) {
+		t.Parallel()
+		resp := doListChannels(t, ctx, ts, bobToken, aliceReg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list channels: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("get channel", func(t *testing.T) {
+		t.Parallel()
+		resp := doGetChannel(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org get channel: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete channel", func(t *testing.T) {
+		t.Parallel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodDelete,
+			fmt.Sprintf("%s/api/v1/orgs/%s/channels/%s", ts.URL, aliceReg.OrgID, created.ID), nil)
+		req.Header.Set("Cookie", "access_token="+bobToken)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("delete request: %v", err)
+		}
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org delete channel: got %d, want 403", resp.StatusCode)
+		}
+	})
+}

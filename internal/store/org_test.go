@@ -51,12 +51,12 @@ func TestGetOrgMemberRole_NonMember(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "OrgA")
-	user, _ := s.CreateUser(ctx, "alice@example.com", "Alice", "", 0)
+	org := s.MustCreateOrg(t, ctx, "OrgA")
+	user := s.MustCreateUser(t, ctx, "alice@example.com", "Alice", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "member")
 
 	// Different user — not a member.
-	stranger, _ := s.CreateUser(ctx, "stranger@example.com", "Stranger", "", 0)
+	stranger := s.MustCreateUser(t, ctx, "stranger@example.com", "Stranger", "", 0)
 	role, err := s.GetOrgMemberRole(ctx, org.ID, stranger.ID)
 	if err != nil {
 		t.Fatalf("GetOrgMemberRole: %v", err)
@@ -71,8 +71,8 @@ func TestGetOrgMemberRole_Member(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "OrgB")
-	user, _ := s.CreateUser(ctx, "bob@example.com", "Bob", "", 0)
+	org := s.MustCreateOrg(t, ctx, "OrgB")
+	user := s.MustCreateUser(t, ctx, "bob@example.com", "Bob", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 
 	role, err := s.GetOrgMemberRole(ctx, org.ID, user.ID)
@@ -92,10 +92,10 @@ func TestListOrgMembers_OnlyShowsOwnOrg(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "Org1")
-	org2, _ := s.CreateOrg(ctx, "Org2")
-	user1, _ := s.CreateUser(ctx, "u1@example.com", "U1", "", 0)
-	user2, _ := s.CreateUser(ctx, "u2@example.com", "U2", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "Org1")
+	org2 := s.MustCreateOrg(t, ctx, "Org2")
+	user1 := s.MustCreateUser(t, ctx, "u1@example.com", "U1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "u2@example.com", "U2", "", 0)
 	_ = s.CreateOrgMember(ctx, org1.ID, user1.ID, "owner")
 	_ = s.CreateOrgMember(ctx, org2.ID, user2.ID, "owner")
 
@@ -117,9 +117,9 @@ func TestListUserOrgs_MultipleOrgs(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two orgs — ListUserOrgs orders by org name, so use alpha-sortable names.
-	orgA, _ := s.CreateOrg(ctx, "Alpha Corp")
-	orgB, _ := s.CreateOrg(ctx, "Beta Corp")
-	user, _ := s.CreateUser(ctx, "carol@example.com", "Carol", "", 0)
+	orgA := s.MustCreateOrg(t, ctx, "Alpha Corp")
+	orgB := s.MustCreateOrg(t, ctx, "Beta Corp")
+	user := s.MustCreateUser(t, ctx, "carol@example.com", "Carol", "", 0)
 	_ = s.CreateOrgMember(ctx, orgA.ID, user.ID, "member")
 	_ = s.CreateOrgMember(ctx, orgB.ID, user.ID, "admin")
 
@@ -144,15 +144,18 @@ func TestUpdateAndRemoveOrgMember(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ChangeOrg")
-	user, _ := s.CreateUser(ctx, "dave2@example.com", "Dave", "", 0)
+	org := s.MustCreateOrg(t, ctx, "ChangeOrg")
+	user := s.MustCreateUser(t, ctx, "dave2@example.com", "Dave", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "viewer")
 
 	// Promote to admin.
 	if err := s.UpdateOrgMemberRole(ctx, org.ID, user.ID, "admin"); err != nil {
 		t.Fatalf("UpdateOrgMemberRole: %v", err)
 	}
-	role, _ := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	role, err := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMemberRole(after promote): %v", err)
+	}
 	if *role != "admin" {
 		t.Errorf("role after update = %q, want admin", *role)
 	}
@@ -161,7 +164,10 @@ func TestUpdateAndRemoveOrgMember(t *testing.T) {
 	if err := s.RemoveOrgMember(ctx, org.ID, user.ID); err != nil {
 		t.Fatalf("RemoveOrgMember: %v", err)
 	}
-	gone, _ := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	gone, err := s.GetOrgMemberRole(ctx, org.ID, user.ID)
+	if err != nil {
+		t.Fatalf("GetOrgMemberRole(after remove): %v", err)
+	}
 	if gone != nil {
 		t.Error("member should be gone after RemoveOrgMember")
 	}
@@ -172,8 +178,8 @@ func TestCreateOrgInvitation_AcceptFlow(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "InviteOrg")
-	admin, _ := s.CreateUser(ctx, "admin@example.com", "Admin", "", 0)
+	org := s.MustCreateOrg(t, ctx, "InviteOrg")
+	admin := s.MustCreateUser(t, ctx, "admin@example.com", "Admin", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
 
 	token := "abc123token"
@@ -197,11 +203,14 @@ func TestCreateOrgInvitation_AcceptFlow(t *testing.T) {
 		t.Error("AcceptedAt should be null before acceptance")
 	}
 
-	newbie, _ := s.CreateUser(ctx, "newbie@example.com", "Newbie", "", 0)
+	newbie := s.MustCreateUser(t, ctx, "newbie@example.com", "Newbie", "", 0)
 	if err := s.AcceptOrgInvitation(ctx, org.ID, newbie.ID, "member", inv.ID); err != nil {
 		t.Fatalf("AcceptOrgInvitation: %v", err)
 	}
-	inv2, _ := s.GetInvitationByToken(ctx, token)
+	inv2, err := s.GetInvitationByToken(ctx, token)
+	if err != nil {
+		t.Fatalf("GetInvitationByToken(after accept): %v", err)
+	}
 	if !inv2.AcceptedAt.Valid {
 		t.Error("AcceptedAt should be set after acceptance")
 	}
@@ -212,17 +221,21 @@ func TestListOrgInvitations_ExpiryFiltering(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "FilterOrg")
-	admin, _ := s.CreateUser(ctx, "admin2@example.com", "Admin2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "FilterOrg")
+	admin := s.MustCreateUser(t, ctx, "admin2@example.com", "Admin2", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
 
 	// Active invitation.
-	_, _ = s.CreateOrgInvitation(ctx, org.ID, "active@example.com", "member",
-		"activetoken", admin.ID, time.Now().Add(48*time.Hour))
+	if _, err := s.CreateOrgInvitation(ctx, org.ID, "active@example.com", "member",
+		"activetoken", admin.ID, time.Now().Add(48*time.Hour)); err != nil {
+		t.Fatalf("setup: CreateOrgInvitation(active): %v", err)
+	}
 
 	// Expired invitation (expires in the past).
-	_, _ = s.CreateOrgInvitation(ctx, org.ID, "expired@example.com", "member",
-		"expiredtoken", admin.ID, time.Now().Add(-1*time.Hour))
+	if _, err := s.CreateOrgInvitation(ctx, org.ID, "expired@example.com", "member",
+		"expiredtoken", admin.ID, time.Now().Add(-1*time.Hour)); err != nil {
+		t.Fatalf("setup: CreateOrgInvitation(expired): %v", err)
+	}
 
 	list, err := s.ListOrgInvitations(ctx, org.ID)
 	if err != nil {
@@ -309,8 +322,8 @@ func TestCreateOrgMember_Duplicate(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "DupMemberOrg")
-	user, _ := s.CreateUser(ctx, "dupmember@example.com", "DupMember", "", 0)
+	org := s.MustCreateOrg(t, ctx, "DupMemberOrg")
+	user := s.MustCreateUser(t, ctx, "dupmember@example.com", "DupMember", "", 0)
 	if err := s.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
 		t.Fatalf("CreateOrgMember (first): %v", err)
 	}
@@ -336,8 +349,8 @@ func TestAcceptOrgInvitation_Flow(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AcceptInvOrg")
-	admin, _ := s.CreateUser(ctx, "acceptinv-admin@example.com", "Admin", "", 0)
+	org := s.MustCreateOrg(t, ctx, "AcceptInvOrg")
+	admin := s.MustCreateUser(t, ctx, "acceptinv-admin@example.com", "Admin", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
 
 	token := "accept-flow-token"
@@ -347,7 +360,7 @@ func TestAcceptOrgInvitation_Flow(t *testing.T) {
 	}
 
 	// Create the joining user.
-	joiner, _ := s.CreateUser(ctx, "joiner@example.com", "Joiner", "", 0)
+	joiner := s.MustCreateUser(t, ctx, "joiner@example.com", "Joiner", "", 0)
 
 	// AcceptOrgInvitation atomically creates member + marks invitation accepted.
 	if err := s.AcceptOrgInvitation(ctx, org.ID, joiner.ID, "member", inv.ID); err != nil {
@@ -364,7 +377,10 @@ func TestAcceptOrgInvitation_Flow(t *testing.T) {
 	}
 
 	// Verify invitation is marked accepted.
-	inv2, _ := s.GetInvitationByToken(ctx, token)
+	inv2, err := s.GetInvitationByToken(ctx, token)
+	if err != nil {
+		t.Fatalf("GetInvitationByToken(after accept): %v", err)
+	}
 	if !inv2.AcceptedAt.Valid {
 		t.Error("AcceptedAt should be set after AcceptOrgInvitation")
 	}
@@ -375,10 +391,10 @@ func TestGetOrgOwnerCount(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "OwnerCountOrg")
-	user1, _ := s.CreateUser(ctx, "owner1@example.com", "Owner1", "", 0)
-	user2, _ := s.CreateUser(ctx, "owner2@example.com", "Owner2", "", 0)
-	user3, _ := s.CreateUser(ctx, "member1@example.com", "Member1", "", 0)
+	org := s.MustCreateOrg(t, ctx, "OwnerCountOrg")
+	user1 := s.MustCreateUser(t, ctx, "owner1@example.com", "Owner1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "owner2@example.com", "Owner2", "", 0)
+	user3 := s.MustCreateUser(t, ctx, "member1@example.com", "Member1", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user1.ID, "owner")
 	_ = s.CreateOrgMember(ctx, org.ID, user2.ID, "owner")
 	_ = s.CreateOrgMember(ctx, org.ID, user3.ID, "member")
@@ -397,7 +413,7 @@ func TestCreateOrgWithOwner(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	user, _ := s.CreateUser(ctx, "withowner@example.com", "WithOwner", "", 0)
+	user := s.MustCreateUser(t, ctx, "withowner@example.com", "WithOwner", "", 0)
 
 	org, err := s.CreateOrgWithOwner(ctx, "OwnerOrg", user.ID)
 	if err != nil {
@@ -425,7 +441,7 @@ func TestUpdateOrg(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "OldName")
+	org := s.MustCreateOrg(t, ctx, "OldName")
 
 	updated, err := s.UpdateOrg(ctx, org.ID, "NewName")
 	if err != nil {
@@ -458,8 +474,8 @@ func TestCancelInvitation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "CancelInvOrg")
-	admin, _ := s.CreateUser(ctx, "cancelinv-admin@example.com", "CancelAdmin", "", 0)
+	org := s.MustCreateOrg(t, ctx, "CancelInvOrg")
+	admin := s.MustCreateUser(t, ctx, "cancelinv-admin@example.com", "CancelAdmin", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, admin.ID, "admin")
 
 	inv, err := s.CreateOrgInvitation(ctx, org.ID, "cancel@example.com", "member", "cancel-tok", admin.ID, time.Now().Add(48*time.Hour))
@@ -504,7 +520,7 @@ func TestListUserOrgs_NoOrgs(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	user, _ := s.CreateUser(ctx, "noorgs@example.com", "NoOrgs", "", 0)
+	user := s.MustCreateUser(t, ctx, "noorgs@example.com", "NoOrgs", "", 0)
 
 	orgs, err := s.ListUserOrgs(ctx, user.ID)
 	if err != nil {

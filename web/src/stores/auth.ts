@@ -77,60 +77,36 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function forgotPassword(email: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      const res = await fetch('/api/v1/auth/forgot-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Requested-By': 'CVErt-Ops' },
-        credentials: 'include',
-        body: JSON.stringify({ email }),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => null)
-        return { success: false, error: body?.detail ?? 'Request failed' }
-      }
-      return { success: true }
-    } catch {
-      return { success: false, error: 'Network error' }
+    const { error } = await client.POST('/auth/forgot-password', {
+      body: { email },
+    })
+    if (error) {
+      return { success: false, error: (error as { detail?: string }).detail ?? 'Request failed' }
     }
+    return { success: true }
   }
 
   async function resetPassword(
     token: string,
     newPassword: string,
   ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const res = await fetch('/api/v1/auth/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Requested-By': 'CVErt-Ops' },
-        credentials: 'include',
-        body: JSON.stringify({ token, new_password: newPassword }),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => null)
-        return { success: false, error: body?.detail ?? 'Reset failed' }
-      }
-      return { success: true }
-    } catch {
-      return { success: false, error: 'Network error' }
+    const { error } = await client.POST('/auth/reset-password', {
+      body: { token, new_password: newPassword },
+    })
+    if (error) {
+      return { success: false, error: (error as { detail?: string }).detail ?? 'Reset failed' }
     }
+    return { success: true }
   }
 
   async function verifyEmail(token: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      const res = await fetch('/api/v1/auth/verify-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Requested-By': 'CVErt-Ops' },
-        credentials: 'include',
-        body: JSON.stringify({ token }),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => null)
-        return { success: false, error: body?.detail ?? 'Verification failed' }
-      }
-      return { success: true }
-    } catch {
-      return { success: false, error: 'Network error' }
+    const { error } = await client.POST('/auth/verify-email', {
+      body: { token },
+    })
+    if (error) {
+      return { success: false, error: (error as { detail?: string }).detail ?? 'Verification failed' }
     }
+    return { success: true }
   }
 
   async function logout() {

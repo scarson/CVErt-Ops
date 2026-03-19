@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
 
@@ -131,6 +132,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 			if member.ScimExempt {
 				slog.WarnContext(ctx, "scim create: exempt user, skipping reactivation",
 					slog.String("user_id", existingUser.ID.String()))
+				srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
 				identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, existingUser.ID)
 				extID := req.ExternalID
 				if identity != nil {
@@ -226,6 +228,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 			} else if member.DeactivatedAt.Valid && member.ScimExempt {
 				slog.WarnContext(ctx, "scim create: exempt user, skipping reactivation",
 					slog.String("user_id", existingUser.ID.String()))
+				srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
 			}
 
 			// Re-read for response.
@@ -328,6 +331,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 		NewState:   map[string]any{"role": defaultRole},
 		Metadata:   scimAuditMeta(scimConfigID),
 	})
+	srv.fireSCIMEvent(ctx, secure.EventSCIMUserProvisioned, &orgID)
 
 	member, _ := srv.store.GetOrgMemberFull(ctx, orgID, newUser.ID)
 	createdAt := newUser.CreatedAt
@@ -559,6 +563,7 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 	if member.ScimExempt {
 		slog.WarnContext(ctx, "scim replace user: exempt user, skipping",
 			slog.String("user_id", userID.String()))
+		srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
 		identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, userID)
 		extID := ""
 		if identity != nil {
@@ -624,6 +629,7 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if count <= 1 {
+				srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 				writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 				return
 			}
@@ -700,6 +706,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 	if member.ScimExempt {
 		slog.WarnContext(ctx, "scim patch user: exempt user, skipping",
 			slog.String("user_id", userID.String()))
+		srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
 		identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, userID)
 		extID := ""
 		if identity != nil {
@@ -741,6 +748,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					if count <= 1 {
+						srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 						writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 						return
 					}
@@ -833,6 +841,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 								return
 							}
 							if count <= 1 {
+								srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 								writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 								return
 							}
@@ -926,6 +935,7 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if member.ScimExempt {
 		slog.WarnContext(ctx, "scim delete user: exempt user, skipping",
 			slog.String("user_id", userID.String()))
+		srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -945,6 +955,7 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if count <= 1 {
+			srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 			writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 			return
 		}
@@ -965,6 +976,7 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 		NewState:   map[string]any{"active": false},
 		Metadata:   scimAuditMeta(scimConfigID),
 	})
+	srv.fireSCIMEvent(ctx, secure.EventSCIMUserDeprovisioned, &orgID)
 
 	w.WriteHeader(http.StatusNoContent)
 }

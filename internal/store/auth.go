@@ -319,3 +319,62 @@ func (s *Store) GetLoginLockoutState(ctx context.Context, email string) (*LoginL
 	}
 	return &state, nil
 }
+
+// UpdateUserEmail updates a user's email address.
+// Uses withBypassTx — users is a global table with no RLS.
+func (s *Store) UpdateUserEmail(ctx context.Context, id uuid.UUID, email string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.UpdateUserEmail(ctx, generated.UpdateUserEmailParams{
+			ID:    id,
+			Email: email,
+		}); err != nil {
+			return fmt.Errorf("update user email: %w", err)
+		}
+		return nil
+	})
+}
+
+// UpdateUserDisplayName updates a user's display name.
+// Uses withBypassTx — users is a global table with no RLS.
+func (s *Store) UpdateUserDisplayName(ctx context.Context, id uuid.UUID, displayName string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.UpdateUserDisplayName(ctx, generated.UpdateUserDisplayNameParams{
+			ID:          id,
+			DisplayName: displayName,
+		}); err != nil {
+			return fmt.Errorf("update user display name: %w", err)
+		}
+		return nil
+	})
+}
+
+// UpdateUserProfile updates a user's email and display name in one statement.
+// Uses withBypassTx — users is a global table with no RLS.
+func (s *Store) UpdateUserProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.UpdateUserProfile(ctx, generated.UpdateUserProfileParams{
+			ID:          id,
+			Email:       email,
+			DisplayName: displayName,
+		}); err != nil {
+			return fmt.Errorf("update user profile: %w", err)
+		}
+		return nil
+	})
+}
+
+// GetIdentityByProviderAndUser returns the identity row for a provider+user,
+// or (nil, nil) if not found.
+func (s *Store) GetIdentityByProviderAndUser(ctx context.Context, provider string, userID uuid.UUID) (*generated.UserIdentity, error) {
+	row, err := s.q.GetIdentityByProviderAndUser(ctx, generated.GetIdentityByProviderAndUserParams{
+		Provider: provider,
+		UserID:   userID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get identity by provider and user: %w", err)
+	}
+	return &row, nil
+}

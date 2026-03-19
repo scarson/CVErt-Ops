@@ -167,8 +167,9 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 		return fmt.Errorf("list rules for %s: %w", cfg.feedName, err)
 	}
 
-	var totalMatches int
-	var totalRuleRuns int
+	// Collect all candidate IDs across pages before evaluating rules.
+	// This avoids creating duplicate rule run records per page (one run per rule per batch).
+	var allCandidateIDs []string
 	var afterID string
 
 	for {
@@ -180,24 +181,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 			break
 		}
 
-		for i := range rules {
-			rule := &rules[i]
-			compiled, compErr := e.loadAndCompileRule(rule)
-			if compErr != nil {
-				e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
-				continue
-			}
-			matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
-			if evalErr != nil {
-				e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
-			}
-			totalMatches += matchCount
-			totalRuleRuns++
-			status, errMsg := runStatus(partial, evalErr)
-			if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, cfg.metricsLabel); runErr == nil {
-				_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
-			}
-		}
+		allCandidateIDs = append(allCandidateIDs, candidateIDs...)
 
 		// Advance keyset cursor to last ID in this page.
 		afterID = candidateIDs[len(candidateIDs)-1]
@@ -208,7 +192,31 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 		}
 	}
 
-	metrics.AlertRulesEvaluatedTotal.WithLabelValues(cfg.metricsLabel).Add(float64(totalRuleRuns))
+	// Short-circuit if no candidates — still write cursor to advance past this window.
+	if len(allCandidateIDs) == 0 {
+		return e.writeCursor(ctx, cfg.feedName, batchTime)
+	}
+
+	var totalMatches int
+	for i := range rules {
+		rule := &rules[i]
+		compiled, compErr := e.loadAndCompileRule(rule)
+		if compErr != nil {
+			e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
+			continue
+		}
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, allCandidateIDs, rule.OrgID, false, false, 0)
+		if evalErr != nil {
+			e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
+		}
+		totalMatches += matchCount
+		status, errMsg := runStatus(partial, evalErr)
+		if run, runErr := e.rules.InsertAlertRuleRun(ctx, rule.ID, rule.OrgID, cfg.metricsLabel); runErr == nil {
+			_ = e.rules.UpdateAlertRuleRun(ctx, run.ID, status, int32(candidatesEval), int32(matchCount), errMsg) //nolint:gosec // G115: bounded by candidateCap
+		}
+	}
+
+	metrics.AlertRulesEvaluatedTotal.WithLabelValues(cfg.metricsLabel).Add(float64(len(rules)))
 	metrics.AlertMatchesTotal.WithLabelValues(cfg.metricsLabel).Add(float64(totalMatches))
 	metrics.AlertEvaluationDuration.WithLabelValues(cfg.metricsLabel).Observe(time.Since(start).Seconds())
 

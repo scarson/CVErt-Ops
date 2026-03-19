@@ -297,3 +297,42 @@ All config secrets (`JWT_SECRET`, `SMTP_PASSWORD`, `GEMINI_API_KEY`, `SSO_ENCRYP
 **Limitations:** Go's garbage collector copies objects during compaction, so secrets must be briefly decrypted into standard buffers for use (e.g., during HMAC computation). Root-level attackers can still read mlock'd memory. Protection is defense-in-depth, not absolute.
 
 **Scope:** Requires refactoring the config loading system to use `memguard.Enclave` for all sensitive fields. This is a cross-cutting change affecting every package that reads config secrets. Not justified as a targeted change for one secret — should be done holistically or not at all.
+
+---
+
+## 10. Deployment Security: RLS Role Wiring (ARCH-30)
+
+> **Added:** 2026-03-18 (pitfalls reorganization audit)
+> **Pitfall:** ARCH-30 in `dev/implementation-pitfalls.md`
+
+**The issue:** Docker Compose connects the app as the database superuser (`${POSTGRES_USER:-cvert_ops}`), which bypasses all RLS policies. The restricted `cvert_ops_app` role exists in `docker/init.sql` with `NOBYPASSRLS`, correct grants, and per-migration explicit GRANTs — but it's never wired into the application.
+
+**Why it matters:** All code-level RLS protections (SET LOCAL, FORCE ROW LEVEL SECURITY, transaction helpers) are dormant in the default deployment. A SQL injection or tenant isolation bug has no database-level safety net.
+
+**What needs to happen:**
+1. Run full test suite against the restricted role to verify all grants are correct
+2. Switch `docker/compose.yml` to use `cvert_ops_app` for the app service, superuser for migrations only
+3. Uncomment and document the dual `DATABASE_URL` / `DATABASE_URL_MIGRATE` pattern in `.env.example`
+4. Add a `doctor` startup check that warns if the connected role is a superuser
+5. Add CI job that runs tests with the restricted role to catch grant regressions
+
+**Risk:** If any migration is missing a GRANT, the app will get permission denied errors. The `ALTER DEFAULT PRIVILEGES` in `init.sql` is a safety net for new tables, but explicit per-table GRANTs are the belt-and-suspenders layer.
+
+---
+
+## 11. AI Request Log: Preserve Zero Token Counts (DB-25)
+
+> **Added:** 2026-03-18 (pitfalls reorganization audit)
+> **Pitfall:** DB-25 in `dev/implementation-pitfalls.md`
+
+**The issue:** `toNullInt32(v int)` in `internal/store/ai.go` maps 0 to NULL, losing the distinction between "measured as 0 tokens" and "not measured."
+
+**Why it matters:** `AVG(output_tokens)` excludes NULL rows, so zero-token responses (cache hits, empty structured responses) are invisible in cost tracking.
+
+**What needs to happen:**
+1. Change `InputTokens`/`OutputTokens` from `int` to `*int` in `ai.GenerateResult`, `ai.SummarizeResult`, `store.AIRequestLogEntry`
+2. Change `toNullInt32` to accept `*int` — nil → NULL, &0 → 0
+3. Update Gemini client to populate pointers only when the API provides token counts
+4. Update all tests that construct these structs
+
+**Risk:** Need to understand how the Gemini SDK represents "no token count available" vs "0 tokens" to avoid incorrect mappings. 3-4 file cascade with test updates.

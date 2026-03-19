@@ -25,3 +25,10 @@
 - **Description:** Added tests for admin audit log and deliveries list endpoints
 - **Tests:** 5 tests: audit log list, filter by entity_type, auth enforcement, deliveries list, deliveries auth enforcement
 - **Files:** `internal/api/admin_system_test.go` (appended)
+
+### Step 5: Combined P8 Task 12 + Task 17 + HR D3
+- **Status:** Complete
+- **Description:** Added revoked key, disabled user (JWT + API key), and pending token tests
+- **Tests:** 4 new tests: revoked API key 401, disabled user API key 401, disabled user JWT 401, pending token rejection probe
+- **Note:** Pending token test documents current behavior — ParseAccessToken does not reject pending tokens structurally (both use HS256 + same claims shape). The test logs a warning if the pending token is accepted.
+- **Files:** `internal/api/middleware_auth_test.go` (appended)

@@ -1,0 +1,210 @@
+{
+  "generated": "2026-03-19T12:50:00Z",
+  "capture_date": "2026-03-19",
+  "records": [
+    {
+      "cve_id": "CVE-2021-44228",
+      "categories": ["C1", "C5", "C7", "C8", "E1", "X1", "X2", "X5"],
+      "feeds": ["nvd", "mitre", "ghsa", "osv", "kev", "epss"],
+      "why": "Log4Shell — maximum cross-feed overlap (6 feeds), 103 references, 2 CWEs, CPE configs, high EPSS 0.94358, KEV-listed"
+    },
+    {
+      "cve_id": "CVE-2018-7600",
+      "categories": ["C1", "C5", "C7", "C8", "E1", "X1", "X2", "X5"],
+      "feeds": ["nvd", "ghsa", "osv", "kev", "epss"],
+      "why": "Drupalgeddon2 — 41 references, 2 CWEs, CPE configs, high EPSS 0.94489, in NVD+GHSA+OSV+KEV"
+    },
+    {
+      "cve_id": "CVE-2026-3909",
+      "categories": ["C1", "C5", "C8", "X2", "X3", "X4"],
+      "feeds": ["nvd", "mitre", "kev", "msrc", "osv", "redhat", "epss"],
+      "why": "In 7 feeds — NVD+KEV+MSRC+OSV+Red Hat+MITRE+EPSS; Analyzed status, 2 CWEs, CPE configs, EPSS 0.33"
+    },
+    {
+      "cve_id": "CVE-2024-27198",
+      "categories": ["C1", "C5", "C8", "E1", "F5", "X2"],
+      "feeds": ["nvd", "kev", "epss"],
+      "why": "JetBrains TeamCity auth bypass — highest EPSS 0.94579, KEV with known ransomware use, 2 CWEs"
+    },
+    {
+      "cve_id": "CVE-2026-27962",
+      "categories": ["E2", "F4", "X4"],
+      "feeds": ["nvd", "mitre", "ghsa", "osv", "redhat", "epss"],
+      "why": "Red Hat Quay — affected_release + package_state with fix_state, NVD+GHSA+Red Hat+OSV overlap, very low EPSS 0.00064"
+    },
+    {
+      "cve_id": "CVE-2026-21510",
+      "categories": ["X3"],
+      "feeds": ["nvd", "msrc", "epss"],
+      "why": "Microsoft CVE — in NVD + MSRC CVRF (Feb 2026), Analyzed status, CVSS v3.1"
+    },
+    {
+      "cve_id": "CVE-2025-40110",
+      "categories": ["C2", "E2"],
+      "feeds": ["nvd", "epss"],
+      "why": "Awaiting Analysis with completely empty metrics object — no CVSS at all; very low EPSS 0.00068"
+    },
+    {
+      "cve_id": "CVE-2024-7205",
+      "categories": ["C4"],
+      "feeds": ["nvd", "epss"],
+      "why": "CVSS v4.0 only (score 9.4) — no v3.1, no v3.0, no v2; Awaiting Analysis status"
+    },
+    {
+      "cve_id": "CVE-2020-8899",
+      "categories": ["C3"],
+      "feeds": ["nvd", "epss"],
+      "why": "Has both CVSS v3.1 (9.8) and v4.0 (10.0) — exercises v4.0 parsing path alongside v3.1"
+    },
+    {
+      "cve_id": "CVE-2022-3102",
+      "categories": ["C4A"],
+      "feeds": ["ghsa"],
+      "why": "GHSA advisory with CVSS v3 score exactly 0.0 and null vector_string — falsy-value preservation test"
+    },
+    {
+      "cve_id": "CVE-2017-12542",
+      "categories": ["C1", "C8", "C9", "E1"],
+      "feeds": ["nvd", "epss"],
+      "why": "HPE iLO4 auth bypass — descriptions in both 'en' and 'es' (Spanish with non-ASCII chars), high EPSS 0.94254"
+    },
+    {
+      "cve_id": "CVE-1999-1056",
+      "categories": ["S1"],
+      "feeds": ["nvd"],
+      "why": "Rejected status in NVD — exercises alert evaluation status filter for rejected CVEs"
+    },
+    {
+      "cve_id": "CVE-2026-25692",
+      "categories": ["C6", "S1"],
+      "feeds": ["nvd"],
+      "why": "Rejected with minimal description ('Rejected reason: Not used') — near-empty description edge case"
+    },
+    {
+      "cve_id": "CVE-2025-0020",
+      "categories": ["S2"],
+      "feeds": ["mitre"],
+      "why": "REJECTED state in MITRE CVE list — exercises incomplete/rejected CVE handling from MITRE source"
+    },
+    {
+      "cve_id": "CVE-2014-4959",
+      "categories": ["S3"],
+      "feeds": ["nvd", "epss"],
+      "why": "Description contains '** DISPUTED **' marker — exercises dispute flag handling"
+    },
+    {
+      "ghsa_id": "GHSA-crmx-v835-hcp4",
+      "cve_id": "CVE-2017-17461",
+      "categories": ["S4"],
+      "feeds": ["ghsa", "nvd"],
+      "why": "GHSA advisory with withdrawn_at='2021-12-02T22:47:36Z' and has CVE ID — exercises withdrawn status handling"
+    },
+    {
+      "ghsa_id": "GHSA-r587-7jh2-4qr3",
+      "categories": ["F1"],
+      "feeds": ["ghsa"],
+      "why": "GHSA advisory with cve_id=null — exercises feed-native ID as primary key and alias resolution"
+    },
+    {
+      "ghsa_id": "GHSA-26hg-crh6-mjrw",
+      "categories": ["S4"],
+      "feeds": ["ghsa"],
+      "why": "GHSA advisory with cve_id=null AND withdrawn_at set — combines null-CVE with withdrawn status"
+    },
+    {
+      "cve_id": "CVE-2016-10931",
+      "categories": ["F2"],
+      "feeds": ["osv", "ghsa", "epss"],
+      "why": "RUSTSEC-2016-0001 in OSV with aliases [CVE-2016-10931, GHSA-34p9-f4q3-c4r7] — non-CVE primary ID with CVE alias"
+    },
+    {
+      "cve_id": "CVE-2021-42771",
+      "categories": ["F2"],
+      "feeds": ["osv", "ghsa", "epss"],
+      "why": "PYSEC-2021-421 in OSV with aliases [CVE-2021-42771, GHSA-h4m5-qpfp-3mpv] — Python ecosystem non-CVE ID"
+    },
+    {
+      "cve_id": "CVE-2026-3944",
+      "categories": ["C1"],
+      "feeds": ["nvd", "mitre", "epss"],
+      "why": "Recent well-formed CVE — Analyzed, CVSS v3.1 (7.3), 2 CWEs, 5 refs, CPE configs, 306-char description"
+    },
+    {
+      "cve_id": "CVE-2026-31938",
+      "categories": ["F4"],
+      "feeds": ["nvd", "redhat", "epss"],
+      "why": "Red Hat CVE with package_state containing fix_state='Affected' — vendor enrichment test"
+    },
+    {
+      "cve_id": "CVE-2023-23752",
+      "categories": ["E1", "X2"],
+      "feeds": ["nvd", "kev", "epss"],
+      "why": "Joomla auth bypass — EPSS 0.94527, KEV-listed; high-EPSS KEV overlap"
+    },
+    {
+      "cve_id": "CVE-2024-23897",
+      "categories": ["E1", "X1", "X2"],
+      "feeds": ["nvd", "ghsa", "kev", "epss"],
+      "why": "Jenkins CLI arbitrary file read — EPSS 0.94466, in NVD+GHSA+KEV"
+    },
+    {
+      "cve_id": "CVE-2017-5638",
+      "categories": ["E1", "X1", "X2"],
+      "feeds": ["nvd", "ghsa", "kev", "epss"],
+      "why": "Apache Struts2 RCE — EPSS 0.94267, in NVD+GHSA+KEV; historically significant"
+    },
+    {
+      "cve_id": "CVE-2022-46169",
+      "categories": ["E1", "X2"],
+      "feeds": ["nvd", "kev", "epss"],
+      "why": "Cacti command injection — EPSS 0.94469, KEV-listed"
+    },
+    {
+      "cve_id": "CVE-2020-35465",
+      "categories": ["S1"],
+      "feeds": ["nvd"],
+      "why": "Rejected NVD entry with empty metrics object — combines rejected status with no CVSS data"
+    },
+    {
+      "cve_id": "CVE-2025-14174",
+      "categories": ["X3"],
+      "feeds": ["nvd", "msrc", "kev", "epss"],
+      "why": "In NVD + MSRC CVRF + KEV — MSRC+KEV cross-reference overlap"
+    },
+    {
+      "cve_id": "CVE-2024-6242",
+      "categories": ["C3", "C4"],
+      "feeds": ["nvd", "epss"],
+      "why": "Has CVSS v4.0 but no v3.x — found in NVD 0075 with cvssMetricV40 only"
+    }
+  ],
+  "category_coverage": {
+    "C1": ["CVE-2021-44228", "CVE-2018-7600", "CVE-2026-3909", "CVE-2024-27198", "CVE-2017-12542", "CVE-2026-3944"],
+    "C2": ["CVE-2025-40110"],
+    "C3": ["CVE-2020-8899", "CVE-2024-6242"],
+    "C4": ["CVE-2024-7205", "CVE-2024-6242"],
+    "C4A": ["CVE-2022-3102"],
+    "C5": ["CVE-2021-44228", "CVE-2018-7600", "CVE-2026-3909", "CVE-2024-27198"],
+    "C6": ["CVE-2026-25692"],
+    "C7": ["CVE-2021-44228", "CVE-2018-7600"],
+    "C8": ["CVE-2021-44228", "CVE-2018-7600", "CVE-2026-3909", "CVE-2024-27198", "CVE-2017-12542"],
+    "C9": ["CVE-2017-12542"],
+    "S1": ["CVE-1999-1056", "CVE-2026-25692", "CVE-2020-35465"],
+    "S2": ["CVE-2025-0020"],
+    "S3": ["CVE-2014-4959"],
+    "S4": ["GHSA-crmx-v835-hcp4", "GHSA-26hg-crh6-mjrw"],
+    "X1": ["CVE-2021-44228", "CVE-2018-7600", "CVE-2024-23897", "CVE-2017-5638"],
+    "X2": ["CVE-2021-44228", "CVE-2018-7600", "CVE-2026-3909", "CVE-2024-27198", "CVE-2023-23752", "CVE-2024-23897", "CVE-2017-5638", "CVE-2022-46169"],
+    "X3": ["CVE-2026-3909", "CVE-2026-21510", "CVE-2025-14174"],
+    "X4": ["CVE-2026-3909", "CVE-2026-27962"],
+    "X5": ["CVE-2021-44228", "CVE-2018-7600"],
+    "E1": ["CVE-2024-27198", "CVE-2021-44228", "CVE-2018-7600", "CVE-2017-12542", "CVE-2023-23752", "CVE-2024-23897", "CVE-2017-5638", "CVE-2022-46169"],
+    "E2": ["CVE-2025-40110", "CVE-2026-27962"],
+    "E3": [],
+    "F1": ["GHSA-r587-7jh2-4qr3"],
+    "F2": ["CVE-2016-10931", "CVE-2021-42771"],
+    "F3": ["CVE-2026-3909", "CVE-2026-21510", "CVE-2025-14174"],
+    "F4": ["CVE-2026-27962", "CVE-2026-31938"],
+    "F5": ["CVE-2024-27198"]
+  }
+}

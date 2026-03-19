@@ -2228,9 +2228,8 @@ func TestEmailOTPConfirm_NoAuth(t *testing.T) {
 }
 
 // SC5: Pending token rejected as access token.
-// TODO: middleware must differentiate pending from access tokens — see auditing-gaps.md
+// ParseAccessToken rejects tokens with token_type != "access".
 func TestPendingToken_RejectedAsAccessToken(t *testing.T) {
-	t.Skip("known gap: middleware does not yet differentiate pending from access tokens — see auditing-gaps.md")
 
 	t.Parallel()
 	db := testutil.NewTestDB(t)

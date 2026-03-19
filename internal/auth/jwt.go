@@ -51,6 +51,16 @@ func parseTokenWithRotation[T jwt.Claims](
 	return zero, fmt.Errorf("parse %s token: %w", label, err)
 }
 
+// Token type constants for the "typ" claim. Each token type includes this claim
+// so parsers can reject tokens of the wrong type — e.g., a pending MFA token
+// must not be accepted as a full access token.
+const (
+	TokenTypeAccess     = "access"
+	TokenTypeRefresh    = "refresh"
+	TokenTypePending    = "pending"
+	TokenTypeEnrollment = "enrollment"
+)
+
 // AccessClaims holds the claims embedded in an access token.
 type AccessClaims struct {
 	jwt.RegisteredClaims
@@ -61,6 +71,8 @@ type AccessClaims struct {
 	UserID uuid.UUID `json:"sub"`
 	// TokenVersion must match users.token_version for the refresh flow to succeed.
 	TokenVersion int `json:"tv"`
+	// Typ identifies this as an access token. Checked by ParseAccessToken.
+	TokenType string `json:"token_type"`
 }
 
 // IssueAccessToken creates a signed HS256 JWT access token.
@@ -74,6 +86,7 @@ func IssueAccessToken(secret []byte, userID uuid.UUID, tokenVersion int, ttl tim
 		},
 		UserID:       userID,
 		TokenVersion: tokenVersion,
+		TokenType:    TokenTypeAccess,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(secret)
@@ -88,7 +101,16 @@ func IssueAccessToken(secret []byte, userID uuid.UUID, tokenVersion int, ttl tim
 // On signature failure only (not expiry or claims errors), it retries with
 // previousSecret if non-nil. Signing always uses activeSecret via IssueAccessToken.
 func ParseAccessToken(tokenStr string, activeSecret []byte, previousSecret []byte) (*AccessClaims, error) {
-	return parseTokenWithRotation(tokenStr, func() *AccessClaims { return &AccessClaims{} }, activeSecret, previousSecret, "access")
+	claims, err := parseTokenWithRotation(tokenStr, func() *AccessClaims { return &AccessClaims{} }, activeSecret, previousSecret, "access")
+	if err != nil {
+		return nil, err
+	}
+	// Reject non-access tokens. Tokens issued before the typ claim was added
+	// have Typ=="" — accept those for backward compatibility during rollout.
+	if claims.TokenType != "" && claims.TokenType != TokenTypeAccess {
+		return nil, fmt.Errorf("parse access token: wrong token type %q", claims.TokenType)
+	}
+	return claims, nil
 }
 
 // RefreshClaims holds the claims embedded in a refresh token.
@@ -102,6 +124,8 @@ type RefreshClaims struct {
 	// JTI is the typed UUID form of the token's unique identifier (jti_id claim).
 	// RegisteredClaims.ID carries the same value as the standard string "jti" claim.
 	JTI uuid.UUID `json:"jti_id"`
+	// TokenType identifies this as a refresh token.
+	TokenType string `json:"token_type"`
 }
 
 // IssueRefreshToken creates a signed HS256 refresh token with a unique JTI.
@@ -116,6 +140,7 @@ func IssueRefreshToken(secret []byte, userID uuid.UUID, tokenVersion int, jti uu
 		UserID:       userID,
 		TokenVersion: tokenVersion,
 		JTI:          jti,
+		TokenType:    TokenTypeRefresh,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(secret)
@@ -147,6 +172,8 @@ type PendingClaims struct {
 	Pending []string `json:"pending"`
 	// Methods lists the available MFA methods when Pending contains "mfa_challenge".
 	Methods []string `json:"methods,omitempty"`
+	// TokenType identifies this as a pending/restricted token.
+	TokenType string `json:"token_type"`
 }
 
 // IssuePendingToken creates a signed HS256 JWT for a restricted session that
@@ -162,6 +189,7 @@ func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pendin
 		TokenVersion: tokenVersion,
 		Pending:      pending,
 		Methods:      methods,
+		TokenType:    TokenTypePending,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(secret)
@@ -186,6 +214,7 @@ type EnrollmentClaims struct {
 	jwt.RegisteredClaims
 	UserID    uuid.UUID `json:"sub"`
 	SecretEnc []byte    `json:"sec"` // AES-256-GCM encrypted TOTP secret
+	TokenType string    `json:"token_type"`
 }
 
 // IssueEnrollmentToken creates a short-lived JWT containing the encrypted TOTP
@@ -199,6 +228,7 @@ func IssueEnrollmentToken(secret []byte, userID uuid.UUID, secretEnc []byte, ttl
 		},
 		UserID:    userID,
 		SecretEnc: secretEnc,
+		TokenType: TokenTypeEnrollment,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(secret)

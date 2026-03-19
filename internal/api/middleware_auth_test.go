@@ -723,18 +723,14 @@ func TestRequireAuthenticated_PendingToken_RejectedAsAccess(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: pendingToken})
 	handler.ServeHTTP(rec, req)
 
-	// The pending token should NOT grant access to normal endpoints.
-	// If the middleware doesn't differentiate pending from access tokens,
-	// this will pass through (200) — that would be a security issue.
-	//
-	// NOTE: Currently both token types share the same HS256 signing key and
-	// ParseAccessToken accepts pending claims structurally. This test documents
-	// the current behavior. If the middleware is updated to reject pending tokens,
-	// change the assertion below to require 401.
-	if rec.Code == http.StatusOK && reached {
-		t.Errorf("SECURITY: pending token accepted as access token — handler reached with status %d", rec.Code)
+	// The pending token must NOT grant access to normal endpoints.
+	// ParseAccessToken rejects tokens with token_type != "access".
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("pending token on normal endpoint: got %d, want 401", rec.Code)
 	}
-	t.Logf("pending token on normal endpoint: status=%d, handler_reached=%v", rec.Code, reached)
+	if reached {
+		t.Error("handler was reached with a pending token — MFA bypass")
+	}
 }
 
 // TestRequireAuthenticated_ReadsFromConfigHolder verifies that JWT parsing reads

@@ -1,6 +1,6 @@
 # Phase 7: SCIM 2.0 Provisioning — Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+**For Claude:** CRITICAL NOTE (2026-03-19): This design was never implemented and is maintained for historical reference only. It's superseded by dev\plans\2026-03-19-phase7-scim-provisioning-design-v2.md and dev\plans\2026-03-19-phase7-scim-implementation-plan-v2.md.
 
 **Goal:** Implement SCIM 2.0 user and group provisioning so enterprise IdPs (Microsoft Entra ID, Okta) can automatically manage CVErt Ops org membership, roles, and notification groups.
 

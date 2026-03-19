@@ -66,6 +66,9 @@ type Config struct {
 	MFAChallengeMaxAttempts int           `env:"MFA_CHALLENGE_MAX_ATTEMPTS" envDefault:"3"`
 	MFAPendingTokenTTL      time.Duration `env:"MFA_PENDING_TOKEN_TTL"      envDefault:"5m"`
 
+	// ── SCIM ─────────────────────────────────────────────────────────────────
+	SCIMRateLimit int `env:"SCIM_RATE_LIMIT" envDefault:"50"` // requests per second per org
+
 	// ── CORS ─────────────────────────────────────────────────────────────────
 	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
 	// Empty in production disables CORS. In development, defaults to localhost dev servers.

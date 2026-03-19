@@ -21,12 +21,21 @@ type maxBodyTransport struct {
 	maxBytes int64
 }
 
+// limitedReadCloser preserves the original body's Close while limiting reads.
+type limitedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
 func (t *maxBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.inner.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-	resp.Body = io.NopCloser(io.LimitReader(resp.Body, t.maxBytes))
+	resp.Body = limitedReadCloser{
+		Reader: io.LimitReader(resp.Body, t.maxBytes),
+		Closer: resp.Body,
+	}
 	return resp, nil
 }
 

@@ -726,12 +726,14 @@ func TestRequireAuthenticated_PendingToken_RejectedAsAccess(t *testing.T) {
 	// The pending token should NOT grant access to normal endpoints.
 	// If the middleware doesn't differentiate pending from access tokens,
 	// this will pass through (200) — that would be a security issue.
+	//
+	// NOTE: Currently both token types share the same HS256 signing key and
+	// ParseAccessToken accepts pending claims structurally. This test documents
+	// the current behavior. If the middleware is updated to reject pending tokens,
+	// change the assertion below to require 401.
 	if rec.Code == http.StatusOK && reached {
-		t.Log("WARNING: pending token was accepted as an access token — this is a security concern")
-		t.Log("The middleware does not differentiate pending tokens from access tokens")
-		t.Log("Both use the same HS256 signing key and ParseAccessToken accepts pending claims")
+		t.Errorf("SECURITY: pending token accepted as access token — handler reached with status %d", rec.Code)
 	}
-	// Document the current behavior regardless of whether it passes or fails.
 	t.Logf("pending token on normal endpoint: status=%d, handler_reached=%v", rec.Code, reached)
 }
 
@@ -756,7 +758,10 @@ func TestRequireAuthenticated_ReadsFromConfigHolder(t *testing.T) {
 		JWTSecret: []byte(originalSecret),
 	})
 	cfg := &config.Config{JWTSecret: originalSecret} //nolint:exhaustruct // test: only JWT secret needed
-	srv, _ := NewServer(db.Store, cfg, ServerDeps{ConfigHolder: holder})
+	srv, err := NewServer(db.Store, cfg, ServerDeps{ConfigHolder: holder})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

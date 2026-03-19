@@ -251,6 +251,9 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 			}
 		}
 
+		// Report fetch outcome to circuit breaker so it can track consecutive failures.
+		cb.Execute(func() (struct{}, error) { return struct{}{}, fetchErr }) //nolint:errcheck,gosec // G104: reporting outcome to breaker; result already in fetchErr
+
 		now := time.Now()
 
 		if fetchErr != nil {

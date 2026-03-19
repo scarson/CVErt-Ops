@@ -225,6 +225,7 @@ func (srv *Server) Handler() http.Handler {
 	// CSRF protection: cookie-authenticated state-changing requests must include
 	// X-Requested-By: CVErt-Ops. Bearer-token requests and safe methods are exempt.
 	apiRouter.Use(csrfProtect)
+	apiRouter.Use(noCacheMiddleware)
 	apiRouter.Use(rejectAPIKeyQueryParams)
 	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
 	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
@@ -288,7 +289,6 @@ func (srv *Server) Handler() http.Handler {
 	// ── Org management routes (chi, not huma, for per-group RBAC middleware) ──
 	apiRouter.Route("/orgs", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())
-		r.Use(noCacheMiddleware)
 		r.Post("/", srv.createOrgHandler)
 
 		r.Route("/{org_id}", func(r chi.Router) {

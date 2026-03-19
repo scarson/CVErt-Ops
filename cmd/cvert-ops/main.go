@@ -187,7 +187,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	} else {
 		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
-	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
+	epssClient, err := feed.BuildFeedClient(300*time.Second, 0) // EPSS downloads ~15MB gzip; allow generous timeout
+	if err != nil {
+		return fmt.Errorf("build EPSS feed client: %w", err)
+	}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
@@ -435,7 +438,10 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	} else {
 		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
-	epssClient := &http.Client{Timeout: 300 * time.Second}
+	epssClient, err := feed.BuildFeedClient(300*time.Second, 0)
+	if err != nil {
+		return fmt.Errorf("build EPSS feed client: %w", err)
+	}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))

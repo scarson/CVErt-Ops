@@ -43,7 +43,10 @@ func TestAdminConfigHandler_SecretsRedacted(t *testing.T) {
 		GeminiAPIKey:       "gemini-api-key-value",
 		NVDAPIKey:          "nvd-api-key-value",
 	}
-	srv, _ := NewServer(db.Store, cfg, ServerDeps{})
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	ts := httptest.NewServer(srv.Handler())
@@ -114,7 +117,10 @@ func TestAdminConfigHandler_EmptySecrets_EmptyString(t *testing.T) {
 	cfg := &config.Config{ //nolint:exhaustruct // test: minimal config
 		JWTSecret: jwtSecret,
 	}
-	srv, _ := NewServer(db.Store, cfg, ServerDeps{})
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	ts := httptest.NewServer(srv.Handler())

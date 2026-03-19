@@ -79,7 +79,7 @@ func (q *Queries) GetGroup(ctx context.Context, arg GetGroupParams) (Group, erro
 }
 
 const listGroupMembers = `-- name: ListGroupMembers :many
-SELECT gm.id, gm.org_id, gm.group_id, gm.user_id, gm.created_at, u.email, u.display_name
+SELECT gm.id, gm.org_id, gm.group_id, gm.user_id, gm.created_at, gm.scim_managed, u.email, u.display_name
 FROM group_members gm JOIN users u ON u.id = gm.user_id
 WHERE gm.group_id = $1 AND gm.org_id = $2
 ORDER BY u.display_name
@@ -96,6 +96,7 @@ type ListGroupMembersRow struct {
 	GroupID     uuid.UUID
 	UserID      uuid.UUID
 	CreatedAt   time.Time
+	ScimManaged bool
 	Email       string
 	DisplayName string
 }
@@ -115,6 +116,7 @@ func (q *Queries) ListGroupMembers(ctx context.Context, arg ListGroupMembersPara
 			&i.GroupID,
 			&i.UserID,
 			&i.CreatedAt,
+			&i.ScimManaged,
 			&i.Email,
 			&i.DisplayName,
 		); err != nil {

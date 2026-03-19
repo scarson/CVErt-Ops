@@ -381,20 +381,22 @@ func (q *Queries) ListOrgInvitations(ctx context.Context, orgID uuid.UUID) ([]Or
 }
 
 const listOrgMembers = `-- name: ListOrgMembers :many
-SELECT om.org_id, om.user_id, om.role, om.created_at, om.updated_at, u.email, u.display_name FROM org_members om
+SELECT om.org_id, om.user_id, om.role, om.created_at, om.updated_at, om.deactivated_at, om.scim_exempt, u.email, u.display_name FROM org_members om
 JOIN users u ON u.id = om.user_id
 WHERE om.org_id = $1
 ORDER BY om.created_at
 `
 
 type ListOrgMembersRow struct {
-	OrgID       uuid.UUID
-	UserID      uuid.UUID
-	Role        string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Email       string
-	DisplayName string
+	OrgID         uuid.UUID
+	UserID        uuid.UUID
+	Role          string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	DeactivatedAt sql.NullTime
+	ScimExempt    bool
+	Email         string
+	DisplayName   string
 }
 
 func (q *Queries) ListOrgMembers(ctx context.Context, orgID uuid.UUID) ([]ListOrgMembersRow, error) {
@@ -412,6 +414,8 @@ func (q *Queries) ListOrgMembers(ctx context.Context, orgID uuid.UUID) ([]ListOr
 			&i.Role,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeactivatedAt,
+			&i.ScimExempt,
 			&i.Email,
 			&i.DisplayName,
 		); err != nil {

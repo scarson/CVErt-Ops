@@ -22,10 +22,10 @@ func TestOrgTx_SetsOrgID(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two orgs and one member each using the superuser store (bypasses RLS).
-	org1, _ := s.CreateOrg(ctx, "RLSOrg1a")
-	org2, _ := s.CreateOrg(ctx, "RLSOrg1b")
-	user1, _ := s.CreateUser(ctx, "rlsuser1a@example.com", "RLSUser1a", "", 0)
-	user2, _ := s.CreateUser(ctx, "rlsuser1b@example.com", "RLSUser1b", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "RLSOrg1a")
+	org2 := s.MustCreateOrg(t, ctx, "RLSOrg1b")
+	user1 := s.MustCreateUser(t, ctx, "rlsuser1a@example.com", "RLSUser1a", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "rlsuser1b@example.com", "RLSUser1b", "", 0)
 	_ = s.CreateOrgMember(ctx, org1.ID, user1.ID, "member")
 	_ = s.CreateOrgMember(ctx, org2.ID, user2.ID, "member")
 
@@ -52,8 +52,8 @@ func TestOrgTx_FailClosed(t *testing.T) {
 	ctx := context.Background()
 
 	// Insert an org + member using the superuser store (bypasses RLS for setup).
-	org, _ := s.CreateOrg(ctx, "RLSOrg2")
-	user, _ := s.CreateUser(ctx, "rlsuser2@example.com", "RLSUser2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "RLSOrg2")
+	user := s.MustCreateUser(t, ctx, "rlsuser2@example.com", "RLSUser2", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "owner")
 
 	// Acquire a raw connection from the app-role pool with no SET LOCAL app.org_id.
@@ -82,10 +82,10 @@ func TestWorkerTx_BypassRLS(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two orgs with one member each using superuser store.
-	org1, _ := s.CreateOrg(ctx, "RLSOrg3a")
-	org2, _ := s.CreateOrg(ctx, "RLSOrg3b")
-	user1, _ := s.CreateUser(ctx, "rlsuser3a@example.com", "RLSUser3a", "", 0)
-	user2, _ := s.CreateUser(ctx, "rlsuser3b@example.com", "RLSUser3b", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "RLSOrg3a")
+	org2 := s.MustCreateOrg(t, ctx, "RLSOrg3b")
+	user1 := s.MustCreateUser(t, ctx, "rlsuser3a@example.com", "RLSUser3a", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "rlsuser3b@example.com", "RLSUser3b", "", 0)
 	_ = s.CreateOrgMember(ctx, org1.ID, user1.ID, "member")
 	_ = s.CreateOrgMember(ctx, org2.ID, user2.ID, "member")
 
@@ -110,8 +110,8 @@ func TestListOrgMembers_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RLSOrg4")
-	user, _ := s.CreateUser(ctx, "rlsuser4@example.com", "RLSUser4", "", 0)
+	org := s.MustCreateOrg(t, ctx, "RLSOrg4")
+	user := s.MustCreateUser(t, ctx, "rlsuser4@example.com", "RLSUser4", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "member")
 
 	members, err := s.AppStore.ListOrgMembers(ctx, org.ID)
@@ -131,7 +131,7 @@ func TestCreateGroup_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RLSOrg5")
+	org := s.MustCreateOrg(t, ctx, "RLSOrg5")
 
 	group, err := s.AppStore.CreateGroup(ctx, org.ID, "alpha", "")
 	if err != nil {
@@ -150,8 +150,8 @@ func TestCreateAPIKey_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RLSOrg6")
-	user, _ := s.CreateUser(ctx, "rlsuser6@example.com", "RLSUser6", "", 0)
+	org := s.MustCreateOrg(t, ctx, "RLSOrg6")
+	user := s.MustCreateUser(t, ctx, "rlsuser6@example.com", "RLSUser6", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "member")
 
 	key, err := s.AppStore.CreateAPIKey(ctx, org.ID, user.ID, "testhash6", "test-key", "member", sql.NullTime{})
@@ -173,8 +173,8 @@ func TestCancelInvitation_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "InvRLS1")
-	user, _ := s.CreateUser(ctx, "invrlsuser1@example.com", "InvRLSUser1", "", 0)
+	org := s.MustCreateOrg(t, ctx, "InvRLS1")
+	user := s.MustCreateUser(t, ctx, "invrlsuser1@example.com", "InvRLSUser1", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 	inv, err := s.CreateOrgInvitation(ctx, org.ID, "cancel-target@example.com", "member", "invrlstoken1", user.ID, time.Now().Add(24*time.Hour))
 	if err != nil {
@@ -199,8 +199,8 @@ func TestInvitation_RLSFailClosed(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "InvRLS2")
-	user, _ := s.CreateUser(ctx, "invrlsuser2@example.com", "InvRLSUser2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "InvRLS2")
+	user := s.MustCreateUser(t, ctx, "invrlsuser2@example.com", "InvRLSUser2", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 	if _, err := s.CreateOrgInvitation(ctx, org.ID, "rls-target@example.com", "member", "invrlstoken2", user.ID, time.Now().Add(24*time.Hour)); err != nil {
 		t.Fatalf("create invitation: %v", err)
@@ -230,8 +230,8 @@ func TestGetInvitationByToken_AppStoreBypass(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "InvRLS3")
-	user, _ := s.CreateUser(ctx, "invrlsuser3@example.com", "InvRLSUser3", "", 0)
+	org := s.MustCreateOrg(t, ctx, "InvRLS3")
+	user := s.MustCreateUser(t, ctx, "invrlsuser3@example.com", "InvRLSUser3", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 	const token = "publicinvtoken3"
 	if _, err := s.CreateOrgInvitation(ctx, org.ID, "public-lookup@example.com", "viewer", token, user.ID, time.Now().Add(24*time.Hour)); err != nil {
@@ -256,8 +256,8 @@ func TestCreateInvitation_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "InvRLS4")
-	user, _ := s.CreateUser(ctx, "invrlsuser4@example.com", "InvRLSUser4", "", 0)
+	org := s.MustCreateOrg(t, ctx, "InvRLS4")
+	user := s.MustCreateUser(t, ctx, "invrlsuser4@example.com", "InvRLSUser4", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 
 	inv, err := s.AppStore.CreateOrgInvitation(ctx, org.ID, "new-invite@example.com", "member", "invrlstoken4", user.ID, time.Now().Add(24*time.Hour))
@@ -277,8 +277,8 @@ func TestListInvitations_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "InvRLS5")
-	user, _ := s.CreateUser(ctx, "invrlsuser5@example.com", "InvRLSUser5", "", 0)
+	org := s.MustCreateOrg(t, ctx, "InvRLS5")
+	user := s.MustCreateUser(t, ctx, "invrlsuser5@example.com", "InvRLSUser5", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 	if _, err := s.CreateOrgInvitation(ctx, org.ID, "list-target@example.com", "member", "invrlstoken5", user.ID, time.Now().Add(24*time.Hour)); err != nil {
 		t.Fatalf("create invitation: %v", err)
@@ -303,8 +303,8 @@ func TestAPIKey_RLSFailClosed(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "APIKeyRLS1")
-	user, _ := s.CreateUser(ctx, "apikeyrlsuser@example.com", "APIKeyRLSUser", "", 0)
+	org := s.MustCreateOrg(t, ctx, "APIKeyRLS1")
+	user := s.MustCreateUser(t, ctx, "apikeyrlsuser@example.com", "APIKeyRLSUser", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 	_, err := s.CreateAPIKey(ctx, org.ID, user.ID, "apikeyrlshash1", "rls-key", "member", sql.NullTime{})
 	if err != nil {
@@ -334,13 +334,17 @@ func TestListOrgAPIKeys_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "APIKeyRLS2a")
-	org2, _ := s.CreateOrg(ctx, "APIKeyRLS2b")
-	user, _ := s.CreateUser(ctx, "apikeyrlsuser2@example.com", "APIKeyRLSUser2", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "APIKeyRLS2a")
+	org2 := s.MustCreateOrg(t, ctx, "APIKeyRLS2b")
+	user := s.MustCreateUser(t, ctx, "apikeyrlsuser2@example.com", "APIKeyRLSUser2", "", 0)
 	_ = s.CreateOrgMember(ctx, org1.ID, user.ID, "admin")
 	_ = s.CreateOrgMember(ctx, org2.ID, user.ID, "admin")
-	_, _ = s.CreateAPIKey(ctx, org1.ID, user.ID, "rlskeyhash2a", "org1-key", "member", sql.NullTime{})
-	_, _ = s.CreateAPIKey(ctx, org2.ID, user.ID, "rlskeyhash2b", "org2-key", "member", sql.NullTime{})
+	if _, err := s.CreateAPIKey(ctx, org1.ID, user.ID, "rlskeyhash2a", "org1-key", "member", sql.NullTime{}); err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
+	if _, err := s.CreateAPIKey(ctx, org2.ID, user.ID, "rlskeyhash2b", "org2-key", "member", sql.NullTime{}); err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	keys, err := s.AppStore.ListOrgAPIKeys(ctx, org1.ID)
 	if err != nil {
@@ -364,7 +368,7 @@ func TestGroup_RLSFailClosed(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupRLS1")
+	org := s.MustCreateOrg(t, ctx, "GroupRLS1")
 	_, err := s.CreateGroup(ctx, org.ID, "rls-group", "")
 	if err != nil {
 		t.Fatalf("create group: %v", err)
@@ -392,10 +396,14 @@ func TestListOrgGroups_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "GroupRLS2a")
-	org2, _ := s.CreateOrg(ctx, "GroupRLS2b")
-	_, _ = s.CreateGroup(ctx, org1.ID, "org1-group", "")
-	_, _ = s.CreateGroup(ctx, org2.ID, "org2-group", "")
+	org1 := s.MustCreateOrg(t, ctx, "GroupRLS2a")
+	org2 := s.MustCreateOrg(t, ctx, "GroupRLS2b")
+	if _, err := s.CreateGroup(ctx, org1.ID, "org1-group", ""); err != nil {
+		t.Fatalf("setup: CreateGroup: %v", err)
+	}
+	if _, err := s.CreateGroup(ctx, org2.ID, "org2-group", ""); err != nil {
+		t.Fatalf("setup: CreateGroup: %v", err)
+	}
 
 	groups, err := s.AppStore.ListOrgGroups(ctx, org1.ID)
 	if err != nil {
@@ -419,9 +427,9 @@ func TestGroupMember_RLSFailClosed(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GMemberRLS1")
-	grp, _ := s.CreateGroup(ctx, org.ID, "rls-gm-group", "")
-	user, _ := s.CreateUser(ctx, "gmrlsuser@example.com", "GMRLSUser", "", 0)
+	org := s.MustCreateOrg(t, ctx, "GMemberRLS1")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "rls-gm-group", "")
+	user := s.MustCreateUser(t, ctx, "gmrlsuser@example.com", "GMRLSUser", "", 0)
 	_ = s.AddGroupMember(ctx, org.ID, grp.ID, user.ID)
 
 	conn, err := s.AppStore.Pool().Acquire(ctx)
@@ -446,12 +454,12 @@ func TestListGroupMembers_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "GMemberRLS2a")
-	org2, _ := s.CreateOrg(ctx, "GMemberRLS2b")
-	grp1, _ := s.CreateGroup(ctx, org1.ID, "team-a", "")
-	grp2, _ := s.CreateGroup(ctx, org2.ID, "team-b", "")
-	user1, _ := s.CreateUser(ctx, "gmrlsuser2a@example.com", "GMRLSUser2a", "", 0)
-	user2, _ := s.CreateUser(ctx, "gmrlsuser2b@example.com", "GMRLSUser2b", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "GMemberRLS2a")
+	org2 := s.MustCreateOrg(t, ctx, "GMemberRLS2b")
+	grp1 := s.MustCreateGroup(t, ctx, org1.ID, "team-a", "")
+	grp2 := s.MustCreateGroup(t, ctx, org2.ID, "team-b", "")
+	user1 := s.MustCreateUser(t, ctx, "gmrlsuser2a@example.com", "GMRLSUser2a", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "gmrlsuser2b@example.com", "GMRLSUser2b", "", 0)
 	_ = s.AddGroupMember(ctx, org1.ID, grp1.ID, user1.ID)
 	_ = s.AddGroupMember(ctx, org2.ID, grp2.ID, user2.ID)
 

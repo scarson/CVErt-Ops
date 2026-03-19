@@ -107,7 +107,8 @@ func TestForgotPassword_RateLimit(t *testing.T) {
 	ctx := context.Background()
 
 	doRegister(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
-	user, _ := db.GetUserByEmail(ctx, "ratelimit@example.com")
+	user, err := db.GetUserByEmail(ctx, "ratelimit@example.com")
+tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
 
 	// Send 3 requests (max per hour).
 	for i := range 3 {
@@ -166,7 +167,8 @@ func TestResetPassword_ValidToken(t *testing.T) {
 	resp.Body.Close() //nolint:errcheck,gosec // G104
 
 	// Extract the token from DB (in a real scenario, user gets it via email).
-	user, _ := db.GetUserByEmail(ctx, "valid-reset@example.com")
+	user, err := db.GetUserByEmail(ctx, "valid-reset@example.com")
+tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
 	// We need to find the token. Since we can't easily extract the raw token from the handler,
 	// we'll create one directly and test the reset endpoint.
 	tokenBytes := make([]byte, 32)
@@ -212,7 +214,8 @@ func TestResetPassword_ExpiredToken(t *testing.T) {
 
 	doRegister(t, ctx, ts, "expired-reset@example.com", "test-password-1234")
 
-	user, _ := db.GetUserByEmail(ctx, "expired-reset@example.com")
+	user, err := db.GetUserByEmail(ctx, "expired-reset@example.com")
+tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
 
 	// Create an expired token directly in DB.
 	tokenBytes := []byte("expired-reset-token-bytes-32char")
@@ -242,7 +245,8 @@ func TestResetPassword_UsedToken(t *testing.T) {
 	ctx := context.Background()
 
 	doRegister(t, ctx, ts, "used-reset@example.com", "test-password-1234")
-	user, _ := db.GetUserByEmail(ctx, "used-reset@example.com")
+	user, err := db.GetUserByEmail(ctx, "used-reset@example.com")
+tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
 
 	tokenBytes := []byte("used-reset-token-bytes-32-chars!")
 	tokenHex := hex.EncodeToString(tokenBytes)
@@ -304,7 +308,8 @@ func TestResetPassword_WeakPassword(t *testing.T) {
 	ctx := context.Background()
 
 	doRegister(t, ctx, ts, "weak-pw@example.com", "test-password-1234")
-	user, _ := db.GetUserByEmail(ctx, "weak-pw@example.com")
+	user, err := db.GetUserByEmail(ctx, "weak-pw@example.com")
+tif err != nil {		t.Fatalf("setup: GetUserByEmail: %v", err)	}
 
 	tokenBytes := []byte("weak-password-token-bytes-32chr!")
 	tokenHex := hex.EncodeToString(tokenBytes)

@@ -24,7 +24,7 @@ func mustUpsertDelivery(t *testing.T, s *testutil.TestDB, ctx context.Context, o
 // Returns orgID, ruleID, channelID.
 func setupDeliveryFixture(t *testing.T, s *testutil.TestDB, ctx context.Context, orgSuffix string) (uuid.UUID, uuid.UUID, uuid.UUID) {
 	t.Helper()
-	org, _ := s.CreateOrg(ctx, "NDOrg"+orgSuffix)
+	org := s.MustCreateOrg(t, ctx, "NDOrg"+orgSuffix)
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "NDRule"+orgSuffix)
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "NDChan"+orgSuffix)
 	return org.ID, rule.ID, chanID
@@ -493,7 +493,7 @@ func TestListDeliveries_CrossOrgIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO1a")
-	org2, _ := s.CreateOrg(ctx, "NDOrgXO1b")
+	org2 := s.MustCreateOrg(t, ctx, "NDOrgXO1b")
 	orgID2 := org2.ID
 
 	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO1"}`), 0)
@@ -525,7 +525,7 @@ func TestGetDelivery_CrossOrgIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO2a")
-	org2, _ := s.CreateOrg(ctx, "NDOrgXO2b")
+	org2 := s.MustCreateOrg(t, ctx, "NDOrgXO2b")
 	orgID2 := org2.ID
 
 	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO2"}`), 0)
@@ -564,7 +564,7 @@ func TestReplayDelivery_CrossOrgIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	orgID1, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "XO3a")
-	org2, _ := s.CreateOrg(ctx, "NDOrgXO3b")
+	org2 := s.MustCreateOrg(t, ctx, "NDOrgXO3b")
 	orgID2 := org2.ID
 
 	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO3"}`), 0)
@@ -788,7 +788,7 @@ func TestInsertDigestDelivery(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "DigestDelivOrg")
+	org := s.MustCreateOrg(t, ctx, "DigestDelivOrg")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DigestReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestChan")
 

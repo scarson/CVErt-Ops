@@ -18,7 +18,7 @@ func TestIncrementAIUsage_CreatesAndIncrements(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIUsageOrg1")
+	org := s.MustCreateOrg(t, ctx, "AIUsageOrg1")
 
 	// First call creates the row with count=1.
 	count, err := s.IncrementAIUsage(ctx, org.ID, "nl_search")
@@ -44,7 +44,7 @@ func TestIncrementAIUsage_SeparateFeatures(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIUsageOrg2")
+	org := s.MustCreateOrg(t, ctx, "AIUsageOrg2")
 
 	// Increment nl_search twice.
 	s.IncrementAIUsage(ctx, org.ID, "nl_search") //nolint:gosec,errcheck // G104: first increment is a setup step
@@ -71,7 +71,7 @@ func TestDecrementAIUsage_FloorsAtZero(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIUsageOrg3")
+	org := s.MustCreateOrg(t, ctx, "AIUsageOrg3")
 
 	// Create a row with count=1.
 	_, err := s.IncrementAIUsage(ctx, org.ID, "nl_search")
@@ -104,7 +104,7 @@ func TestUpdateAIUsageTokens(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIUsageOrg4")
+	org := s.MustCreateOrg(t, ctx, "AIUsageOrg4")
 
 	// IncrementAIUsage creates the row (count=1, tokens=0).
 	_, err := s.IncrementAIUsage(ctx, org.ID, "summarize")
@@ -131,7 +131,7 @@ func TestGetAIQuotaOverride_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIQuotaOrg1")
+	org := s.MustCreateOrg(t, ctx, "AIQuotaOrg1")
 
 	limit, found, err := s.GetAIQuotaOverride(ctx, org.ID, "nl_search")
 	if err != nil {
@@ -150,7 +150,7 @@ func TestSetAndGetAIQuotaOverride(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIQuotaOrg2")
+	org := s.MustCreateOrg(t, ctx, "AIQuotaOrg2")
 
 	// Set an override.
 	if err := s.SetAIQuotaOverride(ctx, org.ID, "nl_search", 500); err != nil {
@@ -187,7 +187,7 @@ func TestDeleteAIQuotaOverride(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIQuotaOrg3")
+	org := s.MustCreateOrg(t, ctx, "AIQuotaOrg3")
 
 	if err := s.SetAIQuotaOverride(ctx, org.ID, "summarize", 200); err != nil {
 		t.Fatalf("SetAIQuotaOverride: %v", err)
@@ -211,8 +211,8 @@ func TestListAIQuotaOverrides(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AIQuotaOrg4a")
-	org2, _ := s.CreateOrg(ctx, "AIQuotaOrg4b")
+	org1 := s.MustCreateOrg(t, ctx, "AIQuotaOrg4a")
+	org2 := s.MustCreateOrg(t, ctx, "AIQuotaOrg4b")
 
 	// Set overrides for two orgs.
 	if err := s.SetAIQuotaOverride(ctx, org1.ID, "nl_search", 100); err != nil {
@@ -253,7 +253,7 @@ func TestListAIQuotaOverridesForOrg(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIQuotaOrg5")
+	org := s.MustCreateOrg(t, ctx, "AIQuotaOrg5")
 
 	if err := s.SetAIQuotaOverride(ctx, org.ID, "nl_search", 100); err != nil {
 		t.Fatalf("SetAIQuotaOverride nl_search: %v", err)
@@ -284,7 +284,7 @@ func TestGetAICache_Miss(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AICacheOrg1")
+	org := s.MustCreateOrg(t, ctx, "AICacheOrg1")
 
 	resp, found, err := s.GetAICache(ctx, org.ID, "nl_search", "v1", "abc123")
 	if err != nil {
@@ -303,7 +303,7 @@ func TestPutAndGetAICache(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AICacheOrg2")
+	org := s.MustCreateOrg(t, ctx, "AICacheOrg2")
 
 	payload := json.RawMessage(`{"result":"test response"}`)
 
@@ -335,7 +335,7 @@ func TestPutAICache_Upsert(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AICacheOrg3")
+	org := s.MustCreateOrg(t, ctx, "AICacheOrg3")
 
 	// Put initial entry.
 	if err := s.PutAICache(ctx, org.ID, "nl_search", "v1", "hash456", json.RawMessage(`{"v":1}`), time.Hour); err != nil {
@@ -369,7 +369,7 @@ func TestGetAICache_DifferentPromptVersion(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AICacheOrg4")
+	org := s.MustCreateOrg(t, ctx, "AICacheOrg4")
 
 	// Cache for v1.
 	if err := s.PutAICache(ctx, org.ID, "nl_search", "v1", "hash789", json.RawMessage(`{"v":"v1"}`), time.Hour); err != nil {
@@ -391,7 +391,7 @@ func TestInsertAIRequestLog(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AILogOrg1")
+	org := s.MustCreateOrg(t, ctx, "AILogOrg1")
 	userID := uuid.New()
 
 	// Insert a success entry.
@@ -453,8 +453,8 @@ func TestAIUsage_OrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AIIsoOrg1")
-	org2, _ := s.CreateOrg(ctx, "AIIsoOrg2")
+	org1 := s.MustCreateOrg(t, ctx, "AIIsoOrg1")
+	org2 := s.MustCreateOrg(t, ctx, "AIIsoOrg2")
 
 	// Increment org1's counter.
 	count, err := s.IncrementAIUsage(ctx, org1.ID, "nl_search")
@@ -480,8 +480,8 @@ func TestAICache_OrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AICacheIso1")
-	org2, _ := s.CreateOrg(ctx, "AICacheIso2")
+	org1 := s.MustCreateOrg(t, ctx, "AICacheIso1")
+	org2 := s.MustCreateOrg(t, ctx, "AICacheIso2")
 
 	// Cache entry for org1.
 	if err := s.PutAICache(ctx, org1.ID, "nl_search", "v1", "shared_hash", json.RawMessage(`{"org":1}`), time.Hour); err != nil {
@@ -507,8 +507,8 @@ func TestIncrementAIUsage_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AIUsageRLS1")
-	org2, _ := s.CreateOrg(ctx, "AIUsageRLS2")
+	org1 := s.MustCreateOrg(t, ctx, "AIUsageRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "AIUsageRLS2")
 
 	// Increment via AppStore for both orgs.
 	count1, err := s.AppStore.IncrementAIUsage(ctx, org1.ID, "nl_search")
@@ -542,7 +542,7 @@ func TestDecrementAIUsage_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIDecrRLS")
+	org := s.MustCreateOrg(t, ctx, "AIDecrRLS")
 
 	// Create a row via superuser store, decrement via AppStore.
 	if _, err := s.IncrementAIUsage(ctx, org.ID, "nl_search"); err != nil {
@@ -568,7 +568,7 @@ func TestUpdateAIUsageTokens_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AITokenRLS")
+	org := s.MustCreateOrg(t, ctx, "AITokenRLS")
 
 	// Create usage row first.
 	if _, err := s.IncrementAIUsage(ctx, org.ID, "summarize"); err != nil {
@@ -586,8 +586,8 @@ func TestGetAIQuotaOverride_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AIQuotaRLS1")
-	org2, _ := s.CreateOrg(ctx, "AIQuotaRLS2")
+	org1 := s.MustCreateOrg(t, ctx, "AIQuotaRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "AIQuotaRLS2")
 
 	// Set override via superuser bypass TX.
 	if err := s.SetAIQuotaOverride(ctx, org1.ID, "nl_search", 500); err != nil {
@@ -615,8 +615,8 @@ func TestGetAICache_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "AICacheRLS1")
-	org2, _ := s.CreateOrg(ctx, "AICacheRLS2")
+	org1 := s.MustCreateOrg(t, ctx, "AICacheRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "AICacheRLS2")
 
 	// Seed cache via superuser store.
 	if err := s.PutAICache(ctx, org1.ID, "nl_search", "v1", "rlshash", json.RawMessage(`{"org":"one"}`), time.Hour); err != nil {
@@ -650,7 +650,7 @@ func TestPutAICache_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AIPutCacheRLS")
+	org := s.MustCreateOrg(t, ctx, "AIPutCacheRLS")
 
 	// Put via AppStore.
 	if err := s.AppStore.PutAICache(ctx, org.ID, "nl_search", "v1", "putrlshash", json.RawMessage(`{"ok":true}`), time.Hour); err != nil {
@@ -672,7 +672,7 @@ func TestInsertAIRequestLog_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "AILogRLS")
+	org := s.MustCreateOrg(t, ctx, "AILogRLS")
 	userID := uuid.New()
 
 	// Insert via AppStore — must succeed (WITH CHECK clause for org_id).

@@ -1537,7 +1537,10 @@ func TestResendInvitation_RequiresAdmin(t *testing.T) {
 
 	// Add viewer to org via direct store call (simpler than invitation flow).
 	orgID := uuid.MustParse(reg.OrgID)
-	viewerUser, _ := db.GetUserByEmail(ctx, "viewer@example.com")
+	viewerUser, err := db.GetUserByEmail(ctx, "viewer@example.com")
+	if err != nil {
+		t.Fatalf("setup: GetUserByEmail: %v", err)
+	}
 	if viewerUser != nil {
 		db.CreateOrgMember(ctx, orgID, viewerUser.ID, "viewer") //nolint:errcheck,gosec
 	}

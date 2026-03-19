@@ -14,7 +14,7 @@ func TestBindChannelToRule_Idempotent(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrg1")
+	org := s.MustCreateOrg(t, ctx, "ARCOrg1")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "BindRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "BindChan")
 
@@ -43,7 +43,7 @@ func TestUnbindChannelFromRule(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrg2")
+	org := s.MustCreateOrg(t, ctx, "ARCOrg2")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "UnbindRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UnbindChan")
 
@@ -79,7 +79,7 @@ func TestListChannelsForRule_ExcludesSoftDeletedChannels(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrg3")
+	org := s.MustCreateOrg(t, ctx, "ARCOrg3")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "SoftDeleteRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "SoftDeleteChan")
 
@@ -107,7 +107,7 @@ func TestListActiveChannelsForFanout_IncludesSecrets(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrg4")
+	org := s.MustCreateOrg(t, ctx, "ARCOrg4")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutRule")
 	chanID, createdSecret := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutChan")
 
@@ -143,8 +143,8 @@ func TestListChannelsForRule_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "ARCOrg6a")
-	org2, _ := s.CreateOrg(ctx, "ARCOrg6b")
+	org1 := s.MustCreateOrg(t, ctx, "ARCOrg6a")
+	org2 := s.MustCreateOrg(t, ctx, "ARCOrg6b")
 	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "CrossOrgRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "CrossOrgChan")
 
@@ -167,7 +167,7 @@ func TestListActiveChannelsForFanout_ExcludesSoftDeletedChannels(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrg7")
+	org := s.MustCreateOrg(t, ctx, "ARCOrg7")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutSoftDeleteRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutSoftDeleteChan")
 
@@ -195,7 +195,7 @@ func TestChannelRuleBindingExists(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrg5")
+	org := s.MustCreateOrg(t, ctx, "ARCOrg5")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "ExistsRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ExistsChan")
 
@@ -227,8 +227,8 @@ func TestBindChannelToRule_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "ARCIsoBindA")
-	org2, _ := s.CreateOrg(ctx, "ARCIsoBindB")
+	org1 := s.MustCreateOrg(t, ctx, "ARCIsoBindA")
+	org2 := s.MustCreateOrg(t, ctx, "ARCIsoBindB")
 	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoBindRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoBindChan")
 
@@ -252,8 +252,8 @@ func TestUnbindChannelFromRule_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "ARCIsoUnbindA")
-	org2, _ := s.CreateOrg(ctx, "ARCIsoUnbindB")
+	org1 := s.MustCreateOrg(t, ctx, "ARCIsoUnbindA")
+	org2 := s.MustCreateOrg(t, ctx, "ARCIsoUnbindB")
 	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoUnbindRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoUnbindChan")
 
@@ -281,8 +281,8 @@ func TestListActiveChannelsForFanout_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "ARCIsoFanoutA")
-	org2, _ := s.CreateOrg(ctx, "ARCIsoFanoutB")
+	org1 := s.MustCreateOrg(t, ctx, "ARCIsoFanoutA")
+	org2 := s.MustCreateOrg(t, ctx, "ARCIsoFanoutB")
 	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoFanoutRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoFanoutChan")
 
@@ -314,8 +314,8 @@ func TestChannelRuleBindingExists_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "ARCIsoExistsA")
-	org2, _ := s.CreateOrg(ctx, "ARCIsoExistsB")
+	org1 := s.MustCreateOrg(t, ctx, "ARCIsoExistsA")
+	org2 := s.MustCreateOrg(t, ctx, "ARCIsoExistsB")
 	rule := mustCreateAlertRule(t, s, ctx, org1.ID, "IsoExistsRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoExistsChan")
 
@@ -338,7 +338,7 @@ func TestUnbindChannelFromRule_NoOp(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "ARCOrgUnbindNoOp")
+	org := s.MustCreateOrg(t, ctx, "ARCOrgUnbindNoOp")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "UnbindNoOpRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UnbindNoOpChan")
 

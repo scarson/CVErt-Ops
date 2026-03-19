@@ -18,8 +18,8 @@ func TestLookupAPIKey_ValidKey(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg1")
-	user, _ := s.CreateUser(ctx, "keyuser1@example.com", "KeyUser1", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg1")
+	user := s.MustCreateUser(t, ctx, "keyuser1@example.com", "KeyUser1", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 
 	hash := "validhash_" + uuid.New().String()
@@ -48,11 +48,14 @@ func TestLookupAPIKey_RevokedKey(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg2")
-	user, _ := s.CreateUser(ctx, "keyuser2@example.com", "KeyUser2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg2")
+	user := s.MustCreateUser(t, ctx, "keyuser2@example.com", "KeyUser2", "", 0)
 
 	hash := "revokedhash_" + uuid.New().String()
-	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "Revoked Key", "member", sql.NullTime{})
+	key, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "Revoked Key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	if err := s.RevokeAPIKey(ctx, org.ID, key.ID); err != nil {
 		t.Fatalf("RevokeAPIKey: %v", err)
@@ -72,8 +75,8 @@ func TestLookupAPIKey_ExpiredKey(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg3")
-	user, _ := s.CreateUser(ctx, "keyuser3@example.com", "KeyUser3", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg3")
+	user := s.MustCreateUser(t, ctx, "keyuser3@example.com", "KeyUser3", "", 0)
 
 	hash := "expiredhash_" + uuid.New().String()
 	pastExpiry := sql.NullTime{Time: time.Now().Add(-1 * time.Hour), Valid: true}
@@ -96,8 +99,8 @@ func TestLookupAPIKey_NeverExpiresKey(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg4")
-	user, _ := s.CreateUser(ctx, "keyuser4@example.com", "KeyUser4", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg4")
+	user := s.MustCreateUser(t, ctx, "keyuser4@example.com", "KeyUser4", "", 0)
 
 	hash := "neverexpires_" + uuid.New().String()
 	// expires_at = NULL means never expires.
@@ -126,13 +129,17 @@ func TestCreateAndListAPIKeys(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg5")
-	user, _ := s.CreateUser(ctx, "keyuser5@example.com", "KeyUser5", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg5")
+	user := s.MustCreateUser(t, ctx, "keyuser5@example.com", "KeyUser5", "", 0)
 
 	hash1 := "listhash1_" + uuid.New().String()
 	hash2 := "listhash2_" + uuid.New().String()
-	_, _ = s.CreateAPIKey(ctx, org.ID, user.ID, hash1, "Key One", "member", sql.NullTime{})
-	_, _ = s.CreateAPIKey(ctx, org.ID, user.ID, hash2, "Key Two", "admin", sql.NullTime{})
+	if _, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash1, "Key One", "member", sql.NullTime{}); err != nil {
+		t.Fatalf("setup: CreateAPIKey(Key One): %v", err)
+	}
+	if _, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash2, "Key Two", "admin", sql.NullTime{}); err != nil {
+		t.Fatalf("setup: CreateAPIKey(Key Two): %v", err)
+	}
 
 	keys, err := s.ListOrgAPIKeys(ctx, org.ID)
 	if err != nil {
@@ -155,12 +162,15 @@ func TestRevokeAPIKey_WrongOrg(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "KeyOrg6a")
-	org2, _ := s.CreateOrg(ctx, "KeyOrg6b")
-	user, _ := s.CreateUser(ctx, "keyuser6@example.com", "KeyUser6", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "KeyOrg6a")
+	org2 := s.MustCreateOrg(t, ctx, "KeyOrg6b")
+	user := s.MustCreateUser(t, ctx, "keyuser6@example.com", "KeyUser6", "", 0)
 
 	hash := "wrongorg_" + uuid.New().String()
-	key, _ := s.CreateAPIKey(ctx, org1.ID, user.ID, hash, "Cross Org Key", "member", sql.NullTime{})
+	key, err := s.CreateAPIKey(ctx, org1.ID, user.ID, hash, "Cross Org Key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	// Revoke with wrong org — should silently do nothing.
 	if err := s.RevokeAPIKey(ctx, org2.ID, key.ID); err != nil {
@@ -182,11 +192,14 @@ func TestRevokeAPIKey_AlreadyRevoked(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg7")
-	user, _ := s.CreateUser(ctx, "keyuser7@example.com", "KeyUser7", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg7")
+	user := s.MustCreateUser(t, ctx, "keyuser7@example.com", "KeyUser7", "", 0)
 
 	hash := "doublerevoke_" + uuid.New().String()
-	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "Double Revoke", "member", sql.NullTime{})
+	key, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "Double Revoke", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	// Revoke once.
 	if err := s.RevokeAPIKey(ctx, org.ID, key.ID); err != nil {
@@ -199,7 +212,10 @@ func TestRevokeAPIKey_AlreadyRevoked(t *testing.T) {
 	}
 
 	// Key should still be revoked.
-	got, _ := s.LookupAPIKey(ctx, hash)
+	got, err := s.LookupAPIKey(ctx, hash)
+	if err != nil {
+		t.Fatalf("LookupAPIKey(double revoke): %v", err)
+	}
 	if got != nil {
 		t.Error("key should still be revoked after double revoke")
 	}
@@ -210,7 +226,7 @@ func TestListOrgAPIKeys_Empty(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg8")
+	org := s.MustCreateOrg(t, ctx, "KeyOrg8")
 
 	keys, err := s.ListOrgAPIKeys(ctx, org.ID)
 	if err != nil {
@@ -226,12 +242,15 @@ func TestGetOrgAPIKey(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg9")
-	user, _ := s.CreateUser(ctx, "keyuser9@example.com", "KeyUser9", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg9")
+	user := s.MustCreateUser(t, ctx, "keyuser9@example.com", "KeyUser9", "", 0)
 	_ = s.CreateOrgMember(ctx, org.ID, user.ID, "admin")
 
 	hash := "getorgkey_" + uuid.New().String()
-	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "GetMe", "member", sql.NullTime{})
+	key, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "GetMe", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	got, err := s.GetOrgAPIKey(ctx, org.ID, key.ID)
 	if err != nil {
@@ -250,7 +269,7 @@ func TestGetOrgAPIKey_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg10")
+	org := s.MustCreateOrg(t, ctx, "KeyOrg10")
 
 	got, err := s.GetOrgAPIKey(ctx, org.ID, uuid.New())
 	if err != nil {
@@ -266,12 +285,15 @@ func TestGetOrgAPIKey_WrongOrg(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "KeyOrg11a")
-	org2, _ := s.CreateOrg(ctx, "KeyOrg11b")
-	user, _ := s.CreateUser(ctx, "keyuser11@example.com", "KeyUser11", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "KeyOrg11a")
+	org2 := s.MustCreateOrg(t, ctx, "KeyOrg11b")
+	user := s.MustCreateUser(t, ctx, "keyuser11@example.com", "KeyUser11", "", 0)
 
 	hash := "crossorgget_" + uuid.New().String()
-	key, _ := s.CreateAPIKey(ctx, org1.ID, user.ID, hash, "CrossOrgGet", "member", sql.NullTime{})
+	key, err := s.CreateAPIKey(ctx, org1.ID, user.ID, hash, "CrossOrgGet", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	// GetOrgAPIKey with wrong org should return nil.
 	got, err := s.GetOrgAPIKey(ctx, org2.ID, key.ID)
@@ -288,14 +310,20 @@ func TestUpdateAPIKeyLastUsed(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "KeyOrg12")
-	user, _ := s.CreateUser(ctx, "keyuser12@example.com", "KeyUser12", "", 0)
+	org := s.MustCreateOrg(t, ctx, "KeyOrg12")
+	user := s.MustCreateUser(t, ctx, "keyuser12@example.com", "KeyUser12", "", 0)
 
 	hash := "lastused_" + uuid.New().String()
-	key, _ := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "LastUsed Key", "member", sql.NullTime{})
+	key, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "LastUsed Key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
 
 	// last_used_at should be null initially.
-	got, _ := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	got, err := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	if err != nil {
+		t.Fatalf("GetOrgAPIKey: %v", err)
+	}
 	if got.LastUsedAt.Valid {
 		t.Error("LastUsedAt should be null initially")
 	}
@@ -304,7 +332,10 @@ func TestUpdateAPIKeyLastUsed(t *testing.T) {
 		t.Fatalf("UpdateAPIKeyLastUsed: %v", err)
 	}
 
-	got2, _ := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	got2, err := s.GetOrgAPIKey(ctx, org.ID, key.ID)
+	if err != nil {
+		t.Fatalf("GetOrgAPIKey(after update): %v", err)
+	}
 	if !got2.LastUsedAt.Valid {
 		t.Error("LastUsedAt should be set after UpdateAPIKeyLastUsed")
 	}
@@ -321,5 +352,48 @@ func TestLookupAPIKey_NotFound(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("expected nil for non-existent hash, got %+v", got)
+	}
+}
+
+func TestLookupAPIKeyByHash_ReturnsRevokedKey(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "KeyByHashOrg")
+	user := s.MustCreateUser(t, ctx, "keybyhash@example.com", "KeyByHash", "", 0)
+
+	hash := "byhash_" + uuid.New().String()
+	key, err := s.CreateAPIKey(ctx, org.ID, user.ID, hash, "ByHash Key", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("setup: CreateAPIKey: %v", err)
+	}
+
+	if err := s.RevokeAPIKey(ctx, org.ID, key.ID); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// LookupAPIKey should return nil (revoked keys excluded).
+	got, err := s.LookupAPIKey(ctx, hash)
+	if err != nil {
+		t.Fatalf("LookupAPIKey: %v", err)
+	}
+	if got != nil {
+		t.Error("LookupAPIKey should return nil for revoked key")
+	}
+
+	// LookupAPIKeyByHash should still return the key (includes revoked).
+	gotByHash, err := s.LookupAPIKeyByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("LookupAPIKeyByHash: %v", err)
+	}
+	if gotByHash == nil {
+		t.Fatal("LookupAPIKeyByHash should return revoked key")
+	}
+	if gotByHash.ID != key.ID {
+		t.Errorf("key ID = %v, want %v", gotByHash.ID, key.ID)
+	}
+	if !gotByHash.RevokedAt.Valid {
+		t.Error("RevokedAt should be set")
 	}
 }

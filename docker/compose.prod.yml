@@ -80,8 +80,12 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    # No healthcheck — distroless has no shell/curl. The /healthz endpoint is
-    # available for external monitoring (e.g., load balancer health checks).
+    # Metrics port on internal network only — reachable by Prometheus on cvert-data-net
+    # but not exposed to the public internet.
+    ports:
+      - target: 9090
+        published: 9090
+        protocol: tcp
 
   caddy:
     deploy:

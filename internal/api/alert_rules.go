@@ -266,6 +266,10 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 		FireOnNonMaterialChanges: req.FireOnNonMaterialChanges,
 	})
 	if err != nil {
+		if isUniqueViolation(err) {
+			writeProblem(w, http.StatusConflict, "an alert rule with this name already exists")
+			return
+		}
 		slog.ErrorContext(r.Context(), "create alert rule", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
@@ -827,4 +831,3 @@ func (srv *Server) enqueueActivation(ctx context.Context, orgID, ruleID uuid.UUI
 		slog.ErrorContext(ctx, "enqueue activation job", "rule_id", ruleID, "error", err)
 	}
 }
-

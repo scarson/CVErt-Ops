@@ -37,7 +37,7 @@ func TestRunner_AllTables(t *testing.T) {
 	now := time.Now().UTC()
 	old := now.Add(-100 * 24 * time.Hour)
 	recent := now.Add(-10 * 24 * time.Hour)
-	org, _ := db.CreateOrg(ctx, "RetAllOrg")
+	org := db.MustCreateOrg(t, ctx, "RetAllOrg")
 
 	// Seed cve_raw_payloads.
 	for _, ts := range []time.Time{old, recent} {
@@ -321,8 +321,8 @@ func TestRunner_PerOrgGroup(t *testing.T) {
 	// 200 days old: within enterprise 365d window, outside free 90d window.
 	boundary := now.Add(-200 * 24 * time.Hour)
 
-	orgFree, _ := db.CreateOrg(ctx, "RetFreeOrg")
-	orgEnt, _ := db.CreateOrg(ctx, "RetEntOrg")
+	orgFree := db.MustCreateOrg(t, ctx, "RetFreeOrg")
+	orgEnt := db.MustCreateOrg(t, ctx, "RetEntOrg")
 
 	// Set enterprise tier + retention override on orgEnt.
 	// Tier differentiation comes from tier_overrides, not the tier name itself
@@ -407,8 +407,8 @@ func TestRunner_AuditLogRetention(t *testing.T) {
 	// 200 days old: within enterprise 365d window, outside free 90d window.
 	boundary := now.Add(-200 * 24 * time.Hour)
 
-	orgFree, _ := db.CreateOrg(ctx, "AuditFreeOrg")
-	orgEnt, _ := db.CreateOrg(ctx, "AuditEntOrg")
+	orgFree := db.MustCreateOrg(t, ctx, "AuditFreeOrg")
+	orgEnt := db.MustCreateOrg(t, ctx, "AuditEntOrg")
 
 	// Set enterprise tier + retention override on orgEnt.
 	if err := db.UpdateOrgTier(ctx, orgEnt.ID, "enterprise"); err != nil {
@@ -477,7 +477,7 @@ func TestRunner_AuditLogBatchSize(t *testing.T) {
 
 	now := time.Now().UTC()
 	old := now.Add(-200 * 24 * time.Hour)
-	org, _ := db.CreateOrg(ctx, "AuditBatchOrg")
+	org := db.MustCreateOrg(t, ctx, "AuditBatchOrg")
 
 	// Insert 15 old audit_log entries.
 	for i := 0; i < 15; i++ {
@@ -519,7 +519,7 @@ func TestRunner_UnlimitedRetentionSkipsOrg(t *testing.T) {
 	now := time.Now().UTC()
 	old := now.Add(-500 * 24 * time.Hour) // 500 days old
 
-	org, _ := db.CreateOrg(ctx, "UnlimitedRetOrg")
+	org := db.MustCreateOrg(t, ctx, "UnlimitedRetOrg")
 	if err := db.UpdateOrgTier(ctx, org.ID, "enterprise"); err != nil {
 		t.Fatalf("update tier: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestRunner_AICleanup(t *testing.T) {
 
 	now := time.Now().UTC()
 	old := now.Add(-100 * 24 * time.Hour)
-	org, _ := db.CreateOrg(ctx, "AICleanupOrg")
+	org := db.MustCreateOrg(t, ctx, "AICleanupOrg")
 
 	// Seed ai_request_log, ai_cache, ai_usage_counters.
 	if _, err := db.Pool().Exec(ctx,

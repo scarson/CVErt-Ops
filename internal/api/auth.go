@@ -469,10 +469,19 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	}
 
 	if len(pending) > 0 {
+		// Build MFA requirement reasons for the pending token claims.
+		var reasons []auth.MFARequiredReason
+		for _, p := range pending {
+			if p == "mfa_challenge" || p == "mfa_enrollment_required" {
+				reasons = srv.buildMFARequiredReasons(ctx, user.ID)
+				break
+			}
+		}
+
 		// Issue restricted pending token instead of full auth tokens.
 		pendingToken, ptErr := auth.IssuePendingToken(
 			secret, user.ID, int(user.TokenVersion),
-			pending, methods, srv.cfg.MFAPendingTokenTTL,
+			pending, methods, reasons, srv.cfg.MFAPendingTokenTTL,
 		)
 		if ptErr != nil {
 			slog.ErrorContext(ctx, "login: issue pending token", "error", ptErr)
@@ -908,7 +917,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 			}
 			token, ptErr := auth.IssuePendingToken(
 				srv.jwtSecret(), userID, int(freshUser.TokenVersion),
-				remaining, nil, srv.cfg.MFAPendingTokenTTL,
+				remaining, nil, pendingClaims.Reasons, srv.cfg.MFAPendingTokenTTL,
 			)
 			if ptErr != nil {
 				slog.ErrorContext(ctx, "change-password: reissue pending token", "error", ptErr)

@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -219,5 +220,38 @@ func TestDBLockout_DifferentEmails(t *testing.T) {
 	allowed, _ := m.Check(ctx, "locked@example.com")
 	if allowed {
 		t.Error("expected original email to be locked")
+	}
+}
+
+// failingLockoutStore always returns an error from GetLoginLockoutState.
+type failingLockoutStore struct{}
+
+func (f *failingLockoutStore) RecordLoginFailure(_ context.Context, _ string, _ int) (*store.LoginLockoutState, error) {
+	return nil, fmt.Errorf("simulated DB failure")
+}
+
+func (f *failingLockoutStore) RecordLoginSuccess(_ context.Context, _ string) error {
+	return fmt.Errorf("simulated DB failure")
+}
+
+func (f *failingLockoutStore) GetLoginLockoutState(_ context.Context, _ string) (*store.LoginLockoutState, error) {
+	return nil, fmt.Errorf("simulated DB failure")
+}
+
+// Regression: lockout must fail open on DB errors — rate limiter is secondary defense.
+// This verifies the intentional fail-open behavior documented at lockout.go:53-54
+// to prevent an inadvertent change to fail-closed (which would lock out all users
+// during a database outage).
+func TestDBLockout_FailOpenOnDBError(t *testing.T) {
+	t.Parallel()
+	m := newLockoutManager(&failingLockoutStore{}, 5, 15*time.Minute)
+	ctx := context.Background()
+
+	allowed, retryAfter := m.Check(ctx, "any@example.com")
+	if !allowed {
+		t.Fatal("lockout must fail open on DB errors — got denied")
+	}
+	if retryAfter != 0 {
+		t.Errorf("retryAfter = %v, want 0 on DB error fail-open", retryAfter)
 	}
 }

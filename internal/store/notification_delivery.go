@@ -37,18 +37,13 @@ DO UPDATE SET
 // Uses an explicit transaction so the raw SQL executes on the same connection as the
 // RLS bypass SET LOCAL — s.db.ExecContext would acquire a different pool connection.
 func (s *Store) UpsertDelivery(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("upsert delivery: begin tx: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck
-	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
-		return fmt.Errorf("upsert delivery: set bypass_rls: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds); err != nil {
-		return fmt.Errorf("upsert delivery: %w", err)
-	}
-	return tx.Commit()
+	return s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+		if err != nil {
+			return fmt.Errorf("upsert delivery: %w", err)
+		}
+		return nil
+	})
 }
 
 // ClaimPendingDeliveries atomically claims up to limit pending delivery rows

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -261,7 +262,7 @@ func TestAlertRule_ValidateDSL(t *testing.T) {
 		t.Fatalf("validate valid DSL: got %d, want 200", validResp.StatusCode)
 	}
 	var validResult struct {
-		Valid  bool `json:"valid"`
+		Valid  bool  `json:"valid"`
 		Errors []any `json:"errors"`
 	}
 	if err := json.NewDecoder(validResp.Body).Decode(&validResult); err != nil {
@@ -279,7 +280,7 @@ func TestAlertRule_ValidateDSL(t *testing.T) {
 		t.Fatalf("validate invalid DSL: got %d, want 200", invalidResp.StatusCode)
 	}
 	var invalidResult struct {
-		Valid  bool `json:"valid"`
+		Valid  bool  `json:"valid"`
 		Errors []any `json:"errors"`
 	}
 	if err := json.NewDecoder(invalidResp.Body).Decode(&invalidResult); err != nil {
@@ -2077,5 +2078,40 @@ func TestCreateAlertRule_TierLimit_ProblemType(t *testing.T) {
 				t.Errorf("type = %v, want urn:cvert:error:tier-limit", problem["type"])
 			}
 		}
+	}
+}
+
+// TestCreateAlertRule_DuplicateName verifies that creating an alert rule with a
+// name already used in the same org returns 409 Conflict.
+func TestCreateAlertRule_DuplicateName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp1 := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusAccepted {
+		t.Fatalf("create 1: got %d, want 202", resp1.StatusCode)
+	}
+
+	resp2 := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate name create: got %d, want 409", resp2.StatusCode)
+	}
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if !strings.Contains(problem.Detail, "already exists") {
+		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
 	}
 }

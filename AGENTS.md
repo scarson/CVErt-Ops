@@ -146,6 +146,14 @@ This is a security product — supply chain risk from unmaintained dependencies 
 - YOU MUST NEVER ignore system or test output - logs and messages often contain CRITICAL information.
 - Test output MUST BE PRISTINE TO PASS. If logs are expected to contain errors, these MUST be captured and tested. If a test is intentionally triggering an error, we *must* capture and validate that the error output is as we expect
 
+### Test execution is mandatory — compilation is not verification
+
+- **Tests MUST be executed, not just compiled.** `go build` and `go vet` verify syntax; only `go test` verifies behavior. Code that compiles but was never executed is unverified code.
+- **If Docker Desktop is unavailable** (testcontainers-go requires it for integration tests), this is a **HARD BLOCKER**. Do NOT proceed with "compilation-only verification." Stop and escalate to Sam.
+- **Before merging any branch to `dev`:** run `go test ./... -count=1 -timeout=600s` on the branch. If tests cannot run (Docker down, DB unavailable), do not merge.
+- **Worktree agents**: If you cannot run integration tests in your worktree, report this as a blocker in your progress log and STOP. Do not mark tasks as complete with "compiles, tests not run."
+- **Coordinator rule**: After merging each stage/worktree to `dev`, run the full test suite on `dev` before launching the next stage. Failures from the merge block the next stage.
+
 
 ## Issue tracking
 

@@ -19,8 +19,8 @@ type Config struct {
 	Schedule   string           `yaml:"schedule"`
 	Auth       AuthConfig       `yaml:"auth"`
 	Format     string           `yaml:"format"`     // "json" or "csaf"
-	RateLimit  float64          `yaml:"rate_limit"`  // requests/second, default 1
-	Timeout    string           `yaml:"timeout"`     // duration string, default "30s"
+	RateLimit  float64          `yaml:"rate_limit"` // requests/second, default 1
+	Timeout    string           `yaml:"timeout"`    // duration string, default "30s"
 	Pagination PaginationConfig `yaml:"pagination"`
 	Mapping    MappingConfig    `yaml:"mapping"`
 }
@@ -29,10 +29,10 @@ type Config struct {
 type AuthConfig struct {
 	Type           string `yaml:"type"`             // none | bearer | basic | header
 	TokenEnv       string `yaml:"token_env"`        // env var for bearer token
-	UsernameEnv    string `yaml:"username_env"`      // env var for basic auth username
-	PasswordEnv    string `yaml:"password_env"`      // env var for basic auth password
-	HeaderName     string `yaml:"header_name"`       // custom header name
-	HeaderValueEnv string `yaml:"header_value_env"`  // env var for custom header value
+	UsernameEnv    string `yaml:"username_env"`     // env var for basic auth username
+	PasswordEnv    string `yaml:"password_env"`     // env var for basic auth password
+	HeaderName     string `yaml:"header_name"`      // custom header name
+	HeaderValueEnv string `yaml:"header_value_env"` // env var for custom header value
 }
 
 // PaginationConfig describes how to paginate through feed results.
@@ -54,9 +54,9 @@ type MappingConfig struct {
 // ParseConfig parses a YAML byte slice into a Config, applying defaults.
 func ParseConfig(data []byte) (*Config, error) {
 	cfg := &Config{
-		RateLimit: 1,
-		Timeout:   "30s",
-		Auth:      AuthConfig{Type: "none"},
+		RateLimit:  1,
+		Timeout:    "30s",
+		Auth:       AuthConfig{Type: "none"},
 		Pagination: PaginationConfig{Type: "none"},
 	}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -123,6 +123,21 @@ func (c *Config) Validate() error {
 		// ok
 	default:
 		errs = append(errs, fmt.Sprintf("pagination.type must be none, offset, cursor, or link-header, got %q", c.Pagination.Type))
+	}
+
+	// Dependent field validation for pagination types.
+	switch c.Pagination.Type {
+	case "cursor":
+		if c.Pagination.CursorParam == "" {
+			errs = append(errs, "pagination.cursor_param is required when type is cursor")
+		}
+		if c.Pagination.CursorPath == "" {
+			errs = append(errs, "pagination.cursor_path is required when type is cursor")
+		}
+	case "offset":
+		if c.Pagination.PageParam == "" {
+			errs = append(errs, "pagination.page_param is required when type is offset")
+		}
 	}
 
 	if len(errs) > 0 {

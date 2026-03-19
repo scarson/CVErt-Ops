@@ -1274,12 +1274,12 @@ func TestTestChannel_EmailNoSMTP(t *testing.T) {
 		t.Fatalf("decode create: %v", err)
 	}
 
-	// Test the email channel — SMTPHost is "" in test config, so the error
-	// should clearly mention SMTP rather than a cryptic connection failure.
+	// Test the email channel — SMTPHost is "" in test config, so delivery fails
+	// and the handler returns 502 with a diagnostic response body.
 	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("test channel: got %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("test channel: got %d, want 502", resp.StatusCode)
 	}
 
 	var result testChannelResponse
@@ -1471,5 +1471,106 @@ func TestCreateChannel_TierLimit_ProblemType(t *testing.T) {
 				t.Errorf("type = %v, want urn:cvert:error:tier-limit", problem["type"])
 			}
 		}
+	}
+}
+
+func TestCrossOrg_ChannelAccess(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A with a channel.
+	aliceReg := doRegister(t, ctx, ts, "alice-ch@example.com", "test-password-1234")
+	aliceLoginResp := doLogin(t, ctx, ts, "alice-ch@example.com", "test-password-1234")
+	defer aliceLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLoginResp, "access_token")
+
+	createResp := doCreateChannel(t, ctx, ts, aliceToken, aliceReg.OrgID,
+		`{"name":"Alice Webhook","type":"webhook","config":{"url":"https://example.com/hook"}}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create channel: got %d", createResp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Bob owns org B, tries to access Alice's channel.
+	doRegister(t, ctx, ts, "bob-ch@example.com", "test-password-1234")
+	bobLoginResp := doLogin(t, ctx, ts, "bob-ch@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	t.Run("list channels", func(t *testing.T) {
+		t.Parallel()
+		resp := doListChannels(t, ctx, ts, bobToken, aliceReg.OrgID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org list channels: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("get channel", func(t *testing.T) {
+		t.Parallel()
+		resp := doGetChannel(t, ctx, ts, bobToken, aliceReg.OrgID, created.ID)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org get channel: got %d, want 403", resp.StatusCode)
+		}
+	})
+
+	t.Run("delete channel", func(t *testing.T) {
+		t.Parallel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodDelete,
+			fmt.Sprintf("%s/api/v1/orgs/%s/channels/%s", ts.URL, aliceReg.OrgID, created.ID), nil)
+		req.Header.Set("Cookie", "access_token="+bobToken)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("delete request: %v", err)
+		}
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("cross-org delete channel: got %d, want 403", resp.StatusCode)
+		}
+	})
+}
+
+// TestCreateChannel_DuplicateName verifies that creating a channel with a name
+// already used in the same org returns 409 Conflict.
+func TestCreateChannel_DuplicateName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	resp1 := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer resp1.Body.Close() //nolint:errcheck,gosec // G104
+	if resp1.StatusCode != http.StatusCreated {
+		t.Fatalf("create 1: got %d, want 201", resp1.StatusCode)
+	}
+
+	resp2 := doCreateChannel(t, ctx, ts, token, aliceReg.OrgID, validChannelBody)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("duplicate name create: got %d, want 409", resp2.StatusCode)
+	}
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if !strings.Contains(problem.Detail, "already exists") {
+		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
 	}
 }

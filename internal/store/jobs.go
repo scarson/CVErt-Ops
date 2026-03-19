@@ -80,6 +80,16 @@ func (s *Store) RecoverStaleJobs(ctx context.Context, staleAfter time.Duration) 
 	return len(rows), nil
 }
 
+// CountPendingJobs returns the number of jobs in 'pending' status across all queues.
+func (s *Store) CountPendingJobs(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.pool.QueryRow(ctx, "SELECT count(*) FROM job_queue WHERE status = 'pending'").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count pending jobs: %w", err)
+	}
+	return count, nil
+}
+
 // EnqueueJob inserts a new job into the named queue and returns its ID.
 // lockKey prevents concurrent execution of jobs with the same key.
 // runAfter defaults to now() when nil.

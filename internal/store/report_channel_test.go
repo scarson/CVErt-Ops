@@ -18,7 +18,7 @@ func TestBindChannelToReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg1")
+	org := s.MustCreateOrg(t, ctx, "RCOrg1")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "BindReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "BindChan")
 
@@ -45,7 +45,7 @@ func TestUnbindChannelFromReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg2")
+	org := s.MustCreateOrg(t, ctx, "RCOrg2")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "UnbindReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UnbindChan")
 
@@ -70,7 +70,7 @@ func TestListChannelsForReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg3")
+	org := s.MustCreateOrg(t, ctx, "RCOrg3")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "ListReport")
 	chanID1, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ListChan1")
 	chanID2, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ListChan2")
@@ -96,7 +96,7 @@ func TestListChannelsForReport_ExcludesDeleted(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg4")
+	org := s.MustCreateOrg(t, ctx, "RCOrg4")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DelChanReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DelChan")
 
@@ -122,7 +122,7 @@ func TestListActiveChannelsForDigest(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg5")
+	org := s.MustCreateOrg(t, ctx, "RCOrg5")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DigestReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestChan")
 
@@ -151,7 +151,7 @@ func TestReportChannelBindingExists_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg6")
+	org := s.MustCreateOrg(t, ctx, "RCOrg6")
 
 	exists, err := s.ReportChannelBindingExists(ctx, org.ID, uuid.New(), uuid.New())
 	if err != nil {
@@ -167,7 +167,7 @@ func TestChannelHasActiveBoundReports_NoBoundReports(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg7")
+	org := s.MustCreateOrg(t, ctx, "RCOrg7")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "NoBoundChan")
 
 	has, err := s.ChannelHasActiveBoundReports(ctx, org.ID, chanID)
@@ -184,7 +184,7 @@ func TestChannelHasActiveBoundReports_WithActiveReport(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg8")
+	org := s.MustCreateOrg(t, ctx, "RCOrg8")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "ActiveReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ActiveChan")
 
@@ -206,8 +206,8 @@ func TestReportChannel_CrossOrgIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "RCIsoA")
-	org2, _ := s.CreateOrg(ctx, "RCIsoB")
+	org1 := s.MustCreateOrg(t, ctx, "RCIsoA")
+	org2 := s.MustCreateOrg(t, ctx, "RCIsoB")
 	report := mustCreateScheduledReport(t, s, ctx, org1.ID, "IsoReport")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org1.ID, "IsoChan")
 
@@ -264,7 +264,7 @@ func TestChannelHasActiveBoundReports_PausedAndDeletedExcluded(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCPausedDelOrg")
+	org := s.MustCreateOrg(t, ctx, "RCPausedDelOrg")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "PausedDelChan")
 
 	// Create a paused report and bind the channel.
@@ -316,7 +316,7 @@ func TestChannelHasActiveBindings_ShortCircuitOnRules(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCShortOrg")
+	org := s.MustCreateOrg(t, ctx, "RCShortOrg")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "ShortCircuitChan")
 
 	// Bind to an active rule (not a report).
@@ -351,7 +351,7 @@ func TestListActiveChannelsForDigest_IncludesSecrets(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCSecretOrg")
+	org := s.MustCreateOrg(t, ctx, "RCSecretOrg")
 	report := mustCreateScheduledReport(t, s, ctx, org.ID, "SecretReport")
 	chanID, secret := mustCreateNotificationChannel(t, s, ctx, org.ID, "SecretChan")
 
@@ -388,7 +388,7 @@ func TestChannelHasActiveBindings_BothRulesAndReports(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "RCOrg9")
+	org := s.MustCreateOrg(t, ctx, "RCOrg9")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "UnifiedChan")
 
 	// No bindings: should be false.

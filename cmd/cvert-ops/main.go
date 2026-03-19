@@ -42,6 +42,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
 	"github.com/scarson/cvert-ops/internal/feed/generic"
 	"github.com/scarson/cvert-ops/internal/ingest"
@@ -144,7 +145,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// SIGHUP handler for config hot-reload (Unix only).
 	// This is a SEPARATE signal handler — do NOT add SIGHUP to the NotifyContext above.
-	stopSIGHUP := config.StartSIGHUPHandler(configHolder, cfg.SecretsFile, nil)
+	stopSIGHUP := config.StartSIGHUPHandler(configHolder, cfg.SecretsFile, logLevelReloadCallback(configHolder))
 	defer stopSIGHUP()
 
 	st := store.New(db)
@@ -174,7 +175,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
 	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
-	feedClient := &http.Client{Timeout: 5 * time.Minute}
+	feedClient, err := feed.BuildFeedClient(5*time.Minute, 0)
+	if err != nil {
+		slog.Error("build feed client", "error", err)
+		os.Exit(1)
+	}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
@@ -182,7 +187,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	} else {
 		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
-	epssClient := &http.Client{Timeout: 300 * time.Second} // EPSS downloads ~15MB gzip; allow generous timeout
+	epssClient, err := feed.BuildFeedClient(300*time.Second, 0) // EPSS downloads ~15MB gzip; allow generous timeout
+	if err != nil {
+		return fmt.Errorf("build EPSS feed client: %w", err)
+	}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 
 	// Construct AI/LLM client based on configuration. MockClient is used for
@@ -258,7 +266,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}, smtpCfg, cfg.ExternalURL)
 	deliveryWorker.SetDispatcher(dispatcher)
 	apiSrv.AddHealthCheck(deliveryWorker.Healthy)
-	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	deliveryDone := make(chan struct{})
+	go func() {
+		deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+		close(deliveryDone)
+	}()
 
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
@@ -346,6 +358,15 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
+	// Wait for delivery worker to drain in-flight deliveries before DB close.
+	select {
+	case <-deliveryDone:
+		slog.Info("delivery worker stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("delivery worker did not stop within shutdown timeout")
+	}
+
 	slog.Info("server stopped")
 	return nil
 }
@@ -405,7 +426,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	defer alertDB.Close() //nolint:errcheck // best-effort cleanup on shutdown
 	alertEval := alert.New(alertDB, st, alertCache, slog.Default(), cfg.DBLongStatementTimeoutMS)
 
-	feedClient := &http.Client{Timeout: 5 * time.Minute}
+	feedClient, err := feed.BuildFeedClient(5*time.Minute, 0)
+	if err != nil {
+		slog.Error("build feed client", "error", err)
+		os.Exit(1)
+	}
 	workerPool := worker.New(st)
 	if len(genericConfigs) > 0 {
 		factory := generic.AdapterFactory(genericConfigs)
@@ -413,7 +438,10 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	} else {
 		workerPool.Register("feed_ingest", ingest.HandlerWithAlerts(st, feedClient, merge.Ingest, alertEval))
 	}
-	epssClient := &http.Client{Timeout: 300 * time.Second}
+	epssClient, err := feed.BuildFeedClient(300*time.Second, 0)
+	if err != nil {
+		return fmt.Errorf("build EPSS feed client: %w", err)
+	}
 	workerPool.Register("epss_ingest", ingest.EPSSHandler(st, epss.New(epssClient).Apply))
 	workerPool.Register("alert_activation", activationHandler(alertEval))
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
@@ -443,7 +471,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	}, smtpCfg, cfg.ExternalURL)
 	alertEval.SetDispatcher(dispatcher)
 	deliveryWorker.SetDispatcher(dispatcher)
-	go deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+	deliveryDone := make(chan struct{})
+	go func() {
+		deliveryWorker.Start(ctx) //nolint:contextcheck // ctx is the process-lifetime context
+		close(deliveryDone)
+	}()
 
 	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
@@ -488,6 +520,15 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Wait for delivery worker to drain in-flight deliveries before DB close.
+	select {
+	case <-deliveryDone:
+		slog.Info("delivery worker stopped")
+	case <-shutdownCtx.Done():
+		slog.Warn("delivery worker did not stop within shutdown timeout")
+	}
+
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("metrics server shutdown error", "error", err)
 	}
@@ -792,22 +833,44 @@ func validateConfig(cfg *config.Config) error {
 const expectedSchemaVersion = 39
 
 // newLogger creates a slog.Logger based on the configured log level and format.
-func newLogger(cfg *config.Config) *slog.Logger {
-	level := slog.LevelInfo
-	switch cfg.LogLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	}
+// logLevel is the dynamic log level used by the global logger.
+// Updated at startup and on config reload via SIGHUP.
+var logLevel slog.LevelVar
 
-	opts := &slog.HandlerOptions{Level: level}
+func newLogger(cfg *config.Config) *slog.Logger {
+	logLevel.Set(parseLogLevel(cfg.LogLevel))
+
+	opts := &slog.HandlerOptions{Level: &logLevel}
 	if cfg.LogFormat == "text" || cfg.IsDevelopment() {
 		return slog.New(slog.NewTextHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+// parseLogLevel converts a string level name to an slog.Level.
+func parseLogLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+// logLevelReloadCallback returns a function suitable for the rescan parameter
+// of StartSIGHUPHandler. It reads the log level from the config holder and
+// updates the global log level.
+func logLevelReloadCallback(holder *config.Holder) func() {
+	return func() {
+		if rc := holder.Load(); rc != nil && rc.LogLevel != "" {
+			logLevel.Set(parseLogLevel(rc.LogLevel))
+			slog.Info("log level updated", "level", rc.LogLevel)
+		}
+	}
 }
 
 // poolStatter adapts *pgxpool.Pool to the metrics.PoolStatter interface.

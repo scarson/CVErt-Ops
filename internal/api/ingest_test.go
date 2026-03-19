@@ -331,3 +331,27 @@ func TestIngestHandler_Unauthenticated(t *testing.T) {
 		t.Fatalf("want 401, got %d", resp.StatusCode)
 	}
 }
+
+func TestCrossOrg_IngestAccess(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	// Alice owns org A.
+	aliceReg := doRegister(t, ctx, ts, "alice-ingest@example.com", "test-password-1234")
+
+	// Bob owns org B, tries to ingest to Alice's org.
+	doRegister(t, ctx, ts, "bob-ingest@example.com", "test-password-1234")
+	bobLoginResp := doLogin(t, ctx, ts, "bob-ingest@example.com", "test-password-1234")
+	defer bobLoginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(bobLoginResp, "access_token")
+
+	body := `{"source_name":"custom","patches":[{"cve_id":"CVE-2025-9999","status":"published"}]}`
+	resp := doIngest(t, ctx, ts, bobToken, aliceReg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("cross-org ingest: got %d, want 403", resp.StatusCode)
+	}
+}

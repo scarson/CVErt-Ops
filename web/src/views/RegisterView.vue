@@ -28,16 +28,11 @@ const googleEnabled = ref(false)
 const hasOAuth = ref(false)
 
 onMounted(async () => {
-  try {
-    const resp = await fetch('/api/v1/auth/providers')
-    if (resp.ok) {
-      const data = await resp.json()
-      githubEnabled.value = data.github === true
-      googleEnabled.value = data.google === true
-      hasOAuth.value = githubEnabled.value || googleEnabled.value
-    }
-  } catch {
-    // Providers endpoint unavailable — hide OAuth buttons
+  const { data } = await client.GET('/auth/providers')
+  if (data) {
+    githubEnabled.value = data.github === true
+    googleEnabled.value = data.google === true
+    hasOAuth.value = githubEnabled.value || googleEnabled.value
   }
 })
 

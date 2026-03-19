@@ -67,6 +67,7 @@ func (srv *Server) orgRateLimitMiddleware(next http.Handler) http.Handler {
 			burst = 1
 		}
 		if !srv.orgRL.Allow(orgID, ratePerSec, burst) {
+			w.Header().Set("Retry-After", "60")
 			writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}

@@ -28,9 +28,11 @@ Follow the skill exactly through its Execution and Synthesis sections. This prod
 
 The health review agents are adversarial by design — they look for problems. But adversarial agents also produce false positives, mischaracterize severity, and sometimes flag intentional design decisions as bugs. Every finding needs verification.
 
+**COMPLETENESS REQUIREMENT:** You MUST account for every single finding from every agent report. Before starting cross-validation, enumerate all findings from all 5 agent reports and the synthesis. Every finding must appear in the validated report as one of: confirmed issue, design decision, false positive, or known/already-tracked. **You do NOT get to decide what's "too minor" to include — that's Sam's decision in Phase 3.** Silently dropping findings defeats the entire purpose of the adversarial review.
+
 ### 2a. Verify each finding against actual code
 
-For each finding in the consolidated report:
+For each finding in the consolidated report AND in individual agent reports (agents may have findings the synthesis missed):
 
 1. **Read the actual code** at the cited location. Do not trust the agent's description alone — verify the evidence yourself.
 2. **Check PLAN.md and `dev/research.md`** — is this an intentional design decision? Some "problems" are documented tradeoffs.
@@ -116,6 +118,8 @@ Write to `dev/health-reviews/<date>-<slug>-validated.md`:
 **Where tracked:** <plan file, bug hunt report, or pitfalls doc>
 ```
 
+**COMPLETENESS CHECK:** Before moving on, re-read every agent report and verify that every finding is accounted for in the validated report. Count the findings: the total of confirmed + design decisions + false positives + known/already-tracked MUST equal or exceed the total unique findings across all agent reports. If any are missing, add them now.
+
 After writing the validated report, update your private journal with key observations: what patterns emerged across dimensions, which findings surprised you, what the false-positive rate looked like, and any insights about the project's overall health.
 
 ---
@@ -127,9 +131,10 @@ Present the validated findings to Sam. Structure the presentation as:
 1. **Executive summary** — X confirmed issues (N critical, N major, N minor), Y design decisions needing input, Z false positives, W already-tracked
 2. **Critical issues** — table (title, dimensions, location, fix complexity)
 3. **Major issues** — same format
-4. **Design decisions** — present each with enough context for an informed decision. Think through each in the context of PLAN.md, project roadmap, and current phase. Make recommendations where you have a well-reasoned opinion.
-5. **Already-tracked items** — briefly note these so Sam knows the health review didn't miss them, but no action needed
-6. **Scope question** — ask which issues Sam wants in the fix plan:
+4. **Minor issues** — same format. **Do NOT omit minors.** Sam decides what to prioritize, not you.
+5. **Design decisions** — present each with enough context for an informed decision. Think through each in the context of PLAN.md, project roadmap, and current phase. Make recommendations where you have a well-reasoned opinion.
+6. **Already-tracked items** — briefly note these so Sam knows the health review didn't miss them, but no action needed
+7. **Scope question** — ask which issues Sam wants in the fix plan:
    - All confirmed issues?
    - Critical + major only?
    - Critical only?
@@ -141,7 +146,9 @@ Present the validated findings to Sam. Structure the presentation as:
 
 ## Phase 4: Write Fix Plan
 
-After Sam has provided input, invoke `/writing-plans` to create an implementation plan for the selected issues.
+After Sam has provided input, invoke `/writing-plans` to create an implementation plan for the selected issues. The plan file MUST be saved to `dev/plans/<date>-<slug>-remediation-plan.md` (e.g., `dev/plans/2026-03-18-health-review-remediation-plan.md`).
+
+When `/writing-plans` presents execution options, **include a recommendation** for which approach would be most effective. The three options are: (1) subagent-driven in this session, (2) parallel session with `/executing-plans` in a worktree, or (3) Agent Teams for multi-agent parallel execution. Base the recommendation on: how much context this session has consumed, whether the plan is self-contained enough for a fresh session, how many tasks are parallelizable vs sequential, and whether any tasks are risky enough to warrant focused attention rather than parallel dispatch. Explain the reasoning concisely.
 
 ### Critical requirements for the plan
 

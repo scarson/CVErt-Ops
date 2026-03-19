@@ -47,7 +47,7 @@ func TestWorker_ClaimsAndDeliversPendingRow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	org, _ := s.CreateOrg(ctx, "WorkerDeliverOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerDeliverOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerDeliverRule")
 
 	// Create a channel pointing at the test server.
@@ -104,7 +104,7 @@ func TestWorker_RetryOnNon2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	org, _ := s.CreateOrg(ctx, "WorkerRetryOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerRetryOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerRetryRule")
 
 	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
@@ -157,7 +157,7 @@ func TestWorker_ExhaustsAfterMaxAttempts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	org, _ := s.CreateOrg(ctx, "WorkerExhaustOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerExhaustOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerExhaustRule")
 
 	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
@@ -207,7 +207,7 @@ func TestWorker_ExhaustsIfChannelDeleted(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WorkerDeletedChanOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerDeletedChanOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerDeletedChanRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "WorkerDeletedChanCh")
 
@@ -247,7 +247,7 @@ func TestWorker_ExhaustsUnknownChannelType(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WorkerUnknownTypeOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerUnknownTypeOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerUnknownTypeRule")
 
 	// Create a valid channel, then change the type to an unsupported value via raw SQL
@@ -304,7 +304,7 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WorkerEmailOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerEmailOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerEmailRule")
 
 	// Create an email channel with recipients.
@@ -433,7 +433,7 @@ func TestWorker_BackoffSeconds_ReflectedInSendAfter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	org, _ := s.CreateOrg(ctx, "WorkerBackoffOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerBackoffOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerBackoffRule")
 
 	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
@@ -483,7 +483,7 @@ func TestWorker_StuckReset(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WorkerStuckOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerStuckOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerStuckRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "WorkerStuckChan")
 
@@ -528,7 +528,7 @@ func TestWorker_Recovery_OrphanedEvents(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WorkerRecoveryOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerRecoveryOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerRecoveryRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "WorkerRecoveryChan")
 
@@ -619,7 +619,7 @@ func TestWorker_EmailDigestBranch(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WorkerDigestOrg")
+	org := s.MustCreateOrg(t, ctx, "WorkerDigestOrg")
 
 	// Create an email channel.
 	emailCfg, _ := json.Marshal(map[string]any{
@@ -692,7 +692,7 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 	ctx := context.Background()
 	db := s.DB()
 
-	org, _ := s.CreateOrg(ctx, "DigestE2EOrg")
+	org := s.MustCreateOrg(t, ctx, "DigestE2EOrg")
 
 	// Create an email channel and bind it to a report.
 	emailCfg, _ := json.Marshal(map[string]any{
@@ -807,7 +807,7 @@ func TestWorker_DigestPipeline_SendOnEmptyFalse_NoCVEs(t *testing.T) {
 	ctx := context.Background()
 	db := s.DB()
 
-	org, _ := s.CreateOrg(ctx, "DigestNoSendOrg")
+	org := s.MustCreateOrg(t, ctx, "DigestNoSendOrg")
 
 	emailCfg, _ := json.Marshal(map[string]any{
 		"recipients": []string{"nosend@example.com"},
@@ -873,7 +873,7 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 	ctx := context.Background()
 	db := s.DB()
 
-	org, _ := s.CreateOrg(ctx, "DigestSevOrg")
+	org := s.MustCreateOrg(t, ctx, "DigestSevOrg")
 
 	emailCfg, _ := json.Marshal(map[string]any{
 		"recipients": []string{"sev@example.com"},

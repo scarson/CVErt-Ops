@@ -26,16 +26,15 @@ vi.mock('@/lib/api/client', () => ({
   },
 }))
 
+import client from '@/lib/api/client'
 import { useAuthStore } from '@/stores/auth'
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
+const mockClient = vi.mocked(client)
 
 function mockProvidersResponse(github = true, google = true) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    json: () => Promise.resolve({ github, google, registration_mode: 'open' }),
-  })
+  mockClient.GET.mockResolvedValueOnce({
+    data: { github, google, registration_mode: 'open' },
+  } as any)
 }
 
 async function mountLogin() {
@@ -49,6 +48,7 @@ describe('LoginView', () => {
     localStorage.clear()
     vi.clearAllMocks()
     mockRouteQuery.redirect = undefined
+    mockClient.GET.mockResolvedValue({ data: { github: false, google: false } } as any)
   })
 
   describe('rendering', () => {
@@ -136,7 +136,10 @@ describe('LoginView', () => {
       const auth = useAuthStore()
       let resolveLogin: (value: { success: boolean }) => void
       vi.spyOn(auth, 'login').mockImplementation(
-        () => new Promise((resolve) => { resolveLogin = resolve }),
+        () =>
+          new Promise((resolve) => {
+            resolveLogin = resolve
+          }),
       )
 
       const wrapper = await mountLogin()
@@ -270,7 +273,15 @@ describe('LoginView', () => {
       const originalLocation = window.location.href
       const hrefSetter = vi.fn()
       Object.defineProperty(window, 'location', {
-        value: { ...window.location, get href() { return originalLocation }, set href(v: string) { hrefSetter(v) } },
+        value: {
+          ...window.location,
+          get href() {
+            return originalLocation
+          },
+          set href(v: string) {
+            hrefSetter(v)
+          },
+        },
         writable: true,
         configurable: true,
       })
@@ -290,7 +301,15 @@ describe('LoginView', () => {
       const originalLocation = window.location.href
       const hrefSetter = vi.fn()
       Object.defineProperty(window, 'location', {
-        value: { ...window.location, get href() { return originalLocation }, set href(v: string) { hrefSetter(v) } },
+        value: {
+          ...window.location,
+          get href() {
+            return originalLocation
+          },
+          set href(v: string) {
+            hrefSetter(v)
+          },
+        },
         writable: true,
         configurable: true,
       })

@@ -41,7 +41,7 @@ func TestUpdateOrgTier(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "TierOrg2")
+	org := db.MustCreateOrg(t, ctx, "TierOrg2")
 
 	if err := db.UpdateOrgTier(ctx, org.ID, "pro"); err != nil {
 		t.Fatalf("UpdateOrgTier: %v", err)
@@ -61,8 +61,8 @@ func TestCountAlertRulesByOrg(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "CountRulesOrg")
-	user, _ := db.CreateUser(ctx, "countru@example.com", "Counter", "", 0)
+	org := db.MustCreateOrg(t, ctx, "CountRulesOrg")
+	user := db.MustCreateUser(t, ctx, "countru@example.com", "Counter", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "owner")
 
 	// Create two active rules via AppStore (RLS-constrained).
@@ -107,8 +107,8 @@ func TestCountWatchlistsByOrg(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "CountWLOrg")
-	user, _ := db.CreateUser(ctx, "countwl@example.com", "Counter", "", 0)
+	org := db.MustCreateOrg(t, ctx, "CountWLOrg")
+	user := db.MustCreateUser(t, ctx, "countwl@example.com", "Counter", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "owner")
 
 	// Create two watchlists.
@@ -142,8 +142,8 @@ func TestCountMembersByOrg(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "CountMemOrg")
-	user, _ := db.CreateUser(ctx, "countm@example.com", "Counter", "", 0)
+	org := db.MustCreateOrg(t, ctx, "CountMemOrg")
+	user := db.MustCreateUser(t, ctx, "countm@example.com", "Counter", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "owner")
 
 	// Org creator = 1 member.
@@ -156,7 +156,7 @@ func TestCountMembersByOrg(t *testing.T) {
 	}
 
 	// Add another member.
-	user2, _ := db.CreateUser(ctx, "countm2@example.com", "Counter2", "", 0)
+	user2 := db.MustCreateUser(t, ctx, "countm2@example.com", "Counter2", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user2.ID, "member")
 
 	count, err = db.AppStore.CountMembersByOrg(ctx, org.ID)
@@ -173,8 +173,8 @@ func TestCountMemberSlotsUsedByOrg(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SlotsOrg")
-	user, _ := db.CreateUser(ctx, "slots@example.com", "Slots", "", 0)
+	org := db.MustCreateOrg(t, ctx, "SlotsOrg")
+	user := db.MustCreateUser(t, ctx, "slots@example.com", "Slots", "", 0)
 	_ = db.CreateOrgMember(ctx, org.ID, user.ID, "owner")
 
 	// 1 member, 0 pending invitations → 1 slot used.
@@ -244,7 +244,7 @@ func TestGetOrgTier_WithOverrides(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "OverridesOrg")
+	org := db.MustCreateOrg(t, ctx, "OverridesOrg")
 	_, err := db.Pool().Exec(ctx,
 		`UPDATE organizations SET tier_overrides = '{"max_alert_rules": 99, "channels_email": true}' WHERE id = $1`, org.ID)
 	if err != nil {
@@ -276,8 +276,8 @@ func TestListAllOrgs(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two orgs with different tiers.
-	org1, _ := db.CreateOrg(ctx, "AllOrg1")
-	org2, _ := db.CreateOrg(ctx, "AllOrg2")
+	org1 := db.MustCreateOrg(t, ctx, "AllOrg1")
+	org2 := db.MustCreateOrg(t, ctx, "AllOrg2")
 	_ = db.UpdateOrgTier(ctx, org2.ID, "enterprise")
 
 	// ListAllOrgs uses bypass (cross-org) — called via embedded Store.

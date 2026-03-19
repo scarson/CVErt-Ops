@@ -400,13 +400,23 @@ func TestRequireAuthenticated_ForcePasswordReset_BlocksNonAuthEndpoints(t *testi
 		t.Errorf("force_password_reset on non-auth endpoint: got %d, want 403", rec.Code)
 	}
 
-	// Verify the response body contains the expected error type.
-	var body map[string]string
+	// Verify RFC 9457 response format.
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/problem+json")
+	}
+	var body struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Detail string `json:"detail"`
+	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["type"] != "password_change_required" {
-		t.Errorf("error type = %q, want %q", body["type"], "password_change_required")
+	if body.Type != "password_change_required" {
+		t.Errorf("error type = %q, want %q", body.Type, "password_change_required")
+	}
+	if body.Status != http.StatusForbidden {
+		t.Errorf("error status = %d, want %d", body.Status, http.StatusForbidden)
 	}
 }
 
@@ -533,6 +543,196 @@ func TestRequireAuthenticated_ForcePasswordReset_AllowsMFARoutes(t *testing.T) {
 	}
 }
 
+// TestTryAPIKeyAuth_RevokedKey_401 verifies that a revoked API key returns 401.
+func TestTryAPIKeyAuth_RevokedKey_401(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := db.CreateOrg(ctx, "RevokedKeyOrg")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	user, err := db.CreateUser(ctx, "revokedkey@example.com", "RevokedKey", "", 0)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("create org member: %v", err)
+	}
+	rawKey, keyHash, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("generate api key: %v", err)
+	}
+	apiKey, err := db.CreateAPIKey(ctx, org.ID, user.ID, keyHash, "revoke-me", "member", sql.NullTime{})
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	// Revoke the key.
+	if err := db.RevokeAPIKey(ctx, org.ID, apiKey.ID); err != nil {
+		t.Fatalf("revoke api key: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("revoked API key: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestTryAPIKeyAuth_DisabledUser_401 verifies that an API key owned by a
+// disabled user returns 401.
+func TestTryAPIKeyAuth_DisabledUser_401(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org, err := db.CreateOrg(ctx, "DisabledUserKeyOrg")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	user, err := db.CreateUser(ctx, "disabledkeyuser@example.com", "DisabledKeyUser", "", 0)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, org.ID, user.ID, "member"); err != nil {
+		t.Fatalf("create org member: %v", err)
+	}
+	rawKey, keyHash, err := auth.GenerateAPIKey()
+	if err != nil {
+		t.Fatalf("generate api key: %v", err)
+	}
+	if _, err := db.CreateAPIKey(ctx, org.ID, user.ID, keyHash, "disabled-user-key", "member", sql.NullTime{}); err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	// Disable the user.
+	if _, err := db.AdminDisableUser(ctx, user.ID); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("disabled user API key: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestRequireAuthenticated_DisabledUser_JWT_401 verifies that a JWT for a
+// disabled user returns 401.
+func TestRequireAuthenticated_DisabledUser_JWT_401(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "disabled-jwt@example.com", "DisabledJWT", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	token, err := auth.IssueAccessToken(secret, user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	// Disable the user after token was issued.
+	if _, err := db.AdminDisableUser(ctx, user.ID); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("disabled user JWT: got %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestRequireAuthenticated_PendingToken_RejectedAsAccess verifies that a
+// pending/restricted JWT token is rejected when presented as an access token
+// on a normal (non-pending) endpoint. Pending tokens should only be accepted
+// by the pending-step handlers (MFA challenge, password reset), not by
+// RequireAuthenticated.
+func TestRequireAuthenticated_PendingToken_RejectedAsAccess(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "pending-reject@example.com", "PendingReject", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	secret := []byte("testsecret")
+	// Issue a pending token (not a full access token).
+	pendingToken, err := auth.IssuePendingToken(secret, user.ID, 1, []string{"mfa_challenge"}, []string{"totp"}, nil, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, "testsecret", db)
+	var reached bool
+	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Present the pending token on a normal protected endpoint.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/orgs/some-org/cves", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: pendingToken})
+	handler.ServeHTTP(rec, req)
+
+	// The pending token must NOT grant access to normal endpoints.
+	// ParseAccessToken rejects tokens with token_type != "access".
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("pending token on normal endpoint: got %d, want 401", rec.Code)
+	}
+	if reached {
+		t.Error("handler was reached with a pending token — MFA bypass")
+	}
+}
+
 // TestRequireAuthenticated_ReadsFromConfigHolder verifies that JWT parsing reads
 // from the hot-reloadable configHolder, not from the static startup config.
 func TestRequireAuthenticated_ReadsFromConfigHolder(t *testing.T) {
@@ -554,7 +754,10 @@ func TestRequireAuthenticated_ReadsFromConfigHolder(t *testing.T) {
 		JWTSecret: []byte(originalSecret),
 	})
 	cfg := &config.Config{JWTSecret: originalSecret} //nolint:exhaustruct // test: only JWT secret needed
-	srv, _ := NewServer(db.Store, cfg, ServerDeps{ConfigHolder: holder})
+	srv, err := NewServer(db.Store, cfg, ServerDeps{ConfigHolder: holder})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	t.Cleanup(srv.Close)
 
 	handler := srv.RequireAuthenticated()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

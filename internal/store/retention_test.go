@@ -90,8 +90,8 @@ func TestCleanupAlertEvents_OrgFilter(t *testing.T) {
 	oldTime := now.Add(-400 * 24 * time.Hour)
 
 	// Create two orgs with alert rules.
-	org1, _ := db.CreateOrg(ctx, "RetentionOrg1")
-	org2, _ := db.CreateOrg(ctx, "RetentionOrg2")
+	org1 := db.MustCreateOrg(t, ctx, "RetentionOrg1")
+	org2 := db.MustCreateOrg(t, ctx, "RetentionOrg2")
 
 	// Create alert rules (FK requirement).
 	var ruleID1, ruleID2 uuid.UUID
@@ -158,8 +158,8 @@ func TestCleanupNotificationDeliveries_OrgFilter(t *testing.T) {
 	now := time.Now().UTC()
 	oldTime := now.Add(-100 * 24 * time.Hour)
 
-	org1, _ := db.CreateOrg(ctx, "NotifRetOrg1")
-	org2, _ := db.CreateOrg(ctx, "NotifRetOrg2")
+	org1 := db.MustCreateOrg(t, ctx, "NotifRetOrg1")
+	org2 := db.MustCreateOrg(t, ctx, "NotifRetOrg2")
 
 	// Create alert rules and channels (FK requirements).
 	var ruleID1, ruleID2 uuid.UUID
@@ -235,8 +235,8 @@ func TestCleanupAuditLog_OrgFilter(t *testing.T) {
 	oldTime := now.Add(-400 * 24 * time.Hour)
 	recentTime := now.Add(-10 * 24 * time.Hour)
 
-	org1, _ := db.CreateOrg(ctx, "AuditRetOrg1")
-	org2, _ := db.CreateOrg(ctx, "AuditRetOrg2")
+	org1 := db.MustCreateOrg(t, ctx, "AuditRetOrg1")
+	org2 := db.MustCreateOrg(t, ctx, "AuditRetOrg2")
 
 	// Insert old entries for both orgs + one recent entry for org1.
 	for _, p := range []struct {
@@ -404,7 +404,7 @@ func TestCleanupAIRequestLog(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC()
-	org, _ := db.CreateOrg(ctx, "AILogRetOrg")
+	org := db.MustCreateOrg(t, ctx, "AILogRetOrg")
 
 	// Insert old and recent request log entries.
 	if _, err := db.Pool().Exec(ctx,
@@ -438,7 +438,7 @@ func TestCleanupAICache_TTL(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC()
-	org, _ := db.CreateOrg(ctx, "AICacheRetOrg")
+	org := db.MustCreateOrg(t, ctx, "AICacheRetOrg")
 
 	// Insert expired and non-expired cache entries.
 	if _, err := db.Pool().Exec(ctx,
@@ -471,7 +471,7 @@ func TestCleanupAIUsageCounters_DailyOnly(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC()
-	org, _ := db.CreateOrg(ctx, "AIUsageRetOrg")
+	org := db.MustCreateOrg(t, ctx, "AIUsageRetOrg")
 
 	oldDate := now.AddDate(0, 0, -100)
 	recentDate := now.AddDate(0, 0, -10)

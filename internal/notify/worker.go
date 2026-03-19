@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wneessen/go-mail"
 
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -41,7 +42,7 @@ type Worker struct {
 	externalURL  string
 	log          *slog.Logger
 	sems         map[uuid.UUID]chan struct{} // per-org semaphores, lazy-init
-	semsLastUsed map[uuid.UUID]time.Time    // last use time per org semaphore
+	semsLastUsed map[uuid.UUID]time.Time     // last use time per org semaphore
 	semsMu       sync.Mutex
 	wg           sync.WaitGroup
 	dispatcher   *Dispatcher
@@ -344,8 +345,9 @@ func (e *permanentDeliveryError) Error() string { return e.err.Error() }
 func (e *permanentDeliveryError) Unwrap() error { return e.err }
 
 // isPermanentDeliveryError returns true if the error is known to be permanent
-// and retrying will never succeed. Covers both Go-level config errors (wrapped
-// with permanentDeliveryError) and SMTP 5xx responses.
+// and retrying will never succeed. Covers Go-level config errors (wrapped with
+// permanentDeliveryError), go-mail typed SendError with SMTP 5xx status, and
+// fallback string matching for non-go-mail SMTP errors.
 func isPermanentDeliveryError(err error) bool {
 	if err == nil {
 		return false
@@ -354,7 +356,16 @@ func isPermanentDeliveryError(err error) bool {
 	if errors.As(err, &pe) {
 		return true
 	}
-	// SMTP 5xx codes indicate permanent failures (mailbox doesn't exist, relay denied, etc.).
+	// go-mail exposes a typed SendError with IsTemp() and ErrorCode().
+	var se *mail.SendError
+	if errors.As(err, &se) {
+		// IsTemp() returns false for permanent SMTP errors (5xx).
+		// ErrorCode() returns the SMTP status code (e.g., 550).
+		if !se.IsTemp() && se.ErrorCode() >= 500 {
+			return true
+		}
+	}
+	// Fallback: string matching for SMTP 5xx codes from non-go-mail sources.
 	msg := err.Error()
 	for _, code := range []string{"550 ", "551 ", "552 ", "553 ", "554 ", "555 "} {
 		if strings.Contains(msg, code) {

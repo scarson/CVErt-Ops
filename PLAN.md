@@ -1484,7 +1484,7 @@ Never use `[0]` (leftmost). Never trust `X-Real-IP` without also validating `r.R
 
 ### 17.1 Bulk Import CLI (`import-bulk`)
 
-The `cvert-ops import-bulk` cobra subcommand handles initial population of a new instance from bulk data files. It is a one-time operation (or run again when a full re-sync is needed) and does not affect normal incremental polling.
+The `cvert-ops import-bulk` cobra subcommand loads CVE data from local files (captured feed snapshots, golden test fixtures) into the database. Primary use cases: (1) seeding a development environment from the test fixture corpus (see Phase 10 plan), (2) offline/airgapped deployments where API access is unavailable. NOT the primary mechanism for initial production data population — use the feed adapters' normal API sync for that. Can be re-run when a full re-sync is needed; does not affect normal incremental polling.
 
 ```
 cvert-ops import-bulk --source nvd --input /path/to/nvdcve-1.1-2024.json.gz
@@ -1559,7 +1559,7 @@ The CVErt Ops binary uses cobra for CLI subcommands:
 - `cvert-ops serve` (default) — runs HTTP server + worker pool in one process. Suitable for self-hosted single-instance deployments.
 - `cvert-ops worker` — runs standalone worker pool only. For SaaS scaling where API and workers run separately.
 - `cvert-ops migrate` — runs pending database migrations and exits.
-- `cvert-ops import-bulk` — imports a bulk data file for a given feed source (see section 17.1). Used for initial instance population; exits on completion.
+- `cvert-ops import-bulk` — imports a bulk data file for a given feed source (see section 17.1). Used for development seeding and airgapped deployments; exits on completion.
 
 **Graceful shutdown:**
 - On SIGTERM/SIGINT: stop accepting new HTTP requests and new jobs

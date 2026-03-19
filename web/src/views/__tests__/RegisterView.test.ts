@@ -30,14 +30,10 @@ import { useAuthStore } from '@/stores/auth'
 
 const mockClient = vi.mocked(client)
 
-const mockFetch = vi.fn()
-vi.stubGlobal('fetch', mockFetch)
-
 function mockProvidersResponse(github = true, google = true) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    json: () => Promise.resolve({ github, google, registration_mode: 'open' }),
-  })
+  mockClient.GET.mockResolvedValueOnce({
+    data: { github, google, registration_mode: 'open' },
+  } as any)
 }
 
 async function mountRegister() {
@@ -50,6 +46,7 @@ describe('RegisterView', () => {
     setActivePinia(createPinia())
     localStorage.clear()
     vi.clearAllMocks()
+    mockClient.GET.mockResolvedValue({ data: { github: false, google: false } } as any)
   })
 
   describe('rendering', () => {
@@ -259,7 +256,10 @@ describe('RegisterView', () => {
     it('disables register button while submitting', async () => {
       let resolvePost: (value: unknown) => void
       vi.mocked(mockClient.POST).mockImplementation(
-        () => new Promise((resolve) => { resolvePost = resolve }) as any,
+        () =>
+          new Promise((resolve) => {
+            resolvePost = resolve
+          }) as any,
       )
 
       const wrapper = await mountRegister()

@@ -14,9 +14,12 @@ func TestQuotaCmd_SetAndGet(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
-	org, _ := s.CreateOrg(ctx, "Quota CLI Test Org")
+	org, err := s.CreateOrg(ctx, "Quota CLI Test Org")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg: %v", err)
+	}
 
-	err := s.SetAIQuotaOverride(ctx, org.ID, "nl_search", 500)
+	err = s.SetAIQuotaOverride(ctx, org.ID, "nl_search", 500)
 	if err != nil {
 		t.Fatalf("SetAIQuotaOverride: %v", err)
 	}
@@ -48,17 +51,23 @@ func TestQuotaCmd_Delete(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
-	org, _ := s.CreateOrg(ctx, "Quota Delete Test Org")
+	org, err := s.CreateOrg(ctx, "Quota Delete Test Org")
+	if err != nil {
+		t.Fatalf("setup: CreateOrg: %v", err)
+	}
 
 	if err := s.SetAIQuotaOverride(ctx, org.ID, "summarize", 100); err != nil {
 		t.Fatalf("SetAIQuotaOverride: %v", err)
 	}
-	err := s.DeleteAIQuotaOverride(ctx, org.ID, "summarize")
+	err = s.DeleteAIQuotaOverride(ctx, org.ID, "summarize")
 	if err != nil {
 		t.Fatalf("DeleteAIQuotaOverride: %v", err)
 	}
 
-	_, ok, _ := s.GetAIQuotaOverride(ctx, org.ID, "summarize")
+	_, ok, err := s.GetAIQuotaOverride(ctx, org.ID, "summarize")
+	if err != nil {
+		t.Fatalf("GetAIQuotaOverride: %v", err)
+	}
 	if ok {
 		t.Error("expected override to be deleted")
 	}

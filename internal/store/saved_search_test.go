@@ -17,8 +17,8 @@ func TestSavedSearch_Create(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSCreateOrg")
-	user, _ := s.CreateUser(ctx, "sscreate@example.com", "SSCreate", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSCreateOrg")
+	user := s.MustCreateUser(t, ctx, "sscreate@example.com", "SSCreate", "", 0)
 
 	row, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
@@ -68,8 +68,8 @@ func TestSavedSearch_Get(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSGetOrg")
-	user, _ := s.CreateUser(ctx, "ssget@example.com", "SSGet", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSGetOrg")
+	user := s.MustCreateUser(t, ctx, "ssget@example.com", "SSGet", "", 0)
 
 	created, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
@@ -101,7 +101,7 @@ func TestSavedSearch_Get_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSGetNFOrg")
+	org := s.MustCreateOrg(t, ctx, "SSGetNFOrg")
 
 	got, err := s.GetSavedSearch(ctx, org.ID, uuid.New())
 	if err != nil {
@@ -117,8 +117,8 @@ func TestSavedSearch_Update(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSUpdateOrg")
-	user, _ := s.CreateUser(ctx, "ssupdate@example.com", "SSUpdate", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSUpdateOrg")
+	user := s.MustCreateUser(t, ctx, "ssupdate@example.com", "SSUpdate", "", 0)
 
 	created, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
@@ -161,8 +161,8 @@ func TestSavedSearch_SoftDelete(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSDeleteOrg")
-	user, _ := s.CreateUser(ctx, "ssdelete@example.com", "SSDelete", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSDeleteOrg")
+	user := s.MustCreateUser(t, ctx, "ssdelete@example.com", "SSDelete", "", 0)
 
 	created, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
@@ -192,9 +192,9 @@ func TestSavedSearch_List_Private(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSListPrivOrg")
-	user1, _ := s.CreateUser(ctx, "sslist1@example.com", "SSList1", "", 0)
-	user2, _ := s.CreateUser(ctx, "sslist2@example.com", "SSList2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSListPrivOrg")
+	user1 := s.MustCreateUser(t, ctx, "sslist1@example.com", "SSList1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "sslist2@example.com", "SSList2", "", 0)
 
 	// User1 creates a private search.
 	_, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
@@ -236,9 +236,9 @@ func TestSavedSearch_List_Shared(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSListSharedOrg")
-	user1, _ := s.CreateUser(ctx, "ssshared1@example.com", "SSShared1", "", 0)
-	user2, _ := s.CreateUser(ctx, "ssshared2@example.com", "SSShared2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSListSharedOrg")
+	user1 := s.MustCreateUser(t, ctx, "ssshared1@example.com", "SSShared1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "ssshared2@example.com", "SSShared2", "", 0)
 
 	// User1 creates a shared search.
 	_, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
@@ -280,31 +280,37 @@ func TestSavedSearch_List_Visibility_Filter(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSListVisOrg")
-	user1, _ := s.CreateUser(ctx, "ssvis1@example.com", "SSVis1", "", 0)
-	user2, _ := s.CreateUser(ctx, "ssvis2@example.com", "SSVis2", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSListVisOrg")
+	user1 := s.MustCreateUser(t, ctx, "ssvis1@example.com", "SSVis1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "ssvis2@example.com", "SSVis2", "", 0)
 
 	// User1: one private, one shared.
-	_, _ = s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
+	if _, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user1.ID, Valid: true},
 		Name:      "U1 Private",
 		QueryJSON: json.RawMessage(`{}`),
 		IsShared:  false,
-	})
-	_, _ = s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
+	}); err != nil {
+		t.Fatalf("setup: CreateSavedSearch(U1 Private): %v", err)
+	}
+	if _, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user1.ID, Valid: true},
 		Name:      "U1 Shared",
 		QueryJSON: json.RawMessage(`{}`),
 		IsShared:  true,
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateSavedSearch(U1 Shared): %v", err)
+	}
 
 	// User2: one private.
-	_, _ = s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
+	if _, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user2.ID, Valid: true},
 		Name:      "U2 Private",
 		QueryJSON: json.RawMessage(`{}`),
 		IsShared:  false,
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateSavedSearch(U2 Private): %v", err)
+	}
 
 	// "all" for user1: should see U1 Private + U1 Shared (own private + all shared).
 	all, err := s.ListSavedSearches(ctx, org.ID, user1.ID, "all", 200)
@@ -351,9 +357,9 @@ func TestSavedSearch_CleanupOrphanedPrivate(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSCleanupOrg")
-	user, _ := s.CreateUser(ctx, "sscleanup@example.com", "SSCleanup", "", 0)
-	otherUser, _ := s.CreateUser(ctx, "ssother@example.com", "SSOther", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSCleanupOrg")
+	user := s.MustCreateUser(t, ctx, "sscleanup@example.com", "SSCleanup", "", 0)
+	otherUser := s.MustCreateUser(t, ctx, "ssother@example.com", "SSOther", "", 0)
 
 	// User's private search.
 	_, err := s.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
@@ -427,8 +433,8 @@ func TestCreateSavedSearch_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "SSCreateRLS")
-	user, _ := s.CreateUser(ctx, "sscreaterls@example.com", "SSCreateRLS", "", 0)
+	org := s.MustCreateOrg(t, ctx, "SSCreateRLS")
+	user := s.MustCreateUser(t, ctx, "sscreaterls@example.com", "SSCreateRLS", "", 0)
 
 	// Create via AppStore — WITH CHECK clause requires matching org_id.
 	row, err := s.AppStore.CreateSavedSearch(ctx, org.ID, store.CreateSavedSearchParams{
@@ -453,9 +459,9 @@ func TestGetSavedSearch_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "SSGetRLS1")
-	org2, _ := s.CreateOrg(ctx, "SSGetRLS2")
-	user, _ := s.CreateUser(ctx, "ssgetrls@example.com", "SSGetRLS", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "SSGetRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "SSGetRLS2")
+	user := s.MustCreateUser(t, ctx, "ssgetrls@example.com", "SSGetRLS", "", 0)
 
 	// Create a search for org1 via superuser store.
 	created, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
@@ -492,23 +498,27 @@ func TestListSavedSearches_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "SSListRLS1")
-	org2, _ := s.CreateOrg(ctx, "SSListRLS2")
-	user, _ := s.CreateUser(ctx, "sslistrls@example.com", "SSListRLS", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "SSListRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "SSListRLS2")
+	user := s.MustCreateUser(t, ctx, "sslistrls@example.com", "SSListRLS", "", 0)
 
 	// Create searches in both orgs via superuser store.
-	_, _ = s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
+	if _, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
 		Name:      "Org1 Shared",
 		QueryJSON: json.RawMessage(`{}`),
 		IsShared:  true,
-	})
-	_, _ = s.CreateSavedSearch(ctx, org2.ID, store.CreateSavedSearchParams{
+	}); err != nil {
+		t.Fatalf("setup: CreateSavedSearch(Org1): %v", err)
+	}
+	if _, err := s.CreateSavedSearch(ctx, org2.ID, store.CreateSavedSearchParams{
 		UserID:    uuid.NullUUID{UUID: user.ID, Valid: true},
 		Name:      "Org2 Shared",
 		QueryJSON: json.RawMessage(`{}`),
 		IsShared:  true,
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateSavedSearch(Org2): %v", err)
+	}
 
 	// AppStore with org1 context — should only see org1's search.
 	rows, err := s.AppStore.ListSavedSearches(ctx, org1.ID, user.ID, "all", 200)
@@ -528,9 +538,9 @@ func TestUpdateSavedSearch_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "SSUpdRLS1")
-	org2, _ := s.CreateOrg(ctx, "SSUpdRLS2")
-	user, _ := s.CreateUser(ctx, "ssupdrls@example.com", "SSUpdRLS", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "SSUpdRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "SSUpdRLS2")
+	user := s.MustCreateUser(t, ctx, "ssupdrls@example.com", "SSUpdRLS", "", 0)
 
 	// Create a search for org1.
 	created, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{
@@ -578,9 +588,9 @@ func TestSoftDeleteSavedSearch_AppStoreRLS(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "SSDelRLS1")
-	org2, _ := s.CreateOrg(ctx, "SSDelRLS2")
-	user, _ := s.CreateUser(ctx, "ssdelrls@example.com", "SSDelRLS", "", 0)
+	org1 := s.MustCreateOrg(t, ctx, "SSDelRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "SSDelRLS2")
+	user := s.MustCreateUser(t, ctx, "ssdelrls@example.com", "SSDelRLS", "", 0)
 
 	// Create a search for org1.
 	created, err := s.CreateSavedSearch(ctx, org1.ID, store.CreateSavedSearchParams{

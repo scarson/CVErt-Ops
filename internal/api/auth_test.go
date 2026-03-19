@@ -18,6 +18,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -1463,3 +1464,72 @@ func TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion(t *te
 
 // Suppress unused import warning for time (used in tests above).
 var _ = time.Now
+
+// ── P11 Task 7: Refresh token reuse event emission ─────────────────────────
+
+func TestRefresh_TokenReuse_EmitsSecurityEvent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "regtestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		MFAPendingTokenTTL:  5 * time.Minute,
+	}
+	ew := secure.NewEventWriter(db.Store)
+	srv, err := NewServer(db.Store, cfg, ServerDeps{EventWriter: ew})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+
+	doRegister(t, ctx, ts, "reusevent@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "reusevent@example.com", "test-password-1234")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+	firstRefreshToken := cookieValue(loginResp, "refresh_token")
+
+	// First refresh: consumes the token.
+	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
+	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	resp1, err := ts.Client().Do(req1) //nolint:gosec
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	resp1.Body.Close() //nolint:errcheck,gosec
+
+	// Backdate used_at to simulate grace window expiry.
+	oldClaims, err := auth.ParseRefreshToken(firstRefreshToken, []byte("regtestsecret"), nil)
+	if err != nil {
+		t.Fatalf("parse refresh token: %v", err)
+	}
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE refresh_tokens SET used_at = now() - interval '2 minutes' WHERE jti = $1",
+		oldClaims.JTI); err != nil {
+		t.Fatalf("backdate used_at: %v", err)
+	}
+
+	// Re-use the token after grace window — theft detected → 401.
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
+	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	resp2, err := ts.Client().Do(req2) //nolint:gosec
+	if err != nil {
+		t.Fatalf("theft re-use: %v", err)
+	}
+	defer resp2.Body.Close() //nolint:errcheck,gosec
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("theft detection: got %d, want 401", resp2.StatusCode)
+	}
+
+	// Verify EventAuthTokenReuseDetected was emitted.
+	events := flushAndQueryEvents(t, ew, db, secure.EventAuthTokenReuseDetected)
+	if len(events) == 0 {
+		t.Error("expected EventAuthTokenReuseDetected event")
+	}
+	if len(events) > 0 && events[0]["severity"] != "critical" {
+		t.Errorf("event severity = %q, want critical", events[0]["severity"])
+	}
+}

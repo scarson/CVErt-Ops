@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/ingest"
 	"github.com/scarson/cvert-ops/internal/merge"
@@ -50,8 +51,8 @@ type ingestPatch struct {
 
 // ingestRef is a reference URL in the ingest request.
 type ingestRef struct {
-	URL    string   `json:"url"`
-	Tags   []string `json:"tags,omitempty"`
+	URL  string   `json:"url"`
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ingestResponse is the JSON response for POST /api/v1/orgs/{org_id}/ingest.
@@ -160,6 +161,14 @@ func (srv *Server) ingestHandler(w http.ResponseWriter, r *http.Request) {
 	if resp.Accepted == 0 {
 		statusCode = http.StatusBadRequest
 	}
+
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "ingest",
+		Success:    resp.Accepted > 0,
+		NewState:   map[string]any{"source_name": req.SourceName, "patch_count": len(req.Patches), "accepted": resp.Accepted, "rejected": resp.Rejected},
+	})
 
 	writeJSON(w, statusCode, resp)
 }

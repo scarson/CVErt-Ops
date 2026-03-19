@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/secure"
 )
@@ -134,17 +135,26 @@ func (srv *Server) createAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 
 	if srv.eventWriter != nil {
 		srv.eventWriter.Write(r.Context(), secure.Event{
-			Type:       secure.EventAuthAPIKeyCreated,
-			Severity:   secure.SeverityInfo,
-			ActorIP:    clientIP(r.Context()),
-			UserID:     &callerID,
-			OrgID:      &orgID,
-			Details:    map[string]any{"key_name": req.Name, "role": req.Role},
+			Type:     secure.EventAuthAPIKeyCreated,
+			Severity: secure.SeverityInfo,
+			ActorIP:  clientIP(r.Context()),
+			UserID:   &callerID,
+			OrgID:    &orgID,
+			Details:  map[string]any{"key_name": req.Name, "role": req.Role},
 		})
 	}
 
 	writeLocation(w, r, key.ID.String())
 	writeJSON(w, http.StatusCreated, out)
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "create",
+		EntityType: "api_key",
+		EntityID:   key.ID.String(),
+		EntityName: key.Name,
+		Success:    true,
+		NewState:   map[string]any{"name": req.Name, "role": req.Role, "expires_at": req.ExpiresAt},
+	})
 }
 
 // listAPIKeysHandler handles GET /api/v1/orgs/{org_id}/api-keys.
@@ -233,5 +243,12 @@ func (srv *Server) revokeAPIKeyHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	srv.auditLog(r, audit.Entry{
+		OrgID:      orgID,
+		Action:     "revoke",
+		EntityType: "api_key",
+		EntityID:   keyID.String(),
+		Success:    true,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }

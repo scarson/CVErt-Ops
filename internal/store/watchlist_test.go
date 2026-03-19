@@ -27,7 +27,7 @@ func TestCreateAndGetWatchlist(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg1")
+	org := s.MustCreateOrg(t, ctx, "WLOrg1")
 
 	w, err := s.CreateWatchlist(ctx, org.ID, uuid.NullUUID{}, "My List", sql.NullString{Valid: true, String: "desc"})
 	if err != nil {
@@ -60,8 +60,8 @@ func TestGetWatchlist_WrongOrgReturnsNil(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "WLOrg2a")
-	org2, _ := s.CreateOrg(ctx, "WLOrg2b")
+	org1 := s.MustCreateOrg(t, ctx, "WLOrg2a")
+	org2 := s.MustCreateOrg(t, ctx, "WLOrg2b")
 	w := mustCreateWatchlist(t, s, ctx, org1.ID, "List A")
 
 	got, err := s.GetWatchlist(ctx, org2.ID, w.ID)
@@ -78,7 +78,7 @@ func TestSoftDeleteWatchlist(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg3")
+	org := s.MustCreateOrg(t, ctx, "WLOrg3")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "ToDelete")
 
 	if err := s.DeleteWatchlist(ctx, org.ID, w.ID); err != nil {
@@ -99,7 +99,7 @@ func TestUpdateWatchlist(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg4")
+	org := s.MustCreateOrg(t, ctx, "WLOrg4")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "Original")
 
 	updated, err := s.UpdateWatchlist(ctx, org.ID, w.ID, store.UpdateWatchlistParams{
@@ -123,7 +123,7 @@ func TestUpdateWatchlist_NotFound(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg4b")
+	org := s.MustCreateOrg(t, ctx, "WLOrg4b")
 
 	updated, err := s.UpdateWatchlist(ctx, org.ID, uuid.New(), store.UpdateWatchlistParams{Name: "X"})
 	if err != nil {
@@ -139,7 +139,7 @@ func TestCreateWatchlistItem_Package(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg5")
+	org := s.MustCreateOrg(t, ctx, "WLOrg5")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "PkgList")
 
 	item, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
@@ -171,7 +171,7 @@ func TestCreateWatchlistItem_CPE(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg6")
+	org := s.MustCreateOrg(t, ctx, "WLOrg6")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "CPEList")
 
 	item, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
@@ -191,7 +191,7 @@ func TestCreateWatchlistItem_DuplicateConflict(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg7")
+	org := s.MustCreateOrg(t, ctx, "WLOrg7")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "DupList")
 
 	p := store.CreateWatchlistItemParams{
@@ -213,20 +213,26 @@ func TestDeleteWatchlistItem(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg8")
+	org := s.MustCreateOrg(t, ctx, "WLOrg8")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "ItemDel")
 
-	item, _ := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	item, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType:    "package",
 		Ecosystem:   strPtr("pypi"),
 		PackageName: strPtr("requests"),
 	})
+	if err != nil {
+		t.Fatalf("setup: CreateWatchlistItem: %v", err)
+	}
 
 	if _, err := s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID); err != nil {
 		t.Fatalf("DeleteWatchlistItem: %v", err)
 	}
 
-	count, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	count, err := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("CountWatchlistItems: %v", err)
+	}
 	if count != 0 {
 		t.Errorf("ItemCount after delete = %d, want 0", count)
 	}
@@ -237,15 +243,19 @@ func TestListWatchlistItems_ItemTypeFilter(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg9")
+	org := s.MustCreateOrg(t, ctx, "WLOrg9")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "MixedList")
 
-	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	if _, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "cpe", CpeNormalized: strPtr("cpe:2.3:a:a:b:1.0:*:*:*:*:*:*:*"),
-	})
-	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(cpe): %v", err)
+	}
+	if _, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("axios"),
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(package): %v", err)
+	}
 
 	pkgType := store.WatchlistItemType("package")
 	itemsAll, err := s.ListWatchlistItems(ctx, org.ID, w.ID, nil, nil, 10)
@@ -273,7 +283,7 @@ func TestListWatchlists_KeysetPagination(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg10")
+	org := s.MustCreateOrg(t, ctx, "WLOrg10")
 	for range 5 {
 		mustCreateWatchlist(t, s, ctx, org.ID, uuid.NewString())
 	}
@@ -311,8 +321,8 @@ func TestValidateWatchlistsOwnership(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "WLOrg11a")
-	org2, _ := s.CreateOrg(ctx, "WLOrg11b")
+	org1 := s.MustCreateOrg(t, ctx, "WLOrg11a")
+	org2 := s.MustCreateOrg(t, ctx, "WLOrg11b")
 	w1 := mustCreateWatchlist(t, s, ctx, org1.ID, "Org1List")
 	w2 := mustCreateWatchlist(t, s, ctx, org2.ID, "Org2List")
 
@@ -346,8 +356,8 @@ func TestListWatchlists_RLSIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "WLRLSOrg1")
-	org2, _ := s.CreateOrg(ctx, "WLRLSOrg2")
+	org1 := s.MustCreateOrg(t, ctx, "WLRLSOrg1")
+	org2 := s.MustCreateOrg(t, ctx, "WLRLSOrg2")
 	mustCreateWatchlist(t, s, ctx, org1.ID, "Org1-List")
 	mustCreateWatchlist(t, s, ctx, org2.ID, "Org2-List")
 
@@ -381,17 +391,21 @@ func TestListWatchlistItems_RLSIsolation(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "WLItemRLS1")
-	org2, _ := s.CreateOrg(ctx, "WLItemRLS2")
+	org1 := s.MustCreateOrg(t, ctx, "WLItemRLS1")
+	org2 := s.MustCreateOrg(t, ctx, "WLItemRLS2")
 	w1 := mustCreateWatchlist(t, s, ctx, org1.ID, "Org1-Items")
 	w2 := mustCreateWatchlist(t, s, ctx, org2.ID, "Org2-Items")
 
-	_, _ = s.CreateWatchlistItem(ctx, org1.ID, w1.ID, store.CreateWatchlistItemParams{
+	if _, err := s.CreateWatchlistItem(ctx, org1.ID, w1.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("express"),
-	})
-	_, _ = s.CreateWatchlistItem(ctx, org2.ID, w2.ID, store.CreateWatchlistItemParams{
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(org1): %v", err)
+	}
+	if _, err := s.CreateWatchlistItem(ctx, org2.ID, w2.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("pypi"), PackageName: strPtr("django"),
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(org2): %v", err)
+	}
 
 	items, err := s.AppStore.ListWatchlistItems(ctx, org1.ID, w1.ID, nil, nil, 10)
 	if err != nil {
@@ -407,18 +421,25 @@ func TestDeleteWatchlist_ItemCountDropsToZero(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg12")
+	org := s.MustCreateOrg(t, ctx, "WLOrg12")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "CascadeList")
 
 	// Add items.
-	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	if _, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("lodash"),
-	})
-	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(lodash): %v", err)
+	}
+	if _, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "cpe", CpeNormalized: strPtr("cpe:2.3:a:v:p:1.0:*:*:*:*:*:*:*"),
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(cpe): %v", err)
+	}
 
-	count, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	count, err := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("CountWatchlistItems: %v", err)
+	}
 	if count != 2 {
 		t.Fatalf("expected 2 items before delete, got %d", count)
 	}
@@ -429,13 +450,16 @@ func TestDeleteWatchlist_ItemCountDropsToZero(t *testing.T) {
 	}
 
 	// Watchlist should be nil (soft-deleted).
-	got, _ := s.GetWatchlist(ctx, org.ID, w.ID)
+	got, err := s.GetWatchlist(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("GetWatchlist(soft-deleted): %v", err)
+	}
 	if got != nil {
 		t.Error("expected nil for soft-deleted watchlist")
 	}
 
 	// CountWatchlistItems should return 0 for a soft-deleted watchlist.
-	count, err := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	count, err = s.CountWatchlistItems(ctx, org.ID, w.ID)
 	if err != nil {
 		t.Fatalf("CountWatchlistItems after delete: %v", err)
 	}
@@ -458,7 +482,7 @@ func TestListWatchlistItems_Pagination(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg13")
+	org := s.MustCreateOrg(t, ctx, "WLOrg13")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "PageList")
 
 	// Create 5 items.
@@ -509,22 +533,33 @@ func TestCountWatchlistItems_AfterDelete(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg14")
+	org := s.MustCreateOrg(t, ctx, "WLOrg14")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "CountAfterDel")
 
-	item, _ := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	item, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("foo"),
 	})
+	if err != nil {
+		t.Fatalf("setup: CreateWatchlistItem: %v", err)
+	}
 
-	count1, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	count1, err := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("CountWatchlistItems: %v", err)
+	}
 	if count1 != 1 {
 		t.Fatalf("expected 1 item, got %d", count1)
 	}
 
 	// Soft-delete the item.
-	_, _ = s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID)
+	if _, err := s.DeleteWatchlistItem(ctx, org.ID, w.ID, item.ID); err != nil {
+		t.Fatalf("DeleteWatchlistItem: %v", err)
+	}
 
-	count2, _ := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	count2, err := s.CountWatchlistItems(ctx, org.ID, w.ID)
+	if err != nil {
+		t.Fatalf("CountWatchlistItems(after delete): %v", err)
+	}
 	if count2 != 0 {
 		t.Errorf("expected 0 items after delete, got %d", count2)
 	}
@@ -535,15 +570,19 @@ func TestGetWatchlist_IncludesItemCount(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg15")
+	org := s.MustCreateOrg(t, ctx, "WLOrg15")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "ItemCountList")
 
-	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	if _, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("a"),
-	})
-	_, _ = s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(a): %v", err)
+	}
+	if _, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{
 		ItemType: "package", Ecosystem: strPtr("npm"), PackageName: strPtr("b"),
-	})
+	}); err != nil {
+		t.Fatalf("setup: CreateWatchlistItem(b): %v", err)
+	}
 
 	got, err := s.GetWatchlist(ctx, org.ID, w.ID)
 	if err != nil {
@@ -559,7 +598,7 @@ func TestValidateWatchlistsOwnership_DeletedWatchlist(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg16")
+	org := s.MustCreateOrg(t, ctx, "WLOrg16")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "DeletedOwnership")
 	_ = s.DeleteWatchlist(ctx, org.ID, w.ID)
 
@@ -578,7 +617,7 @@ func TestCreateWatchlistItem_Namespace(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "WLOrg17")
+	org := s.MustCreateOrg(t, ctx, "WLOrg17")
 	w := mustCreateWatchlist(t, s, ctx, org.ID, "NsList")
 
 	item, err := s.CreateWatchlistItem(ctx, org.ID, w.ID, store.CreateWatchlistItemParams{

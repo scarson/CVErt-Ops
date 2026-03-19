@@ -14,7 +14,7 @@ func TestSSOConnection_CreateAndGet(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSOOrg1")
+	org := db.MustCreateOrg(t, ctx, "SSOOrg1")
 
 	conn, err := db.CreateSSOConnection(ctx, org.ID, "Acme IdP", "https://idp.example.com", "my-client-id", []byte("encrypted-secret"), []string{"openid", "profile"}, false)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestSSOConnection_UniquePerOrg(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSOUniqueOrg")
+	org := db.MustCreateOrg(t, ctx, "SSOUniqueOrg")
 
 	_, err := db.CreateSSOConnection(ctx, org.ID, "First", "https://idp1.example.com", "client1", []byte("enc1"), nil, false)
 	if err != nil {
@@ -75,7 +75,7 @@ func TestSSOConnection_Update(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSOUpdateOrg")
+	org := db.MustCreateOrg(t, ctx, "SSOUpdateOrg")
 
 	_, err := db.CreateSSOConnection(ctx, org.ID, "Original", "https://idp.example.com", "client1", []byte("enc1"), nil, false)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestSSOConnection_Delete(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSODeleteOrg")
+	org := db.MustCreateOrg(t, ctx, "SSODeleteOrg")
 
 	_, err := db.CreateSSOConnection(ctx, org.ID, "ToDelete", "https://idp.example.com", "client1", []byte("enc1"), nil, false)
 	if err != nil {
@@ -136,7 +136,7 @@ func TestSSOEmailDomain_CRUD(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSO_DomainOrg")
+	org := db.MustCreateOrg(t, ctx, "SSO_DomainOrg")
 
 	conn, err := db.CreateSSOConnection(ctx, org.ID, "DomainTest", "https://idp.example.com", "client1", []byte("enc1"), nil, true)
 	if err != nil {
@@ -178,11 +178,17 @@ func TestSSOEmailDomain_Uniqueness(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := db.CreateOrg(ctx, "SSODomainUniq1")
-	org2, _ := db.CreateOrg(ctx, "SSODomainUniq2")
+	org1 := db.MustCreateOrg(t, ctx, "SSODomainUniq1")
+	org2 := db.MustCreateOrg(t, ctx, "SSODomainUniq2")
 
-	conn1, _ := db.CreateSSOConnection(ctx, org1.ID, "Conn1", "https://idp1.example.com", "c1", []byte("e1"), nil, true)
-	conn2, _ := db.CreateSSOConnection(ctx, org2.ID, "Conn2", "https://idp2.example.com", "c2", []byte("e2"), nil, true)
+	conn1, err := db.CreateSSOConnection(ctx, org1.ID, "Conn1", "https://idp1.example.com", "c1", []byte("e1"), nil, true)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(Conn1): %v", err)
+	}
+	conn2, err := db.CreateSSOConnection(ctx, org2.ID, "Conn2", "https://idp2.example.com", "c2", []byte("e2"), nil, true)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(Conn2): %v", err)
+	}
 
 	// Org1 claims "shared.com".
 	if err := db.SetSSOEmailDomains(ctx, conn1.ID, org1.ID, []string{"shared.com"}); err != nil {
@@ -190,7 +196,7 @@ func TestSSOEmailDomain_Uniqueness(t *testing.T) {
 	}
 
 	// Org2 tries to claim the same domain — should fail.
-	err := db.SetSSOEmailDomains(ctx, conn2.ID, org2.ID, []string{"shared.com"})
+	err = db.SetSSOEmailDomains(ctx, conn2.ID, org2.ID, []string{"shared.com"})
 	if err == nil {
 		t.Fatal("expected error when second org claims same domain, got nil")
 	}
@@ -201,9 +207,12 @@ func TestSSOEmailDomain_CascadeDelete(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSOCascadeOrg")
+	org := db.MustCreateOrg(t, ctx, "SSOCascadeOrg")
 
-	conn, _ := db.CreateSSOConnection(ctx, org.ID, "Cascade", "https://idp.example.com", "c1", []byte("e1"), nil, true)
+	conn, err := db.CreateSSOConnection(ctx, org.ID, "Cascade", "https://idp.example.com", "c1", []byte("e1"), nil, true)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(Cascade): %v", err)
+	}
 	if err := db.SetSSOEmailDomains(ctx, conn.ID, org.ID, []string{"cascade.com"}); err != nil {
 		t.Fatalf("set domains: %v", err)
 	}
@@ -214,8 +223,11 @@ func TestSSOEmailDomain_CascadeDelete(t *testing.T) {
 	}
 
 	// Verify domains are gone by checking if another org can now claim it.
-	org2, _ := db.CreateOrg(ctx, "SSOCascadeOrg2")
-	conn2, _ := db.CreateSSOConnection(ctx, org2.ID, "After", "https://idp2.example.com", "c2", []byte("e2"), nil, true)
+	org2 := db.MustCreateOrg(t, ctx, "SSOCascadeOrg2")
+	conn2, err := db.CreateSSOConnection(ctx, org2.ID, "After", "https://idp2.example.com", "c2", []byte("e2"), nil, true)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(After): %v", err)
+	}
 	if err := db.SetSSOEmailDomains(ctx, conn2.ID, org2.ID, []string{"cascade.com"}); err != nil {
 		t.Fatalf("expected cascade.com to be available after cascade delete: %v", err)
 	}
@@ -226,9 +238,12 @@ func TestSSOLookupByDomain(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSOLookupOrg")
+	org := db.MustCreateOrg(t, ctx, "SSOLookupOrg")
 
-	conn, _ := db.CreateSSOConnection(ctx, org.ID, "Lookup", "https://idp.example.com", "c1", []byte("e1"), nil, true)
+	conn, err := db.CreateSSOConnection(ctx, org.ID, "Lookup", "https://idp.example.com", "c1", []byte("e1"), nil, true)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(Lookup): %v", err)
+	}
 	if err := db.SetSSOEmailDomains(ctx, conn.ID, org.ID, []string{"lookup.com"}); err != nil {
 		t.Fatalf("set domains: %v", err)
 	}
@@ -263,10 +278,13 @@ func TestSSOLookupByDomain_DisabledConnection(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSODisabledOrg")
+	org := db.MustCreateOrg(t, ctx, "SSODisabledOrg")
 
 	// Create disabled connection.
-	conn, _ := db.CreateSSOConnection(ctx, org.ID, "Disabled", "https://idp.example.com", "c1", []byte("e1"), nil, false)
+	conn, err := db.CreateSSOConnection(ctx, org.ID, "Disabled", "https://idp.example.com", "c1", []byte("e1"), nil, false)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(Disabled): %v", err)
+	}
 	if err := db.SetSSOEmailDomains(ctx, conn.ID, org.ID, []string{"disabled.com"}); err != nil {
 		t.Fatalf("set domains: %v", err)
 	}
@@ -286,9 +304,12 @@ func TestSSOGetConnectionByID(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := db.CreateOrg(ctx, "SSOGetByIDOrg")
+	org := db.MustCreateOrg(t, ctx, "SSOGetByIDOrg")
 
-	conn, _ := db.CreateSSOConnection(ctx, org.ID, "ByID", "https://idp.example.com", "c1", []byte("e1"), nil, true)
+	conn, err := db.CreateSSOConnection(ctx, org.ID, "ByID", "https://idp.example.com", "c1", []byte("e1"), nil, true)
+	if err != nil {
+		t.Fatalf("setup: CreateSSOConnection(ByID): %v", err)
+	}
 
 	got, err := db.GetSSOConnectionByID(ctx, conn.ID)
 	if err != nil {

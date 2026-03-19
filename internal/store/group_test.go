@@ -14,7 +14,7 @@ func TestCreateAndGetGroup(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg1")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg1")
 
 	grp, err := s.CreateGroup(ctx, org.ID, "Alpha Team", "First team")
 	if err != nil {
@@ -36,7 +36,7 @@ func TestCreateAndGetGroup(t *testing.T) {
 	}
 
 	// GetGroup with wrong org returns nil.
-	org2, _ := s.CreateOrg(ctx, "GroupOrg1b")
+	org2 := s.MustCreateOrg(t, ctx, "GroupOrg1b")
 	missing, err := s.GetGroup(ctx, org2.ID, grp.ID)
 	if err != nil {
 		t.Fatalf("GetGroup(wrong org): %v", err)
@@ -51,10 +51,10 @@ func TestSoftDeleteGroup_NameReuseAllowed(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg2")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg2")
 
 	// Create group named "X" and soft-delete it.
-	grp, _ := s.CreateGroup(ctx, org.ID, "X", "")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "X", "")
 	if err := s.SoftDeleteGroup(ctx, org.ID, grp.ID); err != nil {
 		t.Fatalf("SoftDeleteGroup: %v", err)
 	}
@@ -74,8 +74,8 @@ func TestGetGroup_DeletedReturnsNil(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg3")
-	grp, _ := s.CreateGroup(ctx, org.ID, "Deleted Team", "")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg3")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "Deleted Team", "")
 
 	if err := s.SoftDeleteGroup(ctx, org.ID, grp.ID); err != nil {
 		t.Fatalf("SoftDeleteGroup: %v", err)
@@ -95,9 +95,9 @@ func TestAddGroupMember_Idempotent(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg4")
-	grp, _ := s.CreateGroup(ctx, org.ID, "Idempotent Team", "")
-	user, _ := s.CreateUser(ctx, "grpuser4@example.com", "GrpUser4", "", 0)
+	org := s.MustCreateOrg(t, ctx, "GroupOrg4")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "Idempotent Team", "")
+	user := s.MustCreateUser(t, ctx, "grpuser4@example.com", "GrpUser4", "", 0)
 
 	// Add user twice — second should be a no-op (ON CONFLICT DO NOTHING).
 	if err := s.AddGroupMember(ctx, org.ID, grp.ID, user.ID); err != nil {
@@ -121,14 +121,14 @@ func TestListGroupMembers_OrgScoped(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org1, _ := s.CreateOrg(ctx, "GroupOrg5a")
-	org2, _ := s.CreateOrg(ctx, "GroupOrg5b")
+	org1 := s.MustCreateOrg(t, ctx, "GroupOrg5a")
+	org2 := s.MustCreateOrg(t, ctx, "GroupOrg5b")
 
-	grp1, _ := s.CreateGroup(ctx, org1.ID, "Team A", "")
-	grp2, _ := s.CreateGroup(ctx, org2.ID, "Team B", "")
+	grp1 := s.MustCreateGroup(t, ctx, org1.ID, "Team A", "")
+	grp2 := s.MustCreateGroup(t, ctx, org2.ID, "Team B", "")
 
-	user1, _ := s.CreateUser(ctx, "gmember1@example.com", "GMember1", "", 0)
-	user2, _ := s.CreateUser(ctx, "gmember2@example.com", "GMember2", "", 0)
+	user1 := s.MustCreateUser(t, ctx, "gmember1@example.com", "GMember1", "", 0)
+	user2 := s.MustCreateUser(t, ctx, "gmember2@example.com", "GMember2", "", 0)
 
 	_ = s.AddGroupMember(ctx, org1.ID, grp1.ID, user1.ID)
 	_ = s.AddGroupMember(ctx, org2.ID, grp2.ID, user2.ID)
@@ -150,9 +150,9 @@ func TestRemoveGroupMember(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg6")
-	grp, _ := s.CreateGroup(ctx, org.ID, "RemoveTeam", "")
-	user, _ := s.CreateUser(ctx, "grpremove@example.com", "GrpRemove", "", 0)
+	org := s.MustCreateOrg(t, ctx, "GroupOrg6")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "RemoveTeam", "")
+	user := s.MustCreateUser(t, ctx, "grpremove@example.com", "GrpRemove", "", 0)
 
 	_ = s.AddGroupMember(ctx, org.ID, grp.ID, user.ID)
 
@@ -174,9 +174,9 @@ func TestRemoveGroupMember_NonExistentIsNoOp(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg7")
-	grp, _ := s.CreateGroup(ctx, org.ID, "NoopRemove", "")
-	user, _ := s.CreateUser(ctx, "grpnoopremove@example.com", "GrpNoopRemove", "", 0)
+	org := s.MustCreateOrg(t, ctx, "GroupOrg7")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "NoopRemove", "")
+	user := s.MustCreateUser(t, ctx, "grpnoopremove@example.com", "GrpNoopRemove", "", 0)
 
 	// Removing a user who was never added should not error.
 	if err := s.RemoveGroupMember(ctx, org.ID, grp.ID, user.ID); err != nil {
@@ -189,8 +189,8 @@ func TestListGroupMembers_EmptyGroup(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg8")
-	grp, _ := s.CreateGroup(ctx, org.ID, "Empty Team", "")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg8")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "Empty Team", "")
 
 	members, err := s.ListGroupMembers(ctx, org.ID, grp.ID)
 	if err != nil {
@@ -206,8 +206,8 @@ func TestUpdateGroup(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg9")
-	grp, _ := s.CreateGroup(ctx, org.ID, "OriginalTeam", "old desc")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg9")
+	grp := s.MustCreateGroup(t, ctx, org.ID, "OriginalTeam", "old desc")
 
 	if err := s.UpdateGroup(ctx, org.ID, grp.ID, "RenamedTeam", "new desc"); err != nil {
 		t.Fatalf("UpdateGroup: %v", err)
@@ -233,9 +233,13 @@ func TestListOrgGroups(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg10")
-	_, _ = s.CreateGroup(ctx, org.ID, "Beta Team", "")
-	_, _ = s.CreateGroup(ctx, org.ID, "Alpha Team", "")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg10")
+	if _, err := s.CreateGroup(ctx, org.ID, "Beta Team", ""); err != nil {
+		t.Fatalf("setup: CreateGroup: %v", err)
+	}
+	if _, err := s.CreateGroup(ctx, org.ID, "Alpha Team", ""); err != nil {
+		t.Fatalf("setup: CreateGroup: %v", err)
+	}
 
 	groups, err := s.ListOrgGroups(ctx, org.ID)
 	if err != nil {
@@ -255,7 +259,7 @@ func TestListOrgGroups_Empty(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg11")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg11")
 
 	groups, err := s.ListOrgGroups(ctx, org.ID)
 	if err != nil {
@@ -271,9 +275,9 @@ func TestListOrgGroups_ExcludesDeleted(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "GroupOrg12")
-	grp1, _ := s.CreateGroup(ctx, org.ID, "Active Team", "")
-	grp2, _ := s.CreateGroup(ctx, org.ID, "Deleted Team", "")
+	org := s.MustCreateOrg(t, ctx, "GroupOrg12")
+	grp1 := s.MustCreateGroup(t, ctx, org.ID, "Active Team", "")
+	grp2 := s.MustCreateGroup(t, ctx, org.ID, "Deleted Team", "")
 	_ = s.SoftDeleteGroup(ctx, org.ID, grp2.ID)
 
 	groups, err := s.ListOrgGroups(ctx, org.ID)

@@ -30,7 +30,7 @@ func TestFanout_NoChannels_NoOp(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "FanoutNoChOrg")
+	org := s.MustCreateOrg(t, ctx, "FanoutNoChOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutNoChRule")
 
 	// No channels bound to this rule — Fanout must return nil and create 0 delivery rows.
@@ -58,7 +58,7 @@ func TestFanout_SingleChannel_CreatesDeliveryRow(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "FanoutSingleOrg")
+	org := s.MustCreateOrg(t, ctx, "FanoutSingleOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutSingleRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutSingleChan")
 
@@ -107,7 +107,7 @@ func TestFanout_Debounce_AppendsToExistingRow(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "FanoutDebounceOrg")
+	org := s.MustCreateOrg(t, ctx, "FanoutDebounceOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutDebounceRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutDebounceChan")
 
@@ -178,7 +178,7 @@ func TestFanout_MultiChannel(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "FanoutMultiOrg")
+	org := s.MustCreateOrg(t, ctx, "FanoutMultiOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutMultiRule")
 	chan1, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutMultiCh1")
 	chan2, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutMultiCh2")
@@ -211,7 +211,7 @@ func TestFanout_BuildSnapshot_FullCVEData(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
-	org, _ := s.CreateOrg(ctx, "FanoutSnapOrg")
+	org := s.MustCreateOrg(t, ctx, "FanoutSnapOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FanoutSnapRule")
 	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "FanoutSnapChan")
 

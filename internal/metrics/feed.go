@@ -61,3 +61,13 @@ var FeedConsecutiveFailures = promauto.NewGaugeVec(
 	},
 	[]string{"feed"},
 )
+
+// FeedCircuitBreakerState tracks the circuit breaker state per feed.
+// 0=closed (healthy), 1=half-open (probing), 2=open (blocking).
+var FeedCircuitBreakerState = promauto.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "cvertops_feed_circuit_breaker_state",
+		Help: "Circuit breaker state per feed: 0=closed, 1=half-open, 2=open.",
+	},
+	[]string{"feed"},
+)

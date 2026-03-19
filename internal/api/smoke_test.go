@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -376,27 +377,31 @@ func TestMiddleware_RequestID_404(t *testing.T) {
 	}
 }
 
-// TestMiddleware_Recoverer_CVEPanic verifies that a nil-store server returns
-// 503 Service Unavailable via the handler's nil-store guard, and that the
-// server remains alive afterward.
+// TestMiddleware_Recoverer_CVEPanic verifies that a nil-store server recovers
+// from panics and that the server remains alive afterward.
+// Uses POST /auth/discover (public, no auth required) which panics on nil store
+// when it tries to access the SSO lookup query.
 func TestMiddleware_Recoverer_CVEPanic(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	srv := newNilDBServer(t)
 
-	// GET /api/v1/cves with nil store causes a panic in the handler.
+	// POST /api/v1/auth/discover with nil store panics in the handler.
 	// The Recoverer middleware should catch it and return 500.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/cves", nil)
+	body := strings.NewReader(`{"email":"test@example.com"}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/v1/auth/discover", body)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := srv.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server, not user input
 	if err != nil {
-		t.Fatalf("GET /cves (nil store): %v", err)
+		t.Fatalf("POST /auth/discover (nil store): %v", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
+	// Handler detects nil store and returns 503 Service Unavailable.
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("nil store: got status %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
 	}

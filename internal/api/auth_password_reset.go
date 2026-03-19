@@ -285,6 +285,15 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 	out.Body.Methods = methods
 
 	if len(pending) > 0 {
+		// Build MFA requirement reasons for the pending token claims.
+		var reasons []auth.MFARequiredReason
+		for _, p := range pending {
+			if p == "mfa_challenge" || p == "mfa_enrollment_required" {
+				reasons = srv.buildMFARequiredReasons(ctx, tok.UserID)
+				break
+			}
+		}
+
 		// Re-read user to get the post-increment token_version.
 		user, userErr := srv.store.GetUserByID(ctx, tok.UserID)
 		if userErr != nil || user == nil {
@@ -293,7 +302,7 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 		}
 		pendingToken, ptErr := auth.IssuePendingToken(
 			srv.jwtSecret(), user.ID, int(user.TokenVersion),
-			pending, methods, srv.cfg.MFAPendingTokenTTL,
+			pending, methods, reasons, srv.cfg.MFAPendingTokenTTL,
 		)
 		if ptErr != nil {
 			slog.ErrorContext(ctx, "reset-password: issue pending token", "error", ptErr)

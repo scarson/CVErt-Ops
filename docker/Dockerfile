@@ -27,6 +27,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -o /cvert-ops \
         ./cmd/cvert-ops
 
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux go build \
+        -trimpath \
+        -ldflags="-s -w" \
+        -o /healthcheck \
+        ./cmd/healthcheck
+
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # distroless/static-debian12 includes CA certificates and timezone data
@@ -35,8 +43,13 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /cvert-ops /cvert-ops
+COPY --from=builder /healthcheck /healthcheck
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=3 \
+  CMD ["/healthcheck"]
 
 EXPOSE 8080
+EXPOSE 9090
 
 # Run as the built-in nonroot user (uid 65532).
 USER nonroot:nonroot

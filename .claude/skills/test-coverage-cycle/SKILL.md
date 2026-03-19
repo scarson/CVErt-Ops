@@ -41,18 +41,27 @@ Produce a **scope summary**:
 
 Run coverage in the main session. This data is the shared baseline for all subsequent analysis.
 
+**Use a scope-specific filename in `dev/coverage/`** to avoid clobbering other concurrent coverage runs and keep the project root clean. The directory is already gitignored via the `*.out` glob.
+
 ```bash
+mkdir -p dev/coverage
+# Use the scope slug from Phase 1 + timestamp (supports before/after comparisons)
+COVER_FILE="dev/coverage/coverage-<slug>-$(date +%Y%m%d-%H%M%S).out"
+
 # Adjust -coverpkg to include adjacent packages that scoped code calls
-go test -coverprofile=coverage.out \
+# Timeout: 600s minimum — each DB test spins its own testcontainer, and
+# concurrent agents competing for container resources make this worse.
+# A full-suite run that times out forces re-runs in segments, taking longer overall.
+go test -coverprofile="$COVER_FILE" \
   -coverpkg=./internal/... \
-  -count=1 -timeout=300s \
+  -count=1 -timeout=600s \
   ./internal/...
 ```
 
 Then extract per-function coverage:
 
 ```bash
-go tool cover -func=coverage.out
+go tool cover -func="$COVER_FILE"
 ```
 
 Save both outputs. Note any test failures — failed packages still generate partial coverage. Do NOT exclude failing packages.
@@ -71,6 +80,8 @@ Determine the scope size from the function count:
 ## Phase 3: Dispatch Coverage Review
 
 Launch the hybrid coverage review. The methodology is in `.claude/skills/test-coverage-review-hybrid-go/SKILL.md` — this is the most thorough coverage skill, combining Go coverage tools with semantic code analysis.
+
+**FILE NAMING:** ALL report files in `dev/test-coverage-reports/` MUST be prefixed with the date (`YYYY-MM-DD`). Determine today's date before dispatching subagents and substitute it into every output file path. Files without a date prefix are unacceptable — they become impossible to distinguish across runs.
 
 ### Small scopes (<100 functions)
 
@@ -107,7 +118,7 @@ Coverage data:
 Analyze every function: 0% → classify risk; 1-99% → identify uncovered branches;
 100% security functions → audit assertion quality.
 
-Output file: dev/test-coverage-reports/subagent-<slug>-triage.md
+Output file: dev/test-coverage-reports/<date>-<slug>-triage.md
 Return ONLY: file path, counts by severity, top 3 findings, any production bugs.
 DO NOT write code.
 ```
@@ -123,7 +134,7 @@ For every API handler and security-critical function:
 - Store-layer independence (§4E)
 Also: assertion quality audit (§5) for covered security code.
 
-Output file: dev/test-coverage-reports/subagent-<slug>-semantic.md
+Output file: dev/test-coverage-reports/<date>-<slug>-semantic.md
 Return ONLY: file path, counts by severity, top 3 findings, any production bugs.
 DO NOT write code.
 ```
@@ -141,6 +152,8 @@ Wait for all agents to complete before proceeding.
 ## Phase 4: Cross-Validate and Consolidate
 
 Read all reports (subagent files + your own matrix/cross-handler analysis). Build a unified findings list.
+
+**COMPLETENESS REQUIREMENT:** You MUST account for every single finding from every report (subagent triage, subagent semantic, your own security matrix, and cross-handler analysis). Before starting cross-validation, enumerate all findings. Every finding must appear in the consolidated report as one of: confirmed gap/bug, design decision, false positive, nice-to-have, or out-of-scope. **You do NOT get to decide what's "too minor" to include — that's Sam's decision in Phase 6.** Silently dropping findings defeats the entire purpose of the coverage review.
 
 ### 4a. Verify every finding
 
@@ -228,6 +241,8 @@ Write to `dev/test-coverage-reports/<date>-<slug>-consolidated.md`:
 - [Cross-cutting patterns, systematic gaps, assertion quality patterns]
 ```
 
+**COMPLETENESS CHECK:** Before moving on, re-read every subagent report and your own analysis, then verify that every finding is accounted for in the consolidated report. Count the findings: the total of confirmed + design decisions + false positives + nice-to-have + out-of-scope MUST equal or exceed the total unique findings across all reports. If any are missing, add them now.
+
 After writing the consolidated report, update your private journal with key observations: what coverage patterns emerged, which gaps were most surprising, what the false-positive rate looked like, and any insights about the codebase's testing health.
 
 ---
@@ -301,7 +316,9 @@ Present the findings to Sam. Structure the presentation as:
 
 ## Phase 7: Write Fix Plan
 
-After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed gaps + production bugs + any out-of-scope items Sam chose to include.
+After Sam has provided input on all decisions, invoke `/writing-plans` to create an implementation plan for all confirmed gaps + production bugs + any out-of-scope items Sam chose to include. The plan file MUST be saved to `dev/plans/<date>-<slug>-remediation-plan.md` (e.g., `dev/plans/2026-03-18-phase8-coverage-remediation-plan.md`).
+
+When `/writing-plans` presents execution options, **include a recommendation** for which approach would be most effective. The three options are: (1) subagent-driven in this session, (2) parallel session with `/executing-plans` in a worktree, or (3) Agent Teams for multi-agent parallel execution. Base the recommendation on: how much context this session has consumed, whether the plan is self-contained enough for a fresh session, how many tasks are parallelizable vs sequential, and whether any tasks are risky enough to warrant focused attention rather than parallel dispatch. Explain the reasoning concisely.
 
 ### Critical requirements for the plan
 

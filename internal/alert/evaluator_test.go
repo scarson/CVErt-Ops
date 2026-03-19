@@ -1765,3 +1765,60 @@ func TestEvaluatorEPSS_NoCandidates(t *testing.T) {
 		t.Fatal("EPSS cursor should be set even with no candidates")
 	}
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Batch evaluator — multi-page pagination
+// ──────────────────────────────────────────────────────────────────────────────
+
+func TestEvaluateBatch_PaginatesMultiplePages(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	// candidatePageSize is 1000 — seed more than one page of CVEs.
+	const totalCVEs = 1050
+	score := 9.0
+	for i := range totalCVEs {
+		cveID := fmt.Sprintf("CVE-PAGE-%04d", i)
+		hash := fmt.Sprintf("pagehash-%04d", i)
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "pagination test", &score, hash)
+	}
+
+	// Create a rule with cvss_v3_score >= 7.0 — matches all seeded CVEs.
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("EvaluateBatch with %d CVEs: %v", totalCVEs, err)
+	}
+
+	// Verify a rule run was recorded with the full candidate count (all pages).
+	var candidatesEvaluated int32
+	err := tdb.DB().QueryRowContext(ctx,
+		`SELECT candidates_evaluated FROM alert_rule_runs
+		 WHERE rule_id = $1 AND path = 'batch'
+		 ORDER BY started_at DESC LIMIT 1`,
+		rule.ID,
+	).Scan(&candidatesEvaluated)
+	if err != nil {
+		t.Fatalf("query candidates_evaluated: %v", err)
+	}
+	if int(candidatesEvaluated) < totalCVEs {
+		t.Errorf("candidates_evaluated = %d, want >= %d (pagination should collect all pages)",
+			candidatesEvaluated, totalCVEs)
+	}
+
+	// Verify that all CVEs generated alert events (the rule matches all of them).
+	var totalEvents int
+	err = tdb.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM alert_events WHERE rule_id = $1`, rule.ID,
+	).Scan(&totalEvents)
+	if err != nil {
+		t.Fatalf("count alert events: %v", err)
+	}
+	if totalEvents < totalCVEs {
+		t.Errorf("alert_events = %d, want >= %d (all CVEs should match)", totalEvents, totalCVEs)
+	}
+}

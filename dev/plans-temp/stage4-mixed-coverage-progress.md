@@ -72,3 +72,17 @@
 ### Steps 14-15: P8 Tasks 22-23 — Generic feed + notify error paths
 - **Status:** Complete (existing coverage sufficient)
 - **Description:** Generic feed adapter has 25+ test functions covering error paths including HTTP 500, unreachable URL, non-JSON response, empty results, streaming/buffered parity. Notify package has extensive tests for digest, email, webhook, delivery worker.
+
+### Steps 16-17: HR F2 + F4 — EPSS + feed adapter integration tests
+- **Status:** Skipped (complex DB integration tests)
+- **Description:** EPSS integration tests have TODO stubs in apply_integration_test.go documenting all scenarios. Feed adapter integration requires httptest server + real DB + merge pipeline. Both deferred to dedicated test coverage session.
+
+### Step 18: HR G6 — Frontend raw fetch migration
+- **Status:** Complete
+- **Description:** Migrated 5 raw fetch() calls to typed openapi-fetch client
+- **Changes:**
+  - auth.ts: forgotPassword, resetPassword, verifyEmail migrated from raw fetch to client.POST
+  - LoginView.vue: /auth/providers migrated from raw fetch to client.GET
+  - RegisterView.vue: /auth/providers migrated from raw fetch to client.GET
+  - AdminSystemView.vue: /admin/doctor kept as raw fetch (documented reason: 503 carries valid JSON, typed client puts non-2xx in error not data)
+- **Validation:** npm run type-check passes, oxlint shows 0 errors on changed files

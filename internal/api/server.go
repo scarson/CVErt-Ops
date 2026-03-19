@@ -473,6 +473,21 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Route("/orgs/{org_id}/scim/v2", func(r chi.Router) {
 		r.Use(srv.requireSCIMAuth)
 		r.Use(srv.scimRateLimit())
+
+		// Discovery
+		r.Get("/ServiceProviderConfig", srv.scimServiceProviderConfig)
+		r.Get("/Schemas", srv.scimSchemas)
+		r.Get("/ResourceTypes", srv.scimResourceTypes)
+
+		// Users
+		r.Post("/Users", srv.scimCreateUser)
+		r.Get("/Users", srv.scimListUsers)
+		r.Get("/Users/{id}", srv.scimGetUser)
+		r.Put("/Users/{id}", srv.scimReplaceUser)
+		r.Patch("/Users/{id}", srv.scimPatchUser)
+		r.Delete("/Users/{id}", srv.scimDeleteUser)
+
+		// Groups
 		r.Post("/Groups", srv.scimCreateGroup)
 		r.Get("/Groups", srv.scimListGroups)
 		r.Get("/Groups/{id}", srv.scimGetGroup)

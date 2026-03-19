@@ -86,6 +86,35 @@ func TestRejectAPIKeyQueryParams_AllowsNoParams(t *testing.T) {
 	}
 }
 
+func TestRejectAPIKeyQueryParams_AllowsEmptyValues(t *testing.T) {
+	t.Parallel()
+
+	handler := rejectAPIKeyQueryParams(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Empty values are not dangerous — the key isn't actually being transmitted.
+	emptyVariants := []string{
+		"/?api_key=",
+		"/?token=",
+		"/?access_token=",
+		"/?api_key",
+	}
+
+	for _, url := range emptyVariants {
+		t.Run(url, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, url, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Errorf("empty value %q: got %d, want 200", url, rec.Code)
+			}
+		})
+	}
+}
+
 func TestRejectAPIKeyQueryParams_ResponseFormat(t *testing.T) {
 	t.Parallel()
 

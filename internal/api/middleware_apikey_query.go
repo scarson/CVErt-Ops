@@ -20,15 +20,26 @@ var sensitiveQueryParams = []string{
 	"bearer",
 }
 
+// hasNonEmptyValue reports whether any element in vals is non-empty.
+func hasNonEmptyValue(vals []string) bool {
+	for _, v := range vals {
+		if v != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // rejectAPIKeyQueryParams returns middleware that blocks requests containing
 // API keys or secrets in query parameters. Credentials in URLs leak to server
 // logs, browser history, proxy logs, and Referer headers.
 func rejectAPIKeyQueryParams(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for param := range r.URL.Query() {
+		query := r.URL.Query()
+		for param, values := range query {
 			lower := strings.ToLower(param)
 			for _, sensitive := range sensitiveQueryParams {
-				if lower == sensitive {
+				if lower == sensitive && hasNonEmptyValue(values) {
 					writeProblem(w, http.StatusBadRequest, "API keys must not be sent in query parameters; use the Authorization header")
 					return
 				}

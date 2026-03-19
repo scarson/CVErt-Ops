@@ -158,6 +158,12 @@ func ParseRefreshToken(tokenStr string, activeSecret []byte, previousSecret []by
 	return parseTokenWithRotation(tokenStr, func() *RefreshClaims { return &RefreshClaims{} }, activeSecret, previousSecret, "refresh")
 }
 
+// MFARequiredReason describes why MFA is required for a user.
+type MFARequiredReason struct {
+	Source  string `json:"source"             doc:"Reason source (site_admin, org_owner, org_policy, per_member, db_error)"`
+	OrgName string `json:"org_name,omitempty" doc:"Org name (for org_policy and per_member reasons)"`
+}
+
 // PendingClaims holds the claims for a restricted session token issued when
 // additional authentication steps (MFA challenge, password reset) are required
 // before granting full access.
@@ -172,13 +178,16 @@ type PendingClaims struct {
 	Pending []string `json:"pending"`
 	// Methods lists the available MFA methods when Pending contains "mfa_challenge".
 	Methods []string `json:"methods,omitempty"`
+	// Reasons lists why MFA is required (populated when pending contains
+	// "mfa_enrollment_required" or "mfa_challenge" with a mandate).
+	Reasons []MFARequiredReason `json:"reasons,omitempty"`
 	// TokenType identifies this as a pending/restricted token.
 	TokenType string `json:"token_type"`
 }
 
 // IssuePendingToken creates a signed HS256 JWT for a restricted session that
 // requires additional authentication steps before granting full access.
-func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pending, methods []string, ttl time.Duration) (string, error) {
+func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pending, methods []string, reasons []MFARequiredReason, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := PendingClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -189,6 +198,7 @@ func IssuePendingToken(secret []byte, userID uuid.UUID, tokenVersion int, pendin
 		TokenVersion: tokenVersion,
 		Pending:      pending,
 		Methods:      methods,
+		Reasons:      reasons,
 		TokenType:    TokenTypePending,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

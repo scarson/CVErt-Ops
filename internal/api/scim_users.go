@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
 
@@ -131,6 +132,15 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 			if member.ScimExempt {
 				slog.WarnContext(ctx, "scim create: exempt user, skipping reactivation",
 					slog.String("user_id", existingUser.ID.String()))
+				srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
+				srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
+					OrgID:      orgID,
+					Action:     "update",
+					EntityType: "member",
+					EntityID:   existingUser.ID.String(),
+					Success:    true,
+					Metadata:   map[string]any{"source": "scim", "suppressed": true, "reason": "scim_exempt"},
+				})
 				identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, existingUser.ID)
 				extID := req.ExternalID
 				if identity != nil {
@@ -156,6 +166,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 			if identity != nil {
 				extID = identity.ProviderUserID
 			}
+			srv.fireSCIMEvent(ctx, secure.EventSCIMUserProvisioned, &orgID)
 			srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
 				OrgID:      orgID,
 				Action:     "update",
@@ -226,6 +237,15 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 			} else if member.DeactivatedAt.Valid && member.ScimExempt {
 				slog.WarnContext(ctx, "scim create: exempt user, skipping reactivation",
 					slog.String("user_id", existingUser.ID.String()))
+				srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
+				srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
+					OrgID:      orgID,
+					Action:     "update",
+					EntityType: "member",
+					EntityID:   existingUser.ID.String(),
+					Success:    true,
+					Metadata:   map[string]any{"source": "scim", "suppressed": true, "reason": "scim_exempt"},
+				})
 			}
 
 			// Re-read for response.
@@ -258,6 +278,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		srv.fireSCIMEvent(ctx, secure.EventSCIMUserProvisioned, &orgID)
 		srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
 			OrgID:      orgID,
 			Action:     "create",
@@ -319,6 +340,7 @@ func (srv *Server) scimCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	srv.fireSCIMEvent(ctx, secure.EventSCIMUserProvisioned, &orgID)
 	srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
 		OrgID:      orgID,
 		Action:     "create",
@@ -559,6 +581,15 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 	if member.ScimExempt {
 		slog.WarnContext(ctx, "scim replace user: exempt user, skipping",
 			slog.String("user_id", userID.String()))
+		srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
+		srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
+			OrgID:      orgID,
+			Action:     "update",
+			EntityType: "member",
+			EntityID:   userID.String(),
+			Success:    true,
+			Metadata:   map[string]any{"source": "scim", "suppressed": true, "reason": "scim_exempt"},
+		})
 		identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, userID)
 		extID := ""
 		if identity != nil {
@@ -624,6 +655,7 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if count <= 1 {
+				srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 				writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 				return
 			}
@@ -633,6 +665,7 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 			writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 			return
 		}
+		srv.fireSCIMEvent(ctx, secure.EventSCIMUserDeprovisioned, &orgID)
 	}
 
 	srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
@@ -700,6 +733,15 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 	if member.ScimExempt {
 		slog.WarnContext(ctx, "scim patch user: exempt user, skipping",
 			slog.String("user_id", userID.String()))
+		srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
+		srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
+			OrgID:      orgID,
+			Action:     "update",
+			EntityType: "member",
+			EntityID:   userID.String(),
+			Success:    true,
+			Metadata:   map[string]any{"source": "scim", "suppressed": true, "reason": "scim_exempt"},
+		})
 		identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, userID)
 		extID := ""
 		if identity != nil {
@@ -741,6 +783,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					if count <= 1 {
+						srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 						writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 						return
 					}
@@ -750,6 +793,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 					writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 					return
 				}
+				srv.fireSCIMEvent(ctx, secure.EventSCIMUserDeprovisioned, &orgID)
 			} else if active && !wasActive {
 				if err := srv.store.ReactivateOrgMember(ctx, orgID, userID); err != nil {
 					slog.ErrorContext(ctx, "scim patch: reactivate", "error", err)
@@ -833,6 +877,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 								return
 							}
 							if count <= 1 {
+								srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 								writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 								return
 							}
@@ -842,6 +887,7 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 							writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 							return
 						}
+						srv.fireSCIMEvent(ctx, secure.EventSCIMUserDeprovisioned, &orgID)
 					} else if active && !wasActive {
 						if err := srv.store.ReactivateOrgMember(ctx, orgID, userID); err != nil {
 							slog.ErrorContext(ctx, "scim patch: reactivate (pathless)", "error", err)
@@ -926,6 +972,15 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if member.ScimExempt {
 		slog.WarnContext(ctx, "scim delete user: exempt user, skipping",
 			slog.String("user_id", userID.String()))
+		srv.fireSCIMEvent(ctx, secure.EventSCIMExemptSuppressed, &orgID)
+		srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
+			OrgID:      orgID,
+			Action:     "update",
+			EntityType: "member",
+			EntityID:   userID.String(),
+			Success:    true,
+			Metadata:   map[string]any{"source": "scim", "suppressed": true, "reason": "scim_exempt"},
+		})
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -945,6 +1000,7 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if count <= 1 {
+			srv.fireSCIMEvent(ctx, secure.EventSCIMSoleOwnerProtected, &orgID)
 			writeSCIMError(w, http.StatusBadRequest, "", "cannot deactivate the sole owner")
 			return
 		}
@@ -956,6 +1012,7 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	srv.fireSCIMEvent(ctx, secure.EventSCIMUserDeprovisioned, &orgID)
 	srv.scimAuditLog(r, orgID, scimConfigID, audit.Entry{
 		OrgID:      orgID,
 		Action:     "update",

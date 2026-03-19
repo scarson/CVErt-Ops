@@ -13,3 +13,9 @@
 - **Description:** Added tests for `adminConfigHandler` secret redaction and `redactSecret` function
 - **Tests:** 4 tests: secrets redacted to "***", empty secrets stay empty, non-admin gets 403, unit test for redactSecret
 - **Files:** `internal/api/admin_system_test.go` (new)
+
+### Step 3: P8 Task 10 — Admin user management tests
+- **Status:** Complete
+- **Description:** Added tests for all 5 admin user handlers
+- **Tests:** 7 tests: list pagination, disable success, self-disable prevention, enable after disable, reset-password, site admin auth enforcement (all 5 endpoints)
+- **Files:** `internal/api/admin_users_test.go` (new)

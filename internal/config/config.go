@@ -66,9 +66,6 @@ type Config struct {
 	MFAChallengeMaxAttempts int           `env:"MFA_CHALLENGE_MAX_ATTEMPTS" envDefault:"3"`
 	MFAPendingTokenTTL      time.Duration `env:"MFA_PENDING_TOKEN_TTL"      envDefault:"5m"`
 
-	// ── SCIM ─────────────────────────────────────────────────────────────────
-	SCIMRateLimit int `env:"SCIM_RATE_LIMIT" envDefault:"50"` // requests per second per org
-
 	// ── CORS ─────────────────────────────────────────────────────────────────
 	// Comma-separated list of allowed origins (e.g. "https://app.example.com,https://admin.example.com").
 	// Empty in production disables CORS. In development, defaults to localhost dev servers.
@@ -131,6 +128,9 @@ type Config struct {
 	// Comma-separated CIDRs of trusted reverse proxies; empty = no proxy.
 	TrustedProxies    string        `env:"TRUSTED_PROXIES"`
 	RateLimitEvictTTL time.Duration `env:"RATE_LIMIT_EVICT_TTL" envDefault:"15m"`
+
+	// ── SCIM ────────────────────────────────────────────────────────────────────
+	SCIMRateLimit float64 `env:"SCIM_RATE_LIMIT" envDefault:"50"` // requests per second per org
 
 	// ── SSO ─────────────────────────────────────────────────────────────────────
 	SSOEncryptionKey         string `env:"SSO_ENCRYPTION_KEY"`          // 32-byte hex key; required if SSO is used

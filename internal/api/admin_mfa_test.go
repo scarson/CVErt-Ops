@@ -633,7 +633,10 @@ func TestAdminForcePasswordReset_OAuthOnlyAccount(t *testing.T) {
 	}
 }
 
-// SC6: Site admin can reset an admin's MFA (member role in org, but site admin bypass).
+// SC6: Site admin (with admin org role) can reset another admin's MFA.
+// RequireOrgRole(RoleAdmin) middleware requires at least admin role in the org.
+// The checkAdminMFAPermission site-admin bypass lets SA target equal-role users
+// (admin→admin), which non-SA admins cannot do.
 func TestAdminMFAReset_SiteAdmin_CanTargetAdmin(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -665,8 +668,8 @@ func TestAdminMFAReset_SiteAdmin_CanTargetAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set site admin: %v", err)
 	}
-	if err := srv.store.CreateOrgMember(ctx, orgID, saID, "member"); err != nil {
-		t.Fatalf("add site admin to org as member: %v", err)
+	if err := srv.store.CreateOrgMember(ctx, orgID, saID, "admin"); err != nil {
+		t.Fatalf("add site admin to org as admin: %v", err)
 	}
 
 	// Login as site admin.

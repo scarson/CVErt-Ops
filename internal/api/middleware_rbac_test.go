@@ -431,5 +431,48 @@ func TestRequireOrgRole_APIKeySameOrg_200(t *testing.T) {
 	}
 }
 
+// TestRequireOrgRole_DeactivatedMember verifies that a deactivated org member
+// gets 403 with a specific deactivation message, regardless of their role level.
+func TestRequireOrgRole_DeactivatedMember(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := db.MustCreateOrg(t, ctx, "RBACOrgDeactivated")
+	user := db.MustCreateUser(t, ctx, "rbac_deactivated@example.com", "RBACDeactivated", "", 0)
+	if err := db.CreateOrgMember(ctx, org.ID, user.ID, "admin"); err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+
+	// Deactivate the member.
+	if err := db.DeactivateOrgMember(ctx, org.ID, user.ID); err != nil {
+		t.Fatalf("deactivate member: %v", err)
+	}
+
+	token, err := auth.IssueAccessToken([]byte("rbacdeactivatedsecret"), user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newRBACServer(t, db, "rbacdeactivatedsecret")
+	ts, _ := buildRBACTestServer(t, srv, RoleViewer) // lowest role — should still be rejected
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("deactivated member: got %d, want 403", resp.StatusCode)
+	}
+
+	// Verify the response is RFC 9457 with the deactivation-specific detail.
+	assertRFC9457Response(t, resp, http.StatusForbidden)
+}
+
 // Suppress unused import when uuid is not referenced directly.
 var _ = uuid.UUID{}

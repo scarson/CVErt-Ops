@@ -105,11 +105,11 @@ func mergeSpecPaths(prod, specOnly huma.API) {
 // These embed existing Chi DTO types so spec and runtime share field definitions.
 
 type specCreateGroupInput struct {
-	OrgID string         `path:"org_id" format:"uuid" doc:"Organization ID"`
+	OrgID string          `path:"org_id" format:"uuid" doc:"Organization ID"`
 	Body  createGroupBody `json:"body"`
 }
 type specCreateGroupOutput struct {
-	Location string     `header:"Location"`
+	Location string `header:"Location"`
 	Body     groupEntry
 }
 
@@ -238,7 +238,7 @@ type specCreateOrgInput struct {
 	Body createOrgBody `json:"body"`
 }
 type specCreateOrgOutput struct {
-	Location string              `header:"Location"`
+	Location string `header:"Location"`
 	Body     createOrgResponseBody
 }
 
@@ -267,12 +267,12 @@ type specListMembersOutput struct {
 }
 
 type specUpdateMemberRoleInput struct {
-	OrgID  string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
-	UserID string                 `path:"user_id" format:"uuid" doc:"User ID"`
-	Body   updateMemberRoleBody   `json:"body"`
+	OrgID  string          `path:"org_id" format:"uuid" doc:"Organization ID"`
+	UserID string          `path:"user_id" format:"uuid" doc:"User ID"`
+	Body   patchMemberBody `json:"body"`
 }
 type specUpdateMemberRoleOutput struct {
-	Body updateMemberRoleResponseBody
+	Body patchMemberResponseBody
 }
 
 type specRemoveMemberInput struct {
@@ -399,7 +399,7 @@ type specCreateAPIKeyInput struct {
 	Body  createAPIKeyBody `json:"body"`
 }
 type specCreateAPIKeyOutput struct {
-	Location string             `header:"Location"`
+	Location string `header:"Location"`
 	Body     createAPIKeyResponse
 }
 
@@ -446,11 +446,11 @@ func registerAPIKeysSpecOps(api huma.API) {
 // ── Watchlists spec-only declarations ────────────────────────────────────────
 
 type specCreateWatchlistInput struct {
-	OrgID string             `path:"org_id" format:"uuid" doc:"Organization ID"`
+	OrgID string              `path:"org_id" format:"uuid" doc:"Organization ID"`
 	Body  createWatchlistBody `json:"body"`
 }
 type specCreateWatchlistOutput struct {
-	Location string         `header:"Location"`
+	Location string `header:"Location"`
 	Body     watchlistEntry
 }
 
@@ -488,12 +488,12 @@ type specDeleteWatchlistInput struct {
 }
 
 type specCreateWatchlistItemInput struct {
-	OrgID       string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
-	WatchlistID string                 `path:"id" format:"uuid" doc:"Watchlist ID"`
+	OrgID       string                  `path:"org_id" format:"uuid" doc:"Organization ID"`
+	WatchlistID string                  `path:"id" format:"uuid" doc:"Watchlist ID"`
 	Body        createWatchlistItemBody `json:"body"`
 }
 type specCreateWatchlistItemOutput struct {
-	Location string             `header:"Location"`
+	Location string `header:"Location"`
 	Body     watchlistItemEntry
 }
 
@@ -585,11 +585,11 @@ func registerWatchlistsSpecOps(api huma.API) {
 // ── Alert Rules spec-only declarations ───────────────────────────────────────
 
 type specCreateAlertRuleInput struct {
-	OrgID string             `path:"org_id" format:"uuid" doc:"Organization ID"`
+	OrgID string              `path:"org_id" format:"uuid" doc:"Organization ID"`
 	Body  createAlertRuleBody `json:"body"`
 }
 type specCreateAlertRuleOutput struct {
-	Location string         `header:"Location"`
+	Location string `header:"Location"`
 	Body     alertRuleEntry
 }
 
@@ -966,7 +966,7 @@ type specCreateReportInput struct {
 	Body  createReportBody `json:"body"`
 }
 type specCreateReportOutput struct {
-	Location string      `header:"Location"`
+	Location string `header:"Location"`
 	Body     reportEntry
 }
 
@@ -1092,11 +1092,11 @@ func registerReportsSpecOps(api huma.API) {
 // ── Saved Searches spec-only declarations ────────────────────────────────────
 
 type specCreateSavedSearchInput struct {
-	OrgID string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
+	OrgID string                   `path:"org_id" format:"uuid" doc:"Organization ID"`
 	Body  createSavedSearchRequest `json:"body"`
 }
 type specCreateSavedSearchOutput struct {
-	Location string           `header:"Location"`
+	Location string `header:"Location"`
 	Body     savedSearchEntry
 }
 
@@ -1120,8 +1120,8 @@ type specGetSavedSearchOutput struct {
 }
 
 type specUpdateSavedSearchInput struct {
-	OrgID string                 `path:"org_id" format:"uuid" doc:"Organization ID"`
-	ID    string                 `path:"id" format:"uuid" doc:"Saved Search ID"`
+	OrgID string                  `path:"org_id" format:"uuid" doc:"Organization ID"`
+	ID    string                  `path:"id" format:"uuid" doc:"Saved Search ID"`
 	Body  patchSavedSearchRequest `json:"body"`
 }
 type specUpdateSavedSearchOutput struct {

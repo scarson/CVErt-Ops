@@ -28,3 +28,18 @@ SELECT gm.*, u.email, u.display_name
 FROM group_members gm JOIN users u ON u.id = gm.user_id
 WHERE gm.group_id = $1 AND gm.org_id = $2
 ORDER BY u.display_name;
+
+-- name: AddGroupMemberSCIMManaged :exec
+INSERT INTO group_members (group_id, user_id, org_id, scim_managed)
+VALUES ($1, $2, $3, true)
+ON CONFLICT (group_id, user_id) DO NOTHING;
+
+-- name: RemoveSCIMManagedGroupMember :exec
+DELETE FROM group_members
+WHERE group_id = $1 AND user_id = $2 AND scim_managed = true;
+
+-- name: IsGroupMemberSCIMManaged :one
+SELECT scim_managed FROM group_members WHERE group_id = $1 AND user_id = $2;
+
+-- name: GetGroupIfActive :one
+SELECT * FROM groups WHERE id = $1 AND deleted_at IS NULL;

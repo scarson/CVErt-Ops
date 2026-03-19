@@ -197,6 +197,31 @@ func (s *Store) GetOrgMemberRole(ctx context.Context, orgID, userID uuid.UUID) (
 	return result, nil
 }
 
+// GetOrgMemberRoleAndStatus returns the role and deactivation status of userID in orgID,
+// or (nil, nil) if not a member.
+// Executes with RLS bypass — called from RequireOrgRole middleware before org context is set.
+func (s *Store) GetOrgMemberRoleAndStatus(ctx context.Context, orgID, userID uuid.UUID) (*generated.GetOrgMemberRoleAndStatusRow, error) {
+	var result *generated.GetOrgMemberRoleAndStatusRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetOrgMemberRoleAndStatus(ctx, generated.GetOrgMemberRoleAndStatusParams{
+			OrgID:  orgID,
+			UserID: userID,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get org member role and status: %w", err)
+	}
+	return result, nil
+}
+
 // ListOrgMembers returns all members of an org ordered by join time.
 func (s *Store) ListOrgMembers(ctx context.Context, orgID uuid.UUID) ([]generated.ListOrgMembersRow, error) {
 	var rows []generated.ListOrgMembersRow
@@ -524,4 +549,96 @@ func (s *Store) CountMemberSlotsUsedByOrg(ctx context.Context, orgID uuid.UUID) 
 		return nil
 	})
 	return n, err
+}
+
+// DeactivateOrgMember sets deactivated_at on the org member row.
+func (s *Store) DeactivateOrgMember(ctx context.Context, orgID, userID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.DeactivateOrgMember(ctx, generated.DeactivateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+		}); err != nil {
+			return fmt.Errorf("deactivate org member: %w", err)
+		}
+		return nil
+	})
+}
+
+// ReactivateOrgMember clears deactivated_at on the org member row.
+func (s *Store) ReactivateOrgMember(ctx context.Context, orgID, userID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.ReactivateOrgMember(ctx, generated.ReactivateOrgMemberParams{
+			OrgID:  orgID,
+			UserID: userID,
+		}); err != nil {
+			return fmt.Errorf("reactivate org member: %w", err)
+		}
+		return nil
+	})
+}
+
+// GetOrgMemberFull returns full member info including deactivation status and user details.
+// Returns (nil, nil) if the member is not found.
+func (s *Store) GetOrgMemberFull(ctx context.Context, orgID, userID uuid.UUID) (*generated.GetOrgMemberFullRow, error) {
+	var result *generated.GetOrgMemberFullRow
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		row, err := q.GetOrgMemberFull(ctx, generated.GetOrgMemberFullParams{
+			OrgID:  orgID,
+			UserID: userID,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get org member full: %w", err)
+	}
+	return result, nil
+}
+
+// CountActiveOrgMembers returns the count of non-deactivated members in the org.
+func (s *Store) CountActiveOrgMembers(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var n int32
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountActiveOrgMembers(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count active org members: %w", err)
+		}
+		return nil
+	})
+	return int(n), err
+}
+
+// CountActiveOrgOwners returns the count of non-deactivated owners in the org.
+func (s *Store) CountActiveOrgOwners(ctx context.Context, orgID uuid.UUID) (int, error) {
+	var n int32
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		var err error
+		n, err = q.CountActiveOrgOwners(ctx, orgID)
+		if err != nil {
+			return fmt.Errorf("count active org owners: %w", err)
+		}
+		return nil
+	})
+	return int(n), err
+}
+
+// UpdateOrgMemberSCIMExempt sets the scim_exempt flag on the org member row.
+func (s *Store) UpdateOrgMemberSCIMExempt(ctx context.Context, orgID, userID uuid.UUID, exempt bool) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.UpdateOrgMemberSCIMExempt(ctx, generated.UpdateOrgMemberSCIMExemptParams{
+			OrgID:      orgID,
+			UserID:     userID,
+			ScimExempt: exempt,
+		}); err != nil {
+			return fmt.Errorf("update org member scim exempt: %w", err)
+		}
+		return nil
+	})
 }

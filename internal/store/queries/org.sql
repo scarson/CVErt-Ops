@@ -18,6 +18,9 @@ ON CONFLICT (org_id, user_id) DO NOTHING;
 -- name: GetOrgMemberRole :one
 SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1;
 
+-- name: GetOrgMemberRoleAndStatus :one
+SELECT role, deactivated_at FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1;
+
 -- name: ListOrgMembers :many
 SELECT om.*, u.email, u.display_name FROM org_members om
 JOIN users u ON u.id = om.user_id
@@ -99,3 +102,31 @@ AS bigint);
 -- name: ListAllOrgs :many
 SELECT id, tier, tier_overrides FROM organizations
 WHERE deleted_at IS NULL;
+
+-- name: DeactivateOrgMember :exec
+UPDATE org_members SET deactivated_at = now(), updated_at = now()
+WHERE org_id = $1 AND user_id = $2;
+
+-- name: ReactivateOrgMember :exec
+UPDATE org_members SET deactivated_at = NULL, updated_at = now()
+WHERE org_id = $1 AND user_id = $2;
+
+-- name: GetOrgMemberFull :one
+SELECT om.org_id, om.user_id, om.role, om.created_at, om.updated_at,
+       om.deactivated_at, om.scim_exempt,
+       u.email, u.display_name
+FROM org_members om
+JOIN users u ON u.id = om.user_id
+WHERE om.org_id = $1 AND om.user_id = $2;
+
+-- name: CountActiveOrgMembers :one
+SELECT COUNT(*)::int FROM org_members
+WHERE org_id = $1 AND deactivated_at IS NULL;
+
+-- name: CountActiveOrgOwners :one
+SELECT COUNT(*)::int FROM org_members
+WHERE org_id = $1 AND role = 'owner' AND deactivated_at IS NULL;
+
+-- name: UpdateOrgMemberSCIMExempt :exec
+UPDATE org_members SET scim_exempt = $3, updated_at = now()
+WHERE org_id = $1 AND user_id = $2;

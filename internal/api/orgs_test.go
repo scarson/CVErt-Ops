@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -285,6 +286,20 @@ func doUpdateMemberRole(t *testing.T, ctx context.Context, ts *httptest.Server, 
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("update member role request: %v", err)
+	}
+	return resp
+}
+
+// doPatchMember calls PATCH /api/v1/orgs/{orgID}/members/{userID} with arbitrary JSON body.
+func doPatchMember(t *testing.T, ctx context.Context, ts *httptest.Server, accessToken, orgID, userID, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, ts.URL+"/api/v1/orgs/"+orgID+"/members/"+userID, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", "access_token="+accessToken)
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: srv.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("patch member request: %v", err)
 	}
 	return resp
 }
@@ -1763,5 +1778,177 @@ func TestCreateOrg_ValidationError_ProblemJSON(t *testing.T) {
 	err0, _ := errs[0].(map[string]any)
 	if err0["location"] != "body.name" {
 		t.Errorf("errors[0].location = %v, want body.name", err0["location"])
+	}
+}
+
+// TestPatchMember_Deactivate verifies that PATCH {"active": false} deactivates a member.
+func TestPatchMember_Deactivate(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "member"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doPatchMember(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID, `{"active": false}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("deactivate: got %d, want 200 (body: %s)", resp.StatusCode, string(body))
+	}
+
+	// Verify deactivated_at is set in DB.
+	member, err := db.GetOrgMemberFull(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get member: %v", err)
+	}
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	if !member.DeactivatedAt.Valid {
+		t.Error("deactivated_at should be set after deactivation")
+	}
+}
+
+// TestPatchMember_Reactivate verifies that PATCH {"active": true} reactivates a deactivated member.
+func TestPatchMember_Reactivate(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "member"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	// First deactivate.
+	if err := db.DeactivateOrgMember(ctx, orgID, bobUserID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doPatchMember(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID, `{"active": true}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("reactivate: got %d, want 200 (body: %s)", resp.StatusCode, string(body))
+	}
+
+	// Verify deactivated_at is NULL.
+	member, err := db.GetOrgMemberFull(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get member: %v", err)
+	}
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	if member.DeactivatedAt.Valid {
+		t.Error("deactivated_at should be NULL after reactivation")
+	}
+}
+
+// TestPatchMember_SoleOwnerProtection verifies that deactivating the sole owner returns 400.
+func TestPatchMember_SoleOwnerProtection(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	// Alice is the sole owner — deactivating should be blocked.
+	resp := doPatchMember(t, ctx, ts, aliceToken, aliceReg.OrgID, aliceReg.UserID, `{"active": false}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("sole owner deactivation: got %d, want 400 (body: %s)", resp.StatusCode, string(body))
+	}
+}
+
+// TestPatchMember_SCIMExempt verifies that PATCH {"scim_exempt": true} sets the flag.
+func TestPatchMember_SCIMExempt(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "member"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(loginResp, "access_token")
+
+	resp := doPatchMember(t, ctx, ts, aliceToken, aliceReg.OrgID, bobReg.UserID, `{"scim_exempt": true}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("scim_exempt: got %d, want 200 (body: %s)", resp.StatusCode, string(body))
+	}
+
+	// Verify scim_exempt is set in DB.
+	member, err := db.GetOrgMemberFull(ctx, orgID, bobUserID)
+	if err != nil {
+		t.Fatalf("get member: %v", err)
+	}
+	if member == nil {
+		t.Fatal("member not found")
+	}
+	if !member.ScimExempt {
+		t.Error("scim_exempt should be true")
+	}
+}
+
+// TestPatchMember_RequiresAdmin verifies that a viewer cannot PATCH members.
+func TestPatchMember_RequiresAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	bobReg := doRegister(t, ctx, ts, "bob@example.com", "test-password-1234")
+	orgID, _ := uuid.Parse(aliceReg.OrgID)
+	bobUserID, _ := uuid.Parse(bobReg.UserID)
+	// Make bob a viewer.
+	if err := db.CreateOrgMember(ctx, orgID, bobUserID, "viewer"); err != nil {
+		t.Fatalf("add bob: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "bob@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	bobToken := cookieValue(loginResp, "access_token")
+
+	// Viewer tries to deactivate alice — should get 403.
+	resp := doPatchMember(t, ctx, ts, bobToken, aliceReg.OrgID, aliceReg.UserID, `{"active": false}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("viewer PATCH: got %d, want 403", resp.StatusCode)
 	}
 }

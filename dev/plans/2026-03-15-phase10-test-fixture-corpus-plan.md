@@ -48,6 +48,49 @@ This directory is NOT in the git repo and does NOT need a `.gitignore` entry. It
 
 ---
 
+## Subagent Execution Protocol
+
+All tasks that write tests (Tasks 2, 8, 9, 10A-10G, 11) MUST follow this protocol. Non-test tasks (1, 3, 4, 5, 6, 7, 12, 13) are exempt.
+
+### Before starting any test-writing task:
+```
+1. Read dev/testing-pitfalls.md
+2. Read the TDD skill at .claude/skills/test-driven-development/ (or invoke /test-driven-development)
+For pure test additions: write the test, verify it fails for the right reason
+(or passes if it's testing already-correct behavior), then move on.
+For code bugs: write failing test → fix code → verify green.
+```
+
+### Before marking any test-writing task complete:
+```
+1. Review your tests against dev/testing-pitfalls.md
+2. Verify: are assertions checking behavior, not just execution?
+   - BAD: `if err != nil { t.Fatal(err) }` alone (checks execution, not output)
+   - GOOD: `require.NoError(t, err)` followed by `assert.Equal(t, expected, actual)`
+3. Verify: are negative cases tested, not just positive?
+   - BAD: "assert patches exist" alone
+   - GOOD: "assert patches exist AND assert specific field values AND assert pointer fields are non-nil before dereferencing"
+4. Run tests for the relevant packages only (e.g., `go test ./internal/feed/nvd/... -count=1`). Do NOT run `go test ./...` — Docker container overload from spinning up thousands of testcontainers is a known issue. Only run the full suite if explicitly asked.
+```
+
+### After completing each phase (A, E, F):
+```
+You MUST carefully review the batch of work from multiple perspectives
+and revise/refine as appropriate. Repeat this review loop (you must do
+a minimum of three review rounds; if you still find substantive issues
+in the third review, keep going with additional rounds until there are
+no findings) until you're confident there aren't any more issues. Then
+update your private journal and continue onto the next phase.
+```
+
+### Common pitfalls for this plan (from `dev/testing-pitfalls.md`):
+- **§7 — Test data must flow through production code paths:** Do NOT seed CVEs via raw SQL. Use store methods or the merge pipeline.
+- **§16 — Test setup must not discard errors:** Every `os.WriteFile`, `os.ReadFile`, `json.Marshal`, and store method call in test setup must check errors with `require.NoError`.
+- **§9.4 — Falsy-value preservation:** If a fixture includes CVSS `0.0`, assert the parsed value is `0.0` (not nil, not missing). This is the most recurring adapter bug (3 independent occurrences).
+- **FEED-5 — defer in loops:** When iterating ZIP entries, use explicit `rc.Close()` per iteration, NOT `defer rc.Close()`.
+
+---
+
 ## Adapter URL Constants Reference
 
 These hardcoded constants are needed by the capture CLI (Task 3), extraction tool (Task 7), and golden file test URL-rewrite transports (Tasks 9-10). Every adapter reads its URL from a package-level `const`:
@@ -306,7 +349,10 @@ func TestRecordingTransport_StreamingBodyTee(t *testing.T) {
 	}
 
 	// Saved body must match exactly.
-	saved, _ := os.ReadFile(filepath.Join(outDir, "0001.body"))
+	saved, err := os.ReadFile(filepath.Join(outDir, "0001.body"))
+	if err != nil {
+		t.Fatalf("read saved body: %v", err)
+	}
 	if len(saved) != len(largePayload) {
 		t.Errorf("saved body length %d, want %d", len(saved), len(largePayload))
 	}
@@ -666,6 +712,8 @@ git add dev/cmd/capture-feeds/main.go
 git commit -m "chore: add capture-feeds CLI for snapshotting feed API responses"
 ```
 
+**Phase A review loop:** After completing Tasks 1-3, run the review loop described in the Subagent Execution Protocol section above. Specifically verify: (1) recording transport test covers streaming body tee, sequential numbering, and write failure propagation; (2) capture CLI compiles cleanly; (3) no untracked files left behind.
+
 ---
 
 ## Phase B: Data Capture (Operational — Not a Code Task)
@@ -879,7 +927,7 @@ You are selecting real CVEs from captured feed data to build a test fixture corp
 
 READ FIRST:
 - dev/plans/test-fixture-edge-case-matrix.md (defines all categories and how to find candidates)
-- dev/plans/2026-03-11-test-fixture-corpus.md (overall plan context)
+- dev/plans/2026-03-15-phase10-test-fixture-corpus-plan.md (overall plan context)
 
 CAPTURED DATA LOCATIONS (all under D:/Code/CVErt-Ops/data/feed-snapshots/):
 - nvd/*.body — NVD JSON response pages (one per file, raw NVD API JSON)
@@ -990,7 +1038,7 @@ internal/feed/redhat/testdata/golden/    — Red Hat fixtures (list page + detai
 
 **Per-feed extraction logic:**
 
-**NVD:** Scan each `nvd/*.body` file for CVE entries matching manifest CVE IDs. Extract matching `{"cve": {...}}` objects and group them into 1-2 synthetic response pages. Each page must be a valid NVD response envelope (see "NVD Response Envelope Structure" section above). Set `totalResults` to the actual number of CVEs in the page. Set `startIndex` to 0 for the first page, `resultsPerPage` to the count. Save as `page-001.json`, `page-002.json`.
+**NVD:** Scan each `nvd/*.body` file for CVE entries matching manifest CVE IDs. Extract matching `{"cve": {...}}` objects and group them into 1-2 synthetic response pages. Each page must be a valid NVD response envelope (see "NVD Response Envelope Structure" section above). For each page: set `totalResults` to the number of CVEs in **that page** (not the total across all pages), `startIndex` to 0, and `resultsPerPage` to the same count. This makes the adapter treat each page as a complete, single-page response — it will not attempt to paginate beyond the available fixture files. Save as `page-001.json`, `page-002.json`.
 
 **GHSA:** Scan each `ghsa/*.body` file for advisories matching manifest CVE IDs (match on `cve_id` field) or manifest `ghsa_id` selectors (match on the advisory's GHSA ID). GHSA-native advisories for category F1 MUST be selected via `ghsa_id`, not by blindly including every advisory where `cve_id` is null. Extract matching advisories into a JSON array. Save as `page-001.json`. The adapter expects a JSON array at the top level `[{advisory}, ...]`.
 
@@ -1040,6 +1088,10 @@ type ManifestRecord struct {
 
 At least one selector field must be set on every manifest record. For this
 plan, valid selectors are `cve_id` and `ghsa_id`.
+
+**Do NOT write unit tests for the extraction tool.** Its output (fixture files) is verified by the golden file tests in Tasks 9/10A-10G. Unit tests here would be redundant.
+
+**WARNING (FEED-5):** When iterating MITRE and OSV ZIP entries, use explicit `rc.Close()` per iteration — NOT `defer rc.Close()`. In Go, `defer` is function-scoped, not block-scoped. Using `defer` in a loop holds all file descriptors open simultaneously, exhausting the OS limit. See `dev/implementation-pitfalls.md` FEED-5.
 
 **Step 1: Implement the extraction tool**
 
@@ -1120,7 +1172,9 @@ import (
 func TestGoldenServer_ServesFixtureFiles(t *testing.T) {
 	dir := t.TempDir()
 	content := `{"vulnerabilities": [{"cve": {"id": "CVE-2024-0001"}}]}`
-	os.WriteFile(filepath.Join(dir, "page-001.json"), []byte(content), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "page-001.json"), []byte(content), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
 
 	srv := testutil.NewGoldenServer(t, dir)
 
@@ -1130,7 +1184,10 @@ func TestGoldenServer_ServesFixtureFiles(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
 	if string(body) != content {
 		t.Errorf("got %q, want %q", body, content)
 	}
@@ -1139,7 +1196,9 @@ func TestGoldenServer_ServesFixtureFiles(t *testing.T) {
 func TestURLRewriteTransport_RedirectsRequests(t *testing.T) {
 	dir := t.TempDir()
 	content := `{"result": "ok"}`
-	os.WriteFile(filepath.Join(dir, "data.json"), []byte(content), 0644)
+	if err := os.WriteFile(filepath.Join(dir, "data.json"), []byte(content), 0644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
 
 	srv := testutil.NewGoldenServer(t, dir)
 
@@ -1159,7 +1218,10 @@ func TestURLRewriteTransport_RedirectsRequests(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
 	if string(body) != content {
 		t.Errorf("got %q, want %q", body, content)
 	}
@@ -1371,9 +1433,13 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		),
 	}
 
+	// Set a dummy API key so the adapter uses the faster rate limiter (0.6s/req
+	// instead of 6s/req). Golden tests don't hit the real NVD API, so any
+	// non-empty value works. Existing NVD unit tests bypass this by constructing
+	// the adapter directly with rate.Inf, but we can't do that from an external
+	// test package (unexported rateLimiter field).
+	t.Setenv("NVD_API_KEY", "golden-test-dummy-key")
 	adapter := nvd.New(client)
-	// Note: without NVD_API_KEY env var, the adapter rate-limits to 1 req/6s.
-	// With just 1 fixture page, this adds ~6s to the test — acceptable.
 
 	// IMPORTANT: Do NOT call Fetch with nil cursor — nil triggers a full-history
 	// backfill from 2002 to now, creating ~73 time windows. Instead, construct a
@@ -1441,6 +1507,8 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 ---
 
+**For all Tasks 10A-10G:** Before implementing, READ the adapter source code at `internal/feed/<adapter>/adapter.go` and the existing tests at `internal/feed/<adapter>/adapter_test.go`. You need to understand: (1) the request URL patterns the adapter makes, (2) the pagination/cursor model, (3) the expected response JSON structure. Task 9 (NVD) provides complete test code as a template; tasks 10A-10G do not — you must derive the test handler logic from the adapter source. Do NOT add features, refactor existing tests, or modify adapter code — only create the `golden_test.go` file. Include ABOUTME comments per project convention. `InCISAKEV` and `VendorEnrichment` on `feed.CanonicalPatch` are pointer types (`*bool` and `*feed.VendorEnrichment`) — check for nil before dereferencing.
+
 ### Task 10A: KEV golden file test
 
 **Files:** Create `internal/feed/kev/golden_test.go`
@@ -1449,7 +1517,15 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **URL rewrite:** Rewrite `https://www.cisa.gov` → test server. The adapter GETs the full catalog URL. Serve `catalog.json` for any request.
 
-**Test pattern:** Same as Task 9 but simpler — KEV is single-page, always returns `LastPage: true`. Verify non-zero patches, `LastPage == true`, at least one patch has `InCISAKEV: true`, and at least one patch has `VendorEnrichment` set.
+**Test pattern:** Same as Task 9 but simpler — KEV is single-page, always returns `LastPage: true`.
+
+**Required assertions (follow Subagent Execution Protocol above):**
+1. `len(result.Patches) > 0` — non-zero patches
+2. `result.LastPage == true` — single-page feed
+3. For every patch: `p.CVEID != ""` — all KEV entries have CVE IDs
+4. At least one patch: `p.InCISAKEV != nil && *p.InCISAKEV == true` — nil-check before dereference; `InCISAKEV` is `*bool`
+5. At least one patch: `p.VendorEnrichment != nil` — nil-check; it's `*feed.VendorEnrichment`
+6. At least one patch with VendorEnrichment: check `len(p.VendorEnrichment.Data) > 0` — the `Data` field is `json.RawMessage` containing KEV-specific metadata
 
 **Commit:** `test: add KEV golden file test`
 
@@ -1461,9 +1537,15 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **URL rewrite:** Rewrite `https://api.github.com` → test server. The adapter paginates via Link headers. For a single-page fixture (most likely), the test handler simply omits the Link header → the adapter sees no `after` cursor → sets `LastPage: true`. If multiple fixture pages are needed, include `Link: <https://api.github.com/advisories?after=page2>; rel="next"` on all but the last response. The adapter extracts just the `after` query param value (not the full URL) and builds a new request to `advisoriesURL` with that param — the URL rewrite transport handles the redirect.
 
-**Important:** The GHSA adapter expects a JSON array `[{advisory}, ...]` at the top level, NOT wrapped in an object. The adapter also requires `GITHUB_TOKEN` env var for the auth header — without it, the adapter still works but sends no Authorization header.
+**Important:** The GHSA adapter expects a JSON array `[{advisory}, ...]` at the top level, NOT wrapped in an object. The adapter reads `GITHUB_TOKEN` env var for the auth header — without it, the adapter still works but sends no Authorization header. No `GITHUB_TOKEN` is needed for golden tests since the URL-rewrite transport redirects all requests to the local test server.
 
-**Verify:** Non-zero patches, `LastPage == true`, at least one advisory selected via `ghsa_id` has `cve_id: null` (category F1), and at least one advisory has a populated CVE ID. If the curated GHSA corpus includes a CVSS `0.0` advisory, assert that value survives parsing unchanged.
+**Required assertions:**
+1. `len(allPatches) > 0` — non-zero patches across all pages
+2. `LastPage == true` after consuming all fixture pages
+3. At least one patch: `p.CVEID == "" && p.SourceID != ""` — GHSA-native advisory without CVE ID (category F1). The adapter sets `SourceID` to the GHSA ID when `cve_id` is null.
+4. At least one patch: `p.CVEID != ""` — advisory with a populated CVE ID
+5. For every patch: `p.SourceID != ""` — all GHSA advisories should have a source ID
+6. **Falsy-value check (testing-pitfalls §9.4):** If the curated GHSA corpus includes a CVSS `0.0` advisory, assert `p.CVSSv3Score != nil && *p.CVSSv3Score == 0.0` — do NOT use `> 0` checks which would silently drop zero scores
 
 **Commit:** `test: add GHSA golden file test`
 
@@ -1475,7 +1557,12 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **URL rewrite:** Rewrite `https://github.com` → test server. Serve `cvelistV5.zip` for any request. The adapter downloads the ZIP to a temp file, then iterates entries.
 
-**Verify:** Non-zero patches and at least one RESERVED-status CVE present (category S2).
+**Required assertions:**
+1. `len(result.Patches) > 0` — non-zero patches
+2. `result.LastPage == true` — single-download feed
+3. For every patch: `p.CVEID != ""` — all MITRE entries have CVE IDs
+4. At least one patch: `p.Status == "RESERVED"` — category S2; `Status` is a `string` field on `CanonicalPatch`
+5. At least one patch: `p.Status != "RESERVED"` — verify the corpus has both RESERVED and non-RESERVED CVEs
 
 **Commit:** `test: add MITRE golden file test`
 
@@ -1487,7 +1574,11 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **URL rewrite:** Rewrite `https://osv-vulnerabilities.storage.googleapis.com` → test server. Serve `all.zip`. Same pattern as MITRE.
 
-**Verify:** Non-zero patches and at least one patch has alias resolution (SourceID is not a CVE ID, CVEID is from aliases). If the curated OSV corpus includes a CVSS `0.0` case, assert that score is preserved.
+**Required assertions:**
+1. `len(result.Patches) > 0` — non-zero patches
+2. `result.LastPage == true` — single-download feed
+3. At least one patch with alias resolution: `p.SourceID` does NOT start with `"CVE-"` AND `p.CVEID` starts with `"CVE-"` — this proves the adapter resolved a non-CVE native ID (e.g., `RUSTSEC-*`, `PYSEC-*`) to a CVE ID via the `aliases` array (category F2)
+4. **Falsy-value check (testing-pitfalls §9.4):** If the curated OSV corpus includes a CVSS `0.0` case, assert `p.CVSSv3Score != nil && *p.CVSSv3Score == 0.0`
 
 **Commit:** `test: add OSV golden file test`
 
@@ -1497,17 +1588,22 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 **Follow the shared golden test contract above.**
 
-**EPSS is different** — it uses `Apply()` not `Fetch()`, and writes directly to the database. The golden file test should:
+**EPSS is different** — it uses `Apply()` not `Fetch()`, and writes directly to the database. **Requires Docker Desktop** (testcontainers). The golden file test should:
 1. Serve `scores.csv.gz` via httptest
-2. Create a test database (testcontainer)
-3. Seed a few CVEs that appear in the fixture CSV (insert minimal CVE rows via direct SQL — the Apply method needs `cves` rows to exist for the `UPDATE ... WHERE epss_score IS DISTINCT FROM` pattern)
-4. Create the EPSS adapter with a URL-rewriting client: `epss.New(&http.Client{Transport: testutil.NewURLRewriteTransport("https://epss.empiricalsecurity.com", srv.URL, http.DefaultTransport)})`
-5. Call `adapter.Apply(ctx, db.DB(), nil)` — this downloads from the test server and applies scores
-6. Query the database to verify EPSS scores were applied to the seeded CVEs
+2. Create a test database (testcontainer via `testutil.NewTestDB(t)`)
+3. Seed a few CVEs that appear in the fixture CSV by running the NVD golden fixtures through `merge.Ingest` first (the Apply method needs `cves` rows to exist for the `UPDATE ... WHERE epss_score IS DISTINCT FROM` pattern). Do NOT use raw SQL inserts — per `dev/testing-pitfalls.md` §7, test data must flow through production code paths. Use the NVD adapter with URL rewriting + golden fixtures → merge pipeline to seed CVE rows, then apply EPSS on top. Alternatively, if seeding through the full merge pipeline is disproportionate, use store methods (e.g., the store's CVE upsert function) instead of raw SQL — but document why the full pipeline was skipped.
+4. Set `NVD_API_KEY` env var to a dummy value (`t.Setenv("NVD_API_KEY", "golden-test-dummy-key")`) to get the faster NVD rate limiter if seeding NVD fixtures first
+5. Create the EPSS adapter with a URL-rewriting client: `epss.New(&http.Client{Transport: testutil.NewURLRewriteTransport("https://epss.empiricalsecurity.com", srv.URL, http.DefaultTransport)})`
+6. Call `adapter.Apply(ctx, db.DB(), nil)` — uses `*sql.DB` from `db.Store.DB()` (the embedded `*store.Store` on `TestDB`), NOT `*store.Store` directly
+7. Query the database to verify EPSS scores were applied to the seeded CVEs
 
 **URL rewrite:** Rewrite `https://epss.empiricalsecurity.com` → test server.
 
-**Verify:** Non-zero rows updated. If the curated EPSS corpus includes score `0`, assert it persists as `0`, not NULL or missing.
+**Required assertions:**
+1. Query the database after `Apply()`: at least one CVE row has `epss_score IS NOT NULL` — non-zero rows updated
+2. For each seeded CVE that appears in the fixture CSV: the DB `epss_score` must match the CSV value (query by `cve_id`, compare score)
+3. **Falsy-value check (testing-pitfalls §9.4):** If the curated EPSS corpus includes a CVE with score `0`, assert `epss_score` in the DB is `0.0` (not NULL). Use `sql.NullFloat64` to scan and check `Valid == true && Float64 == 0.0`.
+4. The returned cursor from `Apply()` must be non-nil (EPSS returns an updated cursor for persistence)
 
 **Commit:** `test: add EPSS golden file test`
 
@@ -1523,7 +1619,13 @@ git commit -m "test: add NVD golden file test against captured API responses"
 
 The test server handler must route based on the request path.
 
-**Verify:** Non-zero patches and `VendorEnrichment` populated on patches from CSAF documents. If the curated MSRC corpus includes a CVSS `0.0` case, assert that score is preserved.
+**Required assertions:**
+1. `len(allPatches) > 0` — non-zero patches across all pages
+2. `LastPage == true` after consuming all fixture pages
+3. At least one patch: `p.VendorEnrichment != nil` — MSRC CSAF documents produce vendor enrichment; `VendorEnrichment` is `*feed.VendorEnrichment`
+4. For that patch: `len(p.VendorEnrichment.Data) > 0` — the `Data` field (`json.RawMessage`) contains CSAF-specific metadata
+5. For every patch: `p.CVEID != ""` — all MSRC entries map to CVE IDs
+6. **Falsy-value check (testing-pitfalls §9.4):** If the curated MSRC corpus includes a CVSS `0.0` case, assert `p.CVSSv3Score != nil && *p.CVSSv3Score == 0.0`
 
 **Commit:** `test: add MSRC golden file test`
 
@@ -1539,7 +1641,13 @@ The test server handler must route based on the request path.
 
 The test server handler must route based on path: `/cve.json` → list, `/cve/CVE-*` → detail.
 
-**Verify:** Non-zero patches, `LastPage == true`, and `VendorEnrichment` populated with vendor severity and fix state.
+**Required assertions:**
+1. `len(allPatches) > 0` — non-zero patches
+2. `LastPage == true` after consuming all fixture pages
+3. For every patch: `p.CVEID != ""` — all Red Hat entries map to CVE IDs
+4. At least one patch: `p.VendorEnrichment != nil` — Red Hat detail responses produce vendor enrichment
+5. For that patch: `p.VendorEnrichment.VendorSeverity != nil && *p.VendorEnrichment.VendorSeverity != ""` — `VendorSeverity` is `*string`
+6. At least one patch with fix state: `p.VendorEnrichment.VendorFixState != nil && *p.VendorEnrichment.VendorFixState != ""` — category F4; `VendorFixState` is `*string`
 
 **Commit:** `test: add Red Hat golden file test`
 
@@ -1558,13 +1666,15 @@ Verify:
 2. All existing inline-JSON tests still pass
 3. No compilation errors or import cycles
 
+Do NOT run `go test ./...` here — Docker container overload from spinning up thousands of testcontainers is a known issue. The feed adapter tests above are the relevant scope. Also verify compilation across the full project without running tests:
+
 ```bash
-go test ./... -count=1
+go build ./...
 ```
 
-Verify the full test suite passes (or at least doesn't have new failures).
-
 **Commit:** Nothing to commit — this is a verification step.
+
+**Phase E review loop:** After completing Tasks 8, 9, 10A-10H, run the review loop described in the Subagent Execution Protocol section. Specifically verify: (1) every golden test RUNs (not SKIPs); (2) every golden test has assertions beyond `err == nil` — check field values, nil-safety on pointer types, and at least one adapter-specific semantic check; (3) no existing hand-crafted tests were deleted or broken; (4) every golden test file has ABOUTME comments; (5) check for testing-pitfalls §16 violations (discarded errors in test setup).
 
 ---
 
@@ -1601,9 +1711,11 @@ For this plan, the required corpus feeds are: `nvd`, `ghsa`, `kev`, `mitre`, `os
 
 The merge pipeline entry point is `merge.Ingest`. Its signature:
 ```go
-func Ingest(ctx context.Context, s *store.Store, patch feed.CanonicalPatch, sourceName string) error
+func Ingest(ctx context.Context, s merge.Store, patch feed.CanonicalPatch, sourceName string) error
 ```
 Note: it takes a **single** `CanonicalPatch`, NOT a slice. Loop over patches and call `Ingest` once per patch.
+
+The `merge.Store` interface (defined in `internal/merge/store.go`) requires only `DB() *sql.DB`. The `*store.Store` type satisfies this interface. When using `testutil.TestDB`, the embedded `*store.Store` field (accessed as `db.Store`) can be passed directly to `merge.Ingest`.
 
 For EPSS, the adapter uses `Apply` (not `Fetch`):
 ```go
@@ -1659,18 +1771,22 @@ func TestSeedCorpus(t *testing.T) {
 
 **Step 2: Implement**
 
+**Requires Docker Desktop** (testcontainers via `testutil.NewTestDB`).
+
 The implementing agent should:
-1. For each required adapter (except EPSS):
-   a. Verify `testdata/golden/` exists. If a required fixture directory is missing, fail immediately with a clear error naming the feed.
+1. For each required adapter (except EPSS), **in this order** (order matters for merge field precedence per PLAN.md §5.1): NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat:
+   a. Verify `testdata/golden/` exists for that adapter. If a required fixture directory is missing, fail immediately with a clear error naming the feed.
    b. Create an httptest server serving the golden fixtures (use `testutil.NewGoldenServer` for simple feeds, custom handler for paginated feeds like NVD/GHSA)
    c. Create the adapter with a URL-rewriting client: `adapter.New(&http.Client{Transport: testutil.NewURLRewriteTransport(originalURL, srv.URL, http.DefaultTransport)})`
-   d. Call `Fetch()` in a loop until `result.LastPage == true`, collecting patches
-   e. For each patch, call `merge.Ingest(ctx, store, patch, "source_name")` — one call per patch, NOT a batch
+   d. **CRITICAL for NVD:** Do NOT pass nil cursor to `Fetch()` — nil triggers a full-history backfill (73 time windows from 2002 to now). Construct an initial cursor matching the golden fixture Date header, same pattern as Task 9's golden test: `nvd.Cursor{WindowStart: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), WindowEnd: time.Date(2026, 3, 11, 10, 0, 0, 0, time.UTC), StartIndex: 0}`. Also set `t.Setenv("NVD_API_KEY", "golden-test-dummy-key")` before creating the NVD adapter to get the faster rate limiter (0.6s/req instead of 6s/req). For all other adapters, nil cursor is fine.
+   e. Call `Fetch()` in a loop until `result.LastPage == true`, collecting patches
+   f. For each patch, call `merge.Ingest(ctx, db.Store, patch, "source_name")` — one call per patch, NOT a batch. `db.Store` is the embedded `*store.Store` on `TestDB`, which satisfies the `merge.Store` interface (requires only `DB() *sql.DB`).
 2. After all feed adapters are ingested, apply EPSS:
    a. Create EPSS adapter with URL-rewriting client pointing to test server serving `scores.csv.gz`
-   b. Call `adapter.Apply(ctx, store.DB(), nil)` — uses `*sql.DB` from `store.DB()`, NOT `*store.Store`
+   b. Call `adapter.Apply(ctx, db.Store.DB(), nil)` — uses `*sql.DB` from `db.Store.DB()`, NOT `*store.Store` directly
 3. Return `SeedStats{TotalCVEs, FeedsSeeded, FeedNames}`
 4. The URL rewrite base per adapter (the `OriginalBase` parameter for `NewURLRewriteTransport`) — see the **Appendix: Adapter URL Rewrite Patterns** section at the end of this document for exact values per adapter (e.g., NVD = `https://services.nvd.nist.gov`, GHSA = `https://api.github.com`, etc.)
+5. Do NOT modify any adapter source code, existing tests, or the merge pipeline. Only create the `seedcorpus.go` and `seedcorpus_test.go` files.
 
 This helper is intentionally strict because downstream integration tests rely on
 the committed corpus being complete and deterministic. If a permissive local-dev
@@ -1689,17 +1805,26 @@ git add internal/testutil/seedcorpus.go internal/testutil/seedcorpus_test.go
 git commit -m "test: add SeedCorpus helper for deterministic test data from golden fixtures"
 ```
 
+**Phase F review loop:** After completing Task 11, run the review loop described in the Subagent Execution Protocol section. Specifically verify: (1) `TestSeedCorpus` RUNs (not SKIPs) and seeds a non-zero CVE count from all 8 required feeds; (2) NVD adapter was given a non-nil initial cursor (nil = 73-window backfill hang); (3) EPSS was applied AFTER other feeds (it needs CVE rows to exist); (4) no raw SQL was used for CVE seeding — all data went through `merge.Ingest`; (5) `db.Store` (not `db.AppStore`) was passed to `merge.Ingest` — the merge pipeline needs superuser access.
+
 ---
 
 ## Phase G: Final Verification and Documentation
 
-### Task 12: Full test suite verification
+### Task 12: Final verification of changed packages
+
+Run only the packages this plan touched — do NOT run `go test ./...` (Docker container overload):
 
 ```bash
-go test ./... -count=1
+go test ./internal/feed/... ./internal/testutil/... ./dev/cmd/capture-feeds/... -count=1
 ```
 
-All tests should pass. If any golden file tests skip, the fixtures are missing — go back to Phase D.
+Also verify full-project compilation:
+```bash
+go build ./...
+```
+
+All feed adapter and testutil tests should pass. If any golden file tests skip, the fixtures are missing — go back to Phase D.
 
 ### Task 13: Document the refresh process
 
@@ -1803,7 +1928,7 @@ Quick reference for implementing golden file tests (Tasks 9, 10A-10G).
 - **Request pattern:** `GET /epss_scores-current.csv.gz` (may follow redirect)
 - **Test handler:** Serve `scores.csv.gz` for any request
 - **Fixture naming:** `scores.csv.gz`
-- **Note:** EPSS uses `Apply()` not `Fetch()` — test pattern differs (needs DB)
+- **Note:** EPSS uses `Apply()` not `Fetch()` — test pattern differs (needs DB). Requires Docker Desktop (testcontainers). CVE rows must exist before EPSS apply — seed them through the merge pipeline, not raw SQL (testing-pitfalls §7).
 
 ### MSRC
 - **Rewrite:** `https://api.msrc.microsoft.com` → test server
@@ -1820,3 +1945,35 @@ Quick reference for implementing golden file tests (Tasks 9, 10A-10G).
   - `GET /hydra/rest/securitydata/cve/CVE-YYYY-NNNN.json` → serve `detail/CVE-YYYY-NNNN.json`
 - **Test handler:** Route by path: `/cve.json` → list, `/cve/CVE-*` → detail lookup
 - **Fixture naming:** `list.json`, `detail/CVE-YYYY-NNNN.json`
+
+---
+
+## Appendix: Autonomous Decision Log (2026-03-19 overnight execution)
+
+Decisions made by Claude while Sam was asleep, per Sam's delegation of decision authority.
+
+### Decision 1: MSRC CSAF endpoint broken — used CVRF instead
+**Context:** The MSRC CSAF endpoint (`/cvrf/v3.0/csaf/{releaseID}`) returns "Invalid ID format" (HTTP 400) for ALL release IDs as of 2026-03-19. The CVRF endpoint (`/cvrf/v3.0/cvrf/{releaseID}`) works fine.
+**Decision:** Captured CVRF documents (2026-Mar, 2026-Feb, 2025-Dec) instead of CSAF. The MSRC adapter (`internal/feed/msrc/adapter.go`) uses the CSAF endpoint — this may indicate the API has changed or been deprecated since the adapter was written.
+**Impact on plan:** The MSRC golden file test (Task 10F) may need adjustment if the adapter's CSAF parsing doesn't work with CVRF data. The adapter may need a separate fix (out of scope for this plan).
+**Recommendation for Sam:** Investigate whether the MSRC CSAF endpoint has been deprecated or moved. The adapter may need to be updated to use CVRF format.
+
+### Decision 2: NVD capture hit 429 on final window — accepted partial capture
+**Context:** NVD capture completed 402 pages (338,626 CVE patches) before hitting a 429 rate limit on the very last time window (2026-03-19 ~07:00 UTC).
+**Decision:** Accepted the capture as-is. 338,626 CVEs is comprehensive — the missing window covers only the most recent few hours of data. Plenty of CVEs available for fixture selection.
+**Impact on plan:** None — the fixture corpus only needs 30-50 CVEs.
+
+### Decision 3: GHSA adapter logged parsing errors but raw bodies preserved
+**Context:** The GHSA adapter had JSON unmarshalling errors on the `references` field for some advisories ("cannot unmarshal string into Go struct field ghsaAdvisory.references of type ghsa.ghsaReference"). The adapter's patch count was 0, but all 274 pages of raw JSON response bodies were saved by the recording transport.
+**Decision:** Accepted the capture. The raw body files contain the real GHSA API responses. The selection agent and extraction tool can parse them directly. The adapter's parsing issue is a separate concern from the fixture corpus.
+**Impact on plan:** None — golden file tests will serve the raw body files, and the adapter should parse them (the golden test will actually test whether the adapter handles these parsing edge cases).
+
+### Decision 4: Started Task 8 (golden helpers) before captures complete
+**Context:** Task 8 (golden file test infrastructure) is independent of the capture phase. Rather than idle while feeds download, I implemented it in parallel.
+**Decision:** Implemented and committed Task 8 while captures ran in background.
+**Impact on plan:** None — strictly positive (time saved). Dependency order preserved (Task 8 doesn't depend on captures).
+
+### Decision 5: Scoped test runs to changed packages only
+**Context:** Sam explicitly instructed to avoid `go test ./...` due to Docker container overload from thousands of testcontainers. Another agent (Phase 7 SCIM) is also running tests concurrently.
+**Decision:** All test runs scoped to specific packages (e.g., `go test ./dev/cmd/capture-feeds/...`). Updated plan Tasks 10H and 12 to reflect this.
+**Impact on plan:** Already applied to plan in the review phase.

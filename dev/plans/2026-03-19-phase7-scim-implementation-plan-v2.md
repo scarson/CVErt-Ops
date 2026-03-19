@@ -10,6 +10,17 @@
 
 **Design doc:** `dev/plans/2026-03-19-phase7-scim-provisioning-design-v2.md`
 
+**SCIM Specification References:**
+- RFC 7643 — SCIM Core Schema: https://www.rfc-editor.org/rfc/rfc7643
+- RFC 7644 — SCIM Protocol: https://www.rfc-editor.org/rfc/rfc7644
+- RFC 7644 §3.12 — Error Handling (our error format): https://www.rfc-editor.org/rfc/rfc7644#section-3.12
+- RFC 7644 §3.4.2.2 — Filtering: https://www.rfc-editor.org/rfc/rfc7644#section-3.4.2.2
+- RFC 7644 §3.5.2 — Modifying with PATCH: https://www.rfc-editor.org/rfc/rfc7644#section-3.5.2
+- RFC 7643 §8.7.1 — User Schema: https://www.rfc-editor.org/rfc/rfc7643#section-8.7.1
+- RFC 7643 §8.7.2 — Group Schema: https://www.rfc-editor.org/rfc/rfc7643#section-8.7.2
+
+When in doubt about wire format, response structure, or error semantics, check the relevant RFC section rather than guessing.
+
 **Prerequisites:** Phase 5D complete (SSO — `sso_connections` table, tier gating, audit log). Phase 6B complete (MFA tables exist).
 
 **Context for subagents:**
@@ -43,6 +54,42 @@
 - Do NOT add features or filter operators beyond what the design doc specifies.
 - Do NOT create an `internal/scim/` package. All SCIM handlers live in `internal/api/` alongside existing handlers.
 - Do NOT modify the `groups` or `group_members` table structure beyond adding the `scim_managed` column to `group_members`.
+
+---
+
+## Mandatory Discipline (applies to ALL tasks with tests)
+
+**BEFORE starting any task that includes tests:**
+1. Read `dev/testing-pitfalls.md`
+2. Read the TDD skill at `.claude/skills/test-driven-development/` (or invoke `/test-driven-development`)
+3. For pure test additions: write the test, verify it fails for the right reason (or passes if testing already-correct behavior), then move on.
+4. For code + tests: write failing test → implement code → verify green.
+
+**BEFORE marking any task complete:**
+1. Review your tests against `dev/testing-pitfalls.md`
+2. Verify: are assertions checking *behavior*, not just *execution*? (e.g., assert the returned config has `enabled=true`, not just `err == nil`)
+3. Verify: are negative cases tested, not just positive? (e.g., cross-org RLS isolation, not just same-org access)
+4. Verify: do tests use `require.NoError(t, err)` for setup calls, never `_, _ :=`?
+5. Run `go test ./...` (or relevant subset) and confirm green
+6. Run `golangci-lint run` on modified packages
+
+**After completing each wave (all tasks in the wave):**
+You MUST carefully review the batch of work from multiple perspectives and revise/refine as appropriate. Repeat this review loop (minimum three rounds; if you still find substantive issues in the third review, keep going) until you're confident there aren't any more issues. Specifically check:
+- Are all RLS isolation tests using `AppStore` (not `Store`)?
+- Are SCIM error responses using `application/scim+json` content type (not `text/plain` or `application/json`)?
+- Are admin endpoint error responses using RFC 9457 format (not SCIM format)?
+- Do store tests verify returned values, not just `err == nil`?
+- Are security events verified in the `security_events` table, not just assumed to fire?
+Then update your private journal and continue to the next wave.
+
+**Testing pitfall warnings (applies throughout):**
+- ⚠️ §16: Test setup calls MUST use `require.NoError(t, err)` — never `_, _ :=` (nil pointer panics hide real failures)
+- ⚠️ §16: Every POST/PUT/PATCH/DELETE through full HTTP stack needs `X-Requested-By: CVErt-Ops` for CSRF — EXCEPT SCIM endpoints (Bearer token auth)
+- ⚠️ §10: RLS isolation tests MUST query through `db.AppStore` — `db.Store` bypasses RLS and gives false confidence
+- ⚠️ §7: Every security event constant defined in `events.go` must be emitted by at least one code path — grep to verify
+- ⚠️ §3: Error response format must be consistent — SCIM endpoints use `application/scim+json`, admin endpoints use `application/problem+json`
+- ⚠️ §4: PATCH validation must match POST validation — if POST rejects empty `userName`, PATCH must too
+- ⚠️ §1: Idempotent operations (POST /Users for existing user) must be tested under concurrent access
 
 ---
 
@@ -510,16 +557,16 @@ Wrap sqlc-generated queries in proper transaction helpers.
 
 **Step 1: Write failing tests**
 
-Write tests for SCIM config CRUD using `testutil.NewTestDB(t)`. Test cases:
-- `TestCreateSCIMConfig` — creates config, verifies all fields returned
-- `TestCreateSCIMConfig_Duplicate` — second create returns uniqueness error
-- `TestGetSCIMConfigByTokenHash` — lookup by token hash (uses `withBypassTx`)
-- `TestGetSCIMConfigByOrgID` — org-scoped lookup
-- `TestGetSCIMConfigBySSOConnectionID` — used for SSO delete pre-flight check
-- `TestUpdateSCIMConfig` — update enabled + default_role
-- `TestUpdateSCIMConfigToken` — token rotation
-- `TestDeleteSCIMConfig` — delete + verify gone
-- `TestSCIMConfig_RLSIsolation` — config from org A not visible to org B via `AppStore`
+Write tests for SCIM config CRUD using `testutil.NewTestDB(t)`. Test cases with exact assertions:
+- `TestCreateSCIMConfig` — create config → assert returned row has matching `org_id`, `sso_connection_id`, `enabled`, `token_hash`, `token_prefix`, `default_role` fields; assert `created_at` is non-zero
+- `TestCreateSCIMConfig_Duplicate` — create config, then create again with same org_id → assert error contains "unique" or is a constraint violation (not a nil error)
+- `TestGetSCIMConfigByTokenHash` — create config with known token hash → lookup via `LookupSCIMConfigByTokenHash` → assert returned config has matching `org_id` and `enabled` fields. Also test with non-existent hash → assert returns `nil, nil` (not error)
+- `TestGetSCIMConfigByOrgID` — create config → `GetSCIMConfig(ctx, orgID)` → assert returned config matches. Also test with random UUID → assert returns `nil, nil`
+- `TestGetSCIMConfigBySSOConnectionID` — create config → `LookupSCIMConfigBySSOConnectionID(ctx, ssoConnID)` → assert match. Also test non-existent → `nil, nil`
+- `TestUpdateSCIMConfig` — create config with `enabled=false, default_role="viewer"` → update to `enabled=true, default_role="member"` → re-read → assert both fields changed and `updated_at > created_at`
+- `TestUpdateSCIMConfigToken` — create config → rotate token hash → re-read → assert `token_hash` changed, `token_prefix` changed, `updated_at` advanced
+- `TestDeleteSCIMConfig` — create config → delete → `GetSCIMConfig` returns `nil, nil`
+- `TestSCIMConfig_RLSIsolation` — create config in org A and org B via superuser store → query via `AppStore` scoped to org A → assert only org A's config is returned; query scoped to org B → assert only org B's. Cross-org `GetSCIMConfigByOrgID` must return no results, not an error
 
 Key test patterns:
 - Setup: create org + SSO connection (prerequisites) via superuser store. Read `internal/store/queries/sso.sql` and `internal/store/sso.go` to find the `CreateSSOConnection` method and its required parameters (org_id, display_name, issuer_url, client_id, client_secret_enc, scopes, enabled). Use `require.NoError(t, err)` for every setup call.
@@ -585,7 +632,18 @@ Follow the same TDD pattern as Task 12. Key methods:
 - `ListUserSCIMGroups(ctx, orgID, userID)` — uses `withOrgTx`
 - `CountOtherSCIMGroupsWithSameMapping(ctx, orgID, userID, mappedGroupID, excludeGroupID)` — uses `withOrgTx`
 
-**Test cases must include RLS isolation** — create groups in org A and org B, verify AppStore for org A cannot see org B's groups.
+**Test cases with exact assertions:**
+- `TestCreateSCIMGroup` — create group → assert returned row has matching `org_id`, `display_name`, `external_id`; `mapped_role` and `mapped_group_id` are null
+- `TestCreateSCIMGroup_DuplicateName` — create two groups with same `(org_id, display_name)` → assert unique constraint error
+- `TestGetSCIMGroupByExternalID` — create group with external_id → lookup → assert match. Lookup non-existent → assert `sql.ErrNoRows` or nil
+- `TestListSCIMGroups_WithMemberCounts` — create 2 groups, add 3 members to group A, 0 to group B → `ListSCIMGroups` → assert group A has `member_count=3`, group B has `member_count=0`
+- `TestUpdateSCIMGroupMapping` — set `mapped_role="admin"` and `mapped_group_id=<uuid>` → re-read → assert both fields updated
+- `TestDeleteSCIMGroup_CascadesMembers` — create group with members → delete group → assert `scim_group_members` rows are gone (query directly)
+- `TestAddSCIMGroupMember_Idempotent` — add same member twice → no error (ON CONFLICT DO NOTHING), member count still 1
+- `TestRemoveSCIMGroupMember` — add then remove → `ListSCIMGroupMembers` returns empty slice
+- `TestListUserSCIMGroups` — user in 2 groups → assert both returned. User in 0 groups → assert empty slice (not nil, not error)
+- `TestCountOtherSCIMGroupsWithSameMapping` — 2 groups both mapped to same notification group, user in both → count excluding group A → assert 1. Excluding group B → assert 1. User in only group A → excluding A → assert 0
+- `TestSCIMGroups_RLSIsolation` — create group in org A, query via AppStore scoped to org B → assert zero results. `ListSCIMGroups` for org B returns empty, not org A's groups
 
 TDD: write failing tests → implement → verify pass → lint → commit.
 
@@ -610,13 +668,14 @@ Key methods to add to `org.go`:
 - `CountActiveOrgOwners(ctx, orgID)` — uses `withOrgTx`
 - `UpdateOrgMemberSCIMExempt(ctx, orgID, userID, exempt bool)` — uses `withOrgTx`
 
-**Test cases:**
-- Deactivate → verify `deactivated_at` is set
-- Reactivate → verify `deactivated_at` is NULL
-- CountActiveOrgMembers excludes deactivated
-- CountActiveOrgOwners — sole-owner scenarios
-- scim_exempt flag update
-- RLS isolation for all methods
+**Test cases with exact assertions:**
+- `TestDeactivateOrgMember` — deactivate → call `GetOrgMemberFull` → assert `DeactivatedAt.Valid == true` and `DeactivatedAt.Time` is recent (within last minute)
+- `TestReactivateOrgMember` — deactivate then reactivate → `GetOrgMemberFull` → assert `DeactivatedAt.Valid == false`
+- `TestCountActiveOrgMembers` — create 3 members, deactivate 1 → `CountActiveOrgMembers` → assert returns 2 (not 3)
+- `TestCountActiveOrgOwners_SoleOwner` — create 1 owner + 1 member, deactivate member → `CountActiveOrgOwners` → assert 1. Then deactivate owner → assert 0
+- `TestCountActiveOrgOwners_MultipleOwners` — create 2 owners, deactivate 1 → assert 1 remaining
+- `TestUpdateOrgMemberSCIMExempt` — set exempt=true → `GetOrgMemberFull` → assert `ScimExempt == true`. Set back to false → assert false
+- `TestDeactivation_RLSIsolation` — deactivate member in org A → query via AppStore scoped to org B → assert operation affects zero rows (not error)
 
 TDD: write failing tests → implement → verify pass → lint → commit.
 
@@ -749,6 +808,11 @@ Add `Active *bool` and `SCIMExempt *bool` to the patch member request struct (po
 
 **Step 4: Also update `GET /members` response** to include `active`, `deactivated_at`, `scim_exempt` fields.
 
+**⚠️ Pitfall warnings for this task:**
+- API-2: `Active *bool` and `SCIMExempt *bool` MUST be pointer types. If you use `bool` with `omitempty`, sending `{"active": false}` will be silently ignored (Go's zero value for bool is false, omitempty drops it)
+- API-9: The same validation rules that apply to admin manual deactivation (sole-owner check) must also apply when SCIM triggers deactivation later — this task establishes the handler logic that SCIM reuses
+- Testing §4: Test PATCH with `{"active": false}` explicitly — this is the critical case that breaks with non-pointer types
+
 **Step 5: Run tests, lint, commit**
 
 ```bash
@@ -825,6 +889,11 @@ Follow design doc §2 auth flow steps 1-9 exactly. Use `writeSCIMError()` from T
 - Disabled config → `EventSCIMAuthDisabled`
 
 The middleware needs access to `*store.Store` and `*secure.EventWriter`. Get them from the `*Server` receiver.
+
+**⚠️ Pitfall warnings for this task:**
+- AUTH-10: Token hash comparison MUST use `subtle.ConstantTimeCompare` — never `==` or `bytes.Equal`
+- Testing §3: Auth failure error responses MUST return `Content-Type: application/scim+json` — test that the Content-Type header is correct on ALL error paths (missing header, invalid token, org mismatch, disabled)
+- Testing §11: Test with a well-formed-but-wrong token (same prefix, correct length, different random bytes) — not just `"invalid"` string
 
 **Step 3: Run tests, lint, commit**
 
@@ -917,15 +986,16 @@ Shared function called from SCIM handlers and admin mapping endpoints.
 
 **Step 1: Write failing tests**
 
-Test cases (from design §3.6):
-- `TestRoleRecompute_SingleGroup` — user gets mapped_role
-- `TestRoleRecompute_MultipleGroups_HighestWins` — admin > member > viewer
-- `TestRoleRecompute_NoMappedGroups` — falls back to scim_configs.default_role
-- `TestRoleRecompute_NeverSetsOwner` — owner role never assigned by SCIM
-- `TestRoleRecompute_SCIMExempt_Skipped` — exempt user's role unchanged
-- `TestRoleRecompute_OwnerNotDowngraded` — existing owner preserved
+Test cases (from design §3.6) with exact assertions:
+- `TestRoleRecompute_SingleGroup` — user in group with `mapped_role="admin"` → recompute → `GetOrgMemberFull` → assert `role == "admin"`
+- `TestRoleRecompute_MultipleGroups_HighestWins` — user in group A (`mapped_role="member"`) and group B (`mapped_role="admin"`) → recompute → assert `role == "admin"` (not "member")
+- `TestRoleRecompute_NoMappedGroups` — user in group with `mapped_role=NULL`, `default_role="viewer"` → recompute → assert `role == "viewer"`
+- `TestRoleRecompute_NeverSetsOwner` — user in group with `mapped_role="admin"` → recompute → assert `role == "admin"` (never "owner", even if somehow mapped)
+- `TestRoleRecompute_SCIMExempt_Skipped` — user has `scim_exempt=true`, current `role="viewer"`, in group with `mapped_role="admin"` → recompute → assert `role` is still "viewer" (unchanged)
+- `TestRoleRecompute_OwnerNotDowngraded` — user with `role="owner"` in group with `mapped_role="viewer"` → recompute → assert `role` is still "owner"
+- `TestRoleRecompute_RemovedFromAllGroups` — user was in a group with `mapped_role="admin"`, remove from group → recompute → assert `role` falls back to `default_role` (e.g., "viewer")
 
-These are integration tests using `testutil.NewTestDB(t)`.
+These are integration tests using `testutil.NewTestDB(t)`. Each test must set up a complete environment: org (enterprise tier) + SSO connection + SCIM config + user + org_member + SCIM group + SCIM group membership.
 
 **Step 2: Implement**
 
@@ -955,15 +1025,15 @@ git commit -m "feat(api): SCIM role recomputation from group mappings"
 
 **Step 1: Write failing tests**
 
-Test cases (from design §3.7):
-- `TestNotifSync_Add_NewMember` — inserts with scim_managed=true
-- `TestNotifSync_Add_AlreadyManualMember` — no change
-- `TestNotifSync_Remove_SCIMManaged` — deletes scim_managed=true row
-- `TestNotifSync_Remove_ManualMember` — no-op
-- `TestNotifSync_Remove_MultiMapping` — keeps if other SCIM group maps same
-- `TestNotifSync_GroupDelete_NoRemoval` — SCIM group delete does not remove notification members
-- `TestNotifSync_ExemptUser_Skipped` — exempt user not synced
-- `TestNotifSync_SoftDeletedTargetGroup` — mapped_group_id points to soft-deleted group → no-op
+Test cases (from design §3.7) with exact assertions:
+- `TestNotifSync_Add_NewMember` — call `syncNotifGroupAdd` → query `group_members` → assert row exists with `scim_managed=true`
+- `TestNotifSync_Add_AlreadyManualMember` — manually add member with `scim_managed=false` → call `syncNotifGroupAdd` → assert `scim_managed` is still `false` (ON CONFLICT DO NOTHING preserves manual flag)
+- `TestNotifSync_Remove_SCIMManaged` — add member with `scim_managed=true` → call `syncNotifGroupRemove` → query `group_members` → assert row is gone
+- `TestNotifSync_Remove_ManualMember` — add member with `scim_managed=false` → call `syncNotifGroupRemove` → assert row still exists (admin owns it)
+- `TestNotifSync_Remove_MultiMapping` — user in SCIM group A and B, both mapped to same notification group → remove from group A → assert `group_members` row still exists (group B still maps). Then remove from group B → assert row is gone
+- `TestNotifSync_GroupDelete_NoRemoval` — add via SCIM sync → delete the SCIM group → assert `group_members` row in notification group is STILL present
+- `TestNotifSync_ExemptUser_Skipped` — user has `scim_exempt=true` → call `syncNotifGroupAdd` → assert NO row created in `group_members`
+- `TestNotifSync_SoftDeletedTargetGroup` — soft-delete the notification group (`deleted_at=now()`) → call `syncNotifGroupAdd` → assert NO row created (no-op, no error)
 
 **Step 2: Implement**
 
@@ -1025,6 +1095,14 @@ Identity matching in POST /Users follows design doc §3.2-3.3 exactly:
 3. If not found, create new user
 
 Transaction splitting: `users`/`user_identities` writes use `withBypassTx` (global tables, no RLS). `org_members` writes use `withOrgTx` (org-scoped, RLS). This is NOT a pitfall violation (AUTH-12) — `withBypassTx` is correct here because `users` and `user_identities` are global tables that cannot be written through `withOrgTx`. See design doc §3.3 transaction note.
+
+**⚠️ Pitfall warnings for this task:**
+- API-2: PATCH `active` field MUST be `*bool` pointer — `omitempty` on non-pointer bool silently drops `false` values
+- API-9: PUT/PATCH userName validation must reject empty/whitespace strings the same way POST does
+- Testing §4: Test PATCH with explicit `false` value for `active` — not just `true`. `false` via pointer is different from absent
+- Testing §1: `TestSCIMCreateUser_ConcurrentDuplicate` must use barrier pattern (`close(ready)`) to ensure goroutines hit the critical section simultaneously
+- Testing §3: Error responses for 404, 409, 400 must all return `Content-Type: application/scim+json` — assert Content-Type on EVERY error test case
+- DB-17: Store method selection matters — read `dev/implementation-pitfalls.md` §DB-17 before choosing transaction helpers
 
 **Step 3: Run tests, lint, commit**
 
@@ -1336,6 +1414,7 @@ Each wave completes fully (tests green, lint clean, committed) before the next w
 **Tasks:** 1, 2, 3, 4, 5, 6, 7
 **Why sequential:** Migrations depend on each other. Security events and config must exist first. These are small, mechanical tasks.
 **Deliverable:** All migrations applied, security event constants defined, sqlc regenerated, `go build ./...` passes.
+**Review checkpoint:** Run 3-round review. Verify: all migrations have `-- migrate:no-transaction` where needed (CONCURRENTLY indexes). All RLS policies use dual-escape pattern. Security event exhaustiveness test passes. `go build ./...` clean.
 
 ### Wave 2: Data Layer (3 parallel subagents)
 | Lane A | Lane B | Lane C |
@@ -1346,7 +1425,7 @@ Each wave completes fully (tests green, lint clean, committed) before the next w
 
 **Why parallel:** Each lane touches independent query files and store files.
 **Deliverable:** Complete store layer with passing RLS isolation tests.
-**Review checkpoint:** Verify sqlc generation is clean, store tests pass with AppStore.
+**Review checkpoint:** Run 3-round review. Verify: sqlc generation is clean after merging all three lanes. ALL store tests use `AppStore` for RLS verification (not `Store`). Every store method test verifies the returned VALUE, not just `err == nil`. `go test ./internal/store/ -count=1` passes.
 
 ### Wave 3: Cross-Cutting Utilities (3 parallel subagents)
 | Lane A | Lane B | Lane C |
@@ -1359,6 +1438,7 @@ Each wave completes fully (tests green, lint clean, committed) before the next w
 **Lane B:** General deactivation feature (middleware → API → SSO guard), sequential within.
 **Lane C:** SCIM types and business logic (types → roles → notif sync), sequential within.
 **Deliverable:** SCIM auth tested, deactivation works, role recompute + notif sync tested.
+**Review checkpoint:** Run 3-round review. Verify: SCIM error format (not RFC 9457). Deactivation returns 403 (not 401). Role hierarchy correct (admin > member > viewer). Auth middleware uses `subtle.ConstantTimeCompare`. Security events fire on auth failures. `go test ./internal/api/ ./internal/auth/ -count=1` passes.
 
 ### Wave 4: SCIM Handlers + Admin (3 parallel subagents)
 | Lane A | Lane B | Lane C |
@@ -1370,6 +1450,7 @@ Each wave completes fully (tests green, lint clean, committed) before the next w
 **Lane B:** Group CRUD — depends on role recompute + notif sync from Wave 3.
 **Lane C:** Admin endpoints — standard chi handlers.
 **Deliverable:** All SCIM and admin handlers working.
+**Review checkpoint:** Run 3-round review. Verify: Entra ID quirks handled (case-insensitive ops, string booleans, value-array member removal). PUT is a full implementation (not PATCH wrapper) — critical for Okta. Content-Type is `application/scim+json` on ALL responses. Admin endpoints use RFC 9457 errors (not SCIM format). SCIM `schemas` array is included in every response. `go test ./internal/api/ -count=1 -run SCIM` passes.
 
 ### Wave 5: Integration (sequential — main agent)
 **Task:** 26
@@ -1382,6 +1463,7 @@ Each wave completes fully (tests green, lint clean, committed) before the next w
 | Task 29: E2E integration tests | Task 30: Audit + security event verification |
 
 **Deliverable:** All SCIM flows tested E2E. Audit + security events verified.
+**Review checkpoint:** Run 3-round review. Verify: all 10 security event constants from Task 6 are emitted in at least one code path (grep). All audit log entries have correct `entity_type` and `metadata.source`. E2E tests cover both Entra ID and Okta compatibility scenarios. `go test ./internal/api/ -count=1 -timeout=300s` passes.
 
 ### Wave 7: Final Review (sequential — main agent)
 **Task:** 31

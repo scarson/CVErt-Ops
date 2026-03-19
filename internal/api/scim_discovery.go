@@ -5,7 +5,7 @@ package api
 import "net/http"
 
 // scimServiceProviderConfig returns SCIM capabilities (RFC 7644 §4).
-func (srv *Server) scimServiceProviderConfig(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) scimServiceProviderConfig(w http.ResponseWriter, _ *http.Request) {
 	writeSCIMJSON(w, http.StatusOK, map[string]any{
 		"schemas":        []string{"urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"},
 		"patch":          map[string]any{"supported": true},
@@ -25,7 +25,7 @@ func (srv *Server) scimServiceProviderConfig(w http.ResponseWriter, r *http.Requ
 }
 
 // scimSchemas returns User and Group schema definitions (RFC 7643 §7).
-func (srv *Server) scimSchemas(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) scimSchemas(w http.ResponseWriter, _ *http.Request) {
 	userSchema := map[string]any{
 		"id":          "urn:ietf:params:scim:schemas:core:2.0:User",
 		"name":        "User",
@@ -68,7 +68,7 @@ func (srv *Server) scimSchemas(w http.ResponseWriter, r *http.Request) {
 }
 
 // scimResourceTypes returns metadata for User and Group resources (RFC 7643 §6).
-func (srv *Server) scimResourceTypes(w http.ResponseWriter, r *http.Request) {
+func (srv *Server) scimResourceTypes(w http.ResponseWriter, _ *http.Request) {
 	writeSCIMJSON(w, http.StatusOK, map[string]any{
 		"schemas":      []string{"urn:ietf:params:scim:api:messages:2.0:ListResponse"},
 		"totalResults": 2,

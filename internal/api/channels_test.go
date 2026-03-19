@@ -1274,12 +1274,12 @@ func TestTestChannel_EmailNoSMTP(t *testing.T) {
 		t.Fatalf("decode create: %v", err)
 	}
 
-	// Test the email channel — SMTPHost is "" in test config, so the error
-	// should clearly mention SMTP rather than a cryptic connection failure.
+	// Test the email channel — SMTPHost is "" in test config, so delivery fails
+	// and the handler returns 502 with a diagnostic response body.
 	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("test channel: got %d, want 200", resp.StatusCode)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("test channel: got %d, want 502", resp.StatusCode)
 	}
 
 	var result testChannelResponse

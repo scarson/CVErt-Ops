@@ -101,6 +101,7 @@ func TestAdminDisableUser_Success(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+target.ID.String()+"/disable", nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -147,6 +148,7 @@ func TestAdminDisableUser_SelfDisablePrevented(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+admin.ID.String()+"/disable", nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -194,6 +196,7 @@ func TestAdminEnableUser_Success(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+target.ID.String()+"/enable", nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -244,6 +247,7 @@ func TestAdminResetPassword_Success(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+target.ID.String()+"/reset-password", nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -297,6 +301,9 @@ func TestAdminUsers_RequiresSiteAdmin(t *testing.T) {
 	for _, ep := range endpoints {
 		req, _ := http.NewRequestWithContext(ctx, ep.method, ts.URL+ep.path, nil)
 		req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+		if ep.method != http.MethodGet {
+			req.Header.Set("X-Requested-By", "CVErt-Ops")
+		}
 		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 		if err != nil {
 			t.Fatalf("%s %s: request: %v", ep.method, ep.path, err)

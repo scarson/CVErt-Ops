@@ -489,8 +489,18 @@ func TestAdminMFA_CrossOrg_Rejected(t *testing.T) {
 	}()
 
 	// Create Org B with owner B + member B.
+	// ownerB is not the first user, so doRegister won't bootstrap an org.
+	// Create one explicitly.
 	ownerBResult := doRegister(t, ctx, ts, "crossorg-ownerB@example.com", "ownerB-password-12345")
-	orgBID := uuid.MustParse(ownerBResult.OrgID)
+	ownerBID := uuid.MustParse(ownerBResult.UserID)
+	orgB, err := srv.store.CreateOrg(ctx, "Cross-Org B")
+	if err != nil {
+		t.Fatalf("create org B: %v", err)
+	}
+	orgBID := orgB.ID
+	if err := srv.store.CreateOrgMember(ctx, orgBID, ownerBID, "owner"); err != nil {
+		t.Fatalf("add ownerB to orgB: %v", err)
+	}
 	memberBResult := doRegister(t, ctx, ts, "crossorg-memberB@example.com", "memberB-password-12345")
 	memberBID := uuid.MustParse(memberBResult.UserID)
 	if err := srv.store.CreateOrgMember(ctx, orgBID, memberBID, "member"); err != nil {
@@ -531,7 +541,6 @@ func TestAdminMFA_CrossOrg_Rejected(t *testing.T) {
 	if len(events) != 0 {
 		t.Errorf("expected 0 cross-org EventMFAAdminReset events, got %d", len(events))
 	}
-	_ = ownerBResult // ownerB used to create orgB
 }
 
 // SC3: adminForcePasswordReset negative cases.

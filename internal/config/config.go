@@ -129,6 +129,9 @@ type Config struct {
 	TrustedProxies    string        `env:"TRUSTED_PROXIES"`
 	RateLimitEvictTTL time.Duration `env:"RATE_LIMIT_EVICT_TTL" envDefault:"15m"`
 
+	// ── SCIM ────────────────────────────────────────────────────────────────────
+	SCIMRateLimit float64 `env:"SCIM_RATE_LIMIT" envDefault:"50"` // requests per second per org
+
 	// ── SSO ─────────────────────────────────────────────────────────────────────
 	SSOEncryptionKey         string `env:"SSO_ENCRYPTION_KEY"`          // 32-byte hex key; required if SSO is used
 	SSOEncryptionKeyPrevious string `env:"SSO_ENCRYPTION_KEY_PREVIOUS"` // previous key for rotation

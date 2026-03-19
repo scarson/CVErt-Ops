@@ -57,6 +57,7 @@ type Server struct {
 	googleOIDC            *oidc.Provider      // nil when Google OIDC is not configured
 	googleOAuth           *oauth2.Config      // nil when Google OIDC is not configured
 	orgRL                 *orgRateLimiter     // per-org API rate limiter
+	scimRL                *scimRateLimiter    // per-org SCIM rate limiter (separate from API)
 	tierCache             *tierCache          // short-lived cache for org tier + overrides
 	oidcProviders         sync.Map            // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
 	alertCache            *alert.RuleCache    // nil when alert evaluation is not configured
@@ -163,6 +164,9 @@ func (srv *Server) Close() {
 	}
 	if srv.orgRL != nil {
 		srv.orgRL.Stop()
+	}
+	if srv.scimRL != nil {
+		srv.scimRL.Stop()
 	}
 	if srv.tierCache != nil {
 		srv.tierCache.Stop()

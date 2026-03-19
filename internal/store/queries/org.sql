@@ -18,6 +18,9 @@ ON CONFLICT (org_id, user_id) DO NOTHING;
 -- name: GetOrgMemberRole :one
 SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1;
 
+-- name: GetOrgMemberRoleAndStatus :one
+SELECT role, deactivated_at FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1;
+
 -- name: ListOrgMembers :many
 SELECT om.*, u.email, u.display_name FROM org_members om
 JOIN users u ON u.id = om.user_id

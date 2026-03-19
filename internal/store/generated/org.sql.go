@@ -344,6 +344,27 @@ func (q *Queries) GetOrgMemberRole(ctx context.Context, arg GetOrgMemberRolePara
 	return role, err
 }
 
+const getOrgMemberRoleAndStatus = `-- name: GetOrgMemberRoleAndStatus :one
+SELECT role, deactivated_at FROM org_members WHERE org_id = $1 AND user_id = $2 LIMIT 1
+`
+
+type GetOrgMemberRoleAndStatusParams struct {
+	OrgID  uuid.UUID
+	UserID uuid.UUID
+}
+
+type GetOrgMemberRoleAndStatusRow struct {
+	Role          string
+	DeactivatedAt sql.NullTime
+}
+
+func (q *Queries) GetOrgMemberRoleAndStatus(ctx context.Context, arg GetOrgMemberRoleAndStatusParams) (GetOrgMemberRoleAndStatusRow, error) {
+	row := q.db.QueryRowContext(ctx, getOrgMemberRoleAndStatus, arg.OrgID, arg.UserID)
+	var i GetOrgMemberRoleAndStatusRow
+	err := row.Scan(&i.Role, &i.DeactivatedAt)
+	return i, err
+}
+
 const getOrgOwnerCount = `-- name: GetOrgOwnerCount :one
 SELECT COUNT(*) FROM org_members WHERE org_id = $1 AND role = 'owner'
 `

@@ -197,6 +197,31 @@ func (s *Store) GetOrgMemberRole(ctx context.Context, orgID, userID uuid.UUID) (
 	return result, nil
 }
 
+// GetOrgMemberRoleAndStatus returns the role and deactivation status of userID in orgID,
+// or (nil, nil) if not a member.
+// Executes with RLS bypass — called from RequireOrgRole middleware before org context is set.
+func (s *Store) GetOrgMemberRoleAndStatus(ctx context.Context, orgID, userID uuid.UUID) (*generated.GetOrgMemberRoleAndStatusRow, error) {
+	var result *generated.GetOrgMemberRoleAndStatusRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		row, err := q.GetOrgMemberRoleAndStatus(ctx, generated.GetOrgMemberRoleAndStatusParams{
+			OrgID:  orgID,
+			UserID: userID,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get org member role and status: %w", err)
+	}
+	return result, nil
+}
+
 // ListOrgMembers returns all members of an org ordered by join time.
 func (s *Store) ListOrgMembers(ctx context.Context, orgID uuid.UUID) ([]generated.ListOrgMembersRow, error) {
 	var rows []generated.ListOrgMembersRow

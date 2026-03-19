@@ -371,6 +371,19 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSSOHandler)
 				r.With(srv.RequireOrgRole(RoleOwner)).Put("/domains", srv.putSSODomainsHandler)
 				r.With(srv.RequireOrgRole(RoleMember)).Get("/link", srv.oidcLinkInitHandler)
+
+				// SCIM config admin endpoints (enterprise only)
+				r.Route("/scim", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleOwner)).Post("/", srv.createSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.getSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleOwner)).Patch("/", srv.patchSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleOwner)).Post("/rotate-token", srv.rotateSCIMTokenHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Get("/groups", srv.listSCIMGroupsHandler)
+					r.Route("/groups/{id}/mapping", func(r chi.Router) {
+						r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.patchSCIMGroupMappingHandler)
+					})
+				})
 			})
 
 			// Audit log (enterprise only, admin+)

@@ -132,12 +132,6 @@ func (srv *Server) scimGetGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the group belongs to this org.
-	if group.OrgID != orgID {
-		writeSCIMError(w, http.StatusNotFound, "", "group not found")
-		return
-	}
-
 	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, orgID, group.ID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: list group members", "error", err)
@@ -217,7 +211,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
 	}
-	if group == nil || group.OrgID != orgID {
+	if group == nil {
 		writeSCIMError(w, http.StatusNotFound, "", "group not found")
 		return
 	}
@@ -344,7 +338,7 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
 	}
-	if group == nil || group.OrgID != orgID {
+	if group == nil {
 		writeSCIMError(w, http.StatusNotFound, "", "group not found")
 		return
 	}
@@ -462,7 +456,7 @@ func (srv *Server) scimDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
 	}
-	if group == nil || group.OrgID != orgID {
+	if group == nil {
 		// Idempotent — already deleted returns 204.
 		w.WriteHeader(http.StatusNoContent)
 		return

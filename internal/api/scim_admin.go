@@ -411,7 +411,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if scimGroup == nil || scimGroup.OrgID != orgID {
+	if scimGroup == nil {
 		writeProblem(w, http.StatusNotFound, "SCIM group not found")
 		return
 	}

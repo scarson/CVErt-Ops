@@ -1852,6 +1852,31 @@ The refresh process is:
 
 ---
 
+## Refresh Process
+
+1. Re-run the capture: `go run ./dev/cmd/capture-feeds/... all`
+2. Re-run the selection agent (Task 6 instructions) against new captures
+3. Review and commit the updated canonical manifest at `dev/plans/test-fixture-manifest.json`
+4. Re-run extraction: `go run ./dev/cmd/extract-fixtures/...`
+5. For MSRC: download updated CSAF files from `https://msrc.microsoft.com/csaf/advisories/` and rebuild `changes.csv`
+6. Run all adapter tests: `go test ./internal/feed/...`
+7. If tests pass, commit the updated manifest and fixtures together
+8. If tests fail, investigate — the upstream schema may have changed
+
+**When to refresh:**
+- When an adapter test breaks in a way suggesting upstream schema change
+- When adding a new edge case category to the matrix
+- When adding a new feed adapter
+
+**Adding a new feed adapter:**
+1. Add a capture case to `dev/cmd/capture-feeds/main.go`
+2. Add extraction logic to `dev/cmd/extract-fixtures/main.go`
+3. Add a `golden_test.go` to the new adapter package
+4. Add the adapter to `internal/testutil/seedcorpus.go`
+5. Re-run capture and extraction to populate fixtures
+
+---
+
 ## Dependency Graph
 
 ```

@@ -42,4 +42,4 @@ WHERE group_id = $1 AND user_id = $2 AND scim_managed = true;
 SELECT scim_managed FROM group_members WHERE group_id = $1 AND user_id = $2;
 
 -- name: GetGroupIfActive :one
-SELECT * FROM groups WHERE id = $1 AND deleted_at IS NULL;
+SELECT * FROM groups WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL;

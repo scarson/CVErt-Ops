@@ -442,7 +442,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 
 	// Validate mapped_group_id if provided: must be same org and active.
 	if groupIDSent {
-		group, err := srv.store.GetGroupIfActive(r.Context(), *req.MappedGroupID)
+		group, err := srv.store.GetGroupIfActive(r.Context(), orgID, *req.MappedGroupID)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "scim group mapping patch: get notification group", "error", err)
 			writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -450,10 +450,6 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 		}
 		if group == nil {
 			writeProblem(w, http.StatusBadRequest, "notification group not found or deleted")
-			return
-		}
-		if group.OrgID != orgID {
-			writeProblem(w, http.StatusBadRequest, "notification group belongs to a different organization")
 			return
 		}
 	}

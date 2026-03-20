@@ -143,12 +143,14 @@ func (s *Store) ListGroupMembers(ctx context.Context, orgID, groupID uuid.UUID) 
 }
 
 // GetGroupIfActive returns the group if it exists and is not soft-deleted,
-// or (nil, nil) if not found or deleted. Does not require org context since
-// it's used by SCIM sync where the group ID is already known.
-func (s *Store) GetGroupIfActive(ctx context.Context, id uuid.UUID) (*generated.Group, error) {
+// or (nil, nil) if not found or deleted.
+func (s *Store) GetGroupIfActive(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*generated.Group, error) {
 	var result *generated.Group
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		row, err := q.GetGroupIfActive(ctx, id)
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		row, err := q.GetGroupIfActive(ctx, generated.GetGroupIfActiveParams{
+			ID:    id,
+			OrgID: orgID,
+		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}

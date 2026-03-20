@@ -96,11 +96,16 @@ func (q *Queries) GetGroup(ctx context.Context, arg GetGroupParams) (Group, erro
 }
 
 const getGroupIfActive = `-- name: GetGroupIfActive :one
-SELECT id, org_id, name, description, created_at, deleted_at FROM groups WHERE id = $1 AND deleted_at IS NULL
+SELECT id, org_id, name, description, created_at, deleted_at FROM groups WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 `
 
-func (q *Queries) GetGroupIfActive(ctx context.Context, id uuid.UUID) (Group, error) {
-	row := q.db.QueryRowContext(ctx, getGroupIfActive, id)
+type GetGroupIfActiveParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) GetGroupIfActive(ctx context.Context, arg GetGroupIfActiveParams) (Group, error) {
+	row := q.db.QueryRowContext(ctx, getGroupIfActive, arg.ID, arg.OrgID)
 	var i Group
 	err := row.Scan(
 		&i.ID,

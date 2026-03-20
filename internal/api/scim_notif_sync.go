@@ -13,7 +13,7 @@ import (
 // a member (manually or via SCIM), the existing membership is preserved via ON CONFLICT DO NOTHING.
 func (srv *Server) syncNotifGroupAdd(ctx context.Context, orgID, userID, mappedGroupID, _ uuid.UUID) error {
 	// Verify the target notification group exists and is not soft-deleted.
-	group, err := srv.store.GetGroupIfActive(ctx, mappedGroupID)
+	group, err := srv.store.GetGroupIfActive(ctx, orgID, mappedGroupID)
 	if err != nil {
 		return err
 	}

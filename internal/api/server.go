@@ -371,6 +371,19 @@ func (srv *Server) Handler() http.Handler {
 				r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSSOHandler)
 				r.With(srv.RequireOrgRole(RoleOwner)).Put("/domains", srv.putSSODomainsHandler)
 				r.With(srv.RequireOrgRole(RoleMember)).Get("/link", srv.oidcLinkInitHandler)
+
+				// SCIM config admin endpoints (enterprise only)
+				r.Route("/scim", func(r chi.Router) {
+					r.With(srv.RequireOrgRole(RoleOwner)).Post("/", srv.createSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Get("/", srv.getSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleOwner)).Patch("/", srv.patchSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleOwner)).Delete("/", srv.deleteSCIMConfigHandler)
+					r.With(srv.RequireOrgRole(RoleOwner)).Post("/rotate-token", srv.rotateSCIMTokenHandler)
+					r.With(srv.RequireOrgRole(RoleAdmin)).Get("/groups", srv.listSCIMGroupsHandler)
+					r.Route("/groups/{id}/mapping", func(r chi.Router) {
+						r.With(srv.RequireOrgRole(RoleAdmin)).Patch("/", srv.patchSCIMGroupMappingHandler)
+					})
+				})
 			})
 
 			// Audit log (enterprise only, admin+)
@@ -454,6 +467,33 @@ func (srv *Server) Handler() http.Handler {
 				})
 			})
 		})
+	})
+
+	// ── SCIM v2 endpoints (chi, separate auth — machine-to-machine) ─────────
+	apiRouter.Route("/orgs/{org_id}/scim/v2", func(r chi.Router) {
+		r.Use(srv.requireSCIMAuth)
+		r.Use(srv.scimRateLimit())
+
+		// Discovery
+		r.Get("/ServiceProviderConfig", srv.scimServiceProviderConfig)
+		r.Get("/Schemas", srv.scimSchemas)
+		r.Get("/ResourceTypes", srv.scimResourceTypes)
+
+		// Users
+		r.Post("/Users", srv.scimCreateUser)
+		r.Get("/Users", srv.scimListUsers)
+		r.Get("/Users/{id}", srv.scimGetUser)
+		r.Put("/Users/{id}", srv.scimReplaceUser)
+		r.Patch("/Users/{id}", srv.scimPatchUser)
+		r.Delete("/Users/{id}", srv.scimDeleteUser)
+
+		// Groups
+		r.Post("/Groups", srv.scimCreateGroup)
+		r.Get("/Groups", srv.scimListGroups)
+		r.Get("/Groups/{id}", srv.scimGetGroup)
+		r.Put("/Groups/{id}", srv.scimReplaceGroup)
+		r.Patch("/Groups/{id}", srv.scimPatchGroup)
+		r.Delete("/Groups/{id}", srv.scimDeleteGroup)
 	})
 
 	r.Mount("/api/v1", apiRouter)

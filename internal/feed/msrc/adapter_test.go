@@ -12,9 +12,26 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"net/url"
+
 	"github.com/scarson/cvert-ops/internal/feed"
-	"github.com/scarson/cvert-ops/internal/testutil"
 )
+
+// redirectTransport rewrites outbound request URLs to point at the test server.
+// Used only in internal package tests to avoid importing testutil (which imports
+// msrc, creating an import cycle).
+type redirectTransport struct {
+	targetURL string
+	inner     http.RoundTripper
+}
+
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, _ := url.Parse(rt.targetURL)
+	req = req.Clone(req.Context())
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	return rt.inner.RoundTrip(req)
+}
 
 // --- parseChangesCSV tests ---
 
@@ -425,7 +442,7 @@ func TestFetch_Success(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{
-		Transport: testutil.NewURLRewriteTransport("https://msrc.microsoft.com", srv.URL, http.DefaultTransport),
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 
@@ -487,7 +504,7 @@ func TestFetch_ShortCircuit(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{
-		Transport: testutil.NewURLRewriteTransport("https://msrc.microsoft.com", srv.URL, http.DefaultTransport),
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 
@@ -517,7 +534,7 @@ func TestFetch_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{
-		Transport: testutil.NewURLRewriteTransport("https://msrc.microsoft.com", srv.URL, http.DefaultTransport),
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 
@@ -549,7 +566,7 @@ func TestFetch_CSAFHTTPError(t *testing.T) {
 	defer srv.Close()
 
 	client := &http.Client{
-		Transport: testutil.NewURLRewriteTransport("https://msrc.microsoft.com", srv.URL, http.DefaultTransport),
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 

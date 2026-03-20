@@ -825,3 +825,15 @@ Tasks 1-4 and Task 5 are independent and can run in parallel. Tasks 7-9 are sequ
 - **MSRC rate limiter:** The adapter uses 1 req/sec. For golden tests with 3-5 fixture files, this adds ~3-5 seconds of delay. Acceptable.
 - **EPSS test requires Docker Desktop** — if unavailable, this is a hard blocker for Task 5 only. Other tasks can proceed.
 - **Worktree already has dev merged** — SCIM code is present. No further merges needed.
+
+---
+
+## Appendix: Autonomous Decisions
+
+Decisions made without Sam's explicit input during overnight execution. Flagged for review.
+
+### D1: CVE-2026-3909 replacement with CVE-2026-32194
+
+**Context:** The manifest specified 3 MSRC CVEs (CVE-2026-3909, CVE-2026-21510, CVE-2025-14174). CVE-2026-3909 has no CSAF file in Microsoft's CSAF distribution (`index.txt` search returned no match).
+**Decision:** Replaced with CVE-2026-32194, a recent (2026-03-19) advisory with full CSAF data including product tree, CVSS scores, and vendor enrichment fields.
+**Risk:** Low — the replacement CVE provides equivalent test coverage. The manifest's category coverage (X3: NVD+MSRC overlap) is maintained since CVE-2026-32194 is also a Microsoft CVE.

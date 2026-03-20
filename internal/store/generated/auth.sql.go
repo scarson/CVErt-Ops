@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const clearForcePasswordReset = `-- name: ClearForcePasswordReset :exec
@@ -312,6 +313,48 @@ func (q *Queries) IsUserEnabled(ctx context.Context, id uuid.UUID) (bool, error)
 	var enabled bool
 	err := row.Scan(&enabled)
 	return enabled, err
+}
+
+const listIdentitiesByProviderAndUsers = `-- name: ListIdentitiesByProviderAndUsers :many
+SELECT id, user_id, provider, provider_user_id, email, created_at FROM user_identities
+WHERE provider = $1 AND user_id = ANY($2::uuid[])
+`
+
+type ListIdentitiesByProviderAndUsersParams struct {
+	Provider string
+	Column2  []uuid.UUID
+}
+
+// Returns identity rows for a given provider and set of user IDs.
+// Used by SCIM list users to batch-load external IDs.
+func (q *Queries) ListIdentitiesByProviderAndUsers(ctx context.Context, arg ListIdentitiesByProviderAndUsersParams) ([]UserIdentity, error) {
+	rows, err := q.db.QueryContext(ctx, listIdentitiesByProviderAndUsers, arg.Provider, pq.Array(arg.Column2))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserIdentity
+	for rows.Next() {
+		var i UserIdentity
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Provider,
+			&i.ProviderUserID,
+			&i.Email,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markRefreshTokenUsed = `-- name: MarkRefreshTokenUsed :exec

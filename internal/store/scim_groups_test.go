@@ -114,11 +114,11 @@ func TestUpdateSCIMGroupMapping(t *testing.T) {
 	notifGroup := db.MustCreateGroup(t, ctx, org.ID, "NotifGroup", "for mapping test")
 
 	mappedRole := "admin"
-	err = db.UpdateSCIMGroupMapping(ctx, group.ID, &mappedRole, &notifGroup.ID)
+	err = db.UpdateSCIMGroupMapping(ctx, org.ID, group.ID, &mappedRole, &notifGroup.ID)
 	require.NoError(t, err)
 
 	// Re-read and verify.
-	got, err := db.GetSCIMGroup(ctx, group.ID)
+	got, err := db.GetSCIMGroup(ctx, org.ID, group.ID)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	require.True(t, got.MappedRole.Valid)
@@ -142,15 +142,15 @@ func TestDeleteSCIMGroup_CascadesMembers(t *testing.T) {
 	require.NoError(t, db.AddSCIMGroupMember(ctx, group.ID, user.ID, org.ID))
 
 	// Verify member exists.
-	members, err := db.ListSCIMGroupMembers(ctx, group.ID)
+	members, err := db.ListSCIMGroupMembers(ctx, org.ID, group.ID)
 	require.NoError(t, err)
 	require.Len(t, members, 1)
 
 	// Delete group.
-	require.NoError(t, db.DeleteSCIMGroup(ctx, group.ID))
+	require.NoError(t, db.DeleteSCIMGroup(ctx, org.ID, group.ID))
 
 	// Verify group gone.
-	got, err := db.GetSCIMGroup(ctx, group.ID)
+	got, err := db.GetSCIMGroup(ctx, org.ID, group.ID)
 	require.NoError(t, err)
 	require.Nil(t, got)
 
@@ -178,7 +178,7 @@ func TestAddSCIMGroupMember_Idempotent(t *testing.T) {
 	require.NoError(t, db.AddSCIMGroupMember(ctx, group.ID, user.ID, org.ID))
 	require.NoError(t, db.AddSCIMGroupMember(ctx, group.ID, user.ID, org.ID))
 
-	members, err := db.ListSCIMGroupMembers(ctx, group.ID)
+	members, err := db.ListSCIMGroupMembers(ctx, org.ID, group.ID)
 	require.NoError(t, err)
 	require.Len(t, members, 1, "member count should be 1 after duplicate add")
 }
@@ -198,9 +198,9 @@ func TestRemoveSCIMGroupMember(t *testing.T) {
 	require.NoError(t, db.AddSCIMGroupMember(ctx, group.ID, user.ID, org.ID))
 
 	// Remove.
-	require.NoError(t, db.RemoveSCIMGroupMember(ctx, group.ID, user.ID))
+	require.NoError(t, db.RemoveSCIMGroupMember(ctx, org.ID, group.ID, user.ID))
 
-	members, err := db.ListSCIMGroupMembers(ctx, group.ID)
+	members, err := db.ListSCIMGroupMembers(ctx, org.ID, group.ID)
 	require.NoError(t, err)
 	require.Empty(t, members)
 }
@@ -253,8 +253,8 @@ func TestCountOtherSCIMGroupsWithSameMapping(t *testing.T) {
 
 	// Map both SCIM groups to the same notification group.
 	role := "member"
-	require.NoError(t, db.UpdateSCIMGroupMapping(ctx, groupA.ID, &role, &notifGroup.ID))
-	require.NoError(t, db.UpdateSCIMGroupMapping(ctx, groupB.ID, &role, &notifGroup.ID))
+	require.NoError(t, db.UpdateSCIMGroupMapping(ctx, org.ID, groupA.ID, &role, &notifGroup.ID))
+	require.NoError(t, db.UpdateSCIMGroupMapping(ctx, org.ID, groupB.ID, &role, &notifGroup.ID))
 
 	user := db.MustCreateUser(t, ctx, "countuser@example.com", "CountUser", "hash", 1)
 	require.NoError(t, db.CreateOrgMember(ctx, org.ID, user.ID, "member"))
@@ -264,15 +264,15 @@ func TestCountOtherSCIMGroupsWithSameMapping(t *testing.T) {
 	require.NoError(t, db.AddSCIMGroupMember(ctx, groupB.ID, user.ID, org.ID))
 
 	// Excluding group A → count should be 1 (group B).
-	count, err := db.CountOtherSCIMGroupsWithSameMapping(ctx, user.ID, notifGroup.ID, groupA.ID)
+	count, err := db.CountOtherSCIMGroupsWithSameMapping(ctx, org.ID, user.ID, notifGroup.ID, groupA.ID)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 
 	// Now remove user from group B.
-	require.NoError(t, db.RemoveSCIMGroupMember(ctx, groupB.ID, user.ID))
+	require.NoError(t, db.RemoveSCIMGroupMember(ctx, org.ID, groupB.ID, user.ID))
 
 	// Excluding group A → count should be 0.
-	count, err = db.CountOtherSCIMGroupsWithSameMapping(ctx, user.ID, notifGroup.ID, groupA.ID)
+	count, err = db.CountOtherSCIMGroupsWithSameMapping(ctx, org.ID, user.ID, notifGroup.ID, groupA.ID)
 	require.NoError(t, err)
 	require.Equal(t, 0, count)
 }

@@ -739,7 +739,7 @@ func TestGroupMapping_ClearMapping(t *testing.T) {
 		t.Fatalf("create scim group: %v", err)
 	}
 	admin := "admin"
-	if err := env.db.UpdateSCIMGroupMapping(ctx, scimGroup.ID, &admin, nil); err != nil {
+	if err := env.db.UpdateSCIMGroupMapping(ctx, env.orgID, scimGroup.ID, &admin, nil); err != nil {
 		t.Fatalf("set initial mapping: %v", err)
 	}
 

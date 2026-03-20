@@ -36,10 +36,10 @@ ON CONFLICT (group_id, user_id) DO NOTHING;
 
 -- name: RemoveSCIMManagedGroupMember :exec
 DELETE FROM group_members
-WHERE group_id = $1 AND user_id = $2 AND scim_managed = true;
+WHERE group_id = $1 AND user_id = $2 AND org_id = $3 AND scim_managed = true;
 
 -- name: IsGroupMemberSCIMManaged :one
 SELECT scim_managed FROM group_members WHERE group_id = $1 AND user_id = $2;
 
 -- name: GetGroupIfActive :one
-SELECT * FROM groups WHERE id = $1 AND deleted_at IS NULL;
+SELECT * FROM groups WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL;

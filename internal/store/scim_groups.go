@@ -36,14 +36,14 @@ func (s *Store) CreateSCIMGroup(ctx context.Context, orgID uuid.UUID, externalID
 	return &row, nil
 }
 
-// GetSCIMGroup returns the SCIM group by ID, or (nil, nil) if not found.
-func (s *Store) GetSCIMGroup(ctx context.Context, id uuid.UUID) (*generated.ScimGroup, error) {
+// GetSCIMGroup returns the SCIM group by ID within the given org, or (nil, nil) if not found.
+func (s *Store) GetSCIMGroup(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*generated.ScimGroup, error) {
 	var result *generated.ScimGroup
-	// RLS requires org context but GetSCIMGroupByID filters by id only.
-	// We use withBypassTx here since callers may not know the org_id upfront,
-	// and GetSCIMGroupByID queries by PK (RLS would restrict without SET LOCAL).
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		row, err := q.GetSCIMGroupByID(ctx, id)
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		row, err := q.GetSCIMGroupByID(ctx, generated.GetSCIMGroupByIDParams{
+			ID:    id,
+			OrgID: orgID,
+		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -123,23 +123,24 @@ func (s *Store) ListSCIMGroups(ctx context.Context, orgID uuid.UUID) ([]generate
 }
 
 // UpdateSCIMGroup updates the display name and external ID of a SCIM group.
-func (s *Store) UpdateSCIMGroup(ctx context.Context, id uuid.UUID, displayName string, externalID *string) error {
+func (s *Store) UpdateSCIMGroup(ctx context.Context, orgID uuid.UUID, id uuid.UUID, displayName string, externalID *string) error {
 	var extID sql.NullString
 	if externalID != nil {
 		extID = sql.NullString{String: *externalID, Valid: true}
 	}
 
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		return q.UpdateSCIMGroup(ctx, generated.UpdateSCIMGroupParams{
 			ID:          id,
 			DisplayName: displayName,
 			ExternalID:  extID,
+			OrgID:       orgID,
 		})
 	})
 }
 
 // UpdateSCIMGroupMapping updates the mapped role and notification group for a SCIM group.
-func (s *Store) UpdateSCIMGroupMapping(ctx context.Context, id uuid.UUID, mappedRole *string, mappedGroupID *uuid.UUID) error {
+func (s *Store) UpdateSCIMGroupMapping(ctx context.Context, orgID uuid.UUID, id uuid.UUID, mappedRole *string, mappedGroupID *uuid.UUID) error {
 	var role sql.NullString
 	if mappedRole != nil {
 		role = sql.NullString{String: *mappedRole, Valid: true}
@@ -149,19 +150,23 @@ func (s *Store) UpdateSCIMGroupMapping(ctx context.Context, id uuid.UUID, mapped
 		groupID = uuid.NullUUID{UUID: *mappedGroupID, Valid: true}
 	}
 
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		return q.UpdateSCIMGroupMapping(ctx, generated.UpdateSCIMGroupMappingParams{
 			ID:            id,
 			MappedRole:    role,
 			MappedGroupID: groupID,
+			OrgID:         orgID,
 		})
 	})
 }
 
 // DeleteSCIMGroup deletes a SCIM group by ID. Members are cascade-deleted.
-func (s *Store) DeleteSCIMGroup(ctx context.Context, id uuid.UUID) error {
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
-		return q.DeleteSCIMGroup(ctx, id)
+func (s *Store) DeleteSCIMGroup(ctx context.Context, orgID uuid.UUID, id uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		return q.DeleteSCIMGroup(ctx, generated.DeleteSCIMGroupParams{
+			ID:    id,
+			OrgID: orgID,
+		})
 	})
 }
 
@@ -177,21 +182,25 @@ func (s *Store) AddSCIMGroupMember(ctx context.Context, scimGroupID, userID, org
 }
 
 // RemoveSCIMGroupMember removes a user from a SCIM group.
-func (s *Store) RemoveSCIMGroupMember(ctx context.Context, scimGroupID, userID uuid.UUID) error {
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+func (s *Store) RemoveSCIMGroupMember(ctx context.Context, orgID uuid.UUID, scimGroupID, userID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		return q.RemoveSCIMGroupMember(ctx, generated.RemoveSCIMGroupMemberParams{
 			ScimGroupID: scimGroupID,
 			UserID:      userID,
+			OrgID:       orgID,
 		})
 	})
 }
 
 // ListSCIMGroupMembers returns all user IDs in the given SCIM group.
-func (s *Store) ListSCIMGroupMembers(ctx context.Context, scimGroupID uuid.UUID) ([]uuid.UUID, error) {
+func (s *Store) ListSCIMGroupMembers(ctx context.Context, orgID uuid.UUID, scimGroupID uuid.UUID) ([]uuid.UUID, error) {
 	var result []uuid.UUID
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		var err error
-		result, err = q.ListSCIMGroupMembers(ctx, scimGroupID)
+		result, err = q.ListSCIMGroupMembers(ctx, generated.ListSCIMGroupMembersParams{
+			ScimGroupID: scimGroupID,
+			OrgID:       orgID,
+		})
 		return err
 	})
 	if err != nil {
@@ -219,14 +228,15 @@ func (s *Store) ListUserSCIMGroups(ctx context.Context, userID, orgID uuid.UUID)
 
 // CountOtherSCIMGroupsWithSameMapping counts how many other SCIM groups (excluding
 // excludeGroupID) map to the same notification group and contain the given user.
-func (s *Store) CountOtherSCIMGroupsWithSameMapping(ctx context.Context, userID uuid.UUID, mappedGroupID uuid.UUID, excludeGroupID uuid.UUID) (int, error) {
+func (s *Store) CountOtherSCIMGroupsWithSameMapping(ctx context.Context, orgID uuid.UUID, userID uuid.UUID, mappedGroupID uuid.UUID, excludeGroupID uuid.UUID) (int, error) {
 	var count int32
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		var err error
 		count, err = q.CountOtherSCIMGroupsWithSameMapping(ctx, generated.CountOtherSCIMGroupsWithSameMappingParams{
 			UserID:        userID,
 			MappedGroupID: uuid.NullUUID{UUID: mappedGroupID, Valid: true},
 			ID:            excludeGroupID,
+			OrgID:         orgID,
 		})
 		return err
 	})

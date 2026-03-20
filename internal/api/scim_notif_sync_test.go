@@ -188,10 +188,10 @@ func TestNotifSync_Remove_MultiMapping(t *testing.T) {
 
 	// Map both SCIM groups to the same notification group.
 	notifGroupID := notifGroup.ID
-	if err := db.UpdateSCIMGroupMapping(ctx, scimGroupA.ID, nil, &notifGroupID); err != nil {
+	if err := db.UpdateSCIMGroupMapping(ctx, org.ID, scimGroupA.ID, nil, &notifGroupID); err != nil {
 		t.Fatalf("setup: UpdateSCIMGroupMapping A: %v", err)
 	}
-	if err := db.UpdateSCIMGroupMapping(ctx, scimGroupB.ID, nil, &notifGroupID); err != nil {
+	if err := db.UpdateSCIMGroupMapping(ctx, org.ID, scimGroupB.ID, nil, &notifGroupID); err != nil {
 		t.Fatalf("setup: UpdateSCIMGroupMapping B: %v", err)
 	}
 
@@ -218,7 +218,7 @@ func TestNotifSync_Remove_MultiMapping(t *testing.T) {
 	}
 
 	// Now remove from SCIM group B — no more mappings, should remove.
-	if err := db.RemoveSCIMGroupMember(ctx, scimGroupA.ID, user.ID); err != nil {
+	if err := db.RemoveSCIMGroupMember(ctx, org.ID, scimGroupA.ID, user.ID); err != nil {
 		t.Fatalf("RemoveSCIMGroupMember A: %v", err)
 	}
 	if err := srv.syncNotifGroupRemove(ctx, org.ID, user.ID, notifGroup.ID, scimGroupB.ID); err != nil {
@@ -256,7 +256,7 @@ func TestNotifSync_GroupDelete_NoRemoval(t *testing.T) {
 	if err := db.AddSCIMGroupMember(ctx, scimGroup.ID, user.ID, org.ID); err != nil {
 		t.Fatalf("setup: AddSCIMGroupMember: %v", err)
 	}
-	if err := db.DeleteSCIMGroup(ctx, scimGroup.ID); err != nil {
+	if err := db.DeleteSCIMGroup(ctx, org.ID, scimGroup.ID); err != nil {
 		t.Fatalf("DeleteSCIMGroup: %v", err)
 	}
 

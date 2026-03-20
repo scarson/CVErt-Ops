@@ -52,7 +52,7 @@ func setupSCIMGroupWithMapping(t *testing.T, db *testutil.TestDB, ctx context.Co
 	}
 
 	if mappedRole != nil {
-		if err := db.UpdateSCIMGroupMapping(ctx, group.ID, mappedRole, nil); err != nil {
+		if err := db.UpdateSCIMGroupMapping(ctx, orgID, group.ID, mappedRole, nil); err != nil {
 			t.Fatalf("setup: UpdateSCIMGroupMapping: %v", err)
 		}
 	}
@@ -227,7 +227,7 @@ func TestRoleRecompute_RemovedFromAllGroups(t *testing.T) {
 	// Add to a group with mapped role, then remove.
 	adminRole := "admin"
 	groupID := setupSCIMGroupWithMapping(t, db, ctx, orgID, userID, "Admins", &adminRole)
-	if err := db.RemoveSCIMGroupMember(ctx, groupID, userID); err != nil {
+	if err := db.RemoveSCIMGroupMember(ctx, orgID, groupID, userID); err != nil {
 		t.Fatalf("RemoveSCIMGroupMember: %v", err)
 	}
 

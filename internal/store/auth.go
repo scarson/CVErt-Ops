@@ -363,6 +363,19 @@ func (s *Store) UpdateUserProfile(ctx context.Context, id uuid.UUID, email, disp
 	})
 }
 
+// ListIdentitiesByProviderAndUsers returns all identity rows for a provider
+// and set of user IDs. Used by SCIM list users to batch-load external IDs.
+func (s *Store) ListIdentitiesByProviderAndUsers(ctx context.Context, provider string, userIDs []uuid.UUID) ([]generated.UserIdentity, error) {
+	rows, err := s.q.ListIdentitiesByProviderAndUsers(ctx, generated.ListIdentitiesByProviderAndUsersParams{
+		Provider: provider,
+		Column2:  userIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list identities by provider and users: %w", err)
+	}
+	return rows, nil
+}
+
 // GetIdentityByProviderAndUser returns the identity row for a provider+user,
 // or (nil, nil) if not found.
 func (s *Store) GetIdentityByProviderAndUser(ctx context.Context, provider string, userID uuid.UUID) (*generated.UserIdentity, error) {

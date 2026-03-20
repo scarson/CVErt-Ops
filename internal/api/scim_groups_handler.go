@@ -33,6 +33,8 @@ func (srv *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
 
+	slog.InfoContext(ctx, "scim create group", slog.String("org_id", orgID.String()))
+
 	var body scimGroupRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeSCIMError(w, http.StatusBadRequest, "invalidValue", "invalid JSON body")
@@ -86,7 +88,7 @@ func (srv *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load members for response.
-	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, group.ID)
+	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, orgID, group.ID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: list members after create", "error", err)
 	}
@@ -108,6 +110,10 @@ func (srv *Server) scimCreateGroup(w http.ResponseWriter, r *http.Request) {
 // scimGetGroup handles GET /Groups/{id}.
 func (srv *Server) scimGetGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
+
+	slog.InfoContext(ctx, "scim get group", slog.String("org_id", orgID.String()))
+
 	groupIDStr := chi.URLParam(r, "id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
@@ -115,7 +121,7 @@ func (srv *Server) scimGetGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := srv.store.GetSCIMGroup(ctx, groupID)
+	group, err := srv.store.GetSCIMGroup(ctx, orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: get group", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
@@ -126,14 +132,7 @@ func (srv *Server) scimGetGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the group belongs to this org.
-	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
-	if group.OrgID != orgID {
-		writeSCIMError(w, http.StatusNotFound, "", "group not found")
-		return
-	}
-
-	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, group.ID)
+	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, orgID, group.ID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: list group members", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
@@ -148,6 +147,8 @@ func (srv *Server) scimGetGroup(w http.ResponseWriter, r *http.Request) {
 func (srv *Server) scimListGroups(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
+
+	slog.InfoContext(ctx, "scim list groups", slog.String("org_id", orgID.String()))
 
 	filterStr := r.URL.Query().Get("filter")
 	exprs, err := parseSCIMFilter(filterStr)
@@ -167,7 +168,7 @@ func (srv *Server) scimListGroups(w http.ResponseWriter, r *http.Request) {
 	var filtered []any
 	for _, g := range groups {
 		if matchesSCIMGroupFilter(g.ID.String(), g.ExternalID.String, g.DisplayName, exprs) {
-			memberIDs, mErr := srv.store.ListSCIMGroupMembers(ctx, g.ID)
+			memberIDs, mErr := srv.store.ListSCIMGroupMembers(ctx, orgID, g.ID)
 			if mErr != nil {
 				slog.ErrorContext(ctx, "scim: list group members for list", "group_id", g.ID, "error", mErr)
 				continue
@@ -195,6 +196,8 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
 
+	slog.InfoContext(ctx, "scim replace group", slog.String("org_id", orgID.String()))
+
 	groupIDStr := chi.URLParam(r, "id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
@@ -202,13 +205,13 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := srv.store.GetSCIMGroup(ctx, groupID)
+	group, err := srv.store.GetSCIMGroup(ctx, orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: get group for replace", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
 	}
-	if group == nil || group.OrgID != orgID {
+	if group == nil {
 		writeSCIMError(w, http.StatusNotFound, "", "group not found")
 		return
 	}
@@ -229,7 +232,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 		externalID = &body.ExternalID
 	}
 
-	if err := srv.store.UpdateSCIMGroup(ctx, groupID, body.DisplayName, externalID); err != nil {
+	if err := srv.store.UpdateSCIMGroup(ctx, orgID, groupID, body.DisplayName, externalID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			writeSCIMError(w, http.StatusConflict, "uniqueness", "group displayName already exists in this organization")
 			return
@@ -252,7 +255,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Diff members: current vs new.
-	currentMembers, err := srv.store.ListSCIMGroupMembers(ctx, groupID)
+	currentMembers, err := srv.store.ListSCIMGroupMembers(ctx, orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: list members for diff", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
@@ -274,7 +277,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reload group to get the current mapped_role and mapped_group_id.
-	group, _ = srv.store.GetSCIMGroup(ctx, groupID)
+	group, _ = srv.store.GetSCIMGroup(ctx, orgID, groupID)
 
 	// Add new members.
 	for uid := range newMemberSet {
@@ -290,7 +293,7 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	// Remove absent members.
 	for _, uid := range currentMembers {
 		if !newMemberSet[uid] {
-			if rmErr := srv.store.RemoveSCIMGroupMember(ctx, groupID, uid); rmErr != nil {
+			if rmErr := srv.store.RemoveSCIMGroupMember(ctx, orgID, groupID, uid); rmErr != nil {
 				slog.ErrorContext(ctx, "scim: remove member in replace", "user_id", uid, "error", rmErr)
 				continue
 			}
@@ -309,8 +312,8 @@ func (srv *Server) scimReplaceGroup(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Reload for response.
-	memberIDs, _ := srv.store.ListSCIMGroupMembers(ctx, groupID)
-	group, _ = srv.store.GetSCIMGroup(ctx, groupID)
+	memberIDs, _ := srv.store.ListSCIMGroupMembers(ctx, orgID, groupID)
+	group, _ = srv.store.GetSCIMGroup(ctx, orgID, groupID)
 	resp := srv.buildSCIMGroupResponse(r, group.ID.String(), group.ExternalID.String, group.DisplayName, group.CreatedAt.Format("2006-01-02T15:04:05Z"), group.UpdatedAt.Format("2006-01-02T15:04:05Z"), memberIDs)
 	writeSCIMJSON(w, http.StatusOK, resp)
 }
@@ -320,6 +323,8 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
 
+	slog.InfoContext(ctx, "scim patch group", slog.String("org_id", orgID.String()))
+
 	groupIDStr := chi.URLParam(r, "id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
@@ -327,13 +332,13 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := srv.store.GetSCIMGroup(ctx, groupID)
+	group, err := srv.store.GetSCIMGroup(ctx, orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: get group for patch", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
 	}
-	if group == nil || group.OrgID != orgID {
+	if group == nil {
 		writeSCIMError(w, http.StatusNotFound, "", "group not found")
 		return
 	}
@@ -376,7 +381,7 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 		case "remove":
 			userIDs := srv.extractRemoveTargets(op)
 			for _, userID := range userIDs {
-				if rmErr := srv.store.RemoveSCIMGroupMember(ctx, group.ID, userID); rmErr != nil {
+				if rmErr := srv.store.RemoveSCIMGroupMember(ctx, orgID, group.ID, userID); rmErr != nil {
 					slog.ErrorContext(ctx, "scim: patch remove member", "user_id", userID, "error", rmErr)
 					continue
 				}
@@ -394,7 +399,7 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 					writeSCIMError(w, http.StatusBadRequest, "invalidValue", "displayName cannot be empty")
 					return
 				}
-				if updateErr := srv.store.UpdateSCIMGroup(ctx, group.ID, newName, nil); updateErr != nil {
+				if updateErr := srv.store.UpdateSCIMGroup(ctx, orgID, group.ID, newName, nil); updateErr != nil {
 					if strings.Contains(updateErr.Error(), "duplicate key") || strings.Contains(updateErr.Error(), "unique constraint") {
 						writeSCIMError(w, http.StatusConflict, "uniqueness", "group displayName already exists in this organization")
 						return
@@ -425,8 +430,8 @@ func (srv *Server) scimPatchGroup(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Reload for response.
-	group, _ = srv.store.GetSCIMGroup(ctx, groupID)
-	memberIDs, _ := srv.store.ListSCIMGroupMembers(ctx, groupID)
+	group, _ = srv.store.GetSCIMGroup(ctx, orgID, groupID)
+	memberIDs, _ := srv.store.ListSCIMGroupMembers(ctx, orgID, groupID)
 	resp := srv.buildSCIMGroupResponse(r, group.ID.String(), group.ExternalID.String, group.DisplayName, group.CreatedAt.Format("2006-01-02T15:04:05Z"), group.UpdatedAt.Format("2006-01-02T15:04:05Z"), memberIDs)
 	writeSCIMJSON(w, http.StatusOK, resp)
 }
@@ -436,6 +441,8 @@ func (srv *Server) scimDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orgID := ctx.Value(ctxOrgID).(uuid.UUID)
 
+	slog.InfoContext(ctx, "scim delete group", slog.String("org_id", orgID.String()))
+
 	groupIDStr := chi.URLParam(r, "id")
 	groupID, err := uuid.Parse(groupIDStr)
 	if err != nil {
@@ -443,20 +450,20 @@ func (srv *Server) scimDeleteGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := srv.store.GetSCIMGroup(ctx, groupID)
+	group, err := srv.store.GetSCIMGroup(ctx, orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: get group for delete", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
 	}
-	if group == nil || group.OrgID != orgID {
+	if group == nil {
 		// Idempotent — already deleted returns 204.
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	// Collect affected non-exempt users before deletion.
-	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, groupID)
+	memberIDs, err := srv.store.ListSCIMGroupMembers(ctx, orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(ctx, "scim: list members for delete", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
@@ -476,7 +483,7 @@ func (srv *Server) scimDeleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Delete the group (CASCADE deletes scim_group_members).
-	if err := srv.store.DeleteSCIMGroup(ctx, groupID); err != nil {
+	if err := srv.store.DeleteSCIMGroup(ctx, orgID, groupID); err != nil {
 		slog.ErrorContext(ctx, "scim: delete group", "error", err)
 		writeSCIMError(w, http.StatusInternalServerError, "", "internal error")
 		return
@@ -628,6 +635,7 @@ func matchesSCIMGroupFilter(id, externalID, displayName string, exprs []SCIMFilt
 				return false
 			}
 		default:
+			slog.Warn("scim list groups: unsupported filter attribute", slog.String("attribute", expr.Attr)) //nolint:gosec // G706: slog structured field, not interpolated into log format string
 			return false
 		}
 	}
@@ -663,16 +671,9 @@ func (srv *Server) buildSCIMGroupResponse(r *http.Request, id, externalID, displ
 // For a request to /api/v1/orgs/{org_id}/scim/v2/Groups/..., returns
 // the URL up to and including /scim/v2.
 func scimBaseURL(r *http.Request) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
-		scheme = fwd
-	}
 	path := r.URL.Path
 	if idx := strings.Index(path, "/scim/v2"); idx >= 0 {
 		path = path[:idx+len("/scim/v2")]
 	}
-	return fmt.Sprintf("%s://%s%s", scheme, r.Host, path)
+	return fmt.Sprintf("%s://%s%s", scimScheme(r), r.Host, path)
 }

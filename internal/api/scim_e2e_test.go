@@ -330,7 +330,7 @@ func TestSCIME2E_GroupRoleMapping(t *testing.T) {
 
 	// Set mapped_role="admin" via store (simulating admin action).
 	adminRole := "admin"
-	if err := env.db.UpdateSCIMGroupMapping(ctx, groupUUID, &adminRole, nil); err != nil {
+	if err := env.db.UpdateSCIMGroupMapping(ctx, env.orgID, groupUUID, &adminRole, nil); err != nil {
 		t.Fatalf("UpdateSCIMGroupMapping: %v", err)
 	}
 

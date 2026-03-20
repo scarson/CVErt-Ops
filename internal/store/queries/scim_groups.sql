@@ -6,7 +6,7 @@ INSERT INTO scim_groups (org_id, external_id, display_name)
 VALUES ($1, $2, $3) RETURNING *;
 
 -- name: GetSCIMGroupByID :one
-SELECT * FROM scim_groups WHERE id = $1;
+SELECT * FROM scim_groups WHERE id = $1 AND org_id = $2;
 
 -- name: GetSCIMGroupByDisplayName :one
 SELECT * FROM scim_groups WHERE org_id = $1 AND display_name = $2;
@@ -24,14 +24,14 @@ ORDER BY sg.display_name;
 
 -- name: UpdateSCIMGroup :exec
 UPDATE scim_groups SET display_name = $2, external_id = $3, updated_at = now()
-WHERE id = $1;
+WHERE id = $1 AND org_id = $4;
 
 -- name: UpdateSCIMGroupMapping :exec
 UPDATE scim_groups SET mapped_role = $2, mapped_group_id = $3, updated_at = now()
-WHERE id = $1;
+WHERE id = $1 AND org_id = $4;
 
 -- name: DeleteSCIMGroup :exec
-DELETE FROM scim_groups WHERE id = $1;
+DELETE FROM scim_groups WHERE id = $1 AND org_id = $2;
 
 -- name: AddSCIMGroupMember :exec
 INSERT INTO scim_group_members (scim_group_id, user_id, org_id)
@@ -39,10 +39,10 @@ VALUES ($1, $2, $3)
 ON CONFLICT (scim_group_id, user_id) DO NOTHING;
 
 -- name: RemoveSCIMGroupMember :exec
-DELETE FROM scim_group_members WHERE scim_group_id = $1 AND user_id = $2;
+DELETE FROM scim_group_members WHERE scim_group_id = $1 AND user_id = $2 AND org_id = $3;
 
 -- name: ListSCIMGroupMembers :many
-SELECT user_id FROM scim_group_members WHERE scim_group_id = $1;
+SELECT user_id FROM scim_group_members WHERE scim_group_id = $1 AND org_id = $2;
 
 -- name: ListUserSCIMGroups :many
 SELECT sg.* FROM scim_groups sg
@@ -57,4 +57,5 @@ SELECT COUNT(*)::int FROM scim_group_members sgm
 JOIN scim_groups sg ON sgm.scim_group_id = sg.id
 WHERE sgm.user_id = $1
   AND sg.mapped_group_id = $2
-  AND sg.id != $3;
+  AND sg.id != $3
+  AND sgm.org_id = $4;

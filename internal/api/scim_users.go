@@ -34,14 +34,22 @@ func scimProvider(scimConfigID uuid.UUID) string {
 	return fmt.Sprintf("scim:%s", scimConfigID)
 }
 
+// scimScheme returns "https" or "http" based on TLS state and X-Forwarded-Proto.
+// Only trusts X-Forwarded-Proto if it's a valid scheme.
+func scimScheme(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
+		return fwd
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
 // scimUserLocation returns the SCIM resource location for a user.
 func scimUserLocation(r *http.Request, orgID, userID uuid.UUID) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
 	return fmt.Sprintf("%s://%s/api/v1/orgs/%s/scim/v2/Users/%s",
-		scheme, r.Host, orgID, userID)
+		scimScheme(r), r.Host, orgID, userID)
 }
 
 // buildSCIMUser constructs a SCIMUser response from component data.
@@ -370,6 +378,11 @@ func (srv *Server) scimGetUser(w http.ResponseWriter, r *http.Request) {
 	provider := scimProvider(scimConfigID)
 	ctx := r.Context()
 
+	slog.InfoContext(ctx, "scim get user",
+		slog.String("org_id", orgID.String()),
+		slog.String("scim_config_id", scimConfigID.String()),
+	)
+
 	userIDStr := chi.URLParam(r, "id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -407,6 +420,11 @@ func (srv *Server) scimListUsers(w http.ResponseWriter, r *http.Request) {
 	scimConfigID := r.Context().Value(ctxSCIMConfigID).(uuid.UUID)
 	provider := scimProvider(scimConfigID)
 	ctx := r.Context()
+
+	slog.InfoContext(ctx, "scim list users",
+		slog.String("org_id", orgID.String()),
+		slog.String("scim_config_id", scimConfigID.String()),
+	)
 
 	// Parse pagination params.
 	startIndex := 1
@@ -450,6 +468,20 @@ func (srv *Server) scimListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Batch-load external IDs for all members.
+	userIDs := make([]uuid.UUID, len(members))
+	for i, m := range members {
+		userIDs[i] = m.UserID
+	}
+	extIDMap := make(map[uuid.UUID]string)
+	identities, idErr := srv.store.ListIdentitiesByProviderAndUsers(ctx, provider, userIDs)
+	if idErr != nil {
+		slog.ErrorContext(ctx, "scim list users: batch load identities", "error", idErr)
+	}
+	for _, identity := range identities {
+		extIDMap[identity.UserID] = identity.ProviderUserID
+	}
+
 	// Apply filters.
 	type scimMember struct {
 		UserID      uuid.UUID
@@ -464,13 +496,7 @@ func (srv *Server) scimListUsers(w http.ResponseWriter, r *http.Request) {
 	var filtered []scimMember
 	for _, m := range members {
 		active := !m.DeactivatedAt.Valid
-
-		// Get external ID for this member.
-		extID := ""
-		identity, _ := srv.store.GetIdentityByProviderAndUser(ctx, provider, m.UserID)
-		if identity != nil {
-			extID = identity.ProviderUserID
-		}
+		extID := extIDMap[m.UserID]
 
 		// Apply filters.
 		match := true
@@ -547,6 +573,11 @@ func (srv *Server) scimReplaceUser(w http.ResponseWriter, r *http.Request) {
 	scimConfigID := r.Context().Value(ctxSCIMConfigID).(uuid.UUID)
 	provider := scimProvider(scimConfigID)
 	ctx := r.Context()
+
+	slog.InfoContext(ctx, "scim replace user",
+		slog.String("org_id", orgID.String()),
+		slog.String("scim_config_id", scimConfigID.String()),
+	)
 
 	userIDStr := chi.URLParam(r, "id")
 	userID, err := uuid.Parse(userIDStr)
@@ -704,6 +735,11 @@ func (srv *Server) scimPatchUser(w http.ResponseWriter, r *http.Request) {
 	scimConfigID := r.Context().Value(ctxSCIMConfigID).(uuid.UUID)
 	provider := scimProvider(scimConfigID)
 	ctx := r.Context()
+
+	slog.InfoContext(ctx, "scim patch user",
+		slog.String("org_id", orgID.String()),
+		slog.String("scim_config_id", scimConfigID.String()),
+	)
 
 	userIDStr := chi.URLParam(r, "id")
 	userID, err := uuid.Parse(userIDStr)
@@ -948,6 +984,11 @@ func (srv *Server) scimDeleteUser(w http.ResponseWriter, r *http.Request) {
 	scimConfigID := r.Context().Value(ctxSCIMConfigID).(uuid.UUID)
 	ctx := r.Context()
 
+	slog.InfoContext(ctx, "scim delete user",
+		slog.String("org_id", orgID.String()),
+		slog.String("scim_config_id", scimConfigID.String()),
+	)
+
 	userIDStr := chi.URLParam(r, "id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -1064,8 +1105,6 @@ func (srv *Server) getSCIMDefaultRole(ctx context.Context, orgID uuid.UUID) stri
 // scimAuditLog writes an audit log entry for SCIM operations.
 // SCIM operations have no human actor (actor_id = nil).
 func (srv *Server) scimAuditLog(r *http.Request, _, _ uuid.UUID, entry audit.Entry) {
-	// Override: SCIM has no actor.
-	noActor := uuid.Nil
-	entry.ActorID = &noActor
+	entry.ActorID = nil
 	srv.auditLog(r, entry)
 }

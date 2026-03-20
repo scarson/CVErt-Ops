@@ -96,11 +96,16 @@ func (q *Queries) GetGroup(ctx context.Context, arg GetGroupParams) (Group, erro
 }
 
 const getGroupIfActive = `-- name: GetGroupIfActive :one
-SELECT id, org_id, name, description, created_at, deleted_at FROM groups WHERE id = $1 AND deleted_at IS NULL
+SELECT id, org_id, name, description, created_at, deleted_at FROM groups WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 `
 
-func (q *Queries) GetGroupIfActive(ctx context.Context, id uuid.UUID) (Group, error) {
-	row := q.db.QueryRowContext(ctx, getGroupIfActive, id)
+type GetGroupIfActiveParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) GetGroupIfActive(ctx context.Context, arg GetGroupIfActiveParams) (Group, error) {
+	row := q.db.QueryRowContext(ctx, getGroupIfActive, arg.ID, arg.OrgID)
 	var i Group
 	err := row.Scan(
 		&i.ID,
@@ -235,16 +240,17 @@ func (q *Queries) RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberPa
 
 const removeSCIMManagedGroupMember = `-- name: RemoveSCIMManagedGroupMember :exec
 DELETE FROM group_members
-WHERE group_id = $1 AND user_id = $2 AND scim_managed = true
+WHERE group_id = $1 AND user_id = $2 AND org_id = $3 AND scim_managed = true
 `
 
 type RemoveSCIMManagedGroupMemberParams struct {
 	GroupID uuid.UUID
 	UserID  uuid.UUID
+	OrgID   uuid.UUID
 }
 
 func (q *Queries) RemoveSCIMManagedGroupMember(ctx context.Context, arg RemoveSCIMManagedGroupMemberParams) error {
-	_, err := q.db.ExecContext(ctx, removeSCIMManagedGroupMember, arg.GroupID, arg.UserID)
+	_, err := q.db.ExecContext(ctx, removeSCIMManagedGroupMember, arg.GroupID, arg.UserID, arg.OrgID)
 	return err
 }
 

@@ -36,16 +36,23 @@ JOIN scim_groups sg ON sgm.scim_group_id = sg.id
 WHERE sgm.user_id = $1
   AND sg.mapped_group_id = $2
   AND sg.id != $3
+  AND sgm.org_id = $4
 `
 
 type CountOtherSCIMGroupsWithSameMappingParams struct {
 	UserID        uuid.UUID
 	MappedGroupID uuid.NullUUID
 	ID            uuid.UUID
+	OrgID         uuid.UUID
 }
 
 func (q *Queries) CountOtherSCIMGroupsWithSameMapping(ctx context.Context, arg CountOtherSCIMGroupsWithSameMappingParams) (int32, error) {
-	row := q.db.QueryRowContext(ctx, countOtherSCIMGroupsWithSameMapping, arg.UserID, arg.MappedGroupID, arg.ID)
+	row := q.db.QueryRowContext(ctx, countOtherSCIMGroupsWithSameMapping,
+		arg.UserID,
+		arg.MappedGroupID,
+		arg.ID,
+		arg.OrgID,
+	)
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -82,11 +89,16 @@ func (q *Queries) CreateSCIMGroup(ctx context.Context, arg CreateSCIMGroupParams
 }
 
 const deleteSCIMGroup = `-- name: DeleteSCIMGroup :exec
-DELETE FROM scim_groups WHERE id = $1
+DELETE FROM scim_groups WHERE id = $1 AND org_id = $2
 `
 
-func (q *Queries) DeleteSCIMGroup(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteSCIMGroup, id)
+type DeleteSCIMGroupParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) DeleteSCIMGroup(ctx context.Context, arg DeleteSCIMGroupParams) error {
+	_, err := q.db.ExecContext(ctx, deleteSCIMGroup, arg.ID, arg.OrgID)
 	return err
 }
 
@@ -141,11 +153,16 @@ func (q *Queries) GetSCIMGroupByExternalID(ctx context.Context, arg GetSCIMGroup
 }
 
 const getSCIMGroupByID = `-- name: GetSCIMGroupByID :one
-SELECT id, org_id, external_id, display_name, mapped_role, mapped_group_id, created_at, updated_at FROM scim_groups WHERE id = $1
+SELECT id, org_id, external_id, display_name, mapped_role, mapped_group_id, created_at, updated_at FROM scim_groups WHERE id = $1 AND org_id = $2
 `
 
-func (q *Queries) GetSCIMGroupByID(ctx context.Context, id uuid.UUID) (ScimGroup, error) {
-	row := q.db.QueryRowContext(ctx, getSCIMGroupByID, id)
+type GetSCIMGroupByIDParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) GetSCIMGroupByID(ctx context.Context, arg GetSCIMGroupByIDParams) (ScimGroup, error) {
+	row := q.db.QueryRowContext(ctx, getSCIMGroupByID, arg.ID, arg.OrgID)
 	var i ScimGroup
 	err := row.Scan(
 		&i.ID,
@@ -161,11 +178,16 @@ func (q *Queries) GetSCIMGroupByID(ctx context.Context, id uuid.UUID) (ScimGroup
 }
 
 const listSCIMGroupMembers = `-- name: ListSCIMGroupMembers :many
-SELECT user_id FROM scim_group_members WHERE scim_group_id = $1
+SELECT user_id FROM scim_group_members WHERE scim_group_id = $1 AND org_id = $2
 `
 
-func (q *Queries) ListSCIMGroupMembers(ctx context.Context, scimGroupID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := q.db.QueryContext(ctx, listSCIMGroupMembers, scimGroupID)
+type ListSCIMGroupMembersParams struct {
+	ScimGroupID uuid.UUID
+	OrgID       uuid.UUID
+}
+
+func (q *Queries) ListSCIMGroupMembers(ctx context.Context, arg ListSCIMGroupMembersParams) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listSCIMGroupMembers, arg.ScimGroupID, arg.OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -285,16 +307,17 @@ func (q *Queries) ListUserSCIMGroups(ctx context.Context, arg ListUserSCIMGroups
 }
 
 const removeSCIMGroupMember = `-- name: RemoveSCIMGroupMember :exec
-DELETE FROM scim_group_members WHERE scim_group_id = $1 AND user_id = $2
+DELETE FROM scim_group_members WHERE scim_group_id = $1 AND user_id = $2 AND org_id = $3
 `
 
 type RemoveSCIMGroupMemberParams struct {
 	ScimGroupID uuid.UUID
 	UserID      uuid.UUID
+	OrgID       uuid.UUID
 }
 
 func (q *Queries) RemoveSCIMGroupMember(ctx context.Context, arg RemoveSCIMGroupMemberParams) error {
-	_, err := q.db.ExecContext(ctx, removeSCIMGroupMember, arg.ScimGroupID, arg.UserID)
+	_, err := q.db.ExecContext(ctx, removeSCIMGroupMember, arg.ScimGroupID, arg.UserID, arg.OrgID)
 	return err
 }
 
@@ -309,32 +332,44 @@ func (q *Queries) SetSCIMGroupMembers_Delete(ctx context.Context, scimGroupID uu
 
 const updateSCIMGroup = `-- name: UpdateSCIMGroup :exec
 UPDATE scim_groups SET display_name = $2, external_id = $3, updated_at = now()
-WHERE id = $1
+WHERE id = $1 AND org_id = $4
 `
 
 type UpdateSCIMGroupParams struct {
 	ID          uuid.UUID
 	DisplayName string
 	ExternalID  sql.NullString
+	OrgID       uuid.UUID
 }
 
 func (q *Queries) UpdateSCIMGroup(ctx context.Context, arg UpdateSCIMGroupParams) error {
-	_, err := q.db.ExecContext(ctx, updateSCIMGroup, arg.ID, arg.DisplayName, arg.ExternalID)
+	_, err := q.db.ExecContext(ctx, updateSCIMGroup,
+		arg.ID,
+		arg.DisplayName,
+		arg.ExternalID,
+		arg.OrgID,
+	)
 	return err
 }
 
 const updateSCIMGroupMapping = `-- name: UpdateSCIMGroupMapping :exec
 UPDATE scim_groups SET mapped_role = $2, mapped_group_id = $3, updated_at = now()
-WHERE id = $1
+WHERE id = $1 AND org_id = $4
 `
 
 type UpdateSCIMGroupMappingParams struct {
 	ID            uuid.UUID
 	MappedRole    sql.NullString
 	MappedGroupID uuid.NullUUID
+	OrgID         uuid.UUID
 }
 
 func (q *Queries) UpdateSCIMGroupMapping(ctx context.Context, arg UpdateSCIMGroupMappingParams) error {
-	_, err := q.db.ExecContext(ctx, updateSCIMGroupMapping, arg.ID, arg.MappedRole, arg.MappedGroupID)
+	_, err := q.db.ExecContext(ctx, updateSCIMGroupMapping,
+		arg.ID,
+		arg.MappedRole,
+		arg.MappedGroupID,
+		arg.OrgID,
+	)
 	return err
 }

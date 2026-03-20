@@ -1,16 +1,15 @@
-// ABOUTME: Feed adapter for the Microsoft Security Response Center (MSRC) API.
-// ABOUTME: Fetches CSAF 2.0 advisories, converts to CanonicalPatch with vendor enrichment.
+// ABOUTME: Feed adapter for the Microsoft Security Response Center (MSRC) CSAF feed.
+// ABOUTME: Fetches per-CVE CSAF 2.0 advisories via changes.csv, converts to CanonicalPatch with vendor enrichment.
 package msrc
 
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -24,22 +23,19 @@ const (
 	// SourceName is the canonical feed name stored in cve_sources.
 	SourceName = "msrc"
 
-	// baseURL is the MSRC CSAF API base endpoint.
-	baseURL = "https://api.msrc.microsoft.com/cvrf/v3.0/"
+	// baseURL is the MSRC CSAF advisories base path.
+	baseURL = "https://msrc.microsoft.com/csaf/advisories/"
 
-	// maxUpdatesSize caps the /updates response body to prevent OOM from malformed responses.
-	maxUpdatesSize = 5 << 20 // 5 MB
+	// maxChangesSize caps the changes.csv response body to prevent OOM from malformed responses.
+	maxChangesSize = 10 << 20 // 10 MB
 
 	// maxCSAFDocSize caps the CSAF response body to prevent OOM from malformed responses.
-	maxCSAFDocSize = 50 << 20 // 50 MB
+	maxCSAFDocSize = 1 << 20 // 1 MB
 )
-
-// dateTimeRe validates OData datetime literal format to prevent injection.
-var dateTimeRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)?$`)
 
 // Cursor is the JSON-serializable sync state for the MSRC adapter.
 type Cursor struct {
-	LastReleaseDate string `json:"last_release_date"`
+	LastUpdated string `json:"last_updated"`
 }
 
 // Adapter implements feed.Adapter for the MSRC CSAF feed.
@@ -59,24 +55,32 @@ func New(client *http.Client) *Adapter {
 	}
 }
 
-// updateEntry represents a single release in the MSRC /updates response.
-type updateEntry struct {
-	ID                 string `json:"ID"`
-	CurrentReleaseDate string `json:"CurrentReleaseDate"`
+// changeEntry represents a single row in the MSRC changes.csv file.
+type changeEntry struct {
+	Path      string
+	Timestamp string
 }
 
-// updatesResponse is the OData JSON wrapper around the updates list.
-type updatesResponse struct {
-	Value []updateEntry `json:"value"`
-}
-
-// parseUpdates decodes the MSRC /updates OData JSON response.
-func parseUpdates(r io.Reader) ([]updateEntry, error) {
-	var resp updatesResponse
-	if err := json.NewDecoder(r).Decode(&resp); err != nil {
-		return nil, fmt.Errorf("msrc: parse updates: %w", err)
+// parseChangesCSV parses the MSRC changes.csv format: "path","timestamp" per line.
+func parseChangesCSV(r io.Reader) ([]changeEntry, error) {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = 2
+	cr.ReuseRecord = true
+	var entries []changeEntry
+	for {
+		record, err := cr.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("msrc: parse changes.csv: %w", err)
+		}
+		entries = append(entries, changeEntry{
+			Path:      strings.Clone(record[0]),
+			Timestamp: strings.Clone(record[1]),
+		})
 	}
-	return resp.Value, nil
+	return entries, nil
 }
 
 // parseCSAFDocument parses a raw CSAF JSON byte slice into a csaf.Document.
@@ -282,8 +286,8 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 }
 
 // Fetch implements feed.Adapter. Two-phase:
-// 1. Poll /updates to discover changed release IDs since LastReleaseDate
-// 2. Fetch CSAF document for each changed release, parse, convert to patches
+// 1. Download changes.csv to discover CSAF files updated since LastUpdated cursor
+// 2. Download each pending CSAF file, parse, convert to patches
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
 	var cur Cursor
 	if len(cursorJSON) > 0 {
@@ -292,64 +296,54 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}
 	}
 
-	// Phase 1: discover changed release IDs
+	// Phase 1: download and parse changes.csv
 	if err := a.rateLimiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("msrc: rate limit: %w", err)
 	}
 
-	updatesURL := baseURL + "updates"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, updatesURL, nil)
+	changesURL := baseURL + "changes.csv"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, changesURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("msrc: build updates request: %w", err)
+		return nil, fmt.Errorf("msrc: build changes request: %w", err)
 	}
-	if cur.LastReleaseDate != "" {
-		if !dateTimeRe.MatchString(cur.LastReleaseDate) {
-			return nil, fmt.Errorf("msrc: invalid cursor date format: %q", cur.LastReleaseDate)
-		}
-		q := req.URL.Query()
-		q.Set("$filter", "CurrentReleaseDate gt datetime'"+cur.LastReleaseDate+"'")
-		req.URL.RawQuery = q.Encode()
-	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/csv")
 
 	resp, err := a.client.Do(req) //nolint:gosec // URL is constructed from a constant base
 	if err != nil {
-		return nil, fmt.Errorf("msrc: fetch updates: %w", err)
+		return nil, fmt.Errorf("msrc: fetch changes.csv: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
-		return nil, fmt.Errorf("msrc: updates HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("msrc: changes.csv HTTP %d", resp.StatusCode)
 	}
 
-	updates, err := parseUpdates(io.LimitReader(resp.Body, maxUpdatesSize))
+	allEntries, err := parseChangesCSV(io.LimitReader(resp.Body, maxChangesSize))
 	if err != nil {
 		return nil, err
 	}
 
-	// Determine which release IDs are new (not already at cursor's release date)
-	var pendingIDs []string
-	var latestDate string
-	for _, u := range updates {
-		if u.CurrentReleaseDate > latestDate {
-			latestDate = u.CurrentReleaseDate
+	// Filter entries newer than cursor timestamp
+	var pending []changeEntry
+	var latestTimestamp string
+	for _, entry := range allEntries {
+		if entry.Timestamp > latestTimestamp {
+			latestTimestamp = entry.Timestamp
 		}
-		// If cursor has the same LastReleaseDate, this update is not new
-		if cur.LastReleaseDate != "" && u.CurrentReleaseDate <= cur.LastReleaseDate {
+		if cur.LastUpdated != "" && entry.Timestamp <= cur.LastUpdated {
 			continue
 		}
-		pendingIDs = append(pendingIDs, u.ID)
+		pending = append(pending, entry)
 	}
 
-	// Short-circuit: no new updates
-	if len(pendingIDs) == 0 {
-		// Keep cursor date at the latest seen (or current cursor)
-		effectiveDate := cur.LastReleaseDate
-		if latestDate > effectiveDate {
-			effectiveDate = latestDate
+	// Short-circuit: no pending entries
+	if len(pending) == 0 {
+		effectiveTimestamp := cur.LastUpdated
+		if latestTimestamp > effectiveTimestamp {
+			effectiveTimestamp = latestTimestamp
 		}
-		nextCursor := Cursor{LastReleaseDate: effectiveDate}
+		nextCursor := Cursor{LastUpdated: effectiveTimestamp}
 		nextCursorJSON, err := json.Marshal(nextCursor)
 		if err != nil {
 			return nil, fmt.Errorf("msrc: marshal cursor: %w", err)
@@ -364,54 +358,54 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}, nil
 	}
 
-	// Phase 2: fetch CSAF documents for each pending release ID
+	// Phase 2: fetch CSAF documents for each pending entry
 	fetchedAt := time.Now().UTC()
 	var allPatches []feed.CanonicalPatch
 
-	for _, releaseID := range pendingIDs {
+	for _, entry := range pending {
 		if err := a.rateLimiter.Wait(ctx); err != nil {
 			return nil, fmt.Errorf("msrc: rate limit: %w", err)
 		}
 
-		csafURL := baseURL + "csaf/" + url.PathEscape(releaseID)
-		csafReq, err := http.NewRequestWithContext(ctx, http.MethodGet, csafURL, nil)
+		fileURL := baseURL + entry.Path
+		fileReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 		if err != nil {
-			return nil, fmt.Errorf("msrc: build csaf request for %s: %w", releaseID, err)
+			return nil, fmt.Errorf("msrc: build csaf request for %s: %w", entry.Path, err)
 		}
-		csafReq.Header.Set("Accept", "application/json")
+		fileReq.Header.Set("Accept", "application/json")
 
-		csafResp, err := a.client.Do(csafReq) //nolint:gosec // URL constructed from constant base + release ID
+		fileResp, err := a.client.Do(fileReq) //nolint:gosec // URL constructed from constant base + CSV path
 		if err != nil {
-			return nil, fmt.Errorf("msrc: fetch csaf %s: %w", releaseID, err)
-		}
-
-		if csafResp.StatusCode != http.StatusOK {
-			io.Copy(io.Discard, csafResp.Body) //nolint:errcheck,gosec // drain for connection reuse
-			csafResp.Body.Close()              //nolint:errcheck,gosec // read-only response body close
-			return nil, fmt.Errorf("msrc: csaf %s HTTP %d", releaseID, csafResp.StatusCode)
+			return nil, fmt.Errorf("msrc: fetch csaf %s: %w", entry.Path, err)
 		}
 
-		body, err := io.ReadAll(io.LimitReader(csafResp.Body, maxCSAFDocSize))
-		csafResp.Body.Close() //nolint:errcheck,gosec // read-only response body close
+		if fileResp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, fileResp.Body) //nolint:errcheck,gosec // drain for connection reuse
+			fileResp.Body.Close()              //nolint:errcheck,gosec // read-only response body close
+			return nil, fmt.Errorf("msrc: csaf %s HTTP %d", entry.Path, fileResp.StatusCode)
+		}
+
+		body, err := io.ReadAll(io.LimitReader(fileResp.Body, maxCSAFDocSize))
+		fileResp.Body.Close() //nolint:errcheck,gosec // read-only response body close
 		if err != nil {
-			return nil, fmt.Errorf("msrc: read csaf %s: %w", releaseID, err)
+			return nil, fmt.Errorf("msrc: read csaf %s: %w", entry.Path, err)
 		}
 
 		doc, err := parseCSAFDocument(body)
 		if err != nil {
-			return nil, fmt.Errorf("msrc: parse csaf %s: %w", releaseID, err)
+			return nil, fmt.Errorf("msrc: parse csaf %s: %w", entry.Path, err)
 		}
 
 		patches := csafToPatches(doc)
 		allPatches = append(allPatches, patches...)
 	}
 
-	// Update cursor: all pending IDs have been fetched
-	effectiveDate := cur.LastReleaseDate
-	if latestDate > effectiveDate {
-		effectiveDate = latestDate
+	// Update cursor to the latest timestamp seen
+	effectiveTimestamp := cur.LastUpdated
+	if latestTimestamp > effectiveTimestamp {
+		effectiveTimestamp = latestTimestamp
 	}
-	nextCursor := Cursor{LastReleaseDate: effectiveDate}
+	nextCursor := Cursor{LastUpdated: effectiveTimestamp}
 	nextCursorJSON, err := json.Marshal(nextCursor)
 	if err != nil {
 		return nil, fmt.Errorf("msrc: marshal cursor: %w", err)

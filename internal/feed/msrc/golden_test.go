@@ -105,10 +105,13 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		t.Fatal("expected non-zero patches from golden MSRC CSAF data")
 	}
 
-	// Assertion 2: every patch has a CVE ID.
+	// Assertion 2: every patch has a CVE ID with proper format.
 	for i, p := range allPatches {
 		if p.CVEID == "" {
 			t.Errorf("patch[%d]: empty CVEID", i)
+		}
+		if !strings.HasPrefix(p.CVEID, "CVE-") {
+			t.Errorf("patch[%d]: CVEID %q does not start with CVE-", i, p.CVEID)
 		}
 	}
 

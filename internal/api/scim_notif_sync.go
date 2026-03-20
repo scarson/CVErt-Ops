@@ -27,9 +27,9 @@ func (srv *Server) syncNotifGroupAdd(ctx context.Context, orgID, userID, mappedG
 // syncNotifGroupRemove removes a user from a notification group, but only if:
 //   - The membership is scim_managed=true (manual memberships are preserved)
 //   - No other SCIM group with the same mapped_group_id still includes the user
-func (srv *Server) syncNotifGroupRemove(ctx context.Context, _, userID, mappedGroupID, scimGroupID uuid.UUID) error {
+func (srv *Server) syncNotifGroupRemove(ctx context.Context, orgID, userID, mappedGroupID, scimGroupID uuid.UUID) error {
 	// Check if another SCIM group maps to the same notification group and includes this user.
-	count, err := srv.store.CountOtherSCIMGroupsWithSameMapping(ctx, userID, mappedGroupID, scimGroupID)
+	count, err := srv.store.CountOtherSCIMGroupsWithSameMapping(ctx, orgID, userID, mappedGroupID, scimGroupID)
 	if err != nil {
 		return err
 	}

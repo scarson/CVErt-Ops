@@ -503,7 +503,7 @@ func TestSCIMDeleteGroup_CascadesMembers(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
 
 	// Verify members are gone.
-	memberIDs, err := env.db.ListSCIMGroupMembers(ctx, uuid.MustParse(created.ID))
+	memberIDs, err := env.db.ListSCIMGroupMembers(ctx, env.orgID, uuid.MustParse(created.ID))
 	require.NoError(t, err)
 	assert.Empty(t, memberIDs)
 }
@@ -519,7 +519,7 @@ func TestSCIMDeleteGroup_RecomputesRoles(t *testing.T) {
 	group, err := env.db.CreateSCIMGroup(ctx, env.orgID, nil, "AdminGroup")
 	require.NoError(t, err)
 	adminRole := "admin"
-	require.NoError(t, env.db.UpdateSCIMGroupMapping(ctx, group.ID, &adminRole, nil))
+	require.NoError(t, env.db.UpdateSCIMGroupMapping(ctx, env.orgID, group.ID, &adminRole, nil))
 	require.NoError(t, env.db.AddSCIMGroupMember(ctx, group.ID, userID, env.orgID))
 
 	// Recompute role to set user to admin.

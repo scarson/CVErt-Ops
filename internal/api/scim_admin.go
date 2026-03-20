@@ -405,7 +405,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Get the SCIM group and verify it belongs to this org.
-	scimGroup, err := srv.store.GetSCIMGroup(r.Context(), groupID)
+	scimGroup, err := srv.store.GetSCIMGroup(r.Context(), orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "scim group mapping patch: get group", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -478,7 +478,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 		mappedGroupIDPtr = &scimGroup.MappedGroupID.UUID
 	}
 
-	if err := srv.store.UpdateSCIMGroupMapping(r.Context(), groupID, mappedRolePtr, mappedGroupIDPtr); err != nil {
+	if err := srv.store.UpdateSCIMGroupMapping(r.Context(), orgID, groupID, mappedRolePtr, mappedGroupIDPtr); err != nil {
 		slog.ErrorContext(r.Context(), "scim group mapping patch: update", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
@@ -497,7 +497,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Apply immediate effects to all current members.
-	members, err := srv.store.ListSCIMGroupMembers(r.Context(), groupID)
+	members, err := srv.store.ListSCIMGroupMembers(r.Context(), orgID, groupID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "scim group mapping patch: list members", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -545,7 +545,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 	})
 
 	// Re-read the group to get updated state.
-	updated, err := srv.store.GetSCIMGroup(r.Context(), groupID)
+	updated, err := srv.store.GetSCIMGroup(r.Context(), orgID, groupID)
 	if err != nil || updated == nil {
 		slog.ErrorContext(r.Context(), "scim group mapping patch: re-read", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

@@ -114,3 +114,9 @@ UPDATE users SET email = $2, display_name = $3 WHERE id = $1;
 SELECT * FROM user_identities
 WHERE provider = $1 AND user_id = $2
 LIMIT 1;
+
+-- name: ListIdentitiesByProviderAndUsers :many
+-- Returns identity rows for a given provider and set of user IDs.
+-- Used by SCIM list users to batch-load external IDs.
+SELECT * FROM user_identities
+WHERE provider = $1 AND user_id = ANY($2::uuid[]);

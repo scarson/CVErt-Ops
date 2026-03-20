@@ -21,10 +21,10 @@ func TestSeedCorpus(t *testing.T) {
 		t.Fatal("SeedCorpus produced 0 CVEs")
 	}
 
-	// At minimum: NVD, MITRE, OSV, KEV, Red Hat should produce patches.
+	// At minimum: NVD, MITRE, OSV, KEV, MSRC, Red Hat should produce patches.
 	// GHSA may produce 0 due to known adapter parsing issue.
 	// EPSS is applied separately and may not match any seeded CVEs.
-	minFeeds := 5 // NVD, MITRE, OSV, KEV, Red Hat
+	minFeeds := 6 // NVD, MITRE, OSV, KEV, MSRC, Red Hat
 	if stats.FeedsSeeded < minFeeds {
 		t.Errorf("SeedCorpus seeded %d feeds, want at least %d (got %v)", stats.FeedsSeeded, minFeeds, stats.FeedNames)
 	}

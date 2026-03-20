@@ -21,6 +21,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/feed/ghsa"
 	"github.com/scarson/cvert-ops/internal/feed/kev"
 	"github.com/scarson/cvert-ops/internal/feed/mitre"
+	"github.com/scarson/cvert-ops/internal/feed/msrc"
 	"github.com/scarson/cvert-ops/internal/feed/nvd"
 	"github.com/scarson/cvert-ops/internal/feed/osv"
 	"github.com/scarson/cvert-ops/internal/feed/redhat"
@@ -61,6 +62,7 @@ func SeedCorpus(t *testing.T, db *TestDB) SeedStats {
 		{"ghsa", "ghsa", fetchGHSAGolden},
 		{"osv", "osv", fetchOSVGolden},
 		{"kev", "kev", fetchKEVGolden},
+		{"msrc", "msrc", fetchMSRCGolden},
 		{"redhat", "redhat", fetchRedHatGolden},
 	}
 
@@ -228,6 +230,63 @@ func fetchKEVGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 	}
 
 	return fetchAllPatches(t, kev.New(client), nil)
+}
+
+func fetchMSRCGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
+	t.Helper()
+	goldenDir := filepath.Join(projectRoot, "internal", "feed", "msrc", "testdata", "golden")
+
+	changesData, err := os.ReadFile(filepath.Join(goldenDir, "changes.csv"))
+	if err != nil {
+		t.Fatalf("MSRC changes.csv fixture missing: %v", err)
+	}
+
+	csafDir := filepath.Join(goldenDir, "csaf")
+	csafEntries, err := os.ReadDir(csafDir)
+	if err != nil {
+		t.Fatalf("MSRC CSAF fixtures missing: %v", err)
+	}
+
+	csafByName := make(map[string][]byte)
+	for _, e := range csafEntries {
+		if filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(csafDir, e.Name()))
+		if readErr != nil {
+			t.Fatalf("read MSRC CSAF fixture %s: %v", e.Name(), readErr)
+		}
+		csafByName[e.Name()] = data
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		if strings.HasSuffix(path, "/changes.csv") {
+			w.Header().Set("Content-Type", "text/csv")
+			w.Write(changesData) //nolint:errcheck
+			return
+		}
+
+		if strings.HasSuffix(path, ".json") {
+			parts := strings.Split(path, "/")
+			filename := parts[len(parts)-1]
+			if data, ok := csafByName[filename]; ok {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(data) //nolint:errcheck
+				return
+			}
+		}
+
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &http.Client{
+		Transport: NewURLRewriteTransport("https://msrc.microsoft.com", srv.URL, http.DefaultTransport),
+	}
+
+	return fetchAllPatches(t, msrc.New(client), nil)
 }
 
 func fetchRedHatGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {

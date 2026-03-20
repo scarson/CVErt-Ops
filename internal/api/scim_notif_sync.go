@@ -37,5 +37,5 @@ func (srv *Server) syncNotifGroupRemove(ctx context.Context, orgID, userID, mapp
 		return nil // another SCIM group still maps here — keep the membership
 	}
 
-	return srv.store.RemoveSCIMManagedGroupMember(ctx, mappedGroupID, userID)
+	return srv.store.RemoveSCIMManagedGroupMember(ctx, mappedGroupID, userID, orgID)
 }

@@ -240,16 +240,17 @@ func (q *Queries) RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberPa
 
 const removeSCIMManagedGroupMember = `-- name: RemoveSCIMManagedGroupMember :exec
 DELETE FROM group_members
-WHERE group_id = $1 AND user_id = $2 AND scim_managed = true
+WHERE group_id = $1 AND user_id = $2 AND org_id = $3 AND scim_managed = true
 `
 
 type RemoveSCIMManagedGroupMemberParams struct {
 	GroupID uuid.UUID
 	UserID  uuid.UUID
+	OrgID   uuid.UUID
 }
 
 func (q *Queries) RemoveSCIMManagedGroupMember(ctx context.Context, arg RemoveSCIMManagedGroupMemberParams) error {
-	_, err := q.db.ExecContext(ctx, removeSCIMManagedGroupMember, arg.GroupID, arg.UserID)
+	_, err := q.db.ExecContext(ctx, removeSCIMManagedGroupMember, arg.GroupID, arg.UserID, arg.OrgID)
 	return err
 }
 

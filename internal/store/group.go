@@ -169,7 +169,7 @@ func (s *Store) GetGroupIfActive(ctx context.Context, orgID uuid.UUID, id uuid.U
 // AddGroupMemberSCIMManaged adds a user to the group with scim_managed=true.
 // Idempotent — ON CONFLICT DO NOTHING preserves existing memberships (including manual ones).
 func (s *Store) AddGroupMemberSCIMManaged(ctx context.Context, groupID, userID, orgID uuid.UUID) error {
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		if err := q.AddGroupMemberSCIMManaged(ctx, generated.AddGroupMemberSCIMManagedParams{
 			GroupID: groupID,
 			UserID:  userID,
@@ -183,11 +183,12 @@ func (s *Store) AddGroupMemberSCIMManaged(ctx context.Context, groupID, userID, 
 
 // RemoveSCIMManagedGroupMember removes a user from a group only if their
 // membership is scim_managed=true. Manual memberships are left intact.
-func (s *Store) RemoveSCIMManagedGroupMember(ctx context.Context, groupID, userID uuid.UUID) error {
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
+func (s *Store) RemoveSCIMManagedGroupMember(ctx context.Context, groupID, userID, orgID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		if err := q.RemoveSCIMManagedGroupMember(ctx, generated.RemoveSCIMManagedGroupMemberParams{
 			GroupID: groupID,
 			UserID:  userID,
+			OrgID:   orgID,
 		}); err != nil {
 			return fmt.Errorf("remove scim managed group member: %w", err)
 		}

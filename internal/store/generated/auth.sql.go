@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const clearForcePasswordReset = `-- name: ClearForcePasswordReset :exec
@@ -109,6 +110,32 @@ func (q *Queries) DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const getIdentityByProviderAndUser = `-- name: GetIdentityByProviderAndUser :one
+SELECT id, user_id, provider, provider_user_id, email, created_at FROM user_identities
+WHERE provider = $1 AND user_id = $2
+LIMIT 1
+`
+
+type GetIdentityByProviderAndUserParams struct {
+	Provider string
+	UserID   uuid.UUID
+}
+
+// Returns the identity row for a given provider and user, or no rows.
+func (q *Queries) GetIdentityByProviderAndUser(ctx context.Context, arg GetIdentityByProviderAndUserParams) (UserIdentity, error) {
+	row := q.db.QueryRowContext(ctx, getIdentityByProviderAndUser, arg.Provider, arg.UserID)
+	var i UserIdentity
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Provider,
+		&i.ProviderUserID,
+		&i.Email,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getLoginLockoutState = `-- name: GetLoginLockoutState :one
@@ -288,6 +315,48 @@ func (q *Queries) IsUserEnabled(ctx context.Context, id uuid.UUID) (bool, error)
 	return enabled, err
 }
 
+const listIdentitiesByProviderAndUsers = `-- name: ListIdentitiesByProviderAndUsers :many
+SELECT id, user_id, provider, provider_user_id, email, created_at FROM user_identities
+WHERE provider = $1 AND user_id = ANY($2::uuid[])
+`
+
+type ListIdentitiesByProviderAndUsersParams struct {
+	Provider string
+	Column2  []uuid.UUID
+}
+
+// Returns identity rows for a given provider and set of user IDs.
+// Used by SCIM list users to batch-load external IDs.
+func (q *Queries) ListIdentitiesByProviderAndUsers(ctx context.Context, arg ListIdentitiesByProviderAndUsersParams) ([]UserIdentity, error) {
+	rows, err := q.db.QueryContext(ctx, listIdentitiesByProviderAndUsers, arg.Provider, pq.Array(arg.Column2))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserIdentity
+	for rows.Next() {
+		var i UserIdentity
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Provider,
+			&i.ProviderUserID,
+			&i.Email,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markRefreshTokenUsed = `-- name: MarkRefreshTokenUsed :exec
 UPDATE refresh_tokens
 SET used_at = now(), replaced_by_jti = $2
@@ -378,6 +447,52 @@ type UpdatePasswordHashParams struct {
 
 func (q *Queries) UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error {
 	_, err := q.db.ExecContext(ctx, updatePasswordHash, arg.ID, arg.PasswordHash, arg.PasswordHashVersion)
+	return err
+}
+
+const updateUserDisplayName = `-- name: UpdateUserDisplayName :exec
+UPDATE users SET display_name = $2 WHERE id = $1
+`
+
+type UpdateUserDisplayNameParams struct {
+	ID          uuid.UUID
+	DisplayName string
+}
+
+// Updates a user's display name. Used by SCIM user provisioning.
+func (q *Queries) UpdateUserDisplayName(ctx context.Context, arg UpdateUserDisplayNameParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserDisplayName, arg.ID, arg.DisplayName)
+	return err
+}
+
+const updateUserEmail = `-- name: UpdateUserEmail :exec
+UPDATE users SET email = $2 WHERE id = $1
+`
+
+type UpdateUserEmailParams struct {
+	ID    uuid.UUID
+	Email string
+}
+
+// Updates a user's email. Used by SCIM user provisioning.
+func (q *Queries) UpdateUserEmail(ctx context.Context, arg UpdateUserEmailParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserEmail, arg.ID, arg.Email)
+	return err
+}
+
+const updateUserProfile = `-- name: UpdateUserProfile :exec
+UPDATE users SET email = $2, display_name = $3 WHERE id = $1
+`
+
+type UpdateUserProfileParams struct {
+	ID          uuid.UUID
+	Email       string
+	DisplayName string
+}
+
+// Updates a user's email and display name. Used by SCIM PUT (full replacement).
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
 	return err
 }
 

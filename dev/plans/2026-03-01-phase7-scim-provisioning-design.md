@@ -6,6 +6,8 @@
 **Depends on:** Phase 5D (Generic OIDC — `sso_connections` table, tier gating, audit log)
 **Library:** `marcelom97/scimgateway` v1.0.0 (MIT, embeddable `http.Handler`, slog integration)
 
+**For Claude:** CRITICAL NOTE (2026-03-19): This design was never implemented and is maintained for historical reference only. It's superseded by dev\plans\2026-03-19-phase7-scim-provisioning-design-v2.md and dev\plans\2026-03-19-phase7-scim-implementation-plan-v2.md.
+
 ## Scope Decisions
 
 | Item | Decision |

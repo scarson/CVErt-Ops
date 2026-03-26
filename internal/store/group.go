@@ -141,3 +141,57 @@ func (s *Store) ListGroupMembers(ctx context.Context, orgID, groupID uuid.UUID) 
 	})
 	return rows, err
 }
+
+// GetGroupIfActive returns the group if it exists and is not soft-deleted,
+// or (nil, nil) if not found or deleted.
+func (s *Store) GetGroupIfActive(ctx context.Context, orgID uuid.UUID, id uuid.UUID) (*generated.Group, error) {
+	var result *generated.Group
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		row, err := q.GetGroupIfActive(ctx, generated.GetGroupIfActiveParams{
+			ID:    id,
+			OrgID: orgID,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		result = &row
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get group if active: %w", err)
+	}
+	return result, nil
+}
+
+// AddGroupMemberSCIMManaged adds a user to the group with scim_managed=true.
+// Idempotent — ON CONFLICT DO NOTHING preserves existing memberships (including manual ones).
+func (s *Store) AddGroupMemberSCIMManaged(ctx context.Context, groupID, userID, orgID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.AddGroupMemberSCIMManaged(ctx, generated.AddGroupMemberSCIMManagedParams{
+			GroupID: groupID,
+			UserID:  userID,
+			OrgID:   orgID,
+		}); err != nil {
+			return fmt.Errorf("add group member scim managed: %w", err)
+		}
+		return nil
+	})
+}
+
+// RemoveSCIMManagedGroupMember removes a user from a group only if their
+// membership is scim_managed=true. Manual memberships are left intact.
+func (s *Store) RemoveSCIMManagedGroupMember(ctx context.Context, groupID, userID, orgID uuid.UUID) error {
+	return s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		if err := q.RemoveSCIMManagedGroupMember(ctx, generated.RemoveSCIMManagedGroupMemberParams{
+			GroupID: groupID,
+			UserID:  userID,
+			OrgID:   orgID,
+		}); err != nil {
+			return fmt.Errorf("remove scim managed group member: %w", err)
+		}
+		return nil
+	})
+}

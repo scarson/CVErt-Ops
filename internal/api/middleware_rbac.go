@@ -39,13 +39,18 @@ func (srv *Server) RequireOrgRole(minRole Role) func(http.Handler) http.Handler 
 				}
 			}
 
-			roleStr, err := srv.store.GetOrgMemberRole(r.Context(), orgID, userID)
-			if err != nil || roleStr == nil {
+			member, err := srv.store.GetOrgMemberRoleAndStatus(r.Context(), orgID, userID)
+			if err != nil || member == nil {
 				writeProblem(w, http.StatusForbidden, "forbidden")
 				return
 			}
 
-			effectiveRole := parseRole(*roleStr)
+			if member.DeactivatedAt.Valid {
+				writeProblem(w, http.StatusForbidden, "Your membership in this organization has been deactivated.")
+				return
+			}
+
+			effectiveRole := parseRole(member.Role)
 
 			// Cap effective role to the API key's role when the request is API-key-authenticated.
 			if apiKeyRoleStr, ok := r.Context().Value(ctxAPIKeyRole).(string); ok && apiKeyRoleStr != "" {

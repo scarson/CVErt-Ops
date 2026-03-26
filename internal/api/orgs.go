@@ -165,22 +165,31 @@ func (srv *Server) updateOrgHandler(w http.ResponseWriter, r *http.Request) {
 
 // memberEntry is one row in the GET /members response.
 type memberEntry struct {
-	UserID      string `json:"user_id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"display_name"`
-	Role        string `json:"role"`
-	JoinedAt    string `json:"joined_at"`
+	UserID        string  `json:"user_id"`
+	Email         string  `json:"email"`
+	DisplayName   string  `json:"display_name"`
+	Role          string  `json:"role"`
+	Active        bool    `json:"active"`
+	DeactivatedAt *string `json:"deactivated_at,omitempty"`
+	SCIMExempt    bool    `json:"scim_exempt"`
+	JoinedAt      string  `json:"joined_at"`
 }
 
-// updateMemberRoleBody is the request body for PATCH /members/{user_id}.
-type updateMemberRoleBody struct {
-	Role string `json:"role"`
+// patchMemberBody is the request body for PATCH /members/{user_id}.
+// All fields are pointers: nil = not sent (no change).
+type patchMemberBody struct {
+	Role       *string `json:"role,omitempty"`
+	Active     *bool   `json:"active,omitempty"`
+	SCIMExempt *bool   `json:"scim_exempt,omitempty"`
 }
 
-// updateMemberRoleResponseBody is the response for PATCH /members/{user_id}.
-type updateMemberRoleResponseBody struct {
-	UserID string `json:"user_id"`
-	Role   string `json:"role"`
+// patchMemberResponseBody is the response for PATCH /members/{user_id}.
+type patchMemberResponseBody struct {
+	UserID        string  `json:"user_id"`
+	Role          string  `json:"role"`
+	Active        bool    `json:"active"`
+	DeactivatedAt *string `json:"deactivated_at,omitempty"`
+	SCIMExempt    bool    `json:"scim_exempt"`
 }
 
 // listMembersHandler handles GET /api/v1/orgs/{org_id}/members.
@@ -201,20 +210,28 @@ func (srv *Server) listMembersHandler(w http.ResponseWriter, r *http.Request) {
 
 	members := make([]memberEntry, 0, len(rows))
 	for _, m := range rows {
-		members = append(members, memberEntry{
+		entry := memberEntry{
 			UserID:      m.UserID.String(),
 			Email:       m.Email,
 			DisplayName: m.DisplayName,
 			Role:        m.Role,
+			Active:      !m.DeactivatedAt.Valid,
+			SCIMExempt:  m.ScimExempt,
 			JoinedAt:    m.CreatedAt.Format(time.RFC3339),
-		})
+		}
+		if m.DeactivatedAt.Valid {
+			ts := m.DeactivatedAt.Time.Format(time.RFC3339)
+			entry.DeactivatedAt = &ts
+		}
+		members = append(members, entry)
 	}
 	writeList(w, members, "")
 }
 
 // updateMemberRoleHandler handles PATCH /api/v1/orgs/{org_id}/members/{user_id}.
-// Requires admin+ (enforced by middleware). Cannot change an existing owner's role
-// or assign the owner role (use a transfer-ownership endpoint for that).
+// Requires admin+ (enforced by middleware). Supports updating role, active status,
+// and scim_exempt flag. Cannot change an existing owner's role or assign the owner
+// role (use a transfer-ownership endpoint for that).
 func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
@@ -234,66 +251,134 @@ func (srv *Server) updateMemberRoleHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req updateMemberRoleBody
+	var req patchMemberBody
 	if decErr := decodeJSON(r, &req); decErr != nil {
 		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
 		return
 	}
 
-	// Owner role cannot be assigned via PATCH; use a transfer-ownership endpoint.
-	if req.Role == "owner" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-			&huma.ErrorDetail{Message: "cannot assign owner role via this endpoint", Location: "body.role"})
-		return
-	}
-	if req.Role != "admin" && req.Role != "member" && req.Role != "viewer" {
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-			&huma.ErrorDetail{Message: "invalid role: must be admin, member, or viewer", Location: "body.role"})
-		return
-	}
-
-	// Caller cannot assign a role higher than their own.
-	newRole := parseRole(req.Role)
-	if newRole > callerRole {
-		writeProblem(w, http.StatusForbidden, "cannot assign role higher than your own")
-		return
-	}
-
-	// Look up the target's current role.
-	currentRole, err := srv.store.GetOrgMemberRole(r.Context(), orgID, targetID)
+	// Look up the target's current state.
+	current, err := srv.store.GetOrgMemberFull(r.Context(), orgID, targetID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "get target role", "error", err)
+		slog.ErrorContext(r.Context(), "get target member", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if currentRole == nil {
+	if current == nil {
 		writeProblem(w, http.StatusNotFound, "user not found in org")
 		return
 	}
-	if *currentRole == "owner" {
-		writeProblem(w, http.StatusForbidden, "cannot change role of an org owner")
-		return
+
+	oldState := map[string]any{"role": current.Role}
+	newState := map[string]any{}
+
+	// Handle role update.
+	if req.Role != nil {
+		role := *req.Role
+		// Owner role cannot be assigned via PATCH; use a transfer-ownership endpoint.
+		if role == "owner" {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "cannot assign owner role via this endpoint", Location: "body.role"})
+			return
+		}
+		if role != "admin" && role != "member" && role != "viewer" {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+				&huma.ErrorDetail{Message: "invalid role: must be admin, member, or viewer", Location: "body.role"})
+			return
+		}
+
+		// Caller cannot assign a role higher than their own.
+		if parseRole(role) > callerRole {
+			writeProblem(w, http.StatusForbidden, "cannot assign role higher than your own")
+			return
+		}
+
+		if current.Role == "owner" {
+			writeProblem(w, http.StatusForbidden, "cannot change role of an org owner")
+			return
+		}
+
+		if err := srv.store.UpdateOrgMemberRole(r.Context(), orgID, targetID, role); err != nil {
+			slog.ErrorContext(r.Context(), "update member role", "error", err)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		newState["role"] = role
 	}
 
-	if err := srv.store.UpdateOrgMemberRole(r.Context(), orgID, targetID, req.Role); err != nil {
-		slog.ErrorContext(r.Context(), "update member role", "error", err)
+	// Handle active status (deactivation/reactivation).
+	if req.Active != nil {
+		if !*req.Active {
+			// Deactivation: protect sole owner.
+			if current.Role == "owner" {
+				count, err := srv.store.CountActiveOrgOwners(r.Context(), orgID)
+				if err != nil {
+					slog.ErrorContext(r.Context(), "count active owners", "error", err)
+					writeProblem(w, http.StatusInternalServerError, "internal error")
+					return
+				}
+				if count <= 1 {
+					writeProblem(w, http.StatusBadRequest, "Cannot deactivate the sole owner")
+					return
+				}
+			}
+			if err := srv.store.DeactivateOrgMember(r.Context(), orgID, targetID); err != nil {
+				slog.ErrorContext(r.Context(), "deactivate member", "error", err)
+				writeProblem(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			newState["active"] = false
+		} else {
+			if err := srv.store.ReactivateOrgMember(r.Context(), orgID, targetID); err != nil {
+				slog.ErrorContext(r.Context(), "reactivate member", "error", err)
+				writeProblem(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			newState["active"] = true
+		}
+	}
+
+	// Handle scim_exempt flag.
+	if req.SCIMExempt != nil {
+		if err := srv.store.UpdateOrgMemberSCIMExempt(r.Context(), orgID, targetID, *req.SCIMExempt); err != nil {
+			slog.ErrorContext(r.Context(), "update scim exempt", "error", err)
+			writeProblem(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		newState["scim_exempt"] = *req.SCIMExempt
+	}
+
+	// Re-read to get current state for response.
+	updated, err := srv.store.GetOrgMemberFull(r.Context(), orgID, targetID)
+	if err != nil || updated == nil {
+		slog.ErrorContext(r.Context(), "re-read member after patch", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, updateMemberRoleResponseBody{
-		UserID: targetID.String(),
-		Role:   req.Role,
-	})
-	srv.auditLog(r, audit.Entry{
-		OrgID:      orgID,
-		Action:     "update",
-		EntityType: "member",
-		EntityID:   targetID.String(),
-		Success:    true,
-		OldState:   map[string]any{"role": *currentRole},
-		NewState:   map[string]any{"role": req.Role},
-	})
+	resp := patchMemberResponseBody{
+		UserID:     targetID.String(),
+		Role:       updated.Role,
+		Active:     !updated.DeactivatedAt.Valid,
+		SCIMExempt: updated.ScimExempt,
+	}
+	if updated.DeactivatedAt.Valid {
+		ts := updated.DeactivatedAt.Time.Format(time.RFC3339)
+		resp.DeactivatedAt = &ts
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+	if len(newState) > 0 {
+		srv.auditLog(r, audit.Entry{
+			OrgID:      orgID,
+			Action:     "update",
+			EntityType: "member",
+			EntityID:   targetID.String(),
+			Success:    true,
+			OldState:   oldState,
+			NewState:   newState,
+		})
+	}
 }
 
 // removeMemberHandler handles DELETE /api/v1/orgs/{org_id}/members/{user_id}.

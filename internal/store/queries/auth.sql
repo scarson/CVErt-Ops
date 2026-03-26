@@ -96,3 +96,27 @@ UPDATE users SET failed_login_count = 0, locked_at = NULL WHERE email = @email;
 -- name: GetLoginLockoutState :one
 -- Returns lockout state for a user by email.
 SELECT failed_login_count, locked_at FROM users WHERE email = @email;
+
+-- name: UpdateUserEmail :exec
+-- Updates a user's email. Used by SCIM user provisioning.
+UPDATE users SET email = $2 WHERE id = $1;
+
+-- name: UpdateUserDisplayName :exec
+-- Updates a user's display name. Used by SCIM user provisioning.
+UPDATE users SET display_name = $2 WHERE id = $1;
+
+-- name: UpdateUserProfile :exec
+-- Updates a user's email and display name. Used by SCIM PUT (full replacement).
+UPDATE users SET email = $2, display_name = $3 WHERE id = $1;
+
+-- name: GetIdentityByProviderAndUser :one
+-- Returns the identity row for a given provider and user, or no rows.
+SELECT * FROM user_identities
+WHERE provider = $1 AND user_id = $2
+LIMIT 1;
+
+-- name: ListIdentitiesByProviderAndUsers :many
+-- Returns identity rows for a given provider and set of user IDs.
+-- Used by SCIM list users to batch-load external IDs.
+SELECT * FROM user_identities
+WHERE provider = $1 AND user_id = ANY($2::uuid[]);

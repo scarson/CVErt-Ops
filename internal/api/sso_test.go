@@ -1118,3 +1118,94 @@ func TestAudit_SSOOperations(t *testing.T) {
 		}
 	})
 }
+
+// TestSSODelete_BlockedBySCIM verifies that DELETE SSO returns 409 when a SCIM config
+// is linked to the SSO connection.
+func TestSSODelete_BlockedBySCIM(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-scim@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-scim@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, reg.OrgID)
+
+	// Set enterprise tier.
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// Create SSO connection.
+	createBody := `{"display_name":"SCIM IdP","issuer_url":"https://idp.scim.com","client_id":"scim-client","client_secret":"scim-secret"}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, createBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create SSO: got %d, want 201. Body: %s", resp.StatusCode, body)
+	}
+
+	// Get SSO connection ID from the response.
+	var created map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	ssoConnID := mustParseUUID(t, created["id"].(string))
+
+	// Create a SCIM config linked to this SSO connection.
+	_, err := db.CreateSCIMConfig(ctx, orgID, ssoConnID, true, "tokenhash123", "tok_", "viewer")
+	if err != nil {
+		t.Fatalf("create scim config: %v", err)
+	}
+
+	// DELETE SSO — should be blocked with 409.
+	resp2 := doDeleteSSO(t, ctx, ts, token, reg.OrgID)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusConflict {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Errorf("delete SSO with SCIM: got %d, want 409. Body: %s", resp2.StatusCode, body)
+	}
+}
+
+// TestSSODelete_NoSCIM_StillWorks verifies that DELETE SSO still returns 204
+// when no SCIM config exists.
+func TestSSODelete_NoSCIM_StillWorks(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-noscim@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-noscim@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, reg.OrgID)
+
+	// Set enterprise tier.
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	// Create SSO connection (no SCIM config).
+	createBody := `{"display_name":"Plain IdP","issuer_url":"https://idp.plain.com","client_id":"plain-client","client_secret":"plain-secret"}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, createBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create SSO: got %d, want 201. Body: %s", resp.StatusCode, body)
+	}
+
+	// DELETE SSO — should succeed with 204.
+	resp2 := doDeleteSSO(t, ctx, ts, token, reg.OrgID)
+	defer resp2.Body.Close() //nolint:errcheck,gosec // G104
+	if resp2.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("delete SSO without SCIM: got %d, want 204. Body: %s", resp2.StatusCode, body)
+	}
+}

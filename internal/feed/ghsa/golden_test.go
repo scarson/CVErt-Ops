@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/feed/ghsa"
@@ -48,34 +49,29 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		t.Error("expected LastPage=true (no Link header)")
 	}
 
-	// NOTE: Some GHSA advisories have string references instead of object
-	// references, causing json.Unmarshal errors. The adapter logs warnings and
-	// skips those records. If ALL advisories in our fixture have this issue,
-	// we get 0 patches — this is a known adapter limitation with real GHSA data.
-	// Once the adapter is fixed to handle polymorphic references, this test
-	// should assert non-zero patches.
 	if len(result.Patches) == 0 {
-		t.Skipf("GHSA adapter returned 0 patches — all %d advisories in fixture "+
-			"had unmarshal errors on references field (known issue)", 12)
+		t.Fatal("expected non-zero patches from golden GHSA data")
 	}
 
-	// Verify: at least one patch has a populated CVE ID.
+	// Verify: at least one patch has a CVE ID (mapped advisory).
 	var hasCVE bool
-	// Verify: at least one patch has empty CVEID (GHSA-native, category F1).
-	var hasNullCVE bool
+	// Verify: at least one patch has a GHSA-native ID (no CVE mapping, category F1).
+	// ResolveCanonicalID returns the native GHSA ID when no CVE alias exists,
+	// so CVEID will be the GHSA ID — not empty.
+	var hasGHSANative bool
 	for _, p := range result.Patches {
-		if p.CVEID != "" {
+		if strings.HasPrefix(p.CVEID, "CVE-") {
 			hasCVE = true
 		}
-		if p.CVEID == "" && p.SourceID != "" {
-			hasNullCVE = true
+		if strings.HasPrefix(p.CVEID, "GHSA-") {
+			hasGHSANative = true
 		}
 	}
 	if !hasCVE {
-		t.Error("expected at least one patch with populated CVEID")
+		t.Error("expected at least one patch with CVE ID")
 	}
-	if !hasNullCVE {
-		t.Error("expected at least one GHSA-native patch (empty CVEID, non-empty SourceID)")
+	if !hasGHSANative {
+		t.Error("expected at least one GHSA-native patch (CVEID starts with GHSA-)")
 	}
 
 	// Verify all patches have a SourceID.

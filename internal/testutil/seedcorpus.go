@@ -309,8 +309,12 @@ func fetchRedHatGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 			if len(parts) > 0 {
 				filename := parts[len(parts)-1]
 				cveID := strings.TrimSuffix(filename, ".json")
+				if strings.ContainsAny(cveID, "/\\") || strings.Contains(cveID, "..") {
+					http.NotFound(w, r)
+					return
+				}
 				detailPath := filepath.Join(goldenDir, "detail", cveID+".json")
-				data, err := os.ReadFile(detailPath) //nolint:gosec // G703: test helper reads from known golden fixture directory
+				data, err := os.ReadFile(detailPath) //nolint:gosec // G304: path validated above, reads from golden fixture directory
 				if err != nil {
 					http.NotFound(w, r)
 					return

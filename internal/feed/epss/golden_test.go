@@ -30,6 +30,9 @@ import (
 
 // TestApply_GoldenFiles seeds NVD CVEs from golden fixtures through the merge
 // pipeline, then applies the EPSS golden scores CSV and verifies DB values.
+//
+// This test seeds NVD only (not SeedCorpus) because SeedCorpus runs all 8
+// adapters — disproportionate when we only need CVE rows for EPSS to update.
 func TestApply_GoldenFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires testcontainer")
@@ -129,6 +132,10 @@ func TestApply_GoldenFiles(t *testing.T) {
 
 	// Assertion 4 (testing-pitfalls §9.4): verify a low EPSS score was preserved,
 	// not dropped by a truthiness check.
+	// Known gap: the golden CSV has no score of exactly 0.0, so we cannot test
+	// the 0.0-preserved-as-0.0-not-NULL case here. That case is covered by the
+	// EPSS unit tests (TestApply_SkipsPoisonRows). If the golden CSV is refreshed
+	// with a 0.0-score CVE, add an explicit assertion: Valid == true && Float64 == 0.0.
 	if first {
 		t.Error("no scored CVEs found to verify low-score preservation")
 	} else {

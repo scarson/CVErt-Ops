@@ -34,15 +34,13 @@
 
 ## Data Storage
 
-**Bulk captured data** is stored OUTSIDE the repository at:
+**Bulk captured data** is stored in the gitignored `.data/` directory at the project root:
 
 ```
-D:\Code\CVErt-Ops\data\feed-snapshots\
+.data/feed-snapshots/
 ```
 
-Bash-compatible path: `/d/Code/CVErt-Ops/data/feed-snapshots/`
-
-This directory is NOT in the git repo and does NOT need a `.gitignore` entry. It contains multi-GB raw API responses used only for fixture generation. The curated fixtures extracted FROM this data are small and stored IN the repo at `internal/feed/<adapter>/testdata/golden/`.
+This directory is gitignored (`.data/` in `.gitignore`). It contains multi-GB raw API responses used only for fixture generation. The curated fixtures extracted FROM this data are small and stored IN the repo at `internal/feed/<adapter>/testdata/golden/`.
 
 **Coverage boundary:** This corpus is for realistic schema-drift and merge-path coverage. It does NOT replace all hand-crafted negative fixtures. Keep or add synthetic fixtures/tests for cases real captures may never contain, including null bytes, malformed timestamps, and crash-recovery/final-page cursor regressions called out in `dev/testing-pitfalls.md`.
 
@@ -157,7 +155,7 @@ The streaming parser navigates: root object → `"vulnerabilities"` key → arra
 **Step 1: Create the snapshot directory structure**
 
 ```bash
-mkdir -p /d/Code/CVErt-Ops/data/feed-snapshots/{nvd,mitre,ghsa,osv,kev,epss,msrc,redhat}
+mkdir -p .data/feed-snapshots/{nvd,mitre,ghsa,osv,kev,epss,msrc,redhat}
 ```
 
 **Step 2: Commit** — Nothing to commit. The data directory is outside the repo.
@@ -532,7 +530,7 @@ import (
 
 // defaultDataDir is the default location for captured feed snapshots.
 // Override with --output flag.
-const defaultDataDir = "D:/Code/CVErt-Ops/data/feed-snapshots"
+const defaultDataDir = ".data/feed-snapshots"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -736,7 +734,7 @@ git commit -m "chore: add capture-feeds CLI for snapshotting feed API responses"
 go run ./dev/cmd/capture-feeds/... all
 ```
 
-The default output directory is `D:/Code/CVErt-Ops/data/feed-snapshots/`. Override with `--output` if needed.
+The default output directory is `.data/feed-snapshots/`. Override with `--output` if needed.
 
 **Expected timing:**
 - KEV: ~5 seconds (2 MB JSON)
@@ -751,16 +749,16 @@ The default output directory is `D:/Code/CVErt-Ops/data/feed-snapshots/`. Overri
 **Step 2: Verify the capture**
 
 ```bash
-du -sh /d/Code/CVErt-Ops/data/feed-snapshots/*
-ls /d/Code/CVErt-Ops/data/feed-snapshots/nvd/*.meta.json | wc -l   # ~125 pages
-ls /d/Code/CVErt-Ops/data/feed-snapshots/nvd/*.body | wc -l        # should match meta.json count
-ls /d/Code/CVErt-Ops/data/feed-snapshots/ghsa/*.meta.json | wc -l   # ~2000+ pages
-ls /d/Code/CVErt-Ops/data/feed-snapshots/ghsa/*.body | wc -l        # should match meta.json count
-ls /d/Code/CVErt-Ops/data/feed-snapshots/kev/catalog.json            # single file
-ls /d/Code/CVErt-Ops/data/feed-snapshots/epss/scores.csv.gz          # single file
+du -sh .data/feed-snapshots/*
+ls .data/feed-snapshots/nvd/*.meta.json | wc -l   # ~125 pages
+ls .data/feed-snapshots/nvd/*.body | wc -l        # should match meta.json count
+ls .data/feed-snapshots/ghsa/*.meta.json | wc -l   # ~2000+ pages
+ls .data/feed-snapshots/ghsa/*.body | wc -l        # should match meta.json count
+ls .data/feed-snapshots/kev/catalog.json            # single file
+ls .data/feed-snapshots/epss/scores.csv.gz          # single file
 
 # Spot-check that paginated captures did not record auth/rate-limit/server errors.
-grep -R '"status_code": \(401\|403\|429\|5[0-9][0-9]\)' /d/Code/CVErt-Ops/data/feed-snapshots/{nvd,ghsa,msrc,redhat}/*.meta.json
+grep -R '"status_code": \(401\|403\|429\|5[0-9][0-9]\)' .data/feed-snapshots/{nvd,ghsa,msrc,redhat}/*.meta.json
 ```
 
 The `grep` above should return no matches. If it does, the capture is not usable yet — fix auth/rate-limit issues and re-run that feed before proceeding.
@@ -770,7 +768,7 @@ The `grep` above should return no matches. If it does, the capture is not usable
 The Task 6 selection agent needs to filter the EPSS CSV. Decompress it for easier analysis:
 
 ```bash
-gunzip -k /d/Code/CVErt-Ops/data/feed-snapshots/epss/scores.csv.gz
+gunzip -k .data/feed-snapshots/epss/scores.csv.gz
 # Produces scores.csv alongside scores.csv.gz
 ```
 
@@ -929,7 +927,7 @@ READ FIRST:
 - dev/plans/test-fixture-edge-case-matrix.md (defines all categories and how to find candidates)
 - dev/plans/2026-03-15-phase10-test-fixture-corpus-plan.md (overall plan context)
 
-CAPTURED DATA LOCATIONS (all under D:/Code/CVErt-Ops/data/feed-snapshots/):
+CAPTURED DATA LOCATIONS (all under .data/feed-snapshots/):
 - nvd/*.body — NVD JSON response pages (one per file, raw NVD API JSON)
 - nvd/*.meta.json — metadata for each NVD page (URL, status code, headers)
 - kev/catalog.json — full KEV catalog (single JSON file)
@@ -1018,7 +1016,7 @@ This tool reads the manifest, finds each selected CVE in the captured data, and 
 ```bash
 go run ./dev/cmd/extract-fixtures/... \
   --manifest dev/plans/test-fixture-manifest.json \
-  --snapshots D:/Code/CVErt-Ops/data/feed-snapshots \
+  --snapshots .data/feed-snapshots \
   --output .
 ```
 
@@ -1110,7 +1108,7 @@ The implementing agent should:
 ```bash
 go run ./dev/cmd/extract-fixtures/... \
   --manifest dev/plans/test-fixture-manifest.json \
-  --snapshots D:/Code/CVErt-Ops/data/feed-snapshots \
+  --snapshots .data/feed-snapshots \
   --output .
 ```
 

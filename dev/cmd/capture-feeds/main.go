@@ -23,7 +23,7 @@ import (
 
 // defaultDataDir is the default location for captured feed snapshots.
 // Override with --output flag.
-const defaultDataDir = "D:/Code/CVErt-Ops/data/feed-snapshots"
+const defaultDataDir = ".data/feed-snapshots"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))

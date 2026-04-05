@@ -837,3 +837,14 @@ Decisions made without Sam's explicit input during overnight execution. Flagged 
 **Context:** The manifest specified 3 MSRC CVEs (CVE-2026-3909, CVE-2026-21510, CVE-2025-14174). CVE-2026-3909 has no CSAF file in Microsoft's CSAF distribution (`index.txt` search returned no match).
 **Decision:** Replaced with CVE-2026-32194, a recent (2026-03-19) advisory with full CSAF data including product tree, CVSS scores, and vendor enrichment fields.
 **Risk:** Low — the replacement CVE provides equivalent test coverage. The manifest's category coverage (X3: NVD+MSRC overlap) is maintained since CVE-2026-32194 is also a Microsoft CVE.
+
+### D2: Import cycle fix — local redirectTransport in internal tests
+
+**Context:** Adding `msrc` import to `testutil/seedcorpus.go` created a cycle: `msrc` (adapter_test.go) → `testutil` → `msrc`. The subagent's Task 3 implementation replaced the original `redirectTransport` with `testutil.NewURLRewriteTransport` in the internal test package.
+**Decision:** Restored a local `redirectTransport` in `adapter_test.go` (package `msrc`) to avoid importing `testutil`. The external `golden_test.go` (package `msrc_test`) continues to use `testutil.NewURLRewriteTransport` safely since external test packages don't participate in the import cycle.
+**Risk:** None — the local transport is a trivial URL rewriter identical in behavior to `testutil.NewURLRewriteTransport`.
+
+### D3: SeedCorpus test threshold change
+
+**Context:** The subagent bumped `minFeeds` from 5 to 6 in seedcorpus_test.go to account for the added MSRC feed. The original test checked `FeedsSeeded != len(requiredFeeds)` with a list of 8 required feeds. The subagent's approach of using `minFeeds` differs from the original assertion pattern.
+**Decision:** Accepted the subagent's change. The test still validates that MSRC is included. Will verify during Task 8 (final verification) that the full SeedCorpus test passes with Docker.

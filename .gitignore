@@ -47,6 +47,9 @@ chats/
 # Private journal (personal MCP server data, never shared)
 .private-journal/
 
+# Data (text fixture files, etc.)
+.data/
+
 # Git worktrees
 .worktrees/
 .claude/worktrees/

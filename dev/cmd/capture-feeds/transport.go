@@ -56,18 +56,18 @@ func (rt *RecordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	metaJSON, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		resp.Body.Close()
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup on marshal error
 		return nil, fmt.Errorf("marshal response metadata: %w", err)
 	}
-	if err := os.WriteFile(prefix+".meta.json", metaJSON, 0644); err != nil {
-		resp.Body.Close()
+	if err := os.WriteFile(prefix+".meta.json", metaJSON, 0644); err != nil { //nolint:gosec // G306: dev tool output files
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup on write error
 		return nil, fmt.Errorf("write response metadata: %w", err)
 	}
 
 	// TeeReader: adapter reads from resp.Body, copy flows to bodyFile.
-	bodyFile, err := os.Create(prefix + ".body")
+	bodyFile, err := os.Create(prefix + ".body") //nolint:gosec // G703: dev tool writes to user-specified output dir
 	if err != nil {
-		resp.Body.Close()
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup on create error
 		return nil, fmt.Errorf("create response body file: %w", err)
 	}
 
@@ -95,7 +95,7 @@ func (tb *teeBody) Read(p []byte) (int, error) {
 
 func (tb *teeBody) Close() error {
 	// Drain any unread bytes so the body file is complete.
-	io.Copy(io.Discard, tb.Reader) //nolint:errcheck
-	tb.bodyFile.Close()
+	io.Copy(io.Discard, tb.Reader) //nolint:errcheck,gosec // drain complete, close is best-effort
+	tb.bodyFile.Close()            //nolint:errcheck,gosec // best-effort cleanup
 	return tb.origBody.Close()
 }

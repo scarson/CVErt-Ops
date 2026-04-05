@@ -22,9 +22,9 @@ func TestFetch_GoldenFiles(t *testing.T) {
 	}
 
 	// Serve the ZIP file for any request.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
-		w.Write(zipData)
+		_, _ = w.Write(zipData)
 	}))
 	t.Cleanup(srv.Close)
 

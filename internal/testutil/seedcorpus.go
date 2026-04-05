@@ -115,7 +115,7 @@ func fetchNVDGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 	sort.Strings(pages)
 
 	var requestCount atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		idx := int(requestCount.Add(1)) - 1
 		if idx >= len(pages) {
 			http.Error(w, "no more pages", http.StatusNotFound)
@@ -128,7 +128,7 @@ func fetchNVDGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Date", "Tue, 11 Mar 2026 10:00:00 GMT")
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -156,9 +156,9 @@ func fetchMITREGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		t.Fatalf("MITRE golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
-		w.Write(zipData)
+		_, _ = w.Write(zipData)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -177,9 +177,9 @@ func fetchGHSAGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		t.Fatalf("GHSA golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(pageData)
+		_, _ = w.Write(pageData)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -198,9 +198,9 @@ func fetchOSVGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		t.Fatalf("OSV golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
-		w.Write(zipData)
+		_, _ = w.Write(zipData)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -219,9 +219,9 @@ func fetchKEVGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		t.Fatalf("KEV golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(catalogData)
+		_, _ = w.Write(catalogData)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -264,7 +264,7 @@ func fetchMSRCGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 
 		if strings.HasSuffix(path, "/changes.csv") {
 			w.Header().Set("Content-Type", "text/csv")
-			w.Write(changesData) //nolint:errcheck
+			_, _ = w.Write(changesData)
 			return
 		}
 
@@ -273,7 +273,7 @@ func fetchMSRCGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 			filename := parts[len(parts)-1]
 			if data, ok := csafByName[filename]; ok {
 				w.Header().Set("Content-Type", "application/json")
-				w.Write(data) //nolint:errcheck
+				_, _ = w.Write(data)
 				return
 			}
 		}
@@ -301,7 +301,7 @@ func fetchRedHatGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 		w.Header().Set("Content-Type", "application/json")
 		path := r.URL.Path
 		if strings.HasSuffix(path, "/cve.json") {
-			w.Write(listData)
+			_, _ = w.Write(listData)
 			return
 		}
 		if strings.Contains(path, "/cve/CVE-") {
@@ -310,12 +310,12 @@ func fetchRedHatGolden(t *testing.T, projectRoot string) []feed.CanonicalPatch {
 				filename := parts[len(parts)-1]
 				cveID := strings.TrimSuffix(filename, ".json")
 				detailPath := filepath.Join(goldenDir, "detail", cveID+".json")
-				data, err := os.ReadFile(detailPath)
+				data, err := os.ReadFile(detailPath) //nolint:gosec // G703: test helper reads from known golden fixture directory
 				if err != nil {
 					http.NotFound(w, r)
 					return
 				}
-				w.Write(data)
+				_, _ = w.Write(data) //nolint:gosec // G705: test helper serves golden fixture data, not user input
 				return
 			}
 		}
@@ -339,9 +339,9 @@ func applyEPSSGolden(t *testing.T, db *TestDB, projectRoot string) int {
 		return 0
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
-		w.Write(scoresData)
+		_, _ = w.Write(scoresData)
 	}))
 	t.Cleanup(srv.Close)
 
@@ -350,7 +350,7 @@ func applyEPSSGolden(t *testing.T, db *TestDB, projectRoot string) int {
 	}
 
 	adapter := epss.New(client)
-	cursor, err := adapter.Apply(context.Background(), db.Store.DB(), nil)
+	cursor, err := adapter.Apply(context.Background(), db.DB(), nil)
 	if err != nil {
 		t.Fatalf("SeedCorpus: EPSS Apply: %v", err)
 	}
@@ -360,7 +360,7 @@ func applyEPSSGolden(t *testing.T, db *TestDB, projectRoot string) int {
 
 	// Count how many CVEs got EPSS scores.
 	var count int
-	err = db.Store.DB().QueryRow("SELECT COUNT(*) FROM cves WHERE epss_score IS NOT NULL").Scan(&count)
+	err = db.DB().QueryRowContext(context.Background(), "SELECT COUNT(*) FROM cves WHERE epss_score IS NOT NULL").Scan(&count)
 	if err != nil {
 		t.Fatalf("SeedCorpus: count EPSS scores: %v", err)
 	}

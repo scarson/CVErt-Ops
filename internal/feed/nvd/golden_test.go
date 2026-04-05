@@ -41,7 +41,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 
 	// Serve pages sequentially: first fetch → first page, second → second page, etc.
 	var requestCount atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		idx := int(requestCount.Add(1)) - 1
 		if idx >= len(pages) {
 			http.Error(w, "no more fixture pages", http.StatusNotFound)
@@ -57,7 +57,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		// Must match the cursor's WindowEnd so computeNextCursor returns
 		// LastPage=true after the first window.
 		w.Header().Set("Date", "Tue, 11 Mar 2026 10:00:00 GMT")
-		w.Write(data)
+		_, _ = w.Write(data)
 	}))
 	t.Cleanup(srv.Close)
 

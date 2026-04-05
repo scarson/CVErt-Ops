@@ -25,9 +25,9 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		t.Fatalf("read catalog fixture: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(catalogData)
+		_, _ = w.Write(catalogData)
 	}))
 	t.Cleanup(srv.Close)
 

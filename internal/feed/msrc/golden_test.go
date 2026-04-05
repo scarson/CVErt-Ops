@@ -55,7 +55,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 
 		if strings.HasSuffix(path, "/changes.csv") {
 			w.Header().Set("Content-Type", "text/csv")
-			w.Write(changesCSV) //nolint:errcheck
+			_, _ = w.Write(changesCSV)
 			return
 		}
 
@@ -66,7 +66,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 			data, ok := csafByName[filename]
 			if ok {
 				w.Header().Set("Content-Type", "application/json")
-				w.Write(data) //nolint:errcheck
+				_, _ = w.Write(data)
 				return
 			}
 		}

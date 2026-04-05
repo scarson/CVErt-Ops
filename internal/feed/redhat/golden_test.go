@@ -28,7 +28,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 
 		path := r.URL.Path
 		if strings.HasSuffix(path, "/cve.json") || strings.Contains(path, "/cve.json?") {
-			w.Write(listData)
+			_, _ = w.Write(listData)
 			return
 		}
 
@@ -40,12 +40,12 @@ func TestFetch_GoldenFiles(t *testing.T) {
 				filename := parts[len(parts)-1] // "CVE-YYYY-NNNN.json"
 				cveID := strings.TrimSuffix(filename, ".json")
 				detailPath := filepath.Join(goldenDir, "detail", cveID+".json")
-				data, err := os.ReadFile(detailPath)
+				data, err := os.ReadFile(detailPath) //nolint:gosec // G703: test helper reads from known golden fixture directory
 				if err != nil {
 					http.NotFound(w, r)
 					return
 				}
-				w.Write(data)
+				_, _ = w.Write(data) //nolint:gosec // G705: test helper serves golden fixture data, not user input
 				return
 			}
 		}

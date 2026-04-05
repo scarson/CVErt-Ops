@@ -53,7 +53,7 @@ func TestApply_GoldenFiles(t *testing.T) {
 		t.Fatalf("EPSS golden fixture missing: %v", err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
 		_, _ = w.Write(scoresData)
 	}))
@@ -67,7 +67,7 @@ func TestApply_GoldenFiles(t *testing.T) {
 	adapter := epss.New(client)
 
 	// Apply EPSS scores.
-	cursor, err := adapter.Apply(ctx, db.Store.DB(), nil)
+	cursor, err := adapter.Apply(ctx, db.DB(), nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestApply_GoldenFiles(t *testing.T) {
 
 	// Assertion 2: at least one CVE row has a non-null EPSS score.
 	var scoredCount int
-	err = db.Store.DB().QueryRow(
+	err = db.DB().QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM cves WHERE epss_score IS NOT NULL").Scan(&scoredCount)
 	if err != nil {
 		t.Fatalf("count scored CVEs: %v", err)
@@ -92,7 +92,7 @@ func TestApply_GoldenFiles(t *testing.T) {
 	// Parse the golden CSV to build expected scores, then compare against DB.
 	expectedScores := parseGoldenEPSSScores(t, scoresData)
 
-	rows, err := db.Store.DB().QueryContext(ctx,
+	rows, err := db.DB().QueryContext(ctx,
 		"SELECT cve_id, epss_score FROM cves WHERE epss_score IS NOT NULL")
 	if err != nil {
 		t.Fatalf("query scored CVEs: %v", err)
@@ -174,7 +174,7 @@ func seedNVDForEPSS(t *testing.T, db *testutil.TestDB) []feed.CanonicalPatch {
 	sort.Strings(pages)
 
 	var requestCount atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		idx := int(requestCount.Add(1)) - 1
 		if idx >= len(pages) {
 			http.Error(w, "no more pages", http.StatusNotFound)

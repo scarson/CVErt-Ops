@@ -23,10 +23,10 @@ func TestFetch_GoldenFiles(t *testing.T) {
 	}
 
 	// GHSA adapter expects JSON array, no Link header = last page.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		// No Link header → adapter sees no "next" cursor → LastPage=true.
-		w.Write(pageData)
+		_, _ = w.Write(pageData)
 	}))
 	t.Cleanup(srv.Close)
 

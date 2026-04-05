@@ -54,7 +54,7 @@ func main() {
 
 	for _, f := range feeds {
 		if err := captureFeed(ctx, f, outDir); err != nil {
-			slog.Error("capture failed", "feed", f, "error", err)
+			slog.Error("capture failed", "feed", f, "error", err) //nolint:gosec // G706: dev tool logging, not user-facing
 			// Continue to next feed — don't abort entire run.
 		}
 	}
@@ -62,7 +62,7 @@ func main() {
 
 func captureFeed(ctx context.Context, feedName, baseDir string) error {
 	feedDir := filepath.Join(baseDir, feedName)
-	if err := os.MkdirAll(feedDir, 0755); err != nil {
+	if err := os.MkdirAll(feedDir, 0755); err != nil { //nolint:gosec // G301: dev tool data directory
 		return fmt.Errorf("mkdir %s: %w", feedDir, err)
 	}
 
@@ -110,7 +110,7 @@ func recordingClient(outDir string) *http.Client {
 
 // captureDirectDownload fetches a single URL and saves it to disk.
 func captureDirectDownload(ctx context.Context, dir, url, filename string) error {
-	slog.Info("downloading", "url", url, "dest", filepath.Join(dir, filename))
+	slog.Info("downloading", "url", url, "dest", filepath.Join(dir, filename)) //nolint:gosec // G706: dev tool logging, not user-facing
 	start := time.Now()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -120,36 +120,36 @@ func captureDirectDownload(ctx context.Context, dir, url, filename string) error
 	req.Header.Set("User-Agent", feed.DefaultUserAgent)
 
 	client := &http.Client{Timeout: 30 * time.Minute} // ZIP files can be large
-	resp, err := client.Do(req)
+	resp, err := client.Do(req)                       //nolint:gosec // G704: capture tool intentionally fetches external URLs
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // read-only response body
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
 	}
 
 	outPath := filepath.Join(dir, filename)
-	f, err := os.Create(outPath)
+	f, err := os.Create(outPath) //nolint:gosec // G703: dev tool writes to user-specified output dir
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // best-effort close after io.Copy
 
 	n, err := io.Copy(f, resp.Body)
 	if err != nil {
 		return fmt.Errorf("write %s: %w", outPath, err)
 	}
 
-	slog.Info("downloaded", "file", outPath, "bytes", n, "elapsed", time.Since(start).Round(time.Second))
+	slog.Info("downloaded", "file", outPath, "bytes", n, "elapsed", time.Since(start).Round(time.Second)) //nolint:gosec // G706: dev tool logging, not user-facing
 	return nil
 }
 
 // captureWithAdapter runs a feed.Adapter with a recording transport, paginating
 // until LastPage. All HTTP responses are saved to disk by the transport.
 func captureWithAdapter(ctx context.Context, dir string, adapter feed.Adapter) error {
-	slog.Info("capturing with adapter", "dir", dir)
+	slog.Info("capturing with adapter", "dir", dir) //nolint:gosec // G706: dev tool logging, not user-facing
 	start := time.Now()
 	var totalPatches, totalPages int
 
@@ -166,7 +166,7 @@ func captureWithAdapter(ctx context.Context, dir string, adapter feed.Adapter) e
 
 		totalPages++
 		totalPatches += len(result.Patches)
-		slog.Info("fetched page",
+		slog.Info("fetched page", //nolint:gosec // G706: dev tool logging, not user-facing
 			"page", totalPages,
 			"patches", len(result.Patches),
 			"total_patches", totalPatches,
@@ -179,7 +179,7 @@ func captureWithAdapter(ctx context.Context, dir string, adapter feed.Adapter) e
 		}
 	}
 
-	slog.Info("capture complete",
+	slog.Info("capture complete", //nolint:gosec // G706: dev tool logging, not user-facing
 		"dir", dir,
 		"pages", totalPages,
 		"patches", totalPatches,

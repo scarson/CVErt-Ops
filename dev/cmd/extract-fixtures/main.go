@@ -102,7 +102,7 @@ func loadManifest(path string) (*Manifest, error) {
 }
 
 func ensureDir(path string) error {
-	return os.MkdirAll(path, 0755)
+	return os.MkdirAll(path, 0755) //nolint:gosec // G301: dev tool data directory
 }
 
 // --- NVD Extraction ---
@@ -184,7 +184,7 @@ func extractNVD(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 	}
 
 	outPath := filepath.Join(outDir, "page-001.json")
-	if err := os.WriteFile(outPath, pageJSON, 0644); err != nil {
+	if err := os.WriteFile(outPath, pageJSON, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 		return err
 	}
 
@@ -248,7 +248,7 @@ func extractGHSA(snapshotsDir, outputDir string, cveIDs, ghsaIDs map[string]bool
 	}
 
 	outPath := filepath.Join(outDir, "page-001.json")
-	if err := os.WriteFile(outPath, pageJSON, 0644); err != nil {
+	if err := os.WriteFile(outPath, pageJSON, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 		return err
 	}
 
@@ -318,7 +318,7 @@ func extractKEV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 	}
 
 	outPath := filepath.Join(outDir, "catalog.json")
-	if err := os.WriteFile(outPath, outJSON, 0644); err != nil {
+	if err := os.WriteFile(outPath, outJSON, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 		return err
 	}
 
@@ -339,7 +339,7 @@ func extractEPSS(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) erro
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -353,7 +353,7 @@ func extractEPSS(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) erro
 
 		// Line 1: comment, Line 2: header — always include.
 		if lineNum <= 2 {
-			fmt.Fprintln(gz, line)
+			_, _ = fmt.Fprintln(gz, line) //nolint:gosec // G705: dev tool writes to local gzip buffer, not HTTP response
 			continue
 		}
 
@@ -363,12 +363,12 @@ func extractEPSS(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) erro
 			continue
 		}
 		if cveIDs[parts[0]] {
-			fmt.Fprintln(gz, line)
+			_, _ = fmt.Fprintln(gz, line) //nolint:gosec // G705: dev tool writes to local gzip buffer, not HTTP response
 			extracted++
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		gz.Close()
+		_ = gz.Close()
 		return fmt.Errorf("scan EPSS CSV: %w", err)
 	}
 	if err := gz.Close(); err != nil {
@@ -376,7 +376,7 @@ func extractEPSS(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) erro
 	}
 
 	outPath := filepath.Join(outDir, "scores.csv.gz")
-	if err := os.WriteFile(outPath, buf.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(outPath, buf.Bytes(), 0644); err != nil { //nolint:gosec // G306: dev tool output files
 		return err
 	}
 
@@ -397,11 +397,11 @@ func extractMITRE(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) err
 	if err != nil {
 		return fmt.Errorf("open MITRE ZIP: %w", err)
 	}
-	defer zr.Close()
+	defer zr.Close() //nolint:errcheck // read-only zip reader
 
 	// Create output ZIP.
 	outPath := filepath.Join(outDir, "cvelistV5.zip")
-	outFile, err := os.Create(outPath)
+	outFile, err := os.Create(outPath) //nolint:gosec // G703: dev tool writes to user-specified output dir
 	if err != nil {
 		return err
 	}
@@ -430,7 +430,7 @@ func extractMITRE(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) err
 			continue
 		}
 		data, err := io.ReadAll(rc)
-		rc.Close() // explicit close, not defer (FEED-5)
+		rc.Close() //nolint:errcheck,gosec // explicit close per FEED-5
 		if err != nil {
 			slog.Warn("skip MITRE entry (read)", "name", name, "error", err)
 			continue
@@ -449,7 +449,7 @@ func extractMITRE(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) err
 	}
 
 	if err := zw.Close(); err != nil {
-		outFile.Close()
+		outFile.Close() //nolint:errcheck,gosec // best-effort cleanup on zip write error
 		return fmt.Errorf("close MITRE ZIP writer: %w", err)
 	}
 	if err := outFile.Close(); err != nil {
@@ -473,10 +473,10 @@ func extractOSV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 	if err != nil {
 		return fmt.Errorf("open OSV ZIP: %w", err)
 	}
-	defer zr.Close()
+	defer zr.Close() //nolint:errcheck // read-only zip reader
 
 	outPath := filepath.Join(outDir, "all.zip")
-	outFile, err := os.Create(outPath)
+	outFile, err := os.Create(outPath) //nolint:gosec // G703: dev tool writes to user-specified output dir
 	if err != nil {
 		return err
 	}
@@ -502,7 +502,7 @@ func extractOSV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 				continue
 			}
 			data, err := io.ReadAll(rc)
-			rc.Close() // explicit close (FEED-5)
+			rc.Close() //nolint:errcheck,gosec // explicit close per FEED-5
 			if err != nil {
 				continue
 			}
@@ -511,7 +511,7 @@ func extractOSV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 			if err != nil {
 				continue
 			}
-			w.Write(data)
+			_, _ = w.Write(data)
 			extracted++
 			continue
 		}
@@ -527,7 +527,7 @@ func extractOSV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 			continue
 		}
 		data, err := io.ReadAll(rc)
-		rc.Close() // explicit close (FEED-5)
+		rc.Close() //nolint:errcheck,gosec // explicit close per FEED-5
 		if err != nil {
 			continue
 		}
@@ -545,7 +545,7 @@ func extractOSV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 				if err != nil {
 					break
 				}
-				w.Write(data)
+				_, _ = w.Write(data)
 				extracted++
 				break
 			}
@@ -553,7 +553,7 @@ func extractOSV(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) error
 	}
 
 	if err := zw.Close(); err != nil {
-		outFile.Close()
+		outFile.Close() //nolint:errcheck,gosec // best-effort cleanup on zip write error
 		return fmt.Errorf("close OSV ZIP writer: %w", err)
 	}
 	if err := outFile.Close(); err != nil {
@@ -609,7 +609,7 @@ func extractMSRC(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) erro
 		return fmt.Errorf("read MSRC updates: %w", err)
 	}
 	outPath := filepath.Join(outDir, "updates.json")
-	if err := os.WriteFile(outPath, data, 0644); err != nil {
+	if err := os.WriteFile(outPath, data, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 		return err
 	}
 
@@ -648,7 +648,7 @@ func extractMSRC(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) erro
 		base := filepath.Base(cvrfFile)
 		releaseID := strings.TrimSuffix(strings.TrimPrefix(base, "cvrf-"), ".json")
 		outCSAF := filepath.Join(csafDir, releaseID+".json")
-		if err := os.WriteFile(outCSAF, cvrfData, 0644); err != nil {
+		if err := os.WriteFile(outCSAF, cvrfData, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 			slog.Warn("write MSRC CSAF", "error", err)
 			continue
 		}
@@ -705,7 +705,7 @@ func extractRedHat(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) er
 				}
 
 				outPath := filepath.Join(detailDir, cveID+".json")
-				if err := os.WriteFile(outPath, bodyData, 0644); err != nil {
+				if err := os.WriteFile(outPath, bodyData, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 					slog.Warn("write Red Hat detail", "cve", cveID, "error", err)
 					continue
 				}
@@ -736,7 +736,7 @@ func extractRedHat(snapshotsDir, outputDir string, cveIDs, _ map[string]bool) er
 	}
 
 	outPath := filepath.Join(outDir, "list.json")
-	if err := os.WriteFile(outPath, listJSON, 0644); err != nil {
+	if err := os.WriteFile(outPath, listJSON, 0644); err != nil { //nolint:gosec // G306: dev tool output files
 		return err
 	}
 

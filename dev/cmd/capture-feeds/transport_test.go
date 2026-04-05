@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,10 +15,10 @@ import (
 
 func TestRecordingTransport_SavesRequestAndResponse(t *testing.T) {
 	// Set up a test server that returns known content.
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"vulnerabilities": [{"cve": {"id": "CVE-2024-0001"}}]}`))
+		_, _ = w.Write([]byte(`{"vulnerabilities": [{"cve": {"id": "CVE-2024-0001"}}]}`))
 	}))
 	defer ts.Close()
 
@@ -28,14 +29,18 @@ func TestRecordingTransport_SavesRequestAndResponse(t *testing.T) {
 	}
 	client := &http.Client{Transport: rt}
 
-	resp, err := client.Get(ts.URL + "/api/v2/cves?startIndex=0")
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v2/cves?startIndex=0", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: test server URL is not user-controlled
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
 
 	// The response body must still be readable by the caller (adapter).
 	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	resp.Body.Close() //nolint:gosec // G104: test cleanup
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
@@ -69,8 +74,8 @@ func TestRecordingTransport_SavesRequestAndResponse(t *testing.T) {
 }
 
 func TestRecordingTransport_SequentialNumbering(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{}`))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer ts.Close()
 
@@ -82,12 +87,16 @@ func TestRecordingTransport_SequentialNumbering(t *testing.T) {
 	client := &http.Client{Transport: rt}
 
 	for i := 0; i < 3; i++ {
-		resp, err := client.Get(ts.URL)
+		req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		resp, err := client.Do(req) //nolint:gosec // G704: test server URL is not user-controlled
 		if err != nil {
 			t.Fatal(err)
 		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close() //nolint:gosec // G104: test cleanup
 	}
 
 	// Should have 0001, 0002, 0003 files.
@@ -102,14 +111,14 @@ func TestRecordingTransport_SequentialNumbering(t *testing.T) {
 }
 
 func TestRecordingTransport_WriteFailureFailsRequest(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{}`))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer ts.Close()
 
 	tmp := t.TempDir()
 	notDir := filepath.Join(tmp, "not-a-directory")
-	if err := os.WriteFile(notDir, []byte("x"), 0644); err != nil {
+	if err := os.WriteFile(notDir, []byte("x"), 0644); err != nil { //nolint:gosec // G306: test helper file
 		t.Fatalf("seed blocking file: %v", err)
 	}
 
@@ -119,10 +128,14 @@ func TestRecordingTransport_WriteFailureFailsRequest(t *testing.T) {
 	}
 	client := &http.Client{Transport: rt}
 
-	resp, err := client.Get(ts.URL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: test server URL is not user-controlled
 	if err == nil {
 		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
+			resp.Body.Close() //nolint:gosec // G104: test cleanup
 		}
 		t.Fatal("expected capture write failure to return an error")
 	}
@@ -134,8 +147,8 @@ func TestRecordingTransport_StreamingBodyTee(t *testing.T) {
 	largePayload := strings.Repeat(`{"id":"CVE-0000-0000"},`, 10000)
 	largePayload = `[` + largePayload[:len(largePayload)-1] + `]`
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(largePayload))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(largePayload))
 	}))
 	defer ts.Close()
 
@@ -146,7 +159,11 @@ func TestRecordingTransport_StreamingBodyTee(t *testing.T) {
 	}
 	client := &http.Client{Transport: rt}
 
-	resp, err := client.Get(ts.URL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: test server URL is not user-controlled
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +181,7 @@ func TestRecordingTransport_StreamingBodyTee(t *testing.T) {
 			t.Fatalf("read chunk: %v", err)
 		}
 	}
-	resp.Body.Close()
+	resp.Body.Close() //nolint:gosec // G104: test cleanup
 
 	if totalRead != len(largePayload) {
 		t.Errorf("total read %d, want %d", totalRead, len(largePayload))

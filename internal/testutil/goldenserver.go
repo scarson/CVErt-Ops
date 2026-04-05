@@ -43,6 +43,7 @@ func NewURLRewriteTransport(originalBase, rewriteBase string, inner http.RoundTr
 	}
 }
 
+// RoundTrip rewrites matching request URLs and delegates to the inner transport.
 func (t *URLRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	reqURL := req.URL.String()
 	if suffix, found := strings.CutPrefix(reqURL, t.OriginalBase); found {

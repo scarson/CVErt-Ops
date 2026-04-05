@@ -13,8 +13,9 @@
 //
 // Cursor format: {"since": "2024-01-15T10:00:00Z"}
 // Auth: GITHUB_TOKEN environment variable (Bearer token).
-//   Unauthenticated: 60 req/hr — unusable for backfill.
-//   Authenticated:   5,000 req/hr; adapter uses ≤1 req/sec (safe margin).
+//
+//	Unauthenticated: 60 req/hr — unusable for backfill.
+//	Authenticated:   5,000 req/hr; adapter uses ≤1 req/sec (safe margin).
 //
 // Only "reviewed" type advisories are ingested. Unreviewed advisories lack
 // structured CVE data and are out of scope for the CVErt Ops corpus.
@@ -267,10 +268,10 @@ func parseLinkHeader(header string) string {
 // Fields are pointer types where the API may return null.
 type ghsaAdvisory struct {
 	GHSAID          string              `json:"ghsa_id"`
-	CVEID           *string             `json:"cve_id"`    // null when no CVE assigned
-	Summary         string              `json:"summary"`   // max 1024 chars
+	CVEID           *string             `json:"cve_id"`      // null when no CVE assigned
+	Summary         string              `json:"summary"`     // max 1024 chars
 	Description     *string             `json:"description"` // max 65535 chars, may contain null bytes
-	Severity        string              `json:"severity"`  // "critical","high","medium","low","unknown"
+	Severity        string              `json:"severity"`    // "critical","high","medium","low","unknown"
 	PublishedAt     string              `json:"published_at"`
 	UpdatedAt       string              `json:"updated_at"`
 	WithdrawnAt     *string             `json:"withdrawn_at"` // null when not withdrawn
@@ -278,7 +279,7 @@ type ghsaAdvisory struct {
 	CVSSSeverities  *ghsaCVSSSeverities `json:"cvss_severities"`
 	CWEs            []ghsaCWE           `json:"cwes"`
 	Vulnerabilities []ghsaVulnerability `json:"vulnerabilities"`
-	References      []ghsaReference     `json:"references"`
+	References      []string            `json:"references"`
 	Identifiers     []ghsaIdentifier    `json:"identifiers"`
 	HTMLURL         string              `json:"html_url"`
 }
@@ -310,11 +311,6 @@ type ghsaVulnerability struct {
 	} `json:"package"`
 	VulnerableVersionRange *string `json:"vulnerable_version_range"` // e.g., ">= 1.0, < 1.2.3"
 	FirstPatchedVersion    *string `json:"first_patched_version"`    // e.g., "1.2.3"
-}
-
-// ghsaReference is a single URL reference.
-type ghsaReference struct {
-	URL string `json:"url"`
 }
 
 // ghsaIdentifier is an entry in the identifiers array (type/value pair).
@@ -433,7 +429,7 @@ func parseAdvisory(rec ghsaAdvisory) *feed.CanonicalPatch {
 		if fixed != "" {
 			type event struct {
 				Introduced string `json:"introduced,omitempty"`
-				Fixed       string `json:"fixed,omitempty"`
+				Fixed      string `json:"fixed,omitempty"`
 			}
 			if b, err := json.Marshal([]event{{Introduced: "0"}, {Fixed: fixed}}); err == nil {
 				eventsJSON = b
@@ -459,7 +455,7 @@ func parseAdvisory(rec ghsaAdvisory) *feed.CanonicalPatch {
 		})
 	}
 	for _, ref := range rec.References {
-		u := strings.Clone(feed.StripNullBytes(ref.URL))
+		u := strings.Clone(feed.StripNullBytes(ref))
 		if u == "" {
 			continue
 		}

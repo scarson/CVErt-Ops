@@ -1,5 +1,5 @@
 // ABOUTME: Unit tests for the MSRC feed adapter's parse, convert, and fetch logic.
-// ABOUTME: Covers parseUpdates, csafToPatches, vendor enrichment, and end-to-end Fetch.
+// ABOUTME: Covers parseChangesCSV, csafToPatches, vendor enrichment, and end-to-end Fetch.
 package msrc
 
 import (
@@ -8,58 +8,48 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"net/url"
+
 	"github.com/scarson/cvert-ops/internal/feed"
 )
 
-// --- parseUpdates tests ---
+// redirectTransport rewrites outbound request URLs to point at the test server.
+// Used only in internal package tests to avoid importing testutil (which imports
+// msrc, creating an import cycle).
+type redirectTransport struct {
+	targetURL string
+	inner     http.RoundTripper
+}
 
-func TestParseUpdates(t *testing.T) {
+func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, _ := url.Parse(rt.targetURL)
+	req = req.Clone(req.Context())
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	return rt.inner.RoundTrip(req)
+}
+
+// --- parseChangesCSV tests ---
+
+func TestParseChangesCSV(t *testing.T) {
 	t.Parallel()
-
-	body := `{
-		"@odata.context": "https://api.msrc.microsoft.com/cvrf/v3.0/$metadata#Updates",
-		"value": [
-			{
-				"ID": "2026-Feb",
-				"Alias": "2026-Feb",
-				"DocumentTitle": "February 2026 Security Updates",
-				"Severity": null,
-				"InitialReleaseDate": "2026-02-11T08:00:00Z",
-				"CurrentReleaseDate": "2026-02-13T08:00:00Z",
-				"CvrfUrl": "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/2026-Feb"
-			},
-			{
-				"ID": "2026-Jan",
-				"Alias": "2026-Jan",
-				"DocumentTitle": "January 2026 Security Updates",
-				"Severity": null,
-				"InitialReleaseDate": "2026-01-14T08:00:00Z",
-				"CurrentReleaseDate": "2026-01-16T08:00:00Z",
-				"CvrfUrl": "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/2026-Jan"
-			}
-		]
-	}`
-
-	updates, err := parseUpdates(strings.NewReader(body))
+	body := "\"2026/msrc_cve-2026-3909.json\",\"2026-03-18T01:00:00Z\"\n\"2026/msrc_cve-2026-21510.json\",\"2026-03-17T07:00:00Z\"\n\"2025/msrc_cve-2025-14174.json\",\"2026-03-12T07:00:00Z\"\n"
+	entries, err := parseChangesCSV(strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(updates) != 2 {
-		t.Fatalf("len(updates) = %d, want 2", len(updates))
+	if len(entries) != 3 {
+		t.Fatalf("len(entries) = %d, want 3", len(entries))
 	}
-	if updates[0].ID != "2026-Feb" {
-		t.Errorf("updates[0].ID = %q, want %q", updates[0].ID, "2026-Feb")
+	if entries[0].Path != "2026/msrc_cve-2026-3909.json" {
+		t.Errorf("entries[0].Path = %q, want %q", entries[0].Path, "2026/msrc_cve-2026-3909.json")
 	}
-	if updates[0].CurrentReleaseDate != "2026-02-13T08:00:00Z" {
-		t.Errorf("updates[0].CurrentReleaseDate = %q, want %q", updates[0].CurrentReleaseDate, "2026-02-13T08:00:00Z")
-	}
-	if updates[1].ID != "2026-Jan" {
-		t.Errorf("updates[1].ID = %q, want %q", updates[1].ID, "2026-Jan")
+	if entries[0].Timestamp != "2026-03-18T01:00:00Z" {
+		t.Errorf("entries[0].Timestamp = %q, want %q", entries[0].Timestamp, "2026-03-18T01:00:00Z")
 	}
 }
 
@@ -432,48 +422,27 @@ func TestCSAFToPatches_CVSSZeroIsValid(t *testing.T) {
 
 // --- Fetch tests ---
 
-// redirectTransport intercepts outbound requests and rewrites their scheme/host
-// to point at the httptest server.
-type redirectTransport struct {
-	targetURL string
-	inner     http.RoundTripper
-}
-
-func (rt *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	u, _ := url.Parse(rt.targetURL)
-	req.URL.Scheme = u.Scheme
-	req.URL.Host = u.Host
-	return rt.inner.RoundTrip(req)
-}
-
 func TestFetch_Success(t *testing.T) {
 	t.Parallel()
 
-	updatesResp := `{
-		"value": [{
-			"ID": "2026-Mar",
-			"CurrentReleaseDate": "2026-03-12T08:00:00Z"
-		}]
-	}`
+	changesCSV := `"2026/msrc_cve-2026-21001.json","2026-03-12T08:00:00Z"` + "\n"
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(r.URL.Path, "/updates"):
-			_, _ = w.Write([]byte(updatesResp))
-		case strings.Contains(r.URL.Path, "/csaf/"):
+		case strings.HasSuffix(r.URL.Path, "/changes.csv"):
+			w.Header().Set("Content-Type", "text/csv")
+			_, _ = w.Write([]byte(changesCSV))
+		case strings.HasSuffix(r.URL.Path, ".json"):
 			_, _ = w.Write([]byte(minimalCSAFDoc))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer ts.Close()
+	defer srv.Close()
 
 	client := &http.Client{
-		Transport: &redirectTransport{
-			targetURL: ts.URL,
-			inner:     http.DefaultTransport,
-		},
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 
@@ -498,8 +467,8 @@ func TestFetch_Success(t *testing.T) {
 	if err := json.Unmarshal(result.NextCursor, &cur); err != nil {
 		t.Fatalf("unmarshal cursor: %v", err)
 	}
-	if cur.LastReleaseDate != "2026-03-12T08:00:00Z" {
-		t.Errorf("cursor.LastReleaseDate = %q, want %q", cur.LastReleaseDate, "2026-03-12T08:00:00Z")
+	if cur.LastUpdated != "2026-03-12T08:00:00Z" {
+		t.Errorf("cursor.LastUpdated = %q, want %q", cur.LastUpdated, "2026-03-12T08:00:00Z")
 	}
 
 	if !result.LastPage {
@@ -519,32 +488,28 @@ func TestFetch_Success(t *testing.T) {
 func TestFetch_ShortCircuit(t *testing.T) {
 	t.Parallel()
 
+	changesCSV := `"2026/msrc_cve-2026-21001.json","2026-03-12T08:00:00Z"` + "\n"
+
 	var requestCount atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/updates") {
-			// Return updates with the same date as cursor
-			_, _ = w.Write([]byte(`{
-				"value": [{
-					"ID": "2026-Mar",
-					"CurrentReleaseDate": "2026-03-12T08:00:00Z"
-				}]
-			}`))
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/changes.csv"):
+			w.Header().Set("Content-Type", "text/csv")
+			_, _ = w.Write([]byte(changesCSV))
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer ts.Close()
+	defer srv.Close()
 
 	client := &http.Client{
-		Transport: &redirectTransport{
-			targetURL: ts.URL,
-			inner:     http.DefaultTransport,
-		},
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 
 	cursorJSON, _ := json.Marshal(Cursor{
-		LastReleaseDate: "2026-03-12T08:00:00Z",
+		LastUpdated: "2026-03-12T08:00:00Z",
 	})
 
 	result, err := adapter.Fetch(context.Background(), cursorJSON)
@@ -554,25 +519,22 @@ func TestFetch_ShortCircuit(t *testing.T) {
 	if len(result.Patches) != 0 {
 		t.Errorf("len(Patches) = %d, want 0 (short-circuit)", len(result.Patches))
 	}
-	// Should have made the /updates request but NOT any /csaf/ requests
+	// Should have made the /changes.csv request but NOT any .json requests
 	if requestCount.Load() != 1 {
-		t.Errorf("requestCount = %d, want 1 (only /updates, no /csaf)", requestCount.Load())
+		t.Errorf("requestCount = %d, want 1 (only /changes.csv, no .json)", requestCount.Load())
 	}
 }
 
 func TestFetch_HTTPError(t *testing.T) {
 	t.Parallel()
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer ts.Close()
+	defer srv.Close()
 
 	client := &http.Client{
-		Transport: &redirectTransport{
-			targetURL: ts.URL,
-			inner:     http.DefaultTransport,
-		},
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 
@@ -585,59 +547,26 @@ func TestFetch_HTTPError(t *testing.T) {
 	}
 }
 
-func TestFetch_InvalidCursorDate(t *testing.T) {
-	t.Parallel()
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("should not make HTTP request with invalid cursor date")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	client := &http.Client{
-		Transport: &redirectTransport{
-			targetURL: ts.URL,
-			inner:     http.DefaultTransport,
-		},
-	}
-	adapter := New(client)
-
-	// Cursor with OData injection attempt
-	cursorJSON, _ := json.Marshal(Cursor{
-		LastReleaseDate: "'; DROP TABLE cves; --",
-	})
-
-	_, err := adapter.Fetch(context.Background(), cursorJSON)
-	if err == nil {
-		t.Fatal("expected error for invalid cursor date, got nil")
-	}
-	if !strings.Contains(err.Error(), "invalid cursor date format") {
-		t.Errorf("error = %q, want 'invalid cursor date format'", err.Error())
-	}
-}
-
 func TestFetch_CSAFHTTPError(t *testing.T) {
 	t.Parallel()
 
-	// /updates succeeds but /csaf/ returns 500
-	updatesResp := `{"value": [{"ID": "2026-Apr", "CurrentReleaseDate": "2026-04-01T00:00:00Z"}]}`
+	changesCSV := `"2026/msrc_cve-2026-21001.json","2026-04-01T00:00:00Z"` + "\n"
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.Contains(r.URL.Path, "/updates"):
-			_, _ = w.Write([]byte(updatesResp))
-		case strings.Contains(r.URL.Path, "/csaf/"):
+		case strings.HasSuffix(r.URL.Path, "/changes.csv"):
+			w.Header().Set("Content-Type", "text/csv")
+			_, _ = w.Write([]byte(changesCSV))
+		case strings.HasSuffix(r.URL.Path, ".json"):
 			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer ts.Close()
+	defer srv.Close()
 
 	client := &http.Client{
-		Transport: &redirectTransport{
-			targetURL: ts.URL,
-			inner:     http.DefaultTransport,
-		},
+		Transport: &redirectTransport{targetURL: srv.URL, inner: http.DefaultTransport},
 	}
 	adapter := New(client)
 

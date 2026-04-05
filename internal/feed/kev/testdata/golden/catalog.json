@@ -1,0 +1,157 @@
+{
+  "catalogVersion": "2026.03.18",
+  "dateReleased": "2026-03-18T19:24:20.2811Z",
+  "count": 10,
+  "vulnerabilities": [
+    {
+      "cveID": "CVE-2026-3909",
+      "vendorProject": "Google",
+      "product": "Skia",
+      "vulnerabilityName": "Google Skia Out-of-Bounds Write Vulnerability",
+      "dateAdded": "2026-03-13",
+      "shortDescription": "Google Skia contains an out-of-bounds write vulnerability that could allow a remote attacker to perform out of bounds memory access via a crafted HTML page. This vulnerability affects Google Chrome and ChromeOS, Android, Flutter, and possibly other products.",
+      "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2026-03-27",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "This vulnerability affects a common open-source component, third-party library, or a protocol used by different products. Please check with specific vendors for information on patching status. For more information, please see: https:\/\/chromereleases.googleblog.com\/2026\/03\/stable-channel-update-for-desktop_12.html#:~:text=Google%20is%20aware ; https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2026-3909",
+      "cwes": [
+        "CWE-787"
+      ]
+    },
+    {
+      "cveID": "CVE-2026-21510",
+      "vendorProject": "Microsoft",
+      "product": "Windows",
+      "vulnerabilityName": "Microsoft Windows Shell Protection Mechanism Failure Vulnerability",
+      "dateAdded": "2026-02-10",
+      "shortDescription": "Microsoft Windows Shell contains a protection mechanism failure vulnerability that could allow an unauthorized attacker to bypass a security feature over a network. ",
+      "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2026-03-03",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "https:\/\/msrc.microsoft.com\/update-guide\/vulnerability\/CVE-2026-21510 ; https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2026-21510 ",
+      "cwes": [
+        "CWE-693"
+      ]
+    },
+    {
+      "cveID": "CVE-2025-14174",
+      "vendorProject": "Google",
+      "product": "Chromium",
+      "vulnerabilityName": "Google Chromium Out of Bounds Memory Access Vulnerability",
+      "dateAdded": "2025-12-12",
+      "shortDescription": "Google Chromium contains an out of bounds memory access vulnerability in ANGLE that could allow a remote attacker to perform out of bounds memory access via a crafted HTML page. This vulnerability could affect multiple web browsers that utilize Chromium, including, but not limited to, Google Chrome, Microsoft Edge, and Opera.",
+      "requiredAction": "Apply mitigations per vendor instructions, follow applicable BOD 22-01 guidance for cloud services, or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2026-01-02",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "https:\/\/chromereleases.googleblog.com\/2025\/12\/stable-channel-update-for-desktop_10.html ; https:\/\/learn.microsoft.com\/en-us\/deployedge\/microsoft-edge-relnotes-security ; https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2025-14174",
+      "cwes": []
+    },
+    {
+      "cveID": "CVE-2024-23897",
+      "vendorProject": "Jenkins",
+      "product": "Jenkins Command Line Interface (CLI)",
+      "vulnerabilityName": "Jenkins Command Line Interface (CLI) Path Traversal Vulnerability",
+      "dateAdded": "2024-08-19",
+      "shortDescription": "Jenkins Command Line Interface (CLI) contains a path traversal vulnerability that allows attackers limited read access to certain files, which can lead to code execution.",
+      "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2024-09-09",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "https:\/\/www.jenkins.io\/security\/advisory\/2024-01-24\/#SECURITY-3314; https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2024-23897",
+      "cwes": [
+        "CWE-27"
+      ]
+    },
+    {
+      "cveID": "CVE-2024-27198",
+      "vendorProject": "JetBrains",
+      "product": "TeamCity",
+      "vulnerabilityName": "JetBrains TeamCity Authentication Bypass Vulnerability",
+      "dateAdded": "2024-03-07",
+      "shortDescription": "JetBrains TeamCity contains an authentication bypass vulnerability that allows an attacker to perform admin actions.",
+      "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2024-03-28",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "https:\/\/www.jetbrains.com\/help\/teamcity\/teamcity-2023-11-4-release-notes.html; https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2024-27198",
+      "cwes": [
+        "CWE-288"
+      ]
+    },
+    {
+      "cveID": "CVE-2023-23752",
+      "vendorProject": "Joomla!",
+      "product": "Joomla!",
+      "vulnerabilityName": "Joomla! Improper Access Control Vulnerability",
+      "dateAdded": "2024-01-08",
+      "shortDescription": "Joomla! contains an improper access control vulnerability that allows unauthorized access to webservice endpoints.",
+      "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+      "dueDate": "2024-01-29",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "https:\/\/developer.joomla.org\/security-centre\/894-20230201-core-improper-access-check-in-webservice-endpoints.html;  https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2023-23752",
+      "cwes": [
+        "CWE-284"
+      ]
+    },
+    {
+      "cveID": "CVE-2022-46169",
+      "vendorProject": "Cacti",
+      "product": "Cacti",
+      "vulnerabilityName": "Cacti Command Injection Vulnerability",
+      "dateAdded": "2023-02-16",
+      "shortDescription": "Cacti contains a command injection vulnerability that allows an unauthenticated user to execute code.",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2023-03-09",
+      "knownRansomwareCampaignUse": "Unknown",
+      "notes": "https:\/\/github.com\/Cacti\/cacti\/security\/advisories\/GHSA-6p93-p743-35gf;  https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2022-46169",
+      "cwes": [
+        "CWE-74"
+      ]
+    },
+    {
+      "cveID": "CVE-2021-44228",
+      "vendorProject": "Apache",
+      "product": "Log4j2",
+      "vulnerabilityName": "Apache Log4j2 Remote Code Execution Vulnerability",
+      "dateAdded": "2021-12-10",
+      "shortDescription": "Apache Log4j2 contains a vulnerability where JNDI features do not protect against attacker-controlled JNDI-related endpoints, allowing for remote code execution.",
+      "requiredAction": "For all affected software assets for which updates exist, the only acceptable remediation actions are: 1) Apply updates; OR 2) remove affected assets from agency networks. Temporary mitigations using one of the measures provided at https:\/\/www.cisa.gov\/uscert\/ed-22-02-apache-log4j-recommended-mitigation-measures are only acceptable until updates are available.",
+      "dueDate": "2021-12-24",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2021-44228",
+      "cwes": [
+        "CWE-20",
+        "CWE-400",
+        "CWE-502"
+      ]
+    },
+    {
+      "cveID": "CVE-2017-5638",
+      "vendorProject": "Apache",
+      "product": "Struts",
+      "vulnerabilityName": "Apache Struts Remote Code Execution Vulnerability",
+      "dateAdded": "2021-11-03",
+      "shortDescription": "Apache Struts Jakarta Multipart parser allows for malicious file upload using the Content-Type value, leading to remote code execution.",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2022-05-03",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2017-5638",
+      "cwes": [
+        "CWE-20"
+      ]
+    },
+    {
+      "cveID": "CVE-2018-7600",
+      "vendorProject": "Drupal",
+      "product": "Drupal Core",
+      "vulnerabilityName": "Drupal Core Remote Code Execution Vulnerability",
+      "dateAdded": "2021-11-03",
+      "shortDescription": "Drupal Core contains a remote code execution vulnerability that could allow an attacker to exploit multiple attack vectors on a Drupal site, resulting in complete site compromise.",
+      "requiredAction": "Apply updates per vendor instructions.",
+      "dueDate": "2022-05-03",
+      "knownRansomwareCampaignUse": "Known",
+      "notes": "https:\/\/nvd.nist.gov\/vuln\/detail\/CVE-2018-7600",
+      "cwes": [
+        "CWE-20"
+      ]
+    }
+  ]
+}

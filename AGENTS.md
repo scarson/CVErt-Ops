@@ -146,6 +146,13 @@ This is a security product — supply chain risk from unmaintained dependencies 
 - YOU MUST NEVER ignore system or test output - logs and messages often contain CRITICAL information.
 - Test output MUST BE PRISTINE TO PASS. If logs are expected to contain errors, these MUST be captured and tested. If a test is intentionally triggering an error, we *must* capture and validate that the error output is as we expect
 
+### Test data seeding
+
+- **`testutil.SeedCorpus(t, db)`** — seeds a test database with 65 real CVEs from 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) via golden fixtures and the real merge pipeline. Requires Docker (testcontainers). Use this for integration tests that need a realistic CVE corpus (alert evaluation, search, reports, watchlists).
+- **Do NOT seed CVE test data with raw SQL inserts** — use `SeedCorpus` or store methods. Raw inserts bypass `material_hash` computation, child table population, and FTS index updates. See `dev/testing-pitfalls.md` §7.
+- **Golden file tests** exist for each feed adapter at `internal/feed/<adapter>/golden_test.go`. They serve captured real API responses via httptest. Do not delete or skip these — they catch upstream schema drift that unit tests with hand-crafted fixtures cannot detect.
+- **When NOT to use `SeedCorpus`:** For unit tests that need a specific CVE shape (e.g., CVSS 0.0, null description, specific CWE), hand-craft the `CanonicalPatch` directly. `SeedCorpus` provides breadth, not targeted edge cases. For adapter unit tests, continue using inline JSON fixtures for precise control over individual fields.
+
 ### Test execution is mandatory — compilation is not verification
 
 - **Tests MUST be executed, not just compiled.** `go build` and `go vet` verify syntax; only `go test` verifies behavior. Code that compiles but was never executed is unverified code.

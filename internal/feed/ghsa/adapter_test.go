@@ -554,9 +554,9 @@ func TestParseAdvisory(t *testing.T) {
 		rec := ghsaAdvisory{
 			GHSAID:  "GHSA-ref-test-0001",
 			HTMLURL: "https://github.com/advisories/GHSA-ref-test-0001",
-			References: []ghsaReference{
-				{URL: "https://nvd.nist.gov/vuln/detail/CVE-2024-12345"},
-				{URL: "https://example.com/patch"},
+			References: []string{
+				"https://nvd.nist.gov/vuln/detail/CVE-2024-12345",
+				"https://example.com/patch",
 			},
 		}
 		patch := parseAdvisory(rec)
@@ -587,8 +587,8 @@ func TestParseAdvisory(t *testing.T) {
 		rec := ghsaAdvisory{
 			GHSAID:  "GHSA-ref-nohtml-0001",
 			HTMLURL: "",
-			References: []ghsaReference{
-				{URL: "https://example.com"},
+			References: []string{
+				"https://example.com",
 			},
 		}
 		patch := parseAdvisory(rec)
@@ -607,9 +607,9 @@ func TestParseAdvisory(t *testing.T) {
 		t.Parallel()
 		rec := ghsaAdvisory{
 			GHSAID: "GHSA-ref-empty-0001",
-			References: []ghsaReference{
-				{URL: ""},
-				{URL: "https://example.com"},
+			References: []string{
+				"",
+				"https://example.com",
 			},
 		}
 		patch := parseAdvisory(rec)
@@ -762,8 +762,8 @@ func TestParseAdvisory_NullByteStripping(t *testing.T) {
 			{Type: "CVE", Value: "CVE-2024\x00-55555"},
 		},
 		HTMLURL: "https://github\x00.com/advisories/GHSA-null-test-0001",
-		References: []ghsaReference{
-			{URL: "https://example\x00.com/ref"},
+		References: []string{
+			"https://example\x00.com/ref",
 		},
 	}
 

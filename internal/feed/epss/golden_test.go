@@ -3,6 +3,9 @@
 package epss_test
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +15,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,23 +85,42 @@ func TestApply_GoldenFiles(t *testing.T) {
 		t.Fatal("EPSS Apply produced 0 scored CVEs — expected at least one")
 	}
 
-	// Assertion 3: spot-check a specific CVE's EPSS score from the fixture.
-	// Find a CVE that exists in both the NVD fixtures and the EPSS CSV.
-	type scoreRow struct {
-		cveID string
-		score sql.NullFloat64
-	}
+	// Assertion 3: cross-check DB scores against the fixture CSV.
+	// Parse the golden CSV to build expected scores, then compare against DB.
+	expectedScores := parseGoldenEPSSScores(t, scoresData)
+
 	rows, err := db.Store.DB().QueryContext(ctx,
-		"SELECT cve_id, epss_score FROM cves WHERE epss_score IS NOT NULL ORDER BY epss_score ASC LIMIT 5")
+		"SELECT cve_id, epss_score FROM cves WHERE epss_score IS NOT NULL")
 	if err != nil {
 		t.Fatalf("query scored CVEs: %v", err)
 	}
 	defer rows.Close() //nolint:errcheck
 
-	var lowest scoreRow
-	if rows.Next() {
-		if err := rows.Scan(&lowest.cveID, &lowest.score); err != nil {
+	var lowestCVE string
+	var lowestScore float64
+	first := true
+	for rows.Next() {
+		var cveID string
+		var dbScore sql.NullFloat64
+		if err := rows.Scan(&cveID, &dbScore); err != nil {
 			t.Fatalf("scan scored CVE: %v", err)
+		}
+		if !dbScore.Valid {
+			t.Errorf("%s: epss_score is NULL after IS NOT NULL filter", cveID)
+			continue
+		}
+		csvScore, ok := expectedScores[cveID]
+		if !ok {
+			t.Errorf("%s: has DB score %f but not found in golden CSV", cveID, dbScore.Float64)
+			continue
+		}
+		if dbScore.Float64 != csvScore {
+			t.Errorf("%s: DB score %f != CSV score %f", cveID, dbScore.Float64, csvScore)
+		}
+		if first || dbScore.Float64 < lowestScore {
+			lowestCVE = cveID
+			lowestScore = dbScore.Float64
+			first = false
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -104,13 +128,11 @@ func TestApply_GoldenFiles(t *testing.T) {
 	}
 
 	// Assertion 4 (testing-pitfalls §9.4): verify a low EPSS score was preserved,
-	// not dropped by a truthiness check. The score must be Valid and >= 0.
-	if !lowest.score.Valid {
-		t.Error("lowest EPSS score is NULL — expected a valid float64")
-	} else if lowest.score.Float64 < 0 {
-		t.Errorf("lowest EPSS score is negative: %f", lowest.score.Float64)
+	// not dropped by a truthiness check.
+	if first {
+		t.Error("no scored CVEs found to verify low-score preservation")
 	} else {
-		t.Logf("low EPSS score correctly applied: %s = %f", lowest.cveID, lowest.score.Float64)
+		t.Logf("low EPSS score correctly applied: %s = %f", lowestCVE, lowestScore)
 	}
 
 	t.Logf("EPSS applied scores to %d CVE rows", scoredCount)
@@ -192,4 +214,44 @@ func seedNVDForEPSS(t *testing.T, db *testutil.TestDB) []feed.CanonicalPatch {
 	}
 
 	return allPatches
+}
+
+// parseGoldenEPSSScores decompresses the golden scores.csv.gz and returns a
+// map of CVE ID → EPSS score for cross-checking against DB values.
+func parseGoldenEPSSScores(t *testing.T, gzData []byte) map[string]float64 {
+	t.Helper()
+
+	gr, err := gzip.NewReader(bytes.NewReader(gzData))
+	if err != nil {
+		t.Fatalf("decompress EPSS golden fixture: %v", err)
+	}
+	defer gr.Close() //nolint:errcheck
+
+	scores := make(map[string]float64)
+	scanner := bufio.NewScanner(gr)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip comment lines and header.
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, "cve,") {
+			continue
+		}
+		// Format: "CVE-YYYY-NNNN,score,percentile"
+		parts := strings.SplitN(line, ",", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		score, parseErr := strconv.ParseFloat(parts[1], 64)
+		if parseErr != nil {
+			t.Logf("skipping unparseable EPSS line: %s", line)
+			continue
+		}
+		scores[parts[0]] = score
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan EPSS CSV: %v", err)
+	}
+	if len(scores) == 0 {
+		t.Fatal("parsed 0 scores from golden EPSS CSV")
+	}
+	return scores
 }

@@ -147,6 +147,12 @@ func TestApply_GoldenFiles(t *testing.T) {
 
 // seedNVDForEPSS fetches NVD golden fixtures and ingests them through the merge
 // pipeline so that CVE rows exist for EPSS to update.
+//
+// This intentionally duplicates the NVD fetch logic from testutil.fetchNVDGolden
+// rather than importing it. fetchNVDGolden returns patches without ingesting;
+// this function both fetches and ingests. Extracting a shared helper would require
+// exporting fetchNVDGolden (currently unexported) and adding an ingest callback,
+// which over-complicates the testutil API for a single consumer.
 func seedNVDForEPSS(t *testing.T, db *testutil.TestDB) []feed.CanonicalPatch {
 	t.Helper()
 

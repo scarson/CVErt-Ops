@@ -279,7 +279,7 @@ type ghsaAdvisory struct {
 	CVSSSeverities  *ghsaCVSSSeverities `json:"cvss_severities"`
 	CWEs            []ghsaCWE           `json:"cwes"`
 	Vulnerabilities []ghsaVulnerability `json:"vulnerabilities"`
-	References      []string            `json:"references"`
+	References      []string            `json:"references"` // bare URL strings, not objects
 	Identifiers     []ghsaIdentifier    `json:"identifiers"`
 	HTMLURL         string              `json:"html_url"`
 }

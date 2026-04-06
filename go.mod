@@ -8,7 +8,7 @@ require (
 	github.com/caarlos0/env/v11 v11.4.0
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/cyberphone/json-canonicalization v0.0.0-20241213102144-19d51d7fe467
-	github.com/danielgtaylor/huma/v2 v2.37.2
+	github.com/danielgtaylor/huma/v2 v2.37.3
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/doyensec/safeurl v0.2.2
 	github.com/go-chi/chi/v5 v5.2.5
@@ -16,8 +16,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.8.0
-	github.com/lib/pq v1.11.2
+	github.com/jackc/pgx/v5 v5.9.1
+	github.com/lib/pq v1.12.0
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sony/gobreaker/v2 v2.4.0
@@ -32,7 +32,7 @@ require (
 	golang.org/x/crypto v0.49.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/time v0.15.0
-	google.golang.org/genai v1.50.0
+	google.golang.org/genai v1.52.0
 )
 
 require (
@@ -57,7 +57,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect

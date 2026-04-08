@@ -182,7 +182,7 @@ func (c *EncryptionSentinelCheck) Run(ctx context.Context) (string, string, erro
 		return StatusFail, fmt.Sprintf("query system_settings: %v", err), nil
 	}
 
-	_, err = crypto.DecryptWithFallback(c.Key, c.PreviousKey, value)
+	_, err = crypto.DecryptWithFallback(c.Key, c.PreviousKey, value, []byte("encryption_sentinel"))
 	if err != nil {
 		return StatusFail, fmt.Sprintf("sentinel decryption failed: %v — encryption key may have changed", err), nil
 	}
@@ -344,8 +344,8 @@ func (c *SecurityHeadersCheck) Run(ctx context.Context) (string, string, error) 
 
 	required := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
-		"Referrer-Policy":       "strict-origin-when-cross-origin",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "strict-origin-when-cross-origin",
 	}
 
 	var missing []string
@@ -444,7 +444,7 @@ type StandardChecksConfig struct {
 	SMTPHost                 string
 	SMTPPort                 int
 	SMTPUsername             string
-	CORSAllowedOrigins      string
+	CORSAllowedOrigins       string
 	CookieAuth               bool
 	ServerAddr               string // empty in CLI mode, "http://localhost:{port}" in API mode
 }

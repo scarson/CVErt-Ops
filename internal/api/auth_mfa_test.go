@@ -55,7 +55,7 @@ func enrollTOTP(t *testing.T, ctx context.Context, srv *Server, userID uuid.UUID
 	if err != nil {
 		t.Fatalf("enrollTOTP: encryption key: %v", err)
 	}
-	secretEnc, err := crypto.Encrypt(encKey, []byte(secret))
+	secretEnc, err := crypto.Encrypt(encKey, []byte(secret), userID[:])
 	if err != nil {
 		t.Fatalf("enrollTOTP: encrypt: %v", err)
 	}

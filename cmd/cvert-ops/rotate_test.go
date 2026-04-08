@@ -29,9 +29,9 @@ func TestRotateEncryptionKey_ReEncryptsAllValues(t *testing.T) {
 	}
 	orgID := org.ID
 
-	// Encrypt a secret with the old key.
+	// Encrypt a secret with the old key, bound to the org.
 	secret := []byte("my-client-secret")
-	enc, err := crypto.Encrypt(oldKey, secret)
+	enc, err := crypto.Encrypt(oldKey, secret, orgID[:])
 	if err != nil {
 		t.Fatalf("encrypt with old key: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRotateEncryptionKey_ReEncryptsAllValues(t *testing.T) {
 		t.Fatalf("read re-encrypted value: %v", err)
 	}
 
-	plaintext, err := crypto.Decrypt(newKey, reEncrypted)
+	plaintext, err := crypto.Decrypt(newKey, reEncrypted, orgID[:])
 	if err != nil {
 		t.Fatalf("decrypt with new key failed: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRotateEncryptionKey_ReEncryptsAllValues(t *testing.T) {
 	}
 
 	// Verify old key alone no longer works.
-	_, err = crypto.Decrypt(oldKey, reEncrypted)
+	_, err = crypto.Decrypt(oldKey, reEncrypted, orgID[:])
 	if err == nil {
 		t.Error("decrypt with old key should fail on re-encrypted data, but succeeded")
 	}

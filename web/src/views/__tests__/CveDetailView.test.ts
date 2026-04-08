@@ -33,7 +33,7 @@ const mockGET = vi.fn<(path: string, ...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: (...args: unknown[]) => mockGET(...args),
+    GET: (path: string, ...args: unknown[]) => mockGET(path, ...args),
     POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))

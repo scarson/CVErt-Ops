@@ -8,8 +8,8 @@ import { useAuthStore } from '@/stores/auth'
 
 // Mock vue-router
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ path: '/cves' })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ path: '/cves' })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -20,8 +20,8 @@ vi.mock('vue-router', () => ({
 // Mock API client (needed by auth store)
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -126,7 +126,7 @@ describe('OrgSwitcher', () => {
       user_id: 'u1',
       email: 'sam@example.com',
       display_name: 'Sam Carter',
-    is_site_admin: false,
+      is_site_admin: false,
       orgs: [
         { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
         { org_id: 'org-2', name: 'Globex Inc', role: 'member' },

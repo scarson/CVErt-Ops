@@ -6,11 +6,11 @@ import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
-const mockPush = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: {} })),
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -18,14 +18,14 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
-const mockPATCH = vi.fn()
-const mockDELETE = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockPATCH = vi.fn<(...args: unknown[]) => unknown>()
+const mockDELETE = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
     GET: (...args: unknown[]) => mockGET(...args),
-    POST: vi.fn(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
     PATCH: (...args: unknown[]) => mockPATCH(...args),
     DELETE: (...args: unknown[]) => mockDELETE(...args),
   },
@@ -121,7 +121,9 @@ async function openRoleSelectAndGetOptions(): Promise<string[]> {
     trigger.hasPointerCapture = () => false
     trigger.releasePointerCapture = () => {}
   }
-  trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }))
+  trigger.dispatchEvent(
+    new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }),
+  )
   await flushPromises()
   const options = document.querySelectorAll('[role="option"]')
   return Array.from(options).map((el) => el.textContent?.trim() ?? '')
@@ -139,7 +141,9 @@ async function mountView() {
 
 // Clean up portaled DOM elements (reka-ui Select, AlertDialog, Dialog)
 function cleanupPortals() {
-  document.querySelectorAll('[data-reka-portal], [data-radix-popper-content-wrapper]').forEach((el) => el.remove())
+  document
+    .querySelectorAll('[data-reka-portal], [data-radix-popper-content-wrapper]')
+    .forEach((el) => el.remove())
 }
 
 describe('MembersView', () => {
@@ -193,8 +197,18 @@ describe('MembersView', () => {
     it('renders members table with data', async () => {
       setupAuthStore('admin')
       mockMembersSuccess([
-        makeMember({ user_id: 'u1', email: 'alice@example.com', display_name: 'Alice', role: 'admin' }),
-        makeMember({ user_id: 'u2', email: 'bob@example.com', display_name: 'Bob', role: 'member' }),
+        makeMember({
+          user_id: 'u1',
+          email: 'alice@example.com',
+          display_name: 'Alice',
+          role: 'admin',
+        }),
+        makeMember({
+          user_id: 'u2',
+          email: 'bob@example.com',
+          display_name: 'Bob',
+          role: 'member',
+        }),
       ])
       mockInvitationsSuccess([])
       await mountView()
@@ -322,9 +336,7 @@ describe('MembersView', () => {
 
     it('hides remove button on owner members', async () => {
       setupAuthStore('admin')
-      mockMembersSuccess([
-        makeMember({ user_id: 'u1', role: 'owner', email: 'owner@example.com' }),
-      ])
+      mockMembersSuccess([makeMember({ user_id: 'u1', role: 'owner', email: 'owner@example.com' })])
       mockInvitationsSuccess([])
       await mountView()
       await flushPromises()
@@ -364,8 +376,18 @@ describe('MembersView', () => {
     it('calls DELETE on confirmation and removes from list', async () => {
       setupAuthStore('admin')
       mockMembersSuccess([
-        makeMember({ user_id: 'u1', email: 'keep@example.com', display_name: 'Keep', role: 'member' }),
-        makeMember({ user_id: 'u2', email: 'remove@example.com', display_name: 'Remove', role: 'member' }),
+        makeMember({
+          user_id: 'u1',
+          email: 'keep@example.com',
+          display_name: 'Keep',
+          role: 'member',
+        }),
+        makeMember({
+          user_id: 'u2',
+          email: 'remove@example.com',
+          display_name: 'Remove',
+          role: 'member',
+        }),
       ])
       mockInvitationsSuccess([])
       await mountView()
@@ -428,9 +450,7 @@ describe('MembersView', () => {
 
     it('shows role select for admin on non-owner members', async () => {
       setupAuthStore('admin')
-      mockMembersSuccess([
-        makeMember({ user_id: 'u1', role: 'member' }),
-      ])
+      mockMembersSuccess([makeMember({ user_id: 'u1', role: 'member' })])
       mockInvitationsSuccess([])
       await mountView()
       await flushPromises()
@@ -441,9 +461,7 @@ describe('MembersView', () => {
 
     it('shows plain text role for owner members (not changeable)', async () => {
       setupAuthStore('admin')
-      mockMembersSuccess([
-        makeMember({ user_id: 'u1', role: 'owner' }),
-      ])
+      mockMembersSuccess([makeMember({ user_id: 'u1', role: 'owner' })])
       mockInvitationsSuccess([])
       await mountView()
       await flushPromises()
@@ -458,9 +476,7 @@ describe('MembersView', () => {
 
     it('calls PATCH when role is changed', async () => {
       setupAuthStore('owner')
-      mockMembersSuccess([
-        makeMember({ user_id: 'u1', role: 'member' }),
-      ])
+      mockMembersSuccess([makeMember({ user_id: 'u1', role: 'member' })])
       mockInvitationsSuccess([])
       await mountView()
       await flushPromises()
@@ -484,9 +500,7 @@ describe('MembersView', () => {
 
     it('shows plain text role badge for non-admin users', async () => {
       setupAuthStore('viewer')
-      mockMembersSuccess([
-        makeMember({ user_id: 'u1', role: 'member' }),
-      ])
+      mockMembersSuccess([makeMember({ user_id: 'u1', role: 'member' })])
       await mountView()
       await flushPromises()
 
@@ -552,9 +566,7 @@ describe('MembersView', () => {
     it('shows error when cancelling invitation fails', async () => {
       setupAuthStore('admin')
       mockMembersSuccess([makeMember()])
-      mockInvitationsSuccess([
-        makeInvitation({ id: 'inv-1', email: 'fail@example.com' }),
-      ])
+      mockInvitationsSuccess([makeInvitation({ id: 'inv-1', email: 'fail@example.com' })])
       await mountView()
       await flushPromises()
 
@@ -577,9 +589,7 @@ describe('MembersView', () => {
   describe('role change error handling', () => {
     it('reverts role display and shows error when PATCH fails', async () => {
       setupAuthStore('owner')
-      mockMembersSuccess([
-        makeMember({ user_id: 'u1', role: 'admin', email: 'admin@example.com' }),
-      ])
+      mockMembersSuccess([makeMember({ user_id: 'u1', role: 'admin', email: 'admin@example.com' })])
       mockInvitationsSuccess([])
       await mountView()
       await flushPromises()

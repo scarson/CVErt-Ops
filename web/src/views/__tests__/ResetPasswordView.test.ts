@@ -6,12 +6,12 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
-const mockPush = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 const mockRouteQuery = { token: undefined as string | undefined }
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: mockRouteQuery })),
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRoute: vi.fn<() => { query: typeof mockRouteQuery }>(() => ({ query: mockRouteQuery })),
+  useRouter: vi.fn<() => { push: typeof mockPush }>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -21,14 +21,14 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
 import { useAuthStore } from '@/stores/auth'
 
-const mockFetch = vi.fn()
+const mockFetch = vi.fn<(...args: unknown[]) => unknown>()
 vi.stubGlobal('fetch', mockFetch)
 
 async function mountResetPassword() {
@@ -118,7 +118,10 @@ describe('ResetPasswordView', () => {
       await wrapper.find('form').trigger('submit')
       await flushPromises()
 
-      expect(auth.resetPassword).toHaveBeenCalledWith('valid-hex-token-abc123', 'new-password-1234567')
+      expect(auth.resetPassword).toHaveBeenCalledWith(
+        'valid-hex-token-abc123',
+        'new-password-1234567',
+      )
     })
 
     it('shows success message after successful reset', async () => {
@@ -187,7 +190,10 @@ describe('ResetPasswordView', () => {
       const auth = useAuthStore()
       let resolveReset: (value: { success: boolean }) => void
       vi.spyOn(auth, 'resetPassword').mockImplementation(
-        () => new Promise((resolve) => { resolveReset = resolve }),
+        () =>
+          new Promise((resolve) => {
+            resolveReset = resolve
+          }),
       )
 
       const wrapper = await mountResetPassword()

@@ -6,11 +6,11 @@ import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
-const mockPush = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: {} })),
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRoute: vi.fn<() => { params: Record<string, never> }>(() => ({ params: {} })),
+  useRouter: vi.fn<() => { push: typeof mockPush }>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -18,14 +18,14 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
-const mockDELETE = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockDELETE = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
     GET: (...args: unknown[]) => mockGET(...args),
-    POST: vi.fn(),
-    PATCH: vi.fn(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
+    PATCH: vi.fn<(...args: unknown[]) => unknown>(),
     DELETE: (...args: unknown[]) => mockDELETE(...args),
   },
 }))
@@ -97,7 +97,9 @@ async function mountView() {
 
 // Clean up portaled DOM elements (reka-ui Select, AlertDialog, Dialog)
 function cleanupPortals() {
-  document.querySelectorAll('[data-reka-portal], [data-radix-popper-content-wrapper]').forEach((el) => el.remove())
+  document
+    .querySelectorAll('[data-reka-portal], [data-radix-popper-content-wrapper]')
+    .forEach((el) => el.remove())
 }
 
 describe('GroupsView', () => {

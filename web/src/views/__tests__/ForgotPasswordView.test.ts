@@ -7,8 +7,10 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => { query: Record<string, unknown> }>(() => ({ query: {} })),
+  useRouter: vi.fn<() => { push: (...args: unknown[]) => unknown }>(() => ({
+    push: vi.fn<(...args: unknown[]) => unknown>(),
+  })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -18,14 +20,14 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
 import { useAuthStore } from '@/stores/auth'
 
-const mockFetch = vi.fn()
+const mockFetch = vi.fn<(...args: unknown[]) => unknown>()
 vi.stubGlobal('fetch', mockFetch)
 
 async function mountForgotPassword() {
@@ -96,7 +98,10 @@ describe('ForgotPasswordView', () => {
 
     it('shows success message even on failure (anti-enumeration)', async () => {
       const auth = useAuthStore()
-      vi.spyOn(auth, 'forgotPassword').mockResolvedValue({ success: false, error: 'something went wrong' })
+      vi.spyOn(auth, 'forgotPassword').mockResolvedValue({
+        success: false,
+        error: 'something went wrong',
+      })
 
       const wrapper = await mountForgotPassword()
 
@@ -125,7 +130,10 @@ describe('ForgotPasswordView', () => {
       const auth = useAuthStore()
       let resolveForgot: (value: { success: boolean }) => void
       vi.spyOn(auth, 'forgotPassword').mockImplementation(
-        () => new Promise((resolve) => { resolveForgot = resolve }),
+        () =>
+          new Promise((resolve) => {
+            resolveForgot = resolve
+          }),
       )
 
       const wrapper = await mountForgotPassword()

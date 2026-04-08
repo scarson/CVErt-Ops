@@ -5,8 +5,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ path: '/nonexistent' })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ path: '/nonexistent' })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],

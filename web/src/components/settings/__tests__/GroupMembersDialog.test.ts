@@ -7,8 +7,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -16,15 +16,15 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
-const mockPOST = vi.fn()
-const mockDELETE = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockPOST = vi.fn<(...args: unknown[]) => unknown>()
+const mockDELETE = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
     GET: (...args: unknown[]) => mockGET(...args),
     POST: (...args: unknown[]) => mockPOST(...args),
-    PATCH: vi.fn(),
+    PATCH: vi.fn<(...args: unknown[]) => unknown>(),
     DELETE: (...args: unknown[]) => mockDELETE(...args),
   },
 }))
@@ -93,9 +93,8 @@ function bodyText(): string {
 let wrapper: VueWrapper
 
 async function mountDialog(props: { open?: boolean; groupId?: string; groupName?: string } = {}) {
-  const { default: GroupMembersDialog } = await import(
-    '@/components/settings/GroupMembersDialog.vue'
-  )
+  const { default: GroupMembersDialog } =
+    await import('@/components/settings/GroupMembersDialog.vue')
   wrapper = mount(GroupMembersDialog, {
     props: {
       open: true,
@@ -110,7 +109,9 @@ async function mountDialog(props: { open?: boolean; groupId?: string; groupName?
 
 // Clean up portaled DOM elements
 function cleanupPortals() {
-  document.querySelectorAll('[data-reka-portal], [data-radix-popper-content-wrapper]').forEach((el) => el.remove())
+  document
+    .querySelectorAll('[data-reka-portal], [data-radix-popper-content-wrapper]')
+    .forEach((el) => el.remove())
 }
 
 describe('GroupMembersDialog', () => {
@@ -250,9 +251,7 @@ describe('GroupMembersDialog', () => {
 
   describe('add member', () => {
     it('shows available org members not already in group', async () => {
-      mockGroupMembersSuccess([
-        makeGroupMember({ user_id: 'u1', email: 'alice@example.com' }),
-      ])
+      mockGroupMembersSuccess([makeGroupMember({ user_id: 'u1', email: 'alice@example.com' })])
       mockOrgMembersSuccess([
         makeOrgMember({ user_id: 'u1', email: 'alice@example.com' }),
         makeOrgMember({ user_id: 'u2', email: 'bob@example.com', display_name: 'Bob' }),

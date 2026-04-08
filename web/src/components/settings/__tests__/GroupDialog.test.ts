@@ -8,8 +8,8 @@ import { useAuthStore } from '@/stores/auth'
 import type { GroupEntry } from '@/components/settings/GroupDialog.vue'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -17,15 +17,15 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockPOST = vi.fn()
-const mockPATCH = vi.fn()
+const mockPOST = vi.fn<(...args: unknown[]) => unknown>()
+const mockPATCH = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
     POST: (...args: unknown[]) => mockPOST(...args),
     PATCH: (...args: unknown[]) => mockPATCH(...args),
-    DELETE: vi.fn(),
+    DELETE: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 

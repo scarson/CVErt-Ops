@@ -374,7 +374,7 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 		return false, fmt.Errorf("encryption key: %w", err)
 	}
 	prevKey := srv.ssoEncryptionKeyPrevious()
-	secretBytes, err := crypto.DecryptWithFallback(encKey, prevKey, cred.SecretEnc)
+	secretBytes, err := crypto.DecryptWithFallback(encKey, prevKey, cred.SecretEnc, userID[:])
 	if err != nil {
 		return false, fmt.Errorf("decrypt TOTP secret: %w", err)
 	}
@@ -580,7 +580,7 @@ func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupI
 		slog.ErrorContext(ctx, "totp-setup: encryption key", "error", err)
 		return nil, huma.Error500InternalServerError("encryption key not configured")
 	}
-	secretEnc, err := crypto.Encrypt(encKey, []byte(key.Secret()))
+	secretEnc, err := crypto.Encrypt(encKey, []byte(key.Secret()), userID[:])
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-setup: encrypt secret", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -645,7 +645,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	prevKey := srv.ssoEncryptionKeyPrevious()
-	secretBytes, err := crypto.DecryptWithFallback(encKey, prevKey, enrollClaims.SecretEnc)
+	secretBytes, err := crypto.DecryptWithFallback(encKey, prevKey, enrollClaims.SecretEnc, userID[:])
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: decrypt secret", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -677,7 +677,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 
 	// Re-encrypt secret for DB storage (enrollment cookie used same key, but
 	// re-encrypt to get a fresh nonce for defense in depth).
-	secretEncDB, err := crypto.Encrypt(encKey, secretBytes)
+	secretEncDB, err := crypto.Encrypt(encKey, secretBytes, userID[:])
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: re-encrypt secret", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")

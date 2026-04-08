@@ -15,9 +15,10 @@ import (
 // authentication fails and previousKey is non-zero, it retries with
 // previousKey. This supports seamless encryption key rotation.
 // Structural errors (truncated ciphertext, invalid key) fail immediately
-// without attempting fallback.
-func DecryptWithFallback(currentKey, previousKey [32]byte, data []byte) ([]byte, error) {
-	plaintext, err := Decrypt(currentKey, data)
+// without attempting fallback. The aad (additional authenticated data) is
+// passed through to GCM and must match the value used during encryption.
+func DecryptWithFallback(currentKey, previousKey [32]byte, data []byte, aad []byte) ([]byte, error) {
+	plaintext, err := Decrypt(currentKey, data, aad)
 	if err == nil {
 		return plaintext, nil
 	}
@@ -25,7 +26,7 @@ func DecryptWithFallback(currentKey, previousKey [32]byte, data []byte) ([]byte,
 	// Only fall back on GCM authentication failure (wrong key).
 	// Structural errors (truncated ciphertext, invalid key) fail fast.
 	if previousKey != [32]byte{} && isGCMAuthError(err) {
-		plaintext, err2 := Decrypt(previousKey, data)
+		plaintext, err2 := Decrypt(previousKey, data, aad)
 		if err2 == nil {
 			return plaintext, nil
 		}
@@ -42,8 +43,10 @@ func isGCMAuthError(err error) bool {
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM with a random nonce.
-// Returns nonce || ciphertext.
-func Encrypt(key [32]byte, plaintext []byte) ([]byte, error) {
+// Returns nonce || ciphertext. The aad (additional authenticated data) is
+// mixed into the GCM authentication tag, binding the ciphertext to a context
+// (e.g., an org_id or user_id). Pass nil for context-free encryption.
+func Encrypt(key [32]byte, plaintext []byte, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("aes new cipher: %w", err)
@@ -60,12 +63,13 @@ func Encrypt(key [32]byte, plaintext []byte) ([]byte, error) {
 	}
 
 	// Seal appends ciphertext to nonce, so result is nonce || ciphertext.
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
 // Decrypt decrypts AES-256-GCM ciphertext produced by Encrypt.
-// Expects nonce (12 bytes) || ciphertext.
-func Decrypt(key [32]byte, data []byte) ([]byte, error) {
+// Expects nonce (12 bytes) || ciphertext. The aad must match the value
+// used during encryption; a mismatch causes an authentication failure.
+func Decrypt(key [32]byte, data []byte, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, fmt.Errorf("aes new cipher: %w", err)
@@ -82,7 +86,7 @@ func Decrypt(key [32]byte, data []byte) ([]byte, error) {
 	}
 
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, fmt.Errorf("gcm decrypt: %w", err)
 	}

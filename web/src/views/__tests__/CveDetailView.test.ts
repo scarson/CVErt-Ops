@@ -29,7 +29,7 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockGET = vi.fn<(path: string, ...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {

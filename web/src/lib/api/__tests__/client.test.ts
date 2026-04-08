@@ -119,7 +119,7 @@ describe('refresh middleware', () => {
 
   it('does not attempt refresh for auth endpoints', async () => {
     const { refreshMiddleware } = await import('../client')
-    const fetchMock = vi.fn<(...args: unknown[]) => unknown>()
+    const fetchMock = vi.fn<typeof fetch>()
     globalThis.fetch = fetchMock
 
     const loginRequest = new Request('http://localhost/api/v1/auth/login')
@@ -136,7 +136,7 @@ describe('refresh middleware', () => {
 
   it('does not attempt refresh for auth/me endpoint', async () => {
     const { refreshMiddleware } = await import('../client')
-    const fetchMock = vi.fn<(...args: unknown[]) => unknown>()
+    const fetchMock = vi.fn<typeof fetch>()
     globalThis.fetch = fetchMock
 
     const meRequest = new Request('http://localhost/api/v1/auth/me')
@@ -153,7 +153,7 @@ describe('refresh middleware', () => {
 
   it('does not attempt refresh for the refresh endpoint itself', async () => {
     const { refreshMiddleware } = await import('../client')
-    const fetchMock = vi.fn<(...args: unknown[]) => unknown>()
+    const fetchMock = vi.fn<typeof fetch>()
     globalThis.fetch = fetchMock
 
     const refreshRequest = new Request('http://localhost/api/v1/auth/refresh')
@@ -172,7 +172,7 @@ describe('refresh middleware', () => {
     const { refreshMiddleware } = await import('../client')
     const retryResponse = new Response('ok', { status: 200 })
 
-    const fetchMock = vi.fn<(...args: unknown[]) => unknown>()
+    const fetchMock = vi.fn<typeof fetch>()
     // First call: refresh succeeds.
     fetchMock.mockResolvedValueOnce(new Response('', { status: 200 }))
     // Second call: retry the original request.
@@ -198,7 +198,7 @@ describe('refresh middleware', () => {
   it('returns original 401 response when refresh fails', async () => {
     const { refreshMiddleware } = await import('../client')
 
-    const fetchMock = vi.fn<(...args: unknown[]) => unknown>()
+    const fetchMock = vi.fn<typeof fetch>()
     // Refresh returns 401 (failure).
     fetchMock.mockResolvedValueOnce(new Response('', { status: 401 }))
     globalThis.fetch = fetchMock

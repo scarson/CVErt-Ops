@@ -165,7 +165,7 @@ describe('CreateWatchlistDialog', () => {
     )
 
     // Verify the body includes name and description
-    const callArgs = mockPOST.mock.calls[0]!
+    const callArgs = mockPOST.mock.calls[0] as [string, { body: Record<string, unknown> }]
     expect(callArgs[1].body.name).toBe('Test WL')
     expect(callArgs[1].body.description).toBe('Desc')
   })
@@ -182,7 +182,7 @@ describe('CreateWatchlistDialog', () => {
     await clickTestId('create-watchlist-btn')
     await flushPromises()
 
-    const callArgs = mockPOST.mock.calls[0]!
+    const callArgs = mockPOST.mock.calls[0] as [string, { body: Record<string, unknown> }]
     expect(callArgs[1].body.name).toBe('Name Only')
     expect(callArgs[1].body.description).toBeNull()
   })

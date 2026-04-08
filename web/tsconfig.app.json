@@ -9,7 +9,6 @@
     "noUncheckedIndexedAccess": true,
 
     // Path mapping for cleaner imports.
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     },

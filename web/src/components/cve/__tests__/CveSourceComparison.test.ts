@@ -8,8 +8,8 @@ import type { components } from '@/lib/api/schema'
 type CVESourceResponse = components['schemas']['CVESourceResponse']
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ query: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -34,9 +34,7 @@ function makeSource(overrides: Partial<CVESourceResponse> = {}): CVESourceRespon
 }
 
 async function mountComponent(props: Record<string, unknown> = {}) {
-  const { default: CveSourceComparison } = await import(
-    '@/components/cve/CveSourceComparison.vue'
-  )
+  const { default: CveSourceComparison } = await import('@/components/cve/CveSourceComparison.vue')
   return mount(CveSourceComparison, { props: props as any })
 }
 

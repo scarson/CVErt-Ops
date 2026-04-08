@@ -8,8 +8,10 @@ import { createPinia, setActivePinia } from 'pinia'
 const mockRouteQuery = { token: undefined as string | undefined }
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: mockRouteQuery })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => { query: typeof mockRouteQuery }>(() => ({ query: mockRouteQuery })),
+  useRouter: vi.fn<() => { push: (...args: unknown[]) => unknown }>(() => ({
+    push: vi.fn<(...args: unknown[]) => unknown>(),
+  })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -19,14 +21,14 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
 import { useAuthStore } from '@/stores/auth'
 
-const mockFetch = vi.fn()
+const mockFetch = vi.fn<(...args: unknown[]) => unknown>()
 vi.stubGlobal('fetch', mockFetch)
 
 async function mountVerifyEmail() {
@@ -109,7 +111,10 @@ describe('VerifyEmailView', () => {
 
     it('shows helpful expired link text on error', async () => {
       const auth = useAuthStore()
-      vi.spyOn(auth, 'verifyEmail').mockResolvedValue({ success: false, error: 'Verification failed' })
+      vi.spyOn(auth, 'verifyEmail').mockResolvedValue({
+        success: false,
+        error: 'Verification failed',
+      })
 
       const wrapper = await mountVerifyEmail()
       await flushPromises()

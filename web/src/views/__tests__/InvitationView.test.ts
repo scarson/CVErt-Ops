@@ -7,11 +7,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
 let mockRouteParams: Record<string, string> = { token: 'test-token-abc' }
-const mockPush = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: mockRouteParams })),
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRoute: vi.fn<() => { params: Record<string, string> }>(() => ({ params: mockRouteParams })),
+  useRouter: vi.fn<() => { push: typeof mockPush }>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -19,8 +19,8 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
-const mockPOST = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockPOST = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -178,7 +178,7 @@ describe('InvitationView', () => {
           user_id: 'u1',
           email: 'sam@example.com',
           display_name: 'Sam Carter',
-        is_site_admin: false,
+          is_site_admin: false,
           orgs: [
             { org_id: 'org-old', name: 'Old Org', role: 'admin' },
             { org_id: 'org-new', name: 'Acme Corp', role: 'member' },

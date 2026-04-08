@@ -5,8 +5,10 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ path: '/admin/feeds' })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => { path: string }>(() => ({ path: '/admin/feeds' })),
+  useRouter: vi.fn<() => { push: (...args: unknown[]) => unknown }>(() => ({
+    push: vi.fn<(...args: unknown[]) => unknown>(),
+  })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -14,8 +16,8 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
-const mockPOST = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockPOST = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {

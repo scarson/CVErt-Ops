@@ -11,8 +11,8 @@ import { routes, authGuard, titleGuard } from '../index'
 // Mock the API client so fetchMe doesn't make real HTTP calls.
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 

@@ -7,8 +7,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -16,14 +16,14 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockPOST = vi.fn()
+const mockPOST = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
     POST: (...args: unknown[]) => mockPOST(...args),
-    PATCH: vi.fn(),
-    DELETE: vi.fn(),
+    PATCH: vi.fn<(...args: unknown[]) => unknown>(),
+    DELETE: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -74,9 +74,8 @@ async function clickTestId(testId: string) {
 let wrapper: VueWrapper
 
 async function mountDialog(props: { open?: boolean; currentUserRole?: string } = {}) {
-  const { default: InviteMemberDialog } = await import(
-    '@/components/settings/InviteMemberDialog.vue'
-  )
+  const { default: InviteMemberDialog } =
+    await import('@/components/settings/InviteMemberDialog.vue')
   wrapper = mount(InviteMemberDialog, {
     props: { open: true, currentUserRole: 'admin', ...props },
     attachTo: document.body,

@@ -6,12 +6,12 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 
-const mockPush = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 const mockRouteQuery = { redirect: undefined as string | undefined }
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: mockRouteQuery })),
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRoute: vi.fn<() => { query: typeof mockRouteQuery }>(() => ({ query: mockRouteQuery })),
+  useRouter: vi.fn<() => { push: typeof mockPush }>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -21,8 +21,8 @@ vi.mock('vue-router', () => ({
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -271,7 +271,7 @@ describe('LoginView', () => {
     it('GitHub button redirects to OAuth endpoint', async () => {
       mockProvidersResponse(true, false)
       const originalLocation = window.location.href
-      const hrefSetter = vi.fn()
+      const hrefSetter = vi.fn<(v: string) => void>()
       Object.defineProperty(window, 'location', {
         value: {
           ...window.location,
@@ -299,7 +299,7 @@ describe('LoginView', () => {
     it('Google button redirects to OAuth endpoint', async () => {
       mockProvidersResponse(false, true)
       const originalLocation = window.location.href
-      const hrefSetter = vi.fn()
+      const hrefSetter = vi.fn<(v: string) => void>()
       Object.defineProperty(window, 'location', {
         value: {
           ...window.location,

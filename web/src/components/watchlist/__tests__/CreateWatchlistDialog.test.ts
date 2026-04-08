@@ -7,8 +7,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -16,14 +16,14 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockPOST = vi.fn()
+const mockPOST = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
     POST: (...args: unknown[]) => mockPOST(...args),
-    PATCH: vi.fn(),
-    DELETE: vi.fn(),
+    PATCH: vi.fn<(...args: unknown[]) => unknown>(),
+    DELETE: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -91,9 +91,8 @@ async function clickTestId(testId: string) {
 let wrapper: VueWrapper
 
 async function mountDialog(open = true) {
-  const { default: CreateWatchlistDialog } = await import(
-    '@/components/watchlist/CreateWatchlistDialog.vue'
-  )
+  const { default: CreateWatchlistDialog } =
+    await import('@/components/watchlist/CreateWatchlistDialog.vue')
   wrapper = mount(CreateWatchlistDialog, {
     props: { open },
     attachTo: document.body,
@@ -166,7 +165,7 @@ describe('CreateWatchlistDialog', () => {
     )
 
     // Verify the body includes name and description
-    const callArgs = mockPOST.mock.calls[0]!
+    const callArgs = mockPOST.mock.calls[0] as [string, { body: Record<string, unknown> }]
     expect(callArgs[1].body.name).toBe('Test WL')
     expect(callArgs[1].body.description).toBe('Desc')
   })
@@ -183,7 +182,7 @@ describe('CreateWatchlistDialog', () => {
     await clickTestId('create-watchlist-btn')
     await flushPromises()
 
-    const callArgs = mockPOST.mock.calls[0]!
+    const callArgs = mockPOST.mock.calls[0] as [string, { body: Record<string, unknown> }]
     expect(callArgs[1].body.name).toBe('Name Only')
     expect(callArgs[1].body.description).toBeNull()
   })

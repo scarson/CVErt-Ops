@@ -12,13 +12,15 @@ type CVESourceResponse = components['schemas']['CVESourceResponse']
 let mockRouteParams: Record<string, string> = {}
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({
+  useRoute: vi.fn<() => { params: Record<string, string>; query: Record<string, unknown> }>(() => ({
     params: mockRouteParams,
     query: {},
   })),
-  useRouter: vi.fn(() => ({
-    push: vi.fn(),
-    back: vi.fn(),
+  useRouter: vi.fn<
+    () => { push: (...args: unknown[]) => unknown; back: (...args: unknown[]) => unknown }
+  >(() => ({
+    push: vi.fn<(...args: unknown[]) => unknown>(),
+    back: vi.fn<(...args: unknown[]) => unknown>(),
   })),
   RouterLink: {
     name: 'RouterLink',
@@ -27,12 +29,12 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
+const mockGET = vi.fn<(path: string, ...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: (...args: unknown[]) => mockGET(...args),
-    POST: vi.fn(),
+    GET: (path: string, ...args: unknown[]) => mockGET(path, ...args),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -200,7 +202,7 @@ describe('CveDetailView', () => {
       await flushPromises()
 
       const scoreCards = wrapper.findAll('[data-testid="score-card"]')
-      const cvssCard = scoreCards.find(c => c.text().includes('CVSS'))
+      const cvssCard = scoreCards.find((c) => c.text().includes('CVSS'))
       expect(cvssCard?.text()).toContain('N/A')
     })
 
@@ -210,7 +212,7 @@ describe('CveDetailView', () => {
       await flushPromises()
 
       const scoreCards = wrapper.findAll('[data-testid="score-card"]')
-      const epssCard = scoreCards.find(c => c.text().includes('EPSS'))
+      const epssCard = scoreCards.find((c) => c.text().includes('EPSS'))
       expect(epssCard?.text()).toContain('N/A')
     })
 
@@ -280,7 +282,7 @@ describe('CveDetailView', () => {
       await flushPromises()
 
       const links = wrapper.findAll('a[target="_blank"]')
-      const urls = links.map(l => l.attributes('href'))
+      const urls = links.map((l) => l.attributes('href'))
       expect(urls).toContain('https://nvd.nist.gov/vuln/detail/CVE-2024-12345')
       expect(urls).toContain('https://github.com/advisories/GHSA-xxxx-xxxx-xxxx')
     })
@@ -370,7 +372,9 @@ describe('CveDetailView', () => {
 
       // Set up a slow response (will become stale)
       let resolveStale: (v: unknown) => void
-      const stalePromise = new Promise((resolve) => { resolveStale = resolve })
+      const stalePromise = new Promise((resolve) => {
+        resolveStale = resolve
+      })
       mockGET.mockReturnValueOnce(stalePromise)
 
       // Trigger first refetch — increments fetchId

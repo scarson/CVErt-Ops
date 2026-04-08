@@ -8,8 +8,8 @@ import type { components } from '@/lib/api/schema'
 type CVEItem = components['schemas']['CVEItem']
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: {} })),
-  useRouter: vi.fn(() => ({ push: vi.fn() })),
+  useRoute: vi.fn<() => unknown>(() => ({ query: {} })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -20,7 +20,8 @@ vi.mock('vue-router', () => ({
 function makeCVE(overrides: Partial<CVEItem> = {}): CVEItem {
   return {
     cve_id: 'CVE-2024-12345',
-    description_primary: 'A critical vulnerability in Apache Log4j allows remote code execution via crafted log messages.',
+    description_primary:
+      'A critical vulnerability in Apache Log4j allows remote code execution via crafted log messages.',
     cvss_v3_score: 9.8,
     epss_score: 0.975,
     severity: 'critical',
@@ -133,7 +134,7 @@ describe('CveResultsTable', () => {
       const wrapper = await mountTable({ items })
 
       const cells = wrapper.findAll('td')
-      const epssCell = cells.find(c => c.text() === '\u2014')
+      const epssCell = cells.find((c) => c.text() === '\u2014')
       expect(epssCell).toBeDefined()
     })
   })

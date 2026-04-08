@@ -8,8 +8,8 @@ import { useAuthStore } from '../auth'
 // Mock the API client
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn(),
-    POST: vi.fn(),
+    GET: vi.fn<(...args: unknown[]) => unknown>(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -120,7 +120,11 @@ describe('auth store', () => {
         is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'Org One', role: 'owner' }],
       }
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       const result = await auth.fetchMe()
@@ -131,7 +135,11 @@ describe('auth store', () => {
     })
 
     it('returns false on API error', async () => {
-      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { type: 'about:blank', detail: 'unauthorized' }, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: undefined,
+        error: { type: 'about:blank', detail: 'unauthorized' },
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       const result = await auth.fetchMe()
@@ -148,7 +156,11 @@ describe('auth store', () => {
         is_site_admin: false,
         orgs: [{ org_id: 'only-org', name: 'Only Org', role: 'admin' }],
       }
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -168,7 +180,11 @@ describe('auth store', () => {
           { org_id: 'org-2', name: 'Org Two', role: 'member' },
         ],
       }
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -185,7 +201,11 @@ describe('auth store', () => {
         is_site_admin: false,
         orgs: [{ org_id: 'current-org', name: 'Current', role: 'admin' }],
       }
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -207,7 +227,11 @@ describe('auth store', () => {
           { org_id: 'org-2', name: 'Org Two', role: 'member' },
         ],
       }
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -230,7 +254,11 @@ describe('auth store', () => {
         is_site_admin: false,
         orgs: [],
       }
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -239,7 +267,11 @@ describe('auth store', () => {
     })
 
     it('is set to true after failed fetchMe', async () => {
-      vi.mocked(client.GET).mockResolvedValue({ data: undefined, error: { type: 'about:blank', detail: 'unauthorized' }, response: {} as Response })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: undefined,
+        error: { type: 'about:blank', detail: 'unauthorized' },
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       await auth.fetchMe()
@@ -248,7 +280,11 @@ describe('auth store', () => {
     })
 
     it('is reset to false on clearAuth', async () => {
-      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: undefined, response: {} as Response })
+      vi.mocked(client.POST).mockResolvedValue({
+        data: undefined,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       auth.sessionChecked = true
@@ -268,8 +304,16 @@ describe('auth store', () => {
         is_site_admin: false,
         orgs: [{ org_id: 'org-1', name: 'Org One', role: 'admin' }],
       }
-      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: undefined, response: {} as Response })
-      vi.mocked(client.GET).mockResolvedValue({ data: meData, error: undefined, response: {} as Response })
+      vi.mocked(client.POST).mockResolvedValue({
+        data: undefined,
+        error: undefined,
+        response: {} as Response,
+      })
+      vi.mocked(client.GET).mockResolvedValue({
+        data: meData,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       const result = await auth.login('test@example.com', 'password123')
@@ -280,7 +324,11 @@ describe('auth store', () => {
     })
 
     it('returns error on failed login', async () => {
-      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: { type: 'about:blank', detail: 'bad creds' }, response: {} as Response })
+      vi.mocked(client.POST).mockResolvedValue({
+        data: undefined,
+        error: { type: 'about:blank', detail: 'bad creds' },
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       const result = await auth.login('bad@example.com', 'wrong')
@@ -293,7 +341,11 @@ describe('auth store', () => {
 
   describe('logout', () => {
     it('calls logout endpoint and clears auth state', async () => {
-      vi.mocked(client.POST).mockResolvedValue({ data: undefined, error: undefined, response: {} as Response })
+      vi.mocked(client.POST).mockResolvedValue({
+        data: undefined,
+        error: undefined,
+        response: {} as Response,
+      })
 
       const auth = useAuthStore()
       auth.user = {

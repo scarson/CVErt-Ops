@@ -171,7 +171,7 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "server configuration error")
 		return
 	}
-	encSecret, err := crypto.Encrypt(key, []byte(req.ClientSecret))
+	encSecret, err := crypto.Encrypt(key, []byte(req.ClientSecret), orgID[:])
 	if err != nil {
 		slog.ErrorContext(r.Context(), "sso create: encrypt secret", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "encryption error")
@@ -347,7 +347,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, http.StatusInternalServerError, "server configuration error")
 			return
 		}
-		secretEnc, err = crypto.Encrypt(key, []byte(*req.ClientSecret))
+		secretEnc, err = crypto.Encrypt(key, []byte(*req.ClientSecret), orgID[:])
 		if err != nil {
 			slog.ErrorContext(r.Context(), "sso patch: encrypt secret", "error", err)
 			writeProblem(w, http.StatusInternalServerError, "encryption error")

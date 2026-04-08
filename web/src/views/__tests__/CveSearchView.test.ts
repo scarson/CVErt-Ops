@@ -8,13 +8,18 @@ import type { components } from '@/lib/api/schema'
 
 type CVEItem = components['schemas']['CVEItem']
 
-const mockPush = vi.fn()
-const mockReplace = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
+const mockReplace = vi.fn<(...args: unknown[]) => unknown>()
 let mockRouteQuery: Record<string, string | undefined> = {}
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ query: mockRouteQuery })),
-  useRouter: vi.fn(() => ({ push: mockPush, replace: mockReplace })),
+  useRoute: vi.fn<() => { query: Record<string, string | undefined> }>(() => ({
+    query: mockRouteQuery,
+  })),
+  useRouter: vi.fn<() => { push: typeof mockPush; replace: typeof mockReplace }>(() => ({
+    push: mockPush,
+    replace: mockReplace,
+  })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -22,12 +27,12 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
     GET: (...args: unknown[]) => mockGET(...args),
-    POST: vi.fn(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
 
@@ -114,11 +119,14 @@ describe('CveSearchView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockGET).toHaveBeenCalledWith('/cves', expect.objectContaining({
-        params: expect.objectContaining({
-          query: expect.any(Object),
+      expect(mockGET).toHaveBeenCalledWith(
+        '/cves',
+        expect.objectContaining({
+          params: expect.objectContaining({
+            query: expect.any(Object),
+          }),
         }),
-      }))
+      )
     })
 
     it('displays fetched CVE results', async () => {
@@ -139,13 +147,16 @@ describe('CveSearchView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockGET).toHaveBeenCalledWith('/cves', expect.objectContaining({
-        params: {
-          query: expect.objectContaining({
-            q: 'apache',
-          }),
-        },
-      }))
+      expect(mockGET).toHaveBeenCalledWith(
+        '/cves',
+        expect.objectContaining({
+          params: {
+            query: expect.objectContaining({
+              q: 'apache',
+            }),
+          },
+        }),
+      )
     })
 
     it('passes severity filter to API', async () => {
@@ -154,13 +165,16 @@ describe('CveSearchView', () => {
       await mountView()
       await flushPromises()
 
-      expect(mockGET).toHaveBeenCalledWith('/cves', expect.objectContaining({
-        params: {
-          query: expect.objectContaining({
-            severity: ['critical'],
-          }),
-        },
-      }))
+      expect(mockGET).toHaveBeenCalledWith(
+        '/cves',
+        expect.objectContaining({
+          params: {
+            query: expect.objectContaining({
+              severity: ['critical'],
+            }),
+          },
+        }),
+      )
     })
   })
 
@@ -190,11 +204,13 @@ describe('CveSearchView', () => {
       await wrapper.find('form').trigger('submit')
       await flushPromises()
 
-      expect(mockReplace).toHaveBeenCalledWith(expect.objectContaining({
-        query: expect.objectContaining({
-          q: 'openssl',
+      expect(mockReplace).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: expect.objectContaining({
+            q: 'openssl',
+          }),
         }),
-      }))
+      )
     })
   })
 
@@ -240,13 +256,16 @@ describe('CveSearchView', () => {
       await wrapper.find('[data-testid="next-page"]').trigger('click')
       await flushPromises()
 
-      expect(mockGET).toHaveBeenCalledWith('/cves', expect.objectContaining({
-        params: {
-          query: expect.objectContaining({
-            cursor: 'cursor-page2',
-          }),
-        },
-      }))
+      expect(mockGET).toHaveBeenCalledWith(
+        '/cves',
+        expect.objectContaining({
+          params: {
+            query: expect.objectContaining({
+              cursor: 'cursor-page2',
+            }),
+          },
+        }),
+      )
       expect(wrapper.text()).toContain('CVE-2024-0002')
     })
 

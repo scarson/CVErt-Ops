@@ -7,11 +7,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 
 let mockRouteParams: Record<string, string> = { id: 'wl-123' }
-const mockPush = vi.fn()
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('vue-router', () => ({
-  useRoute: vi.fn(() => ({ params: mockRouteParams })),
-  useRouter: vi.fn(() => ({ push: mockPush })),
+  useRoute: vi.fn<() => { params: Record<string, string> }>(() => ({ params: mockRouteParams })),
+  useRouter: vi.fn<() => { push: typeof mockPush }>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -19,14 +19,14 @@ vi.mock('vue-router', () => ({
   },
 }))
 
-const mockGET = vi.fn()
-const mockPATCH = vi.fn()
-const mockDELETE = vi.fn()
+const mockGET = vi.fn<(...args: unknown[]) => unknown>()
+const mockPATCH = vi.fn<(...args: unknown[]) => unknown>()
+const mockDELETE = vi.fn<(...args: unknown[]) => unknown>()
 
 vi.mock('@/lib/api/client', () => ({
   default: {
     GET: (...args: unknown[]) => mockGET(...args),
-    POST: vi.fn(),
+    POST: vi.fn<(...args: unknown[]) => unknown>(),
     PATCH: (...args: unknown[]) => mockPATCH(...args),
     DELETE: (...args: unknown[]) => mockDELETE(...args),
   },
@@ -134,9 +134,7 @@ async function clickTestId(testId: string) {
 let wrapper: VueWrapper
 
 async function mountView() {
-  const { default: WatchlistDetailView } = await import(
-    '@/views/WatchlistDetailView.vue'
-  )
+  const { default: WatchlistDetailView } = await import('@/views/WatchlistDetailView.vue')
   wrapper = mount(WatchlistDetailView, {
     attachTo: document.body,
   })

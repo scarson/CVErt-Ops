@@ -24,7 +24,9 @@ const unhealthyDoctor = {
 // Stub the openapi-fetch client used by the component.
 vi.mock('@/lib/api/client', () => ({
   default: {
-    GET: vi.fn().mockResolvedValue({ data: null, error: { status: 500 } }),
+    GET: vi
+      .fn<(...args: unknown[]) => unknown>()
+      .mockResolvedValue({ data: null, error: { status: 500 } }),
   },
 }))
 

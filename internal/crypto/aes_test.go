@@ -23,12 +23,12 @@ func TestAESGCM_RoundTrip(t *testing.T) {
 	key := testKey(t)
 	plaintext := []byte("secret webhook signing key 🔑")
 
-	ciphertext, err := Encrypt(key, plaintext)
+	ciphertext, err := Encrypt(key, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	got, err := Decrypt(key, ciphertext)
+	got, err := Decrypt(key, ciphertext, nil)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -37,16 +37,73 @@ func TestAESGCM_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestAESGCM_RoundTrip_WithAAD(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	plaintext := []byte("org-scoped secret")
+	aad := []byte("org-id-abc-123")
+
+	ciphertext, err := Encrypt(key, plaintext, aad)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	got, err := Decrypt(key, ciphertext, aad)
+	if err != nil {
+		t.Fatalf("Decrypt: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("round-trip mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestAESGCM_AADMismatch_Rejected(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	plaintext := []byte("bound to org A")
+	aadA := []byte("org-A")
+	aadB := []byte("org-B")
+
+	ciphertext, err := Encrypt(key, plaintext, aadA)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// Decrypting with different AAD must fail (ciphertext relocation attack).
+	_, err = Decrypt(key, ciphertext, aadB)
+	if err == nil {
+		t.Error("Decrypt succeeded with wrong AAD, want authentication failure")
+	}
+}
+
+func TestAESGCM_AADVsNilAAD_Rejected(t *testing.T) {
+	t.Parallel()
+	key := testKey(t)
+	plaintext := []byte("has AAD binding")
+	aad := []byte("some-context")
+
+	ciphertext, err := Encrypt(key, plaintext, aad)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// Encrypted with AAD, decrypted without — must fail.
+	_, err = Decrypt(key, ciphertext, nil)
+	if err == nil {
+		t.Error("Decrypt with nil AAD succeeded on AAD-encrypted data, want failure")
+	}
+}
+
 func TestAESGCM_UniqueNonce(t *testing.T) {
 	t.Parallel()
 	key := testKey(t)
 	plaintext := []byte("same input")
 
-	ct1, err := Encrypt(key, plaintext)
+	ct1, err := Encrypt(key, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt 1: %v", err)
 	}
-	ct2, err := Encrypt(key, plaintext)
+	ct2, err := Encrypt(key, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt 2: %v", err)
 	}
@@ -60,7 +117,7 @@ func TestAESGCM_TamperedCiphertext(t *testing.T) {
 	t.Parallel()
 	key := testKey(t)
 
-	ciphertext, err := Encrypt(key, []byte("tamper me"))
+	ciphertext, err := Encrypt(key, []byte("tamper me"), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -70,7 +127,7 @@ func TestAESGCM_TamperedCiphertext(t *testing.T) {
 	copy(tampered, ciphertext)
 	tampered[len(tampered)-1] ^= 0xff
 
-	_, err = Decrypt(key, tampered)
+	_, err = Decrypt(key, tampered, nil)
 	if err == nil {
 		t.Error("Decrypt succeeded on tampered ciphertext, want error")
 	}
@@ -81,12 +138,12 @@ func TestAESGCM_WrongKey(t *testing.T) {
 	key1 := testKey(t)
 	key2 := testKey(t)
 
-	ciphertext, err := Encrypt(key1, []byte("wrong key test"))
+	ciphertext, err := Encrypt(key1, []byte("wrong key test"), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	_, err = Decrypt(key2, ciphertext)
+	_, err = Decrypt(key2, ciphertext, nil)
 	if err == nil {
 		t.Error("Decrypt succeeded with wrong key, want error")
 	}
@@ -96,12 +153,12 @@ func TestAESGCM_EmptyPlaintext(t *testing.T) {
 	t.Parallel()
 	key := testKey(t)
 
-	ciphertext, err := Encrypt(key, []byte{})
+	ciphertext, err := Encrypt(key, []byte{}, nil)
 	if err != nil {
 		t.Fatalf("Encrypt empty: %v", err)
 	}
 
-	got, err := Decrypt(key, ciphertext)
+	got, err := Decrypt(key, ciphertext, nil)
 	if err != nil {
 		t.Fatalf("Decrypt empty: %v", err)
 	}
@@ -116,7 +173,7 @@ func TestAESGCM_ShortCiphertext(t *testing.T) {
 	// ciphertext too short to contain a nonce is rejected at runtime.
 	key := testKey(t)
 
-	_, err := Decrypt(key, []byte("short"))
+	_, err := Decrypt(key, []byte("short"), nil)
 	if err == nil {
 		t.Error("Decrypt succeeded on too-short ciphertext, want error")
 	}
@@ -130,12 +187,12 @@ func TestDecryptWithFallback_CurrentKeyWorks(t *testing.T) {
 	previousKey := testKey(t)
 	plaintext := []byte("current key decryption")
 
-	ciphertext, err := Encrypt(currentKey, plaintext)
+	ciphertext, err := Encrypt(currentKey, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	got, err := DecryptWithFallback(currentKey, previousKey, ciphertext)
+	got, err := DecryptWithFallback(currentKey, previousKey, ciphertext, nil)
 	if err != nil {
 		t.Fatalf("DecryptWithFallback: %v", err)
 	}
@@ -150,13 +207,13 @@ func TestDecryptWithFallback_PreviousKeyWorks(t *testing.T) {
 	newKey := testKey(t)
 	plaintext := []byte("encrypted with old key")
 
-	ciphertext, err := Encrypt(oldKey, plaintext)
+	ciphertext, err := Encrypt(oldKey, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
 	// newKey as current fails GCM auth; oldKey as previous succeeds.
-	got, err := DecryptWithFallback(newKey, oldKey, ciphertext)
+	got, err := DecryptWithFallback(newKey, oldKey, ciphertext, nil)
 	if err != nil {
 		t.Fatalf("DecryptWithFallback: %v", err)
 	}
@@ -172,12 +229,12 @@ func TestDecryptWithFallback_BothKeysWrong(t *testing.T) {
 	keyC := testKey(t)
 	plaintext := []byte("neither key works")
 
-	ciphertext, err := Encrypt(keyA, plaintext)
+	ciphertext, err := Encrypt(keyA, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	_, err = DecryptWithFallback(keyB, keyC, ciphertext)
+	_, err = DecryptWithFallback(keyB, keyC, ciphertext, nil)
 	if err == nil {
 		t.Error("DecryptWithFallback succeeded with both wrong keys, want error")
 	}
@@ -189,13 +246,13 @@ func TestDecryptWithFallback_NoPreviousKey(t *testing.T) {
 	var zeroKey [32]byte
 	plaintext := []byte("no previous key")
 
-	ciphertext, err := Encrypt(currentKey, plaintext)
+	ciphertext, err := Encrypt(currentKey, plaintext, nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
 	// Zero previous key → only current key tried.
-	got, err := DecryptWithFallback(currentKey, zeroKey, ciphertext)
+	got, err := DecryptWithFallback(currentKey, zeroKey, ciphertext, nil)
 	if err != nil {
 		t.Fatalf("DecryptWithFallback: %v", err)
 	}
@@ -212,7 +269,7 @@ func TestDecryptWithFallback_TruncatedCiphertext_NoFallback(t *testing.T) {
 	previousKey := [32]byte{2}
 	shortData := []byte("short")
 
-	_, err := DecryptWithFallback(currentKey, previousKey, shortData)
+	_, err := DecryptWithFallback(currentKey, previousKey, shortData, nil)
 	if err == nil {
 		t.Fatal("DecryptWithFallback succeeded on truncated ciphertext, want error")
 	}
@@ -231,14 +288,53 @@ func TestDecryptWithFallback_NoPreviousKeyCurrentFails(t *testing.T) {
 	keyB := testKey(t)
 	var zeroKey [32]byte
 
-	ciphertext, err := Encrypt(keyA, []byte("no previous key fails"))
+	ciphertext, err := Encrypt(keyA, []byte("no previous key fails"), nil)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
 	// Wrong current key, zero previous → returns error without panic.
-	_, err = DecryptWithFallback(keyB, zeroKey, ciphertext)
+	_, err = DecryptWithFallback(keyB, zeroKey, ciphertext, nil)
 	if err == nil {
 		t.Error("DecryptWithFallback succeeded with wrong current and zero previous, want error")
+	}
+}
+
+func TestDecryptWithFallback_WithAAD(t *testing.T) {
+	t.Parallel()
+	currentKey := testKey(t)
+	previousKey := testKey(t)
+	plaintext := []byte("aad-bound secret")
+	aad := []byte("org-id-bytes")
+
+	ciphertext, err := Encrypt(currentKey, plaintext, aad)
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	got, err := DecryptWithFallback(currentKey, previousKey, ciphertext, aad)
+	if err != nil {
+		t.Fatalf("DecryptWithFallback: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Errorf("plaintext mismatch: got %q, want %q", got, plaintext)
+	}
+}
+
+func TestDecryptWithFallback_AADMismatch_Rejected(t *testing.T) {
+	t.Parallel()
+	currentKey := testKey(t)
+	var zeroKey [32]byte
+	plaintext := []byte("bound to org A")
+
+	ciphertext, err := Encrypt(currentKey, plaintext, []byte("org-A"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// Correct key but wrong AAD must fail.
+	_, err = DecryptWithFallback(currentKey, zeroKey, ciphertext, []byte("org-B"))
+	if err == nil {
+		t.Error("DecryptWithFallback succeeded with wrong AAD, want error")
 	}
 }

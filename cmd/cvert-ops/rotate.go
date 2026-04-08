@@ -100,21 +100,22 @@ func rotateEncryptionKeys(ctx context.Context, pool *pgxpool.Pool, currentKey, p
 		return 0, fmt.Errorf("set bypass_rls: %w", err)
 	}
 
-	rows, err := tx.Query(ctx, "SELECT id, client_secret_enc FROM sso_connections")
+	rows, err := tx.Query(ctx, "SELECT id, org_id, client_secret_enc FROM sso_connections")
 	if err != nil {
 		return 0, fmt.Errorf("query sso_connections: %w", err)
 	}
 	defer rows.Close()
 
 	type pending struct {
-		id  string
-		enc []byte
+		id    string
+		orgID [16]byte
+		enc   []byte
 	}
 
 	var updates []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.enc); err != nil {
+		if err := rows.Scan(&p.id, &p.orgID, &p.enc); err != nil {
 			return 0, fmt.Errorf("scan row: %w", err)
 		}
 		updates = append(updates, p)
@@ -125,12 +126,12 @@ func rotateEncryptionKeys(ctx context.Context, pool *pgxpool.Pool, currentKey, p
 
 	count := 0
 	for _, u := range updates {
-		plaintext, err := crypto.DecryptWithFallback(currentKey, previousKey, u.enc)
+		plaintext, err := crypto.DecryptWithFallback(currentKey, previousKey, u.enc, u.orgID[:])
 		if err != nil {
 			return 0, fmt.Errorf("decrypt row %s: %w", u.id, err)
 		}
 
-		newEnc, err := crypto.Encrypt(currentKey, plaintext)
+		newEnc, err := crypto.Encrypt(currentKey, plaintext, u.orgID[:])
 		if err != nil {
 			return 0, fmt.Errorf("re-encrypt row %s: %w", u.id, err)
 		}

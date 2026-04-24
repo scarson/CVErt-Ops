@@ -21,7 +21,7 @@ CVErt Ops pulls from 10 vulnerability data sources and merges them into a unifie
 - **CSAF** — Common Security Advisory Framework documents
 - **Generic** — Configurable adapter for custom or internal feeds
 
-Each source is ingested independently, and a merge pipeline recomputes the canonical CVE record from all available sources on every update. A material hash (SHA-256 over normalized fields) tracks meaningful changes and drives alert evaluation — cosmetic updates don't trigger false alerts.
+Each source is ingested independently through a shared HTTP client with per-feed circuit breakers (sony/gobreaker v2), SSRF-hardened transport, and response-body size limits. A merge pipeline recomputes the canonical CVE record from all available sources on every update. A material hash (SHA-256 over normalized fields) tracks meaningful changes and drives alert evaluation — cosmetic updates don't trigger false alerts.
 
 ### Full-Text Search and Faceted Filtering
 
@@ -76,9 +76,17 @@ Every org gets full data isolation through dual-layer tenant separation:
 
 Four RBAC roles control access: **Owner** > **Admin** > **Member** > **Viewer**. Per-route middleware enforces minimum role requirements. API key authentication is supported with org-scoping and role caps.
 
+### Multi-Factor Authentication
+
+MFA can be required per-org or per-user, with TOTP (authenticator apps) and email OTP as second factors. Enrollment is a multi-step flow gated by pending tokens that encode the remaining MFA requirements directly in their claims — the client can't skip a step by replaying an earlier token. TOTP verification uses `FOR UPDATE` locking with skew-aware step tracking to prevent code replay. Email OTP challenges have per-attempt rate limits and emit security events when exhausted. Admins can reset a user's MFA atomically, and password reset completion itself is MFA-gated.
+
 ### Enterprise SSO
 
-Organizations can configure OIDC-based single sign-on with domain-based auto-discovery. Supports GitHub OAuth, Google OIDC, and generic OIDC providers. Users can link SSO identities to existing accounts. SCIM provisioning for automated user lifecycle management is planned.
+Organizations can configure OIDC-based single sign-on with domain-based auto-discovery. Supports GitHub OAuth, Google OIDC, and generic OIDC providers. Users can link SSO identities to existing accounts.
+
+### SCIM Provisioning
+
+Full SCIM 2.0 support for automated user lifecycle management via your identity provider (Okta, Azure AD, Google Workspace, etc.). Bearer-token authenticated endpoints expose standard `/Users` and `/Groups` resources with create/read/update/patch/delete and filter parsing. Group-to-role mappings let you drive RBAC membership directly from IdP groups — changes take effect on the next SCIM sync with no admin action required. Org members can be flagged `scim_exempt` to keep local accounts (emergency access, service accounts) from being deactivated by an IdP sync. A dedicated per-org rate limiter isolates SCIM traffic from the main API budget.
 
 ### Site Administration
 
@@ -92,13 +100,13 @@ Site admins get a dedicated set of endpoints and UI views for:
 
 ### Testing
 
-CVErt Ops has extensive test coverage — over 1,600 Go test functions across 147 test files, plus 32 frontend test suites. Aggregate statement coverage is 62%, but that number is diluted by generated code (sqlc output), test infrastructure, and CLI boilerplate — all at 0%. Business logic packages where coverage matters most range from 80% to 100%: alert DSL 94%, feed adapters 84-100%, auth 89%, merge 87%, retention 96%, worker 91%.
+CVErt Ops has extensive test coverage — over 2,200 Go test functions across 200+ test files, plus 32 frontend test suites. Aggregate statement coverage is diluted by generated code (sqlc output), test infrastructure, and CLI boilerplate — all at 0% by design. Business logic packages where coverage matters most — alert DSL, feed adapters, auth, merge, retention, worker — sit consistently in the 80–100% range.
 
-**Integration tests hit real infrastructure.** Over 70 test files run against a real PostgreSQL instance (via testcontainers) with full RLS enforcement, real migrations, and seeded data. API tests stand up real HTTP servers and exercise the full middleware stack — auth, RBAC, CSRF, tier enforcement, rate limiting. No mocking away the hard parts.
+**Integration tests hit real infrastructure.** Over 100 test files run against a real PostgreSQL instance (via testcontainers) with full RLS enforcement, real migrations, and seeded data. API tests stand up real HTTP servers and exercise the full middleware stack — auth, RBAC, MFA, SCIM, CSRF, tier enforcement, rate limiting. No mocking away the hard parts.
 
-**Shared test infrastructure** in `internal/testutil/` provides reusable helpers: a managed test database with automatic migration, seed data utilities, a mock OIDC provider for SSO testing, and a local SMTP server for email delivery tests. This keeps individual test files focused on the behavior under test rather than setup boilerplate.
+**Shared test infrastructure** in `internal/testutil/` provides reusable helpers: a managed test database with automatic migration, seed data utilities, a mock OIDC provider for SSO testing, and a local SMTP server for email delivery tests. `testutil.SeedCorpus` seeds a test database with 65 real CVEs across 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) by running captured upstream responses through the real merge pipeline — giving downstream tests (alert evaluation, search, reports) a realistic corpus without hand-crafted fixtures.
 
-**Feed adapter tests** use recorded HTTP responses to verify parsing, streaming, error handling, and rate limit compliance without hitting upstream APIs. Alert DSL tests cover the compiler, evaluator, and all three evaluation paths (realtime, batch, EPSS). Notification delivery tests verify the transactional safety guarantees — claim, commit, deliver, record — with real database state.
+**Feed adapter tests** use captured HTTP responses served via `httptest` to verify parsing, streaming, error handling, and rate limit compliance without hitting upstream APIs. Each adapter has a golden-file test that runs real captured responses end-to-end, catching upstream schema drift that unit tests with hand-crafted fixtures cannot detect. Alert DSL tests cover the compiler, evaluator, and all three evaluation paths (realtime, batch, EPSS). Notification delivery tests verify the transactional safety guarantees — claim, commit, deliver, record — with real database state.
 
 The frontend uses Vitest with jsdom and Vue Test Utils for component and composable testing.
 
@@ -118,17 +126,23 @@ This project is developed with [Claude Code](https://claude.com/claude-code) usi
 
 **Supply chain security** — GitHub CodeQL scans on every PR, Dependabot alerts and automated security update PRs for vulnerable dependencies, secret scanning with push protection, and weekly version update PRs for Go modules, npm packages, and GitHub Actions.
 
-**Structured planning** — features are designed in `docs/plans/` before implementation, with research notes in `dev/research-findings/` capturing technical investigations and trade-off analyses for architectural decisions.
+**Structured planning** — features are designed in `dev/plans/` before implementation, with research notes in `dev/research-findings/` capturing technical investigations and trade-off analyses for architectural decisions.
 
 ## Architecture
 
-CVErt Ops is a single Go binary with three runtime modes:
+CVErt Ops is a single Go binary (`cvert-ops`) with cobra subcommands covering every operational task. A second small binary (`healthcheck`) ships alongside it for container probes.
 
 | Command | What it runs |
 |---------|-------------|
 | `cvert-ops serve` | HTTP API server + embedded background worker pool |
 | `cvert-ops worker` | Standalone worker pool (no HTTP) |
 | `cvert-ops migrate` | Database migrations |
+| `cvert-ops import-bulk` | Bulk-import CVE data from a file (dev seed / airgapped loader) |
+| `cvert-ops doctor` | System health checks (DB, feeds, config, migrations) |
+| `cvert-ops validate-feeds` | Validate feed configuration without running a sync |
+| `cvert-ops quota` | Manage per-org AI quota (`set`/`get`/`list`/`delete`) |
+| `cvert-ops rotate-encryption-key` | Rotate the at-rest encryption key with re-encrypt pass |
+| `healthcheck` | Minimal container liveness/readiness probe |
 
 The background worker handles feed ingestion, alert evaluation, notification delivery, retention cleanup, and report generation — all via an internal job queue in PostgreSQL. No Redis, no RabbitMQ, no external dependencies beyond Postgres.
 
@@ -150,21 +164,27 @@ The background worker handles feed ingestion, alert evaluation, notification del
 
 ```
 cmd/cvert-ops/       CLI entry points (cobra subcommands)
+cmd/healthcheck/     Container liveness/readiness probe binary
 internal/
   ai/                LLM client, quota, sanitization
   alert/             Alert DSL compiler and evaluator
-  api/               HTTP handlers and middleware
+  api/               HTTP handlers and middleware (REST + SCIM 2.0)
   audit/             Audit logging
-  auth/              JWT, OAuth, API keys, Argon2id
+  auth/              JWT, OAuth/OIDC, MFA (TOTP + email OTP), API keys, Argon2id
   config/            Environment-based configuration
-  feed/              Feed adapters (NVD, MITRE, KEV, OSV, GHSA, EPSS, ...)
+  crypto/            Encryption helpers (AES-GCM with AAD binding)
+  doctor/            System health check framework
+  feed/              Feed adapters + circuit breaker + SSRF-hardened client
   ingest/            Feed ingestion orchestrator
   merge/             CVE merge pipeline
+  metrics/           Prometheus counters and histograms
   notify/            Notification channels and delivery
   report/            Scheduled report generation
   retention/         Data retention policies
   search/            Full-text search and facets
-  store/             Repository layer (sqlc + squirrel)
+  secure/            Async security event pipeline
+  store/             Repository layer (sqlc + squirrel) + SCIM store methods
+  tier/              Subscription tier logic
   worker/            Job queue and worker pool
 migrations/          SQL migration files (embedded)
 templates/           Notification and report templates (embedded)

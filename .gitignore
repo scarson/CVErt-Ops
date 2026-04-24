@@ -53,3 +53,6 @@ chats/
 # Git worktrees
 .worktrees/
 .claude/worktrees/
+
+# Serena MCP — local project state, cache, and personal memories
+.serena/

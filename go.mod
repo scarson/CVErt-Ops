@@ -1,6 +1,6 @@
 module github.com/scarson/cvert-ops
 
-go 1.26.0
+go 1.26.2
 
 require (
 	github.com/KimMachineGun/automemlimit v0.7.5
@@ -16,7 +16,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.9.1
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/lib/pq v1.12.3
 	github.com/pquerna/otp v1.5.0
 	github.com/prometheus/client_golang v1.23.2

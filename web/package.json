@@ -17,7 +17,7 @@
     "generate-api": "openapi-typescript ../openapi.json -o src/lib/api/schema.d.ts"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.2.2",
+    "@tailwindcss/vite": "^4.2.4",
     "@tanstack/vue-table": "^8.21.3",
     "@vueuse/core": "^14.2.1",
     "class-variance-authority": "^0.7.1",

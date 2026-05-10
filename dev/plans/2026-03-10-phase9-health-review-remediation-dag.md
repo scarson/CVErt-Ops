@@ -4,6 +4,8 @@ Inter-task dependency graph for `dev/plans/2026-03-10-phase9-health-review-remed
 
 **Scope:** ordering between named tasks (e.g. `1.11 → 2C.1`). Intra-task ordering — TDD steps inside a single task body, such as 6B's "scaffolding → stub → failing test → real impl → wire to readiness" — is not modeled here. Read the task body in the plan for those details.
 
+**Methodology:** this DAG was extracted before the methodology was codified. The standardized procedure is now documented in `.claude/skills/extracting-plan-dag/SKILL.md` and the rationale for the gc / non-gc split it embeds is in `dev/research-findings/dag-extraction-and-orchestration.md`. Re-extractions (e.g. on plan revision) SHOULD follow the skill's process going forward.
+
 Sources of edges (line refs into the plan):
 - Stage Overview "Dependency graph" block (lines 43–51)
 - Stage 1 prologue: 1.11 must run after all other Stage 1 tasks (line 83)
@@ -206,3 +208,19 @@ The two chains share only the Phase 8 prerequisite, so they run concurrently aft
 - **Task 4C** — moved into Stage 6 as 6C (already a node).
 - **Task 6D (Finding 19)** — invalidated; NVD has no bulk download archives. Not a node.
 - **Original Tasks 3.0–3.12** — superseded; lives behind `<details>` in the plan with "Do not execute." Not nodes; replaced by the single `S3EXT` node pointing at the external implementation plan.
+
+## Adversarial review
+
+This DAG went through nine rounds of review during its initial production, summarized retrospectively against the standardized rounds in `.claude/skills/extracting-plan-dag/SKILL.md` Phase 7. Findings counts are approximate, recovered from the conversation arc rather than logged at the time.
+
+| Round | Lens | Findings applied |
+|---|---|---|
+| 1 | Citation auditor — every edge cites a plan line | 4 fabricated edges removed (incl. an unjustified `2C.1 → 2C.2`) |
+| 2 | Coverage auditor — `Files:`-overlap pairs captured | 6 soft-conflict pairs added (4D↔6B, 1.12↔6E, 1.4↔2C.1, 5B↔2C.2, 1.11 mass-rename row, 6A↔8C-derived setters) |
+| 3 | Inference-discipline auditor — no edges from numeric ordering | Numeric-order edge from `2C.1 → 2C.2` deleted (was inferred, not cited) |
+| 4 | Plan-specific perspective: **`<details>` block / supersession audit** — chosen because the plan revised Stage 3 mid-flight and wrapped the original task list in a `<details>` block marked "Do not execute" | 13 superseded tasks (3.0–3.12 + cleanup) removed from the graph; replaced with a single external-plan node `S3EXT` and a re-routed `T6C` dependency |
+| 5+ | Loop check — graph/text contradictions, dangling edges, scope-clarification gaps | DAG-scope statement added; `T6D` removed entirely (graph said "node," text said "excluded"); critical-path claim recomputed as two independent chains; Phase 8 split into 8B/8C/8D/8E with per-task dotted edges; 1.11→2B.1 demoted from a graph edge to a soft-conflict row |
+
+The Round 4 perspective was specifically motivated by this plan's mid-flight Stage 3 revision (the `<details>` block at lines 1280–1912 of the plan). On a plan without such revisions, a different Round 4 perspective would have applied — that's why the skill mandates plan-specific choice rather than a fixed canonical lens.
+
+A final loop pass produced zero material findings.

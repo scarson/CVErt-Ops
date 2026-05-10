@@ -1,6 +1,8 @@
 # Phase 9 Health Review Remediation — Task DAG
 
-Dependency graph for `dev/plans/2026-03-10-phase9-health-review-remediation-plan.md`.
+Inter-task dependency graph for `dev/plans/2026-03-10-phase9-health-review-remediation-plan.md`.
+
+**Scope:** ordering between named tasks (e.g. `1.11 → 2C.1`). Intra-task ordering — TDD steps inside a single task body, such as 6B's "scaffolding → stub → failing test → real impl → wire to readiness" — is not modeled here. Read the task body in the plan for those details.
 
 Sources of edges (line refs into the plan):
 - Stage Overview "Dependency graph" block (lines 43–51)

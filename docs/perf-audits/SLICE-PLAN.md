@@ -144,7 +144,7 @@ roll-up. Run ledger: `docs/perf-audits/runs.jsonl` (one line per executed run).
 
 | Slice | Tier | State | Artifacts |
 |---|---|---|---|
-| S3 Feed ingestion & adapters | FULL | PENDING | |
+| S3 Feed ingestion & adapters | FULL | **DONE** | `2026-06-05-s3-feed-ingest-consolidated.md` + 6 lane reports + bug-hunt-kickoff |
 | S1 Merge & corpus write | FULL | PENDING | |
 | S2 Alert engine | FULL | PENDING | |
 | S4 Search, CVE read & watchlist | FULL | PENDING | |

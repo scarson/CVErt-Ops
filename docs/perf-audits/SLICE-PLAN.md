@@ -151,11 +151,11 @@ roll-up. Run ledger: `docs/perf-audits/runs.jsonl` (one line per executed run).
 | S5 Async delivery & per-request overhead | REDUCED | **DONE** | `2026-06-05-s5-delivery-consolidated.md` + 4 lane reports + bug-hunt-kickoff |
 | S6 Reports / AI / retention | REDUCED | **DONE** | `2026-06-05-s6-reports-consolidated.md` + 4 lane reports + bug-hunt-kickoff |
 | S7 Frontend (Vue SPA) | REDUCED | **DONE** | `2026-06-05-s7-frontend-consolidated.md` + 5 lane reports + bug-hunt-kickoff |
-| O1 Ingest→merge→alert→notify | OVERLAY | PENDING | |
+| O1 Ingest→merge→alert→notify | OVERLAY | **DONE** | `2026-06-05-O1-ingest-pipeline-overlay.md` |
 | S8 AuthN/MFA/SSO/OAuth glue | COLD | **DONE** | `2026-06-05-s8-authglue-consolidated.md` + 3 lane reports |
 | S9 Org/SCIM/admin/tenant glue | COLD | **DONE** | `2026-06-05-s9-orgglue-consolidated.md` + 3 lane reports |
 | S10 Platform/infra glue | COLD | **DONE** | `2026-06-05-s10-infraglue-consolidated.md` + 3 lane reports |
-| Roll-up | — | PENDING | |
+| Roll-up | — | **DONE** | `2026-06-05-WHOLE-REPO-ROLLUP.md` |
 
 ---
 

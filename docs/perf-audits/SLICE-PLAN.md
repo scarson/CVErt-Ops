@@ -149,7 +149,7 @@ roll-up. Run ledger: `docs/perf-audits/runs.jsonl` (one line per executed run).
 | S2 Alert engine | FULL | **DONE** | `2026-06-05-s2-alert-consolidated.md` + 6 lane reports + bug-hunt-kickoff |
 | S4 Search, CVE read & watchlist | FULL | **DONE** | `2026-06-05-s4-search-consolidated.md` + 6 lane reports + bug-hunt-kickoff |
 | S5 Async delivery & per-request overhead | REDUCED | **DONE** | `2026-06-05-s5-delivery-consolidated.md` + 4 lane reports + bug-hunt-kickoff |
-| S6 Reports / AI / retention | REDUCED | PENDING | |
+| S6 Reports / AI / retention | REDUCED | **DONE** | `2026-06-05-s6-reports-consolidated.md` + 4 lane reports + bug-hunt-kickoff |
 | S7 Frontend (Vue SPA) | REDUCED | PENDING | |
 | O1 Ingest→merge→alert→notify | OVERLAY | PENDING | |
 | S8 AuthN/MFA/SSO/OAuth glue | COLD | PENDING | |

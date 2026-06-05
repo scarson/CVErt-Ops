@@ -191,3 +191,54 @@ per-page batching (default), not full async.
 security-relevant suspected bugs (alert cap+cursor missed alerts; digest watchlist scoping; EPSS
 partial-run; missing `http.TimeoutHandler`) should go through `bug-hunt-cycle` **independently** of this
 perf plan — they are correctness, not performance.
+
+---
+
+## Plan Review (adversarial, 3 rounds — per the project's `plan-review-cycle` discipline)
+
+Reviewed for subagent-readiness, cross-task conflicts, and verification/pitfall coverage. Each round's
+findings are folded back as the **addenda** below (treat them as part of the task instructions).
+
+### Round 1 — ambiguity / subagent-readiness
+- **A1 (T0.1/T0.2):** the migration tasks didn't name the next migration number. **Addendum:** migrations
+  run through `000045_create_scim_groups`; the index migration pair is **`000046_perf_indexes.{up,down}.sql`**.
+  Per CLAUDE.md, `CREATE INDEX CONCURRENTLY` must run **outside a transaction** — golang-migrate needs the
+  `-- +migrate NoTransaction`-equivalent (this project disables the wrapping tx for concurrent-index
+  migrations; confirm the existing concurrent-index migrations' pattern, e.g. `000002`, and match it). The
+  `down` migration `DROP INDEX CONCURRENTLY IF EXISTS`.
+- **A2 (T1.2):** "optionally gate the delete+re-insert" was ambiguous. **Addendum:** the **multi-row insert
+  is the required change**; the resolved-set-changed gate is a **separate stretch item** — do NOT block T1.2
+  on it, and if attempted it MUST use order-insensitive set equality (preserve `ON CONFLICT DO NOTHING`).
+- **A3:** run `pitfall-check` before committing T1.* (merge), T1.4 (EPSS), T4.1 (RLS/bypass) — they touch
+  the exact areas `implementation-pitfalls.md` covers (merge recompute, EPSS two-statement, advisory lock,
+  RLS bypass-tx selection).
+
+### Round 2 — cross-task conflicts / ordering (the lens a per-task view misses)
+- **B1 (W1 file contention):** T1.1, T1.2, T1.3 all edit `internal/merge/pipeline.go` and/or
+  `internal/ingest/handler.go`. **Addendum:** execute W1 **sequentially in one worktree**, NOT as parallel
+  subagents — they would collide. T1.1 (the `MergeFunc` signature change) lands first; T1.2/T1.3 rebase on it.
+- **B2 (bypass-read helper ownership):** T4.1 introduces the direct non-tx read path; T3.2 (S5-P2) and the
+  W6 infra batch also want it. **Addendum:** **T4.1 owns the helper**; T3.2/W6 *consume* it and must land
+  after T4.1 (or stub against its signature). Avoids three divergent helpers.
+- **B3 (W2/W3 dependency):** T3.1 fan-out hoist assumes the realtime change-signal from T1.1 and the
+  per-page eval from T2.2. **Addendum:** order W1 → W2 → W3; W3 may proceed once T1.1 + T2.2 are merged.
+
+### Round 3 — verification-gate completeness / pitfall coverage / security
+- **C1 (W0 evidence environment):** the `EXPLAIN` baselines need a running Postgres with representative
+  data, which this static-only environment lacks. **Addendum:** the index *choice* is justified by the
+  query's row-value-keyset / cross-org-sort structure **regardless of EXPLAIN** (Strong-static); capture the
+  `EXPLAIN (ANALYZE)` evidence in an environment that has a seeded DB (`testutil.SeedCorpus` + a local
+  Postgres) before claiming the win `Measured`. Do **not** fabricate the plan output.
+- **C2 (security gates):** T4.1 (auth bypass-read path) and T2.1 (rule-snapshot visibility) are
+  security-sensitive. **Addendum:** both MUST pass `security-review` before merge — T4.1 for tenant
+  isolation (the non-tx path must still refuse org data on RLS tables), T2.1 because a stale rule snapshot
+  dropping a just-activated rule is a security miss, not just a perf regression.
+- **C3 (correctness-guard realism):** confirmed every task pins behavior with a real test (not a mocked
+  one) per `testing-pitfalls.md` — the guards for T1.2 (idempotency), T2.1 (rule visibility), T4.1 (auth
+  decisions), T4.2 (SCIM response equality) are behavior tests against real data. No guard tests a mock.
+- **C4 (no-deferral discipline):** re-verified — every confirmed finding is scheduled; the only deferrals
+  (Appendix) name a concrete mechanism (EPSS locking, JCS portability, eval-decoupling depth) and are
+  *scheduled with a decision gate*, not dropped. Holds.
+
+**Verdict:** the plan is subagent-ready with the Round-1/2 ordering addenda applied (W1 sequential; helper
+ownership; W0→W2→W3 ordering). Finalized. Re-run this review if the partition or findings change.

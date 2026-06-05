@@ -154,7 +154,7 @@ roll-up. Run ledger: `docs/perf-audits/runs.jsonl` (one line per executed run).
 | O1 Ingest→merge→alert→notify | OVERLAY | PENDING | |
 | S8 AuthN/MFA/SSO/OAuth glue | COLD | **DONE** | `2026-06-05-s8-authglue-consolidated.md` + 3 lane reports |
 | S9 Org/SCIM/admin/tenant glue | COLD | **DONE** | `2026-06-05-s9-orgglue-consolidated.md` + 3 lane reports |
-| S10 Platform/infra glue | COLD | PENDING | |
+| S10 Platform/infra glue | COLD | **DONE** | `2026-06-05-s10-infraglue-consolidated.md` + 3 lane reports |
 | Roll-up | — | PENDING | |
 
 ---

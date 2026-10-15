@@ -356,6 +356,28 @@ describe('CveDetailView', () => {
 
       expect(wrapper.text()).toContain('Failed to load CVE')
     })
+
+    it('shows error message on network failure', async () => {
+      mockGET.mockRejectedValue(new TypeError('Failed to fetch'))
+      const wrapper = await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to load CVE')
+    })
+
+    it('stops loading sources on network failure', async () => {
+      mockGET.mockImplementation((path: string) => {
+        if (path === '/cves/{cve_id}') {
+          return Promise.resolve({ data: makeCVEDetail(), error: undefined })
+        }
+        return Promise.reject(new TypeError('Failed to fetch'))
+      })
+      const wrapper = await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).not.toContain('Loading sources')
+      expect(wrapper.text()).toContain('No source data available')
+    })
   })
 
   describe('stale response protection', () => {

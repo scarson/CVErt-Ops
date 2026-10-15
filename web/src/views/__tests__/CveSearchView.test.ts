@@ -302,6 +302,14 @@ describe('CveSearchView', () => {
 
       expect(wrapper.text()).toContain('Failed to load CVEs')
     })
+
+    it('displays error message on network failure', async () => {
+      mockGET.mockRejectedValue(new TypeError('Failed to fetch'))
+      const wrapper = await mountView()
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('Failed to load CVEs')
+    })
   })
 
   describe('URL state sync', () => {

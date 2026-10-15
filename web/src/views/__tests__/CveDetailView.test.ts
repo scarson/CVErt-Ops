@@ -134,6 +134,17 @@ function mockErrorResponse() {
   )
 }
 
+// The client converts a request that never reaches the server into a 503 problem.
+const NETWORK_FAILURE = {
+  data: undefined,
+  error: {
+    type: 'about:blank',
+    title: 'Network Error',
+    status: 503,
+    detail: 'Could not reach the server. Check your connection and try again.',
+  },
+}
+
 async function mountView() {
   const { default: CveDetailView } = await import('@/views/CveDetailView.vue')
   return mount(CveDetailView)
@@ -358,7 +369,7 @@ describe('CveDetailView', () => {
     })
 
     it('shows error message on network failure', async () => {
-      mockGET.mockRejectedValue(new TypeError('Failed to fetch'))
+      mockGET.mockResolvedValue(NETWORK_FAILURE)
       const wrapper = await mountView()
       await flushPromises()
 
@@ -370,7 +381,7 @@ describe('CveDetailView', () => {
         if (path === '/cves/{cve_id}') {
           return Promise.resolve({ data: makeCVEDetail(), error: undefined })
         }
-        return Promise.reject(new TypeError('Failed to fetch'))
+        return Promise.resolve(NETWORK_FAILURE)
       })
       const wrapper = await mountView()
       await flushPromises()

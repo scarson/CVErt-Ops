@@ -326,8 +326,8 @@ describe('auth store', () => {
     it('returns error on failed login', async () => {
       vi.mocked(client.POST).mockResolvedValue({
         data: undefined,
-        error: { type: 'about:blank', detail: 'bad creds' },
-        response: {} as Response,
+        error: { type: 'about:blank', detail: 'invalid credentials' },
+        response: { status: 401 } as Response,
       })
 
       const auth = useAuthStore()
@@ -336,6 +336,24 @@ describe('auth store', () => {
       expect(result.success).toBe(false)
       expect(result.error).toBe('Invalid email or password')
       expect(auth.isAuthenticated).toBe(false)
+    })
+
+    it('returns the server detail when login fails for a reason other than credentials', async () => {
+      vi.mocked(client.POST).mockResolvedValue({
+        data: undefined,
+        error: {
+          type: 'about:blank',
+          status: 503,
+          detail: 'Could not reach the server. Check your connection and try again.',
+        },
+        response: { status: 503 } as Response,
+      })
+
+      const auth = useAuthStore()
+      const result = await auth.login('test@example.com', 'password123')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('Could not reach the server. Check your connection and try again.')
     })
   })
 
@@ -357,13 +375,44 @@ describe('auth store', () => {
       }
       auth.setActiveOrg('some-org')
 
-      await auth.logout()
+      const result = await auth.logout()
 
+      expect(result.success).toBe(true)
       expect(client.POST).toHaveBeenCalledWith('/auth/logout')
       expect(auth.isAuthenticated).toBe(false)
       expect(auth.user).toBeNull()
       expect(auth.activeOrgId).toBeNull()
       expect(localStorage.getItem('activeOrgId')).toBeNull()
+    })
+
+    it('keeps auth state and returns the error when logout fails', async () => {
+      vi.mocked(client.POST).mockResolvedValue({
+        data: undefined,
+        error: {
+          type: 'about:blank',
+          status: 503,
+          detail: 'Could not reach the server. Check your connection and try again.',
+        },
+        response: { status: 503 } as Response,
+      })
+
+      const auth = useAuthStore()
+      auth.user = {
+        user_id: 'u1',
+        email: 'test@example.com',
+        display_name: 'Test',
+        is_site_admin: false,
+        orgs: [],
+      }
+      auth.setActiveOrg('some-org')
+
+      const result = await auth.logout()
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe('Could not reach the server. Check your connection and try again.')
+      expect(auth.isAuthenticated).toBe(true)
+      expect(auth.activeOrgId).toBe('some-org')
+      expect(localStorage.getItem('activeOrgId')).toBe('some-org')
     })
   })
 })

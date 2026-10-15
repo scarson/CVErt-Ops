@@ -66,11 +66,14 @@ export const useAuthStore = defineStore('auth', () => {
     email: string,
     password: string,
   ): Promise<{ success: boolean; error?: string }> {
-    const { error } = await client.POST('/auth/login', {
+    const { error, response } = await client.POST('/auth/login', {
       body: { email, password },
     })
     if (error) {
-      return { success: false, error: 'Invalid email or password' }
+      if (response.status === 401) {
+        return { success: false, error: 'Invalid email or password' }
+      }
+      return { success: false, error: (error as { detail?: string }).detail ?? 'Login failed' }
     }
     const fetched = await fetchMe()
     return { success: fetched }
@@ -109,9 +112,15 @@ export const useAuthStore = defineStore('auth', () => {
     return { success: true }
   }
 
-  async function logout() {
-    await client.POST('/auth/logout')
+  // Clears local state only after the server has revoked the session; on failure the
+  // session cookies are still valid, so the user must not be shown as logged out.
+  async function logout(): Promise<{ success: boolean; error?: string }> {
+    const { error } = await client.POST('/auth/logout')
+    if (error) {
+      return { success: false, error: (error as { detail?: string }).detail ?? 'Logout failed' }
+    }
     clearAuth()
+    return { success: true }
   }
 
   function clearAuth() {

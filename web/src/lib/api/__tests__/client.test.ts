@@ -1,5 +1,5 @@
 // ABOUTME: Tests for the API client configuration.
-// ABOUTME: Verifies CSRF header injection and 401 refresh interceptor behavior.
+// ABOUTME: Verifies CSRF header injection, 401 refresh interceptor, and network-failure handling.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { MergedOptions } from 'openapi-fetch'
@@ -195,6 +195,27 @@ describe('refresh middleware', () => {
     expect((result as Response).status).toBe(200)
   })
 
+  it('returns a 503 problem response when the retry after refresh fails to send', async () => {
+    const { refreshMiddleware } = await import('../client')
+
+    const fetchMock = vi.fn<typeof fetch>()
+    // Refresh succeeds.
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 200 }))
+    // Retry never reaches the server.
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    globalThis.fetch = fetchMock
+
+    const request = new Request('http://localhost/api/v1/cves')
+    const response = new Response('unauthorized', { status: 401 })
+
+    const result = await refreshMiddleware.onResponse!({
+      ...middlewareParams(request),
+      response,
+    })
+
+    expect((result as Response).status).toBe(503)
+  })
+
   it('returns original 401 response when refresh fails', async () => {
     const { refreshMiddleware } = await import('../client')
 
@@ -212,5 +233,47 @@ describe('refresh middleware', () => {
     })
 
     expect((result as Response).status).toBe(401)
+  })
+})
+
+describe('network error handling', () => {
+  // Node's Request rejects the client's relative base URL, so tests pass an absolute one.
+  const baseUrl = 'http://localhost/api/v1'
+  const failedFetch = vi.fn<typeof fetch>(() => Promise.reject(new TypeError('Failed to fetch')))
+
+  it('returns a 503 problem response instead of rejecting when a GET fails to send', async () => {
+    const { default: client } = await import('../client')
+
+    const { data, error, response } = await client.GET('/cves', { baseUrl, fetch: failedFetch })
+
+    expect(data).toBeUndefined()
+    expect(response.status).toBe(503)
+    expect(error).toMatchObject({
+      status: 503,
+      title: 'Network Error',
+      detail: 'Could not reach the server. Check your connection and try again.',
+    })
+  })
+
+  it('returns a 503 problem response instead of rejecting when a POST fails to send', async () => {
+    const { default: client } = await import('../client')
+
+    const { error, response } = await client.POST('/auth/logout', { baseUrl, fetch: failedFetch })
+
+    expect(response.status).toBe(503)
+    expect(error).toMatchObject({ status: 503, title: 'Network Error' })
+  })
+
+  it('still rejects when the request was aborted by the caller', async () => {
+    const { default: client } = await import('../client')
+    const controller = new AbortController()
+    controller.abort()
+    const abortingFetch = vi.fn<typeof fetch>(() =>
+      Promise.reject(new DOMException('The operation was aborted.', 'AbortError')),
+    )
+
+    await expect(
+      client.GET('/cves', { baseUrl, fetch: abortingFetch, signal: controller.signal }),
+    ).rejects.toThrow('The operation was aborted.')
   })
 })

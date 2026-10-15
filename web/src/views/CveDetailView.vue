@@ -81,13 +81,9 @@ async function fetchCve() {
   error.value = ''
   notFound.value = false
 
-  // A network failure rejects instead of returning an error; treat it as an empty
-  // response so the error branch below ends the loading state.
-  const { data, error: apiError } = await client
-    .GET('/cves/{cve_id}', {
-      params: { path: { cve_id: cveId.value } },
-    })
-    .catch(() => ({ data: undefined, error: undefined }))
+  const { data, error: apiError } = await client.GET('/cves/{cve_id}', {
+    params: { path: { cve_id: cveId.value } },
+  })
 
   if (currentFetchId !== fetchId) return
 
@@ -109,11 +105,9 @@ async function fetchSources() {
   const currentFetchId = fetchId
   sourcesLoading.value = true
 
-  const { data } = await client
-    .GET('/cves/{cve_id}/sources', {
-      params: { path: { cve_id: cveId.value } },
-    })
-    .catch(() => ({ data: undefined }))
+  const { data } = await client.GET('/cves/{cve_id}/sources', {
+    params: { path: { cve_id: cveId.value } },
+  })
 
   if (currentFetchId !== fetchId) return
 

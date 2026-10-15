@@ -40,15 +40,11 @@ async function fetchCves() {
   if (severity.value) params.severity = [severity.value]
   if (cursor.value) params.cursor = cursor.value
 
-  // A network failure rejects instead of returning an error; treat it as an empty
-  // response so the error branch below ends the loading state.
-  const { data, error: apiError } = await client
-    .GET('/cves', {
-      params: {
-        query: params as Record<string, never>,
-      },
-    })
-    .catch(() => ({ data: undefined, error: undefined }))
+  const { data, error: apiError } = await client.GET('/cves', {
+    params: {
+      query: params as Record<string, never>,
+    },
+  })
 
   // Discard stale response if a newer fetch was started.
   if (currentFetchId !== fetchId) return

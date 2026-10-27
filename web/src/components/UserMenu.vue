@@ -5,6 +5,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { LogOut } from 'lucide-vue-next'
+import { toast } from 'vue-sonner'
 import { useAuthStore } from '@/stores/auth'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
@@ -20,8 +21,12 @@ const auth = useAuthStore()
 const router = useRouter()
 
 async function handleLogout() {
-  await auth.logout()
-  router.push('/login')
+  const result = await auth.logout()
+  if (result.success) {
+    router.push('/login')
+  } else {
+    toast.error(result.error ?? 'Logout failed')
+  }
 }
 
 const initials = computed(() => {

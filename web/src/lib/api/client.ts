@@ -1,5 +1,5 @@
 // ABOUTME: Typed API client for the CVErt Ops backend.
-// ABOUTME: Auto-configured with CSRF header and 401 refresh interceptor.
+// ABOUTME: Auto-configured with CSRF header, 401 refresh interceptor, and network-failure handling.
 
 import createClient, { type Middleware } from 'openapi-fetch'
 import type { paths } from './schema'
@@ -15,6 +15,21 @@ export const csrfMiddleware: Middleware = {
     }
     return request
   },
+}
+
+// Builds the RFC 9457 problem response that stands in for a request that never
+// reached the server, so callers see it through the same `error` branch as a
+// server-side failure.
+function networkErrorResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      type: 'about:blank',
+      title: 'Network Error',
+      status: 503,
+      detail: 'Could not reach the server. Check your connection and try again.',
+    }),
+    { status: 503, headers: { 'Content-Type': 'application/problem+json' } },
+  )
 }
 
 async function refreshTokens(): Promise<boolean> {
@@ -63,7 +78,26 @@ export const refreshMiddleware: Middleware = {
 
     // Retry the original request with fresh cookies.
     // Clone the request before retrying — the original body stream was consumed by the first fetch.
-    return fetch(request.clone(), { credentials: 'include' })
+    // A rejection here bypasses onError middleware, so network failures are converted in place.
+    try {
+      return await fetch(request.clone(), { credentials: 'include' })
+    } catch (err) {
+      if (request.signal.aborted) {
+        throw err
+      }
+      return networkErrorResponse()
+    }
+  },
+}
+
+// Converts fetch rejections (server unreachable, offline, DNS failure) into a
+// 503 problem response. Requests aborted by the caller still reject.
+export const networkErrorMiddleware: Middleware = {
+  onError({ request }) {
+    if (request.signal.aborted) {
+      return
+    }
+    return networkErrorResponse()
   },
 }
 
@@ -74,5 +108,6 @@ const client = createClient<paths>({
 
 client.use(csrfMiddleware)
 client.use(refreshMiddleware)
+client.use(networkErrorMiddleware)
 
 export default client

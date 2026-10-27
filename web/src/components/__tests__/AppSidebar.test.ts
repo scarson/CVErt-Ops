@@ -1,15 +1,17 @@
 // ABOUTME: Tests for the authenticated sidebar navigation components.
-// ABOUTME: Covers AppSidebar nav links, OrgSwitcher org display, and UserMenu user display.
+// ABOUTME: Covers AppSidebar nav links, OrgSwitcher org display, and UserMenu display and logout.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+
+const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
 // Mock vue-router
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => unknown>(() => ({ path: '/cves' })),
-  useRouter: vi.fn<() => unknown>(() => ({ push: vi.fn<(...args: unknown[]) => unknown>() })),
+  useRouter: vi.fn<() => unknown>(() => ({ push: mockPush })),
   RouterLink: {
     name: 'RouterLink',
     props: ['to'],
@@ -24,6 +26,24 @@ vi.mock('@/lib/api/client', () => ({
     POST: vi.fn<(...args: unknown[]) => unknown>(),
   },
 }))
+
+const mockToastError = vi.fn<(message: string) => unknown>()
+
+vi.mock('vue-sonner', () => ({
+  toast: { error: (message: string) => mockToastError(message) },
+}))
+
+import client from '@/lib/api/client'
+
+// Renders the dropdown contents inline so the logout item can be clicked without
+// driving the menu's open/close interaction.
+const dropdownStubs = {
+  DropdownMenuContent: { template: '<div><slot /></div>' },
+  DropdownMenuItem: {
+    emits: ['click'],
+    template: '<button data-testid="menu-item" @click="$emit(\'click\')"><slot /></button>',
+  },
+}
 
 function seedAuthStore() {
   const auth = useAuthStore()
@@ -145,6 +165,7 @@ describe('UserMenu', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    vi.clearAllMocks()
   })
 
   it('shows user display name', async () => {
@@ -161,5 +182,46 @@ describe('UserMenu', () => {
     const wrapper = mount(UserMenu)
 
     expect(wrapper.text()).toContain('sam@example.com')
+  })
+
+  it('navigates to login after a successful logout', async () => {
+    vi.mocked(client.POST).mockResolvedValue({
+      data: undefined,
+      error: undefined,
+      response: { status: 200 } as Response,
+    })
+    seedAuthStore()
+    const { default: UserMenu } = await import('@/components/UserMenu.vue')
+    const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
+
+    await wrapper.find('[data-testid="menu-item"]').trigger('click')
+    await flushPromises()
+
+    expect(mockPush).toHaveBeenCalledWith('/login')
+    expect(mockToastError).not.toHaveBeenCalled()
+  })
+
+  it('shows an error and stays logged in when logout fails', async () => {
+    vi.mocked(client.POST).mockResolvedValue({
+      data: undefined,
+      error: {
+        type: 'about:blank',
+        status: 503,
+        detail: 'Could not reach the server. Check your connection and try again.',
+      },
+      response: { status: 503 } as Response,
+    })
+    const auth = seedAuthStore()
+    const { default: UserMenu } = await import('@/components/UserMenu.vue')
+    const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
+
+    await wrapper.find('[data-testid="menu-item"]').trigger('click')
+    await flushPromises()
+
+    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockToastError).toHaveBeenCalledWith(
+      'Could not reach the server. Check your connection and try again.',
+    )
+    expect(auth.isAuthenticated).toBe(true)
   })
 })

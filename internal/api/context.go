@@ -13,4 +13,5 @@ const (
 	ctxClientIP                       // string — client IP address for rate limiting
 	ctxTierResolver                   // *tier.Resolver — resolved tier limits for this org
 	ctxSCIMConfigID                   // uuid.UUID — SCIM config ID (set by requireSCIMAuth)
+	ctxAPIKeyID                       // uuid.UUID — ID of the API key that authenticated the request
 )

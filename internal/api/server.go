@@ -513,7 +513,8 @@ func (srv *Server) AddHealthCheck(check func() bool) {
 }
 
 // auditLog records an audit entry if the audit writer is configured.
-// Extracts actor context from the request. Nil-safe: no-op if writer is nil.
+// Extracts actor context, including the acting API key, from the request.
+// Nil-safe: no-op if writer is nil.
 func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
 	if srv.auditWriter == nil {
 		return
@@ -521,6 +522,11 @@ func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
 	if entry.ActorID == nil {
 		if uid, ok := r.Context().Value(ctxUserID).(uuid.UUID); ok {
 			entry.ActorID = &uid
+		}
+	}
+	if entry.APIKeyID == nil {
+		if keyID, ok := r.Context().Value(ctxAPIKeyID).(uuid.UUID); ok {
+			entry.APIKeyID = &keyID
 		}
 	}
 	srv.auditWriter.Log(r.Context(), entry)

@@ -177,6 +177,7 @@ type AuditLog struct {
 	NewState   pqtype.NullRawMessage
 	Metadata   pqtype.NullRawMessage
 	CreatedAt  time.Time
+	ApiKeyID   uuid.NullUUID
 }
 
 type CVE struct {

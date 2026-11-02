@@ -175,6 +175,7 @@ When PRing from a worktree that was created from `main` and merged `dev`:
 - **Tests MUST be executed, not just compiled.** `go build` and `go vet` verify syntax; only `go test` verifies behavior. Code that compiles but was never executed is unverified code.
 - **If Docker Desktop is unavailable** (testcontainers-go requires it for integration tests), this is a **HARD BLOCKER**. Do NOT proceed with "compilation-only verification." Stop and escalate to Sam.
 - **Before merging any branch to `dev`:** run `go test ./... -count=1 -timeout=600s` on the branch. If tests cannot run (Docker down, DB unavailable), do not merge.
+- **Slow packages:** on a Windows dev machine, run alongside other packages, `internal/api` took 595s and `internal/store` 377s (2026-11-02). `-timeout` applies per package, so `internal/api` is at the edge of 600s. For work in progress, narrow runs with `-run <TestName>`.
 - **Worktree agents**: If you cannot run integration tests in your worktree, report this as a blocker in your progress log and STOP. Do not mark tasks as complete with "compiles, tests not run."
 - **Coordinator rule**: After merging each stage/worktree to `dev`, run the full test suite on `dev` before launching the next stage. Failures from the merge block the next stage.
 

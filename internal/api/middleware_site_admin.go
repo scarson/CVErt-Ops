@@ -11,12 +11,18 @@ import (
 
 // RequireSiteAdmin returns middleware that rejects requests from non-site-admin users.
 // It expects ctxUserID to be set by RequireAuthenticated upstream.
+// API keys are always rejected: a key is scoped to one org and never carries
+// its creator's site-admin power, whatever the key's role.
 func (srv *Server) RequireSiteAdmin() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			userID, ok := r.Context().Value(ctxUserID).(uuid.UUID)
 			if !ok {
 				writeProblem(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			if _, isAPIKey := r.Context().Value(ctxAPIKeyRole).(string); isAPIKey {
+				writeProblem(w, http.StatusForbidden, "forbidden: API keys cannot access site admin routes")
 				return
 			}
 			isAdmin, err := srv.store.IsSiteAdmin(r.Context(), userID)

@@ -222,6 +222,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		return fmt.Errorf("embedded migrations: %w", err)
+	}
+
 	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
 		AlertCache:            alertCache,
 		AlertEvaluator:        alertEval,
@@ -799,6 +804,11 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	// not match the version the binary was compiled for. This catches
 	// misconfigured deployments where migrations haven't been applied yet
 	// (PLAN.md §18 advisory item).
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("embedded migrations: %w", err)
+	}
 	var schemaVersion int
 	err = db.QueryRow(ctx,
 		"SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
@@ -827,10 +837,6 @@ func validateConfig(cfg *config.Config) error {
 	}
 	return nil
 }
-
-// expectedSchemaVersion is the database migration version this binary requires.
-// Update this constant when new migrations are added.
-const expectedSchemaVersion = 39
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 // logLevel is the dynamic log level used by the global logger.

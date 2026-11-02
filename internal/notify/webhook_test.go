@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/scarson/cvert-ops/internal/notify"
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 func buildTestClient() *http.Client {
@@ -309,4 +312,33 @@ func TestSend_RedirectRejected(t *testing.T) {
 	// Non-2xx (302) → error
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "302")
+}
+
+func TestChannelWebhookConfig_CustomHeadersReachReceiver(t *testing.T) {
+	// Receiver behaves like ntfy with token auth: 401 without the bearer token.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tk_test" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	channel := func(config string) *store.NotificationChannelForDeliveryRow {
+		return &store.NotificationChannelForDeliveryRow{
+			Type:          "webhook",
+			Config:        json.RawMessage(config),
+			SigningSecret: sql.NullString{String: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Valid: true},
+		}
+	}
+
+	withCustomHeaders := channel(`{"url":"` + srv.URL + `","custom_headers":{"Authorization":"Bearer tk_test"}}`)
+	err := notify.Send(context.Background(), buildTestClient(), notify.ChannelWebhookConfig(withCustomHeaders), []byte(`[]`))
+	require.NoError(t, err, "header set in custom_headers must reach the receiver")
+
+	withOtherKey := channel(`{"url":"` + srv.URL + `","headers":{"Authorization":"Bearer tk_test"}}`)
+	err = notify.Send(context.Background(), buildTestClient(), notify.ChannelWebhookConfig(withOtherKey), []byte(`[]`))
+	require.Error(t, err, "only custom_headers is applied to deliveries")
+	assert.Contains(t, err.Error(), "401")
 }

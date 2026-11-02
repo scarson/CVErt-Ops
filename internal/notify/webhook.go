@@ -8,12 +8,15 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // WebhookConfig holds the delivery-time view of a notification_channels row for a webhook channel.
@@ -22,6 +25,24 @@ type WebhookConfig struct {
 	SigningSecret          string
 	SigningSecretSecondary string            // non-empty during rotation grace period
 	CustomHeaders          map[string]string // applied after denylist filtering
+}
+
+// ChannelWebhookConfig builds the WebhookConfig for a webhook channel from its stored
+// config JSON ({"url": ..., "custom_headers": {...}}) and signing secrets. Delivery and
+// the channel test endpoint both use it so a test sends exactly what a delivery would.
+// Malformed config yields an empty URL, which Send rejects.
+func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) WebhookConfig {
+	var config struct {
+		URL           string            `json:"url"`
+		CustomHeaders map[string]string `json:"custom_headers"`
+	}
+	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail
+	return WebhookConfig{
+		URL:                    config.URL,
+		SigningSecret:          ch.SigningSecret.String,
+		SigningSecretSecondary: ch.SigningSecretSecondary.String,
+		CustomHeaders:          config.CustomHeaders,
+	}
 }
 
 // deniedHeaders are custom header keys that callers must not override.

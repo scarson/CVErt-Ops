@@ -243,18 +243,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 }
 
 func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
-	var config struct {
-		URL           string            `json:"url"`
-		CustomHeaders map[string]string `json:"custom_headers"`
-	}
-	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail → retry/exhaust handles it
-
-	return Send(ctx, w.client, WebhookConfig{
-		URL:                    config.URL,
-		SigningSecret:          ch.SigningSecret.String,
-		SigningSecretSecondary: ch.SigningSecretSecondary.String,
-		CustomHeaders:          config.CustomHeaders,
-	}, row.Payload)
+	// Bad config JSON yields an empty URL; Send fails and retry/exhaust handles it.
+	return Send(ctx, w.client, ChannelWebhookConfig(ch), row.Payload)
 }
 
 func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {

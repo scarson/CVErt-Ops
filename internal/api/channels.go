@@ -536,10 +536,6 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		return errors.New("channel not found")
 	}
 
-	var cfg map[string]any
-	_ = json.Unmarshal(delivery.Config, &cfg)
-	urlStr, _ := cfg["url"].(string)
-
 	client, err := notify.BuildSafeClient()
 	if err != nil {
 		return fmt.Errorf("build webhook client: %w", err)
@@ -551,22 +547,7 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	whCfg := notify.WebhookConfig{
-		URL:                    urlStr,
-		SigningSecret:          delivery.SigningSecret.String,
-		SigningSecretSecondary: delivery.SigningSecretSecondary.String,
-	}
-	// Apply custom headers if present.
-	if headers, ok := cfg["headers"].(map[string]any); ok {
-		whCfg.CustomHeaders = make(map[string]string, len(headers))
-		for k, v := range headers {
-			if s, ok := v.(string); ok {
-				whCfg.CustomHeaders[k] = s
-			}
-		}
-	}
-
-	return notify.Send(ctx, client, whCfg, payload)
+	return notify.Send(ctx, client, notify.ChannelWebhookConfig(delivery), payload)
 }
 
 func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage) error {

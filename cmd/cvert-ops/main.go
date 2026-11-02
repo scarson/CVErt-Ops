@@ -41,6 +41,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
@@ -222,28 +223,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	expectedSchemaVersion, err := migrations.LatestVersion()
-	if err != nil {
-		return fmt.Errorf("embedded migrations: %w", err)
-	}
-
-	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
-		AlertCache:            alertCache,
-		AlertEvaluator:        alertEval,
-		LLM:                   llm,
-		EventWriter:           eventWriter,
-		ConfigHolder:          configHolder,
-		RescanFunc:            nil, // Feed rescan wiring is future work.
-		ExpectedSchemaVersion: expectedSchemaVersion,
-		VersionInfo: api.VersionInfo{
-			Version:   version,
-			Commit:    commit,
-			BuildTime: buildTime,
-		},
+	apiSrv, auditWriter, err := newAPIServer(st, cfg, api.ServerDeps{
+		AlertCache:     alertCache,
+		AlertEvaluator: alertEval,
+		LLM:            llm,
+		EventWriter:    eventWriter,
+		ConfigHolder:   configHolder,
+		RescanFunc:     nil, // Feed rescan wiring is future work.
 	})
 	if err != nil {
-		return fmt.Errorf("api server init: %w", err)
+		return err
 	}
+	// Defers run last-in first-out: this Flush runs after apiSrv.Close and
+	// before db.Close, so pending audit entries are written while the pool is open.
+	defer auditWriter.Flush()
 	defer apiSrv.Close()
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
@@ -821,6 +814,31 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	return db, nil
+}
+
+// newAPIServer builds the HTTP API server for the serve command. It fills in the
+// dependencies the serve command owns (audit writer, schema version and build
+// info) on top of the components the caller passes in deps. The caller must
+// Flush the returned audit writer after the HTTP server stops, before the
+// database pool closes, so pending audit entries are written.
+func newAPIServer(st *store.Store, cfg *config.Config, deps api.ServerDeps) (*api.Server, *audit.Writer, error) {
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		return nil, nil, fmt.Errorf("embedded migrations: %w", err)
+	}
+	auditWriter := audit.NewWriter(st, slog.Default())
+	deps.AuditWriter = auditWriter
+	deps.ExpectedSchemaVersion = expectedSchemaVersion
+	deps.VersionInfo = api.VersionInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildTime: buildTime,
+	}
+	srv, err := api.NewServer(st, cfg, deps)
+	if err != nil {
+		return nil, nil, fmt.Errorf("api server init: %w", err)
+	}
+	return srv, auditWriter, nil
 }
 
 // validateConfig enforces startup invariants that environment parsing cannot express:

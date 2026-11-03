@@ -85,11 +85,10 @@ LIMIT 1;
 
 -- name: InsertDigestDelivery :exec
 -- Digest runner: insert a digest delivery for a report+channel.
--- ON CONFLICT targets uq_deliveries_pending_digest partial index.
+-- Each digest run gets its own row, even while an earlier digest for the same
+-- report and channel is still pending.
 INSERT INTO notification_deliveries (org_id, report_id, channel_id, kind, payload, send_after)
-VALUES ($1, $2, $3, 'digest', $4, now())
-ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest'
-DO NOTHING;
+VALUES ($1, $2, $3, 'digest', $4, now());
 
 -- name: ReplayDelivery :exec
 UPDATE notification_deliveries

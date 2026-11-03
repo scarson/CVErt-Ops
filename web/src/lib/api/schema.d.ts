@@ -3076,7 +3076,7 @@ export interface components {
              * @example https://example.com/schemas/PatchSCIMGroupMappingBody.json
              */
             readonly $schema?: string;
-            mapped_group_id?: string;
+            mapped_group_id?: string | null;
             mapped_role?: string;
         };
         PatchSSOBody: {
@@ -3113,7 +3113,7 @@ export interface components {
              */
             readonly $schema?: string;
             description?: string;
-            group_id?: string;
+            group_id?: string | null;
             name?: string;
         };
         "Pause-feedResponse": {

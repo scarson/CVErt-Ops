@@ -228,7 +228,8 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	writeLocation(w, r, row.ID.String())
+	// An org has a single SSO connection, addressed by the collection URL itself.
+	w.Header().Set("Location", strings.TrimSuffix(r.URL.Path, "/"))
 	writeJSON(w, http.StatusCreated, resp)
 }
 

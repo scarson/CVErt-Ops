@@ -108,8 +108,8 @@ Vite 8.3 warns at config load about patterns that its native config loader (plan
 
 ## Follow-ups (not done here)
 
-- **`npm-run-all2` 8.x has had no release since 2025-05-25.** 9.x is active (9.0.4, 2026-10-21) but is a major bump: ESM-only, requiring Node `^22.22.2 || ^24.15.0 || >=26`. That needs Sam's approval and a Node-floor check.
-- **TypeScript 5.9 → 6.** This blocks `@vitest/eslint-plugin` ≥1.6.28 and so blocks `npm audit fix`. It is a major bump that needs its own change.
+- **`npm-run-all2` 8.x has had no release since 2025-05-25.** 9.x is active (9.0.4, 2026-10-21) but is a major bump: ESM-only, requiring Node `^22.22.2 || ^24.15.0 || >=26`. That needs Sam's approval and a Node-floor check. Done in the follow-up section "TypeScript 6 and npm-run-all2 9" below.
+- **TypeScript 5.9 → 6.** This blocks `@vitest/eslint-plugin` ≥1.6.28 and so blocks `npm audit fix`. It is a major bump that needs its own change. Done in the follow-up section "TypeScript 6 and npm-run-all2 9" below.
 - Re-check `minimatch` and `glob` when ESLint/typescript-eslint adopt `minimatch` 11 and `js-beautify` adopts `glob` 14.
 
 ## Verification
@@ -122,3 +122,90 @@ All of these ran in `web/` after the change; the full output is clean, with no w
 - `npm run build`: built
 - `npm ci` with npm 11.4.2 against the new lockfile: succeeded, lockfile unchanged
 - `npm audit`: 20 moderate, 0 high, 0 critical
+
+## Follow-up: TypeScript 6 and npm-run-all2 9 (2026-11-03)
+
+Sam approved both major bumps on 2026-11-03 and asked for an assessment of TypeScript 7 and of the side-by-side TypeScript 6 + 7 setup that Microsoft recommends until 7.1.
+
+### Result
+
+| Package | Before | After | `package.json` range |
+|---|---|---|---|
+| `typescript` | 5.9.3 | 6.0.3 | `~5.9.3` → `~6.0.3` |
+| `npm-run-all2` | 8.0.4 | 9.0.4 | `^8.0.4` → `^9.0.4` |
+
+Other `package.json` changes:
+
+- **`engines.node`: `>=24` → `^24.15.0 || >=26.0.0`.** This is `npm-run-all2` 9's own floor minus the Node 22 branch, which this project never supported. Its 9.x dependencies `read-package-json-fast` 6, `json-parse-even-better-errors` 6, `npm-normalize-package-bin` 6 and `which` 7 declare the same range. Node 25 is excluded because those packages exclude it, and Node 25 has been end-of-life since June 2026. CI uses `node-version: "24"`, which resolves to the newest cached 24.x, well above 24.15.
+- **`overrides`: `{"openapi-typescript": {"typescript": "$typescript"}}`.** `openapi-typescript` 7.13.0 (latest, 2026-02-11) declares peer `typescript ^5.x`. With TypeScript 6, `npm install` only warns, but `npm ci` fails with ERESOLVE on both npm 11.4.2 and 11.19.1, so CI would break. The override changes only that one peer edge: it makes `openapi-typescript` accept the root's own `typescript` spec. It does not force any version. That is different from the overrides Sam declined under "Left unfixed", which would have forced `minimatch` 11 into parents that declare older ranges. This one is still Sam's to confirm in review. See "openapi-typescript and TypeScript 6" below for why it is safe.
+
+Lockfile movement: `typescript`, `npm-run-all2`, and `npm-run-all2`'s own dependencies `pidtree` 0.6.0 → 1.0.0, `read-package-json-fast` 4 → 6, `json-parse-even-better-errors` 4 → 6, `npm-normalize-package-bin` 4 → 6, and nested `which` 5 → 7, `isexe` 3.1.5 → 4.0.0 and `ansi-styles` (new, 7.0.0). Nothing else moved. `vue-tsc` (3.2.6), `typescript-eslint` (8.58.1), `@vue/eslint-config-typescript` (14.7.0), `eslint-plugin-vue` (10.8.0) and `@vitest/eslint-plugin` (1.6.13) all accept TypeScript 6.0.3 at their locked versions, so none had to move.
+
+`npm audit` is unchanged at 20 moderate, 0 high, 0 critical. Neither bump touches the `minimatch` or `glob` chains above.
+
+### Dependency checks
+
+Per `CLAUDE.md` ("Third-Party Dependencies") and the `dependency-check` skill:
+
+| Check | `typescript` 6.0.3 | `npm-run-all2` 9.0.4 |
+|---|---|---|
+| Repository | `microsoft/TypeScript`, active (pushed 2026-11-03). `microsoft/typescript-go` is archived; 7.x publishes as the `typescript` package, with `microsoft/TypeScript` as its repository. | `bcomnes/npm-run-all2`, active (pushed 2026-11-02), 6 open issues |
+| Release | 6.0.3, 2026-04-16. It is the last 6.x; `latest` is now 7.0.2. | 9.0.4, 2026-10-21. The 9.x line started on 2026-05-19. |
+| Advisories (OSV.dev, GitHub) | none | none (the repository has no security advisories) |
+| License | Apache-2.0 | MIT |
+| Provenance | none (6.0.3 has no npm attestations) | SLSA v1 |
+| Install scripts | none | none, and none in its new dependencies |
+
+OSV.dev also reports no advisories for any of the new transitive versions listed above. The 9.x breaking changes are the Node floor, ESM-only internals, and glob task patterns that match nothing now succeeding silently instead of failing. Our scripts use only `run-s lint:*` and `run-p type-check "build-only {@}" --`, and the `lint:*` pattern always matches.
+
+Argument passthrough through `{@}` behaves the same in 8.0.4 and 9.0.4. `npm-run-all2` runs `npm run build-only <args>` without a `--` separator, so npm takes any flag it recognizes as its own (for example, `npm run build -- --version` prints npm's version under both releases). CI runs `npm run build` with no arguments.
+
+### openapi-typescript and TypeScript 6
+
+`openapi-typescript` is used only for `npm run generate-api` (codegen from `../openapi.json`), and it never ships. Upstream issue openapi-ts/openapi-typescript#2723 ("Add support for TypeScript 6") and three PRs (#2774, #2818, #2872) have been open since April 2026 without a merge or a release. The PR author reports that build, tests and lint pass after only widening the peer range. The one code fix proposed there is for `openapi-typescript-helpers` `Readable<T>`/`Writable<T>` on `Date` fields. Our generated schema has no `Date` types, and `vue-tsc` passes on everything that uses `openapi-fetch`.
+
+Checked here: with TypeScript 6.0.3 installed, `npm run generate-api` produced a byte-identical `src/lib/api/schema.d.ts`.
+
+Remove the override when `openapi-typescript` releases a version with a TypeScript 6 peer range. The project's maintenance pace is a separate concern: there has been no release in nine months, 287 issues are open, and it still pins the archived `@redocly/openapi-core` 1.x (upstream issue #2846). Re-evaluate it if it falls further behind.
+
+### TypeScript 7 and the side-by-side setup
+
+TypeScript 7.0 (the Go-native compiler) has been `latest` on npm since 2026-07-08. It ships without a programmatic API; a new, different API is planned for 7.1, which reached beta on 2026-10-20. Until then the [7.0 announcement](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/) recommends a side-by-side install:
+
+```json
+"typescript": "npm:@typescript/typescript6@^6.0.2",
+"@typescript/native": "npm:typescript@^7.0.2"
+```
+
+`tsc` is then 7.0 and `tsc6` is 6.0, and tools that `import 'typescript'` keep getting the 6.0 API. The same announcement says Vue, Svelte, Astro and MDX projects should stay on 6.0 for now.
+
+**Decision: plain `typescript@~6.0.3`, no side-by-side install.** The reasons:
+
+- **`vue-tsc` is our only type checker, and it needs the 6.0 API.** Volar builds on the TypeScript API, so `npm run type-check` must keep running on 6.0 under either setup.
+- **TypeScript 7 cannot check most of this project.** A probe with `npx -p typescript@7.0.2 tsc -p <config> --noEmit` passed on `tsconfig.node.json` (the build and lint config files only). It failed on `tsconfig.app.json` (111 errors) and `tsconfig.vitest.json` (61 errors), and every error was `TS2307` on a `.vue` import. A TypeScript 7 check would therefore cover only the config files that `vue-tsc --build` already covers.
+- **`typescript-eslint` caps its peer at `<6.1.0`** (8.72.1, the latest), so ESLint also needs 6.0.
+- **The side-by-side install costs more than it gives.** It adds a second compiler with about 20 platform-specific optional packages, and an alias that makes the `typescript` in `package.json` a different package than its name says. In return it would only speed up a check on five config files.
+
+The probe also shows that, apart from `.vue` resolution, our TypeScript already compiles under 7.0 with no errors. That includes the 7.0 breaking changes (`baseUrl`, `moduleResolution: node10`, `esModuleInterop: false` and the like), none of which our tsconfigs use. So the move to 7 depends only on the tooling.
+
+**Revisit when** 7.1 is stable and `vue-tsc` and `typescript-eslint` release support for it; at that point move straight to 7.x with no side-by-side phase. Secondary sources report a 7.1 RC around 2026-11-10 and a stable release around 2026-11-24. These dates are unverified against a primary Microsoft source.
+
+### `npm audit fix` after the TypeScript bump
+
+The TypeScript 6 bump removes the ERESOLVE described in "Tooling problems hit" above, but `npm audit fix` was still not applied. A dry run shows that it clears none of the 20 moderates. It would also move ESLint's cache chain to `file-entry-cache` 11.1.5, `flat-cache` 6.1.23, `keyv` 5.6.0 and `cacheable` 2.5.0, and pull in the `@cacheable/*`, `hookified`, `hashery` and `qified` packages. Each of those four versions is one release below a version compromised in the keyv/cacheable worm (CSA Singapore AD-2026-009; see "Supply-chain verification" above). That chain should move only as its own reviewed change.
+
+### Verification
+
+These ran in `web/` with Node 24.22.2 (npm 11.19.1, installed through mise because the workstation's Node 24.14.0 is below the new floor). Each ran from a cold cache, with `node_modules/.tmp`, `.eslintcache` and `dist` removed first:
+
+- `npm run type-check`: passed, with no output beyond the script banner
+- `npm run test:unit -- --run --testTimeout=30000`: 32 files and 430 tests passed, with no warnings
+- `npm run lint`: oxlint reported 0 warnings and 0 errors; eslint was clean
+- `npm run build`: built, with no warnings
+- `npm ci`: succeeded on npm 11.19.1 (Node 24.22.2) and on npm 11.4.2 (Node 24.14.0), and left the lockfile unchanged. On Node 24.14.0, npm prints `EBADENGINE` warnings for the project and the `npm-run-all2` 9 chain, as intended.
+- `npm run generate-api`: `schema.d.ts` unchanged
+
+Not caused by this change, but seen while verifying:
+
+- npm 11.19.1, which Node 24.22.2 and therefore CI bundle, adds an `install-scripts ... not yet covered by allowScripts` warning for `vue-demi`'s postinstall.
+- `npm ci` warns that `glob@10.5.0` is deprecated. That is the `@vue/test-utils` → `js-beautify` → `glob` path described in "Left unfixed" above.

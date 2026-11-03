@@ -13,7 +13,10 @@ import (
 	"github.com/scarson/cvert-ops/internal/config"
 )
 
-func TestOpenAPISpec(t *testing.T) {
+// buildOpenAPISpec serves the production huma spec merged with the spec-only
+// Chi route declarations and returns it decoded.
+func buildOpenAPISpec(t *testing.T) map[string]any {
+	t.Helper()
 	cfg := &config.Config{
 		JWTSecret:   "test-secret-for-openapi-generation",
 		ExternalURL: "http://localhost:8080",
@@ -23,7 +26,7 @@ func TestOpenAPISpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	handler := srv.Handler()
 
@@ -40,13 +43,16 @@ func TestOpenAPISpec(t *testing.T) {
 		t.Fatalf("GET /api/v1/openapi.json: status %d, body: %s", rec.Code, rec.Body.String())
 	}
 
-	body := rec.Body.Bytes()
-
 	// Verify valid JSON.
 	var spec map[string]any
-	if err := json.Unmarshal(body, &spec); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
+	return spec
+}
+
+func TestOpenAPISpec(t *testing.T) {
+	spec := buildOpenAPISpec(t)
 
 	// Verify OpenAPI 3.1 version.
 	if v, ok := spec["openapi"]; !ok {
@@ -83,6 +89,10 @@ func TestOpenAPISpec(t *testing.T) {
 		"/orgs/{org_id}",
 		"/orgs/{org_id}/members",
 		"/orgs/{org_id}/members/{user_id}",
+		"/orgs/{org_id}/members/{user_id}/reset-mfa",
+		"/orgs/{org_id}/members/{user_id}/force-password-reset",
+		"/orgs/{org_id}/members/{user_id}/require-mfa",
+		"/orgs/{org_id}/mfa-settings",
 		"/orgs/{org_id}/invitations",
 		"/orgs/{org_id}/invitations/{id}",
 		"/orgs/{org_id}/invitations/{id}/resend",
@@ -134,6 +144,11 @@ func TestOpenAPISpec(t *testing.T) {
 		// Spec-only: SSO
 		"/orgs/{org_id}/sso",
 		"/orgs/{org_id}/sso/domains",
+		"/orgs/{org_id}/sso/link",
+		"/orgs/{org_id}/sso/scim",
+		"/orgs/{org_id}/sso/scim/rotate-token",
+		"/orgs/{org_id}/sso/scim/groups",
+		"/orgs/{org_id}/sso/scim/groups/{id}/mapping",
 		"/auth/discover",
 
 		// Spec-only: Audit Log
@@ -197,5 +212,185 @@ func TestOpenAPISpec(t *testing.T) {
 			t.Fatalf("write %s: %v", outPath, err)
 		}
 		t.Logf("wrote %s (%d bytes)", outPath, len(pretty))
+	}
+}
+
+// TestOpenAPISpec_EmbeddedFieldsDocumented verifies that response schemas
+// built by embedding another DTO document the embedded DTO's fields, which
+// encoding/json promotes into the response body.
+func TestOpenAPISpec_EmbeddedFieldsDocumented(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	tests := []struct {
+		schema       string
+		wantRequired []string
+		wantOptional []string
+	}{
+		// signing_secret is sent only for webhook channels.
+		{schema: "ChannelCreateEntry", wantRequired: []string{"id", "org_id", "name", "type", "config", "created_at", "updated_at"}, wantOptional: []string{"signing_secret"}},
+		{schema: "DeliveryDetail", wantRequired: []string{"id", "org_id", "status", "created_at", "payload"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.schema, func(t *testing.T) {
+			s, ok := schemas[tc.schema].(map[string]any)
+			if !ok {
+				t.Fatalf("schema %s missing from spec", tc.schema)
+			}
+			props, _ := s["properties"].(map[string]any)
+			required := map[string]bool{}
+			reqList, _ := s["required"].([]any)
+			for _, r := range reqList {
+				required[r.(string)] = true
+			}
+			for _, f := range tc.wantRequired {
+				if _, ok := props[f]; !ok {
+					t.Errorf("property %s not documented", f)
+				}
+				if !required[f] {
+					t.Errorf("property %s not marked required", f)
+				}
+			}
+			for _, f := range tc.wantOptional {
+				if _, ok := props[f]; !ok {
+					t.Errorf("property %s not documented", f)
+				}
+				if required[f] {
+					t.Errorf("property %s marked required, but the handler can omit it", f)
+				}
+			}
+		})
+	}
+}
+
+// TestOpenAPISpec_PatchBodiesOptional verifies that PATCH request schemas mark
+// no field required: the handlers keep the current value for an omitted field.
+func TestOpenAPISpec_PatchBodiesOptional(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	for _, name := range []string{"PatchSCIMConfigBody", "PatchSCIMGroupMappingBody"} {
+		t.Run(name, func(t *testing.T) {
+			s, ok := schemas[name].(map[string]any)
+			if !ok {
+				t.Fatalf("schema %s missing from spec", name)
+			}
+			if req, ok := s["required"]; ok {
+				t.Errorf("required = %v, want no required fields", req)
+			}
+		})
+	}
+}
+
+// TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
+// handlers answer 201 Created, 202 Accepted, 204 No Content or 302 Found
+// document that status, and do not document a 200 the handler never sends.
+func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	paths := spec["paths"].(map[string]any)
+
+	tests := []struct {
+		path         string
+		method       string
+		wantStatuses []string
+		wantLocation bool
+		noBody       bool
+		contentType  string // body media type when not application/json
+	}{
+		{path: "/admin/reindex", method: "post", wantStatuses: []string{"202"}},
+		{path: "/admin/feeds/{feed}/run", method: "post", wantStatuses: []string{"202"}},
+		{path: "/orgs/{org_id}/ingest", method: "post", wantStatuses: []string{"202"}},
+		{path: "/orgs/{org_id}/invitations", method: "post", wantStatuses: []string{"202"}, wantLocation: true},
+		// 201 when the rule is created ready, 202 when it needs an activation scan.
+		{path: "/orgs/{org_id}/alert-rules", method: "post", wantStatuses: []string{"201", "202"}, wantLocation: true},
+
+		// 201 Created with the new resource and its Location.
+		{path: "/auth/register", method: "post", wantStatuses: []string{"201"}},
+		{path: "/orgs", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/api-keys", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/channels", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/groups", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/reports", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/saved-searches", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/sso", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/watchlists", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/watchlists/{id}/items", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+
+		// 201 Created with a body but no Location: neither handler creates an addressable resource.
+		{path: "/orgs/{org_id}/members/{user_id}/require-mfa", method: "post", wantStatuses: []string{"201"}},
+		{path: "/orgs/{org_id}/sso/scim", method: "post", wantStatuses: []string{"201"}},
+
+		// 204 No Content.
+		{path: "/auth/mfa/methods/{method}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/members/{user_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/invitations/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/api-keys/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/watchlists/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/watchlists/{id}/items/{item_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/channels/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/channels/{id}/clear-secondary", method: "post", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/deliveries/{id}/replay", method: "post", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/alert-rules/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}", method: "put", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/reports/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/reports/{id}/channels/{channel_id}", method: "put", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/reports/{id}/channels/{channel_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/saved-searches/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/sso", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/groups/{group_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/groups/{group_id}/members", method: "post", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/groups/{group_id}/members/{user_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/members/{user_id}/require-mfa", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/sso/scim", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+
+		// 302 Found redirecting the browser to the identity provider; http.Redirect
+		// adds a short HTML body naming the target.
+		{path: "/orgs/{org_id}/sso/link", method: "get", wantStatuses: []string{"302"}, wantLocation: true, contentType: "text/html"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			item, ok := paths[tc.path].(map[string]any)
+			if !ok {
+				t.Fatalf("path %s missing from spec", tc.path)
+			}
+			op, ok := item[tc.method].(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s missing from spec", tc.method, tc.path)
+			}
+			responses := op["responses"].(map[string]any)
+
+			if _, ok := responses["200"]; ok {
+				t.Errorf("documents 200, which the handler never returns")
+			}
+			if _, ok := responses["default"]; !ok {
+				t.Errorf("no default error response documented")
+			}
+			for _, status := range tc.wantStatuses {
+				resp, ok := responses[status].(map[string]any)
+				if !ok {
+					t.Errorf("response %s not documented", status)
+					continue
+				}
+				content, _ := resp["content"].(map[string]any)
+				contentType := tc.contentType
+				if contentType == "" {
+					contentType = "application/json"
+				}
+				if tc.noBody {
+					if len(content) != 0 {
+						t.Errorf("response %s documents a body, which the handler never sends", status)
+					}
+				} else if _, ok := content[contentType]; !ok {
+					t.Errorf("response %s has no %s body", status, contentType)
+				}
+				if tc.wantLocation {
+					headers, _ := resp["headers"].(map[string]any)
+					if _, ok := headers["Location"]; !ok {
+						t.Errorf("response %s does not document the Location header", status)
+					}
+				}
+			}
+		})
 	}
 }

@@ -1,8 +1,9 @@
 // ABOUTME: Typed API client for the CVErt Ops backend.
-// ABOUTME: Auto-configured with CSRF header, 401 refresh interceptor, and network-failure handling.
+// ABOUTME: Auto-configured with CSRF header, 401 refresh, forced-password-change, and network-failure handling.
 
 import createClient, { type Middleware } from 'openapi-fetch'
 import type { paths } from './schema'
+import { PROBLEM_PASSWORD_CHANGE_REQUIRED, problemType } from './problems'
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
@@ -58,15 +59,45 @@ function coalescedRefresh(): Promise<boolean> {
   return refreshPromise
 }
 
+// Endpoints whose 401 a token refresh cannot fix: sign-in, sign-out, the refresh
+// call itself, and the steps of a pending (pre-session) sign-in.
+const NO_REFRESH_PATHS = [
+  '/auth/login',
+  '/auth/refresh',
+  '/auth/logout',
+  '/auth/register',
+  '/auth/forgot-password',
+  '/auth/reset-password',
+  '/auth/verify-email',
+  '/auth/mfa/challenge',
+  '/auth/mfa/verify',
+]
+
+function skipsRefresh(url: string): boolean {
+  const path = new URL(url, 'http://localhost').pathname
+  return NO_REFRESH_PATHS.some((p) => path.endsWith(p))
+}
+
+// Reads the problem "type" from a response without consuming its body.
+async function responseProblemType(response: Response): Promise<string | undefined> {
+  try {
+    const body: unknown = await response.clone().json()
+    return problemType(body)
+  } catch {
+    return undefined
+  }
+}
+
 // Attempts token refresh on 401 responses, then retries the original request.
+// A typed 401 (wrong code, wrong password, expired sign-in step) is an answer
+// about the request, not an expired access token, so it is passed through.
 export const refreshMiddleware: Middleware = {
   async onResponse({ request, response }) {
     if (response.status !== 401) {
       return response
     }
 
-    // Don't try to refresh any auth endpoints — they're the auth system itself.
-    if (request.url.includes('/auth/')) {
+    if (skipsRefresh(request.url) || (await responseProblemType(response)) !== undefined) {
       return response
     }
 
@@ -90,6 +121,27 @@ export const refreshMiddleware: Middleware = {
   },
 }
 
+let passwordChangeRequiredHandler: (() => void) | null = null
+
+// Registers the app's response to a session that must change its password
+// (the backend answers every other request with 403 password_change_required).
+export function setPasswordChangeRequiredHandler(handler: (() => void) | null) {
+  passwordChangeRequiredHandler = handler
+}
+
+export const passwordChangeRequiredMiddleware: Middleware = {
+  async onResponse({ response }) {
+    if (
+      response.status === 403 &&
+      passwordChangeRequiredHandler &&
+      (await responseProblemType(response)) === PROBLEM_PASSWORD_CHANGE_REQUIRED
+    ) {
+      passwordChangeRequiredHandler()
+    }
+    return response
+  },
+}
+
 // Converts fetch rejections (server unreachable, offline, DNS failure) into a
 // 503 problem response. Requests aborted by the caller still reject.
 export const networkErrorMiddleware: Middleware = {
@@ -108,6 +160,7 @@ const client = createClient<paths>({
 
 client.use(csrfMiddleware)
 client.use(refreshMiddleware)
+client.use(passwordChangeRequiredMiddleware)
 client.use(networkErrorMiddleware)
 
 export default client

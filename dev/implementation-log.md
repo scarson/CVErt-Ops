@@ -2627,6 +2627,92 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 - **New tests:** `TestEvaluateBatch_RuleErrorDoesNotSkipCVEs`, `TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap`, `TestEvaluator_UncompilableRuleSetToError` (batch and realtime subtests). The first two failed before the fix; the realtime subtest was written together with the fix.
 - **Tests run locally:** only the new tests, because of Docker contention on the dev host; CI runs the full `internal/alert` package.
 
+## SPA Sign-In Steps, MFA Enrollment and MFA Management
+
+**Date:** 2026-11-03
+**Branch:** `claude/spa-mfa-sign-in`
+**Design:** `dev/plans/2026-11-03-spa-mfa-sign-in-design.md` (sign-in steps on `/login`, shared enrollment component, `/settings/account`, six backend session fixes)
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Session cookie hygiene | `internal/api/auth.go`, `auth_mfa.go`, `auth_password_reset.go`, `oauth_*.go` | Pending logins expire `access_token`/`refresh_token`; every full-token issuance and logout expire `mfa_pending_token`/`mfa_enroll_token` (`clearSignInCookies`) |
+| Typed sign-in 401s | `internal/api/contract.go` (`typedProblem`), `auth.go`, `auth_mfa.go` | `urn:cvert:error:pending-session-invalid`, `invalid-code`, `invalid-password`, `enrollment-expired` |
+| Backend fixes | `auth_mfa.go`, `auth.go`, `auth_password_reset.go` | TOTP setup renews the pending token; `/auth/me` reports `has_password`; forgot-password reset clears `force_password_reset` |
+| Tests | `internal/api/auth_session_test.go` | 16 integration tests for the above |
+| API client | `web/src/lib/api/client.ts`, `problems.ts` | Refresh skip list limited to sign-in endpoints; typed 401s pass through; 403 `password_change_required` handler |
+| Auth store | `web/src/stores/auth.ts` | `pendingSteps`, `mfaMethods`, `signInEmail`, `signInNotice`; step actions (challenge, verify, forced change, finish, expire, cancel) |
+| Sign-in steps | `web/src/views/LoginView.vue`, `web/src/components/auth/*` | MFA check, forced password change and mandatory enrollment rendered on `/login` |
+| MFA components | `web/src/components/mfa/*` | `MfaEnrollment` (TOTP QR via `uqr`, secret key, email OTP), `RecoveryCodesDisplay` |
+| Account page | `web/src/views/AccountView.vue`, `web/src/components/account/*`, router, `UserMenu.vue`, `main.ts` | Password change, MFA methods, recovery codes; forced-reset routing |
+
+### Key implementation decisions
+
+- **Steps stay on `/login`.** The pending token is an HttpOnly cookie and `methods` exist only in the login response, so a reload restarts at the password form.
+- **Enrollment completes sign-in.** Confirm responses carry no `pending`; enrollment is always the last step, so a successful restricted confirm means full cookies are set.
+- **Another user's pending cookie is ignored, not rejected**, following scarson/CVErt-Ops#145 (merged while this branch was open). This branch's first draft rejected the request instead.
+- **`/auth/me` now refreshes on 401.** Before, a reload after the 15-minute access token expired showed a user with a valid refresh token as logged out.
+- **`uqr`** renders the QR as an SVG data URL in an `<img>` (no `v-html`); dependency check passed (zero dependencies, MIT, no advisories).
+
+### Gotchas discovered
+
+- **The OpenAPI generator is `GENERATE_OPENAPI=1 go test ./internal/api -run '^TestOpenAPISpec$'`.** The served `/api/v1/openapi.json` alone lacks the spec-only Chi operations.
+- **`npm install` on this host strips `libc` fields from `package-lock.json`** that a newer npm wrote; restore the lockfile instead of committing that churn.
+- **The dev stack did not start** (`postgres:18-alpine` rejects the compose data mount; `serve` hung after migrations), so no in-browser check was possible.
+
+### Quality checks
+
+- **Go:** the 178 tests in the touched auth test files passed before the merge with dev (666 s); after the merge, 24 targeted tests (this branch's 16 plus the #143/#145 tests and the full TOTP, enrollment and forced-reset flows) pass. `golangci-lint` on `internal/api` reported only a G101 false positive on a problem-type URN, suppressed inline. Full `internal/api` suite and post-merge lint left to CI at Sam's request (host under load).
+- **Web:** `npm run type-check` and `npm run lint` clean; before the merge the full unit suite passed (528 tests, no warnings); after the merge the 18 touched test files pass (205 tests).
+
+---
+
+## Dependabot Triage and Consolidated Dependency Updates (2026-11-03)
+
+Triage of 24 open Dependabot PRs. Most were months old and either superseded on `dev` or pinned versions that no longer cleared current advisories. The live updates were applied together on one branch from `dev` at the versions current supply-chain checks support.
+
+| Dependabot PR(s) | Outcome |
+|------|-------|
+| #114 postcss, #115 js-cookie, #122 undici, #127 js-yaml/redocly, #128 vite, #135 shell-quote (security, base `main`) | Closed: superseded by #142 on `dev` |
+| #101 typescript 6.0.3 | Closed: superseded by #148 on `dev` (adds the `openapi-typescript` peer override that `npm ci` needs) |
+| #102 eslint-plugin-oxlint 1.61.0 | Closed: already on `dev` |
+| #126 x/net, #130 and #111 x/crypto, #131 safeurl, #134 grpc, #106 env, #110 gjson, #112 go-mail, #113 genai | Superseded by the Go module commit on this branch (newer versions) |
+| #123 checkout, #132 setup-node, #133 setup-go, #129 golangci-lint-action | Superseded by the actions commit (newer releases where available) |
+| #100 @tailwindcss/vite, #103 vue-router, #104 plugin-vue | Superseded by the web commit |
+
+### What changed
+
+| Area | Files | Change |
+|------|-------|--------|
+| Go toolchain | `go.mod` | `go 1.26.10`: govulncheck found reachable stdlib advisories in go1.26.2 (crypto/x509, crypto/tls, net/http, net/textproto, html/template) |
+| Go modules | `go.mod`, `go.sum` | x/crypto v0.58.0, x/net v0.62.0, x/text v0.43.0, grpc v1.83.2, safeurl v0.2.5, moby/go-archive v0.3.3, genai v1.77.0, go-mail v0.7.3, gjson v1.20.0, env v11.4.1 |
+| CI | `.github/workflows/ci.yml` | checkout v7.0.1, setup-go v7.0.0, setup-node v7.1.0, golangci-lint-action v9.3.0, pinned by commit SHA |
+| Web | `web/package.json`, `web/package-lock.json` | tailwindcss and @tailwindcss/vite 4.2.4, vue-router 5.0.6, @vitejs/plugin-vue 6.0.10 |
+
+### Key implementation decisions
+
+- **govulncheck 47 → 5 reachable advisories.** Remaining: chi `middleware.RealIP` (GO-2026-5774/5775/5777) and docker/docker (GO-2026-4883/4887, no fixed release, test helpers only).
+- **chi not bumped.** chi 5.3+ only deprecates `RealIP`, without changing its behaviour, and staticcheck SA1019 would fail lint. The actual bug: `RealIP` trusts `X-Forwarded-For`/`True-Client-IP` from any client, and `TRUSTED_PROXIES` (PLAN.md rate-limiting section, documented in `docs/deployment/`) is parsed but never used, so clients can spoof the IP the auth rate limiter keys on. This needs its own fix.
+- **safeurl v0.2.5:** `errors.go` is unchanged since v0.2.2, so the tests' exact refusal text still matches. v0.2.4 adds missing IPv6 blocklist ranges.
+- **grpc floor is 1.83.1, not Dependabot's 1.82.1:** GO-2026-6348 is fixed only in 1.83.1.
+- **vue-router 5.0.6, not 5.0.7:** 5.0.7 moves to Babel 8 through `@babel/generator` 8.1.0 (one day old), which pins a `@jridgewell/gen-mapping` beta. Tailwind 4.3 and vue-router 5.4 were skipped because they change default font stack and scroll restoration.
+- **x/net v0.62.0** also fixes x/net/html advisories GO-2026-6860 and GO-2026-6866, which govulncheck did not list.
+
+### Gotchas discovered
+
+- CI (`.github/workflows/ci.yml`) runs only for pushes and PRs to `main`, so PRs to `dev` get no CI; local targeted tests gate them.
+- CI's govulncheck step fails on every run since 2026-07-05: its docker/docker exception has expired.
+- Local Node 24.14.0 is below the `web/` engines floor (`^24.15.0 || >=26.0.0`, from #148), so every npm command warns EBADENGINE.
+
+### Quality checks
+
+- `go build ./...`, `go vet ./...`, `golangci-lint run`: clean.
+- Go tests: `internal/notify`, `internal/feed/...`, `internal/auth`, `internal/ai`, `internal/config`, `internal/testutil`, `cmd/cvert-ops`, and `internal/api -run 'Channel|Webhook|Login|Password|APIKey|MFA|Register'` pass. Full suite not run.
+- Web: type-check, 430 unit tests, lint and build pass; `npm ci` with npm 11.4.2 succeeds.
+
+---
+
 ## Notify — Digests No Longer Dropped While the Previous Digest Is Pending
 
 > **Date:** 2026-11-03

@@ -145,6 +145,7 @@ func (srv *Server) tryAPIKeyAuth(r *http.Request, rawKey string, w http.Response
 	ctx := context.WithValue(r.Context(), ctxUserID, key.CreatedByUserID)
 	ctx = context.WithValue(ctx, ctxAPIKeyRole, key.Role)
 	ctx = context.WithValue(ctx, ctxAPIKeyOrgID, key.OrgID)
+	ctx = context.WithValue(ctx, ctxAPIKeyID, key.ID)
 	next.ServeHTTP(w, r.WithContext(ctx))
 	return true
 }

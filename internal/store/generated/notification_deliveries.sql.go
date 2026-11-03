@@ -86,24 +86,26 @@ UPDATE notification_deliveries
 SET status        = 'failed',
     attempt_count = attempt_count + 1,
     last_error    = $2,
+    last_error_for_org = $3,
     updated_at    = now()
 WHERE id = $1
 `
 
 type ExhaustDeliveryParams struct {
-	ID        uuid.UUID
-	LastError sql.NullString
+	ID              uuid.UUID
+	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 }
 
 // Max attempts reached — move to permanent failure.
 func (q *Queries) ExhaustDelivery(ctx context.Context, arg ExhaustDeliveryParams) error {
-	_, err := q.db.ExecContext(ctx, exhaustDelivery, arg.ID, arg.LastError)
+	_, err := q.db.ExecContext(ctx, exhaustDelivery, arg.ID, arg.LastError, arg.LastErrorForOrg)
 	return err
 }
 
 const getDelivery = `-- name: GetDelivery :one
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count, payload,
-       send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
+       send_after, last_attempted_at, delivered_at, last_error_for_org, created_at, updated_at
 FROM notification_deliveries
 WHERE id = $1 AND org_id = $2
 LIMIT 1
@@ -127,7 +129,7 @@ type GetDeliveryRow struct {
 	SendAfter       time.Time
 	LastAttemptedAt sql.NullTime
 	DeliveredAt     sql.NullTime
-	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -148,7 +150,7 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 		&i.SendAfter,
 		&i.LastAttemptedAt,
 		&i.DeliveredAt,
-		&i.LastError,
+		&i.LastErrorForOrg,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -183,7 +185,7 @@ func (q *Queries) InsertDigestDelivery(ctx context.Context, arg InsertDigestDeli
 
 const listDeliveries = `-- name: ListDeliveries :many
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count,
-       send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
+       send_after, last_attempted_at, delivered_at, last_error_for_org, created_at, updated_at
 FROM notification_deliveries
 WHERE org_id = $1
   AND ($2 = '00000000-0000-0000-0000-000000000000'::uuid OR rule_id    = $2)
@@ -216,7 +218,7 @@ type ListDeliveriesRow struct {
 	SendAfter       time.Time
 	LastAttemptedAt sql.NullTime
 	DeliveredAt     sql.NullTime
-	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -250,7 +252,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) 
 			&i.SendAfter,
 			&i.LastAttemptedAt,
 			&i.DeliveredAt,
-			&i.LastError,
+			&i.LastErrorForOrg,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -331,6 +333,7 @@ SET status        = 'pending',
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id = $1 AND org_id = $2
   AND status IN ('failed', 'cancelled')
@@ -365,18 +368,25 @@ SET status        = 'pending',
     attempt_count = attempt_count + 1,
     send_after    = now() + ($2 * interval '1 second'),
     last_error    = $3,
+    last_error_for_org = $4,
     updated_at    = now()
 WHERE id = $1
 `
 
 type RetryDeliveryParams struct {
-	ID        uuid.UUID
-	Column2   interface{}
-	LastError sql.NullString
+	ID              uuid.UUID
+	Column2         interface{}
+	LastError       sql.NullString
+	LastErrorForOrg sql.NullString
 }
 
 // Sets status back to pending with incremented attempt_count and backoff send_after.
 func (q *Queries) RetryDelivery(ctx context.Context, arg RetryDeliveryParams) error {
-	_, err := q.db.ExecContext(ctx, retryDelivery, arg.ID, arg.Column2, arg.LastError)
+	_, err := q.db.ExecContext(ctx, retryDelivery,
+		arg.ID,
+		arg.Column2,
+		arg.LastError,
+		arg.LastErrorForOrg,
+	)
 	return err
 }

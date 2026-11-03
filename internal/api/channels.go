@@ -39,7 +39,9 @@ type patchChannelBody struct {
 	Config *json.RawMessage `json:"config"`
 }
 
-type channelEntry struct {
+// ChannelEntry is the API shape of a notification channel. It is exported so
+// huma documents its fields where channelCreateEntry embeds it.
+type ChannelEntry struct {
 	ID        string          `json:"id"`
 	OrgID     string          `json:"org_id"`
 	Name      string          `json:"name"`
@@ -49,10 +51,10 @@ type channelEntry struct {
 	UpdatedAt string          `json:"updated_at"`
 }
 
-// channelCreateEntry extends channelEntry with the signing secret, returned only at creation.
+// channelCreateEntry extends ChannelEntry with the signing secret, returned only at creation.
 type channelCreateEntry struct {
-	channelEntry
-	SigningSecret string `json:"signing_secret"`
+	ChannelEntry
+	SigningSecret string `json:"signing_secret,omitempty" doc:"Webhook channels only. Shown once, at creation."`
 }
 
 type rotateSecretResponse struct {
@@ -119,7 +121,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
 			return
 		}
-		if err := validateWebhookURL(urlVal); err != nil {
+		if err := validateWebhookURL(urlVal, srv.privateDests); err != nil {
 			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
 			return
 		}
@@ -143,7 +145,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	entry := channelEntry{
+	entry := ChannelEntry{
 		ID:        row.ID.String(),
 		OrgID:     row.OrgID.String(),
 		Name:      row.Name,
@@ -155,7 +157,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	writeLocation(w, r, row.ID.String())
 	if req.Type == "webhook" {
 		writeJSON(w, http.StatusCreated, channelCreateEntry{
-			channelEntry:  entry,
+			ChannelEntry:  entry,
 			SigningSecret: secret,
 		})
 	} else {
@@ -200,7 +202,7 @@ func (srv *Server) getChannelHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, channelEntry{
+	writeJSON(w, http.StatusOK, ChannelEntry{
 		ID:        row.ID.String(),
 		OrgID:     row.OrgID.String(),
 		Name:      row.Name,
@@ -224,9 +226,9 @@ func (srv *Server) listChannelsHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items := make([]channelEntry, len(rows))
+	items := make([]ChannelEntry, len(rows))
 	for i, row := range rows {
-		items[i] = channelEntry{
+		items[i] = ChannelEntry{
 			ID:        row.ID.String(),
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,
@@ -296,7 +298,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
 				return
 			}
-			if err := validateWebhookURL(urlVal); err != nil {
+			if err := validateWebhookURL(urlVal, srv.privateDests); err != nil {
 				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
 				return
 			}
@@ -320,7 +322,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, channelEntry{
+	writeJSON(w, http.StatusOK, ChannelEntry{
 		ID:        updated.ID.String(),
 		OrgID:     updated.OrgID.String(),
 		Name:      updated.Name,
@@ -536,11 +538,7 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		return errors.New("channel not found")
 	}
 
-	var cfg map[string]any
-	_ = json.Unmarshal(delivery.Config, &cfg)
-	urlStr, _ := cfg["url"].(string)
-
-	client, err := notify.BuildSafeClient()
+	client, err := notify.BuildSafeClient(srv.privateDests)
 	if err != nil {
 		return fmt.Errorf("build webhook client: %w", err)
 	}
@@ -551,22 +549,14 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	whCfg := notify.WebhookConfig{
-		URL:                    urlStr,
-		SigningSecret:          delivery.SigningSecret.String,
-		SigningSecretSecondary: delivery.SigningSecretSecondary.String,
+	// The full error can carry the resolved address (from the SSRF dial check
+	// or DNS), which would let an org admin map internal DNS by testing host
+	// names, so the caller gets only what org members may read.
+	if err := notify.Send(ctx, client, notify.ChannelWebhookConfig(delivery), payload); err != nil {
+		slog.WarnContext(ctx, "channel test webhook failed", "channel_id", channelID, "error", err)
+		return notify.ErrorForOrg(err)
 	}
-	// Apply custom headers if present.
-	if headers, ok := cfg["headers"].(map[string]any); ok {
-		whCfg.CustomHeaders = make(map[string]string, len(headers))
-		for k, v := range headers {
-			if s, ok := v.(string); ok {
-				whCfg.CustomHeaders[k] = s
-			}
-		}
-	}
-
-	return notify.Send(ctx, client, whCfg, payload)
+	return nil
 }
 
 func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage) error {
@@ -643,7 +633,7 @@ func validateEmailConfig(config json.RawMessage) ([]string, error) {
 
 // validateWebhookURL performs SSRF-safe static validation of a webhook URL at registration time.
 // Dynamic validation occurs again at delivery time via the safeurl-wrapped client.
-func validateWebhookURL(rawURL string) error {
+func validateWebhookURL(rawURL string, private notify.PrivateDestinations) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return errors.New("webhook url is not a valid URL")
@@ -654,6 +644,11 @@ func validateWebhookURL(rawURL string) error {
 	host := u.Hostname()
 	if host == "" {
 		return errors.New("webhook url must have a host")
+	}
+	// Hosts the operator listed in WEBHOOK_PRIVATE_HOSTS may be private. The
+	// delivery client still confines them to WEBHOOK_PRIVATE_CIDRS.
+	if private.Allows(host) {
+		return nil
 	}
 	// Reject known-internal hostnames.
 	lh := strings.ToLower(host)

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/scarson/cvert-ops/internal/store"
@@ -48,21 +49,7 @@ func NewTestDB(t *testing.T) *TestDB {
 	t.Helper()
 	ctx := context.Background()
 
-	pgCtr, err := tcpostgres.Run(ctx,
-		"postgres:18-alpine",
-		tcpostgres.WithDatabase("cvert_ops_test"),
-		tcpostgres.WithUsername("cvert_ops_test"),
-		tcpostgres.WithPassword("testpassword"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := pgCtr.Terminate(ctx); err != nil {
-			t.Logf("terminate postgres container: %v", err)
-		}
-	})
+	pgCtr := startPostgres(t)
 
 	connStr, err := pgCtr.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
@@ -138,4 +125,35 @@ func NewTestDB(t *testing.T) *TestDB {
 		Store:    store.New(pool),
 		AppStore: store.New(appPool),
 	}
+}
+
+// startPostgres starts a Postgres container that t's cleanup terminates.
+// opts are applied after the defaults.
+func startPostgres(t testing.TB, opts ...testcontainers.ContainerCustomizer) *tcpostgres.PostgresContainer {
+	t.Helper()
+	ctx := context.Background()
+
+	pgCtr, err := tcpostgres.Run(ctx,
+		"postgres:18-alpine",
+		append([]testcontainers.ContainerCustomizer{
+			tcpostgres.WithDatabase("cvert_ops_test"),
+			tcpostgres.WithUsername("cvert_ops_test"),
+			tcpostgres.WithPassword("testpassword"),
+			tcpostgres.BasicWaitStrategies(),
+			ownedContainer(t),
+		}, opts...)...,
+	)
+	// Run returns a container that was created but never became ready
+	// together with the error, so termination is registered first.
+	if pgCtr != nil {
+		t.Cleanup(func() {
+			if err := pgCtr.Terminate(ctx); err != nil {
+				t.Logf("terminate postgres container: %v", err)
+			}
+		})
+	}
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	return pgCtr
 }

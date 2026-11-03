@@ -1405,6 +1405,75 @@ export interface paths {
         patch: operations["update-member-role"];
         trace?: never;
     };
+    "/orgs/{org_id}/members/{user_id}/force-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Force a member to reset their password */
+        post: operations["force-member-password-reset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/members/{user_id}/require-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Require MFA for a member */
+        post: operations["require-member-mfa"];
+        /** Remove a member's MFA requirement */
+        delete: operations["unrequire-member-mfa"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/members/{user_id}/reset-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset a member's MFA */
+        post: operations["reset-member-mfa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/mfa-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update organization MFA settings */
+        patch: operations["update-org-mfa-settings"];
+        trace?: never;
+    };
     "/orgs/{org_id}/reports": {
         parameters: {
             query?: never;
@@ -1562,6 +1631,100 @@ export interface paths {
         /** Set SSO email domains */
         put: operations["put-sso-domains"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Start linking the caller's account to the org's SSO identity
+         * @description Redirects the browser to the identity provider. The provider returns to /auth/oidc/link-callback.
+         */
+        get: operations["link-sso-identity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get SCIM configuration */
+        get: operations["get-scim-config"];
+        put?: never;
+        /**
+         * Create SCIM configuration
+         * @description The response carries the SCIM bearer token; it is not shown again.
+         */
+        post: operations["create-scim-config"];
+        /** Delete SCIM configuration */
+        delete: operations["delete-scim-config"];
+        options?: never;
+        head?: never;
+        /** Update SCIM configuration */
+        patch: operations["patch-scim-config"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List SCIM-provisioned groups */
+        get: operations["list-scim-groups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim/groups/{id}/mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Map a SCIM group to a role or notification group */
+        patch: operations["patch-scim-group-mapping"];
+        trace?: never;
+    };
+    "/orgs/{org_id}/sso/scim/rotate-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate the SCIM bearer token */
+        post: operations["rotate-scim-token"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1899,6 +2062,7 @@ export interface components {
             action: string;
             actor_email: string;
             actor_id?: string;
+            api_key_id?: string;
             created_at: string;
             entity_id: string;
             entity_name?: string;
@@ -1913,6 +2077,7 @@ export interface components {
             action: string;
             actor_email?: string;
             actor_id?: string;
+            api_key_id?: string;
             /** Format: date-time */
             created_at: string;
             entity_id: string;
@@ -2022,7 +2187,15 @@ export interface components {
              * @example https://example.com/schemas/ChannelCreateEntry.json
              */
             readonly $schema?: string;
-            signing_secret: string;
+            config: unknown;
+            created_at: string;
+            id: string;
+            name: string;
+            org_id: string;
+            /** @description Webhook channels only. Shown once, at creation. */
+            signing_secret?: string;
+            type: string;
+            updated_at: string;
         };
         ChannelEntry: {
             /**
@@ -2200,7 +2373,22 @@ export interface components {
              * @example https://example.com/schemas/DeliveryDetail.json
              */
             readonly $schema?: string;
+            /** Format: int32 */
+            attempt_count: number;
+            channel_id: string;
+            created_at: string;
+            delivered_at?: string;
+            id: string;
+            kind: string;
+            last_attempted_at?: string;
+            last_error?: string;
+            org_id: string;
             payload: unknown;
+            report_id?: string;
+            rule_id: string;
+            send_after: string;
+            status: string;
+            updated_at: string;
         };
         DeliveryEntry: {
             /** Format: int32 */
@@ -2552,6 +2740,15 @@ export interface components {
             items: components["schemas"]["SecurityEventRow"][] | null;
             next_cursor?: string;
         };
+        ListSCIMGroupsResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ListSCIMGroupsResponse.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["ScimGroupItem"][] | null;
+        };
         LoginInputBody: {
             /**
              * Format: uri
@@ -2862,6 +3059,26 @@ export interface components {
             timezone: string | null;
             watchlist_ids: string[] | null;
         };
+        PatchSCIMConfigBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/PatchSCIMConfigBody.json
+             */
+            readonly $schema?: string;
+            default_role?: string;
+            enabled?: boolean;
+        };
+        PatchSCIMGroupMappingBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/PatchSCIMGroupMappingBody.json
+             */
+            readonly $schema?: string;
+            mapped_group_id?: string;
+            mapped_role?: string;
+        };
         PatchSSOBody: {
             /**
              * Format: uri
@@ -3023,6 +3240,16 @@ export interface components {
             readonly $schema?: string;
             signing_secret: string;
         };
+        RotateTokenResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/RotateTokenResponse.json
+             */
+            readonly $schema?: string;
+            token: string;
+            token_prefix: string;
+        };
         SavedSearchEntry: {
             /**
              * Format: uri
@@ -3036,6 +3263,47 @@ export interface components {
             name: string;
             nl_query?: string;
             query_json: unknown;
+            updated_at: string;
+        };
+        ScimConfigResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ScimConfigResponse.json
+             */
+            readonly $schema?: string;
+            created_at: string;
+            default_role: string;
+            enabled: boolean;
+            id: string;
+            org_id: string;
+            token?: string;
+            token_prefix: string;
+            updated_at?: string;
+        };
+        ScimGroupItem: {
+            created_at: string;
+            display_name: string;
+            external_id: string | null;
+            id: string;
+            mapped_group_id: string | null;
+            mapped_role: string | null;
+            /** Format: int64 */
+            member_count: number;
+        };
+        ScimGroupResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ScimGroupResponse.json
+             */
+            readonly $schema?: string;
+            created_at: string;
+            display_name: string;
+            external_id: string | null;
+            id: string;
+            mapped_group_id: string | null;
+            mapped_role: string | null;
             updated_at: string;
         };
         SecurityEventRow: {
@@ -3200,6 +3468,16 @@ export interface components {
             items: components["schemas"]["WatchlistEntry"][] | null;
             next_cursor?: string;
         };
+        SpecMemberActionOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SpecMemberActionOutputBody.json
+             */
+            readonly $schema?: string;
+            status: string;
+            user_id: string;
+        };
         SpecPutSSODomainsOutputBody: {
             /**
              * Format: uri
@@ -3208,6 +3486,18 @@ export interface components {
              */
             readonly $schema?: string;
             domains: string[] | null;
+        };
+        SpecUpdateOrgMFASettingsOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/SpecUpdateOrgMFASettingsOutputBody.json
+             */
+            readonly $schema?: string;
+            mfa_remember_device_allowed: boolean;
+            /** Format: int32 */
+            mfa_remember_device_days: number;
+            mfa_required_all: boolean;
         };
         SsoResponse: {
             /**
@@ -3289,6 +3579,18 @@ export interface components {
              */
             readonly $schema?: string;
             name?: string;
+        };
+        UpdateOrgMFASettingsBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/UpdateOrgMFASettingsBody.json
+             */
+            readonly $schema?: string;
+            mfa_remember_device_allowed?: boolean;
+            /** Format: int32 */
+            mfa_remember_device_days?: number;
+            mfa_required_all?: boolean;
         };
         ValidateRuleBody: {
             /**
@@ -6654,6 +6956,176 @@ export interface operations {
             };
         };
     };
+    "force-member-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecMemberActionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "require-member-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecMemberActionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "unrequire-member-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "reset-member-mfa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Target member's user ID */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecMemberActionOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "update-org-mfa-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrgMFASettingsBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpecUpdateOrgMFASettingsOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-reports": {
         parameters: {
             query?: never;
@@ -7304,6 +7776,271 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SpecPutSSODomainsOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "link-sso-identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Found */
+            302: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "delete-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "patch-scim-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchSCIMConfigBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimConfigResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-scim-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListSCIMGroupsResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "patch-scim-group-mapping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description SCIM group ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PatchSCIMGroupMappingBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScimGroupResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "rotate-scim-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotateTokenResponse"];
                 };
             };
             /** @description Error */

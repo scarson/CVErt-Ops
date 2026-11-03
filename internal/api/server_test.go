@@ -151,3 +151,17 @@ func TestAuditLog_NilWriterWithUserContext(t *testing.T) {
 	// auditLog with nil writer returns immediately — this exercises the nil check.
 	srv.auditLog(req, audit.Entry{Action: "test.action"})
 }
+
+// TestNewServer_InvalidPrivateDestinations verifies that a malformed webhook
+// private-destination setting stops startup instead of being ignored.
+func TestNewServer_InvalidPrivateDestinations(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only the setting under test
+		WebhookPrivateHosts: "ntfy.example.test", // hosts without WEBHOOK_PRIVATE_CIDRS
+	}
+	srv, err := NewServer(nil, cfg, ServerDeps{})
+	if err == nil {
+		srv.Close()
+		t.Fatal("NewServer with WEBHOOK_PRIVATE_HOSTS but no WEBHOOK_PRIVATE_CIDRS: got nil error")
+	}
+}

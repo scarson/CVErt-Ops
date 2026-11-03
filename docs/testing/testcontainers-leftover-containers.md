@@ -1,0 +1,67 @@
+# Leftover Postgres Test Containers When Ryuk Is Disabled
+
+Analysis of 2026-11-03. It covers why `postgres:18-alpine` test containers pile up on a shared Docker daemon when integration tests run with `TESTCONTAINERS_RYUK_DISABLED=true`, and how the test helpers remove them.
+
+## Background
+
+`testutil.NewTestDB` (`internal/testutil/postgres.go`) starts one Postgres container per test and terminates it in `t.Cleanup`. Ryuk, the testcontainers reaper, normally removes containers whose test process has died, but on this Windows development host it exits with status 1 about once a second after a Docker Desktop restart. The tests therefore run with Ryuk disabled, and nothing removes a container that its own test did not terminate.
+
+## Findings
+
+### A passing package run does not leak
+
+A full-suite run reported that `go test ./internal/alert/` had left about 15 containers even though it passed. This was rechecked by running the package alone with Ryuk off:
+
+```bash
+TESTCONTAINERS_RYUK_DISABLED=true go test -v ./internal/alert/ -count=1
+```
+
+It passed in 107 s. The log shows 24 "Container created" and 24 "Container terminated" lines and no `terminate postgres container` error. Afterwards, no container carried that run's session label. Per-test cleanup works when the test binary exits normally.
+
+### The session label identifies a `go test` invocation, not a package
+
+testcontainers-go v0.42.0 (`internal/core/bootstrap.go`) sets the `org.testcontainers.sessionId` label to a SHA-256 hash of the parent process ID and the parent's start time. The parent of a test binary is the `go test` process, so:
+
+- every package run by one `go test ./...` invocation shares one session ID;
+- each separate `go test ./internal/<pkg>/` invocation gets its own.
+
+The label cannot attribute leftovers to a package. In the full run behind the report, `internal/alert`, `internal/api`, `internal/ingest` and `internal/store` all hit the 10-minute timeout, and their leftovers all carried the same label.
+
+### Timed-out test binaries leave the containers of their running tests
+
+When `go test -timeout` expires, the test binary panics and exits. Tests that had already finished have terminated their containers. Tests still running at the panic never reach their `t.Cleanup`, so their containers stay up:
+
+- A package whose database tests run one at a time leaves one container. `internal/alert` is an example.
+- A package that uses `t.Parallel` leaves up to `-parallel` containers, which defaults to GOMAXPROCS. `internal/api` is an example: two timed-out runs left 13 each.
+
+The leftovers counted after one day of full-suite runs fit this: 27 from one full run in which four packages timed out, and 6 from an `internal/api` rerun that timed out. The extra containers slow the shared daemon, which pushes the slowest packages past the timeout again.
+
+### A container that fails to start is never removed
+
+`tcpostgres.Run` can return a container together with an error, for example when the readiness wait times out on a busy daemon. `NewTestDB` called `t.Fatalf` before registering `Terminate`, so that container was never removed. `NewTestSMTP` (`internal/testutil/smtp.go`) had the same ordering. Both helpers now register termination for any non-nil container before checking the error, which is the order testcontainers documents for `testcontainers.CleanupContainer`. `TestStartPostgres_RemovesContainerThatFailsToStart` uses a wait strategy that cannot succeed and checks that no container remains.
+
+## Fix: owner-liveness sweep
+
+Every container started by the test helpers carries two labels that name the test process that owns it:
+
+| Label | Value |
+|---|---|
+| `cvert-ops.test.owner-pid` | the test binary's process ID |
+| `cvert-ops.test.owner-start` | that process's start time, in milliseconds since the Unix epoch |
+
+Before a test binary starts its first container, it lists containers carrying these labels and force-removes each one whose owner has exited. An owner has exited when no process has that PID, or when the process with that PID started at a different time (the PID was reused). The code is in `internal/testutil/owner.go`; `startPostgres` and `NewTestSMTP` apply it. A failed sweep is logged with `t.Logf` and does not fail the test.
+
+This was checked end to end. `go test -v -timeout=9s -run '^TestEvaluatorBatch$' ./internal/alert/` was killed mid-test and left its container running with the owner labels. The next `go test ./internal/alert/` run removed that container before starting its own, then terminated its own, leaving no labelled containers.
+
+Properties:
+
+- **Safe with concurrent test runs.** A container whose owner is still running is never touched, so a sweep cannot remove another session's live containers.
+- **Fails safe.** A container without both labels is left alone, as is a container whose owner's start time cannot be read (for example because of access rights).
+- **Self-healing.** Leftovers from a timed-out run are removed by the next run of any package that uses the helpers. No manual step and no Ryuk are needed.
+- **One-time cleanup.** Containers created before the labels existed carry no owner labels, so the sweep ignores them. Remove those once by hand after confirming that no test process owns them.
+
+Process lookup uses `github.com/shirou/gopsutil/v4`, and the container list and removal use the testcontainers Docker client (`github.com/moby/moby/client`). testcontainers-go already depends on both.
+
+## Related
+
+- `dev/research-findings/testcontainers-go-windows-panic.md` explains why the helpers set `DOCKER_HOST` on Windows: named-pipe discovery panics under load.

@@ -1,5 +1,5 @@
 // ABOUTME: Integration tests for session cookie hygiene between full and pending sign-in sessions.
-// ABOUTME: Covers cookie clearing, cross-user token mismatch, typed 401 problems, and has_password.
+// ABOUTME: Covers cookie clearing, cross-user cookie isolation, typed 401 problems, and has_password.
 package api
 
 import (
@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,9 +176,9 @@ func TestLogout_ExpiresPendingAndEnrollmentCookies(t *testing.T) {
 	}
 }
 
-// ── Cross-user token mismatch ────────────────────────────────────────────────
+// ── Another user's pending token next to an access token ─────────────────────
 
-func TestTOTPSetup_RejectsAccessAndPendingTokensForDifferentUsers(t *testing.T) {
+func TestTOTPSetup_IgnoresAnotherUsersPendingToken(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -194,12 +195,25 @@ func TestTOTPSetup_RejectsAccessAndPendingTokensForDifferentUsers(t *testing.T) 
 	resp := doSessionRequest(t, ctx, ts, http.MethodPost, "/api/v1/auth/mfa/totp/setup", "", cookies)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("setup with tokens for two users: got %d, want 401", resp.StatusCode)
+	// The signed-in user (A) enrolls; B's sign-in session is neither used nor renewed.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("setup: got %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		QRCodeURI string `json:"qr_code_uri"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	if !strings.Contains(body.QRCodeURI, "mismatch-a") {
+		t.Errorf("QR URI %q is not for the signed-in user", body.QRCodeURI)
+	}
+	if cookieValue(resp, "mfa_pending_token") != "" {
+		t.Error("setup renewed another user's pending token")
 	}
 }
 
-func TestChangePassword_RejectsAccessAndPendingTokensForDifferentUsers(t *testing.T) {
+func TestChangePassword_IgnoresAnotherUsersPendingToken(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -218,8 +232,9 @@ func TestChangePassword_RejectsAccessAndPendingTokensForDifferentUsers(t *testin
 		`{"new_password":"a-brand-new-password"}`, cookies)
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("change-password with tokens for two users: got %d, want 401", resp.StatusCode)
+	// The access token's user (A) is in normal mode, which needs A's current password.
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("change-password with tokens for two users: got %d, want 422", resp.StatusCode)
 	}
 
 	// B's password is unchanged: the old one still opens a pending session.

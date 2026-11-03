@@ -177,6 +177,7 @@ type AuditLog struct {
 	NewState   pqtype.NullRawMessage
 	Metadata   pqtype.NullRawMessage
 	CreatedAt  time.Time
+	ApiKeyID   uuid.NullUUID
 }
 
 type CVE struct {
@@ -410,6 +411,7 @@ type NotificationDelivery struct {
 	UpdatedAt       time.Time
 	Kind            string
 	ReportID        uuid.NullUUID
+	LastErrorForOrg sql.NullString
 }
 
 type OrgInvitation struct {

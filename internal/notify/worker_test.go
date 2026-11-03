@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -143,6 +144,73 @@ func TestWorker_RetryOnNon2xx(t *testing.T) {
 	}
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1", attemptCount)
+	}
+
+	// The receiver answered, so org members see the same text as site admins.
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanID)
+	if !strings.Contains(lastError, "unexpected status 500") || lastErrorForOrg != lastError {
+		t.Errorf("last_error = %q, last_error_for_org = %q, want both to report status 500", lastError, lastErrorForOrg)
+	}
+}
+
+// scanDeliveryErrors returns last_error and last_error_for_org for the channel's delivery.
+func scanDeliveryErrors(t *testing.T, s *testutil.TestDB, ctx context.Context, chanID uuid.UUID) (string, string) {
+	t.Helper()
+	var lastError, lastErrorForOrg sql.NullString
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT last_error, last_error_for_org FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&lastError, &lastErrorForOrg); err != nil {
+		t.Fatalf("scan delivery errors: %v", err)
+	}
+	return lastError.String, lastErrorForOrg.String
+}
+
+// TestWorker_RefusedDestinationWithheldFromOrg verifies that the address in a
+// refused dial reaches last_error (site admins) but not last_error_for_org.
+func TestWorker_RefusedDestinationWithheldFromOrg(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	org := s.MustCreateOrg(t, ctx, "WorkerRefusedOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerRefusedRule")
+	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "WorkerRefusedChan", "webhook", json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanRow.ID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-9010"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanRow.ID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+
+	// The production client refuses the loopback receiver at dial time.
+	client, err := notify.BuildSafeClient(notify.PrivateDestinations{})
+	if err != nil {
+		t.Fatalf("BuildSafeClient: %v", err)
+	}
+	w := newTestWorker(s, client, notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunOnce(ctx)
+
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanRow.ID)
+	if !strings.Contains(lastError, "127.0.0.1") {
+		t.Errorf("last_error = %q, want the refused address for site admins", lastError)
+	}
+	if lastErrorForOrg != notify.ErrCauseWithheld.Error() {
+		t.Errorf("last_error_for_org = %q, want %q", lastErrorForOrg, notify.ErrCauseWithheld.Error())
 	}
 }
 
@@ -296,6 +364,10 @@ func TestWorker_ExhaustsUnknownChannelType(t *testing.T) {
 	}
 	if lastError == nil || *lastError == "" {
 		t.Error("expected last_error to contain unsupported channel type message")
+	}
+	// The message names only the channel's own type, so org members see it too.
+	if _, forOrg := scanDeliveryErrors(t, s, ctx, chanID); forOrg != *lastError {
+		t.Errorf("last_error_for_org = %q, want %q", forOrg, *lastError)
 	}
 }
 

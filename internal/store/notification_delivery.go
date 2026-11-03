@@ -81,14 +81,25 @@ func (s *Store) CompleteDelivery(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// DeliveryFailure is the most recent failure of a delivery attempt. Detail is
+// the full text, shown only to site admins. ForOrg is the text org members may
+// read, which must not describe the instance's network. Both are set or both
+// are empty: the notification_deliveries_last_error_pair constraint rejects one
+// without the other.
+type DeliveryFailure struct {
+	Detail string
+	ForOrg string
+}
+
 // RetryDelivery moves a delivery back to pending with incremented attempt_count and a
-// backoff delay of backoffSeconds. lastError records the most recent failure message.
-func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds int, lastError string) error {
+// backoff delay of backoffSeconds. failure records the most recent failure.
+func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds int, failure DeliveryFailure) error {
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.RetryDelivery(ctx, generated.RetryDeliveryParams{
-			ID:        id,
-			Column2:   backoffSeconds,
-			LastError: dbutil.NullString(lastError),
+			ID:              id,
+			Column2:         backoffSeconds,
+			LastError:       dbutil.NullString(failure.Detail),
+			LastErrorForOrg: dbutil.NullString(failure.ForOrg),
 		})
 	})
 	if err != nil {
@@ -98,11 +109,12 @@ func (s *Store) RetryDelivery(ctx context.Context, id uuid.UUID, backoffSeconds 
 }
 
 // ExhaustDelivery marks a delivery as permanently failed (max attempts reached).
-func (s *Store) ExhaustDelivery(ctx context.Context, id uuid.UUID, lastError string) error {
+func (s *Store) ExhaustDelivery(ctx context.Context, id uuid.UUID, failure DeliveryFailure) error {
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.ExhaustDelivery(ctx, generated.ExhaustDeliveryParams{
-			ID:        id,
-			LastError: dbutil.NullString(lastError),
+			ID:              id,
+			LastError:       dbutil.NullString(failure.Detail),
+			LastErrorForOrg: dbutil.NullString(failure.ForOrg),
 		})
 	})
 	if err != nil {

@@ -28,6 +28,7 @@ vi.mock('@/lib/api/client', () => ({
 
 import client from '@/lib/api/client'
 import { useAuthStore } from '@/stores/auth'
+import LoginView from '@/views/LoginView.vue'
 
 const mockClient = vi.mocked(client)
 
@@ -38,7 +39,6 @@ function mockProvidersResponse(github = true, google = true) {
 }
 
 async function mountLogin() {
-  const { default: LoginView } = await import('@/views/LoginView.vue')
   return mount(LoginView)
 }
 

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import InvitationView from '@/views/InvitationView.vue'
 
 let mockRouteParams: Record<string, string> = { token: 'test-token-abc' }
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
@@ -30,7 +31,6 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 async function mountInvitation() {
-  const { default: InvitationView } = await import('@/views/InvitationView.vue')
   return mount(InvitationView)
 }
 

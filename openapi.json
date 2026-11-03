@@ -2808,6 +2808,10 @@
           "force_password_reset": {
             "type": "boolean"
           },
+          "has_password": {
+            "description": "False for accounts that sign in only through an external identity provider",
+            "type": "boolean"
+          },
           "is_site_admin": {
             "type": "boolean"
           },
@@ -2830,6 +2834,7 @@
           "display_name",
           "is_site_admin",
           "force_password_reset",
+          "has_password",
           "orgs"
         ],
         "type": "object"

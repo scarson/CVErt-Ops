@@ -1,8 +1,8 @@
-<!-- ABOUTME: Login page with email/password form and OAuth provider buttons. -->
-<!-- ABOUTME: Handles redirect query param and displays auth errors from the store. -->
+<!-- ABOUTME: Login page with email/password form, OAuth provider buttons, and the follow-up sign-in steps. -->
+<!-- ABOUTME: Renders the step the server still requires (MFA, forced password change, MFA enrollment), then redirects. -->
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import client from '@/lib/api/client'
@@ -12,6 +12,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { Github } from 'lucide-vue-next'
+import MfaChallengeStep from '@/components/auth/MfaChallengeStep.vue'
+import ForcedPasswordStep from '@/components/auth/ForcedPasswordStep.vue'
+import MfaEnrollStep from '@/components/auth/MfaEnrollStep.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +27,17 @@ const submitting = ref(false)
 const githubEnabled = ref(false)
 const googleEnabled = ref(false)
 const hasOAuth = ref(false)
+
+const SUPPORTED_STEPS = ['mfa_challenge', 'password_reset', 'mfa_enrollment_required']
+const currentStep = computed(() => auth.pendingSteps[0] ?? null)
+const unsupportedStep = computed(
+  () => currentStep.value !== null && !SUPPORTED_STEPS.includes(currentStep.value),
+)
+
+function goToRedirect() {
+  const redirect = (route.query.redirect as string) || '/cves'
+  router.push(redirect)
+}
 
 onMounted(async () => {
   const { data } = await client.GET('/auth/providers')
@@ -42,8 +56,10 @@ async function onSubmit() {
     const result = await auth.login(email.value, password.value)
 
     if (result.success) {
-      const redirect = (route.query.redirect as string) || '/cves'
-      router.push(redirect)
+      goToRedirect()
+    } else if (auth.pendingSteps.length > 0) {
+      // The password has done its job; do not keep it around during the steps.
+      password.value = ''
     } else {
       error.value = result.error ?? 'Login failed'
     }
@@ -63,10 +79,24 @@ function loginWithGoogle() {
 
 <template>
   <Card>
-    <CardHeader class="text-center">
+    <CardContent v-if="currentStep">
+      <div v-if="unsupportedStep" class="space-y-4">
+        <p class="text-sm text-destructive" role="alert">
+          This account needs a sign-in step that cannot be completed in this app. Contact your administrator.
+        </p>
+        <Button variant="outline" class="w-full" @click="auth.cancelSignIn()">Back to log in</Button>
+      </div>
+      <MfaChallengeStep v-else-if="currentStep === 'mfa_challenge'" @complete="goToRedirect" />
+      <ForcedPasswordStep v-else-if="currentStep === 'password_reset'" @complete="goToRedirect" />
+      <MfaEnrollStep v-else @complete="goToRedirect" />
+    </CardContent>
+    <CardHeader v-if="!currentStep" class="text-center">
       <CardTitle class="text-xl">Log in to your account</CardTitle>
     </CardHeader>
-    <CardContent>
+    <CardContent v-if="!currentStep">
+      <p v-if="auth.signInNotice" class="mb-4 text-sm text-muted-foreground" role="status" data-testid="sign-in-notice">
+        {{ auth.signInNotice }}
+      </p>
       <form class="space-y-4" @submit.prevent="onSubmit">
         <div class="space-y-2">
           <Label for="email">Email</Label>

@@ -121,10 +121,17 @@ func parseTrustedProxies(value string) ([]string, error) {
 // When chi resolves no IP (the peer is a trusted proxy that sent no untrusted
 // X-Forwarded-For entry, or an entry did not parse), the TCP peer is used: it
 // cannot be spoofed, and it is what PLAN.md specifies when every hop is trusted.
+//
+// It also sets ctxTrustedProxyPeer, so code reading other forwarded headers
+// (X-Forwarded-Proto) can apply the same trust decision.
 func clientIPMiddleware(trustedProxies []string) func(http.Handler) http.Handler {
 	resolve := middleware.ClientIPFromRemoteAddr
 	if len(trustedProxies) > 0 {
 		resolve = middleware.ClientIPFromXFF(trustedProxies...)
+	}
+	prefixes := make([]netip.Prefix, len(trustedProxies))
+	for i, p := range trustedProxies {
+		prefixes[i] = netip.MustParsePrefix(p) // validated by parseTrustedProxies
 	}
 	return func(next http.Handler) http.Handler {
 		return resolve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,9 +143,31 @@ func clientIPMiddleware(trustedProxies []string) func(http.Handler) http.Handler
 				}
 			}
 			ctx := context.WithValue(r.Context(), ctxClientIP, ip)
+			ctx = context.WithValue(ctx, ctxTrustedProxyPeer, peerInPrefixes(r.RemoteAddr, prefixes))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		}))
 	}
+}
+
+// peerInPrefixes reports whether the host of remoteAddr falls within any of
+// prefixes. v4-mapped addresses fold to v4 and zones are stripped, as chi does,
+// so neither notation can alias a trusted address past the check.
+func peerInPrefixes(remoteAddr string, prefixes []netip.Prefix) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap().WithZone("")
+	for _, p := range prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // clientIP extracts the client IP address from the request context.

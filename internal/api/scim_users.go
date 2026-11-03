@@ -35,10 +35,14 @@ func scimProvider(scimConfigID uuid.UUID) string {
 }
 
 // scimScheme returns "https" or "http" based on TLS state and X-Forwarded-Proto.
-// Only trusts X-Forwarded-Proto if it's a valid scheme.
+// X-Forwarded-Proto is honoured only when the TCP peer is a TRUSTED_PROXIES
+// proxy (ctxTrustedProxyPeer, set by clientIPMiddleware) and only if it names a
+// valid scheme; any other client gets the scheme of its own connection.
 func scimScheme(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
-		return fwd
+	if fromProxy, _ := r.Context().Value(ctxTrustedProxyPeer).(bool); fromProxy {
+		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
+			return fwd
+		}
 	}
 	if r.TLS != nil {
 		return "https"

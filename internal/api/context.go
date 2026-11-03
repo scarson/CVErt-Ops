@@ -5,13 +5,14 @@ package api
 type contextKey int
 
 const (
-	ctxUserID       contextKey = iota // uuid.UUID — authenticated user
-	ctxOrgID                          // uuid.UUID — org from URL path param
-	ctxRole                           // Role — effective RBAC role for this request
-	ctxAPIKeyRole                     // string — role from the API key (may cap org role)
-	ctxAPIKeyOrgID                    // uuid.UUID — org the API key belongs to (restricts access to that org only)
-	ctxClientIP                       // string — client IP address for rate limiting
-	ctxTierResolver                   // *tier.Resolver — resolved tier limits for this org
-	ctxSCIMConfigID                   // uuid.UUID — SCIM config ID (set by requireSCIMAuth)
-	ctxAPIKeyID                       // uuid.UUID — ID of the API key that authenticated the request
+	ctxUserID           contextKey = iota // uuid.UUID — authenticated user
+	ctxOrgID                              // uuid.UUID — org from URL path param
+	ctxRole                               // Role — effective RBAC role for this request
+	ctxAPIKeyRole                         // string — role from the API key (may cap org role)
+	ctxAPIKeyOrgID                        // uuid.UUID — org the API key belongs to (restricts access to that org only)
+	ctxClientIP                           // string — client IP address for rate limiting
+	ctxTrustedProxyPeer                   // bool — TCP peer is inside TRUSTED_PROXIES, so its forwarded headers may be honoured
+	ctxTierResolver                       // *tier.Resolver — resolved tier limits for this org
+	ctxSCIMConfigID                       // uuid.UUID — SCIM config ID (set by requireSCIMAuth)
+	ctxAPIKeyID                           // uuid.UUID — ID of the API key that authenticated the request
 )

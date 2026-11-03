@@ -3542,7 +3542,10 @@
             "type": "string"
           },
           "mapped_group_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "mapped_role": {
             "type": "string"
@@ -3630,7 +3633,10 @@
             "type": "string"
           },
           "group_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "type": "string"

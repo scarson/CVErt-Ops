@@ -1405,6 +1405,15 @@ func registerSSOSpecOps(api huma.API) {
 		Description:   "Redirects the browser to the identity provider. The provider returns to /auth/oidc/link-callback.",
 		Tags:          []string{"SSO"},
 		DefaultStatus: http.StatusFound,
+		// http.Redirect writes a short HTML body linking to the target for GET requests.
+		Responses: map[string]*huma.Response{
+			"302": {
+				Description: "Found",
+				Content: map[string]*huma.MediaType{
+					"text/html": {Schema: &huma.Schema{Type: huma.TypeString}},
+				},
+			},
+		},
 	}, noopHandler[specSSOLinkInput, specSSOLinkOutput]())
 }
 

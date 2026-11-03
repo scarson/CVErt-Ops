@@ -263,6 +263,25 @@ func TestOpenAPISpec_EmbeddedFieldsDocumented(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpec_PatchBodiesOptional verifies that PATCH request schemas mark
+// no field required: the handlers keep the current value for an omitted field.
+func TestOpenAPISpec_PatchBodiesOptional(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	for _, name := range []string{"PatchSCIMConfigBody", "PatchSCIMGroupMappingBody"} {
+		t.Run(name, func(t *testing.T) {
+			s, ok := schemas[name].(map[string]any)
+			if !ok {
+				t.Fatalf("schema %s missing from spec", name)
+			}
+			if req, ok := s["required"]; ok {
+				t.Errorf("required = %v, want no required fields", req)
+			}
+		})
+	}
+}
+
 // TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
 // handlers answer 201 Created, 202 Accepted, 204 No Content or 302 Found
 // document that status, and do not document a 200 the handler never sends.
@@ -276,6 +295,7 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 		wantStatuses []string
 		wantLocation bool
 		noBody       bool
+		contentType  string // body media type when not application/json
 	}{
 		{path: "/admin/reindex", method: "post", wantStatuses: []string{"202"}},
 		{path: "/admin/feeds/{feed}/run", method: "post", wantStatuses: []string{"202"}},
@@ -324,8 +344,9 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 		{path: "/orgs/{org_id}/members/{user_id}/require-mfa", method: "delete", wantStatuses: []string{"204"}, noBody: true},
 		{path: "/orgs/{org_id}/sso/scim", method: "delete", wantStatuses: []string{"204"}, noBody: true},
 
-		// 302 Found redirecting the browser to the identity provider.
-		{path: "/orgs/{org_id}/sso/link", method: "get", wantStatuses: []string{"302"}, wantLocation: true, noBody: true},
+		// 302 Found redirecting the browser to the identity provider; http.Redirect
+		// adds a short HTML body naming the target.
+		{path: "/orgs/{org_id}/sso/link", method: "get", wantStatuses: []string{"302"}, wantLocation: true, contentType: "text/html"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -352,12 +373,16 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 					continue
 				}
 				content, _ := resp["content"].(map[string]any)
+				contentType := tc.contentType
+				if contentType == "" {
+					contentType = "application/json"
+				}
 				if tc.noBody {
 					if len(content) != 0 {
 						t.Errorf("response %s documents a body, which the handler never sends", status)
 					}
-				} else if _, ok := content["application/json"]; !ok {
-					t.Errorf("response %s has no application/json body", status)
+				} else if _, ok := content[contentType]; !ok {
+					t.Errorf("response %s has no %s body", status, contentType)
 				}
 				if tc.wantLocation {
 					headers, _ := resp["headers"].(map[string]any)

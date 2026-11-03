@@ -3585,22 +3585,12 @@
             "type": "string"
           },
           "default_role": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "enabled": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           }
         },
-        "required": [
-          "enabled",
-          "default_role"
-        ],
         "type": "object"
       },
       "PatchSCIMGroupMappingBody": {
@@ -3619,16 +3609,9 @@
             "type": "string"
           },
           "mapped_role": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
-        "required": [
-          "mapped_role",
-          "mapped_group_id"
-        ],
         "type": "object"
       },
       "PatchSSOBody": {
@@ -11789,6 +11772,13 @@
         ],
         "responses": {
           "302": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "description": "Found",
             "headers": {
               "Location": {

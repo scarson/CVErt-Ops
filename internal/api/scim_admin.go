@@ -30,9 +30,10 @@ type scimConfigResponse struct {
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
+// patchSCIMConfigBody fields are optional: an omitted field keeps its current value.
 type patchSCIMConfigBody struct {
-	Enabled     *bool   `json:"enabled"`
-	DefaultRole *string `json:"default_role"`
+	Enabled     *bool   `json:"enabled,omitempty"`
+	DefaultRole *string `json:"default_role,omitempty"`
 }
 
 type rotateTokenResponse struct {
@@ -54,9 +55,11 @@ type listSCIMGroupsResponse struct {
 	Items []scimGroupItem `json:"items"`
 }
 
+// patchSCIMGroupMappingBody fields are optional: an omitted field keeps its
+// current mapping, and an empty mapped_role clears the role mapping.
 type patchSCIMGroupMappingBody struct {
-	MappedRole    *string    `json:"mapped_role"`
-	MappedGroupID *uuid.UUID `json:"mapped_group_id"`
+	MappedRole    *string    `json:"mapped_role,omitempty"`
+	MappedGroupID *uuid.UUID `json:"mapped_group_id,omitempty"`
 }
 
 type scimGroupResponse struct {

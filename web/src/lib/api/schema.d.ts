@@ -3064,8 +3064,8 @@ export interface components {
              * @example https://example.com/schemas/PatchSCIMConfigBody.json
              */
             readonly $schema?: string;
-            default_role: string | null;
-            enabled: boolean | null;
+            default_role?: string;
+            enabled?: boolean;
         };
         PatchSCIMGroupMappingBody: {
             /**
@@ -3074,8 +3074,8 @@ export interface components {
              * @example https://example.com/schemas/PatchSCIMGroupMappingBody.json
              */
             readonly $schema?: string;
-            mapped_group_id: string;
-            mapped_role: string | null;
+            mapped_group_id?: string;
+            mapped_role?: string;
         };
         PatchSSOBody: {
             /**
@@ -7805,7 +7805,9 @@ export interface operations {
                     Location?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "text/html": string;
+                };
             };
             /** @description Error */
             default: {

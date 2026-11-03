@@ -2197,6 +2197,9 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 - **Tests:** `TestOpenAPISpec_EmbeddedFieldsDocumented` failed first (missing promoted fields, `signing_secret` required), then passes; all `OpenAPI|Spec` tests pass; `go vet` clean
 - **Integration:** after a Docker Desktop restart (the engine had answered 500 on `/info`), `TestCreateSSO_LocationHeader` failed against the old `writeLocation` call with Location `/sso/{id}`, then passed with the fix. The 148 `internal/api` tests matching `SSO|Channel|Deliver|Report|AlertRule|OpenAPI|Spec` pass.
 - **Lint:** `golangci-lint run ./internal/api/...` 0 issues; web `type-check` and `lint` clean
+- **Code review:** codex (gpt-6.1-sol, high) on `origin/dev...HEAD` after merging `dev`; regenerated artifacts matched byte-for-byte. Two findings, both fixed with failing tests first:
+  - `PatchSCIMConfigBody` and `PatchSCIMGroupMappingBody` marked every field required. Their fields are now `omitempty` (request-only structs, so no response changes); `TestOpenAPISpec_PatchBodiesOptional` covers them. The SCIM admin handler tests pass.
+  - `GET /orgs/{org_id}/sso/link` documented a bodyless 302, but `http.Redirect` writes a short `text/html` body for GET. The 302 now documents a `text/html` string body, and the success-status table checks the media type.
 
 ---
 

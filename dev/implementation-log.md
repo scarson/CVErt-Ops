@@ -3040,7 +3040,7 @@ The digest fix (PR #159) noted that the alert debounce index `uq_deliveries_pend
 ### Quality checks
 
 - **Tests:** the six return-to-pending tests failed with 23505 and the backoff test failed (one pending row, want two) before the fix. Migration backfill and down/up round trip checked with a throwaway test (not committed): only the never-claimed pending alert delivery is backfilled open, and the down migration rebuilds `uq_deliveries_pending_alert`.
-- **Full suite** at `4490b6b` (`TESTCONTAINERS_RYUK_DISABLED=true go test ./... -count=1 -timeout=600s`): all packages pass. `cmd/cvert-ops`, `internal/api` and `web` first failed at setup because the worktree had no `web/dist`, and passed after copying it from the main checkout.
+- **Full suite** at `4490b6b` (`TESTCONTAINERS_RYUK_DISABLED=true go test ./... -count=1 -timeout=600s`): all packages pass. `cmd/cvert-ops`, `internal/api` and `web` first failed at setup because the worktree had no `web/dist`, and passed after copying it from the main checkout. After merging `dev` at `bfdb7ad`, the full suite passed again at `d575622` (35 packages).
 - **golangci-lint run ./internal/store/...:** 0 issues
 
 ---

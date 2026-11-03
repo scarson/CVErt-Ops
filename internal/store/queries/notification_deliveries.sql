@@ -26,6 +26,7 @@ SET status        = 'pending',
     attempt_count = attempt_count + 1,
     send_after    = now() + ($2 * interval '1 second'),
     last_error    = $3,
+    last_error_for_org = $4,
     updated_at    = now()
 WHERE id = $1;
 
@@ -35,6 +36,7 @@ UPDATE notification_deliveries
 SET status        = 'failed',
     attempt_count = attempt_count + 1,
     last_error    = $2,
+    last_error_for_org = $3,
     updated_at    = now()
 WHERE id = $1;
 
@@ -64,7 +66,7 @@ LIMIT $1;
 
 -- name: ListDeliveries :many
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count,
-       send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
+       send_after, last_attempted_at, delivered_at, last_error_for_org, created_at, updated_at
 FROM notification_deliveries
 WHERE org_id = $1
   AND ($2 = '00000000-0000-0000-0000-000000000000'::uuid OR rule_id    = $2)
@@ -76,7 +78,7 @@ LIMIT $7;
 
 -- name: GetDelivery :one
 SELECT id, org_id, rule_id, channel_id, kind, report_id, status, attempt_count, payload,
-       send_after, last_attempted_at, delivered_at, last_error, created_at, updated_at
+       send_after, last_attempted_at, delivered_at, last_error_for_org, created_at, updated_at
 FROM notification_deliveries
 WHERE id = $1 AND org_id = $2
 LIMIT 1;
@@ -95,6 +97,7 @@ SET status        = 'pending',
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id = $1 AND org_id = $2
   AND status IN ('failed', 'cancelled');

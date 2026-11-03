@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -201,7 +202,7 @@ func TestRetryDelivery_IncreasesAttemptCount(t *testing.T) {
 
 	ids := claimAndMarkProcessing(t, s, ctx)
 
-	if err := s.RetryDelivery(ctx, ids[0], 5, "connection refused"); err != nil {
+	if err := s.RetryDelivery(ctx, ids[0], 5, store.DeliveryFailure{Detail: "connection refused", ForOrg: "connection refused"}); err != nil {
 		t.Fatalf("RetryDelivery: %v", err)
 	}
 
@@ -228,7 +229,7 @@ func TestExhaustDelivery_SetsFailed(t *testing.T) {
 
 	initialAttempts := getAttemptCount(t, s, ctx, ids[0])
 
-	if err := s.ExhaustDelivery(ctx, ids[0], "max retries exceeded"); err != nil {
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "max retries exceeded", ForOrg: "max retries exceeded"}); err != nil {
 		t.Fatalf("ExhaustDelivery: %v", err)
 	}
 
@@ -240,6 +241,64 @@ func TestExhaustDelivery_SetsFailed(t *testing.T) {
 	attempts := getAttemptCount(t, s, ctx, ids[0])
 	if attempts != initialAttempts+1 {
 		t.Errorf("attempt_count = %d, want %d", attempts, initialAttempts+1)
+	}
+}
+
+func TestExhaustDelivery_OrgQueriesReturnOrgError(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrgErr")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0041"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+
+	failure := store.DeliveryFailure{
+		Detail: "webhook POST: dial tcp 10.1.2.3:443: ip: 10.1.2.3 not found in allowlist",
+		ForOrg: "delivery failed, cause withheld",
+	}
+	if err := s.ExhaustDelivery(ctx, ids[0], failure); err != nil {
+		t.Fatalf("ExhaustDelivery: %v", err)
+	}
+
+	var detail string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT last_error FROM notification_deliveries WHERE id=$1", ids[0]).Scan(&detail); err != nil {
+		t.Fatalf("scan last_error: %v", err)
+	}
+	if detail != failure.Detail {
+		t.Errorf("last_error = %q, want %q", detail, failure.Detail)
+	}
+
+	d, err := s.GetDelivery(ctx, ids[0], orgID)
+	if err != nil || d == nil {
+		t.Fatalf("GetDelivery: %v, %v", d, err)
+	}
+	if d.LastErrorForOrg.String != failure.ForOrg {
+		t.Errorf("GetDelivery LastErrorForOrg = %q, want %q", d.LastErrorForOrg.String, failure.ForOrg)
+	}
+
+	rows, err := s.ListDeliveries(ctx, orgID, uuid.Nil, uuid.Nil, "", time.Now().Add(24*time.Hour), uuid.Nil, 10)
+	if err != nil {
+		t.Fatalf("ListDeliveries: %v", err)
+	}
+	if len(rows) != 1 || rows[0].LastErrorForOrg.String != failure.ForOrg {
+		t.Errorf("ListDeliveries = %+v, want one row with LastErrorForOrg %q", rows, failure.ForOrg)
+	}
+}
+
+func TestExhaustDelivery_RejectsDetailWithoutOrgError(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrgErrPair")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0042"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+
+	// The CHECK constraint keeps last_error and last_error_for_org set together.
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "connection refused"}); err == nil {
+		t.Fatal("ExhaustDelivery with no org error succeeded, want a check violation")
 	}
 }
 
@@ -281,7 +340,7 @@ func TestReplayDelivery_ResetsFailedToZero(t *testing.T) {
 	ids := claimAndMarkProcessing(t, s, ctx)
 
 	// Exhaust the delivery to get it into status=failed.
-	if err := s.ExhaustDelivery(ctx, ids[0], "permanent failure"); err != nil {
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "permanent failure", ForOrg: "permanent failure"}); err != nil {
 		t.Fatalf("ExhaustDelivery: %v", err)
 	}
 
@@ -570,7 +629,7 @@ func TestReplayDelivery_CrossOrgIsolation(t *testing.T) {
 	mustUpsertDelivery(t, s, ctx, orgID1, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-XO3"}`), 0)
 
 	ids := claimAndMarkProcessing(t, s, ctx)
-	if err := s.ExhaustDelivery(ctx, ids[0], "permanent failure"); err != nil {
+	if err := s.ExhaustDelivery(ctx, ids[0], store.DeliveryFailure{Detail: "permanent failure", ForOrg: "permanent failure"}); err != nil {
 		t.Fatalf("ExhaustDelivery: %v", err)
 	}
 
@@ -659,7 +718,7 @@ func TestRetryDelivery_EmptyLastError(t *testing.T) {
 	ids := claimAndMarkProcessing(t, s, ctx)
 
 	// Retry with empty lastError — should not error.
-	if err := s.RetryDelivery(ctx, ids[0], 5, ""); err != nil {
+	if err := s.RetryDelivery(ctx, ids[0], 5, store.DeliveryFailure{}); err != nil {
 		t.Fatalf("RetryDelivery(empty error): %v", err)
 	}
 

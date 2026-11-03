@@ -41,6 +41,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/api"
+	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/epss"
@@ -222,28 +223,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	apiSrv, err := api.NewServer(st, cfg, api.ServerDeps{
-		AlertCache:            alertCache,
-		AlertEvaluator:        alertEval,
-		LLM:                   llm,
-		EventWriter:           eventWriter,
-		ConfigHolder:          configHolder,
-		RescanFunc:            nil, // Feed rescan wiring is future work.
-		ExpectedSchemaVersion: expectedSchemaVersion,
-		VersionInfo: api.VersionInfo{
-			Version:   version,
-			Commit:    commit,
-			BuildTime: buildTime,
-		},
+	apiSrv, auditWriter, err := newAPIServer(st, cfg, api.ServerDeps{
+		AlertCache:     alertCache,
+		AlertEvaluator: alertEval,
+		LLM:            llm,
+		EventWriter:    eventWriter,
+		ConfigHolder:   configHolder,
+		RescanFunc:     nil, // Feed rescan wiring is future work.
 	})
 	if err != nil {
-		return fmt.Errorf("api server init: %w", err)
+		return err
 	}
+	// Defers run last-in first-out: this Flush runs after apiSrv.Close and
+	// before db.Close, so pending audit entries are written while the pool is open.
+	defer auditWriter.Flush()
 	defer apiSrv.Close()
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
 	// worker polls delivery rows and executes outbound webhook calls.
-	deliveryClient, err := notify.BuildSafeClient()
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return fmt.Errorf("webhook private destinations: %w", err)
+	}
+	deliveryClient, err := notify.BuildSafeClient(privateDests)
 	if err != nil {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}
@@ -449,7 +451,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
-	deliveryClient, err := notify.BuildSafeClient()
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return fmt.Errorf("webhook private destinations: %w", err)
+	}
+	deliveryClient, err := notify.BuildSafeClient(privateDests)
 	if err != nil {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}
@@ -799,6 +805,11 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	// not match the version the binary was compiled for. This catches
 	// misconfigured deployments where migrations haven't been applied yet
 	// (PLAN.md §18 advisory item).
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("embedded migrations: %w", err)
+	}
 	var schemaVersion int
 	err = db.QueryRow(ctx,
 		"SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
@@ -811,6 +822,31 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	return db, nil
+}
+
+// newAPIServer builds the HTTP API server for the serve command. It fills in the
+// dependencies the serve command owns (audit writer, schema version and build
+// info) on top of the components the caller passes in deps. The caller must
+// Flush the returned audit writer after the HTTP server stops, before the
+// database pool closes, so pending audit entries are written.
+func newAPIServer(st *store.Store, cfg *config.Config, deps api.ServerDeps) (*api.Server, *audit.Writer, error) {
+	expectedSchemaVersion, err := migrations.LatestVersion()
+	if err != nil {
+		return nil, nil, fmt.Errorf("embedded migrations: %w", err)
+	}
+	auditWriter := audit.NewWriter(st, slog.Default())
+	deps.AuditWriter = auditWriter
+	deps.ExpectedSchemaVersion = expectedSchemaVersion
+	deps.VersionInfo = api.VersionInfo{
+		Version:   version,
+		Commit:    commit,
+		BuildTime: buildTime,
+	}
+	srv, err := api.NewServer(st, cfg, deps)
+	if err != nil {
+		return nil, nil, fmt.Errorf("api server init: %w", err)
+	}
+	return srv, auditWriter, nil
 }
 
 // validateConfig enforces startup invariants that environment parsing cannot express:
@@ -827,10 +863,6 @@ func validateConfig(cfg *config.Config) error {
 	}
 	return nil
 }
-
-// expectedSchemaVersion is the database migration version this binary requires.
-// Update this constant when new migrations are added.
-const expectedSchemaVersion = 39
 
 // newLogger creates a slog.Logger based on the configured log level and format.
 // logLevel is the dynamic log level used by the global logger.

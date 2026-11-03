@@ -17,6 +17,7 @@ import (
 type auditLogListEntry struct {
 	ID         string          `json:"id"`
 	ActorID    *string         `json:"actor_id,omitempty"`
+	APIKeyID   *string         `json:"api_key_id,omitempty"`
 	ActorEmail string          `json:"actor_email"`
 	Action     string          `json:"action"`
 	EntityType string          `json:"entity_type"`
@@ -158,6 +159,10 @@ func (srv *Server) listAuditLogHandler(w http.ResponseWriter, r *http.Request) {
 		if row.ActorID != nil {
 			s := row.ActorID.String()
 			entry.ActorID = &s
+		}
+		if row.APIKeyID != nil {
+			s := row.APIKeyID.String()
+			entry.APIKeyID = &s
 		}
 		items = append(items, entry)
 	}

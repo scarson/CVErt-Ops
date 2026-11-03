@@ -17,6 +17,7 @@ import (
 type Entry struct {
 	OrgID      uuid.UUID
 	ActorID    *uuid.UUID     // nil for system actions (retention, feed sync)
+	APIKeyID   *uuid.UUID     // key that performed the action; nil for session and system actions
 	ActorEmail string         // empty for system actions
 	Action     string         // "create", "update", "delete"
 	EntityType string         // "alert_rule", "channel", "watchlist", "member", "saved_search", "sso_connection"
@@ -97,6 +98,7 @@ func (w *Writer) buildStoreEntry(entry Entry) (store.AuditEntry, error) {
 	return store.AuditEntry{
 		OrgID:      entry.OrgID,
 		ActorID:    entry.ActorID,
+		APIKeyID:   entry.APIKeyID,
 		ActorEmail: entry.ActorEmail,
 		Action:     entry.Action,
 		EntityType: entry.EntityType,

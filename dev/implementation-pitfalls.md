@@ -1910,6 +1910,18 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 ---
 
+### NOTIFY-24: Alert Delivery Cannot Return to Pending Beside a Newer Batch
+
+**The Flaw:** The alert debounce index `uq_deliveries_pending_alert` was unique on `(rule_id, channel_id)` over every pending alert delivery. It did not cover `processing`, so `UpsertDelivery` inserted a new pending batch while the previous one was in flight. Five statements move a delivery back to `pending`: `RetryDelivery`, `ResetStuckDeliveries`, `ReplayDelivery`, `AdminRetryDelivery` and `AdminBulkRetryFailed`. Each failed with 23505 when a pending batch for the same rule and channel already existed, and the two bulk statements also failed on two of their own rows for one pair. The worker only logs a failed retry, so the row stayed in `processing`. `ResetStuckDeliveries` is one statement across all orgs, so a single conflicting pair made every recovery run fail for every tenant. The same index also let `UpsertDelivery` append new CVEs to a batch waiting out a retry backoff: the append reset `send_after` to the debounce window and gave the new CVEs the batch's attempt count.
+
+**Why It Matters:** A worker crash during a burst, or any failed send while matches keep arriving, leaves deliveries stuck in `processing` with no automatic way out, and stops stuck-row recovery across the instance. After a long channel outage, the admin bulk retry fails as soon as two exhausted batches share a rule and channel.
+
+**The Fix:** Migration 000050 adds `batch_open` and replaces the index with `uq_deliveries_open_alert_batch`, unique on `(rule_id, channel_id)` only over pending alert deliveries with `batch_open`. `UpsertDelivery` inserts open batches and its `ON CONFLICT` targets that index. `MarkDeliveriesProcessing` closes a batch when it is claimed, and the five statements that return a delivery to `pending` keep it closed. A closed batch is delivered on its own, with its own attempt count and backoff, the same model NOTIFY-22 adopted for digests. Merging a returning delivery into the pending batch was rejected: in a sustained outage with steady matches, every failed send merges into the next batch, so the attempt count never reaches the limit and the payload grows without bound. Replay would also move the replayed delivery's content to a different row. Widening the index to cover `processing` was rejected because a CVE that matches during a send would have no row to join. The cost is that a channel can receive one message per closed batch after an outage instead of one combined message.
+
+**The Lesson:** A partial unique index on a status is a debounce key only if inserting is the one way into that status. Before relying on one, list every statement that moves a row into the indexed status, including bulk recovery and admin paths, and check each one against a row inserted while the original was out of that status.
+
+---
+
 ### Review Checklist
 
 - [ ] Activation scan runs in silent mode (writes `alert_events` but does NOT enqueue notification deliveries)?
@@ -1923,6 +1935,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - [ ] Webhook HTTP client has `Timeout: 10s` and `MaxConnsPerHost: 50`?
 - [ ] Webhook response body drained: `io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))`?
 - [ ] Notification debounce window per `(rule_id, channel_id)` batches CVEs into grouped delivery?
+- [ ] Every statement that moves a delivery back to `pending` keeps it out of the debounce index (`batch_open = false`, NOTIFY-24)?
 - [ ] Notification channels soft-deleted (`deleted_at` column), not hard-deleted?
 - [ ] Retry delay uses full jitter to prevent thundering herd?
 - [ ] Dry-run evaluation does NOT persist to `alert_events` (read-only path or explicit ROLLBACK)?

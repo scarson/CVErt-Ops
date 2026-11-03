@@ -186,8 +186,8 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 			s := row.DeliveredAt.Time.Format(time.RFC3339)
 			entry.DeliveredAt = &s
 		}
-		if row.LastError.Valid {
-			s := row.LastError.String
+		if row.LastErrorForOrg.Valid {
+			s := row.LastErrorForOrg.String
 			entry.LastError = &s
 		}
 		items[i] = entry
@@ -255,8 +255,8 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		s := row.DeliveredAt.Time.Format(time.RFC3339)
 		entry.DeliveredAt = &s
 	}
-	if row.LastError.Valid {
-		s := row.LastError.String
+	if row.LastErrorForOrg.Valid {
+		s := row.LastErrorForOrg.String
 		entry.LastError = &s
 	}
 

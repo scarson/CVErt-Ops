@@ -259,6 +259,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reload-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reload configuration from secrets file */
+        post: operations["admin-reload-config"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/security-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List security events */
+        get: operations["admin-list-security-events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/users": {
         parameters: {
             query?: never;
@@ -491,6 +525,159 @@ export interface paths {
         get: operations["get-me"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request MFA challenge (email OTP code or signal TOTP readiness) */
+        post: operations["mfa-challenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/email-otp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify email OTP code and finalize enrollment */
+        post: operations["mfa-email-otp-confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/email-otp/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send email OTP verification code for enrollment */
+        post: operations["mfa-email-otp-setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List enrolled MFA methods and enforcement status */
+        get: operations["mfa-methods-list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/methods/{method}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove an MFA method (requires password re-auth) */
+        delete: operations["mfa-method-remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/recovery-codes/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regenerate recovery codes (requires password re-auth) */
+        post: operations["mfa-recovery-codes-regenerate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/totp/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify TOTP code and finalize enrollment */
+        post: operations["mfa-totp-confirm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/totp/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate TOTP secret and QR code URI */
+        post: operations["mfa-totp-setup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/mfa/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit MFA verification code */
+        post: operations["mfa-verify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1533,6 +1720,15 @@ export interface components {
             readonly $schema?: string;
             job_id: string;
         };
+        "Admin-reload-configResponse": {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/Admin-reload-configResponse.json
+             */
+            readonly $schema?: string;
+            message: string;
+        };
         "Admin-reset-passwordResponse": {
             /**
              * Format: uri
@@ -1608,6 +1804,10 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             id: string;
+            /** Format: date-time */
+            last_activity_at: string | null;
+            /** Format: int64 */
+            member_count: number;
             name: string;
             /** Format: date-time */
             suspended_at: string | null;
@@ -1800,10 +2000,20 @@ export interface components {
              * @example https://example.com/schemas/ChangePasswordInputBody.json
              */
             readonly $schema?: string;
-            /** @description Current password */
-            current_password: string;
+            /** @description Current password (required in normal mode, optional in restricted mode) */
+            current_password?: string;
             /** @description New password (min 16 characters) */
             new_password: string;
+        };
+        ChangePasswordOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ChangePasswordOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Remaining pending items (if any) */
+            pending?: string[] | null;
         };
         ChannelCreateEntry: {
             /**
@@ -2302,6 +2512,16 @@ export interface components {
             items: components["schemas"]["AuditRow"][] | null;
             next_cursor?: string;
         };
+        ListResponseCVEItem: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ListResponseCVEItem.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["CVEItem"][] | null;
+            next_cursor?: string;
+        };
         ListResponseFeedLogEntry: {
             /**
              * Format: uri
@@ -2322,6 +2542,16 @@ export interface components {
             items: components["schemas"]["FeedStatusEntry"][] | null;
             next_cursor?: string;
         };
+        ListResponseSecurityEventRow: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ListResponseSecurityEventRow.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["SecurityEventRow"][] | null;
+            next_cursor?: string;
+        };
         LoginInputBody: {
             /**
              * Format: uri
@@ -2337,6 +2567,26 @@ export interface components {
             /** @description Password */
             password: string;
         };
+        LoginOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/LoginOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Available MFA methods (only when pending contains mfa_challenge) */
+            methods?: string[] | null;
+            /** @description Remaining auth steps (empty = fully authenticated) */
+            pending: string[] | null;
+            /** @description Authenticated user ID */
+            user_id: string;
+        };
+        MFARequiredReason: {
+            /** @description Org name (for org_policy and per_member reasons) */
+            org_name?: string;
+            /** @description Reason source (site_admin, org_owner, org_policy, per_member, db_error) */
+            source: string;
+        };
         MeOutputBody: {
             /**
              * Format: uri
@@ -2346,15 +2596,166 @@ export interface components {
             readonly $schema?: string;
             display_name: string;
             email: string;
+            force_password_reset: boolean;
             is_site_admin: boolean;
             orgs: components["schemas"]["OrgEntry"][] | null;
             user_id: string;
         };
         MemberEntry: {
+            active: boolean;
+            deactivated_at?: string;
             display_name: string;
             email: string;
             joined_at: string;
             role: string;
+            scim_exempt: boolean;
+            user_id: string;
+        };
+        MfaChallengeInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaChallengeInputBody.json
+             */
+            readonly $schema?: string;
+            /**
+             * @description MFA method to challenge
+             * @enum {string}
+             */
+            method: "totp" | "email_otp";
+        };
+        MfaEmailOTPConfirmInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaEmailOTPConfirmInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description 6-digit code from email */
+            code: string;
+        };
+        MfaEmailOTPConfirmOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaEmailOTPConfirmOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description One-time recovery codes (only on first MFA enrollment) */
+            recovery_codes?: string[] | null;
+        };
+        MfaMethodEntry: {
+            /**
+             * Format: date-time
+             * @description When this method was enrolled
+             */
+            created_at: string;
+            /** @description MFA method name (totp, email_otp) */
+            method: string;
+        };
+        MfaMethodsOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaMethodsOutputBody.json
+             */
+            readonly $schema?: string;
+            methods: components["schemas"]["MfaMethodEntry"][] | null;
+            /** Format: int64 */
+            recovery_codes_remaining: number;
+            /** @description Whether MFA is required for this user */
+            required: boolean;
+            /** @description Why MFA is required */
+            required_reasons: components["schemas"]["MFARequiredReason"][] | null;
+        };
+        MfaRegenerateCodesInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaRegenerateCodesInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Current password for re-authentication */
+            current_password: string;
+        };
+        MfaRegenerateCodesOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaRegenerateCodesOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description 10 new one-time recovery codes */
+            recovery_codes: string[] | null;
+        };
+        MfaRemoveMethodInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaRemoveMethodInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Current password for re-authentication */
+            current_password: string;
+        };
+        MfaTOTPConfirmInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaTOTPConfirmInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description 6-digit TOTP code from authenticator app */
+            code: string;
+        };
+        MfaTOTPConfirmOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaTOTPConfirmOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description One-time recovery codes (only on first MFA enrollment) */
+            recovery_codes?: string[] | null;
+        };
+        MfaTOTPSetupOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaTOTPSetupOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description otpauth:// URI for QR code */
+            qr_code_uri: string;
+            /** @description Base32-encoded TOTP secret (manual entry) */
+            secret: string;
+        };
+        MfaVerifyInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaVerifyInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Verification code */
+            code: string;
+            /**
+             * @description MFA method
+             * @enum {string}
+             */
+            method: "totp" | "email_otp" | "recovery";
+            /** @description Issue remember-device token */
+            remember_device?: boolean;
+        };
+        MfaVerifyOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/MfaVerifyOutputBody.json
+             */
+            readonly $schema?: string;
+            methods?: string[] | null;
+            pending: string[] | null;
             user_id: string;
         };
         NlSearchRequest: {
@@ -2418,6 +2819,30 @@ export interface components {
             readonly $schema?: string;
             config: unknown;
             name: string | null;
+        };
+        PatchMemberBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/PatchMemberBody.json
+             */
+            readonly $schema?: string;
+            active?: boolean;
+            role?: string;
+            scim_exempt?: boolean;
+        };
+        PatchMemberResponseBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/PatchMemberResponseBody.json
+             */
+            readonly $schema?: string;
+            active: boolean;
+            deactivated_at?: string;
+            role: string;
+            scim_exempt: boolean;
+            user_id: string;
         };
         PatchReportBody: {
             /**
@@ -2565,6 +2990,18 @@ export interface components {
             /** @description Password reset token (hex-encoded) */
             token: string;
         };
+        ResetPasswordOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/schemas/ResetPasswordOutputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Available MFA methods (only when pending contains mfa_challenge) */
+            methods?: string[] | null;
+            /** @description Remaining auth steps (empty = no MFA required) */
+            pending: string[] | null;
+        };
         "Resume-feedResponse": {
             /**
              * Format: uri
@@ -2599,15 +3036,17 @@ export interface components {
             query_json: unknown;
             updated_at: string;
         };
-        SavedSearchExecuteResponse: {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/SavedSearchExecuteResponse.json
-             */
-            readonly $schema?: string;
-            items: components["schemas"]["CVEItem"][] | null;
-            next_cursor?: string;
+        SecurityEventRow: {
+            actor_email?: string;
+            actor_ip?: string;
+            /** Format: date-time */
+            created_at: string;
+            details?: unknown;
+            event_type: string;
+            id: string;
+            org_id?: string;
+            severity: string;
+            user_id?: string;
         };
         SpecListAPIKeysOutputBody: {
             /**
@@ -2839,25 +3278,6 @@ export interface components {
             readonly $schema?: string;
             description?: string;
             name?: string;
-        };
-        UpdateMemberRoleBody: {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/UpdateMemberRoleBody.json
-             */
-            readonly $schema?: string;
-            role: string;
-        };
-        UpdateMemberRoleResponseBody: {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example https://example.com/schemas/UpdateMemberRoleResponseBody.json
-             */
-            readonly $schema?: string;
-            role: string;
-            user_id: string;
         };
         UpdateOrgBody: {
             /**
@@ -3280,8 +3700,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3409,13 +3829,86 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Admin-reindexResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "admin-reload-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
             /** @description OK */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-reindexResponse"];
+                    "application/json": components["schemas"]["Admin-reload-configResponse"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "admin-list-security-events": {
+        parameters: {
+            query?: {
+                /** @description Filter by event type */
+                event_type?: string;
+                /** @description Filter by severity */
+                severity?: string;
+                /** @description Filter by actor email */
+                actor_email?: string;
+                /** @description Filter events after timestamp (RFC3339) */
+                since?: string;
+                /** @description Filter events before timestamp (RFC3339) */
+                until?: string;
+                /** @description Pagination cursor */
+                cursor?: string;
+                /** @description Max items per page (1-100, default 50) */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListResponseSecurityEventRow"];
                 };
             };
             /** @description Error */
@@ -3622,6 +4115,8 @@ export interface operations {
             cookie?: {
                 /** @description Access token cookie */
                 access_token?: string;
+                /** @description Pending token cookie (restricted session) */
+                mfa_pending_token?: string;
             };
         };
         requestBody: {
@@ -3633,9 +4128,12 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ChangePasswordOutputBody"];
+                };
             };
             /** @description Error */
             default: {
@@ -3784,7 +4282,10 @@ export interface operations {
             query?: never;
             header?: never;
             path?: never;
-            cookie?: never;
+            cookie?: {
+                /** @description Remember-device token (optional) */
+                mfa_device_token?: string;
+            };
         };
         requestBody: {
             content: {
@@ -3798,7 +4299,9 @@ export interface operations {
                     "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["LoginOutputBody"];
+                };
             };
             /** @description Error */
             default: {
@@ -3861,6 +4364,317 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaChallengeInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-email-otp-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaEmailOTPConfirmInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaEmailOTPConfirmOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-email-otp-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-methods-list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaMethodsOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-method-remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description MFA method to remove */
+                method: "totp" | "email_otp";
+            };
+            cookie?: {
+                access_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaRemoveMethodInputBody"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-recovery-codes-regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaRegenerateCodesInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaRegenerateCodesOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-totp-confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+                mfa_enroll_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaTOTPConfirmInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaTOTPConfirmOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-totp-setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                access_token?: string;
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaTOTPSetupOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "mfa-verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: {
+                mfa_pending_token?: string;
+            };
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MfaVerifyInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MfaVerifyOutputBody"];
                 };
             };
             /** @description Error */
@@ -4015,9 +4829,12 @@ export interface operations {
             /** @description OK */
             200: {
                 headers: {
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["ResetPasswordOutputBody"];
+                };
             };
             /** @description Error */
             default: {
@@ -4192,8 +5009,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -4449,8 +5266,18 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlertRuleEntry"];
+                };
+            };
+            /** @description Accepted: the rule is activating while its initial scan runs */
+            202: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -4794,8 +5621,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -4942,8 +5769,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -5324,8 +6151,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -5568,8 +6395,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5636,9 +6463,10 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Accepted */
+            202: {
                 headers: {
+                    Location?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -5800,7 +6628,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateMemberRoleBody"];
+                "application/json": components["schemas"]["PatchMemberBody"];
             };
         };
         responses: {
@@ -5810,7 +6638,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["UpdateMemberRoleResponseBody"];
+                    "application/json": components["schemas"]["PatchMemberResponseBody"];
                 };
             };
             /** @description Error */
@@ -5872,8 +6700,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6152,8 +6980,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6302,7 +7130,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["SavedSearchExecuteResponse"];
+                    "application/json": components["schemas"]["ListResponseCVEItem"];
                 };
             };
             /** @description Error */
@@ -6364,8 +7192,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6569,8 +7397,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
@@ -6751,8 +7579,8 @@ export interface operations {
             };
         };
         responses: {
-            /** @description OK */
-            200: {
+            /** @description Created */
+            201: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;

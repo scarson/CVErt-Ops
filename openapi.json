@@ -140,6 +140,27 @@
         ],
         "type": "object"
       },
+      "Admin-reload-configResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/Admin-reload-configResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
       "Admin-reset-passwordResponse": {
         "additionalProperties": false,
         "properties": {
@@ -334,6 +355,17 @@
           "id": {
             "type": "string"
           },
+          "last_activity_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "member_count": {
+            "format": "int64",
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -352,8 +384,10 @@
           "id",
           "name",
           "tier",
+          "member_count",
           "suspended_at",
-          "created_at"
+          "created_at",
+          "last_activity_at"
         ],
         "type": "object"
       },
@@ -992,9 +1026,8 @@
             "type": "string"
           },
           "current_password": {
-            "description": "Current password",
+            "description": "Current password (required in normal mode, optional in restricted mode)",
             "maxLength": 1024,
-            "minLength": 1,
             "type": "string"
           },
           "new_password": {
@@ -1005,9 +1038,33 @@
           }
         },
         "required": [
-          "current_password",
           "new_password"
         ],
+        "type": "object"
+      },
+      "ChangePasswordOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ChangePasswordOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "pending": {
+            "description": "Remaining pending items (if any)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "ChannelCreateEntry": {
@@ -2407,6 +2464,36 @@
         ],
         "type": "object"
       },
+      "ListResponseCVEItem": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ListResponseCVEItem.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CVEItem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
       "ListResponseFeedLogEntry": {
         "additionalProperties": false,
         "properties": {
@@ -2467,6 +2554,36 @@
         ],
         "type": "object"
       },
+      "ListResponseSecurityEventRow": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ListResponseSecurityEventRow.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SecurityEventRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
       "LoginInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -2498,6 +2615,66 @@
         ],
         "type": "object"
       },
+      "LoginOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/LoginOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "methods": {
+            "description": "Available MFA methods (only when pending contains mfa_challenge)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pending": {
+            "description": "Remaining auth steps (empty = fully authenticated)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "user_id": {
+            "description": "Authenticated user ID",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "pending"
+        ],
+        "type": "object"
+      },
+      "MFARequiredReason": {
+        "additionalProperties": false,
+        "properties": {
+          "org_name": {
+            "description": "Org name (for org_policy and per_member reasons)",
+            "type": "string"
+          },
+          "source": {
+            "description": "Reason source (site_admin, org_owner, org_policy, per_member, db_error)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "type": "object"
+      },
       "MeOutputBody": {
         "additionalProperties": false,
         "properties": {
@@ -2515,6 +2692,9 @@
           },
           "email": {
             "type": "string"
+          },
+          "force_password_reset": {
+            "type": "boolean"
           },
           "is_site_admin": {
             "type": "boolean"
@@ -2537,6 +2717,7 @@
           "email",
           "display_name",
           "is_site_admin",
+          "force_password_reset",
           "orgs"
         ],
         "type": "object"
@@ -2544,6 +2725,12 @@
       "MemberEntry": {
         "additionalProperties": false,
         "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "deactivated_at": {
+            "type": "string"
+          },
           "display_name": {
             "type": "string"
           },
@@ -2556,6 +2743,9 @@
           "role": {
             "type": "string"
           },
+          "scim_exempt": {
+            "type": "boolean"
+          },
           "user_id": {
             "type": "string"
           }
@@ -2565,7 +2755,379 @@
           "email",
           "display_name",
           "role",
+          "active",
+          "scim_exempt",
           "joined_at"
+        ],
+        "type": "object"
+      },
+      "MfaChallengeInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaChallengeInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "method": {
+            "description": "MFA method to challenge",
+            "enum": [
+              "totp",
+              "email_otp"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "type": "object"
+      },
+      "MfaEmailOTPConfirmInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaEmailOTPConfirmInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "code": {
+            "description": "6-digit code from email",
+            "maxLength": 6,
+            "minLength": 6,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "MfaEmailOTPConfirmOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaEmailOTPConfirmOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "recovery_codes": {
+            "description": "One-time recovery codes (only on first MFA enrollment)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "MfaMethodEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "description": "When this method was enrolled",
+            "format": "date-time",
+            "type": "string"
+          },
+          "method": {
+            "description": "MFA method name (totp, email_otp)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "MfaMethodsOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaMethodsOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "$ref": "#/components/schemas/MfaMethodEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "recovery_codes_remaining": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "required": {
+            "description": "Whether MFA is required for this user",
+            "type": "boolean"
+          },
+          "required_reasons": {
+            "description": "Why MFA is required",
+            "items": {
+              "$ref": "#/components/schemas/MFARequiredReason"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "methods",
+          "recovery_codes_remaining",
+          "required",
+          "required_reasons"
+        ],
+        "type": "object"
+      },
+      "MfaRegenerateCodesInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaRegenerateCodesInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "current_password": {
+            "description": "Current password for re-authentication",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_password"
+        ],
+        "type": "object"
+      },
+      "MfaRegenerateCodesOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaRegenerateCodesOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "recovery_codes": {
+            "description": "10 new one-time recovery codes",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "recovery_codes"
+        ],
+        "type": "object"
+      },
+      "MfaRemoveMethodInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaRemoveMethodInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "current_password": {
+            "description": "Current password for re-authentication",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "current_password"
+        ],
+        "type": "object"
+      },
+      "MfaTOTPConfirmInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaTOTPConfirmInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "code": {
+            "description": "6-digit TOTP code from authenticator app",
+            "maxLength": 6,
+            "minLength": 6,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "MfaTOTPConfirmOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaTOTPConfirmOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "recovery_codes": {
+            "description": "One-time recovery codes (only on first MFA enrollment)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "MfaTOTPSetupOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaTOTPSetupOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "qr_code_uri": {
+            "description": "otpauth:// URI for QR code",
+            "type": "string"
+          },
+          "secret": {
+            "description": "Base32-encoded TOTP secret (manual entry)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "qr_code_uri",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "MfaVerifyInputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaVerifyInputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "code": {
+            "description": "Verification code",
+            "maxLength": 20,
+            "minLength": 1,
+            "type": "string"
+          },
+          "method": {
+            "description": "MFA method",
+            "enum": [
+              "totp",
+              "email_otp",
+              "recovery"
+            ],
+            "type": "string"
+          },
+          "remember_device": {
+            "description": "Issue remember-device token",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "method",
+          "code"
+        ],
+        "type": "object"
+      },
+      "MfaVerifyOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/MfaVerifyOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pending": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "pending"
         ],
         "type": "object"
       },
@@ -2759,6 +3321,66 @@
         "required": [
           "name",
           "config"
+        ],
+        "type": "object"
+      },
+      "PatchMemberBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/PatchMemberBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "role": {
+            "type": "string"
+          },
+          "scim_exempt": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "PatchMemberResponseBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/PatchMemberResponseBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "deactivated_at": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "scim_exempt": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "role",
+          "active",
+          "scim_exempt"
         ],
         "type": "object"
       },
@@ -3224,6 +3846,44 @@
         ],
         "type": "object"
       },
+      "ResetPasswordOutputBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "https://example.com/schemas/ResetPasswordOutputBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "methods": {
+            "description": "Available MFA methods (only when pending contains mfa_challenge)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pending": {
+            "description": "Remaining auth steps (empty = no MFA required)",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pending"
+        ],
+        "type": "object"
+      },
       "Resume-feedResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3312,33 +3972,41 @@
         ],
         "type": "object"
       },
-      "SavedSearchExecuteResponse": {
+      "SecurityEventRow": {
         "additionalProperties": false,
         "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/SavedSearchExecuteResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
+          "actor_email": {
             "type": "string"
           },
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/CVEItem"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
+          "actor_ip": {
+            "type": "string"
           },
-          "next_cursor": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "details": {},
+          "event_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "user_id": {
             "type": "string"
           }
         },
         "required": [
-          "items"
+          "id",
+          "event_type",
+          "severity",
+          "created_at"
         ],
         "type": "object"
       },
@@ -4017,52 +4685,6 @@
             "type": "string"
           }
         },
-        "type": "object"
-      },
-      "UpdateMemberRoleBody": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/UpdateMemberRoleBody.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "role": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "role"
-        ],
-        "type": "object"
-      },
-      "UpdateMemberRoleResponseBody": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "https://example.com/schemas/UpdateMemberRoleResponseBody.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "role": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id",
-          "role"
-        ],
         "type": "object"
       },
       "UpdateOrgBody": {
@@ -4776,7 +5398,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -4784,7 +5406,7 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "Accepted"
           },
           "default": {
             "content": {
@@ -4952,11 +5574,42 @@
       "post": {
         "operationId": "admin-reindex",
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Admin-reindexResponse"
+                }
+              }
+            },
+            "description": "Accepted"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Trigger search reindex",
+        "tags": [
+          "Admin System"
+        ]
+      }
+    },
+    "/admin/reload-config": {
+      "post": {
+        "operationId": "admin-reload-config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Admin-reload-configResponse"
                 }
               }
             },
@@ -4973,9 +5626,113 @@
             "description": "Error"
           }
         },
-        "summary": "Trigger search reindex",
+        "summary": "Reload configuration from secrets file",
         "tags": [
           "Admin System"
+        ]
+      }
+    },
+    "/admin/security-events": {
+      "get": {
+        "operationId": "admin-list-security-events",
+        "parameters": [
+          {
+            "description": "Filter by event type",
+            "explode": false,
+            "in": "query",
+            "name": "event_type",
+            "schema": {
+              "description": "Filter by event type",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by severity",
+            "explode": false,
+            "in": "query",
+            "name": "severity",
+            "schema": {
+              "description": "Filter by severity",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by actor email",
+            "explode": false,
+            "in": "query",
+            "name": "actor_email",
+            "schema": {
+              "description": "Filter by actor email",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter events after timestamp (RFC3339)",
+            "explode": false,
+            "in": "query",
+            "name": "since",
+            "schema": {
+              "description": "Filter events after timestamp (RFC3339)",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter events before timestamp (RFC3339)",
+            "explode": false,
+            "in": "query",
+            "name": "until",
+            "schema": {
+              "description": "Filter events before timestamp (RFC3339)",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Pagination cursor",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "Pagination cursor",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Max items per page (1-100, default 50)",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "description": "Max items per page (1-100, default 50)",
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListResponseSecurityEventRow"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List security events",
+        "tags": [
+          "Admin Security Events"
         ]
       }
     },
@@ -5240,6 +5997,15 @@
               "description": "Access token cookie",
               "type": "string"
             }
+          },
+          {
+            "description": "Pending token cookie (restricted session)",
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "description": "Pending token cookie (restricted session)",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -5254,7 +6020,21 @@
         },
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePasswordOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "default": {
             "content": {
@@ -5446,6 +6226,17 @@
     "/auth/login": {
       "post": {
         "operationId": "login",
+        "parameters": [
+          {
+            "description": "Remember-device token (optional)",
+            "in": "cookie",
+            "name": "mfa_device_token",
+            "schema": {
+              "description": "Remember-device token (optional)",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -5458,6 +6249,13 @@
         },
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginOutputBody"
+                }
+              }
+            },
             "description": "OK",
             "headers": {
               "Set-Cookie": {
@@ -5565,6 +6363,505 @@
         "summary": "Get the current user's profile and org memberships",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/auth/mfa/challenge": {
+      "post": {
+        "operationId": "mfa-challenge",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaChallengeInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Request MFA challenge (email OTP code or signal TOTP readiness)",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/email-otp/confirm": {
+      "post": {
+        "operationId": "mfa-email-otp-confirm",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaEmailOTPConfirmInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaEmailOTPConfirmOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Verify email OTP code and finalize enrollment",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/email-otp/setup": {
+      "post": {
+        "operationId": "mfa-email-otp-setup",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Send email OTP verification code for enrollment",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/methods": {
+      "get": {
+        "operationId": "mfa-methods-list",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaMethodsOutputBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "List enrolled MFA methods and enforcement status",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/methods/{method}": {
+      "delete": {
+        "operationId": "mfa-method-remove",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "MFA method to remove",
+            "in": "path",
+            "name": "method",
+            "required": true,
+            "schema": {
+              "description": "MFA method to remove",
+              "enum": [
+                "totp",
+                "email_otp"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaRemoveMethodInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Remove an MFA method (requires password re-auth)",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/recovery-codes/regenerate": {
+      "post": {
+        "operationId": "mfa-recovery-codes-regenerate",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaRegenerateCodesInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaRegenerateCodesOutputBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Regenerate recovery codes (requires password re-auth)",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/totp/confirm": {
+      "post": {
+        "operationId": "mfa-totp-confirm",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "mfa_enroll_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaTOTPConfirmInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaTOTPConfirmOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Verify TOTP code and finalize enrollment",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/totp/setup": {
+      "post": {
+        "operationId": "mfa-totp-setup",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "access_token",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaTOTPSetupOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Generate TOTP secret and QR code URI",
+        "tags": [
+          "auth",
+          "mfa"
+        ]
+      }
+    },
+    "/auth/mfa/verify": {
+      "post": {
+        "operationId": "mfa-verify",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "mfa_pending_token",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaVerifyInputBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaVerifyOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Submit MFA verification code",
+        "tags": [
+          "auth",
+          "mfa"
         ]
       }
     },
@@ -5739,7 +7036,21 @@
         },
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetPasswordOutputBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "default": {
             "content": {
@@ -6055,7 +7366,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -6063,7 +7374,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -6491,7 +7802,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -6499,7 +7810,24 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertRuleEntry"
+                }
+              }
+            },
+            "description": "Accepted: the rule is activating while its initial scan runs",
             "headers": {
               "Location": {
                 "schema": {
@@ -7038,7 +8366,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -7046,7 +8374,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -7304,7 +8632,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -7312,7 +8640,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -7927,7 +9255,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -7935,7 +9263,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -8320,7 +9648,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -8328,7 +9656,7 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "Accepted"
           },
           "default": {
             "content": {
@@ -8416,7 +9744,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -8424,7 +9752,14 @@
                 }
               }
             },
-            "description": "OK"
+            "description": "Accepted",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "default": {
             "content": {
@@ -8667,7 +10002,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateMemberRoleBody"
+                "$ref": "#/components/schemas/PatchMemberBody"
               }
             }
           },
@@ -8678,7 +10013,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UpdateMemberRoleResponseBody"
+                  "$ref": "#/components/schemas/PatchMemberResponseBody"
                 }
               }
             },
@@ -8770,7 +10105,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -8778,7 +10113,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -9229,7 +10564,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -9237,7 +10572,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -9480,7 +10815,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SavedSearchExecuteResponse"
+                  "$ref": "#/components/schemas/ListResponseCVEItem"
                 }
               }
             },
@@ -9659,7 +10994,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -9667,7 +11002,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -9868,7 +11203,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -9876,7 +11211,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {
@@ -10177,7 +11512,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
@@ -10185,7 +11520,7 @@
                 }
               }
             },
-            "description": "OK",
+            "description": "Created",
             "headers": {
               "Location": {
                 "schema": {

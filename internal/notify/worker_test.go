@@ -806,13 +806,15 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 	}
 
 	// Insert a CVE modified after the report's created_at (so DigestCVEs returns it).
+	// Stamped with the database clock, which also set created_at; the test
+	// host's clock can run behind the container's.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO cves (cve_id, status, severity, description_primary, cvss_v3_score, material_hash, date_modified_canonical)
-		VALUES ($1, 'published', 'critical', 'Digest E2E vuln', 9.8, $2, $3)
+		VALUES ($1, 'published', 'critical', 'Digest E2E vuln', 9.8, $2, now())
 		ON CONFLICT (cve_id) DO UPDATE SET
 			severity = EXCLUDED.severity,
 			date_modified_canonical = EXCLUDED.date_modified_canonical`,
-		"CVE-2025-DIGEST-E2E", uuid.New().String(), time.Now()); err != nil {
+		"CVE-2025-DIGEST-E2E", uuid.New().String()); err != nil {
 		t.Fatalf("insert CVE: %v", err)
 	}
 
@@ -973,18 +975,20 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 	}
 
 	// Insert CVEs: one critical (should match), one low (should NOT match).
+	// Stamped with the database clock, which also set the report's created_at;
+	// the test host's clock can run behind the container's.
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
-		VALUES ($1, 'published', 'critical', 'Critical sev test', $2, $3)
+		VALUES ($1, 'published', 'critical', 'Critical sev test', $2, now())
 		ON CONFLICT (cve_id) DO UPDATE SET severity = EXCLUDED.severity, date_modified_canonical = EXCLUDED.date_modified_canonical`,
-		"CVE-2025-SEV-CRIT", uuid.New().String(), time.Now()); err != nil {
+		"CVE-2025-SEV-CRIT", uuid.New().String()); err != nil {
 		t.Fatalf("insert critical CVE: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
-		VALUES ($1, 'published', 'low', 'Low sev test', $2, $3)
+		VALUES ($1, 'published', 'low', 'Low sev test', $2, now())
 		ON CONFLICT (cve_id) DO UPDATE SET severity = EXCLUDED.severity, date_modified_canonical = EXCLUDED.date_modified_canonical`,
-		"CVE-2025-SEV-LOW", uuid.New().String(), time.Now()); err != nil {
+		"CVE-2025-SEV-LOW", uuid.New().String()); err != nil {
 		t.Fatalf("insert low CVE: %v", err)
 	}
 

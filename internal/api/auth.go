@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -324,18 +325,7 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 				Details:    map[string]any{"reason": "account locked"},
 			})
 		}
-		retrySeconds := int(retryAfter.Seconds())
-		if retrySeconds < 1 {
-			retrySeconds = 1
-		}
-		return nil, huma.Error429TooManyRequests(
-			"account temporarily locked due to too many failed login attempts",
-			&huma.ErrorDetail{
-				Message:  "retry_after_seconds",
-				Location: "header",
-				Value:    retrySeconds,
-			},
-		)
+		return nil, accountLockedError(retryAfter)
 	}
 
 	// Timing normalization: always spend argon2 time regardless of whether the user exists.
@@ -398,9 +388,6 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		}
 		return nil, huma.Error401Unauthorized("invalid credentials")
 	}
-
-	// Successful login — reset lockout counter.
-	srv.lockout.RecordSuccess(ctx, input.Body.Email)
 
 	// ── MFA / restricted session checks ──────────────────────────────
 	var pending []string
@@ -468,6 +455,14 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		if required {
 			pending = append(pending, "mfa_enrollment_required")
 		}
+	}
+
+	// Reset the lockout counter only when no MFA challenge remains. Password
+	// and MFA failures share the counter, so a reset on the password alone
+	// would let someone holding the password log in again to clear failed
+	// MFA guesses. mfaVerifyHandler resets it once the challenge passes.
+	if !slices.Contains(pending, "mfa_challenge") {
+		srv.lockout.RecordSuccess(ctx, input.Body.Email)
 	}
 
 	// Non-fatal — last_login_at is informational only.

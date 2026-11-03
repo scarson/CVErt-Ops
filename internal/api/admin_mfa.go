@@ -3,7 +3,10 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -17,6 +20,28 @@ import (
 // errPermissionDenied is returned by checkAdminMFAPermission when the caller
 // lacks sufficient privileges. The HTTP error response is already written.
 var errPermissionDenied = errors.New("permission denied")
+
+// noNativeIdentityProblem is the 400 detail returned when an admin
+// forces a password reset on a user who has no password to reset.
+const noNativeIdentityProblem = "user has no native identity — cannot force password reset on OAuth-only account"
+
+// forcePasswordReset requires the user to set a new password at next login
+// and ends their sessions: it sets force_password_reset, increments
+// token_version, and deletes remember-device tokens. An already-set flag is
+// not an error, so a repeated reset still invalidates sessions.
+func (srv *Server) forcePasswordReset(ctx context.Context, userID uuid.UUID) error {
+	if _, err := srv.store.AdminForcePasswordReset(ctx, userID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("set force_password_reset: %w", err)
+	}
+	if _, err := srv.store.IncrementTokenVersion(ctx, userID); err != nil {
+		return fmt.Errorf("invalidate sessions: %w", err)
+	}
+	if err := srv.store.DeleteRememberDeviceTokens(ctx, userID); err != nil {
+		// Non-fatal — the important actions (flag + session invalidation) are done.
+		slog.ErrorContext(ctx, "force password reset: delete device tokens", "error", err)
+	}
+	return nil
+}
 
 // adminResetMFAHandler handles POST /api/v1/orgs/{org_id}/members/{user_id}/reset-mfa.
 // Clears all MFA credentials, recovery codes, and challenges for the target user.
@@ -122,28 +147,14 @@ func (srv *Server) adminForcePasswordResetHandler(w http.ResponseWriter, r *http
 		return
 	}
 	if !user.PasswordHash.Valid {
-		writeProblem(w, http.StatusBadRequest, "user has no native identity — cannot force password reset on OAuth-only account")
+		writeProblem(w, http.StatusBadRequest, noNativeIdentityProblem)
 		return
 	}
 
-	// Set force_password_reset flag (idempotent).
-	if _, err := srv.store.AdminForcePasswordReset(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin force-password-reset: set flag", "error", err)
+	if err := srv.forcePasswordReset(r.Context(), targetID); err != nil {
+		slog.ErrorContext(r.Context(), "admin force-password-reset", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
-	}
-
-	// Invalidate sessions.
-	if _, err := srv.store.IncrementTokenVersion(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin force-password-reset: increment token version", "error", err)
-		writeProblem(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-
-	// Delete device tokens.
-	if err := srv.store.DeleteRememberDeviceTokens(r.Context(), targetID); err != nil {
-		slog.ErrorContext(r.Context(), "admin force-password-reset: delete device tokens", "error", err)
-		// Non-fatal — the important actions (flag + session invalidation) are done.
 	}
 
 	if srv.eventWriter != nil {

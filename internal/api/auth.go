@@ -260,6 +260,13 @@ func clearPendingTokenCookie(secure bool) string {
 	return c.String()
 }
 
+// clearSignInCookies expires the cookies of an in-progress sign-in (the
+// pending token and the TOTP enrollment token). Sent whenever full tokens are
+// issued or the session ends, so a half-finished sign-in cannot outlive it.
+func clearSignInCookies(secure bool) []string {
+	return []string{clearPendingTokenCookie(secure), clearEnrollmentCookie(secure)}
+}
+
 // loginHandler handles POST /api/v1/auth/login.
 // Nonexistent users still run argon2 to normalize response timing (prevents email enumeration).
 func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginOutput, error) {
@@ -501,7 +508,12 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 		out.Body.UserID = user.ID
 		out.Body.Pending = pending
 		out.Body.Methods = methods
-		out.SetCookie = pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+		// Expire any full session in this browser so the pending steps cannot
+		// be resolved against another user's access token.
+		out.SetCookie = append(
+			pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL),
+			clearAuthCookies(srv.cfg.CookieSecure)...,
+		)
 		return out, nil
 	}
 
@@ -535,7 +547,10 @@ func (srv *Server) loginHandler(ctx context.Context, input *loginInput) (*loginO
 	out := &loginOutput{}
 	out.Body.UserID = user.ID
 	out.Body.Pending = []string{}
-	out.SetCookie = authCookies(accessToken, refreshToken, srv.cfg.CookieSecure)
+	out.SetCookie = append(
+		authCookies(accessToken, refreshToken, srv.cfg.CookieSecure),
+		clearSignInCookies(srv.cfg.CookieSecure)...,
+	)
 	return out, nil
 }
 
@@ -685,7 +700,10 @@ func (srv *Server) logoutHandler(ctx context.Context, input *logoutInput) (*logo
 			}
 		}
 	}
-	return &logoutOutput{SetCookie: clearAuthCookies(srv.cfg.CookieSecure)}, nil
+	return &logoutOutput{SetCookie: append(
+		clearAuthCookies(srv.cfg.CookieSecure),
+		clearSignInCookies(srv.cfg.CookieSecure)...,
+	)}, nil
 }
 
 // ── Me ────────────────────────────────────────────────────────────────────────
@@ -710,6 +728,7 @@ type meOutput struct {
 		DisplayName        string     `json:"display_name"`
 		IsSiteAdmin        bool       `json:"is_site_admin"`
 		ForcePasswordReset bool       `json:"force_password_reset"`
+		HasPassword        bool       `json:"has_password" doc:"False for accounts that sign in only through an external identity provider"`
 		Orgs               []orgEntry `json:"orgs"`
 	}
 }
@@ -748,6 +767,7 @@ func (srv *Server) meHandler(ctx context.Context, input *meInput) (*meOutput, er
 	out.Body.DisplayName = user.DisplayName
 	out.Body.IsSiteAdmin = isSiteAdmin
 	out.Body.ForcePasswordReset = user.ForcePasswordReset
+	out.Body.HasPassword = user.PasswordHash.Valid
 	out.Body.Orgs = make([]orgEntry, 0, len(orgRows))
 	for _, row := range orgRows {
 		out.Body.Orgs = append(out.Body.Orgs, orgEntry{
@@ -804,11 +824,13 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	}
 	if userID == uuid.Nil && input.MFAPendingToken != "" {
 		claims, err := srv.validatePendingToken(input.MFAPendingToken, "password_reset")
-		if err == nil {
-			userID = claims.UserID
-			pendingClaims = claims
-			isRestricted = true
+		if err != nil {
+			return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid,
+				"invalid or expired pending token")
 		}
+		userID = claims.UserID
+		pendingClaims = claims
+		isRestricted = true
 	}
 	if userID == uuid.Nil {
 		return nil, huma.Error401Unauthorized("authentication required")
@@ -821,7 +843,8 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 	}
 	// Verify token_version matches DB (prevents stale tokens after admin actions).
 	if isRestricted && int(user.TokenVersion) != pendingClaims.TokenVersion {
-		return nil, huma.Error401Unauthorized("session invalidated — please log in again")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid,
+			"session invalidated — please log in again")
 	}
 	if !user.PasswordHash.Valid {
 		return nil, huma.Error400BadRequest("account uses OAuth authentication — password change not supported")
@@ -846,7 +869,7 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 			return nil, huma.Error500InternalServerError("internal error")
 		}
 		if !ok {
-			return nil, huma.Error401Unauthorized("current password incorrect")
+			return nil, typedProblem(http.StatusUnauthorized, problemTypeInvalidPassword, "current password incorrect")
 		}
 	}
 
@@ -940,7 +963,6 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 			return nil, tokErr
 		}
 		out.SetCookie = cookies
-		out.SetCookie = append(out.SetCookie, clearPendingTokenCookie(srv.cfg.CookieSecure))
 	}
 
 	return out, nil

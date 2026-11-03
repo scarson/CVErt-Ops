@@ -276,7 +276,7 @@ func (srv *Server) oidcCallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	_ = srv.store.UpdateLastLogin(ctx, user.ID)
 
-	for _, cookieStr := range authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure) {
+	for _, cookieStr := range append(authCookies(accessToken, refreshTokenStr, srv.cfg.CookieSecure), clearSignInCookies(srv.cfg.CookieSecure)...) {
 		w.Header().Add("Set-Cookie", cookieStr)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"user_id": user.ID.String()})

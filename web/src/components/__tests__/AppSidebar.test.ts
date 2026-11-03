@@ -56,6 +56,7 @@ function seedAuthStore() {
     display_name: 'Sam Carter',
     is_site_admin: false,
     force_password_reset: false,
+    has_password: true,
     orgs: [
       { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
       { org_id: 'org-2', name: 'Globex Inc', role: 'member' },
@@ -146,6 +147,7 @@ describe('OrgSwitcher', () => {
       display_name: 'Sam Carter',
       is_site_admin: false,
       force_password_reset: false,
+      has_password: true,
       orgs: [
         { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
         { org_id: 'org-2', name: 'Globex Inc', role: 'member' },
@@ -158,6 +160,13 @@ describe('OrgSwitcher', () => {
     expect(wrapper.text()).toContain('Select org')
   })
 })
+
+// Finds a user menu item by its label.
+function menuItem(wrapper: ReturnType<typeof mount>, label: string) {
+  const item = wrapper.findAll('[data-testid="menu-item"]').find((b) => b.text().includes(label))
+  if (!item) throw new Error(`no menu item labelled ${label}`)
+  return item
+}
 
 describe('UserMenu', () => {
   beforeEach(() => {
@@ -189,7 +198,7 @@ describe('UserMenu', () => {
     seedAuthStore()
     const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
 
-    await wrapper.find('[data-testid="menu-item"]').trigger('click')
+    await menuItem(wrapper, 'Log out').trigger('click')
     await flushPromises()
 
     expect(mockPush).toHaveBeenCalledWith('/login')
@@ -209,7 +218,7 @@ describe('UserMenu', () => {
     const auth = seedAuthStore()
     const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
 
-    await wrapper.find('[data-testid="menu-item"]').trigger('click')
+    await menuItem(wrapper, 'Log out').trigger('click')
     await flushPromises()
 
     expect(mockPush).not.toHaveBeenCalled()
@@ -217,5 +226,15 @@ describe('UserMenu', () => {
       'Could not reach the server. Check your connection and try again.',
     )
     expect(auth.isAuthenticated).toBe(true)
+  })
+
+  it('navigates to the account page', async () => {
+    seedAuthStore()
+    const { default: UserMenu } = await import('@/components/UserMenu.vue')
+    const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
+
+    await menuItem(wrapper, 'Account').trigger('click')
+
+    expect(mockPush).toHaveBeenCalledWith({ name: 'account' })
   })
 })

@@ -8,12 +8,16 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 // WebhookConfig holds the delivery-time view of a notification_channels row for a webhook channel.
@@ -22,6 +26,24 @@ type WebhookConfig struct {
 	SigningSecret          string
 	SigningSecretSecondary string            // non-empty during rotation grace period
 	CustomHeaders          map[string]string // applied after denylist filtering
+}
+
+// ChannelWebhookConfig builds the WebhookConfig for a webhook channel from its stored
+// config JSON ({"url": ..., "custom_headers": {...}}) and signing secrets. Delivery and
+// the channel test endpoint both use it so a test sends exactly what a delivery would.
+// Malformed config yields an empty URL, which Send rejects.
+func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) WebhookConfig {
+	var config struct {
+		URL           string            `json:"url"`
+		CustomHeaders map[string]string `json:"custom_headers"`
+	}
+	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail
+	return WebhookConfig{
+		URL:                    config.URL,
+		SigningSecret:          ch.SigningSecret.String,
+		SigningSecretSecondary: ch.SigningSecretSecondary.String,
+		CustomHeaders:          config.CustomHeaders,
+	}
 }
 
 // deniedHeaders are custom header keys that callers must not override.
@@ -78,7 +100,37 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) //nolint:errcheck,gosec // G104: discard errors are irrelevant for io.Discard writes
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook POST: unexpected status %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+// StatusError reports that the webhook receiver answered with a non-2xx status.
+// Any other error from Send means the request failed before a response arrived.
+type StatusError struct {
+	StatusCode int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("webhook POST: unexpected status %d", e.StatusCode)
+}
+
+// ErrCauseWithheld stands in for a delivery error that org members may not read.
+var ErrCauseWithheld = errors.New("delivery failed; the cause is recorded for the instance operator")
+
+// ErrorForOrg returns the error org members may read for a failed delivery.
+// Only errors known to describe the org's own channel pass through: a
+// receiver's answer (*StatusError) and a problem with the channel's stored
+// configuration (permanentDeliveryError). Every other error, including dial
+// and DNS failures that name resolved addresses, becomes ErrCauseWithheld.
+func ErrorForOrg(err error) error {
+	if err == nil {
+		return nil
+	}
+	var statusErr *StatusError
+	var configErr *permanentDeliveryError
+	if errors.As(err, &statusErr) || errors.As(err, &configErr) {
+		return err
+	}
+	return ErrCauseWithheld
 }

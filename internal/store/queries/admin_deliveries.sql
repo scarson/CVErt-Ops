@@ -14,6 +14,7 @@ SET status        = 'pending',
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id = $1 AND status IN ('failed');
 
@@ -24,6 +25,7 @@ SET status        = 'pending',
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
+    last_error_for_org = NULL,
     updated_at    = now()
 WHERE id IN (
     SELECT id FROM notification_deliveries

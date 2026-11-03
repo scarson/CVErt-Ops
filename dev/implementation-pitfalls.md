@@ -28,7 +28,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-25 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
-| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-21 | §5.C |
+| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-22 | §5.C |
 | 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-44 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
@@ -1887,6 +1887,18 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 ---
 
+### NOTIFY-22: Digest Row Limit Drops CVEs Without a Trace
+
+**The Flaw:** `DigestCVEs` (`internal/store/queries/cves.sql`) returns at most 500 rows, sorted by severity, and `executeDigestReport` (`internal/notify/digest.go`) advances `last_run_at` past the whole window regardless. The payload was a bare array of those rows, and the email renderer took its length as the digest's total. When more than 500 CVEs matched, the lower-severity ones were in no digest, the email said "Showing 25 of 500", and webhook consumers had no way to tell the array was incomplete.
+
+**Why It Matters:** More than 500 matching modifications in one day is normal during NVD enrichment bursts. The digest looks complete and understates the day's volume. The cursor cannot simply stop at the last CVE sent, because the rows are ordered by severity, not by timestamp.
+
+**The Fix:** `DigestCVEs` returns `count(*) OVER () AS total_count`, the number of matching CVEs before the limit, computed on the same predicate and snapshot as the rows. A digest payload is a JSON object, `{"total_count": N, "cves": [...]}`, while alert payloads stay arrays. `digestTemplateData` sets the email's total from `total_count` and marks it truncated when the total exceeds the 25 CVEs listed (PLAN.md §12.1). A separate `COUNT(*)` query would avoid buffering every matching row, but it would duplicate the `WHERE` clause and could disagree with the rows.
+
+**The Lesson:** A `LIMIT` on a query whose result is reported as "everything since the cursor" must carry the uncut count with it. If the consumer cannot get the rest, it must at least know that there is a rest.
+
+---
+
 ### Review Checklist
 
 - [ ] Activation scan runs in silent mode (writes `alert_events` but does NOT enqueue notification deliveries)?
@@ -1907,6 +1919,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - [ ] Channel deletion pre-flight: DELETE /channels/{id} returns 409 if active alert rules reference the channel (NOTIFY-7)?
 - [ ] Timestamp-cursor scans start a re-scan window behind the stored cursor, and re-processing a row in that window is idempotent (NOTIFY-20)?
 - [ ] Digest scans start a re-scan window behind `last_run_at`, take the next cursor before the query, and leave out CVE versions already sent (NOTIFY-21)?
+- [ ] A row-limited digest or report query carries the match count before the limit, and renderers report that count rather than the number of rows (NOTIFY-22)?
 
 ### See Also
 - Webhook SSRF and redirect bypass: see AUTH-17
@@ -2691,7 +2704,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §2 Database & Query | DB-1 – DB-25 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
-| §5 Notification & Alert | NOTIFY-1 – NOTIFY-21 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list |
+| §5 Notification & Alert | NOTIFY-1 – NOTIFY-22 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit |
 | §6 Architecture & Ops | ARCH-1 – ARCH-44 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 
 **Total: ~144 pitfall entries across 6 domains.**

@@ -347,6 +347,8 @@ describe('WatchlistDetailView', () => {
         '/orgs/{org_id}/watchlists/{id}',
         expect.objectContaining({
           params: { path: { org_id: TEST_ORG_ID, id: 'wl-123' } },
+          // Only the changed field is sent: an omitted field keeps its value.
+          body: { name: 'Updated Name' },
         }),
       )
 

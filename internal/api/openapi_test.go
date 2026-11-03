@@ -269,7 +269,15 @@ func TestOpenAPISpec_PatchBodiesOptional(t *testing.T) {
 	spec := buildOpenAPISpec(t)
 	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
 
-	for _, name := range []string{"PatchSCIMConfigBody", "PatchSCIMGroupMappingBody"} {
+	for _, name := range []string{
+		"PatchAlertRuleBody",
+		"PatchChannelBody",
+		"PatchReportBody",
+		"PatchSCIMConfigBody",
+		"PatchSCIMGroupMappingBody",
+		"PatchSSOBody",
+		"PatchWatchlistBody",
+	} {
 		t.Run(name, func(t *testing.T) {
 			s, ok := schemas[name].(map[string]any)
 			if !ok {

@@ -3002,12 +3002,12 @@ export interface components {
              * @example https://example.com/schemas/PatchAlertRuleBody.json
              */
             readonly $schema?: string;
-            conditions: unknown;
-            enabled: boolean | null;
-            fire_on_non_material_changes: boolean | null;
-            logic: string | null;
-            name: string | null;
-            watchlist_ids: string[] | null;
+            conditions?: unknown;
+            enabled?: boolean;
+            fire_on_non_material_changes?: boolean;
+            logic?: string;
+            name?: string;
+            watchlist_ids?: string[];
         };
         PatchChannelBody: {
             /**
@@ -3016,8 +3016,8 @@ export interface components {
              * @example https://example.com/schemas/PatchChannelBody.json
              */
             readonly $schema?: string;
-            config: unknown;
-            name: string | null;
+            config?: unknown;
+            name?: string;
         };
         PatchMemberBody: {
             /**
@@ -3050,14 +3050,14 @@ export interface components {
              * @example https://example.com/schemas/PatchReportBody.json
              */
             readonly $schema?: string;
-            ai_summary: boolean | null;
-            name: string | null;
-            scheduled_time: string | null;
-            send_on_empty: boolean | null;
-            severity_threshold: string | null;
-            status: string | null;
-            timezone: string | null;
-            watchlist_ids: string[] | null;
+            ai_summary?: boolean;
+            name?: string;
+            scheduled_time?: string;
+            send_on_empty?: boolean;
+            severity_threshold?: string;
+            status?: string;
+            timezone?: string;
+            watchlist_ids?: string[];
         };
         PatchSCIMConfigBody: {
             /**
@@ -3086,12 +3086,12 @@ export interface components {
              * @example https://example.com/schemas/PatchSSOBody.json
              */
             readonly $schema?: string;
-            client_id: string | null;
-            client_secret: string | null;
-            display_name: string | null;
-            enabled: boolean | null;
-            issuer_url: string | null;
-            scopes: string[] | null;
+            client_id?: string;
+            client_secret?: string;
+            display_name?: string;
+            enabled?: boolean;
+            issuer_url?: string;
+            scopes?: string[] | null;
         };
         PatchSavedSearchRequest: {
             /**
@@ -3112,9 +3112,9 @@ export interface components {
              * @example https://example.com/schemas/PatchWatchlistBody.json
              */
             readonly $schema?: string;
-            description: string | null;
-            group_id: string | null;
-            name: string | null;
+            description?: string;
+            group_id?: string;
+            name?: string;
         };
         "Pause-feedResponse": {
             /**

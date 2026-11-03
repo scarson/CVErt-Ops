@@ -129,10 +129,10 @@ async function saveName() {
     return
   }
 
+  // Send only the changed fields: the server keeps the current value of an omitted field.
   const body = {
-    name: nameChanged ? editName.value.trim() : null,
-    description: descChanged ? editDescription.value.trim() : null,
-    group_id: null,
+    ...(nameChanged && { name: editName.value.trim() }),
+    ...(descChanged && { description: editDescription.value.trim() }),
   }
 
   try {

@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -235,7 +236,11 @@ func TestAdvanceReport(t *testing.T) {
 	lastRun := time.Now().Truncate(time.Microsecond)
 	nextRun := time.Now().Add(24 * time.Hour).Truncate(time.Microsecond)
 
-	if err := s.AdvanceReport(ctx, created.ID, lastRun, nextRun); err != nil {
+	sent := []store.DigestSentCVE{
+		{CVEID: "CVE-2025-0001", DateModifiedCanonical: lastRun.Add(-time.Minute)},
+	}
+
+	if err := s.AdvanceReport(ctx, created.ID, lastRun, nextRun, sent); err != nil {
 		t.Fatalf("AdvanceReport: %v", err)
 	}
 
@@ -254,6 +259,34 @@ func TestAdvanceReport(t *testing.T) {
 	}
 	if !got.NextRunAt.Equal(nextRun) {
 		t.Errorf("NextRunAt = %v, want %v", got.NextRunAt, nextRun)
+	}
+	var gotSent []store.DigestSentCVE
+	if err := json.Unmarshal(got.RescanSentCves, &gotSent); err != nil {
+		t.Fatalf("unmarshal rescan_sent_cves %s: %v", got.RescanSentCves, err)
+	}
+	if len(gotSent) != 1 || gotSent[0].CVEID != sent[0].CVEID ||
+		!gotSent[0].DateModifiedCanonical.Equal(sent[0].DateModifiedCanonical) {
+		t.Errorf("rescan_sent_cves = %+v, want %+v", gotSent, sent)
+	}
+}
+
+func TestAdvanceReport_NilSentStoresEmptyArray(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ReportOrgNilSent")
+	created := mustCreateScheduledReport(t, s, ctx, org.ID, "ToAdvanceNilSent")
+
+	if err := s.AdvanceReport(ctx, created.ID, time.Now(), time.Now().Add(24*time.Hour), nil); err != nil {
+		t.Fatalf("AdvanceReport: %v", err)
+	}
+	got, err := s.GetScheduledReport(ctx, org.ID, created.ID)
+	if err != nil {
+		t.Fatalf("GetScheduledReport after advance: %v", err)
+	}
+	if string(got.RescanSentCves) != "[]" {
+		t.Errorf("rescan_sent_cves = %s, want []", got.RescanSentCves)
 	}
 }
 

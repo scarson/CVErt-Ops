@@ -226,15 +226,40 @@ func (s *Store) InsertDigestDelivery(ctx context.Context, orgID uuid.UUID, repor
 // DigestCVEsRow is the row returned by DigestCVEs.
 type DigestCVEsRow = generated.DigestCVEsRow
 
-// DigestCVEs returns CVEs modified since the given time, optionally filtered by severity.
-// Uses bypass-RLS (worker context). Returns up to 500 rows sorted by severity desc.
-func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string) ([]DigestCVEsRow, error) {
+// DigestSentCVE identifies one version of a CVE that a digest has already sent.
+// date_modified_canonical changes only when the CVE's material content does.
+type DigestSentCVE struct {
+	CVEID                 string    `json:"cve_id"`
+	DateModifiedCanonical time.Time `json:"date_modified_canonical"`
+}
+
+// marshalDigestSentCVEs encodes sent CVE versions as a JSON array; nil encodes as [].
+func marshalDigestSentCVEs(sent []DigestSentCVE) (json.RawMessage, error) {
+	if sent == nil {
+		sent = []DigestSentCVE{}
+	}
+	raw, err := json.Marshal(sent)
+	if err != nil {
+		return nil, fmt.Errorf("marshal sent digest CVEs: %w", err)
+	}
+	return raw, nil
+}
+
+// DigestCVEs returns CVEs modified since the given time, optionally filtered by severity,
+// leaving out the CVE versions in sent. Uses bypass-RLS (worker context).
+// Returns up to 500 rows sorted by severity desc.
+func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
+	sentJSON, err := marshalDigestSentCVEs(sent)
+	if err != nil {
+		return nil, fmt.Errorf("digest cves: %w", err)
+	}
 	var result []DigestCVEsRow
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+	err = s.withBypassTx(ctx, func(q *generated.Queries) error {
 		var err error
 		result, err = q.DigestCVEs(ctx, generated.DigestCVEsParams{
 			DateModifiedCanonical: since,
 			Column2:               severities,
+			Column3:               sentJSON,
 		})
 		return err
 	})

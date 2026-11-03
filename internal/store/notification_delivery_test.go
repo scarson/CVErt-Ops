@@ -940,7 +940,7 @@ func TestDigestCVEs(t *testing.T) {
 	}
 
 	// Test 1: No severity filter — should return D001 and D002 (not D003, too old).
-	all, err := s.DigestCVEs(ctx, since, nil)
+	all, err := s.DigestCVEs(ctx, since, nil, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs(all): %v", err)
 	}
@@ -966,7 +966,7 @@ func TestDigestCVEs(t *testing.T) {
 	}
 
 	// Test 2: Severity filter [critical, high] — only D001 should match.
-	filtered, err := s.DigestCVEs(ctx, since, []string{"critical", "high"})
+	filtered, err := s.DigestCVEs(ctx, since, []string{"critical", "high"}, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs(critical,high): %v", err)
 	}
@@ -1024,7 +1024,7 @@ func TestDigestCVEs_ExcludesRejectedAndWithdrawn(t *testing.T) {
 		t.Fatalf("insert published CVE: %v", err)
 	}
 
-	rows, err := s.DigestCVEs(ctx, since, nil)
+	rows, err := s.DigestCVEs(ctx, since, nil, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs: %v", err)
 	}
@@ -1048,6 +1048,44 @@ func TestDigestCVEs_ExcludesRejectedAndWithdrawn(t *testing.T) {
 	}
 	if !foundPublished {
 		t.Error("published CVE should be included in DigestCVEs")
+	}
+}
+
+func TestDigestCVEs_ExcludesSentVersions(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	since := time.Now().Add(-1 * time.Hour)
+	stampA := time.Now().Add(-10 * time.Minute).Truncate(time.Microsecond)
+	stampB := time.Now().Add(-5 * time.Minute).Truncate(time.Microsecond)
+	s.SeedTestCVE(t, "CVE-2025-SENT-A", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stampA})
+	s.SeedTestCVE(t, "CVE-2025-SENT-B", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stampB})
+
+	// A's current version was sent; B was sent at an earlier version only.
+	sent := []store.DigestSentCVE{
+		{CVEID: "CVE-2025-SENT-A", DateModifiedCanonical: stampA},
+		{CVEID: "CVE-2025-SENT-B", DateModifiedCanonical: stampB.Add(-time.Minute)},
+	}
+	rows, err := s.DigestCVEs(ctx, since, nil, sent)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+
+	var gotB *store.DigestCVEsRow
+	for i, row := range rows {
+		switch row.CveID {
+		case "CVE-2025-SENT-A":
+			t.Error("CVE-2025-SENT-A: its current version was already sent and should be excluded")
+		case "CVE-2025-SENT-B":
+			gotB = &rows[i]
+		}
+	}
+	if gotB == nil {
+		t.Fatal("CVE-2025-SENT-B: a version other than the sent one should be included")
+	}
+	if !gotB.DateModifiedCanonical.Equal(stampB) {
+		t.Errorf("CVE-2025-SENT-B date_modified_canonical = %v, want %v", gotB.DateModifiedCanonical, stampB)
 	}
 }
 
@@ -1086,7 +1124,7 @@ func TestDigestCVEs_SortOrder(t *testing.T) {
 		}
 	}
 
-	rows, err := s.DigestCVEs(ctx, since, nil)
+	rows, err := s.DigestCVEs(ctx, since, nil, nil)
 	if err != nil {
 		t.Fatalf("DigestCVEs: %v", err)
 	}

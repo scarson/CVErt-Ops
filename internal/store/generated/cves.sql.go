@@ -56,11 +56,17 @@ func (q *Queries) DeleteEPSSStaging(ctx context.Context, cveID string) error {
 
 const digestCVEs = `-- name: DigestCVEs :many
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, date_modified_canonical
 FROM cves
 WHERE date_modified_canonical > $1
   AND status NOT IN ('rejected', 'withdrawn')
   AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_to_recordset($3::jsonb) AS sent(cve_id text, date_modified_canonical timestamptz)
+      WHERE sent.cve_id = cves.cve_id
+        AND sent.date_modified_canonical = cves.date_modified_canonical
+  )
 ORDER BY
     CASE severity
         WHEN 'critical' THEN 1
@@ -76,23 +82,27 @@ LIMIT 500
 type DigestCVEsParams struct {
 	DateModifiedCanonical time.Time
 	Column2               []string
+	Column3               json.RawMessage
 }
 
 type DigestCVEsRow struct {
-	CveID              string
-	Severity           sql.NullString
-	CvssV3Score        sql.NullFloat64
-	CvssV4Score        sql.NullFloat64
-	EpssScore          sql.NullFloat64
-	DescriptionPrimary sql.NullString
-	ExploitAvailable   bool
-	InCisaKev          bool
+	CveID                 string
+	Severity              sql.NullString
+	CvssV3Score           sql.NullFloat64
+	CvssV4Score           sql.NullFloat64
+	EpssScore             sql.NullFloat64
+	DescriptionPrimary    sql.NullString
+	ExploitAvailable      bool
+	InCisaKev             bool
+	DateModifiedCanonical time.Time
 }
 
-// Fetch CVEs modified since $1, optionally filtered by severity.
+// Fetch CVEs modified since $1, optionally filtered by severity, leaving out the
+// CVE versions in $3: a JSON array of {"cve_id", "date_modified_canonical"}
+// objects a previous digest of the report already sent.
 // Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
 func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]DigestCVEsRow, error) {
-	rows, err := q.db.QueryContext(ctx, digestCVEs, arg.DateModifiedCanonical, pq.Array(arg.Column2))
+	rows, err := q.db.QueryContext(ctx, digestCVEs, arg.DateModifiedCanonical, pq.Array(arg.Column2), arg.Column3)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +119,7 @@ func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]Diges
 			&i.DescriptionPrimary,
 			&i.ExploitAvailable,
 			&i.InCisaKev,
+			&i.DateModifiedCanonical,
 		); err != nil {
 			return nil, err
 		}

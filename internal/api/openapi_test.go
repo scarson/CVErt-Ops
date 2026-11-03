@@ -13,7 +13,10 @@ import (
 	"github.com/scarson/cvert-ops/internal/config"
 )
 
-func TestOpenAPISpec(t *testing.T) {
+// buildOpenAPISpec serves the production huma spec merged with the spec-only
+// Chi route declarations and returns it decoded.
+func buildOpenAPISpec(t *testing.T) map[string]any {
+	t.Helper()
 	cfg := &config.Config{
 		JWTSecret:   "test-secret-for-openapi-generation",
 		ExternalURL: "http://localhost:8080",
@@ -23,7 +26,7 @@ func TestOpenAPISpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	handler := srv.Handler()
 
@@ -40,13 +43,16 @@ func TestOpenAPISpec(t *testing.T) {
 		t.Fatalf("GET /api/v1/openapi.json: status %d, body: %s", rec.Code, rec.Body.String())
 	}
 
-	body := rec.Body.Bytes()
-
 	// Verify valid JSON.
 	var spec map[string]any
-	if err := json.Unmarshal(body, &spec); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
+	return spec
+}
+
+func TestOpenAPISpec(t *testing.T) {
+	spec := buildOpenAPISpec(t)
 
 	// Verify OpenAPI 3.1 version.
 	if v, ok := spec["openapi"]; !ok {
@@ -197,5 +203,64 @@ func TestOpenAPISpec(t *testing.T) {
 			t.Fatalf("write %s: %v", outPath, err)
 		}
 		t.Logf("wrote %s (%d bytes)", outPath, len(pretty))
+	}
+}
+
+// TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
+// handlers answer 202 Accepted (or 201 Created) document that status, and do
+// not document a 200 the handler never sends.
+func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	paths := spec["paths"].(map[string]any)
+
+	tests := []struct {
+		path         string
+		method       string
+		wantStatuses []string
+		wantLocation bool
+	}{
+		{path: "/admin/reindex", method: "post", wantStatuses: []string{"202"}},
+		{path: "/admin/feeds/{feed}/run", method: "post", wantStatuses: []string{"202"}},
+		{path: "/orgs/{org_id}/ingest", method: "post", wantStatuses: []string{"202"}},
+		{path: "/orgs/{org_id}/invitations", method: "post", wantStatuses: []string{"202"}, wantLocation: true},
+		// 201 when the rule is created ready, 202 when it needs an activation scan.
+		{path: "/orgs/{org_id}/alert-rules", method: "post", wantStatuses: []string{"201", "202"}, wantLocation: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			item, ok := paths[tc.path].(map[string]any)
+			if !ok {
+				t.Fatalf("path %s missing from spec", tc.path)
+			}
+			op, ok := item[tc.method].(map[string]any)
+			if !ok {
+				t.Fatalf("%s %s missing from spec", tc.method, tc.path)
+			}
+			responses := op["responses"].(map[string]any)
+
+			if _, ok := responses["200"]; ok {
+				t.Errorf("documents 200, which the handler never returns")
+			}
+			if _, ok := responses["default"]; !ok {
+				t.Errorf("no default error response documented")
+			}
+			for _, status := range tc.wantStatuses {
+				resp, ok := responses[status].(map[string]any)
+				if !ok {
+					t.Errorf("response %s not documented", status)
+					continue
+				}
+				content, _ := resp["content"].(map[string]any)
+				if _, ok := content["application/json"]; !ok {
+					t.Errorf("response %s has no application/json body", status)
+				}
+				if tc.wantLocation {
+					headers, _ := resp["headers"].(map[string]any)
+					if _, ok := headers["Location"]; !ok {
+						t.Errorf("response %s does not document the Location header", status)
+					}
+				}
+			}
+		})
 	}
 }

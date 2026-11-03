@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -285,7 +286,8 @@ type specCreateInvitationInput struct {
 	Body  createInvitationBody `json:"body"`
 }
 type specCreateInvitationOutput struct {
-	Body invitationEntry
+	Location string `header:"Location"`
+	Body     invitationEntry
 }
 
 type specListInvitationsInput struct {
@@ -360,11 +362,12 @@ func registerOrgsSpecOps(api huma.API) {
 	}, noopHandler[specRemoveMemberInput, struct{}]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-invitation",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/invitations",
-		Summary:     "Create an invitation",
-		Tags:        []string{"Invitations"},
+		OperationID:   "create-invitation",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/invitations",
+		Summary:       "Create an invitation",
+		Tags:          []string{"Invitations"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[specCreateInvitationInput, specCreateInvitationOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -666,12 +669,31 @@ type specUnbindRuleChannelInput struct {
 }
 
 func registerAlertRulesSpecOps(api huma.API) {
+	// The handler answers 201 for a rule that is ready at creation and 202 for
+	// one that needs an activation scan first; both carry the rule and Location.
+	// huma adds its default error response only to operations with a single
+	// response, so this operation declares it explicitly.
+	schemas := api.OpenAPI().Components.Schemas
+	ruleSchema := schemas.Schema(reflect.TypeFor[alertRuleEntry](), true, "")
+	errSchema := schemas.Schema(reflect.TypeFor[huma.ErrorModel](), true, "")
 	huma.Register(api, huma.Operation{
-		OperationID: "create-alert-rule",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/alert-rules",
-		Summary:     "Create an alert rule",
-		Tags:        []string{"Alert Rules"},
+		OperationID:   "create-alert-rule",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/alert-rules",
+		Summary:       "Create an alert rule",
+		Tags:          []string{"Alert Rules"},
+		DefaultStatus: http.StatusCreated,
+		Responses: map[string]*huma.Response{
+			"202": {
+				Description: "Accepted: the rule is activating while its initial scan runs",
+				Headers:     map[string]*huma.Param{"Location": {Schema: &huma.Schema{Type: huma.TypeString}}},
+				Content:     map[string]*huma.MediaType{"application/json": {Schema: ruleSchema}},
+			},
+			"default": {
+				Description: "Error",
+				Content:     map[string]*huma.MediaType{"application/problem+json": {Schema: errSchema}},
+			},
+		},
 	}, noopHandler[specCreateAlertRuleInput, specCreateAlertRuleOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1355,11 +1377,12 @@ func registerAISpecOps(api huma.API) {
 
 func registerIngestSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "ingest-cves",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/ingest",
-		Summary:     "Ingest CVE patches",
-		Tags:        []string{"Ingest"},
+		OperationID:   "ingest-cves",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/ingest",
+		Summary:       "Ingest CVE patches",
+		Tags:          []string{"Ingest"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct {
 		OrgID string `path:"org_id" format:"uuid"`
 		Body  ingestRequest
@@ -1398,11 +1421,12 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "trigger-feed",
-		Method:      http.MethodPost,
-		Path:        "/admin/feeds/{feed}/run",
-		Summary:     "Trigger feed sync",
-		Tags:        []string{"Admin Feeds"},
+		OperationID:   "trigger-feed",
+		Method:        http.MethodPost,
+		Path:          "/admin/feeds/{feed}/run",
+		Summary:       "Trigger feed sync",
+		Tags:          []string{"Admin Feeds"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
@@ -1460,11 +1484,12 @@ func registerAdminFeedsSpecOps(api huma.API) {
 
 func registerAdminSystemSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "admin-reindex",
-		Method:      http.MethodPost,
-		Path:        "/admin/reindex",
-		Summary:     "Trigger search reindex",
-		Tags:        []string{"Admin System"},
+		OperationID:   "admin-reindex",
+		Method:        http.MethodPost,
+		Path:          "/admin/reindex",
+		Summary:       "Trigger search reindex",
+		Tags:          []string{"Admin System"},
+		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct{}, struct {
 		Body struct {
 			JobID string `json:"job_id"`

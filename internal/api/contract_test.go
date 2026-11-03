@@ -179,6 +179,55 @@ func TestDecodeJSON_ValidInput(t *testing.T) {
 	}
 }
 
+// TestClearableField_Decode verifies that a clearableField tells an omitted
+// key, a JSON null and a value apart.
+func TestClearableField_Decode(t *testing.T) {
+	type body struct {
+		GroupID clearableField[string] `json:"group_id,omitempty"`
+	}
+
+	tests := []struct {
+		name      string
+		input     string
+		wantSent  bool
+		wantValue *string
+	}{
+		{name: "omitted", input: `{}`, wantSent: false},
+		{name: "null", input: `{"group_id":null}`, wantSent: true},
+		{name: "value", input: `{"group_id":"g1"}`, wantSent: true, wantValue: new("g1")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(tt.input))
+			var dst body
+			if detail := decodeJSON(r, &dst); detail != nil {
+				t.Fatalf("unexpected error: %v", detail)
+			}
+			if dst.GroupID.Sent != tt.wantSent {
+				t.Errorf("Sent = %v, want %v", dst.GroupID.Sent, tt.wantSent)
+			}
+			switch {
+			case tt.wantValue == nil && dst.GroupID.Value != nil:
+				t.Errorf("Value = %q, want nil", *dst.GroupID.Value)
+			case tt.wantValue != nil && (dst.GroupID.Value == nil || *dst.GroupID.Value != *tt.wantValue):
+				t.Errorf("Value = %v, want %q", dst.GroupID.Value, *tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestClearableField_DecodeWrongType verifies that a value of the wrong JSON
+// type is rejected rather than treated as null.
+func TestClearableField_DecodeWrongType(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"group_id":42}`))
+	var dst struct {
+		GroupID clearableField[string] `json:"group_id,omitempty"`
+	}
+	if detail := decodeJSON(r, &dst); detail == nil {
+		t.Fatal("expected error detail for a number in a string field")
+	}
+}
+
 func TestWriteList_EmptySlice(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeList[string](rec, nil, "")

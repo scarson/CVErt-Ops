@@ -3,11 +3,13 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -105,6 +107,38 @@ func decodeJSON(r *http.Request, dst any) *huma.ErrorDetail {
 		}
 	}
 	return nil
+}
+
+// clearableField is a PATCH request field that can be left unchanged, cleared
+// or set. Sent is false when the key is omitted; Value is nil when the key is
+// JSON null. A pointer field cannot make this distinction, because
+// encoding/json decodes both an omitted key and null to a nil pointer.
+type clearableField[T any] struct {
+	Sent  bool
+	Value *T
+}
+
+// UnmarshalJSON records that the key was sent and decodes its value. encoding/json
+// calls it only for keys present in the input, including those set to null.
+func (f *clearableField[T]) UnmarshalJSON(data []byte) error {
+	f.Sent = true
+	if bytes.Equal(data, []byte("null")) {
+		f.Value = nil
+		return nil
+	}
+	var v T
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	f.Value = &v
+	return nil
+}
+
+// Schema documents the field as its value type or null.
+func (clearableField[T]) Schema(r huma.Registry) *huma.Schema {
+	s := r.Schema(reflect.TypeFor[T](), true, "")
+	s.Nullable = true
+	return s
 }
 
 // listResponse is the standard list envelope for all endpoints.

@@ -35,8 +35,8 @@ type createChannelBody struct {
 
 // patchChannelBody uses pointer fields so only supplied keys are updated.
 type patchChannelBody struct {
-	Name   *string          `json:"name"`
-	Config *json.RawMessage `json:"config"`
+	Name   *string          `json:"name,omitempty"`
+	Config *json.RawMessage `json:"config,omitempty"`
 }
 
 // ChannelEntry is the API shape of a notification channel. It is exported so

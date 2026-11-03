@@ -39,9 +39,9 @@ type createWatchlistBody struct {
 // nil outer pointer = key omitted (no change); non-nil outer, nil inner = JSON null (clear);
 // non-nil outer, non-nil inner = new UUID.
 type patchWatchlistBody struct {
-	Name        *string  `json:"name"`
-	Description *string  `json:"description"`
-	GroupID     **string `json:"group_id"`
+	Name        *string  `json:"name,omitempty"`
+	Description *string  `json:"description,omitempty"`
+	GroupID     **string `json:"group_id,omitempty"`
 }
 
 type watchlistEntry struct {

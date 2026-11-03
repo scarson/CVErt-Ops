@@ -403,6 +403,70 @@ func TestFullForcedPasswordResetWithMFA(t *testing.T) {
 	}
 }
 
+// TestForcedPasswordReset_RejectsChangeBeforeMFA verifies that a pending token
+// from login with pending=["mfa_challenge", "password_reset"] cannot change the
+// password: MFA must be proven first, so password_reset is not yet the next step.
+func TestForcedPasswordReset_RejectsChangeBeforeMFA(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	email, password := "fpr-before-mfa@example.com", "test-password-1234" //nolint:gosec // G101: test credentials
+
+	reg := doRegister(t, ctx, ts, email, password)
+	userID, _ := uuid.Parse(reg.UserID)
+	enrollTOTP(t, ctx, srv, userID)
+	if _, err := db.AdminForcePasswordReset(ctx, userID); err != nil {
+		t.Fatalf("force password reset: %v", err)
+	}
+
+	before, err := db.GetUserByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, email, password)
+	body := parseLoginBody(t, loginResp)
+	pt := cookieValue(loginResp, "mfa_pending_token")
+	loginResp.Body.Close() //nolint:errcheck,gosec
+	if len(body.Pending) < 2 || body.Pending[0] != "mfa_challenge" || body.Pending[1] != "password_reset" {
+		t.Fatalf("expected [mfa_challenge, password_reset], got %v", body.Pending)
+	}
+
+	// Skip the MFA challenge and go straight to change-password.
+	changePWReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
+		ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(`{"new_password":"attacker-chosen-pw-5678"}`))
+	changePWReq.Header.Set("Content-Type", "application/json")
+	changePWReq.Header.Set("X-Requested-By", "CVErt-Ops")
+	changePWReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	changePWResp, err := ts.Client().Do(changePWReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	defer changePWResp.Body.Close() //nolint:errcheck,gosec
+
+	if changePWResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("change password before MFA: got %d, want 401", changePWResp.StatusCode)
+	}
+
+	after, err := db.GetUserByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user after: %v", err)
+	}
+	if after.PasswordHash.String != before.PasswordHash.String {
+		t.Error("password hash changed although MFA was not completed")
+	}
+	status, err := db.GetUserAuthStatus(ctx, userID)
+	if err != nil {
+		t.Fatalf("get auth status: %v", err)
+	}
+	if !status.ForcePasswordReset {
+		t.Error("force_password_reset was cleared although MFA was not completed")
+	}
+}
+
 // ── Full MFA Enrollment Required ──────────────────────────────────────────────
 
 func TestFullMFAEnrollmentRequired(t *testing.T) {

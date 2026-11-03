@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import CreateWatchlistDialog from '@/components/watchlist/CreateWatchlistDialog.vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => unknown>(() => ({ params: {} })),
@@ -91,8 +92,6 @@ async function clickTestId(testId: string) {
 let wrapper: VueWrapper
 
 async function mountDialog(open = true) {
-  const { default: CreateWatchlistDialog } =
-    await import('@/components/watchlist/CreateWatchlistDialog.vue')
   wrapper = mount(CreateWatchlistDialog, {
     props: { open },
     attachTo: document.body,

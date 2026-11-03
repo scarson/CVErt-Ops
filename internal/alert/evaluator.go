@@ -143,6 +143,21 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 
 const candidatePageSize = 1000
 
+// cursorRescanWindow is how far behind the stored cursor each batch/EPSS run starts its
+// candidate scan. The cursor is the evaluator's Go clock at the start of the previous run,
+// while the timestamps it is compared with come from other clocks and are taken before
+// their writer commits: date_epss_updated is Postgres now() (transaction start), and
+// date_modified_canonical is the merge worker's Go clock, read before its upsert. A row
+// stamped before the cursor but committed after the previous run's scan would otherwise
+// never be evaluated. Re-evaluating a CVE is idempotent: alert_events inserts are
+// ON CONFLICT DO NOTHING and fan-out runs only for newly inserted events.
+//
+// The window must exceed clock skew between the app and database hosts plus the longest
+// gap between a writer taking its timestamp and committing. Both are normally well under
+// a second; two minutes leaves a wide margin while at most doubling the candidate set of
+// a batch run, which is scheduled every two minutes.
+const cursorRescanWindow = 2 * time.Minute
+
 // batchConfig parameterizes the shared batch/EPSS evaluation loop.
 type batchConfig struct {
 	feedName      string
@@ -162,6 +177,12 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	}
 	batchTime := time.Now().UTC()
 
+	// A zero cursor means no previous run: scan everything.
+	since := cursor
+	if !since.IsZero() {
+		since = since.Add(-cursorRescanWindow)
+	}
+
 	rules, err := cfg.listRules(ctx)
 	if err != nil {
 		return fmt.Errorf("list rules for %s: %w", cfg.feedName, err)
@@ -173,7 +194,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	var afterID string
 
 	for {
-		candidateIDs, pageErr := cfg.getCandidates(ctx, cursor, afterID, candidatePageSize)
+		candidateIDs, pageErr := cfg.getCandidates(ctx, since, afterID, candidatePageSize)
 		if pageErr != nil {
 			return fmt.Errorf("get %s candidates: %w", cfg.feedName, pageErr)
 		}
@@ -205,7 +226,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 			e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, allCandidateIDs, rule.OrgID, false, false, 0)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, allCandidateIDs, rule.OrgID)
 		if evalErr != nil {
 			e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
 		}
@@ -461,6 +482,32 @@ func (e *Evaluator) evaluateRule(
 	}
 
 	return len(matched), false, len(candidateIDs), nil
+}
+
+// evaluateRuleInChunks runs evaluateRule over candidateIDs in chunks of at most candidateCap
+// IDs. The batch and EPSS paths advance their cursor past every candidate once the run ends,
+// so a rule that hit the cap on the whole change set would never evaluate those CVEs. The
+// candidate query returns at most one row per candidate ID (the only join is the 1:1
+// cve_search_index), so no chunk can exceed the cap. Resolution detection stays correct per
+// chunk because chunks are disjoint. Stops at the first error or partial chunk.
+// Returns (matchCount, partial, candidatesEval, err) summed over the evaluated chunks.
+func (e *Evaluator) evaluateRuleInChunks(
+	ctx context.Context,
+	compiled *dsl.CompiledRule,
+	candidateIDs []string,
+	orgID uuid.UUID,
+) (int, bool, int, error) {
+	var totalMatches, totalEvaluated int
+	for start := 0; start < len(candidateIDs); start += candidateCap {
+		end := min(start+candidateCap, len(candidateIDs))
+		matchCount, partial, candidatesEval, err := e.evaluateRule(ctx, compiled, candidateIDs[start:end], orgID, false, false, 0)
+		totalMatches += matchCount
+		totalEvaluated += candidatesEval
+		if err != nil || partial {
+			return totalMatches, partial, totalEvaluated, err
+		}
+	}
+	return totalMatches, false, totalEvaluated, nil
 }
 
 // queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is

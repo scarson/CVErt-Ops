@@ -2185,6 +2185,105 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 
 ---
 
+## Fix — Change-Password Pending-Step Order
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/change-password-pending-order`
+
+`POST /auth/change-password` in restricted mode accepted a pending token when `password_reset` appeared anywhere in its pending list. Login for a user with MFA and `force_password_reset` issues `["mfa_challenge", "password_reset"]`, so a holder of the password alone could change it before passing MFA: the password changed, `force_password_reset` was cleared, remember-device tokens were deleted, and the real user was locked out. The handler now resolves the pending token through `validatePendingToken(token, "password_reset")`, which requires the step to be `Pending[0]`, as the MFA challenge and verify endpoints already do (phase 11 MFA design, "Fixed completion order (most sensitive first)").
+
+### Other pending-token consumers
+
+- **MFA challenge and verify** (`validatePendingToken(…, "mfa_challenge")`) and **enrollment setup/confirm via pending token** (`resolveEnrollmentUserID`) already require their step at `Pending[0]`.
+- **Enrollment confirm trusted any pending cookie**: `clearEnrollmentPending`, called after TOTP and email OTP confirm, parsed the `mfa_pending_token` cookie without checking `Pending[0]`, the token version, or that the token's user was the user who enrolled. `resolveEnrollmentUserID` tries the access token first and never looked at the cookie then, so a request with one account's access token and another account's pending cookie removed `mfa_enrollment_required` from the second account's token and issued it full tokens without that account enrolling a factor. The email OTP setup handler likewise reissued any pending cookie with a fresh TTL. `resolveEnrollmentUserID` now also returns the pending claims, set only when the cookie passes `validateEnrollmentPendingToken` (next step `mfa_enrollment_required`, `token_version` equal to the DB value) and belongs to the resolved user. `clearEnrollmentPending` and the email OTP setup reissue act only on those claims. A cookie that fails these checks alongside a valid access token is ignored, not rejected, so a stale cookie from another login in the same browser does not block the signed-in user's own enrollment. Enrollment does not change `token_version`, so the claims validated before the credential is stored are still current when the step is cleared.
+- **Stale pending tokens could change the password**: the restricted change-password path did not compare the pending token's `token_version` with the DB, unlike MFA verify and enrollment. It now returns 401 on a mismatch.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/api`
+- **Tests:** `internal/api` password, forced-reset, enrollment-order and pending-token tests (40) pass with `TESTCONTAINERS_RYUK_DISABLED=true`, including `TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion` (pending `["password_reset", "mfa_enrollment_required"]`). Full suite not run.
+- **New test:** `TestForcedPasswordReset_RejectsChangeBeforeMFA` — failed with 200 before the fix, passes with 401 after; also checks the password hash and `force_password_reset` are unchanged
+- **Enrollment and token_version follow-up:** `internal/api` enrollment, email OTP, TOTP, change-password and forced-reset tests (47) pass. New tests, each seen failing first: `TestEnrollmentConfirm_IgnoresOtherUsersPendingToken` (another account's cookie got an access token), `TestEnrollmentConfirm_IgnoresOutOfOrderPendingToken`, `TestEmailOTPSetup_IgnoresOtherUsersPendingToken`, `TestChangePassword_RestrictedSession_RejectsStaleTokenVersion` (got 200)
+
+---
+
+## Fix — Alert Evaluator Cursor Re-scan Window
+
+> **Date:** 2026-11-03
+> **Commits:** `95bb14a`..`843acba` on `fix/alert-cursor-clock-skew`
+> **Trigger:** `TestEvaluatorEPSS` failed once in a full suite run: `OnlyEPSSRulesEvaluated` and `MixedEPSSAndCVSSRule` found 0 alert events where they expected 1, and passed on rerun.
+
+### What was built
+
+| Component | Location | Description |
+|-----------|----------|-------------|
+| Re-scan window | `internal/alert/evaluator.go` (`cursorRescanWindow`, `evaluateBatchPath`) | Batch and EPSS runs select candidates from 2 minutes behind the stored cursor |
+| Regression tests | `internal/alert/evaluator_test.go` (`TestEvaluatorCursor_RowStampedBeforeCursor`, `TestEvaluatorCursor_RescanDoesNotRedispatch`) | A row stamped 1 s before the cursor is still evaluated on both paths; a re-scanned CVE gets no second event or fan-out |
+| Pitfall | `dev/implementation-pitfalls.md` NOTIFY-20 | Evaluator cursor skips rows stamped before it |
+
+### Key implementation decisions
+
+- **Overlap window instead of a database-clock or max-seen cursor** — the cursor is the evaluator's Go clock, `date_epss_updated` is Postgres `now()` (transaction start), and `date_modified_canonical` is the merge worker's Go clock read before its upsert. A database-clock cursor fixes only the EPSS path's clock mismatch; a max-seen cursor fixes skew on both paths. Neither covers a writer that commits after the evaluator's scan with a timestamp before the cursor. The overlap covers both, and re-evaluation is idempotent (`alert_events` `ON CONFLICT DO NOTHING`, fan-out only on insert).
+- **Two minutes** — skew and commit lag are normally well under a second; two minutes is one batch scheduling interval, so a batch run's candidate set at most doubles. A larger candidate set makes the 5,000-row candidate cap easier to reach.
+
+### Gotchas discovered
+
+- **Skew was not observable after the fact** — after a Docker Desktop restart the Postgres container clock read about 130 ms ahead of the host (±120 ms), so the lag at failure time could not be measured. The deterministic test reproduces the mechanism instead.
+- **Same pattern elsewhere** — the digest worker sets `last_run_at` from a Go timestamp taken after its query (`internal/notify/digest.go`), and partial (cap-exceeded) rule runs still advance the alert cursor. Both are tracked as separate tasks.
+
+### Quality checks
+
+- **Red:** with the pre-fix `evaluator.go`, both subtests of `TestEvaluatorCursor_RowStampedBeforeCursor` found 0 events and `TestEvaluatorCursor_RescanDoesNotRedispatch` saw one batch run instead of two.
+- **Tests:** `go test ./internal/alert/ -count=1` passes (40 top-level tests, 537 s).
+- **Lint:** `go vet` and `golangci-lint run ./internal/alert/...` clean.
+
+---
+
+## Admin Search Reindex — Endpoint Fix + Worker
+
+> **Date:** 2026-11-02
+> **Commits:** `b505bb4`, `b57226e` on `fix/admin-reindex` (branched from `dev` at `2dcffc8`)
+> **Spec:** PLAN.md §17 (admin actions: rebuild search index); `dev/plans/2026-03-10-phase8-ops-operate-design.md` (System section: `POST /api/v1/admin/reindex`, 202 async via job queue)
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Enqueue fix | `internal/api/admin_system.go` | Enqueues `{}` instead of a nil payload (`job_queue.payload` is NOT NULL, so every call had returned 500) on `merge.SearchReindexQueue` |
+| Search index rebuild | `internal/merge/reindex.go` | `RebuildSearchIndex(ctx, store, batchSize)`: keyset walk over `cves` by `cve_id`; per batch, one transaction takes the merge advisory locks, reads inputs, reruns `UpsertCVESearchIndex` |
+| Rebuild queries | `internal/store/queries/cves.sql` | `ListCVEIDsAfter`, `LockCVEAdvisoryKeys` (ascending key order), `ListSearchIndexInputs` (description, CWE IDs, raw package names) |
+| Worker handler | `cmd/cvert-ops/main.go` | `searchReindexHandler` on `system_reindex`, batch size 200; `registerMaintenanceJobs` registers it and `retention_cleanup` for both `serve` and `worker` |
+| Sorted FTS package names | `internal/merge/pipeline.go` | `ftsPackageNames` de-duplicates and sorts package names bytewise for both merge and the rebuild, as PLAN.md §5.3 requires for arrays in the FTS document |
+| Job outcome after deadline | `internal/worker/pool.go` | `processOne` records `CompleteJob`/`FailJob` on a context detached from the job's (10 s `recordOutcomeTimeout`) |
+
+### Key implementation decisions
+
+- **Implement rather than remove** — Sam chose to keep the endpoint because PLAN.md §17 lists "rebuild search index" as an MVP admin action. Merge already rewrites the FTS row on every ingest, so a rebuild is needed only when the tsvector recipe changes or rows were written outside merge.
+- **Reuse the merge tsvector recipe** — the rebuild calls the generated `UpsertCVESearchIndex`, so the weighting (A description, B CWE IDs, C package names, D CVE ID) has one definition. A set-based `INSERT ... SELECT` would have been faster but would duplicate the recipe in SQL.
+- **Advisory locks before the read** — each batch transaction locks every CVE's `merge.CVEAdvisoryKey` before it reads. Under READ COMMITTED the read sees every merge that committed before the locks were granted, so the rebuild never writes a tsvector built from pre-merge text. Merge's late-binding PK migration takes the destination lock and then the source lock, out of key order, so a batch holding the source and waiting on the destination deadlocks with it. Postgres aborts one transaction; when it aborts the batch, the rebuild retries that batch (up to `maxBatchAttempts` = 3, only on SQLSTATE 40P01).
+- **Batch size 200** — per-CVE transactions would cost ~6 round trips per CVE and could exceed the 10-minute `maxJobDuration` on a full corpus. Batches keep a few hundred statements per transaction while holding at most 200 advisory locks at a time, well under the shared lock table (`max_locks_per_transaction` × connections). Measured throughput: 20k synthetic CVEs (NVD-length descriptions, 2 packages each) in 8.7 s, 0.43 ms/CVE, so ~2 m 10 s for 300k CVEs, inside the 10-minute cap with a 4.6× margin. The rebuild does not resume across attempts; if the corpus grows past that margin, it needs a persisted cursor or set-based upserts.
+- **Package names sorted in Go, not SQL** — an `ORDER BY` in `ListSearchIndexInputs` follows the database collation, so under a linguistic collation (`en-US-x-icu`) "alpha" sorts before "Zebra" while merge's bytewise sort puts "Zebra" first, and the rebuild would move lexeme positions. Both paths go through `ftsPackageNames`.
+- **Shared queue constant** — `merge.SearchReindexQueue` is used by the API enqueue and both worker registrations. The original bug was an enqueue with no consumer.
+
+### Gotchas discovered
+
+- **Package-name order made the FTS document unstable** — `collectPackageNames` kept feed insertion order, so a feed reordering its affected packages changed tsvector positions, and a rebuild from `cve_affected_packages` could not reproduce merge's document. Sorting fixes both. Existing rows pick up the sorted form on their next merge or on a rebuild.
+- **`sqlc generate` on Windows touches every generated file** — with `core.autocrlf=true` the checkout is CRLF and sqlc writes LF. Only `cves.sql.go` had content changes; the rest were restored with `git restore -- internal/store/generated ':!internal/store/generated/cves.sql.go'`.
+- **OpenAPI spec documents 200, not 202** — no operation in `openapi_spec.go` sets `DefaultStatus`, so every 202 endpoint (reindex, feed trigger, ingest, invitations, alert-rule activation) is documented as 200. Fixed on a separate branch, `fix/openapi-async-status`.
+- **The worker pool lost job outcomes at the deadline** — `processOne` called `FailJob`/`CompleteJob` with the job's own context. A handler that ran to `maxJobDuration` left the job `running`, the status write failed with `context deadline exceeded`, and stale recovery requeued it after 10 minutes regardless of `max_attempts`. For the reindex job that meant a restart loop holding `system:reindex`, so every admin call returned 409. Found by the codex review; fixed in the pool for all queues.
+- **Stale recovery ignores `max_attempts`** — `RecoverStaleJobs` resets any job stuck in `running` to `pending` without checking attempts, so a job that crashes its worker every time is retried forever. Not changed here.
+- **`internal/api` exceeds the 600 s package timeout** — 650 tests each start their own Postgres container. On this machine the package took 1112 s when run alone (with 55 other containers on the daemon), so `go test ./... -timeout=600s` always fails there. A test binary killed by the timeout panic skips `t.Cleanup`, and with `TESTCONTAINERS_RYUK_DISABLED=true` its containers stay running.
+
+### Quality checks
+
+- **go build ./...:** Clean
+- **golangci-lint run ./internal/merge/... ./internal/worker/... ./internal/api/... ./cmd/...:** 0 issues
+- **Tests:** full suite at `fad0ed0`: 33 packages pass, `internal/api` timed out at 600 s. At `b57226e` (review fixes): `internal/merge`, `internal/worker`, `internal/ingest`, `cmd/cvert-ops` pass; `internal/api` passes with `-timeout=45m` (1112 s).
+- **Review:** `codex exec` (gpt-6.1-sol, high) found three medium issues, each reproduced: rebuild progress lost at the job deadline (root cause in the worker pool, fixed there), package order following the database collation (fixed), and a deadlock with merge's PK migration aborting the rebuild (fixed with a batch retry). It also noted that the end-to-end test registered its own handler (fixed with `registerMaintenanceJobs`).
+- **New tests:** `TestAdminReindex_EnqueuesSearchReindexJob` (202, job on the consumed queue, 409 on repeat — failed with 500 before the fix), `TestAdminReindex_RequiresSiteAdmin`, `TestRebuildSearchIndex_RestoresMissingAndStaleRows` (batch boundary, missing + stale rows match merge output), `TestRebuildSearchIndex_EmptyCorpus`, `TestRebuildSearchIndex_WaitsForMergeLock`, `TestSearchReindexJob_RunsAndRebuildsIndex` (enqueue → `worker.Pool` with the production registrations → job `succeeded` → row rebuilt), `TestCollectPackageNames/sorted_lexicographically`, `TestRebuildSearchIndex_PackageOrderIgnoresCollation` (`en-US-x-icu` column), `TestRebuildSearchIndex_RetriesBatchAfterDeadlock` (deterministic lock cycle from a second session), `TestProcessOne_HandlerTimesOut_JobRecordedDead`, `TestProcessOne_HandlerSucceedsAtDeadline_JobRecordedSucceeded`
+
+---
+
 ## Web SPA Dependency Audit — npm Advisories (2026-11-03)
 
 Cleared the critical and all high `npm audit` advisories in `web/` with in-range lockfile updates. Full triage, reachability per advisory, and the supply-chain checks: `dev/2026-11-03-web-npm-audit-triage.md`.
@@ -2199,7 +2298,7 @@ Cleared the critical and all high `npm audit` advisories in `web/` with in-range
 
 - **No `npm audit fix --force`**: its suggestions were downgrades (`openapi-typescript` 6.7.6, `@vue/eslint-config-typescript` 4.0.0).
 - **`@redocly/openapi-core` pinned to 1.34.22, not 1.34.23**: 1.34.23 was one day old.
-- **20 moderates left**: `minimatch` <11 and `glob` <14.0.2, lint/test tooling only, not reachable, and no patched release fits the parents' ranges. Fixing them needs `overrides`, which is Sam's call.
+- **20 moderates left**: `minimatch` <11 and `glob` <14.0.2, lint/test tooling only, not reachable, and no patched release fits the parents' ranges. Sam accepted them until upstream moves; no `overrides`.
 
 ### Gotchas discovered
 
@@ -2211,6 +2310,67 @@ Cleared the critical and all high `npm audit` advisories in `web/` with in-range
 - `npm run type-check`, `npm run test:unit -- --run --testTimeout=30000` (430 tests), `npm run lint`, `npm run build`: all pass with clean output.
 - `npm audit`: 20 moderate, 0 high, 0 critical (was 24 / 10 / 1).
 - Go suite not run (no Go changes).
+
+---
+
+## Test Reliability — Rate-Limit Spacing and Vitest Cold Imports
+
+**Date:** 2026-11-03
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Rate-limit test | `internal/feed/generic/adapter_test.go` | `TestAdapter_RateLimiting` delays the first request 150ms in the transport and asserts the second request arrives at least 499ms after the first `Fetch` began |
+| Vitest component imports | 24 files under `web/src/**/__tests__/` | Components and views are imported statically at the top of the file instead of by `await import()` inside each test |
+| Router guard tests | `web/src/router/__tests__/guards.test.ts` | A top-level `await` loads every lazily imported route view while the file is collected |
+
+### Key implementation decisions
+
+- **The limiter was correct; the assertion measured the wrong interval.** With rate 2 and burst 1, `rate.Limiter` guarantees that the second `Wait` returns 500ms after the first `Wait` began. The test compared arrival times at the server, and that gap shrinks by however much longer the first request took to arrive, for example the first TCP dial on a loaded host. On Windows it measured 397.5ms. The 1ms allowance covers `durationFromTokens` truncating its float result to whole nanoseconds.
+- **Cold import cost belongs in collection, not in a test.** Vitest applies `testTimeout` to each test but not to collecting a file, so a static import or a top-level `await` keeps the per-file cold transform and import out of every test's budget. The global timeout was left at the 5s default.
+
+### Gotchas discovered
+
+- **A timed-out vitest test keeps running.** Vitest cannot cancel the test's async body. In `WatchlistDetailView.test.ts` the timed-out loading test later finished its import, mounted the view and consumed the next test's `mockResolvedValueOnce`. Its `mockImplementation(() => new Promise(() => {}))` also stayed in place, because `vi.clearAllMocks()` clears calls, not implementations. The 404 test's request then hung and it showed "Loading watchlist...".
+- **Every slow vitest test was the first in its file** (24 of 24 over 500ms; 1.4–3.8s on an idle machine), so the timeouts moved between files from run to run.
+
+### Quality checks
+
+- **Rate-limit test:** a 150ms first-request delay reproduced the failure (347.9ms) with the old assertion. The fixed test passes 20 of 20 runs and `-race`, and fails (152ms) with the limiter set 1000x faster. golangci-lint: 0 issues.
+- **Vitest:** at `--testTimeout=1000`, the old tests reproduced the WatchlistDetailView cascade and the guards timeout, and the fixed tests pass. On an idle machine, summed test time fell from 83.5s to 11.1s and the slowest test from 3835ms to 276ms. With three full suites run at once: the old tests failed 35 tests per run (slowest 12.5s); the fixed tests passed all 430 in each run (slowest 648ms). `type-check` and `lint` are clean.
+- **Full Go suite:** not run; the Docker engine returned HTTP 500 for the whole session.
+
+---
+
+## Alert Evaluator — Candidate Cap No Longer Drops Batch and EPSS Matches
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/alert-candidate-cap-batch`
+> **Source:** investigation of whether batch/EPSS evaluation loses matches when a rule hits the 5,000-row candidate cap
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Chunked evaluation | `internal/alert/evaluator.go` | `evaluateRuleInChunks` runs `evaluateRule` over the run's changed CVE IDs in chunks of at most `candidateCap` IDs; `evaluateBatchPath` calls it for both the batch and EPSS paths. One run row per rule per run, with summed counts |
+| Spec | `PLAN.md` §10.2 | The cap bounds a single prefilter query; batch and EPSS evaluate in chunks; dry-run keeps the fail-closed cap |
+
+### Key implementation decisions
+
+- **Chunk instead of holding the cursor or adding a per-rule cursor**: a rule that overflows the cap on one run overflows on every later run, so holding the global cursor would stall every rule, and a per-rule cursor would still never let the broad rule fire. Chunking produces a complete evaluation, which is what the fail-closed rule protects. Activation already pages the corpus the same way.
+- **Chunk size is `candidateCap`**: the prefilter returns at most one row per candidate ID (the only DSL join is the 1:1 `cve_search_index`), so a chunk of that size cannot overflow. If a later join breaks that, the chunk returns partial and the run is recorded as partial rather than silently dropping CVEs.
+
+### Gotchas discovered
+
+- **The EPSS path had no fallback**: realtime evaluation covers most batch-path changes, but EPSS score changes do not alter `material_hash` and never trigger realtime evaluation. The daily EPSS update touches most of the corpus, so a rule such as `epss_score >= 0.1` was partial on every run and never fired.
+- **A rule error still advances the cursor**: a statement timeout or other error on one rule loses that run's CVEs for that rule. Not addressed here.
+- **PLAN §10.2's partial metric and log entry are not emitted**: after this change only dry-run can return partial, and it reports `Partial` to the caller.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/alert`
+- **New tests:** `TestEvaluateBatch_RuleMatchingMoreThanCandidateCap`, `TestEvaluateEPSS_RuleMatchingMoreThanCandidateCap` (5,100 matching CVEs; failed with 0 events before the fix)
 
 ---
 

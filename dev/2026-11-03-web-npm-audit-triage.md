@@ -44,7 +44,9 @@ Every other advisory below is in build, dev-server, test or codegen tooling, whi
 
 ## Left unfixed (moderate only)
 
-Neither of these is reachable here, and neither ships. Each can only be fixed by forcing a version that a parent package's declared range does not allow. That needs an `npm overrides` entry or a major bump, and under `CLAUDE.md` both are decisions for Sam, not something to apply unasked.
+**Decision (Sam, 2026-11-03): accept both advisories until upstream moves. Do not add `npm overrides` for them.**
+
+Neither of these is reachable here, and neither ships. Each can only be fixed by forcing a version that a parent package's declared range does not allow. That needs an `npm overrides` entry or a major bump.
 
 1. **`minimatch` <11.0.1 — GHSA-g3hv-75wg-m249 (DoS via globparts amplification).** It accounts for 18 of the 20 audit entries, through `eslint` 10, `@eslint/config-array`, `@typescript-eslint/*`, `typescript-eslint`, `eslint-plugin-vue`, `vue-eslint-parser`, `@vue/eslint-config-typescript`, `@vitest/eslint-plugin`, `eslint-config-prettier`, `editorconfig`, `glob`, `js-beautify`, `@redocly/openapi-core` and `openapi-typescript`.
    - **Fix status:** the only patched release is 11.0.1+, and no backport exists for 5.x, 9.x or 10.x. The parent ranges are `eslint` `^10.2.4`, `@typescript-eslint/typescript-estree` `^10.2.2`, `editorconfig` `^9.0.1`, and `@redocly/openapi-core`, which pins exactly `5.1.9`.
@@ -54,6 +56,22 @@ Neither of these is reachable here, and neither ships. Each can only be fixed by
    - **Fix status:** the only patched release is 14.0.2. Raising `@vue/test-utils` to 2.5.1 (in range) moves to `js-beautify` 2, which still uses `glob` `^13`, so it would not clear the advisory.
    - **Reachability:** `@vue/test-utils` uses `js-beautify` only to format HTML strings in `wrapper.html()`. It never globs the filesystem, and no AbortSignal is involved.
    - **Recommendation:** accept, and re-check when `js-beautify` moves to `glob` 14.
+
+The toolchain major upgrades (TypeScript 6, `npm-run-all2` 9) do not clear either advisory. The registry on 2026-11-03 shows these declared ranges:
+
+| Package (latest) | `minimatch` | `glob` |
+|---|---|---|
+| `eslint` 10.14.0 | `^10.2.6` | |
+| `@eslint/config-array` 0.23.5 | `^10.2.4` | |
+| `@typescript-eslint/typescript-estree` 8.72.1 | `^10.2.2` | |
+| `editorconfig` 3.0.2 | `~10.2.4` | |
+| `js-beautify` 2.0.3 | | `^13.0.6` |
+
+No ESLint 11 exists yet. `@redocly/openapi-core` 2.x drops `minimatch` entirely, but `openapi-typescript` 7.13.0 still requires `@redocly/openapi-core` `^1.34.6`. So the triggers to re-check are:
+
+- ESLint, typescript-eslint and `editorconfig` adopting `minimatch` 11
+- `openapi-typescript` moving to redocly 2
+- `js-beautify` adopting `glob` 14
 
 ## Supply-chain verification
 
@@ -119,7 +137,7 @@ Sam approved both major bumps on 2026-11-03 and asked for an assessment of TypeS
 Other `package.json` changes:
 
 - **`engines.node`: `>=24` → `^24.15.0 || >=26.0.0`.** This is `npm-run-all2` 9's own floor minus the Node 22 branch, which this project never supported. Its 9.x dependencies `read-package-json-fast` 6, `json-parse-even-better-errors` 6, `npm-normalize-package-bin` 6 and `which` 7 declare the same range. Node 25 is excluded because those packages exclude it, and Node 25 has been end-of-life since June 2026. CI uses `node-version: "24"`, which resolves to the newest cached 24.x, well above 24.15.
-- **`overrides`: `{"openapi-typescript": {"typescript": "$typescript"}}`.** `openapi-typescript` 7.13.0 (latest, 2026-02-11) declares peer `typescript ^5.x`. With TypeScript 6, `npm install` only warns, but `npm ci` fails with ERESOLVE on both npm 11.4.2 and 11.19.1, so CI would break. The override changes only that one peer edge: it makes `openapi-typescript` accept the root's own `typescript` spec. It does not force any version. See "openapi-typescript and TypeScript 6" below for why this is safe.
+- **`overrides`: `{"openapi-typescript": {"typescript": "$typescript"}}`.** `openapi-typescript` 7.13.0 (latest, 2026-02-11) declares peer `typescript ^5.x`. With TypeScript 6, `npm install` only warns, but `npm ci` fails with ERESOLVE on both npm 11.4.2 and 11.19.1, so CI would break. The override changes only that one peer edge: it makes `openapi-typescript` accept the root's own `typescript` spec. It does not force any version. That is different from the overrides Sam declined under "Left unfixed", which would have forced `minimatch` 11 into parents that declare older ranges. This one is still Sam's to confirm in review. See "openapi-typescript and TypeScript 6" below for why it is safe.
 
 Lockfile movement: `typescript`, `npm-run-all2`, and `npm-run-all2`'s own dependencies `pidtree` 0.6.0 → 1.0.0, `read-package-json-fast` 4 → 6, `json-parse-even-better-errors` 4 → 6, `npm-normalize-package-bin` 4 → 6, and nested `which` 5 → 7, `isexe` 3.1.5 → 4.0.0 and `ansi-styles` (new, 7.0.0). Nothing else moved. `vue-tsc` (3.2.6), `typescript-eslint` (8.58.1), `@vue/eslint-config-typescript` (14.7.0), `eslint-plugin-vue` (10.8.0) and `@vitest/eslint-plugin` (1.6.13) all accept TypeScript 6.0.3 at their locked versions, so none had to move.
 

@@ -39,6 +39,11 @@ const (
 	// maxJobDuration caps how long a single job can run. Prevents unbounded
 	// shutdown hangs when in-flight jobs use context.WithoutCancel.
 	maxJobDuration = 10 * time.Minute
+
+	// recordOutcomeTimeout bounds the CompleteJob/FailJob write that follows a
+	// job, which runs on its own context so an expired job context cannot
+	// prevent it.
+	recordOutcomeTimeout = 10 * time.Second
 )
 
 // PeriodicTask runs on a fixed interval alongside the job queue polling.
@@ -208,10 +213,18 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 	slog.Info("executing job",
 		"queue", queue, "job_id", job.ID, "attempts", job.Attempts)
 
-	if err := p.safeExecute(ctx, h, job.Payload); err != nil {
+	err = p.safeExecute(ctx, h, job.Payload)
+
+	// The job context may have expired by now (a handler that ran to
+	// maxJobDuration). Record the outcome on a context that outlives it, or the
+	// write fails and the job stays 'running' until stale recovery requeues it.
+	recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), recordOutcomeTimeout)
+	defer cancelRecord()
+
+	if err != nil {
 		slog.Error("job handler failed",
 			"queue", queue, "job_id", job.ID, "error", err)
-		if failErr := p.store.FailJob(ctx, job.ID, err.Error()); failErr != nil {
+		if failErr := p.store.FailJob(recordCtx, job.ID, err.Error()); failErr != nil {
 			slog.Error("fail job error", "job_id", job.ID, "error", failErr)
 		}
 		metrics.WorkerJobsCompletedTotal.WithLabelValues(queue, "failure").Inc()
@@ -219,7 +232,7 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 		return
 	}
 
-	if err := p.store.CompleteJob(ctx, job.ID); err != nil {
+	if err := p.store.CompleteJob(recordCtx, job.ID); err != nil {
 		slog.Error("complete job error", "job_id", job.ID, "error", err)
 		return
 	}

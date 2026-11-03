@@ -5,6 +5,7 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1202,6 +1203,51 @@ func TestDigestCVEs_SortOrder(t *testing.T) {
 	for i, id := range sortIDs {
 		if id != expected[i] {
 			t.Errorf("position %d: got %s, want %s", i, id, expected[i])
+		}
+	}
+}
+
+// TestDigestCVEs_TotalCountBeyondLimit checks that each row reports how many CVEs
+// matched before the row limit cut the result, counting only CVEs the result
+// itself could include.
+func TestDigestCVEs_TotalCountBeyondLimit(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	since := time.Now().Add(-1 * time.Hour)
+	stamp := time.Now().Add(-10 * time.Minute).Truncate(time.Microsecond)
+	for i := range 500 {
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2025-TOTAL-%04d", i), "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	}
+	s.SeedTestCVE(t, "CVE-2025-TOTAL-LOW", "low", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	s.SeedTestCVE(t, "CVE-2025-TOTAL-REJECTED", "high", &testutil.SeedCVEOpts{Status: "rejected", DateModifiedCanonical: &stamp})
+	s.SeedTestCVE(t, "CVE-2025-TOTAL-SENT", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	sent := []store.DigestSentCVE{{CVEID: "CVE-2025-TOTAL-SENT", DateModifiedCanonical: stamp}}
+
+	cases := []struct {
+		name       string
+		severities []string
+		wantRows   int
+		wantTotal  int64
+	}{
+		{"all severities", nil, 500, 501},
+		{"high and above", []string{"critical", "high"}, 500, 500},
+		{"low only", []string{"low"}, 1, 1},
+	}
+	for _, tc := range cases {
+		rows, err := s.DigestCVEs(ctx, since, tc.severities, sent)
+		if err != nil {
+			t.Fatalf("%s: DigestCVEs: %v", tc.name, err)
+		}
+		if len(rows) != tc.wantRows {
+			t.Errorf("%s: got %d rows, want %d", tc.name, len(rows), tc.wantRows)
+		}
+		for _, row := range rows {
+			if row.TotalCount != tc.wantTotal {
+				t.Errorf("%s: %s total_count = %d, want %d", tc.name, row.CveID, row.TotalCount, tc.wantTotal)
+				break
+			}
 		}
 	}
 }

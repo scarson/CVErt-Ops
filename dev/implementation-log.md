@@ -2780,10 +2780,82 @@ Triage of 24 open Dependabot PRs. Most were months old and either superseded on 
 
 ---
 
+## Digest Total Count — CVEs Beyond the 500-Row Limit Are Reported
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/digest-truncation`
+> **Source:** follow-up to the digest re-scan window: a digest with more than 500 matching CVEs dropped the rest with no trace
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Query | `internal/store/queries/cves.sql` | `DigestCVEs` returns `count(*) OVER () AS total_count`, the match count before `LIMIT 500` |
+| Worker | `internal/notify/digest.go` | Digest payload is `digestPayload`, `{"total_count": N, "cves": [...]}`. `digestTemplateData` lists the first 25 CVEs and takes the email's total from `total_count` |
+| Delivery | `internal/notify/worker.go` | `deliverEmail` decodes the payload per kind: alerts stay arrays, digests are objects |
+| Docs | `PLAN.md` §12.1, `dev/implementation-pitfalls.md` NOTIFY-23 | Payload shape and the rule that renderers take N from `total_count` |
+
+### Key implementation decisions
+
+- **Report the total, keep the cap**: carrying the overflow into later digests would need a cursor that is not ordered by timestamp, would delay low-severity CVEs by days after a burst, and would grow `rescan_sent_cves` without bound. Removing the cap would let a burst produce multi-megabyte payloads.
+- **Window function, not a second `COUNT(*)` query**: one predicate and one snapshot, so the total cannot disagree with the rows. The cost is that Postgres buffers every matching row before the top-500 sort.
+- **No decoder for the old array form**: digest deliveries still pending at deploy fail to decode, retry and are exhausted. The project has no release yet.
+- **The "view all" link still opens the CVErt Ops root**: the SPA CVE search cannot filter by modification date, so a link scoped to the digest window needs frontend work.
+
+### Gotchas discovered
+
+- **The re-scan window hid the bug in a first test version**: with the CVEs stamped within 2 minutes of the run, the second run's re-scan window picked up the dropped CVE and the test passed on `dev`.
+- **`TestWorker_EmailDigestBranch` cannot detect a payload decode failure**: it uses an unreachable SMTP host, and a decode error leaves the row in the same state (pending, one attempt). The email-side logic is covered by the `digestTemplateData` unit test instead.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/notify`, `internal/store`
+- **Break-test:** with `total_count` set from the payload length, `TestWorker_Digest_MoreCVEsThanQueryLimit` fails (`total_count = 500, want 501`)
+- **New tests:** `TestWorker_Digest_MoreCVEsThanQueryLimit` (failed on `dev`: low-severity CVE in no digest), `TestDigestCVEs_TotalCountBeyondLimit`, `TestDigestTemplateData`; `total_count` assertion added to `TestWorker_DigestPipeline_EndToEnd`
+- **Tests run:** full `internal/notify` package; `internal/store` tests matching `TestDigestCVEs|TestAdvanceReport|TestInsertDigestDelivery`
+
+---
+
+## Test Infrastructure — One Postgres Container per Test Binary
+
+> **Date:** 2026-11-03
+> **Commits:** on `test/shared-postgres-container` (branched from `fix/admin-reindex`)
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Shared container + template clone | `internal/testutil/postgres.go` | The first `NewTestDB` call in a test binary starts one Postgres container and migrates a template database (`cvert_ops_template`). Every `NewTestDB` call then runs `CREATE DATABASE ... TEMPLATE` (~100 ms) and drops that database with `FORCE` at cleanup. The 650+ call sites are unchanged. |
+| `testutil.Run` | `internal/testutil/postgres.go`, `*/main_test.go` (14 packages) | `TestMain` in every package that uses `NewTestDB` calls `os.Exit(testutil.Run(m))`, which terminates the container after the tests. `NewTestDB` fails with instructions if a package lacks it. |
+| Server settings | `internal/testutil/postgres.go` | `max_connections=1000`, `synchronous_commit=off`, `full_page_writes=off` (the module already sets `fsync=off`): one server now serves every parallel test in a binary. |
+| Flake fixes | `internal/notify/worker_test.go`, `internal/feed/breaker_test.go`, `internal/api/ingest_test.go`, `internal/api/auth_test.go`, `internal/api/org_ratelimit.go` | Digest tests stamp CVEs with the database clock; the breaker-open test uses an open timeout it cannot reach; the ingest rate test freezes the limiter clock; the login rate test uses an hourly refill like the register test. `orgRateLimiter.Allow` now refills by the limiter's injected clock, as `AllowN` already did. |
+| CLAUDE.md | `CLAUDE.md` | The suite-runtime note describes the per-binary container, the required `TestMain`, and the new timings; the leftover-containers note covers the shared container. |
+| Owner sweep integration | `internal/testutil/owner.go`, `internal/testutil/postgres.go` | The owner labels and orphan sweep from the owner-liveness work (#149) now apply to the shared container: `ownerOption()` is `ownedContainer` without a `testing.TB`, and `startCluster` adds its labels to the defaults. `startCluster` terminates a container that `tcpostgres.Run` returns together with an error (created but never ready). `startPostgres`, the per-test start, is gone. |
+
+### Key implementation decisions
+
+- **Container per test binary, not one reused machine-wide container** — Sam's choice. Each `go test` process owns its container, so concurrent runs by several sessions stay isolated, and a binary killed by a timeout panic leaks one container instead of hundreds. Reuse-by-name would skip container start-up entirely but share one server across worktrees and agents.
+- **Template database, not truncation** — cloning gives each test an empty, fully migrated database with no ordering or cleanup coupling between parallel tests; truncating shared tables would serialize them.
+- **Cleanup order** — the `DROP DATABASE` cleanup is registered before the pools, so it runs after they close (cleanups run last-in first-out); `WITH (FORCE)` ends any connection a test leaked.
+
+### Gotchas discovered
+
+- **`internal/feed/epss` and `internal/merge` cannot put `TestMain` in their internal test package** — `testutil` imports both (SeedCorpus, the merge pipeline), so their `main_test.go` uses the external test package.
+- **Cluster-wide views now see other tests** — with one server per binary, `pg_locks`, `pg_stat_activity` and `pg_database` include other tests' databases. The rebuild deadlock test filters `pg_locks` by the current database's OID.
+- **Faster runs exposed timing flakes** — packages now run their tests far more concurrently, so tests that raced a real clock (100 ms breaker timeout, one-token-per-second rate limit, host vs container clock) failed. Each now controls its clock.
+
+### Quality checks
+
+- **Full suite timing (Windows, Docker Desktop, several sessions sharing the daemon):** 189–384 s total at `-timeout=600s`, against ~16 minutes before; `internal/api` 108–220 s, against 1112 s.
+- **Tests:** full suite passes, all 35 packages (at `f830bef`, before merging the owner-sweep work; rerun after the merge recorded in the PR).
+- **New tests:** `TestNewTestDB_IsolatedDatabasesShareOneCluster`, `TestNewTestDB_DropsDatabaseAtCleanup`, `TestStartCluster_RemovesContainerThatFailsToStart` (replaces the per-test start's equivalent), `TestCheckRunner_RequiresRun`, `TestOrgRateLimiter_AllowUsesInjectedClock`; `TestIngestHandler_RateLimitCountsAsNRequests` rewritten to test N-token counting (mutation-checked).
+
+---
+
 ## Fix — OpenAPI Success Statuses for 202 Endpoints
 
 > **Date:** 2026-11-03
-> **Commits:** `39cc2a3` on `fix/openapi-async-status` (branched from `dev` at `2dcffc8`)
+> **Commits:** `39cc2a3` on `fix/openapi-async-status` (branched from `dev` at `2dcffc8`); reached `dev` through #147, whose branch was built on it
 
 ### What was built
 
@@ -2797,7 +2869,7 @@ Triage of 24 open Dependabot PRs. Most were months old and either superseded on 
 
 - **Second success response declared by hand** — huma derives one response from `DefaultStatus` and the output type. The 202 for alert-rule create is an explicit `Responses["202"]` entry referencing the same `AlertRuleEntry` schema, so both statuses share one component.
 - **Explicit `default` error response** — huma adds its generic `default` error response only to operations with a single response and no declared errors, so adding the 202 removed it from alert-rule create. The operation declares it explicitly, matching the other operations' `ErrorModel` response, and the test asserts it on every listed operation.
-- **Artifacts not regenerated here** — the production server never serves the spec-only operations; they reach `openapi.json` only through `GENERATE_OPENAPI=1 go test -run TestOpenAPISpec`. The committed `openapi.json` and `web/src/lib/api/schema.d.ts` were last regenerated on 2026-03-16 and are far behind the code, so refreshing them, and fixing the 201/204 endpoints, is a separate branch.
+- **Artifacts not regenerated here** — the production server never serves the spec-only operations; they reach `openapi.json` only through `GENERATE_OPENAPI=1 go test -run TestOpenAPISpec`. Regenerating `openapi.json` and `web/src/lib/api/schema.d.ts` (last done 2026-03-16) and fixing the 201/204 endpoints was done on a separate branch that also reached `dev` through #147.
 
 ### Quality checks
 

@@ -247,7 +247,8 @@ func marshalDigestSentCVEs(sent []DigestSentCVE) (json.RawMessage, error) {
 
 // DigestCVEs returns CVEs modified since the given time, optionally filtered by severity,
 // leaving out the CVE versions in sent. Uses bypass-RLS (worker context).
-// Returns up to 500 rows sorted by severity desc.
+// Returns up to 500 rows sorted by severity desc; each row's TotalCount is the
+// number of matching CVEs before that limit.
 func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
 	sentJSON, err := marshalDigestSentCVEs(sent)
 	if err != nil {

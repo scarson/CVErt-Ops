@@ -13,7 +13,10 @@ import (
 func TestBreaker_OpensAfterConsecutiveFailures(t *testing.T) {
 	t.Parallel()
 
-	cb := NewBreaker("test-feed", 3, 100*time.Millisecond)
+	// The open timeout must outlast the test: once it elapses the breaker
+	// admits a probe, and under parallel test load 100 ms could pass between
+	// the third failure and the check below.
+	cb := NewBreaker("test-feed", 3, time.Minute)
 	testErr := errors.New("upstream error")
 
 	// 3 consecutive failures should open the breaker.

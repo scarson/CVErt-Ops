@@ -1437,14 +1437,15 @@ server := &http.Server{
 
 **Why It Matters:** (a) One user triggers the limit and all users are banned (same proxy IP). (b) Naive fix of trusting `X-Forwarded-For` enables attacker bypass by sending `X-Forwarded-For: 127.0.0.1`.
 
-**The Fix:** chi's `middleware.RealIP` handles `X-Forwarded-For` parsing securely. Register it before any middleware that reads client IP:
+**The Fix:** `clientIPMiddleware(srv.trustedProxies)` in `internal/api/ratelimit.go` wraps chi's `middleware.ClientIPFromRemoteAddr` when `TRUSTED_PROXIES` is empty and `middleware.ClientIPFromXFF(cidrs...)` otherwise, and stores the result as `ctxClientIP`. `NewServer` rejects any `TRUSTED_PROXIES` entry that is not a CIDR. Everything that keys on the client IP (`authRateLimit`, `checkAuthRateLimit`, audit and security events) reads `ctxClientIP`, never `r.RemoteAddr`:
 ```go
-r.Use(middleware.RealIP)       // parses XFF, sets r.RemoteAddr
-r.Use(clientIPMiddleware)      // reads r.RemoteAddr (already corrected)
-r.Use(rateLimitMiddleware)     // uses client IP from context
+r.Use(clientIPMiddleware(srv.trustedProxies)) // resolves client IP into ctxClientIP
+apiRouter.With(srv.authRateLimit()).Get(...)  // keys on ctxClientIP
 ```
 
-**The Lesson:** IP extraction for rate limiting is a two-step trust decision: (1) is the immediate connection from a trusted proxy? (2) if yes, what IP did the proxy report? Skipping step 1 enables trivial bypass. Using a well-tested library middleware (chi's RealIP) is preferable to a custom implementation for this security-critical parsing.
+Do not use chi's `middleware.RealIP`. It rewrites `r.RemoteAddr` from `True-Client-IP`, `X-Real-IP` or the leftmost `X-Forwarded-For` entry for every client, with no trusted-proxy check, so any client can choose its rate-limit key (GO-2026-5774/5775/5777). chi 5.3+ marks it deprecated, and staticcheck SA1019 fails lint on it. Do not use `ClientIPFromXFFTrustedProxies` either: it counts hops and never checks `r.RemoteAddr`, so a client that reaches the server directly can spoof its IP.
+
+**The Lesson:** IP extraction for rate limiting is a two-step trust decision: (1) is the immediate connection from a trusted proxy? (2) if yes, what IP did the proxy report? Skipping step 1 enables trivial bypass. Prefer a library middleware that performs both steps (chi's `ClientIPFromXFF` treats `r.RemoteAddr` as the rightmost hop since v5.4.0) over custom parsing, but read its documentation for which step it skips: `RealIP` skips step 1, so a well-known library default is not evidence that the trust decision is made.
 
 ---
 
@@ -2197,7 +2198,7 @@ The Go runtime's GC is unaware of container memory limits by default. It schedul
 
 ### ARCH-24: X-Forwarded-For Must Be Read Right-to-Left
 
-Reading `X-Forwarded-For` left-to-right trusts the leftmost entry, which is attacker-controlled. The correct approach: read right-to-left; the first non-trusted-CIDR entry is the client IP. chi's `RealIP` middleware handles this when `TRUSTED_PROXIES` is configured correctly.
+Reading `X-Forwarded-For` left-to-right trusts the leftmost entry, which is attacker-controlled. The correct approach: read right-to-left; the first non-trusted-CIDR entry is the client IP. chi's `middleware.ClientIPFromXFF(cidrs...)` does this, and `clientIPMiddleware` passes it the `TRUSTED_PROXIES` CIDRs (API-5 — IP rate limiter global ban via reverse proxy). chi's `RealIP` does not: it takes the leftmost entry from any client.
 
 ---
 

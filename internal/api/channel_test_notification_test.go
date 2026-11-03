@@ -9,8 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -67,6 +71,106 @@ func TestChannelTest_Webhook_Unreachable(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("expected non-empty error message")
+	}
+}
+
+// newPrivateDestServer starts a server whose webhook client allows the given
+// private destinations, so a test can reach or be refused by a loopback receiver.
+func newPrivateDestServer(t *testing.T, db *testutil.TestDB, hosts, cidrs, ports string) *httptest.Server {
+	t.Helper()
+	cfg := &config.Config{ //nolint:exhaustruct // test: only relevant fields set
+		JWTSecret:           "regtestsecret",
+		RegistrationMode:    "open",
+		Argon2MaxConcurrent: 5,
+		MFAPendingTokenTTL:  5 * time.Minute,
+		WebhookPrivateHosts: hosts,
+		WebhookPrivateCIDRs: cidrs,
+		WebhookPrivatePorts: ports,
+	}
+	srv, err := NewServer(db.Store, cfg, ServerDeps{})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(srv.Close)
+	return ts
+}
+
+// testLoopbackChannel registers a webhook channel at a loopback receiver that
+// answers with status, tests it, and returns the response status and body.
+func testLoopbackChannel(t *testing.T, cidrs string, status int) (int, testChannelResponse) {
+	t.Helper()
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(receiver.Close)
+	u, err := url.Parse(receiver.URL)
+	if err != nil {
+		t.Fatalf("parse receiver URL: %v", err)
+	}
+
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	ts := newPrivateDestServer(t, db, "127.0.0.1", cidrs, u.Port())
+	reg := doRegister(t, ctx, ts, "admin@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "admin@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	channelBody := `{"name":"lan-hook","type":"webhook","config":{"url":"` + receiver.URL + `/hook"}}`
+	createResp := doCreateChannel(t, ctx, ts, token, reg.OrgID, channelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec
+	if createResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("create channel: got %d, body: %s", createResp.StatusCode, body)
+	}
+	var ch struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(createResp.Body).Decode(&ch) //nolint:errcheck,gosec
+
+	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+	var result testChannelResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode test channel response: %v", err)
+	}
+	return resp.StatusCode, result
+}
+
+// TestChannelTest_Webhook_RefusedDestinationHidesAddress verifies that a refused
+// dial does not return the resolved address, which would let an org admin map
+// internal DNS by registering host names and testing them.
+func TestChannelTest_Webhook_RefusedDestinationHidesAddress(t *testing.T) {
+	t.Parallel()
+	// 127.0.0.1 is listed, but its network is not, so the dial is refused with
+	// "ip: 127.0.0.1 not found in allowlist".
+	status, result := testLoopbackChannel(t, "10.0.0.0/8", http.StatusOK)
+	if status != http.StatusBadGateway {
+		t.Fatalf("test channel: got %d, want 502", status)
+	}
+	if result.Success {
+		t.Fatal("expected success=false for a refused destination")
+	}
+	if result.Error != errWebhookNoResponse.Error() {
+		t.Errorf("error = %q, want %q", result.Error, errWebhookNoResponse.Error())
+	}
+	if strings.Contains(result.Error, "127.0.0.1") {
+		t.Errorf("error %q reveals the resolved address", result.Error)
+	}
+}
+
+// TestChannelTest_Webhook_ReportsReceiverStatus verifies that a status from a
+// receiver the request reached is still reported to the caller.
+func TestChannelTest_Webhook_ReportsReceiverStatus(t *testing.T) {
+	t.Parallel()
+	status, result := testLoopbackChannel(t, "127.0.0.0/8", http.StatusInternalServerError)
+	if status != http.StatusBadGateway {
+		t.Fatalf("test channel: got %d, want 502", status)
+	}
+	if !strings.Contains(result.Error, "unexpected status 500") {
+		t.Errorf("error = %q, want it to report the receiver's status 500", result.Error)
 	}
 }
 

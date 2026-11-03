@@ -99,7 +99,17 @@ func Send(ctx context.Context, client *http.Client, cfg WebhookConfig, payload [
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096)) //nolint:errcheck,gosec // G104: discard errors are irrelevant for io.Discard writes
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook POST: unexpected status %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode}
 	}
 	return nil
+}
+
+// StatusError reports that the webhook receiver answered with a non-2xx status.
+// Any other error from Send means the request failed before a response arrived.
+type StatusError struct {
+	StatusCode int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("webhook POST: unexpected status %d", e.StatusCode)
 }

@@ -2174,13 +2174,13 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 - **safeurl v0.2.2 reports the IPv6 block first**: `localhost` resolves to `::1` first on Windows, and Go reports the first dial error. Refusal tests that dialed `localhost` passed because IPv6 was blocked, not because of the check under test. The tests use `127.0.0.1` and assert the exact refusal text (`ip: … not found in allowlist`, `port: … not found in allowlist`).
 - **`SetAllowedPorts` replaces safeurl's default ports** rather than adding to them, so 80 and 443 are restated.
 - **safeurl's scheme, host and credential checks run only in `WrappedClient.Do`**, which CVErt does not call. The bare `http.Client` applies only the dial-time IP and port checks, so scheme validation stays in `validateWebhookURL`.
-- **Found, not fixed:** `POST /channels/{id}/test` returns safeurl's error text, which includes the resolved IP of any host an org admin registers. This predates the change and allows probing internal DNS.
+- **Resolved addresses reached org users**: `POST /channels/{id}/test` returned safeurl's error text, which includes the resolved IP of any host an org admin registers, so the endpoint could map internal DNS. It now returns a fixed message for any failure before the receiver answers and logs the cause; a receiver's HTTP status is still returned (`notify.StatusError`). **Not fixed:** the delivery worker stores the same text in `notification_deliveries.last_error`, which `GET /orgs/{org_id}/deliveries` returns to org viewers.
 
 ### Quality checks
 
 - **golangci-lint:** 0 issues on changed packages
 - **Security review:** run on the change. Its one failure (IPv6 entries accepted but never deliverable) is fixed. Two warnings remain: the instance-wide allowance, and the channel test endpoint revealing resolved IPs.
 - **Tests:** `internal/notify` (31.6s), `internal/config`, `cmd/cvert-ops` (14.9s), and `internal/api -run 'Channel|ValidateWebhook|NewServer|Server'` (27.8s) pass with `TESTCONTAINERS_RYUK_DISABLED=true`. Full suite not run.
-- **New tests:** `TestParsePrivateDestinations_*` (3, including 11 invalid cases), `TestBuildSafeClient_*` (4), `TestValidateWebhookURL_PrivateDestinations`, `TestNewServer_InvalidPrivateDestinations`
+- **New tests:** `TestParsePrivateDestinations_*` (3, including 11 invalid cases), `TestBuildSafeClient_*` (4), `TestValidateWebhookURL_PrivateDestinations`, `TestNewServer_InvalidPrivateDestinations`, `TestChannelTest_Webhook_RefusedDestinationHidesAddress`, `TestChannelTest_Webhook_ReportsReceiverStatus`
 
 ---

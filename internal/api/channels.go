@@ -527,6 +527,10 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, resp)
 }
 
+// errWebhookNoResponse is the test result for a webhook request that failed
+// before the receiver answered.
+var errWebhookNoResponse = errors.New("webhook request failed before the receiver responded; the server log records the cause")
+
 func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) error {
 	delivery, err := srv.store.GetNotificationChannelForDelivery(ctx, channelID)
 	if err != nil {
@@ -547,7 +551,16 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	return notify.Send(ctx, client, notify.ChannelWebhookConfig(delivery), payload)
+	// A failure before the receiver answers can carry the resolved address
+	// (from the SSRF dial check or DNS), which would let an org admin map
+	// internal DNS by testing host names. Only a receiver's status is returned.
+	err = notify.Send(ctx, client, notify.ChannelWebhookConfig(delivery), payload)
+	var statusErr *notify.StatusError
+	if err != nil && !errors.As(err, &statusErr) {
+		slog.WarnContext(ctx, "channel test webhook request failed", "channel_id", channelID, "error", err)
+		return errWebhookNoResponse
+	}
+	return err
 }
 
 func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage) error {

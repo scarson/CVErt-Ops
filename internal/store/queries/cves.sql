@@ -121,6 +121,37 @@ ON CONFLICT (cve_id) DO UPDATE
     SET fts_document = EXCLUDED.fts_document
     WHERE cve_search_index.fts_document IS DISTINCT FROM EXCLUDED.fts_document;
 
+-- name: ListCVEIDsAfter :many
+-- Keyset page of CVE IDs for full-corpus walks (search index rebuild).
+SELECT cve_id FROM cves
+WHERE cve_id > @after_cve_id::text
+ORDER BY cve_id
+LIMIT @batch_size;
+
+-- name: LockCVEAdvisoryKeys :exec
+-- Takes the per-CVE merge advisory lock (merge.CVEAdvisoryKey) for every key,
+-- in ascending key order, until the transaction ends.
+SELECT pg_advisory_xact_lock(k)
+FROM (SELECT unnest(@keys::bigint[]) AS k ORDER BY k) AS ordered;
+
+-- name: ListSearchIndexInputs :many
+-- The fields UpsertCVESearchIndex builds the tsvector from, for a batch of
+-- CVEs. Package names come back unordered and may repeat; the caller
+-- de-duplicates and sorts them bytewise, as the merge pipeline does, because
+-- an ORDER BY here would follow the database collation.
+SELECT c.cve_id,
+       c.description_primary,
+       c.cwe_ids,
+       COALESCE(
+           array_agg(p.package_name) FILTER (WHERE p.package_name IS NOT NULL),
+           '{}'
+       )::text[] AS package_names
+FROM cves c
+LEFT JOIN cve_affected_packages p ON p.cve_id = c.cve_id
+WHERE c.cve_id = ANY(@cve_ids::text[])
+GROUP BY c.cve_id
+ORDER BY c.cve_id;
+
 -- name: UpsertEPSSStaging :exec
 -- Two-statement EPSS pattern step 2 (pitfall §2.5/§2.6): insert staging row ONLY
 -- if the CVE does not yet exist in cves. DB-side WHERE NOT EXISTS eliminates the

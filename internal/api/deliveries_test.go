@@ -225,6 +225,55 @@ func TestGetDelivery_Found(t *testing.T) {
 	}
 }
 
+// TestDeliveries_ReturnOrgErrorOnly verifies that the org delivery endpoints
+// return last_error_for_org and never the full failure text, which can name
+// addresses a webhook host name resolved to.
+func TestDeliveries_ReturnOrgErrorOnly(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	chanID := createTestDelivery(t, ctx, db, orgID, "")
+	delID := getDeliveryIDByChannel(t, ctx, db, orgID, chanID)
+
+	const detail = "webhook POST: dial tcp 10.1.2.3:443: ip: 10.1.2.3 not found in allowlist"
+	const forOrg = "delivery failed, cause withheld"
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE notification_deliveries SET status='failed', last_error=$2, last_error_for_org=$3, updated_at=now() WHERE id=$1",
+		delID, detail, forOrg); err != nil {
+		t.Fatalf("set failed: %v", err)
+	}
+
+	getResp := doGetDelivery(t, ctx, ts, token, aliceReg.OrgID, delID.String())
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	var got map[string]any
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got["last_error"] != forOrg {
+		t.Errorf("get last_error = %v, want %q", got["last_error"], forOrg)
+	}
+
+	listResp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, nil)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0]["last_error"] != forOrg {
+		t.Errorf("list items = %v, want one with last_error %q", list.Items, forOrg)
+	}
+}
+
 // TestGetDelivery_404 verifies that fetching a non-existent delivery returns 404.
 func TestGetDelivery_404(t *testing.T) {
 	t.Parallel()
@@ -262,7 +311,7 @@ func TestReplayDelivery_ResetsStatus(t *testing.T) {
 
 	// Put a last_error on the delivery and set status to failed.
 	_, err := db.DB().ExecContext(ctx,
-		"UPDATE notification_deliveries SET status='failed', attempt_count=3, last_error='timeout', updated_at=now() WHERE id=$1",
+		"UPDATE notification_deliveries SET status='failed', attempt_count=3, last_error='timeout', last_error_for_org='timeout', updated_at=now() WHERE id=$1",
 		delID,
 	)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -112,4 +113,24 @@ type StatusError struct {
 
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("webhook POST: unexpected status %d", e.StatusCode)
+}
+
+// ErrCauseWithheld stands in for a delivery error that org members may not read.
+var ErrCauseWithheld = errors.New("delivery failed; the cause is recorded for the instance operator")
+
+// ErrorForOrg returns the error org members may read for a failed delivery.
+// Only errors known to describe the org's own channel pass through: a
+// receiver's answer (*StatusError) and a problem with the channel's stored
+// configuration (permanentDeliveryError). Every other error, including dial
+// and DNS failures that name resolved addresses, becomes ErrCauseWithheld.
+func ErrorForOrg(err error) error {
+	if err == nil {
+		return nil
+	}
+	var statusErr *StatusError
+	var configErr *permanentDeliveryError
+	if errors.As(err, &statusErr) || errors.As(err, &configErr) {
+		return err
+	}
+	return ErrCauseWithheld
 }

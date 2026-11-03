@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -153,8 +154,8 @@ func TestChannelTest_Webhook_RefusedDestinationHidesAddress(t *testing.T) {
 	if result.Success {
 		t.Fatal("expected success=false for a refused destination")
 	}
-	if result.Error != errWebhookNoResponse.Error() {
-		t.Errorf("error = %q, want %q", result.Error, errWebhookNoResponse.Error())
+	if result.Error != notify.ErrCauseWithheld.Error() {
+		t.Errorf("error = %q, want %q", result.Error, notify.ErrCauseWithheld.Error())
 	}
 	if strings.Contains(result.Error, "127.0.0.1") {
 		t.Errorf("error %q reveals the resolved address", result.Error)

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -193,6 +194,24 @@ func TestSend_NetworkError(t *testing.T) {
 	}, []byte(`[]`))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "webhook POST")
+}
+
+func TestErrorForOrg(t *testing.T) {
+	assert.NoError(t, notify.ErrorForOrg(nil))
+
+	// A receiver's answer is the org's own endpoint talking, so it is shown.
+	status := &notify.StatusError{StatusCode: http.StatusInternalServerError}
+	assert.Equal(t, status, notify.ErrorForOrg(status))
+	wrapped := fmt.Errorf("deliver: %w", status)
+	assert.Equal(t, wrapped, notify.ErrorForOrg(wrapped))
+
+	// A failure before any answer can name the address a host name resolved to.
+	dialErr := notify.Send(context.Background(), buildTestClient(), notify.WebhookConfig{
+		URL: "http://127.0.0.1:1", SigningSecret: "x",
+	}, []byte(`[]`))
+	require.Error(t, dialErr)
+	assert.Equal(t, notify.ErrCauseWithheld, notify.ErrorForOrg(dialErr))
+	assert.NotContains(t, notify.ErrCauseWithheld.Error(), "127.0.0.1")
 }
 
 func TestSend_ContextCancellation(t *testing.T) {

@@ -411,6 +411,7 @@ type NotificationDelivery struct {
 	UpdatedAt       time.Time
 	Kind            string
 	ReportID        uuid.NullUUID
+	LastErrorForOrg sql.NullString
 }
 
 type OrgInvitation struct {

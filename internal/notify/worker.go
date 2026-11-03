@@ -181,12 +181,12 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	start := time.Now()
 	ch, err := w.store.GetNotificationChannelForDelivery(ctx, row.ChannelID)
 	if err != nil || ch == nil {
-		msg := "channel lookup failed"
+		failure := store.DeliveryFailure{Detail: "channel lookup failed", ForOrg: "channel lookup failed"}
 		if err != nil {
-			msg = fmt.Sprintf("channel lookup failed: %v", err)
+			failure.Detail = fmt.Sprintf("channel lookup failed: %v", err)
 		}
 		w.log.Error("get channel for delivery", "channel_id", row.ChannelID, "err", err)
-		w.exhaust(ctx, row.ID, msg)
+		w.exhaust(ctx, row.ID, failure)
 		metrics.NotificationDeliveriesTotal.WithLabelValues("unknown", "failure").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues("unknown").Observe(time.Since(start).Seconds())
 		return
@@ -199,7 +199,8 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	case "email":
 		sendErr = w.deliverEmail(ctx, row, ch)
 	default:
-		w.exhaust(ctx, row.ID, fmt.Sprintf("unsupported channel type: %s", ch.Type))
+		msg := fmt.Sprintf("unsupported channel type: %s", ch.Type)
+		w.exhaust(ctx, row.ID, store.DeliveryFailure{Detail: msg, ForOrg: msg})
 		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "failure").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
@@ -214,10 +215,12 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 		return
 	}
 
+	failure := store.DeliveryFailure{Detail: sendErr.Error(), ForOrg: ErrorForOrg(sendErr).Error()}
+
 	// Permanent errors should exhaust immediately — retrying will never help.
 	if isPermanentDeliveryError(sendErr) {
 		w.log.Warn("permanent delivery failure", "id", row.ID, "type", ch.Type, "err", sendErr)
-		w.exhaust(ctx, row.ID, sendErr.Error())
+		w.exhaust(ctx, row.ID, failure)
 		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "exhausted").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
@@ -226,14 +229,14 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 	nextAttempt := int(row.AttemptCount) + 1
 	w.log.Warn("delivery failed", "id", row.ID, "type", ch.Type, "err", sendErr, "attempt", nextAttempt)
 	if nextAttempt >= w.cfg.MaxAttempts {
-		w.exhaust(ctx, row.ID, sendErr.Error())
+		w.exhaust(ctx, row.ID, failure)
 		metrics.NotificationDeliveriesTotal.WithLabelValues(ch.Type, "exhausted").Inc()
 		metrics.NotificationDeliveryDuration.WithLabelValues(ch.Type).Observe(time.Since(start).Seconds())
 		return
 	}
 
 	backoff := w.backoffSeconds(nextAttempt)
-	if err := w.store.RetryDelivery(ctx, row.ID, backoff, sendErr.Error()); err != nil {
+	if err := w.store.RetryDelivery(ctx, row.ID, backoff, failure); err != nil {
 		w.log.Error("retry delivery", "id", row.ID, "err", err)
 	}
 
@@ -365,8 +368,8 @@ func isPermanentDeliveryError(err error) bool {
 	return false
 }
 
-func (w *Worker) exhaust(ctx context.Context, id uuid.UUID, lastError string) {
-	if err := w.store.ExhaustDelivery(ctx, id, lastError); err != nil {
+func (w *Worker) exhaust(ctx context.Context, id uuid.UUID, failure store.DeliveryFailure) {
+	if err := w.store.ExhaustDelivery(ctx, id, failure); err != nil {
 		w.log.Error("exhaust delivery", "id", id, "err", err)
 	}
 }

@@ -1,5 +1,5 @@
 // ABOUTME: Tests for NewTestDB: per-test databases cloned from one migrated template per test binary.
-// ABOUTME: Covers isolation, shared cluster, migration state, cleanup, and the testutil.Run precondition.
+// ABOUTME: Covers isolation, shared cluster, migration state, cleanup, start failure, and the testutil.Run precondition.
 package testutil
 
 import (
@@ -8,10 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	dockerclient "github.com/docker/docker/client"
 	"github.com/google/uuid"
+	"github.com/moby/moby/client"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -107,21 +105,21 @@ func TestStartCluster_RemovesContainerThatFailsToStart(t *testing.T) {
 		t.Fatal("startCluster succeeded although the container never became ready")
 	}
 
-	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
 	defer cli.Close() //nolint:errcheck
-	list, err := cli.ContainerList(ctx, container.ListOptions{
+	list, err := cli.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("label", "cvert-ops.test.case="+marker)),
+		Filters: make(client.Filters).Add("label", "cvert-ops.test.case="+marker),
 	})
 	if err != nil {
 		t.Fatalf("list containers: %v", err)
 	}
-	if len(list) != 0 {
-		t.Errorf("container that failed to start is still present: %s", list[0].ID)
-		_ = cli.ContainerRemove(ctx, list[0].ID, container.RemoveOptions{Force: true})
+	if len(list.Items) != 0 {
+		t.Errorf("container that failed to start is still present: %s", list.Items[0].ID)
+		_, _ = cli.ContainerRemove(ctx, list.Items[0].ID, client.ContainerRemoveOptions{Force: true})
 	}
 }
 

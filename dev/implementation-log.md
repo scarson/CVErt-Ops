@@ -2499,6 +2499,136 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 
 ---
 
+## Test Containers — Owner-Liveness Sweep and Start-Failure Cleanup
+
+**Date:** 2026-11-03
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Owner labels and sweep | `internal/testutil/owner.go` | `ownedContainer` labels each container with the test process's PID and start time; the first call in a test binary force-removes labelled containers whose owner has exited |
+| Postgres start | `internal/testutil/postgres.go` | `startPostgres` (extracted from `NewTestDB`) applies the owner labels and registers termination before checking `Run`'s error |
+| SMTP start | `internal/testutil/smtp.go` | `NewTestSMTP` applies the owner labels and registers termination before checking `Run`'s error |
+| Analysis | `docs/testing/testcontainers-leftover-containers.md` | Why containers piled up with Ryuk disabled, and the sweep's safety rules |
+
+### Key implementation decisions
+
+- **The owner is identified by PID and process start time**, so a reused PID is not mistaken for the original owner. A container whose owner is running is never removed, which makes the sweep safe while other sessions run tests on the same daemon.
+- **Fail safe:** a container without both labels, or whose owner's start time cannot be read, is left alone. A failed sweep is logged, not a test failure.
+- **testcontainers' own Docker client** (`testcontainers.NewDockerClientWithOpts`) lists and removes containers, so the sweep reaches the daemon the containers were started on. `github.com/moby/moby/client`, `github.com/shirou/gopsutil/v4` and `github.com/testcontainers/testcontainers-go` moved from indirect to direct in `go.mod` at the same versions; both new direct modules were checked as maintained.
+- **Terminate errors stay logged**, as before, rather than failing the test as `testcontainers.CleanupContainer` would.
+
+### Gotchas discovered
+
+- **A passing `internal/alert` run never leaked.** The report that it left ~15 containers came from `org.testcontainers.sessionId`, which is a hash of the parent `go test` process. Every package in one `go test ./...` shares it, and the leftovers were from packages killed by the 10-minute timeout.
+- **testcontainers prints its container lifecycle lines only with `-v`.** A non-verbose log cannot show which container a run created.
+
+### Quality checks
+
+- **Unit and integration tests:** `TestOwnerAlive`, `TestOrphaned` (7 cases), `TestRemoveOrphanedContainers` and `TestStartPostgres_RemovesContainerThatFailsToStart` pass; the whole `internal/testutil` package passes (93s). Break-tests: with the PID-reuse check, the orphan check or the error-path ordering removed, the matching test fails (the last reproduced a leaked container that failed to start).
+- **End to end:** `go test -v -timeout=9s -run '^TestEvaluatorBatch$' ./internal/alert/` was killed mid-test and left its container running with owner labels; the next `internal/alert` run removed it and left no labelled container.
+- **golangci-lint:** 0 issues on `internal/testutil`.
+
+---
+
+## Digest Re-scan Window — CVEs Committed After a Digest's Query
+
+> **Date:** 2026-11-03
+> **Commit:** `3a4331a` on `fix/digest-window-gap`
+> **Source:** follow-up to the alert evaluator cursor re-scan window, which covers the same flaw in the batch and EPSS evaluators
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Schema | `migrations/000048_scheduled_report_rescan_sent_cves.*.sql` | `scheduled_reports.rescan_sent_cves JSONB NOT NULL DEFAULT '[]'`, CHECK that it is an array |
+| Queries | `internal/store/queries/cves.sql`, `scheduled_reports.sql` | `DigestCVEs` returns `date_modified_canonical` and leaves out the `(cve_id, date_modified_canonical)` pairs in a JSONB argument. `AdvanceReport` writes the list with the cursor |
+| Store | `internal/store/notification_delivery.go`, `scheduled_report.go` | `DigestSentCVE`, new `sent` parameters on `DigestCVEs` and `AdvanceReport` (nil stores `[]`) |
+| Worker | `internal/notify/digest.go` | Cursor read before the query, scan from `digestRescanWindow` (2 minutes) before `last_run_at`, `sentInRescanWindow` keeps sent versions the next scan reaches |
+| Docs | `dev/implementation-pitfalls.md` NOTIFY-21, `PLAN.md` §12.1 | Digest re-scan window rule |
+
+### Key implementation decisions
+
+- **Overlap plus a sent-version list, not overlap alone**: digests have no `alert_events` uniqueness, so a plain overlap repeats CVEs across digests.
+- **Key is `(cve_id, date_modified_canonical)`, not `material_hash`**: a CVE that changes and changes back gets its old hash again under a new timestamp and must appear again.
+- **Exclusion in SQL before `LIMIT 500`**: filtering in Go after the limit would shrink a full digest below 500 while eligible CVEs exist.
+- **Previous entries still inside the window are carried over**, so the list stays correct if two runs fall within the window of each other.
+- **A malformed list is logged and treated as empty**, so it costs repeats in one digest rather than stopping the report.
+
+### Gotchas discovered
+
+- **DB-16 hit again**: a semicolon in the new migration's comment broke every integration test with `migration failed in line 0`.
+- **A pending digest delivery blocks the next digest for the same report and channel**: `InsertDigestDelivery` is `ON CONFLICT (report_id, channel_id) WHERE status = 'pending' DO NOTHING`. Multi-run digest tests must complete the first delivery (`completeDigestDeliveries`), or the second run's insert is a no-op and the test fails for the wrong reason. In production this also drops a digest's CVEs while the previous digest is still retrying; not addressed here.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/notify`, `internal/store`
+- **Break-tests:** both new notify tests fail on `dev` (late CVE in 0 digests, re-modified CVE missed); `TestWorker_Digest_RescanWindowSkipsSentVersions` fails with the sent-version exclusion disabled (unchanged CVE in 2 digests)
+- **New tests:** `TestWorker_Digest_IncludesCVECommittedAfterQuery`, `TestWorker_Digest_RescanWindowSkipsSentVersions`, `TestDigestCVEs_ExcludesSentVersions`, `TestAdvanceReport_NilSentStoresEmptyArray`, `TestSentInRescanWindow` (fails with the carry-over loop removed), `TestSentInRescanWindow_NothingSent`; sent-list assertion added to `TestAdvanceReport`
+
+---
+
+---
+
+## OpenAPI — PATCH Request Bodies Mark No Field Required
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/patch-bodies-optional`
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| PATCH DTO tags | `internal/api/alert_rules.go`, `channels.go`, `reports.go`, `sso.go`, `watchlists.go` | Every field of `patchAlertRuleBody`, `patchChannelBody`, `patchReportBody`, `patchSSOBody` and `patchWatchlistBody` has `,omitempty` in its `json` tag, as the SCIM PATCH bodies already had |
+| Spec test | `internal/api/openapi_test.go` | `TestOpenAPISpec_PatchBodiesOptional` covers all seven PATCH body schemas |
+| Watchlist rename | `web/src/views/WatchlistDetailView.vue` | The PATCH body carries only the changed fields instead of `null` for the unchanged ones |
+
+### Key implementation decisions
+
+- **`omitempty` only changes the spec here.** huma marks a field required when its `json` tag has no `omitempty`. These structs are only decoded (`decodeJSON`) and used as spec-only request bodies, never encoded, so the tag does not change runtime behavior.
+- **The fields are no longer nullable in the spec.** huma marks a pointer field nullable only when it is required, so the generated TypeScript types changed from `string | null` (required) to `string` (optional). A JSON `null` still decodes to a nil pointer, which the handlers treat as omitted.
+- **Response DTOs needed no nullability change.** Pointer fields without `omitempty` (for example `ScimGroupItem.external_id`) are already `["string", "null"]`, slices are nullable by default in huma 2.37, `json.RawMessage` gets the any (`{}`) schema, and the one map field (`TierResponse.limits`) is never nil.
+
+### Gotchas discovered
+
+- **`patchWatchlistBody.GroupID **string` cannot tell `null` from omission.** `encoding/json` sets the outer pointer to nil for a JSON `null`, so `{"group_id": null}` keeps the current group instead of clearing it, contrary to the struct's doc comment. Not fixed here. Before this change the SPA sent `group_id: null` on every rename, which would have cleared the group if the decoding had worked as documented.
+
+### Quality checks
+
+- **Spec test:** failed for the five schemas before the tag change; passes after.
+- **Go:** `go test ./internal/api/ -run '(?i)patch|OpenAPISpec'` passes; golangci-lint: 0 issues on `internal/api`.
+- **Frontend:** `generate-api`, `type-check` and `lint` clean; `WatchlistDetailView.test.ts` 21/21, including a new assertion on the PATCH body that failed before the view change.
+
+## Alert Evaluator — Rule Failures No Longer Let the Cursor Skip CVEs
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/alert-rule-error-cursor`
+> **Source:** follow-up to the candidate cap fix: a rule that errors or fails to compile also let the batch/EPSS cursor move past CVEs it never evaluated
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Uncompilable rules | `internal/alert/evaluator.go` | `failUncompilableRule` logs the compile failure and moves the rule from `active` to `error` in the realtime, batch and EPSS paths, matching the activation scan |
+| Held cursor | `internal/alert/evaluator.go` | `evaluateBatchPath` keeps the previous cursor when any rule errors or returns partial; `evalCursor.HeldRuns` in `cursor_json` counts consecutive held runs, capped by `batchMaxHeldRuns` (30) and `epssMaxHeldRuns` (3) |
+| Spec | `PLAN.md` §10.3 | Cursor advancement rule for the batched and EPSS-specific jobs |
+
+### Key implementation decisions
+
+- **Hold the global cursor, not a per-rule cursor**: no migration, and re-evaluating the held window is idempotent for healthy rules. A per-rule cursor would isolate the extra work but needs a schema change, activation and re-activation changes, and still needs a cap for a rule that fails on every run.
+- **Cap by consecutive held runs, not cursor age**: after the worker has been down for days, the cursor is already old; an age cap would advance past the first failure without any retry.
+- **A held run still sets `last_success_at`**: the scheduler (`internal/ingest/scheduler.go`) enqueues the next run when `last_success_at + Interval` has passed. Leaving it unset would re-enqueue the daily EPSS job on every scheduler tick and use up its held runs within minutes.
+- **No automatic disable after repeated failures**: a short database outage would fail every rule, and re-enabling runs activation with delivery suppressed, so missed CVEs would never notify.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/alert`
+- **New tests:** `TestEvaluateBatch_RuleErrorDoesNotSkipCVEs`, `TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap`, `TestEvaluator_UncompilableRuleSetToError` (batch and realtime subtests). The first two failed before the fix; the realtime subtest was written together with the fix.
+- **Tests run locally:** only the new tests, because of Docker contention on the dev host; CI runs the full `internal/alert` package.
+
+---
+
 ## Test Infrastructure — One Postgres Container per Test Binary
 
 > **Date:** 2026-11-03
@@ -2512,7 +2642,8 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 | `testutil.Run` | `internal/testutil/postgres.go`, `*/main_test.go` (14 packages) | `TestMain` in every package that uses `NewTestDB` calls `os.Exit(testutil.Run(m))`, which terminates the container after the tests. `NewTestDB` fails with instructions if a package lacks it. |
 | Server settings | `internal/testutil/postgres.go` | `max_connections=1000`, `synchronous_commit=off`, `full_page_writes=off` (the module already sets `fsync=off`): one server now serves every parallel test in a binary. |
 | Flake fixes | `internal/notify/worker_test.go`, `internal/feed/breaker_test.go`, `internal/api/ingest_test.go`, `internal/api/auth_test.go`, `internal/api/org_ratelimit.go` | Digest tests stamp CVEs with the database clock; the breaker-open test uses an open timeout it cannot reach; the ingest rate test freezes the limiter clock; the login rate test uses an hourly refill like the register test. `orgRateLimiter.Allow` now refills by the limiter's injected clock, as `AllowN` already did. |
-| CLAUDE.md | `CLAUDE.md` | The suite-runtime note describes the per-binary container, the required `TestMain`, and the new timings. |
+| CLAUDE.md | `CLAUDE.md` | The suite-runtime note describes the per-binary container, the required `TestMain`, and the new timings; the leftover-containers note covers the shared container. |
+| Owner sweep integration | `internal/testutil/owner.go`, `internal/testutil/postgres.go` | The owner labels and orphan sweep from the owner-liveness work (#149) now apply to the shared container: `ownerOption()` is `ownedContainer` without a `testing.TB`, and `startCluster` adds its labels to the defaults. `startCluster` terminates a container that `tcpostgres.Run` returns together with an error (created but never ready). `startPostgres`, the per-test start, is gone. |
 
 ### Key implementation decisions
 
@@ -2528,9 +2659,9 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 
 ### Quality checks
 
-- **Full suite timing (Windows, Docker Desktop, several sessions sharing the daemon):** 228–269 s total, against ~16 minutes before; `internal/api` 195–220 s, against 1112 s.
-- **Tests:** FULL_SUITE_RESULT
-- **New tests:** `TestNewTestDB_IsolatedDatabasesShareOneCluster`, `TestNewTestDB_DropsDatabaseAtCleanup`, `TestCheckRunner_RequiresRun`, `TestOrgRateLimiter_AllowUsesInjectedClock`; `TestIngestHandler_RateLimitCountsAsNRequests` rewritten to test N-token counting (mutation-checked).
+- **Full suite timing (Windows, Docker Desktop, several sessions sharing the daemon):** 189–384 s total at `-timeout=600s`, against ~16 minutes before; `internal/api` 108–220 s, against 1112 s.
+- **Tests:** full suite passes, all 35 packages (at `f830bef`, before merging the owner-sweep work; rerun after the merge recorded in the PR).
+- **New tests:** `TestNewTestDB_IsolatedDatabasesShareOneCluster`, `TestNewTestDB_DropsDatabaseAtCleanup`, `TestStartCluster_RemovesContainerThatFailsToStart` (replaces the per-test start's equivalent), `TestCheckRunner_RequiresRun`, `TestOrgRateLimiter_AllowUsesInjectedClock`; `TestIngestHandler_RateLimitCountsAsNRequests` rewritten to test N-token counting (mutation-checked).
 
 ---
 

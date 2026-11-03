@@ -875,6 +875,203 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestWorker_Digest_IncludesCVECommittedAfterQuery covers a CVE whose
+// date_modified_canonical is earlier than the last_run_at a digest run records,
+// but which became visible only after that run's CVE query: a merge whose clock
+// lags the digest worker's, or whose transaction commits while the run is in
+// progress. The CVE must appear in a later digest.
+func TestWorker_Digest_IncludesCVECommittedAfterQuery(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestLateCommitOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"late-commit@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestLateCommitChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestLateCommitReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+	// Backdate created_at so the first run's window certainly contains the
+	// timestamp given to the late CVE below.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET created_at = now() - interval '1 hour' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("backdate created_at: %v", err)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+
+	// First run: the corpus is empty, so the digest is empty.
+	w.RunDigestOnce(ctx)
+
+	var lastRunAt time.Time
+	if err := db.QueryRowContext(ctx,
+		"SELECT last_run_at FROM scheduled_reports WHERE id = $1", report.ID).Scan(&lastRunAt); err != nil {
+		t.Fatalf("scan last_run_at: %v", err)
+	}
+
+	// The CVE is committed after the first run, stamped 1ms before the
+	// last_run_at that run recorded.
+	stamp := lastRunAt.Add(-time.Millisecond)
+	cvss := 9.8
+	s.SeedTestCVE(t, "CVE-2025-DIGEST-LATE", "critical", &testutil.SeedCVEOpts{
+		CvssV3Score:           &cvss,
+		DateModifiedCanonical: &stamp,
+	})
+
+	// Second run.
+	completeDigestDeliveries(t, ctx, db, report.ID)
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	if counts["CVE-2025-DIGEST-LATE"] != 1 {
+		t.Errorf("CVE-2025-DIGEST-LATE appeared in %d digests, want 1 (all CVE counts: %v)",
+			counts["CVE-2025-DIGEST-LATE"], counts)
+	}
+}
+
+// TestWorker_Digest_RescanWindowSkipsSentVersions covers CVEs a digest sent whose
+// date_modified_canonical lies within the re-scan window the next digest scans
+// again. A version already sent must not repeat; a CVE modified again since must.
+func TestWorker_Digest_RescanWindowSkipsSentVersions(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestRescanOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"rescan@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestRescanChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestRescanReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// Both CVEs are stamped just after report creation, so the first run sends them
+	// and their stamps lie within the window the second run scans again.
+	stamp := report.CreatedAt.Add(time.Millisecond)
+	s.SeedTestCVE(t, "CVE-2025-RESCAN-SAME", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	s.SeedTestCVE(t, "CVE-2025-RESCAN-CHANGED", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// A material change to one CVE after the first run.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE cves SET date_modified_canonical = date_modified_canonical + interval '1 millisecond' WHERE cve_id = $1",
+		"CVE-2025-RESCAN-CHANGED"); err != nil {
+		t.Fatalf("modify CVE-2025-RESCAN-CHANGED: %v", err)
+	}
+	completeDigestDeliveries(t, ctx, db, report.ID)
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	if counts["CVE-2025-RESCAN-SAME"] != 1 {
+		t.Errorf("CVE-2025-RESCAN-SAME appeared in %d digests, want 1 (all CVE counts: %v)",
+			counts["CVE-2025-RESCAN-SAME"], counts)
+	}
+	if counts["CVE-2025-RESCAN-CHANGED"] != 2 {
+		t.Errorf("CVE-2025-RESCAN-CHANGED appeared in %d digests, want 2 (all CVE counts: %v)",
+			counts["CVE-2025-RESCAN-CHANGED"], counts)
+	}
+}
+
+// completeDigestDeliveries marks the report's pending digest deliveries succeeded.
+// A pending digest delivery for a report and channel makes the next digest's
+// insert for that pair a no-op, so tests that run several digests clear it first.
+func completeDigestDeliveries(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx,
+		"UPDATE notification_deliveries SET status = 'succeeded' WHERE report_id = $1 AND status = 'pending'",
+		reportID); err != nil {
+		t.Fatalf("complete digest deliveries: %v", err)
+	}
+}
+
+// digestCVECounts returns, for each CVE ID, the number of digest deliveries for
+// the report whose payload contains it.
+func digestCVECounts(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) map[string]int {
+	t.Helper()
+	rows, err := db.QueryContext(ctx,
+		"SELECT payload FROM notification_deliveries WHERE report_id = $1", reportID)
+	if err != nil {
+		t.Fatalf("query digest deliveries: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	counts := map[string]int{}
+	for rows.Next() {
+		var payload json.RawMessage
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan digest payload: %v", err)
+		}
+		var snaps []struct {
+			CVEID string `json:"cve_id"`
+		}
+		if err := json.Unmarshal(payload, &snaps); err != nil {
+			t.Fatalf("unmarshal digest payload: %v", err)
+		}
+		for _, snap := range snaps {
+			counts[snap.CVEID]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate digest deliveries: %v", err)
+	}
+	return counts
+}
+
 func TestWorker_DigestPipeline_SendOnEmptyFalse_NoCVEs(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

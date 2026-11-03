@@ -24,15 +24,19 @@ func NewTestSMTP(t *testing.T) *TestSMTP {
 	t.Helper()
 	ctx := context.Background()
 
-	ctr, err := inbucket.Run(ctx, "inbucket/inbucket:sha-2d409bb")
+	ctr, err := inbucket.Run(ctx, "inbucket/inbucket:sha-2d409bb", ownedContainer(t))
+	// Run returns a container that was created but never became ready
+	// together with the error, so termination is registered first.
+	if ctr != nil {
+		t.Cleanup(func() {
+			if err := ctr.Terminate(ctx); err != nil {
+				t.Logf("terminate inbucket container: %v", err)
+			}
+		})
+	}
 	if err != nil {
 		t.Fatalf("start inbucket container: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := ctr.Terminate(ctx); err != nil {
-			t.Logf("terminate inbucket container: %v", err)
-		}
-	})
 
 	smtpURL, err := ctr.SmtpConnection(ctx)
 	if err != nil {

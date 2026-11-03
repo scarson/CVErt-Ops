@@ -164,6 +164,10 @@ func NewTestDB(t *testing.T) *TestDB {
 // and runs all migrations into the template database. opts are applied after
 // the defaults.
 func startCluster(ctx context.Context, opts ...testcontainers.ContainerCustomizer) (*cluster, error) {
+	owner, err := ownerOption()
+	if err != nil {
+		return nil, fmt.Errorf("owner labels: %w", err)
+	}
 	pgCtr, err := tcpostgres.Run(ctx,
 		"postgres:18-alpine",
 		append([]testcontainers.ContainerCustomizer{
@@ -171,6 +175,9 @@ func startCluster(ctx context.Context, opts ...testcontainers.ContainerCustomize
 			tcpostgres.WithUsername("cvert_ops_test"),
 			tcpostgres.WithPassword("testpassword"),
 			tcpostgres.BasicWaitStrategies(),
+			// Lets a later test binary remove this container if this one is
+			// killed before Run terminates it.
+			owner,
 			// Every parallel test in the binary connects to this one server.
 			// The module already sets fsync=off; durability is irrelevant for tests.
 			testcontainers.WithCmdArgs(

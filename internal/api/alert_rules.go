@@ -36,12 +36,12 @@ type createAlertRuleBody struct {
 // json.RawMessage is nil if the key was absent from the PATCH payload.
 // Enabled maps to the status state machine: true → activating, false → disabled.
 type patchAlertRuleBody struct {
-	Name                     *string         `json:"name"`
-	Logic                    *string         `json:"logic"`
-	Conditions               json.RawMessage `json:"conditions"` // nil = not provided
-	WatchlistIDs             *[]string       `json:"watchlist_ids"`
-	Enabled                  *bool           `json:"enabled"`
-	FireOnNonMaterialChanges *bool           `json:"fire_on_non_material_changes"`
+	Name                     *string         `json:"name,omitempty"`
+	Logic                    *string         `json:"logic,omitempty"`
+	Conditions               json.RawMessage `json:"conditions,omitempty"` // nil = not provided
+	WatchlistIDs             *[]string       `json:"watchlist_ids,omitempty"`
+	Enabled                  *bool           `json:"enabled,omitempty"`
+	FireOnNonMaterialChanges *bool           `json:"fire_on_non_material_changes,omitempty"`
 }
 
 type alertRuleEntry struct {

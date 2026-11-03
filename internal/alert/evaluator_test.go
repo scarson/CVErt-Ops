@@ -1767,6 +1767,82 @@ func TestEvaluatorEPSS_NoCandidates(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Batch and EPSS evaluators — rows stamped before the cursor
+// ──────────────────────────────────────────────────────────────────────────────
+
+// cursorLag is how far before the stored cursor a late-visible row is stamped. It stands
+// for the Postgres clock running behind the app clock, or for a writer transaction whose
+// timestamp was taken before the evaluator ran but which committed after it.
+const cursorLag = time.Second
+
+// TestEvaluatorCursor_RowStampedBeforeCursor checks that a CVE row which becomes visible
+// after an evaluation run, but whose timestamp is earlier than the cursor that run stored,
+// is still evaluated by the next run.
+func TestEvaluatorCursor_RowStampedBeforeCursor(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	t.Run("EPSS", func(t *testing.T) {
+		const epssCond = `[{"field":"epss_score","operator":"gte","value":0.9}]`
+		rule := mustEPSSRule(t, ctx, tdb.Store, orgID, "and", epssCond, true)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateEPSS(ctx); err != nil {
+			t.Fatalf("first EvaluateEPSS: %v", err)
+		}
+		cursor := getCursorSince(t, tdb.DB(), "alert:epss")
+
+		const cveID = "CVE-EPSS-LAG-001"
+		score := 6.0
+		epss := 0.95
+		insertCVEWithEPSS(t, tdb.DB(), cveID, "Analyzed", "stamped before cursor", &score, &epss, "epss-lag-hash-001")
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE cves SET date_epss_updated = $1 WHERE cve_id = $2`,
+			cursor.Add(-cursorLag), cveID,
+		); err != nil {
+			t.Fatalf("backdate date_epss_updated: %v", err)
+		}
+
+		if err := ev.EvaluateEPSS(ctx); err != nil {
+			t.Fatalf("second EvaluateEPSS: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for CVE stamped %v before the EPSS cursor, got %d", cursorLag, n)
+		}
+	})
+
+	t.Run("Batch", func(t *testing.T) {
+		const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("first EvaluateBatch: %v", err)
+		}
+		cursor := getCursorSince(t, tdb.DB(), "alert:batch")
+
+		const cveID = "CVE-BATCH-LAG-001"
+		score := 9.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "stamped before cursor", &score, "batch-lag-hash-001")
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE cves SET date_modified_canonical = $1 WHERE cve_id = $2`,
+			cursor.Add(-cursorLag), cveID,
+		); err != nil {
+			t.Fatalf("backdate date_modified_canonical: %v", err)
+		}
+
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("second EvaluateBatch: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for CVE stamped %v before the batch cursor, got %d", cursorLag, n)
+		}
+	})
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Batch evaluator — multi-page pagination
 // ──────────────────────────────────────────────────────────────────────────────
 

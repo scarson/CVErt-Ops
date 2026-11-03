@@ -28,7 +28,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-25 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
-| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-22 | §5.C |
+| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-23 | §5.C |
 | 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-44 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
@@ -1885,9 +1885,19 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 **The Lesson:** NOTIFY-20 (batch/EPSS evaluator cursor skips rows stamped before it) is the same flaw in the alert evaluator, where re-processing a row is idempotent. When re-processing is not idempotent, an overlap window needs its own record of what was already sent. Taking the cursor before the query fixes only the gap caused by run duration, not commit lag or clock skew.
 
+### NOTIFY-22: Digest Dropped While the Previous Digest Is Still Pending
+
+**The Flaw:** `InsertDigestDelivery` ended in `ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest' DO NOTHING`, backed by the partial unique index `uq_deliveries_pending_digest`. `executeDigestReport` (`internal/notify/digest.go`) did not check whether the insert happened and advanced `last_run_at` regardless. While the previous digest for a report and channel waited out a retry backoff (SMTP down, webhook 503), the next digest's insert did nothing, and its CVEs were never sent to that channel. The same index broke retries: a pending-only index does not cover a `processing` row, so the next digest could be inserted while the previous one was in flight. If that send failed, `RetryDelivery` set the row back to `pending`, violated the index (23505), and left the row in `processing`. `ResetStuckDeliveries` updates every stuck row in one statement, so the same conflict then made each recovery run fail.
+
+**Why It Matters:** CVEs are silently missing from a channel's digests: no error, and the cursor moves on. It happens exactly when a channel is already having trouble, so the recipient loses the content that should catch them up after the outage.
+
+**The Fix:** Each digest run inserts its own delivery row (migration 000049 drops `uq_deliveries_pending_digest`). A digest is a dated, self-contained report with its own retry count, backoff, and delivery history. Merging the new payload into the pending row, as the alert debounce does, was rejected: the new CVEs would inherit the old row's attempt count and backoff, and the processing-row conflict would remain. Holding the cursor back for the affected channel was also rejected, because `last_run_at` belongs to the report, not to a channel.
+
+**The Lesson:** `ON CONFLICT DO NOTHING` treats the conflicting row as an equivalent replacement for the new one. That holds only when the two rows carry the same content. A debounce index on a `pending` status also has to account for every transition back into `pending` (retry, stuck-row reset, replay): each one can collide with a row inserted while the original was out of `pending`.
+
 ---
 
-### NOTIFY-22: Digest Row Limit Drops CVEs Without a Trace
+### NOTIFY-23: Digest Row Limit Drops CVEs Without a Trace
 
 **The Flaw:** `DigestCVEs` (`internal/store/queries/cves.sql`) returns at most 500 rows, sorted by severity, and `executeDigestReport` (`internal/notify/digest.go`) advances `last_run_at` past the whole window regardless. The payload was a bare array of those rows, and the email renderer took its length as the digest's total. When more than 500 CVEs matched, the lower-severity ones were in no digest, the email said "Showing 25 of 500", and webhook consumers had no way to tell the array was incomplete.
 
@@ -1919,7 +1929,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - [ ] Channel deletion pre-flight: DELETE /channels/{id} returns 409 if active alert rules reference the channel (NOTIFY-7)?
 - [ ] Timestamp-cursor scans start a re-scan window behind the stored cursor, and re-processing a row in that window is idempotent (NOTIFY-20)?
 - [ ] Digest scans start a re-scan window behind `last_run_at`, take the next cursor before the query, and leave out CVE versions already sent (NOTIFY-21)?
-- [ ] A row-limited digest or report query carries the match count before the limit, and renderers report that count rather than the number of rows (NOTIFY-22)?
+- [ ] A row-limited digest or report query carries the match count before the limit, and renderers report that count rather than the number of rows (NOTIFY-23)?
 
 ### See Also
 - Webhook SSRF and redirect bypass: see AUTH-17
@@ -2704,7 +2714,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §2 Database & Query | DB-1 – DB-25 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
-| §5 Notification & Alert | NOTIFY-1 – NOTIFY-22 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit |
+| §5 Notification & Alert | NOTIFY-1 – NOTIFY-23 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit |
 | §6 Architecture & Ops | ARCH-1 – ARCH-44 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 
 **Total: ~144 pitfall entries across 6 domains.**

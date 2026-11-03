@@ -160,8 +160,6 @@ func (q *Queries) GetDelivery(ctx context.Context, arg GetDeliveryParams) (GetDe
 const insertDigestDelivery = `-- name: InsertDigestDelivery :exec
 INSERT INTO notification_deliveries (org_id, report_id, channel_id, kind, payload, send_after)
 VALUES ($1, $2, $3, 'digest', $4, now())
-ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest'
-DO NOTHING
 `
 
 type InsertDigestDeliveryParams struct {
@@ -172,7 +170,8 @@ type InsertDigestDeliveryParams struct {
 }
 
 // Digest runner: insert a digest delivery for a report+channel.
-// ON CONFLICT targets uq_deliveries_pending_digest partial index.
+// Each digest run gets its own row, even while an earlier digest for the same
+// report and channel is still pending.
 func (q *Queries) InsertDigestDelivery(ctx context.Context, arg InsertDigestDeliveryParams) error {
 	_, err := q.db.ExecContext(ctx, insertDigestDelivery,
 		arg.OrgID,

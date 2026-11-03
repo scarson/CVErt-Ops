@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1023,6 +1024,77 @@ func TestWorker_Digest_RescanWindowSkipsSentVersions(t *testing.T) {
 	if counts["CVE-2025-RESCAN-CHANGED"] != 2 {
 		t.Errorf("CVE-2025-RESCAN-CHANGED appeared in %d digests, want 2 (all CVE counts: %v)",
 			counts["CVE-2025-RESCAN-CHANGED"], counts)
+	}
+}
+
+// TestWorker_Digest_MoreCVEsThanQueryLimit covers a digest window holding more
+// matching CVEs than one digest query returns, as after an NVD enrichment burst.
+// 500 high-severity CVEs fill the first digest, so the low-severity CVE stamped in
+// the same window is not in it. It must not be lost: a later digest must carry it.
+func TestWorker_Digest_MoreCVEsThanQueryLimit(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestOverflowOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"overflow@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestOverflowChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestOverflowReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// The CVEs are stamped an hour ago, outside the re-scan window of the second
+	// run, so only the first run's window contains them.
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET created_at = now() - interval '2 hours' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("backdate created_at: %v", err)
+	}
+	stamp := time.Now().Add(-1 * time.Hour)
+	for i := range 500 {
+		s.SeedTestCVE(t, fmt.Sprintf("CVE-2025-OVERFLOW-%04d", i), "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+	}
+	s.SeedTestCVE(t, "CVE-2025-OVERFLOW-LOW", "low", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	completeDigestDeliveries(t, ctx, db, report.ID)
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	if len(counts) != 501 {
+		t.Errorf("digests carried %d distinct CVEs, want all 501 that matched", len(counts))
+	}
+	if counts["CVE-2025-OVERFLOW-LOW"] != 1 {
+		t.Errorf("CVE-2025-OVERFLOW-LOW appeared in %d digests, want 1", counts["CVE-2025-OVERFLOW-LOW"])
 	}
 }
 

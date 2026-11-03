@@ -727,7 +727,7 @@ type specListRuleChannelsInput struct {
 }
 type specListRuleChannelsOutput struct {
 	Body struct {
-		Items []channelEntry `json:"items"`
+		Items []ChannelEntry `json:"items"`
 	}
 }
 
@@ -887,7 +887,7 @@ type specListChannelsInput struct {
 }
 type specListChannelsOutput struct {
 	Body struct {
-		Items []channelEntry `json:"items"`
+		Items []ChannelEntry `json:"items"`
 	}
 }
 
@@ -896,7 +896,7 @@ type specGetChannelInput struct {
 	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
 }
 type specGetChannelOutput struct {
-	Body channelEntry
+	Body ChannelEntry
 }
 
 type specUpdateChannelInput struct {
@@ -905,7 +905,7 @@ type specUpdateChannelInput struct {
 	Body  patchChannelBody `json:"body"`
 }
 type specUpdateChannelOutput struct {
-	Body channelEntry
+	Body ChannelEntry
 }
 
 type specDeleteChannelInput struct {
@@ -1013,7 +1013,7 @@ type specListDeliveriesInput struct {
 }
 type specListDeliveriesOutput struct {
 	Body struct {
-		Items      []deliveryEntry `json:"items"`
+		Items      []DeliveryEntry `json:"items"`
 		NextCursor string          `json:"next_cursor,omitempty"`
 	}
 }
@@ -1105,7 +1105,7 @@ type specListReportChannelsInput struct {
 }
 type specListReportChannelsOutput struct {
 	Body struct {
-		Items []channelEntry `json:"items"`
+		Items []ChannelEntry `json:"items"`
 	}
 }
 

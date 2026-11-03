@@ -2185,7 +2185,15 @@ export interface components {
              * @example https://example.com/schemas/ChannelCreateEntry.json
              */
             readonly $schema?: string;
-            signing_secret: string;
+            config: unknown;
+            created_at: string;
+            id: string;
+            name: string;
+            org_id: string;
+            /** @description Webhook channels only. Shown once, at creation. */
+            signing_secret?: string;
+            type: string;
+            updated_at: string;
         };
         ChannelEntry: {
             /**
@@ -2363,7 +2371,22 @@ export interface components {
              * @example https://example.com/schemas/DeliveryDetail.json
              */
             readonly $schema?: string;
+            /** Format: int32 */
+            attempt_count: number;
+            channel_id: string;
+            created_at: string;
+            delivered_at?: string;
+            id: string;
+            kind: string;
+            last_attempted_at?: string;
+            last_error?: string;
+            org_id: string;
             payload: unknown;
+            report_id?: string;
+            rule_id: string;
+            send_after: string;
+            status: string;
+            updated_at: string;
         };
         DeliveryEntry: {
             /** Format: int32 */

@@ -215,6 +215,54 @@ func TestOpenAPISpec(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpec_EmbeddedFieldsDocumented verifies that response schemas
+// built by embedding another DTO document the embedded DTO's fields, which
+// encoding/json promotes into the response body.
+func TestOpenAPISpec_EmbeddedFieldsDocumented(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	tests := []struct {
+		schema       string
+		wantRequired []string
+		wantOptional []string
+	}{
+		// signing_secret is sent only for webhook channels.
+		{schema: "ChannelCreateEntry", wantRequired: []string{"id", "org_id", "name", "type", "config", "created_at", "updated_at"}, wantOptional: []string{"signing_secret"}},
+		{schema: "DeliveryDetail", wantRequired: []string{"id", "org_id", "status", "created_at", "payload"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.schema, func(t *testing.T) {
+			s, ok := schemas[tc.schema].(map[string]any)
+			if !ok {
+				t.Fatalf("schema %s missing from spec", tc.schema)
+			}
+			props, _ := s["properties"].(map[string]any)
+			required := map[string]bool{}
+			reqList, _ := s["required"].([]any)
+			for _, r := range reqList {
+				required[r.(string)] = true
+			}
+			for _, f := range tc.wantRequired {
+				if _, ok := props[f]; !ok {
+					t.Errorf("property %s not documented", f)
+				}
+				if !required[f] {
+					t.Errorf("property %s not marked required", f)
+				}
+			}
+			for _, f := range tc.wantOptional {
+				if _, ok := props[f]; !ok {
+					t.Errorf("property %s not documented", f)
+				}
+				if required[f] {
+					t.Errorf("property %s marked required, but the handler can omit it", f)
+				}
+			}
+		})
+	}
+}
+
 // TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
 // handlers answer 201 Created, 202 Accepted, 204 No Content or 302 Found
 // document that status, and do not document a 200 the handler never sends.

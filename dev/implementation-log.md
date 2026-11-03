@@ -2173,3 +2173,29 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 - **Frontend:** `npm run generate-api`, `npm run type-check` and `npm run lint` clean
 
 ---
+
+## OpenAPI: Embedded DTO Fields, Optional Signing Secret, SSO Location
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/hungry-khayyam-68844e`
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| Embedded DTO fields documented | `internal/api/channels.go`, `internal/api/deliveries.go` (+ call sites) | `channelEntry` and `deliveryEntry` renamed to `ChannelEntry` and `DeliveryEntry`. huma skips unexported struct fields, embedded ones included, so `ChannelCreateEntry` documented only `signing_secret` and `DeliveryDetail` only `payload`. `encoding/json` promotes them either way, so response bodies are unchanged. |
+| `signing_secret` optional | `internal/api/channels.go` | `json:"signing_secret,omitempty"`: `createChannelHandler` sends it for webhook channels only. A webhook secret is always 64 hex characters, so `omitempty` never drops one. |
+| SSO create Location | `internal/api/sso.go` | `Location` is now `/api/v1/orgs/{org_id}/sso`, the org's single SSO connection. It was `/sso/{id}`, a route that does not exist. |
+| Tests | `internal/api/openapi_test.go`, `internal/api/sso_test.go` | `TestOpenAPISpec_EmbeddedFieldsDocumented`; `TestCreateSSO_LocationHeader` checks the header and that GET on it answers 200. |
+
+### Gotchas discovered
+
+- **`gofmt -r ... -w` over a package rewrites every file** — it reformats files that were not gofmt-clean and writes LF into a CRLF checkout. Restore the files with no content change (`git diff --ignore-cr-at-eol --stat`, then `git restore` with exclusions).
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec_EmbeddedFieldsDocumented` failed first (missing promoted fields, `signing_secret` required), then passes; all `OpenAPI|Spec` tests pass; `go vet` clean
+- **Not run:** `TestCreateSSO_LocationHeader` and the channel, delivery and report integration tests touched by the rename. Docker Desktop answers 500 on `/info`, so testcontainers cannot start Postgres.
+- **Lint:** `golangci-lint run ./internal/api/...` 0 issues; web `type-check` and `lint` clean
+
+---

@@ -53,8 +53,9 @@ func checkReplayLimit(orgID uuid.UUID) bool {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
-// deliveryEntry is the list item shape (no payload to keep list responses small).
-type deliveryEntry struct {
+// DeliveryEntry is the list item shape (no payload to keep list responses small).
+// It is exported so huma documents its fields where deliveryDetail embeds it.
+type DeliveryEntry struct {
 	ID              string  `json:"id"`
 	OrgID           string  `json:"org_id"`
 	RuleID          string  `json:"rule_id"`
@@ -71,9 +72,9 @@ type deliveryEntry struct {
 	UpdatedAt       string  `json:"updated_at"`
 }
 
-// deliveryDetail extends deliveryEntry with the full payload.
+// deliveryDetail extends DeliveryEntry with the full payload.
 type deliveryDetail struct {
-	deliveryEntry
+	DeliveryEntry
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -160,9 +161,9 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		rows = rows[:limit]
 	}
 
-	items := make([]deliveryEntry, len(rows))
+	items := make([]DeliveryEntry, len(rows))
 	for i, row := range rows {
-		entry := deliveryEntry{
+		entry := DeliveryEntry{
 			ID:           row.ID.String(),
 			OrgID:        row.OrgID.String(),
 			RuleID:       row.RuleID.UUID.String(),
@@ -231,7 +232,7 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry := deliveryEntry{
+	entry := DeliveryEntry{
 		ID:           row.ID.String(),
 		OrgID:        row.OrgID.String(),
 		RuleID:       row.RuleID.UUID.String(),
@@ -261,7 +262,7 @@ func (srv *Server) getDeliveryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, deliveryDetail{
-		deliveryEntry: entry,
+		DeliveryEntry: entry,
 		Payload:       row.Payload,
 	})
 }

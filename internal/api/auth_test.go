@@ -1330,6 +1330,58 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 	}
 }
 
+// TestChangePassword_RestrictedSession_RejectsStaleTokenVersion verifies that a
+// pending token issued before the user's token_version changed (for example by
+// an admin MFA reset) can no longer change the password.
+func TestChangePassword_RestrictedSession_RejectsStaleTokenVersion(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "forcereset-stale@example.com", "test-old-password-1")
+	user, err := db.GetUserByEmail(ctx, "forcereset-stale@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if _, err := db.AdminForcePasswordReset(ctx, user.ID); err != nil {
+		t.Fatalf("set force_password_reset: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "forcereset-stale@example.com", "test-old-password-1")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	pendingToken := cookieValue(loginResp, "mfa_pending_token")
+	if pendingToken == "" {
+		t.Fatal("expected mfa_pending_token cookie from login with force_password_reset")
+	}
+
+	if _, err := db.IncrementTokenVersion(ctx, user.ID); err != nil {
+		t.Fatalf("increment token version: %v", err)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/change-password",
+		bytes.NewBufferString(`{"new_password":"test-new-password-1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
+	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("change-password: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("change-password with stale pending token: got %d, want 401", resp.StatusCode)
+	}
+
+	after, err := db.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user after: %v", err)
+	}
+	if after.PasswordHash.String != user.PasswordHash.String {
+		t.Error("password hash changed with a stale pending token")
+	}
+}
+
 func TestLogin_IncludesForcePasswordReset(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

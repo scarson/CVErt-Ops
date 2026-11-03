@@ -353,16 +353,20 @@ func buildCPEStrings(cpes []feed.AffectedCPE) []string {
 // collectPackageNames extracts unique package names for FTS indexing, sorted
 // lexicographically so feed reordering does not change the tsvector (§5.3).
 func collectPackageNames(pkgs []feed.AffectedPackage) []string {
-	seen := make(map[string]struct{})
-	var names []string
+	names := make([]string, 0, len(pkgs))
 	for _, p := range pkgs {
-		if _, ok := seen[p.PackageName]; !ok {
-			seen[p.PackageName] = struct{}{}
-			names = append(names, p.PackageName)
-		}
+		names = append(names, p.PackageName)
 	}
-	slices.Sort(names)
-	return names
+	return ftsPackageNames(names)
+}
+
+// ftsPackageNames returns names de-duplicated and sorted bytewise. Merge and
+// the search index rebuild both order package names with it, so the same
+// packages always produce the same tsvector regardless of database collation.
+func ftsPackageNames(names []string) []string {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	return slices.Compact(sorted)
 }
 
 // migrateCVEPK renames a CVE's primary key from oldID to newID across all

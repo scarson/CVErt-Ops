@@ -553,8 +553,7 @@ SELECT c.cve_id,
        c.description_primary,
        c.cwe_ids,
        COALESCE(
-           array_agg(DISTINCT p.package_name ORDER BY p.package_name)
-               FILTER (WHERE p.package_name IS NOT NULL),
+           array_agg(p.package_name) FILTER (WHERE p.package_name IS NOT NULL),
            '{}'
        )::text[] AS package_names
 FROM cves c
@@ -572,7 +571,9 @@ type ListSearchIndexInputsRow struct {
 }
 
 // The fields UpsertCVESearchIndex builds the tsvector from, for a batch of
-// CVEs. Package names are de-duplicated and sorted, as in the merge pipeline.
+// CVEs. Package names come back unordered and may repeat; the caller
+// de-duplicates and sorts them bytewise, as the merge pipeline does, because
+// an ORDER BY here would follow the database collation.
 func (q *Queries) ListSearchIndexInputs(ctx context.Context, cveIds []string) ([]ListSearchIndexInputsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listSearchIndexInputs, pq.Array(cveIds))
 	if err != nil {

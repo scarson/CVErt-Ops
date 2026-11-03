@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -48,8 +49,10 @@ func TestSearchReindexJob_RunsAndRebuildsIndex(t *testing.T) {
 		t.Fatalf("EnqueueJob: %v", err)
 	}
 
+	// Register handlers through the same function serve and worker use, so a
+	// missing production registration fails this test.
 	pool := worker.New(tdb.Store)
-	pool.Register(merge.SearchReindexQueue, searchReindexHandler(tdb.Store))
+	registerMaintenanceJobs(pool, tdb.Store, &config.Config{}) //nolint:exhaustruct // test: no retention job is enqueued
 	poolCtx, stopPool := context.WithCancel(ctx)
 	poolDone := make(chan struct{})
 	go func() {

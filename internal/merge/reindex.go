@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -25,8 +27,10 @@ const SearchReindexQueue = "system_reindex"
 // then sees every merge that committed before the locks were granted, and
 // merges that start later wait for this commit, so the rebuild never writes a
 // tsvector built from pre-merge text. Merge's late-binding PK migration takes
-// a second lock out of key order; a deadlock with it is resolved by Postgres's
-// deadlock detector, as it is between two concurrent merges.
+// a second lock out of key order, so a batch that holds a migration's source
+// ID while waiting for its destination can deadlock with it. Postgres aborts
+// one of the two transactions; when the batch is the one aborted, it is rolled
+// back whole and retried up to maxBatchAttempts times.
 func RebuildSearchIndex(ctx context.Context, s Store, batchSize int32) (int, error) {
 	if batchSize <= 0 {
 		return 0, errors.New("rebuild search index: batch size must be positive")
@@ -46,13 +50,29 @@ func RebuildSearchIndex(ctx context.Context, s Store, batchSize int32) (int, err
 			return total, nil
 		}
 
-		n, err := rebuildSearchIndexBatch(ctx, s, ids)
+		var n int
+		for attempt := 1; ; attempt++ {
+			n, err = rebuildSearchIndexBatch(ctx, s, ids)
+			if err == nil || !isDeadlock(err) || attempt == maxBatchAttempts {
+				break
+			}
+		}
 		if err != nil {
 			return total, fmt.Errorf("rebuild search index: batch after %q: %w", after, err)
 		}
 		total += n
 		after = ids[len(ids)-1]
 	}
+}
+
+// maxBatchAttempts bounds how many times one rebuild batch is retried after
+// Postgres aborts it to break a deadlock.
+const maxBatchAttempts = 3
+
+// isDeadlock reports whether err is Postgres's deadlock_detected (40P01).
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 // rebuildSearchIndexBatch rebuilds the cve_search_index rows for ids under the
@@ -84,7 +104,7 @@ func rebuildSearchIndexBatch(ctx context.Context, s Store, ids []string) (int, e
 			CveID:        r.CveID,
 			Description:  r.DescriptionPrimary.String,
 			CweNames:     strings.Join(r.CweIds, " "),
-			PackageNames: strings.Join(r.PackageNames, " "),
+			PackageNames: strings.Join(ftsPackageNames(r.PackageNames), " "),
 		}); err != nil {
 			return 0, fmt.Errorf("upsert search index for %s: %w", r.CveID, err)
 		}

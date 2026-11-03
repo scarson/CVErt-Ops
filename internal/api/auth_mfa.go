@@ -65,6 +65,8 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 
 	if input.Body.Method == "totp" {
 		// TOTP is client-side — just reissue the pending token with fresh TTL.
+		// Renewal needs no cap: mfaVerifyHandler counts each wrong code toward
+		// the account lockout, which bounds guesses however long the token lives.
 		cookies, reissueErr := srv.reissuePendingTokenCookies(claims)
 		if reissueErr != nil {
 			slog.ErrorContext(ctx, "mfa-challenge: reissue pending token", "error", reissueErr)
@@ -182,6 +184,21 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 		return nil, huma.Error401Unauthorized("session invalidated — please log in again")
 	}
 
+	// Account lockout check — failed codes count toward the same lockout as
+	// failed passwords, so a locked account gets no further guesses here.
+	if allowed, retryAfter := srv.lockout.Check(ctx, user.Email); !allowed {
+		if srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:     secure.EventMFAVerifyFailed,
+				Severity: secure.SeverityWarning,
+				ActorIP:  clientIP(ctx),
+				UserID:   &claims.UserID,
+				Details:  map[string]any{"method": input.Body.Method, "reason": "account locked"},
+			})
+		}
+		return nil, accountLockedError(retryAfter)
+	}
+
 	// Verify the code based on method.
 	var verified bool
 	switch input.Body.Method {
@@ -233,6 +250,16 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 				ActorIP:  clientIP(ctx),
 				UserID:   &claims.UserID,
 				Details:  map[string]any{"method": input.Body.Method},
+			})
+		}
+		// Check if this failure triggered account lockout.
+		if allowed, _ := srv.lockout.Check(ctx, user.Email); !allowed && srv.eventWriter != nil {
+			srv.eventWriter.Write(ctx, secure.Event{
+				Type:       secure.EventAuthAccountLocked,
+				Severity:   secure.SeverityCritical,
+				ActorIP:    clientIP(ctx),
+				ActorEmail: user.Email,
+				UserID:     &claims.UserID,
 			})
 		}
 		return nil, huma.Error401Unauthorized("invalid verification code")

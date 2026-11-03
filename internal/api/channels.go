@@ -119,7 +119,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
 			return
 		}
-		if err := validateWebhookURL(urlVal); err != nil {
+		if err := validateWebhookURL(urlVal, srv.privateDests); err != nil {
 			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
 			return
 		}
@@ -296,7 +296,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: "webhook config must include a non-empty url", Location: "body.config.url"})
 				return
 			}
-			if err := validateWebhookURL(urlVal); err != nil {
+			if err := validateWebhookURL(urlVal, srv.privateDests); err != nil {
 				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: err.Error(), Location: "body.config.url"})
 				return
 			}
@@ -536,7 +536,7 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		return errors.New("channel not found")
 	}
 
-	client, err := notify.BuildSafeClient()
+	client, err := notify.BuildSafeClient(srv.privateDests)
 	if err != nil {
 		return fmt.Errorf("build webhook client: %w", err)
 	}
@@ -624,7 +624,7 @@ func validateEmailConfig(config json.RawMessage) ([]string, error) {
 
 // validateWebhookURL performs SSRF-safe static validation of a webhook URL at registration time.
 // Dynamic validation occurs again at delivery time via the safeurl-wrapped client.
-func validateWebhookURL(rawURL string) error {
+func validateWebhookURL(rawURL string, private notify.PrivateDestinations) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return errors.New("webhook url is not a valid URL")
@@ -635,6 +635,11 @@ func validateWebhookURL(rawURL string) error {
 	host := u.Hostname()
 	if host == "" {
 		return errors.New("webhook url must have a host")
+	}
+	// Hosts the operator listed in WEBHOOK_PRIVATE_HOSTS may be private. The
+	// delivery client still confines them to WEBHOOK_PRIVATE_CIDRS.
+	if private.Allows(host) {
+		return nil
 	}
 	// Reject known-internal hostnames.
 	lh := strings.ToLower(host)

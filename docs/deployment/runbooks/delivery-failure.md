@@ -29,7 +29,7 @@ Each failed delivery includes a `last_error` field. Common errors:
 | `connection refused` | Webhook endpoint unreachable | Verify the channel URL is correct and reachable |
 | `timeout` | Webhook endpoint too slow | Endpoint must respond within 10 seconds |
 | `403`/`401` | Authentication failure | Check webhook secret/token configuration |
-| `SSRF blocked` | URL targets a private/internal IP | Webhook URLs must be publicly routable |
+| `ip: … not found in allowlist` or `port: … not found in allowlist` | SSRF protection: the URL resolves to a private/internal address or uses a port other than 80/443 | Use a publicly routable URL, or, for a self-hosted receiver, list its host in `WEBHOOK_PRIVATE_HOSTS` with its network in `WEBHOOK_PRIVATE_CIDRS` (and any port in `WEBHOOK_PRIVATE_PORTS`); see `.env.example` |
 | `max attempts exceeded` | Delivery exhausted all retries | Fix the underlying issue, then retry |
 | `SMTP error` | Email delivery failure | Check SMTP credentials and server connectivity |
 

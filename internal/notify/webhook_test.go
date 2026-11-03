@@ -259,7 +259,7 @@ func TestBuildSafeClient_BlocksPrivateIPs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client, err := notify.BuildSafeClient()
+	client, err := notify.BuildSafeClient(notify.PrivateDestinations{})
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
@@ -271,7 +271,7 @@ func TestBuildSafeClient_BlocksPrivateIPs(t *testing.T) {
 }
 
 func TestBuildSafeClient_ReturnsValidClient(t *testing.T) {
-	client, err := notify.BuildSafeClient()
+	client, err := notify.BuildSafeClient(notify.PrivateDestinations{})
 	require.NoError(t, err)
 	require.NotNil(t, client)
 	assert.Equal(t, 10*time.Second, client.Timeout)

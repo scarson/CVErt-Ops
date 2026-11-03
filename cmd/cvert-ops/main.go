@@ -241,7 +241,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	// Wire notification delivery: dispatcher fans out alert events to delivery rows;
 	// worker polls delivery rows and executes outbound webhook calls.
-	deliveryClient, err := notify.BuildSafeClient()
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return fmt.Errorf("webhook private destinations: %w", err)
+	}
+	deliveryClient, err := notify.BuildSafeClient(privateDests)
 	if err != nil {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}
@@ -447,7 +451,11 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
 
 	// Start notification delivery worker alongside the job queue worker pool.
-	deliveryClient, err := notify.BuildSafeClient()
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return fmt.Errorf("webhook private destinations: %w", err)
+	}
+	deliveryClient, err := notify.BuildSafeClient(privateDests)
 	if err != nil {
 		return fmt.Errorf("build delivery HTTP client: %w", err)
 	}

@@ -124,6 +124,17 @@ type Config struct {
 	NotifyMaxAttempts         int `env:"NOTIFY_MAX_ATTEMPTS"           envDefault:"4"`
 	NotifyBackoffBaseSeconds  int `env:"NOTIFY_BACKOFF_BASE_SECONDS"   envDefault:"30"`
 
+	// Webhook hosts allowed on private networks, for self-hosted receivers such
+	// as an ntfy server on a LAN. Comma-separated. Empty (the default) keeps the
+	// SSRF policy: private addresses blocked, ports 80 and 443 only. A listed
+	// host may resolve only into WEBHOOK_PRIVATE_CIDRS, and may also use
+	// WEBHOOK_PRIVATE_PORTS. Parsed and validated by notify.ParsePrivateDestinations.
+	// Every org's channels may target a listed host, so on a multi-tenant
+	// deployment list only hosts every tenant may reach.
+	WebhookPrivateHosts string `env:"WEBHOOK_PRIVATE_HOSTS"`
+	WebhookPrivateCIDRs string `env:"WEBHOOK_PRIVATE_CIDRS"`
+	WebhookPrivatePorts string `env:"WEBHOOK_PRIVATE_PORTS"`
+
 	// ── Rate limiting ────────────────────────────────────────────────────────────
 	// Comma-separated CIDRs of trusted reverse proxies; empty = no proxy.
 	TrustedProxies    string        `env:"TRUSTED_PROXIES"`

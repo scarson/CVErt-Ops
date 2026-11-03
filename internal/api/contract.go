@@ -73,6 +73,27 @@ func writeProblemTyped(w http.ResponseWriter, status int, problemType, detail st
 // Tier-limit problem type URI.
 const problemTypeTierLimit = "urn:cvert:error:tier-limit"
 
+// Sign-in problem type URIs. They let a client tell a mistyped code or
+// password (stay on the step) from a missing or expired session (start over),
+// which share the 401 status.
+const (
+	problemTypePendingSessionInvalid = "urn:cvert:error:pending-session-invalid"
+	problemTypeInvalidCode           = "urn:cvert:error:invalid-code"
+	problemTypeInvalidPassword       = "urn:cvert:error:invalid-password" //nolint:gosec // G101: public problem type URI, not a credential
+	problemTypeEnrollmentExpired     = "urn:cvert:error:enrollment-expired"
+)
+
+// typedProblem returns an error that huma handlers can return to produce an
+// RFC 9457 response with a custom problem type URI.
+func typedProblem(status int, problemType, detail string) error {
+	return &huma.ErrorModel{
+		Type:   problemType,
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: detail,
+	}
+}
+
 // decodeJSON decodes JSON from the request body into dst.
 // Returns a *huma.ErrorDetail on malformed JSON, nil on success.
 // The caller is responsible for semantic validation after decode.

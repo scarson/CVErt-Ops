@@ -1,15 +1,19 @@
-// ABOUTME: Per-IP in-memory rate limiter for auth endpoints.
-// ABOUTME: Uses golang.org/x/time/rate with background cleanup of idle entries.
+// ABOUTME: Per-IP in-memory rate limiter for auth endpoints, and client IP resolution
+// ABOUTME: that honours forwarded headers only from TRUSTED_PROXIES.
 package api
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/go-chi/chi/v5/middleware"
 	"golang.org/x/time/rate"
 )
 
@@ -76,16 +80,11 @@ func (rl *ipRateLimiter) cleanupLoop() {
 }
 
 // authRateLimit returns a middleware that applies per-IP rate limiting.
-// The IP is extracted from r.RemoteAddr — chi's RealIP middleware must run first
-// so X-Forwarded-For is honoured for requests behind a reverse proxy.
+// The IP comes from ctxClientIP, so clientIPMiddleware must run first.
 func (srv *Server) authRateLimit() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			if host, _, err := net.SplitHostPort(ip); err == nil {
-				ip = host
-			}
-			if !srv.rateLimiter.Allow(ip) {
+			if !srv.rateLimiter.Allow(clientIP(r.Context())) {
 				w.Header().Set("Retry-After", "60")
 				writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
@@ -95,18 +94,51 @@ func (srv *Server) authRateLimit() func(http.Handler) http.Handler {
 	}
 }
 
-// clientIPMiddleware extracts the client IP from r.RemoteAddr and injects it
-// into the context. Must run after chi's RealIP middleware. Huma handlers read
-// the IP via ctxClientIP to perform rate limiting at the handler level.
-func clientIPMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if host, _, err := net.SplitHostPort(ip); err == nil {
-			ip = host
+// parseTrustedProxies splits the TRUSTED_PROXIES value into CIDR prefixes and
+// rejects any entry that is not one, so a typo fails startup instead of
+// silently disabling (or widening) forwarded-header trust.
+func parseTrustedProxies(value string) ([]string, error) {
+	var prefixes []string
+	for _, p := range strings.Split(value, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
 		}
-		ctx := context.WithValue(r.Context(), ctxClientIP, ip)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+		if _, err := netip.ParsePrefix(p); err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXIES: %q is not a CIDR network (use 10.0.0.5/32 for a single proxy)", p)
+		}
+		prefixes = append(prefixes, p)
+	}
+	return prefixes, nil
+}
+
+// clientIPMiddleware resolves the client IP and injects it into the context as
+// ctxClientIP, where the auth rate limiters, audit log and security events read
+// it. With no trusted proxies the IP is the TCP peer and forwarded headers are
+// ignored. Otherwise X-Forwarded-For is honoured only when the peer is inside
+// trustedProxies, and the client is its rightmost entry outside them.
+//
+// When chi resolves no IP (the peer is a trusted proxy that sent no untrusted
+// X-Forwarded-For entry, or an entry did not parse), the TCP peer is used: it
+// cannot be spoofed, and it is what PLAN.md specifies when every hop is trusted.
+func clientIPMiddleware(trustedProxies []string) func(http.Handler) http.Handler {
+	resolve := middleware.ClientIPFromRemoteAddr
+	if len(trustedProxies) > 0 {
+		resolve = middleware.ClientIPFromXFF(trustedProxies...)
+	}
+	return func(next http.Handler) http.Handler {
+		return resolve(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := middleware.GetClientIP(r.Context())
+			if ip == "" {
+				ip = r.RemoteAddr
+				if host, _, err := net.SplitHostPort(ip); err == nil {
+					ip = host
+				}
+			}
+			ctx := context.WithValue(r.Context(), ctxClientIP, ip)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		}))
+	}
 }
 
 // clientIP extracts the client IP address from the request context.

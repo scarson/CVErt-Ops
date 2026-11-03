@@ -66,6 +66,7 @@ type Server struct {
 	llm                   ai.LLMClient               // nil when AI features are not configured
 	auditWriter           *audit.Writer              // nil when audit logging is not configured
 	privateDests          notify.PrivateDestinations // webhook hosts allowed on private networks
+	trustedProxies        []string                   // TRUSTED_PROXIES CIDRs whose X-Forwarded-For is honoured
 	eventWriter           *secure.EventWriter        // async security event recording
 	lockout               *lockoutManager            // brute-force login protection
 	configHolder          *config.Holder             // hot-reloadable config for admin reload endpoint
@@ -83,6 +84,10 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
 	if err != nil {
 		return nil, fmt.Errorf("webhook private destinations: %w", err)
+	}
+	trustedProxies, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
 	}
 	sem := make(chan struct{}, cfg.Argon2MaxConcurrent)
 	evictTTL := cfg.RateLimitEvictTTL
@@ -116,6 +121,7 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		llm:                   deps.LLM,
 		auditWriter:           deps.AuditWriter,
 		privateDests:          privateDests,
+		trustedProxies:        trustedProxies,
 		configHolder:          deps.ConfigHolder,
 		rescanFunc:            deps.RescanFunc,
 		expectedSchemaVersion: deps.ExpectedSchemaVersion,
@@ -217,8 +223,7 @@ func (srv *Server) Handler() http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	})
-	r.Use(middleware.RealIP)
-	r.Use(clientIPMiddleware)
+	r.Use(clientIPMiddleware(srv.trustedProxies))
 	r.Use(contextLoggerMiddleware)
 	// 1 MB global body limit — protect against OOM from large request bodies
 	// (PLAN.md §18.3 "HTTP request body size limit").

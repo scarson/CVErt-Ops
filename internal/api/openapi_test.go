@@ -89,6 +89,10 @@ func TestOpenAPISpec(t *testing.T) {
 		"/orgs/{org_id}",
 		"/orgs/{org_id}/members",
 		"/orgs/{org_id}/members/{user_id}",
+		"/orgs/{org_id}/members/{user_id}/reset-mfa",
+		"/orgs/{org_id}/members/{user_id}/force-password-reset",
+		"/orgs/{org_id}/members/{user_id}/require-mfa",
+		"/orgs/{org_id}/mfa-settings",
 		"/orgs/{org_id}/invitations",
 		"/orgs/{org_id}/invitations/{id}",
 		"/orgs/{org_id}/invitations/{id}/resend",
@@ -140,6 +144,11 @@ func TestOpenAPISpec(t *testing.T) {
 		// Spec-only: SSO
 		"/orgs/{org_id}/sso",
 		"/orgs/{org_id}/sso/domains",
+		"/orgs/{org_id}/sso/link",
+		"/orgs/{org_id}/sso/scim",
+		"/orgs/{org_id}/sso/scim/rotate-token",
+		"/orgs/{org_id}/sso/scim/groups",
+		"/orgs/{org_id}/sso/scim/groups/{id}/mapping",
 		"/auth/discover",
 
 		// Spec-only: Audit Log
@@ -207,8 +216,8 @@ func TestOpenAPISpec(t *testing.T) {
 }
 
 // TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
-// handlers answer 201 Created, 202 Accepted or 204 No Content document that
-// status, and do not document a 200 the handler never sends.
+// handlers answer 201 Created, 202 Accepted, 204 No Content or 302 Found
+// document that status, and do not document a 200 the handler never sends.
 func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 	spec := buildOpenAPISpec(t)
 	paths := spec["paths"].(map[string]any)
@@ -239,6 +248,10 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 		{path: "/orgs/{org_id}/watchlists", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
 		{path: "/orgs/{org_id}/watchlists/{id}/items", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
 
+		// 201 Created with a body but no Location: neither handler creates an addressable resource.
+		{path: "/orgs/{org_id}/members/{user_id}/require-mfa", method: "post", wantStatuses: []string{"201"}},
+		{path: "/orgs/{org_id}/sso/scim", method: "post", wantStatuses: []string{"201"}},
+
 		// 204 No Content.
 		{path: "/auth/mfa/methods/{method}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
 		{path: "/orgs/{org_id}/members/{user_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
@@ -260,6 +273,11 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 		{path: "/orgs/{org_id}/groups/{group_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
 		{path: "/orgs/{org_id}/groups/{group_id}/members", method: "post", wantStatuses: []string{"204"}, noBody: true},
 		{path: "/orgs/{org_id}/groups/{group_id}/members/{user_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/members/{user_id}/require-mfa", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/sso/scim", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+
+		// 302 Found redirecting the browser to the identity provider.
+		{path: "/orgs/{org_id}/sso/link", method: "get", wantStatuses: []string{"302"}, wantLocation: true, noBody: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {

@@ -2107,3 +2107,42 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 - **New tests:** 7 golden file tests, 1 EPSS golden test (testcontainer), 1 SeedCorpus integration test, `TestParseChangesCSV`, 4 MSRC Fetch tests rewritten
 
 ---
+
+## Admin Search Reindex — Endpoint Fix + Worker
+
+> **Date:** 2026-11-02
+> **Commits:** `b505bb4` on `fix/admin-reindex` (branched from `dev` at `2dcffc8`)
+> **Spec:** PLAN.md §17 (admin actions: rebuild search index); `dev/plans/2026-03-10-phase8-ops-operate-design.md` (System section: `POST /api/v1/admin/reindex`, 202 async via job queue)
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Enqueue fix | `internal/api/admin_system.go` | Enqueues `{}` instead of a nil payload (`job_queue.payload` is NOT NULL, so every call had returned 500) on `merge.SearchReindexQueue` |
+| Search index rebuild | `internal/merge/reindex.go` | `RebuildSearchIndex(ctx, store, batchSize)`: keyset walk over `cves` by `cve_id`; per batch, one transaction takes the merge advisory locks, reads inputs, reruns `UpsertCVESearchIndex` |
+| Rebuild queries | `internal/store/queries/cves.sql` | `ListCVEIDsAfter`, `LockCVEAdvisoryKeys` (ascending key order), `ListSearchIndexInputs` (description, CWE IDs, distinct sorted package names) |
+| Worker handler | `cmd/cvert-ops/main.go` | `searchReindexHandler` registered on `system_reindex` in both `serve` and `worker`; batch size 200 |
+| Sorted FTS package names | `internal/merge/pipeline.go` | `collectPackageNames` sorts its output, as PLAN.md §5.3 requires for arrays in the FTS document |
+
+### Key implementation decisions
+
+- **Implement rather than remove** — Sam chose to keep the endpoint because PLAN.md §17 lists "rebuild search index" as an MVP admin action. Merge already rewrites the FTS row on every ingest, so a rebuild is needed only when the tsvector recipe changes or rows were written outside merge.
+- **Reuse the merge tsvector recipe** — the rebuild calls the generated `UpsertCVESearchIndex`, so the weighting (A description, B CWE IDs, C package names, D CVE ID) has one definition. A set-based `INSERT ... SELECT` would have been faster but would duplicate the recipe in SQL.
+- **Advisory locks before the read** — each batch transaction locks every CVE's `merge.CVEAdvisoryKey` before it reads. Under READ COMMITTED the read sees every merge that committed before the locks were granted, so the rebuild never writes a tsvector built from pre-merge text. Merge's late-binding PK migration takes a second lock out of key order. A deadlock with it is left to Postgres's deadlock detector, the same policy merge documents for two concurrent PK migrations; the rebuild job then fails and the admin re-triggers it.
+- **Batch size 200** — per-CVE transactions would cost ~6 round trips per CVE and could exceed the 10-minute `maxJobDuration` on a full corpus. Batches keep a few hundred statements per transaction while holding at most 200 advisory locks at a time, well under the shared lock table (`max_locks_per_transaction` × connections).
+- **Shared queue constant** — `merge.SearchReindexQueue` is used by the API enqueue and both worker registrations. The original bug was an enqueue with no consumer.
+
+### Gotchas discovered
+
+- **Package-name order made the FTS document unstable** — `collectPackageNames` kept feed insertion order, so a feed reordering its affected packages changed tsvector positions, and a rebuild from `cve_affected_packages` could not reproduce merge's document. Sorting fixes both. Existing rows pick up the sorted form on their next merge or on a rebuild.
+- **`sqlc generate` on Windows touches every generated file** — with `core.autocrlf=true` the checkout is CRLF and sqlc writes LF. Only `cves.sql.go` had content changes; the rest were restored with `git restore -- internal/store/generated ':!internal/store/generated/cves.sql.go'`.
+- **OpenAPI spec documents 200, not 202** — no operation in `openapi_spec.go` sets `DefaultStatus`, so every 202 endpoint (reindex, feed trigger, alert activation, invitations) is documented as 200. Not changed here.
+
+### Quality checks
+
+- **go build ./...:** Clean
+- **golangci-lint run ./internal/merge/... ./internal/api/... ./cmd/...:** 0 issues
+- **Tests:** `internal/merge`, `internal/ingest`, `cmd/cvert-ops` (full packages); `internal/api -run 'Admin|Search|OpenAPI|Spec'`; `internal/store -run 'Search|FTS|CVE'` — all pass. Full `go test ./...` not run.
+- **New tests:** `TestAdminReindex_EnqueuesSearchReindexJob` (202, job on the consumed queue, 409 on repeat — failed with 500 before the fix), `TestAdminReindex_RequiresSiteAdmin`, `TestRebuildSearchIndex_RestoresMissingAndStaleRows` (batch boundary, missing + stale rows match merge output), `TestRebuildSearchIndex_EmptyCorpus`, `TestRebuildSearchIndex_WaitsForMergeLock`, `TestSearchReindexJob_RunsAndRebuildsIndex` (enqueue → real `worker.Pool` → job `succeeded` → row rebuilt), `TestCollectPackageNames/sorted_lexicographically`
+
+---

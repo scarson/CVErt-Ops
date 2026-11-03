@@ -20,6 +20,7 @@ import (
 type AuditEntry struct {
 	OrgID      uuid.UUID
 	ActorID    *uuid.UUID
+	APIKeyID   *uuid.UUID // key that performed the action; nil for session and system actions
 	ActorEmail string
 	Action     string
 	EntityType string
@@ -36,6 +37,7 @@ type AuditRow struct {
 	ID         uuid.UUID       `json:"id"`
 	OrgID      uuid.UUID       `json:"org_id"`
 	ActorID    *uuid.UUID      `json:"actor_id,omitempty"`
+	APIKeyID   *uuid.UUID      `json:"api_key_id,omitempty"`
 	ActorEmail string          `json:"actor_email,omitempty"`
 	Action     string          `json:"action"`
 	EntityType string          `json:"entity_type"`
@@ -67,6 +69,7 @@ func (s *Store) InsertAuditEntry(ctx context.Context, e AuditEntry) error {
 		return q.InsertAuditEntry(ctx, generated.InsertAuditEntryParams{
 			OrgID:      e.OrgID,
 			ActorID:    toNullUUID(e.ActorID),
+			ApiKeyID:   toNullUUID(e.APIKeyID),
 			ActorEmail: dbutil.NullString(e.ActorEmail),
 			Action:     e.Action,
 			EntityType: e.EntityType,
@@ -113,6 +116,7 @@ func (s *Store) ListAuditEntries(ctx context.Context, p AuditListParams) ([]Audi
 				ID:         r.ID,
 				OrgID:      r.OrgID,
 				ActorID:    fromNullUUID(r.ActorID),
+				APIKeyID:   fromNullUUID(r.ApiKeyID),
 				ActorEmail: r.ActorEmail.String,
 				Action:     r.Action,
 				EntityType: r.EntityType,

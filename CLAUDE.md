@@ -175,6 +175,7 @@ When PRing from a worktree that was created from `main` and merged `dev`:
 - **Tests MUST be executed, not just compiled.** `go build` and `go vet` verify syntax; only `go test` verifies behavior. Code that compiles but was never executed is unverified code.
 - **If Docker Desktop is unavailable** (testcontainers-go requires it for integration tests), this is a **HARD BLOCKER**. Do NOT proceed with "compilation-only verification." Stop and escalate to Sam.
 - **Before merging any branch to `dev`:** run `go test ./... -count=1 -timeout=600s` on the branch. If tests cannot run (Docker down, DB unavailable), do not merge.
+- **Slow packages:** on a Windows dev machine, run alongside other packages, `internal/api` took 595s and `internal/store` 377s (2026-11-02). In a full `go test ./... -p 4` run later that day, `internal/api` took 1192s and `internal/store` 685s. `-timeout` applies per package, so `-timeout=600s` can fail `internal/api` on time alone; use `-timeout=1800s` for full runs. For work in progress, narrow runs with `-run <TestName>`.
 - **Worktree agents**: If you cannot run integration tests in your worktree, report this as a blocker in your progress log and STOP. Do not mark tasks as complete with "compiles, tests not run."
 - **Coordinator rule**: After merging each stage/worktree to `dev`, run the full test suite on `dev` before launching the next stage. Failures from the merge block the next stage.
 
@@ -337,6 +338,7 @@ Mailpit UI: http://localhost:8025
 - Realtime: fires on CVE upsert when `material_hash` changes
 - Batch: periodic job using `date_modified_canonical > last_cursor`; skips rules whose only conditions reference `epss_score`
 - EPSS-specific: daily job using `date_epss_updated > last_cursor`; only rules with `epss_score` conditions
+- Batch and EPSS scans start 2 minutes behind `last_cursor` (`cursorRescanWindow`): the cursor and the compared timestamps come from different clocks and writers commit after stamping (implementation-pitfalls.md NOTIFY-20)
 - All paths: filter `cves.status NOT IN ('rejected', 'withdrawn')`; regex rules fail-closed if candidate cap (5,000) exceeded
 - New rule activation: handler inserts rule with `status='activating'`, enqueues scan job, returns 202 immediately — never runs the scan inline
 - `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)`; inserts use `ON CONFLICT DO NOTHING RETURNING id` — fan-out only if the row was actually inserted

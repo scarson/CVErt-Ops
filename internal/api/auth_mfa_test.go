@@ -1742,6 +1742,169 @@ func TestEnrollment_RejectsStaleTokenVersion(t *testing.T) {
 	}
 }
 
+// confirmTOTPEnrollment runs TOTP setup and confirm with the given cookies and
+// returns the confirm response. The caller closes the response body.
+func confirmTOTPEnrollment(t *testing.T, ctx context.Context, ts *httptest.Server, cookies []*http.Cookie) *http.Response {
+	t.Helper()
+	setupResp, err := ts.Client().Do(authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup request: %v", err)
+	}
+	var setupOut struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(setupResp.Body).Decode(&setupOut); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	setupResp.Body.Close() //nolint:errcheck,gosec
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	if setupResp.StatusCode != http.StatusOK || setupOut.Secret == "" || enrollToken == "" {
+		t.Fatalf("setup: status %d, secret or enrollment token missing", setupResp.StatusCode)
+	}
+
+	code, err := totp.GenerateCode(setupOut.Secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	confirmCookies := append(append([]*http.Cookie{}, cookies...), &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmResp, err := ts.Client().Do(authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", //nolint:gosec
+		fmt.Sprintf(`{"code":%q}`, code), confirmCookies))
+	if err != nil {
+		t.Fatalf("confirm request: %v", err)
+	}
+	return confirmResp
+}
+
+// TestEnrollmentConfirm_IgnoresOtherUsersPendingToken verifies that enrolling
+// with one account's access token does not clear another account's
+// mfa_enrollment_required step or issue that account full tokens.
+func TestEnrollmentConfirm_IgnoresOtherUsersPendingToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	// B registers first: only the first registration returns an org to mandate MFA on.
+	regB := doRegister(t, ctx, ts, "enroll-victim@example.com", "test-password-1234")
+	userB, _ := uuid.Parse(regB.UserID)
+	orgB, err := uuid.Parse(regB.OrgID)
+	if err != nil {
+		t.Fatalf("parse B org ID %q: %v", regB.OrgID, err)
+	}
+	if _, err := db.Pool().Exec(ctx, "UPDATE organizations SET mfa_required_all = true WHERE id = $1", orgB); err != nil {
+		t.Fatalf("set mfa_required_all: %v", err)
+	}
+
+	doRegister(t, ctx, ts, "enroll-owner@example.com", "test-password-1234")
+	loginA := doLogin(t, ctx, ts, "enroll-owner@example.com", "test-password-1234")
+	accessA := authedCookies(t, loginA)
+	loginA.Body.Close() //nolint:errcheck,gosec
+
+	loginB := doLogin(t, ctx, ts, "enroll-victim@example.com", "test-password-1234")
+	bodyB := parseLoginBody(t, loginB)
+	pendingB := cookieValue(loginB, "mfa_pending_token")
+	loginB.Body.Close() //nolint:errcheck,gosec
+	if len(bodyB.Pending) != 1 || bodyB.Pending[0] != "mfa_enrollment_required" || pendingB == "" {
+		t.Fatalf("expected pending=[mfa_enrollment_required] for B, got %v", bodyB.Pending)
+	}
+
+	cookies := append(accessA, &http.Cookie{Name: "mfa_pending_token", Value: pendingB})
+	resp := confirmTOTPEnrollment(t, ctx, ts, cookies)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: got %d, want 200 (A's own enrollment succeeds)", resp.StatusCode)
+	}
+	if cookieValue(resp, "access_token") != "" {
+		t.Error("confirm issued an access token from another user's pending token")
+	}
+	if cookieValue(resp, "mfa_pending_token") != "" {
+		t.Error("confirm reissued another user's pending token")
+	}
+	credsB, err := db.GetMFACredentialsByUserID(ctx, userB)
+	if err != nil {
+		t.Fatalf("get B credentials: %v", err)
+	}
+	if len(credsB) != 0 {
+		t.Errorf("B should have no MFA credential, got %d", len(credsB))
+	}
+}
+
+// TestEnrollmentConfirm_IgnoresOutOfOrderPendingToken verifies that a pending
+// token whose first step is not mfa_enrollment_required is left unchanged when
+// the user enrolls with an access token.
+func TestEnrollmentConfirm_IgnoresOutOfOrderPendingToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "enroll-order@example.com", "test-password-1234")
+	userID, _ := uuid.Parse(reg.UserID)
+	login := doLogin(t, ctx, ts, "enroll-order@example.com", "test-password-1234")
+	access := authedCookies(t, login)
+	login.Body.Close() //nolint:errcheck,gosec
+
+	pendingToken, err := auth.IssuePendingToken(
+		srv.jwtSecret(), userID, 1,
+		[]string{"password_reset", "mfa_enrollment_required"},
+		nil, nil, 5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := append(access, &http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	resp := confirmTOTPEnrollment(t, ctx, ts, cookies)
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: got %d, want 200", resp.StatusCode)
+	}
+	if cookieValue(resp, "mfa_pending_token") != "" {
+		t.Error("confirm cleared mfa_enrollment_required although password_reset comes first")
+	}
+}
+
+// TestEmailOTPSetup_IgnoresOtherUsersPendingToken verifies that email OTP setup
+// with one account's access token does not extend another account's pending token.
+func TestEmailOTPSetup_IgnoresOtherUsersPendingToken(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	doRegister(t, ctx, ts, "otp-setup-owner@example.com", "test-password-1234")
+	login := doLogin(t, ctx, ts, "otp-setup-owner@example.com", "test-password-1234")
+	access := authedCookies(t, login)
+	login.Body.Close() //nolint:errcheck,gosec
+
+	regB := doRegister(t, ctx, ts, "otp-setup-other@example.com", "test-password-1234")
+	userB, _ := uuid.Parse(regB.UserID)
+	pendingB, err := auth.IssuePendingToken(
+		srv.jwtSecret(), userB, 1,
+		[]string{"mfa_challenge", "password_reset"},
+		[]string{"totp"}, nil, 5*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("issue pending token: %v", err)
+	}
+
+	cookies := append(access, &http.Cookie{Name: "mfa_pending_token", Value: pendingB})
+	resp, err := ts.Client().Do(authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)) //nolint:gosec
+	if err != nil {
+		t.Fatalf("email OTP setup: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("email OTP setup: got %d, want 2xx", resp.StatusCode)
+	}
+	if cookieValue(resp, "mfa_pending_token") != "" {
+		t.Error("email OTP setup reissued another user's pending token")
+	}
+}
+
 func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

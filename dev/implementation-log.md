@@ -2498,3 +2498,64 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 - Go suite not run (no Go changes).
 
 ---
+
+## Test Infrastructure — One Postgres Container per Test Binary
+
+> **Date:** 2026-11-03
+> **Commits:** on `test/shared-postgres-container` (branched from `fix/admin-reindex`)
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| Shared container + template clone | `internal/testutil/postgres.go` | The first `NewTestDB` call in a test binary starts one Postgres container and migrates a template database (`cvert_ops_template`). Every `NewTestDB` call then runs `CREATE DATABASE ... TEMPLATE` (~100 ms) and drops that database with `FORCE` at cleanup. The 650+ call sites are unchanged. |
+| `testutil.Run` | `internal/testutil/postgres.go`, `*/main_test.go` (14 packages) | `TestMain` in every package that uses `NewTestDB` calls `os.Exit(testutil.Run(m))`, which terminates the container after the tests. `NewTestDB` fails with instructions if a package lacks it. |
+| Server settings | `internal/testutil/postgres.go` | `max_connections=1000`, `synchronous_commit=off`, `full_page_writes=off` (the module already sets `fsync=off`): one server now serves every parallel test in a binary. |
+| Flake fixes | `internal/notify/worker_test.go`, `internal/feed/breaker_test.go`, `internal/api/ingest_test.go`, `internal/api/auth_test.go`, `internal/api/org_ratelimit.go` | Digest tests stamp CVEs with the database clock; the breaker-open test uses an open timeout it cannot reach; the ingest rate test freezes the limiter clock; the login rate test uses an hourly refill like the register test. `orgRateLimiter.Allow` now refills by the limiter's injected clock, as `AllowN` already did. |
+| CLAUDE.md | `CLAUDE.md` | The suite-runtime note describes the per-binary container, the required `TestMain`, and the new timings. |
+
+### Key implementation decisions
+
+- **Container per test binary, not one reused machine-wide container** — Sam's choice. Each `go test` process owns its container, so concurrent runs by several sessions stay isolated, and a binary killed by a timeout panic leaks one container instead of hundreds. Reuse-by-name would skip container start-up entirely but share one server across worktrees and agents.
+- **Template database, not truncation** — cloning gives each test an empty, fully migrated database with no ordering or cleanup coupling between parallel tests; truncating shared tables would serialize them.
+- **Cleanup order** — the `DROP DATABASE` cleanup is registered before the pools, so it runs after they close (cleanups run last-in first-out); `WITH (FORCE)` ends any connection a test leaked.
+
+### Gotchas discovered
+
+- **`internal/feed/epss` and `internal/merge` cannot put `TestMain` in their internal test package** — `testutil` imports both (SeedCorpus, the merge pipeline), so their `main_test.go` uses the external test package.
+- **Cluster-wide views now see other tests** — with one server per binary, `pg_locks`, `pg_stat_activity` and `pg_database` include other tests' databases. The rebuild deadlock test filters `pg_locks` by the current database's OID.
+- **Faster runs exposed timing flakes** — packages now run their tests far more concurrently, so tests that raced a real clock (100 ms breaker timeout, one-token-per-second rate limit, host vs container clock) failed. Each now controls its clock.
+
+### Quality checks
+
+- **Full suite timing (Windows, Docker Desktop, several sessions sharing the daemon):** 228–269 s total, against ~16 minutes before; `internal/api` 195–220 s, against 1112 s.
+- **Tests:** FULL_SUITE_RESULT
+- **New tests:** `TestNewTestDB_IsolatedDatabasesShareOneCluster`, `TestNewTestDB_DropsDatabaseAtCleanup`, `TestCheckRunner_RequiresRun`, `TestOrgRateLimiter_AllowUsesInjectedClock`; `TestIngestHandler_RateLimitCountsAsNRequests` rewritten to test N-token counting (mutation-checked).
+
+---
+
+## Fix — OpenAPI Success Statuses for 202 Endpoints
+
+> **Date:** 2026-11-03
+> **Commits:** `39cc2a3` on `fix/openapi-async-status` (branched from `dev` at `2dcffc8`); reached `dev` through #147, whose branch was built on it
+
+### What was built
+
+| Feature | Files | Description |
+|---|---|---|
+| 202 documented | `internal/api/openapi_spec.go` | `DefaultStatus: 202` on admin reindex, feed trigger, ingest, and invitation create; invitation create also documents its `Location` header |
+| 201 or 202 | `internal/api/openapi_spec.go` | Alert-rule create documents 201 (rule ready) and 202 (rule activating), both with the rule body and `Location` |
+| Status test | `internal/api/openapi_test.go` | `TestOpenAPISpec_SuccessStatusMatchesHandler`; spec building moved into the shared `buildOpenAPISpec` helper |
+
+### Key implementation decisions
+
+- **Second success response declared by hand** — huma derives one response from `DefaultStatus` and the output type. The 202 for alert-rule create is an explicit `Responses["202"]` entry referencing the same `AlertRuleEntry` schema, so both statuses share one component.
+- **Explicit `default` error response** — huma adds its generic `default` error response only to operations with a single response and no declared errors, so adding the 202 removed it from alert-rule create. The operation declares it explicitly, matching the other operations' `ErrorModel` response, and the test asserts it on every listed operation.
+- **Artifacts not regenerated here** — the production server never serves the spec-only operations; they reach `openapi.json` only through `GENERATE_OPENAPI=1 go test -run TestOpenAPISpec`. Regenerating `openapi.json` and `web/src/lib/api/schema.d.ts` (last done 2026-03-16) and fixing the 201/204 endpoints was done on a separate branch that also reached `dev` through #147.
+
+### Quality checks
+
+- **golangci-lint run ./internal/api/...:** 0 issues
+- **Tests:** `internal/api -run TestOpenAPISpec` passes; the new test failed on all five operations before the change.
+
+---

@@ -166,12 +166,15 @@ func TestRebuildSearchIndex_RetriesBatchAfterDeadlock(t *testing.T) {
 		rebuildErr <- err
 	}()
 
-	// Wait until the rebuild holds lowID and is blocked on highID.
+	// Wait until the rebuild holds lowID and is blocked on highID. pg_locks
+	// covers the whole cluster, which other tests' databases share.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var waiting int
-		if err := s.DB().QueryRowContext(ctx,
-			"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+		if err := s.DB().QueryRowContext(ctx, `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
 		).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_locks: %v", err)
 		}

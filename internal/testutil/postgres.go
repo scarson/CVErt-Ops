@@ -1,12 +1,19 @@
-// ABOUTME: Test helper that starts a Postgres testcontainer with all migrations applied.
-// ABOUTME: Use NewTestDB(t) in integration tests that need a real database.
+// ABOUTME: Test helper that gives each test its own migrated Postgres database.
+// ABOUTME: One container per test binary holds a migrated template; NewTestDB clones it per test.
 package testutil
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/docker/docker/client"
@@ -16,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/scarson/cvert-ops/internal/store"
@@ -33,6 +41,53 @@ func init() {
 	}
 }
 
+// templateDBName is the migrated database every test database is cloned from.
+const templateDBName = "cvert_ops_template"
+
+// cluster is the Postgres container shared by all NewTestDB calls in one test
+// binary.
+type cluster struct {
+	ctr *tcpostgres.PostgresContainer
+	// url is a superuser connection URL; NewTestDB swaps in each test's database.
+	url url.URL
+	// admin is connected to the "postgres" maintenance database, which CREATE
+	// DATABASE and DROP DATABASE run from (a template cannot have connections).
+	admin *sql.DB
+}
+
+var (
+	// runActive is set by Run. NewTestDB refuses to start a container without
+	// it, because nothing else would terminate the container.
+	runActive atomic.Bool
+
+	clusterOnce sync.Once
+	shared      *cluster
+	sharedErr   error
+)
+
+// Run runs the package's tests and then terminates the shared Postgres
+// container, if any test started one. Every package that calls NewTestDB needs
+//
+//	func TestMain(m *testing.M) { os.Exit(testutil.Run(m)) }
+func Run(m *testing.M) int {
+	runActive.Store(true)
+	code := m.Run()
+	if shared != nil {
+		shared.close()
+	}
+	return code
+}
+
+// checkRunner reports whether the test binary's TestMain called Run.
+func checkRunner() error {
+	if !runActive.Load() {
+		return errors.New("testutil.NewTestDB needs the package's TestMain to call testutil.Run, " +
+			"which terminates the shared Postgres container: " +
+			"func TestMain(m *testing.M) { os.Exit(testutil.Run(m)) }")
+	}
+	return nil
+}
+
 // TestDB wraps a Store with helpers for RLS integration tests.
 // It embeds *store.Store so all store methods are directly callable,
 // keeping all existing tests working without modification.
@@ -42,42 +97,135 @@ type TestDB struct {
 	AppStore *store.Store
 }
 
-// NewTestDB starts a Postgres testcontainer, runs all migrations, and returns
-// a TestDB backed by the test DB. The container and pools are cleaned up via t.Cleanup.
+// NewTestDB returns a TestDB backed by a new database cloned from the test
+// binary's migrated template. The first call in a binary starts the shared
+// container and migrates the template. The database and pools are cleaned up
+// via t.Cleanup; the container is terminated by Run.
 func NewTestDB(t *testing.T) *TestDB {
 	t.Helper()
 	ctx := context.Background()
 
-	pgCtr, err := tcpostgres.Run(ctx,
-		"postgres:18-alpine",
-		tcpostgres.WithDatabase("cvert_ops_test"),
-		tcpostgres.WithUsername("cvert_ops_test"),
-		tcpostgres.WithPassword("testpassword"),
-		tcpostgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
+	if err := checkRunner(); err != nil {
+		t.Fatal(err)
 	}
+	clusterOnce.Do(func() { shared, sharedErr = startCluster(ctx) })
+	if sharedErr != nil {
+		t.Fatalf("start shared postgres: %v", sharedErr)
+	}
+
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatalf("database name: %v", err)
+	}
+	name := "test_" + hex.EncodeToString(suffix)
+	if _, err := shared.admin.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s",
+		pgx.Identifier{name}.Sanitize(), pgx.Identifier{templateDBName}.Sanitize())); err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	// Registered before the pools, so it runs after they close (cleanups run
+	// last-in first-out). FORCE ends any connection a test leaked.
 	t.Cleanup(func() {
-		if err := pgCtr.Terminate(ctx); err != nil {
-			t.Logf("terminate postgres container: %v", err)
+		if _, err := shared.admin.ExecContext(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)",
+			pgx.Identifier{name}.Sanitize())); err != nil {
+			t.Logf("drop test database %s: %v", name, err)
 		}
 	})
 
-	connStr, err := pgCtr.ConnectionString(ctx, "sslmode=disable")
+	dbURL := shared.url
+	dbURL.Path = "/" + name
+
+	// Superuser pool for data setup (bypasses RLS).
+	pool, err := pgxpool.New(ctx, dbURL.String())
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	// App-role pool connecting as cvert_ops_app (subject to RLS).
+	appPoolCfg, err := pgxpool.ParseConfig(dbURL.String())
+	if err != nil {
+		t.Fatalf("parse app pool config: %v", err)
+	}
+	appPoolCfg.ConnConfig.User = "cvert_ops_app"
+	appPoolCfg.ConnConfig.Password = "apptestpw"
+	appPool, err := pgxpool.NewWithConfig(ctx, appPoolCfg)
+	if err != nil {
+		t.Fatalf("pgxpool (cvert_ops_app): %v", err)
+	}
+	t.Cleanup(appPool.Close)
+
+	return &TestDB{
+		Store:    store.New(pool),
+		AppStore: store.New(appPool),
+	}
+}
+
+// startCluster starts the Postgres container, creates the cvert_ops_app role,
+// and runs all migrations into the template database.
+func startCluster(ctx context.Context) (*cluster, error) {
+	pgCtr, err := tcpostgres.Run(ctx,
+		"postgres:18-alpine",
+		tcpostgres.WithDatabase(templateDBName),
+		tcpostgres.WithUsername("cvert_ops_test"),
+		tcpostgres.WithPassword("testpassword"),
+		tcpostgres.BasicWaitStrategies(),
+		// Every parallel test in the binary connects to this one server. The
+		// module already sets fsync=off; durability is irrelevant for tests.
+		testcontainers.WithCmdArgs(
+			"-c", "max_connections=1000",
+			"-c", "synchronous_commit=off",
+			"-c", "full_page_writes=off",
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("start postgres container: %w", err)
+	}
+	c := &cluster{ctr: pgCtr}
+	if err := c.prepare(ctx); err != nil {
+		c.close()
+		return nil, err
+	}
+	return c, nil
+}
+
+// prepare migrates the template database and opens the maintenance connection.
+func (c *cluster) prepare(ctx context.Context) error {
+	connStr, err := c.ctr.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		return fmt.Errorf("connection string: %w", err)
+	}
+	u, err := url.Parse(connStr)
+	if err != nil {
+		return fmt.Errorf("parse connection string: %w", err)
+	}
+	c.url = *u
+
+	if err := migrateTemplate(ctx, connStr); err != nil {
+		return err
 	}
 
+	adminCfg, err := pgx.ParseConfig(connStr)
+	if err != nil {
+		return fmt.Errorf("parse db url: %w", err)
+	}
+	adminCfg.Database = "postgres"
+	c.admin = stdlib.OpenDB(*adminCfg)
+	return nil
+}
+
+// migrateTemplate creates the cvert_ops_app role and applies all migrations to
+// the database connStr names. It closes its connections before returning,
+// because CREATE DATABASE ... TEMPLATE fails while the template has any.
+func migrateTemplate(ctx context.Context, connStr string) error {
 	// Run migrations using the same pattern as cmd/cvert-ops/main.go runMigrate.
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
-		t.Fatalf("migration source: %v", err)
+		return fmt.Errorf("migration source: %w", err)
 	}
 
 	connCfg, err := pgx.ParseConfig(connStr)
 	if err != nil {
-		t.Fatalf("parse db url: %v", err)
+		return fmt.Errorf("parse db url: %w", err)
 	}
 	// Simple query protocol lets postgres execute multi-statement migration files
 	// natively — each statement runs in its own autocommit. Extended protocol
@@ -97,45 +245,32 @@ func NewTestDB(t *testing.T) *TestDB {
 				ALTER ROLE cvert_ops_app WITH LOGIN NOBYPASSRLS PASSWORD 'apptestpw';
 			END IF;
 		END $$`); err != nil {
-		t.Fatalf("create cvert_ops_app role: %v", err)
+		return fmt.Errorf("create cvert_ops_app role: %w", err)
 	}
 
 	driver, err := migratepg.WithInstance(db, &migratepg.Config{MultiStatementEnabled: true})
 	if err != nil {
-		t.Fatalf("migration driver: %v", err)
+		return fmt.Errorf("migration driver: %w", err)
 	}
 
 	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
 	if err != nil {
-		t.Fatalf("migrate init: %v", err)
+		return fmt.Errorf("migrate init: %w", err)
 	}
+	defer m.Close() //nolint:errcheck
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		t.Fatalf("migrate up: %v", err)
+		return fmt.Errorf("migrate up: %w", err)
 	}
+	return nil
+}
 
-	// Superuser pool for data setup (bypasses RLS).
-	pool, err := pgxpool.New(ctx, connStr)
-	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
+// close releases the maintenance connection and terminates the container.
+func (c *cluster) close() {
+	if c.admin != nil {
+		_ = c.admin.Close()
 	}
-	t.Cleanup(pool.Close)
-
-	// App-role pool connecting as cvert_ops_app (subject to RLS).
-	appPoolCfg, err := pgxpool.ParseConfig(connStr)
-	if err != nil {
-		t.Fatalf("parse app pool config: %v", err)
-	}
-	appPoolCfg.ConnConfig.User = "cvert_ops_app"
-	appPoolCfg.ConnConfig.Password = "apptestpw"
-	appPool, err := pgxpool.NewWithConfig(ctx, appPoolCfg)
-	if err != nil {
-		t.Fatalf("pgxpool (cvert_ops_app): %v", err)
-	}
-	t.Cleanup(appPool.Close)
-
-	return &TestDB{
-		Store:    store.New(pool),
-		AppStore: store.New(appPool),
+	if err := c.ctr.Terminate(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "testutil: terminate postgres container: %v\n", err)
 	}
 }

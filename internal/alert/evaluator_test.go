@@ -284,6 +284,20 @@ func getRunPath(t *testing.T, db *sql.DB, ruleID uuid.UUID) string {
 	return p
 }
 
+// getLatestRunStatus returns the status column for the most recent alert_rule_run for a rule.
+func getLatestRunStatus(t *testing.T, db *sql.DB, ruleID uuid.UUID) string {
+	t.Helper()
+	var s string
+	err := db.QueryRowContext(context.Background(),
+		`SELECT status FROM alert_rule_runs WHERE rule_id = $1 ORDER BY started_at DESC LIMIT 1`,
+		ruleID,
+	).Scan(&s)
+	if err != nil {
+		t.Fatalf("getLatestRunStatus: %v", err)
+	}
+	return s
+}
+
 // getCursorSince reads the "since" value from the feed_sync_state cursor JSON for the named feed.
 func getCursorSince(t *testing.T, db *sql.DB, feedName string) time.Time {
 	t.Helper()
@@ -1130,6 +1144,73 @@ func TestDryRun_CandidateCapFailClosed(t *testing.T) {
 	// CandidatesEvaluated should be candidateCap+1 (5001) to signal overflow
 	if result.CandidatesEvaluated != 5001 {
 		t.Fatalf("want CandidatesEvaluated=5001 on partial, got %d", result.CandidatesEvaluated)
+	}
+}
+
+// TestEvaluateBatch_RuleMatchingMoreThanCandidateCap verifies that a batch run evaluates
+// every changed CVE for a rule whose prefilter matches more than candidateCap of them.
+// The run advances the cursor past these CVEs, so any that are not evaluated in this run
+// are never evaluated by the batch path.
+func TestEvaluateBatch_RuleMatchingMoreThanCandidateCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping candidateCap test in short mode (inserts 5100 rows)")
+	}
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	bulkInsertCVEs(t, tdb.DB(), "CVE-BATCHCAP", 5100, 8.0)
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("EvaluateBatch: %v", err)
+	}
+
+	if n := countAllAlertEventsForRule(t, tdb.DB(), rule.ID); n != 5100 {
+		t.Fatalf("want 5100 alert_events (one per matching changed CVE), got %d", n)
+	}
+	if s := getLatestRunStatus(t, tdb.DB(), rule.ID); s != "complete" {
+		t.Fatalf("want run status complete, got %q", s)
+	}
+}
+
+// TestEvaluateEPSS_RuleMatchingMoreThanCandidateCap verifies that an EPSS run evaluates
+// every CVE with a new EPSS score for a rule whose prefilter matches more than
+// candidateCap of them. EPSS score changes do not trigger realtime evaluation, so the
+// EPSS run is the only path that can alert on them.
+func TestEvaluateEPSS_RuleMatchingMoreThanCandidateCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping candidateCap test in short mode (inserts 5100 rows)")
+	}
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	bulkInsertCVEs(t, tdb.DB(), "CVE-EPSSCAP", 5100, 8.0)
+	if _, err := tdb.DB().ExecContext(ctx,
+		`UPDATE cves SET epss_score = 0.9, date_epss_updated = now() WHERE cve_id LIKE 'CVE-EPSSCAP-%'`,
+	); err != nil {
+		t.Fatalf("set EPSS scores: %v", err)
+	}
+
+	const epssCondition = `[{"field":"epss_score","operator":"gte","value":0.5}]`
+	rule := mustEPSSRule(t, ctx, tdb.Store, orgID, "and", epssCondition, true)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if err := ev.EvaluateEPSS(ctx); err != nil {
+		t.Fatalf("EvaluateEPSS: %v", err)
+	}
+
+	if n := countAllAlertEventsForRule(t, tdb.DB(), rule.ID); n != 5100 {
+		t.Fatalf("want 5100 alert_events (one per CVE with a new matching EPSS score), got %d", n)
+	}
+	if s := getLatestRunStatus(t, tdb.DB(), rule.ID); s != "complete" {
+		t.Fatalf("want run status complete, got %q", s)
 	}
 }
 

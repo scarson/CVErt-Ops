@@ -586,6 +586,70 @@ func TestWatchlist_PatchEmptyName(t *testing.T) {
 	}
 }
 
+// TestWatchlist_PatchGroupID verifies that PATCH keeps the group when group_id
+// is omitted, clears it when group_id is null, and sets it when given an ID.
+func TestWatchlist_PatchGroupID(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	groupResp := doCreateGroup(t, ctx, ts, token, aliceReg.OrgID, "Engineering", "Engineering team")
+	defer groupResp.Body.Close() //nolint:errcheck,gosec // G104
+	if groupResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create group: got %d, want 201", groupResp.StatusCode)
+	}
+	var group groupEntry
+	if err := json.NewDecoder(groupResp.Body).Decode(&group); err != nil {
+		t.Fatalf("decode group: %v", err)
+	}
+
+	createResp := doCreateWatchlist(t, ctx, ts, token, aliceReg.OrgID,
+		`{"name":"Grouped","group_id":"`+group.ID+`"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var wl watchlistEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	patch := func(body string) watchlistEntry {
+		t.Helper()
+		resp := doPatchWatchlist(t, ctx, ts, token, aliceReg.OrgID, wl.ID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("patch %s: got %d, want 200", body, resp.StatusCode)
+		}
+		var got watchlistEntry
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decode patch: %v", err)
+		}
+		return got
+	}
+
+	// Omitted group_id keeps the group.
+	if got := patch(`{"name":"Renamed"}`); got.GroupID == nil || *got.GroupID != group.ID {
+		t.Errorf("after rename: group_id = %v, want %s", got.GroupID, group.ID)
+	}
+
+	// group_id null clears the group.
+	if got := patch(`{"group_id":null}`); got.GroupID != nil {
+		t.Errorf("after null: group_id = %s, want none", *got.GroupID)
+	}
+
+	// group_id with an ID sets the group.
+	if got := patch(`{"group_id":"` + group.ID + `"}`); got.GroupID == nil || *got.GroupID != group.ID {
+		t.Errorf("after set: group_id = %v, want %s", got.GroupID, group.ID)
+	}
+}
+
 // TestWatchlist_DuplicateName verifies that creating a watchlist with a duplicate name returns 409.
 func TestWatchlist_DuplicateName(t *testing.T) {
 	t.Parallel()

@@ -56,10 +56,11 @@ type listSCIMGroupsResponse struct {
 }
 
 // patchSCIMGroupMappingBody fields are optional: an omitted field keeps its
-// current mapping, and an empty mapped_role clears the role mapping.
+// current mapping, an empty mapped_role clears the role mapping, and
+// mapped_group_id null clears the notification group mapping.
 type patchSCIMGroupMappingBody struct {
-	MappedRole    *string    `json:"mapped_role,omitempty"`
-	MappedGroupID *uuid.UUID `json:"mapped_group_id,omitempty"`
+	MappedRole    *string                   `json:"mapped_role,omitempty"`
+	MappedGroupID clearableField[uuid.UUID] `json:"mapped_group_id,omitempty"`
 }
 
 type scimGroupResponse struct {
@@ -427,7 +428,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 
 	// Track whether each field was sent in the request (even if to clear).
 	roleSent := req.MappedRole != nil
-	groupIDSent := req.MappedGroupID != nil
+	groupIDSent := req.MappedGroupID.Sent
 
 	// Validate mapped_role if provided.
 	if roleSent {
@@ -443,9 +444,9 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Validate mapped_group_id if provided: must be same org and active.
-	if groupIDSent {
-		group, err := srv.store.GetGroupIfActive(r.Context(), orgID, *req.MappedGroupID)
+	// Validate mapped_group_id if provided and not null: must be same org and active.
+	if req.MappedGroupID.Value != nil {
+		group, err := srv.store.GetGroupIfActive(r.Context(), orgID, *req.MappedGroupID.Value)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "scim group mapping patch: get notification group", "error", err)
 			writeProblem(w, http.StatusInternalServerError, "internal error")
@@ -472,7 +473,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 
 	var mappedGroupIDPtr *uuid.UUID
 	if groupIDSent {
-		mappedGroupIDPtr = req.MappedGroupID
+		mappedGroupIDPtr = req.MappedGroupID.Value // nil means clear, non-nil means set
 	} else if scimGroup.MappedGroupID.Valid {
 		mappedGroupIDPtr = &scimGroup.MappedGroupID.UUID
 	}

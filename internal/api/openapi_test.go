@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -285,6 +286,37 @@ func TestOpenAPISpec_PatchBodiesOptional(t *testing.T) {
 			}
 			if req, ok := s["required"]; ok {
 				t.Errorf("required = %v, want no required fields", req)
+			}
+		})
+	}
+}
+
+// TestOpenAPISpec_PatchClearableFieldsNullable verifies that PATCH fields the
+// handlers clear on JSON null are documented as nullable strings.
+func TestOpenAPISpec_PatchClearableFieldsNullable(t *testing.T) {
+	spec := buildOpenAPISpec(t)
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+
+	tests := []struct {
+		schema string
+		field  string
+	}{
+		{schema: "PatchWatchlistBody", field: "group_id"},
+		{schema: "PatchSCIMGroupMappingBody", field: "mapped_group_id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.schema+"."+tt.field, func(t *testing.T) {
+			s, ok := schemas[tt.schema].(map[string]any)
+			if !ok {
+				t.Fatalf("schema %s missing from spec", tt.schema)
+			}
+			prop, ok := s["properties"].(map[string]any)[tt.field].(map[string]any)
+			if !ok {
+				t.Fatalf("property %s missing from %s", tt.field, tt.schema)
+			}
+			got := fmt.Sprint(prop["type"])
+			if got != "[string null]" {
+				t.Errorf("type = %s, want [string null]", got)
 			}
 		})
 	}

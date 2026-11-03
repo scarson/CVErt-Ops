@@ -35,13 +35,12 @@ type createWatchlistBody struct {
 	GroupID     *string `json:"group_id"`
 }
 
-// patchWatchlistBody uses double-pointer for group_id to distinguish omit vs null vs value.
-// nil outer pointer = key omitted (no change); non-nil outer, nil inner = JSON null (clear);
-// non-nil outer, non-nil inner = new UUID.
+// patchWatchlistBody fields are optional: an omitted field keeps its current
+// value, and group_id null removes the watchlist from its group.
 type patchWatchlistBody struct {
-	Name        *string  `json:"name,omitempty"`
-	Description *string  `json:"description,omitempty"`
-	GroupID     **string `json:"group_id,omitempty"`
+	Name        *string                `json:"name,omitempty"`
+	Description *string                `json:"description,omitempty"`
+	GroupID     clearableField[string] `json:"group_id,omitempty"`
 }
 
 type watchlistEntry struct {
@@ -361,11 +360,11 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 	if req.Description != nil {
 		p.Description = sql.NullString{String: *req.Description, Valid: true}
 	}
-	if req.GroupID != nil {
-		if *req.GroupID == nil {
+	if req.GroupID.Sent {
+		if req.GroupID.Value == nil {
 			p.GroupID = uuid.NullUUID{}
 		} else {
-			gid, err := uuid.Parse(**req.GroupID)
+			gid, err := uuid.Parse(*req.GroupID.Value)
 			if err != nil {
 				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
 					&huma.ErrorDetail{Message: "invalid group_id", Location: "body.group_id"})

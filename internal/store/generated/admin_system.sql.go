@@ -14,7 +14,7 @@ import (
 
 const adminListAuditEntries = `-- name: AdminListAuditEntries :many
 
-SELECT id, org_id, actor_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata, created_at FROM audit_log
+SELECT id, org_id, actor_id, actor_email, action, entity_type, entity_id, entity_name, success, old_state, new_state, metadata, created_at, api_key_id FROM audit_log
 WHERE ($1::text = '' OR entity_type = $1::text)
   AND ($2::text = '' OR action = $2::text)
   AND ($3::uuid IS NULL OR org_id = $3::uuid)
@@ -71,6 +71,7 @@ func (q *Queries) AdminListAuditEntries(ctx context.Context, arg AdminListAuditE
 			&i.NewState,
 			&i.Metadata,
 			&i.CreatedAt,
+			&i.ApiKeyID,
 		); err != nil {
 			return nil, err
 		}

@@ -698,6 +698,9 @@
           "actor_id": {
             "type": "string"
           },
+          "api_key_id": {
+            "type": "string"
+          },
           "created_at": {
             "type": "string"
           },
@@ -741,6 +744,9 @@
             "type": "string"
           },
           "actor_id": {
+            "type": "string"
+          },
+          "api_key_id": {
             "type": "string"
           },
           "created_at": {

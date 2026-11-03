@@ -2062,6 +2062,7 @@ export interface components {
             action: string;
             actor_email: string;
             actor_id?: string;
+            api_key_id?: string;
             created_at: string;
             entity_id: string;
             entity_name?: string;
@@ -2076,6 +2077,7 @@ export interface components {
             action: string;
             actor_email?: string;
             actor_id?: string;
+            api_key_id?: string;
             /** Format: date-time */
             created_at: string;
             entity_id: string;

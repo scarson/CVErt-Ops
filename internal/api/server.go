@@ -27,6 +27,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/metrics"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/secure"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/web"
@@ -52,32 +53,37 @@ type Server struct {
 	cfg                   *config.Config
 	argon2Sem             chan struct{}
 	rateLimiter           *ipRateLimiter
-	ghOAuth               *oauth2.Config      // nil when GitHub OAuth is not configured
-	ghAPIBaseURL          string              // GitHub REST API base URL; overridable in tests
-	googleOIDC            *oidc.Provider      // nil when Google OIDC is not configured
-	googleOAuth           *oauth2.Config      // nil when Google OIDC is not configured
-	orgRL                 *orgRateLimiter     // per-org API rate limiter
-	scimRL                *scimRateLimiter    // per-org SCIM rate limiter (separate from API)
-	tierCache             *tierCache          // short-lived cache for org tier + overrides
-	oidcProviders         sync.Map            // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
-	alertCache            *alert.RuleCache    // nil when alert evaluation is not configured
-	alertEvaluator        *alert.Evaluator    // nil when alert evaluation is not configured
-	llm                   ai.LLMClient        // nil when AI features are not configured
-	auditWriter           *audit.Writer       // nil when audit logging is not configured
-	eventWriter           *secure.EventWriter // async security event recording
-	lockout               *lockoutManager     // brute-force login protection
-	configHolder          *config.Holder      // hot-reloadable config for admin reload endpoint
-	rescanFunc            func()              // feed config rescan on hot-reload
-	bootstrapMu           sync.Mutex          // serializes first-user bootstrap in invite-only mode
-	expectedSchemaVersion int                 // migration version for /readyz check
-	versionInfo           VersionInfo         // build metadata for /admin/version
-	healthChecks          []func() bool       // extra readiness checks (e.g., delivery worker)
-	humaAPI               huma.API            // production huma API instance for spec merging
+	ghOAuth               *oauth2.Config             // nil when GitHub OAuth is not configured
+	ghAPIBaseURL          string                     // GitHub REST API base URL; overridable in tests
+	googleOIDC            *oidc.Provider             // nil when Google OIDC is not configured
+	googleOAuth           *oauth2.Config             // nil when Google OIDC is not configured
+	orgRL                 *orgRateLimiter            // per-org API rate limiter
+	scimRL                *scimRateLimiter           // per-org SCIM rate limiter (separate from API)
+	tierCache             *tierCache                 // short-lived cache for org tier + overrides
+	oidcProviders         sync.Map                   // issuer URL → *oidc.Provider; lazy-loaded per SSO connection
+	alertCache            *alert.RuleCache           // nil when alert evaluation is not configured
+	alertEvaluator        *alert.Evaluator           // nil when alert evaluation is not configured
+	llm                   ai.LLMClient               // nil when AI features are not configured
+	auditWriter           *audit.Writer              // nil when audit logging is not configured
+	privateDests          notify.PrivateDestinations // webhook hosts allowed on private networks
+	eventWriter           *secure.EventWriter        // async security event recording
+	lockout               *lockoutManager            // brute-force login protection
+	configHolder          *config.Holder             // hot-reloadable config for admin reload endpoint
+	rescanFunc            func()                     // feed config rescan on hot-reload
+	bootstrapMu           sync.Mutex                 // serializes first-user bootstrap in invite-only mode
+	expectedSchemaVersion int                        // migration version for /readyz check
+	versionInfo           VersionInfo                // build metadata for /admin/version
+	healthChecks          []func() bool              // extra readiness checks (e.g., delivery worker)
+	humaAPI               huma.API                   // production huma API instance for spec merging
 }
 
 // NewServer creates a Server. Returns an error if Google OIDC initialization fails.
 // If cfg.GoogleClientID is empty, Google OIDC is skipped.
 func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, error) {
+	privateDests, err := notify.ParsePrivateDestinations(cfg.WebhookPrivateHosts, cfg.WebhookPrivateCIDRs, cfg.WebhookPrivatePorts)
+	if err != nil {
+		return nil, fmt.Errorf("webhook private destinations: %w", err)
+	}
 	sem := make(chan struct{}, cfg.Argon2MaxConcurrent)
 	evictTTL := cfg.RateLimitEvictTTL
 	if evictTTL == 0 {
@@ -109,6 +115,7 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		alertEvaluator:        deps.AlertEvaluator,
 		llm:                   deps.LLM,
 		auditWriter:           deps.AuditWriter,
+		privateDests:          privateDests,
 		configHolder:          deps.ConfigHolder,
 		rescanFunc:            deps.RescanFunc,
 		expectedSchemaVersion: deps.ExpectedSchemaVersion,
@@ -513,7 +520,8 @@ func (srv *Server) AddHealthCheck(check func() bool) {
 }
 
 // auditLog records an audit entry if the audit writer is configured.
-// Extracts actor context from the request. Nil-safe: no-op if writer is nil.
+// Extracts actor context, including the acting API key, from the request.
+// Nil-safe: no-op if writer is nil.
 func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
 	if srv.auditWriter == nil {
 		return
@@ -521,6 +529,11 @@ func (srv *Server) auditLog(r *http.Request, entry audit.Entry) {
 	if entry.ActorID == nil {
 		if uid, ok := r.Context().Value(ctxUserID).(uuid.UUID); ok {
 			entry.ActorID = &uid
+		}
+	}
+	if entry.APIKeyID == nil {
+		if keyID, ok := r.Context().Value(ctxAPIKeyID).(uuid.UUID); ok {
+			entry.APIKeyID = &keyID
 		}
 	}
 	srv.auditWriter.Log(r.Context(), entry)

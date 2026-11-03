@@ -97,7 +97,7 @@ func (e *Evaluator) EvaluateRealtime(ctx context.Context, cveID string) error {
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
 		if compErr != nil {
-			e.log.Error("compile rule for realtime", "rule_id", rule.ID, "err", compErr)
+			e.failUncompilableRule(ctx, rule, "realtime", compErr)
 			continue
 		}
 		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, candidateIDs, rule.OrgID, false, false, 0)
@@ -223,7 +223,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
 		if compErr != nil {
-			e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
+			e.failUncompilableRule(ctx, rule, cfg.metricsLabel, compErr)
 			continue
 		}
 		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, allCandidateIDs, rule.OrgID)
@@ -562,6 +562,16 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		return nil, true, nil
 	}
 	return candidates, false, nil
+}
+
+// failUncompilableRule logs a rule whose stored conditions do not compile and marks it
+// status=error, so it fails closed visibly instead of being skipped on every run
+// (PLAN §10.5). Re-enabling the rule runs a new activation scan.
+func (e *Evaluator) failUncompilableRule(ctx context.Context, rule *store.AlertRuleRow, path string, compErr error) {
+	e.log.Error("compile rule for "+path, "rule_id", rule.ID, "err", compErr)
+	if _, err := e.rules.SetAlertRuleStatusIf(ctx, rule.OrgID, rule.ID, "error", "active"); err != nil {
+		e.log.Error("set uncompilable rule to error", "rule_id", rule.ID, "err", err)
+	}
 }
 
 // loadAndCompileRule returns the CompiledRule from cache, or compiles it from the rule's

@@ -2132,34 +2132,51 @@ func TestEvaluateBatch_RuleErrorDoesNotSkipCVEs(t *testing.T) {
 	}
 }
 
-// TestEvaluateBatch_UncompilableRuleSetToError checks that a rule whose stored conditions
-// no longer compile is marked status=error, so it fails closed visibly (PLAN §10.5).
-func TestEvaluateBatch_UncompilableRuleSetToError(t *testing.T) {
+// TestEvaluator_UncompilableRuleSetToError checks that a rule whose stored conditions no
+// longer compile is marked status=error, so it fails closed visibly (PLAN §10.5).
+func TestEvaluator_UncompilableRuleSetToError(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ctx := context.Background()
 	orgID := createTestOrg(t, tdb.DB())
 
+	const cveID = "CVE-RULECOMPILE-001"
 	score := 9.0
-	insertCVE(t, tdb.DB(), "CVE-RULECOMPILE-001", "Analyzed", "compile error test", &score, "rulecompile-hash-001")
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "compile error test", &score, "rulecompile-hash-001")
 
-	const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
-	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
-	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
-	if _, err := tdb.DB().ExecContext(ctx,
-		`UPDATE alert_rules SET conditions = '[{"field":"no_such_field","operator":"eq","value":1}]' WHERE id = $1`,
-		rule.ID,
-	); err != nil {
-		t.Fatalf("corrupt rule conditions: %v", err)
+	uncompilableRule := func(t *testing.T) *store.AlertRuleRow {
+		t.Helper()
+		const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE alert_rules SET conditions = '[{"field":"no_such_field","operator":"eq","value":1}]' WHERE id = $1`,
+			rule.ID,
+		); err != nil {
+			t.Fatalf("corrupt rule conditions: %v", err)
+		}
+		return rule
 	}
 
-	ev, logBuf := newLoggedEvaluator(tdb, tdb.Store)
-	if err := ev.EvaluateBatch(ctx); err != nil {
-		t.Fatalf("EvaluateBatch: %v", err)
+	paths := []struct {
+		name     string
+		evaluate func(*alert.Evaluator) error
+	}{
+		{"Batch", func(ev *alert.Evaluator) error { return ev.EvaluateBatch(ctx) }},
+		{"Realtime", func(ev *alert.Evaluator) error { return ev.EvaluateRealtime(ctx, cveID) }},
 	}
-	if s := getRuleStatus(t, tdb.DB(), rule.ID); s != "error" {
-		t.Fatalf("rule status = %q, want error", s)
-	}
-	if !strings.Contains(logBuf.String(), "no_such_field") {
-		t.Fatalf("want the compile failure logged, got log %q", logBuf.String())
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			rule := uncompilableRule(t)
+			ev, logBuf := newLoggedEvaluator(tdb, tdb.Store)
+			if err := p.evaluate(ev); err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if s := getRuleStatus(t, tdb.DB(), rule.ID); s != "error" {
+				t.Fatalf("rule status = %q, want error", s)
+			}
+			if !strings.Contains(logBuf.String(), "no_such_field") {
+				t.Fatalf("want the compile failure logged, got log %q", logBuf.String())
+			}
+		})
 	}
 }

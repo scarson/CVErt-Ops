@@ -138,14 +138,20 @@ func (s *Store) ClaimDueReports(ctx context.Context, limit int) ([]ScheduledRepo
 	return result, err
 }
 
-// AdvanceReport updates last_run_at and next_run_at after a digest run.
+// AdvanceReport updates last_run_at, next_run_at, and the sent CVE versions the
+// next run's re-scan window must leave out, after a digest run.
 // Uses bypass-RLS (worker context).
-func (s *Store) AdvanceReport(ctx context.Context, id uuid.UUID, lastRunAt, nextRunAt time.Time) error {
+func (s *Store) AdvanceReport(ctx context.Context, id uuid.UUID, lastRunAt, nextRunAt time.Time, sent []DigestSentCVE) error {
+	sentJSON, err := marshalDigestSentCVEs(sent)
+	if err != nil {
+		return fmt.Errorf("advance report: %w", err)
+	}
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {
 		return q.AdvanceReport(ctx, generated.AdvanceReportParams{
-			ID:        id,
-			LastRunAt: sql.NullTime{Time: lastRunAt, Valid: true},
-			NextRunAt: nextRunAt,
+			ID:             id,
+			LastRunAt:      sql.NullTime{Time: lastRunAt, Valid: true},
+			NextRunAt:      nextRunAt,
+			RescanSentCves: sentJSON,
 		})
 	})
 }

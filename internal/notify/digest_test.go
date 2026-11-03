@@ -268,3 +268,42 @@ func TestSentInRescanWindow_NothingSent(t *testing.T) {
 		t.Errorf("sentInRescanWindow(nil, nil) = %+v, want empty", got)
 	}
 }
+
+func TestDigestTemplateData(t *testing.T) {
+	t.Parallel()
+	snaps := func(n int) []cveSnapshot {
+		out := make([]cveSnapshot, n)
+		for i := range out {
+			out[i] = cveSnapshot{CVEID: fmt.Sprintf("CVE-2025-%04d", i)}
+		}
+		return out
+	}
+	cases := []struct {
+		name          string
+		payload       digestPayload
+		wantShown     int
+		wantTruncated bool
+	}{
+		{"all shown", digestPayload{TotalCount: 3, CVEs: snaps(3)}, 3, false},
+		{"exactly the email cap", digestPayload{TotalCount: 25, CVEs: snaps(25)}, 25, false},
+		{"more than the email cap", digestPayload{TotalCount: 30, CVEs: snaps(30)}, 25, true},
+		// The query cap cut the payload short: the total exceeds the CVEs carried.
+		{"query cap reached", digestPayload{TotalCount: 501, CVEs: snaps(500)}, 25, true},
+		{"empty", digestPayload{TotalCount: 0, CVEs: snaps(0)}, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := digestTemplateData(tc.payload, "Report", "Org", "https://cvert.example.com")
+			if len(got.CVEs) != tc.wantShown {
+				t.Errorf("shown CVEs = %d, want %d", len(got.CVEs), tc.wantShown)
+			}
+			if got.TotalCount != tc.payload.TotalCount {
+				t.Errorf("TotalCount = %d, want %d", got.TotalCount, tc.payload.TotalCount)
+			}
+			if got.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", got.Truncated, tc.wantTruncated)
+			}
+		})
+	}
+}

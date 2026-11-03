@@ -56,7 +56,8 @@ func (q *Queries) DeleteEPSSStaging(ctx context.Context, cveID string) error {
 
 const digestCVEs = `-- name: DigestCVEs :many
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev, date_modified_canonical
+       description_primary, exploit_available, in_cisa_kev, date_modified_canonical,
+       count(*) OVER () AS total_count
 FROM cves
 WHERE date_modified_canonical > $1
   AND status NOT IN ('rejected', 'withdrawn')
@@ -95,12 +96,17 @@ type DigestCVEsRow struct {
 	ExploitAvailable      bool
 	InCisaKev             bool
 	DateModifiedCanonical time.Time
+	TotalCount            int64
 }
 
 // Fetch CVEs modified since $1, optionally filtered by severity, leaving out the
 // CVE versions in $3: a JSON array of {"cve_id", "date_modified_canonical"}
 // objects a previous digest of the report already sent.
 // Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
+// total_count is the number of matching CVEs before LIMIT, so callers can tell
+// when the limit cut the result short. A window function keeps that count on the
+// same predicate and snapshot as the rows, at the cost of buffering every
+// matching row before the sort.
 func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]DigestCVEsRow, error) {
 	rows, err := q.db.QueryContext(ctx, digestCVEs, arg.DateModifiedCanonical, pq.Array(arg.Column2), arg.Column3)
 	if err != nil {
@@ -120,6 +126,7 @@ func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]Diges
 			&i.ExploitAvailable,
 			&i.InCisaKev,
 			&i.DateModifiedCanonical,
+			&i.TotalCount,
 		); err != nil {
 			return nil, err
 		}

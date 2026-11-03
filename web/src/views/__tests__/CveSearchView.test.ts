@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { components } from '@/lib/api/schema'
+import CveSearchView from '@/views/CveSearchView.vue'
 
 type CVEItem = components['schemas']['CVEItem']
 
@@ -89,7 +90,6 @@ function mockNetworkFailure() {
 }
 
 async function mountView() {
-  const { default: CveSearchView } = await import('@/views/CveSearchView.vue')
   return mount(CveSearchView)
 }
 

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import GroupsView from '@/views/GroupsView.vue'
 
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 
@@ -88,7 +89,6 @@ function setupAuthStore(role: string) {
 let wrapper: VueWrapper
 
 async function mountView() {
-  const { default: GroupsView } = await import('@/views/GroupsView.vue')
   wrapper = mount(GroupsView, {
     attachTo: document.body,
   })

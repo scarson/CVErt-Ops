@@ -4,6 +4,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import type { components } from '@/lib/api/schema'
+import CveSourceComparison from '@/components/cve/CveSourceComparison.vue'
 
 type CVESourceResponse = components['schemas']['CVESourceResponse']
 
@@ -34,7 +35,6 @@ function makeSource(overrides: Partial<CVESourceResponse> = {}): CVESourceRespon
 }
 
 async function mountComponent(props: Record<string, unknown> = {}) {
-  const { default: CveSourceComparison } = await import('@/components/cve/CveSourceComparison.vue')
   return mount(CveSourceComparison, { props: props as any })
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ import (
 //  6. Upsert cves — update canonical row (IS DISTINCT FROM guard on hash)
 //  7. Tombstone — NULL out CVSS/EPSS/KEV if status is rejected/withdrawn
 //  8. Delete + re-insert child tables — references, packages, CPEs
-//  8.5. Upsert vendor enrichment — optional, only vendor-specific adapters
+//     8.5. Upsert vendor enrichment — optional, only vendor-specific adapters
 //  9. Apply staged EPSS — drain epss_staging for this CVE (always delete)
 //  10. Upsert FTS index — update cve_search_index (IS DISTINCT FROM guard)
 func Ingest(
@@ -349,17 +350,23 @@ func buildCPEStrings(cpes []feed.AffectedCPE) []string {
 	return out
 }
 
-// collectPackageNames extracts unique package names for FTS indexing.
+// collectPackageNames extracts unique package names for FTS indexing, sorted
+// lexicographically so feed reordering does not change the tsvector (§5.3).
 func collectPackageNames(pkgs []feed.AffectedPackage) []string {
-	seen := make(map[string]struct{})
-	var names []string
+	names := make([]string, 0, len(pkgs))
 	for _, p := range pkgs {
-		if _, ok := seen[p.PackageName]; !ok {
-			seen[p.PackageName] = struct{}{}
-			names = append(names, p.PackageName)
-		}
+		names = append(names, p.PackageName)
 	}
-	return names
+	return ftsPackageNames(names)
+}
+
+// ftsPackageNames returns names de-duplicated and sorted bytewise. Merge and
+// the search index rebuild both order package names with it, so the same
+// packages always produce the same tsvector regardless of database collation.
+func ftsPackageNames(names []string) []string {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	return slices.Compact(sorted)
 }
 
 // migrateCVEPK renames a CVE's primary key from oldID to newID across all

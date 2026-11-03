@@ -143,6 +143,21 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 
 const candidatePageSize = 1000
 
+// cursorRescanWindow is how far behind the stored cursor each batch/EPSS run starts its
+// candidate scan. The cursor is the evaluator's Go clock at the start of the previous run,
+// while the timestamps it is compared with come from other clocks and are taken before
+// their writer commits: date_epss_updated is Postgres now() (transaction start), and
+// date_modified_canonical is the merge worker's Go clock, read before its upsert. A row
+// stamped before the cursor but committed after the previous run's scan would otherwise
+// never be evaluated. Re-evaluating a CVE is idempotent: alert_events inserts are
+// ON CONFLICT DO NOTHING and fan-out runs only for newly inserted events.
+//
+// The window must exceed clock skew between the app and database hosts plus the longest
+// gap between a writer taking its timestamp and committing. Both are normally well under
+// a second; two minutes leaves a wide margin while at most doubling the candidate set of
+// a batch run, which is scheduled every two minutes.
+const cursorRescanWindow = 2 * time.Minute
+
 // batchConfig parameterizes the shared batch/EPSS evaluation loop.
 type batchConfig struct {
 	feedName      string
@@ -162,6 +177,12 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	}
 	batchTime := time.Now().UTC()
 
+	// A zero cursor means no previous run: scan everything.
+	since := cursor
+	if !since.IsZero() {
+		since = since.Add(-cursorRescanWindow)
+	}
+
 	rules, err := cfg.listRules(ctx)
 	if err != nil {
 		return fmt.Errorf("list rules for %s: %w", cfg.feedName, err)
@@ -173,7 +194,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	var afterID string
 
 	for {
-		candidateIDs, pageErr := cfg.getCandidates(ctx, cursor, afterID, candidatePageSize)
+		candidateIDs, pageErr := cfg.getCandidates(ctx, since, afterID, candidatePageSize)
 		if pageErr != nil {
 			return fmt.Errorf("get %s candidates: %w", cfg.feedName, pageErr)
 		}

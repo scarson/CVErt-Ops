@@ -1017,6 +1017,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
   - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor). Evaluates all rules EXCEPT those whose only conditions reference `epss_score`.
   - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while non-EPSS fields stay unchanged.
   - **Digest-only**: no immediate alerts; included in scheduled reports
+  - **Batched and EPSS cursor re-scan window (required):** both jobs select candidates from `last_cursor - 2 minutes`, not `last_cursor`. The cursor is the evaluator's clock at the start of the previous run, while the compared timestamps come from Postgres `now()` or the merge worker's clock and are taken before their writer commits; without the overlap, clock skew or a transaction that commits after the scan loses the alert. Re-evaluation inside the window is idempotent through the `alert_events` unique key. See `dev/implementation-pitfalls.md` NOTIFY-20 (evaluator cursor skips rows stamped before it).
 - **New rule activation scan (required, silent mode, async):** When an alert rule is first saved and enabled, a one-time full-corpus scan runs as an **asynchronous background job**. The HTTP handler must:
   1. Insert the rule with `status = 'activating'`
   2. Enqueue the activation scan job to the worker pool

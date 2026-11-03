@@ -28,9 +28,9 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 import { useAuthStore } from '@/stores/auth'
+import CreateOrgView from '@/views/CreateOrgView.vue'
 
 async function mountCreateOrg() {
-  const { default: CreateOrgView } = await import('@/views/CreateOrgView.vue')
   return mount(CreateOrgView)
 }
 

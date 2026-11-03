@@ -27,6 +27,7 @@ vi.mock('@/lib/api/client', () => ({
 
 import client from '@/lib/api/client'
 import { useAuthStore } from '@/stores/auth'
+import RegisterView from '@/views/RegisterView.vue'
 
 const mockClient = vi.mocked(client)
 
@@ -37,7 +38,6 @@ function mockProvidersResponse(github = true, google = true) {
 }
 
 async function mountRegister() {
-  const { default: RegisterView } = await import('@/views/RegisterView.vue')
   return mount(RegisterView)
 }
 

@@ -50,11 +50,13 @@ LIMIT $1
 FOR UPDATE SKIP LOCKED;
 
 -- name: AdvanceReport :exec
--- After a digest run: update last_run_at and next_run_at.
+-- After a digest run: update last_run_at, next_run_at, and the sent CVE
+-- versions the next run's re-scan window must leave out.
 UPDATE scheduled_reports
-SET last_run_at = $2,
-    next_run_at = $3,
-    updated_at  = now()
+SET last_run_at      = $2,
+    next_run_at      = $3,
+    rescan_sent_cves = $4,
+    updated_at       = now()
 WHERE id = $1;
 
 -- name: GetAlertRuleName :one

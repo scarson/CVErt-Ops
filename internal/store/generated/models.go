@@ -504,6 +504,7 @@ type ScheduledReport struct {
 	DeletedAt         sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	RescanSentCves    json.RawMessage
 }
 
 type ScimConfig struct {

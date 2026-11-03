@@ -8,6 +8,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,26 +17,34 @@ import (
 
 const advanceReport = `-- name: AdvanceReport :exec
 UPDATE scheduled_reports
-SET last_run_at = $2,
-    next_run_at = $3,
-    updated_at  = now()
+SET last_run_at      = $2,
+    next_run_at      = $3,
+    rescan_sent_cves = $4,
+    updated_at       = now()
 WHERE id = $1
 `
 
 type AdvanceReportParams struct {
-	ID        uuid.UUID
-	LastRunAt sql.NullTime
-	NextRunAt time.Time
+	ID             uuid.UUID
+	LastRunAt      sql.NullTime
+	NextRunAt      time.Time
+	RescanSentCves json.RawMessage
 }
 
-// After a digest run: update last_run_at and next_run_at.
+// After a digest run: update last_run_at, next_run_at, and the sent CVE
+// versions the next run's re-scan window must leave out.
 func (q *Queries) AdvanceReport(ctx context.Context, arg AdvanceReportParams) error {
-	_, err := q.db.ExecContext(ctx, advanceReport, arg.ID, arg.LastRunAt, arg.NextRunAt)
+	_, err := q.db.ExecContext(ctx, advanceReport,
+		arg.ID,
+		arg.LastRunAt,
+		arg.NextRunAt,
+		arg.RescanSentCves,
+	)
 	return err
 }
 
 const claimDueReports = `-- name: ClaimDueReports :many
-SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at FROM scheduled_reports
+SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at, rescan_sent_cves FROM scheduled_reports
 WHERE status = 'active'
   AND next_run_at <= now()
   AND deleted_at IS NULL
@@ -70,6 +79,7 @@ func (q *Queries) ClaimDueReports(ctx context.Context, limit int32) ([]Scheduled
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RescanSentCves,
 		); err != nil {
 			return nil, err
 		}
@@ -91,7 +101,7 @@ INSERT INTO scheduled_reports (
     severity_threshold, watchlist_ids, send_on_empty, ai_summary, status
 )
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at
+RETURNING id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at, rescan_sent_cves
 `
 
 type CreateScheduledReportParams struct {
@@ -139,6 +149,7 @@ func (q *Queries) CreateScheduledReport(ctx context.Context, arg CreateScheduled
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RescanSentCves,
 	)
 	return i, err
 }
@@ -156,7 +167,7 @@ func (q *Queries) GetAlertRuleName(ctx context.Context, id uuid.UUID) (string, e
 }
 
 const getScheduledReport = `-- name: GetScheduledReport :one
-SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at FROM scheduled_reports
+SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at, rescan_sent_cves FROM scheduled_reports
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 LIMIT 1
 `
@@ -185,6 +196,7 @@ func (q *Queries) GetScheduledReport(ctx context.Context, arg GetScheduledReport
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RescanSentCves,
 	)
 	return i, err
 }
@@ -202,7 +214,7 @@ func (q *Queries) GetScheduledReportName(ctx context.Context, id uuid.UUID) (str
 }
 
 const listScheduledReports = `-- name: ListScheduledReports :many
-SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at FROM scheduled_reports
+SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at, rescan_sent_cves FROM scheduled_reports
 WHERE org_id = $1 AND deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
 `
@@ -232,6 +244,7 @@ func (q *Queries) ListScheduledReports(ctx context.Context, orgID uuid.UUID) ([]
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RescanSentCves,
 		); err != nil {
 			return nil, err
 		}
@@ -275,7 +288,7 @@ SET name               = $3,
     status             = $11,
     updated_at         = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
-RETURNING id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at
+RETURNING id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at, rescan_sent_cves
 `
 
 type UpdateScheduledReportParams struct {
@@ -323,6 +336,7 @@ func (q *Queries) UpdateScheduledReport(ctx context.Context, arg UpdateScheduled
 		&i.DeletedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RescanSentCves,
 	)
 	return i, err
 }

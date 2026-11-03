@@ -19,19 +19,20 @@ import (
 // ClaimedDelivery is the row returned by ClaimPendingDeliveries.
 type ClaimedDelivery = generated.ClaimPendingDeliveriesRow
 
-// upsertDeliverySQL is the debounce INSERT: creates a pending delivery or appends the
-// CVE snapshot to an existing pending row for the same (rule_id, channel_id) pair.
-// The ON CONFLICT targets the partial unique index uq_deliveries_pending_alert.
+// upsertDeliverySQL is the debounce INSERT: creates an open batch or appends the CVE
+// snapshot to the open batch for the same (rule_id, channel_id) pair. Claiming a batch
+// closes it, so CVEs never join a batch that has been sent or is waiting out a retry.
+// The ON CONFLICT targets the partial unique index uq_deliveries_open_alert_batch.
 const upsertDeliverySQL = `
-INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after)
-VALUES ($1, $2, $3, 'alert', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'))
-ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert'
+INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after, batch_open)
+VALUES ($1, $2, $3, 'alert', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'), true)
+ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert' AND batch_open
 DO UPDATE SET
     payload    = notification_deliveries.payload || jsonb_build_array($4::jsonb),
     send_after = now() + ($5 * interval '1 second'),
     updated_at = now()`
 
-// UpsertDelivery creates a pending delivery row or, if a pending row already exists for
+// UpsertDelivery creates a pending delivery row or, if an open batch already exists for
 // the same (rule_id, channel_id), appends the CVE snapshot to its payload array.
 // debounceSeconds controls when send_after is set (debounce window or retry backoff).
 // Uses an explicit transaction so the raw SQL executes on the same connection as the

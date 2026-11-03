@@ -3367,47 +3367,24 @@
           },
           "conditions": {},
           "enabled": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           },
           "fire_on_non_material_changes": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           },
           "logic": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "watchlist_ids": {
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
-        "required": [
-          "name",
-          "logic",
-          "conditions",
-          "watchlist_ids",
-          "enabled",
-          "fire_on_non_material_changes"
-        ],
         "type": "object"
       },
       "PatchChannelBody": {
@@ -3424,16 +3401,9 @@
           },
           "config": {},
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
-        "required": [
-          "name",
-          "config"
-        ],
         "type": "object"
       },
       "PatchMemberBody": {
@@ -3509,67 +3479,33 @@
             "type": "string"
           },
           "ai_summary": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "scheduled_time": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "send_on_empty": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           },
           "severity_threshold": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "status": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "timezone": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "watchlist_ids": {
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
-        "required": [
-          "name",
-          "scheduled_time",
-          "timezone",
-          "severity_threshold",
-          "watchlist_ids",
-          "send_on_empty",
-          "ai_summary",
-          "status"
-        ],
         "type": "object"
       },
       "PatchSCIMConfigBody": {
@@ -3627,34 +3563,19 @@
             "type": "string"
           },
           "client_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "client_secret": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "display_name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "enabled": {
-            "type": [
-              "boolean",
-              "null"
-            ]
+            "type": "boolean"
           },
           "issuer_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "scopes": {
             "items": {
@@ -3666,14 +3587,6 @@
             ]
           }
         },
-        "required": [
-          "display_name",
-          "issuer_url",
-          "client_id",
-          "client_secret",
-          "scopes",
-          "enabled"
-        ],
         "type": "object"
       },
       "PatchSavedSearchRequest": {
@@ -3714,29 +3627,15 @@
             "type": "string"
           },
           "description": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "group_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "name": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
-        "required": [
-          "name",
-          "description",
-          "group_id"
-        ],
         "type": "object"
       },
       "Pause-feedResponse": {

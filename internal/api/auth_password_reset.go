@@ -230,6 +230,12 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
+	// The user has just chosen a new password, which satisfies a forced reset.
+	if err := srv.store.ClearForcePasswordReset(ctx, tok.UserID); err != nil {
+		slog.ErrorContext(ctx, "reset-password: clear force reset", "error", err)
+		// Non-fatal — password is already changed.
+	}
+
 	if srv.eventWriter != nil {
 		srv.eventWriter.Write(ctx, secure.Event{
 			Type:     secure.EventAuthPasswordChanged,
@@ -308,7 +314,10 @@ func (srv *Server) resetPasswordHandler(ctx context.Context, input *resetPasswor
 			slog.ErrorContext(ctx, "reset-password: issue pending token", "error", ptErr)
 			return nil, huma.Error500InternalServerError("internal error")
 		}
-		out.SetCookie = pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL)
+		out.SetCookie = append(
+			pendingTokenCookies(pendingToken, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL),
+			clearAuthCookies(srv.cfg.CookieSecure)...,
+		)
 	}
 
 	return out, nil

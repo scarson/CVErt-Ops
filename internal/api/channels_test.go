@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -484,7 +485,7 @@ func TestValidateWebhookURL(t *testing.T) {
 		"https://hooks.example.com:8443/path?foo=bar",
 	}
 	for _, u := range valid {
-		if err := validateWebhookURL(u); err != nil {
+		if err := validateWebhookURL(u, notify.PrivateDestinations{}); err != nil {
 			t.Errorf("validateWebhookURL(%q) = %v, want nil", u, err)
 		}
 	}
@@ -509,8 +510,34 @@ func TestValidateWebhookURL(t *testing.T) {
 		{"http://0.0.0.0/hook", "unspecified"},
 	}
 	for _, tc := range invalid {
-		if err := validateWebhookURL(tc.url); err == nil {
+		if err := validateWebhookURL(tc.url, notify.PrivateDestinations{}); err == nil {
 			t.Errorf("validateWebhookURL(%q) (%s) = nil, want error", tc.url, tc.desc)
+		}
+	}
+}
+
+// TestValidateWebhookURL_PrivateDestinations verifies that hosts the operator
+// listed in WEBHOOK_PRIVATE_HOSTS register, and that every other private or
+// internal target is still rejected.
+func TestValidateWebhookURL_PrivateDestinations(t *testing.T) {
+	t.Parallel()
+	dests, err := notify.ParsePrivateDestinations("ntfy.internal,10.0.0.5", "10.0.0.0/8", "8080")
+	if err != nil {
+		t.Fatalf("ParsePrivateDestinations: %v", err)
+	}
+
+	for _, u := range []string{"https://ntfy.internal/alerts", "http://10.0.0.5:8080/hook", "https://NTFY.internal/alerts"} {
+		if err := validateWebhookURL(u, notify.PrivateDestinations{}); err == nil {
+			t.Errorf("validateWebhookURL(%q) without listed destinations = nil, want error", u)
+		}
+		if err := validateWebhookURL(u, dests); err != nil {
+			t.Errorf("validateWebhookURL(%q) with it listed = %v, want nil", u, err)
+		}
+	}
+
+	for _, u := range []string{"https://other.internal/hook", "http://10.0.0.6/hook", "http://localhost/hook", "ftp://ntfy.internal/hook"} {
+		if err := validateWebhookURL(u, dests); err == nil {
+			t.Errorf("validateWebhookURL(%q) = nil, want error: not listed or bad scheme", u)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -166,7 +167,7 @@ func TestSoftDeleteScheduledReport(t *testing.T) {
 	}
 }
 
-func TestClaimDueReports(t *testing.T) {
+func TestRunDueDigest_ClaimsActiveDueReport(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -212,26 +213,152 @@ func TestClaimDueReports(t *testing.T) {
 		t.Fatalf("create paused report: %v", err)
 	}
 
-	// Claim: should only get the active due report.
-	claimed, err := s.ClaimDueReports(ctx, 10)
+	// Run: should only claim the active due report.
+	var ran []uuid.UUID
+	record := func(run *store.DigestRun) error {
+		ran = append(ran, run.Report.ID)
+		return nil
+	}
+	claimed, err := s.RunDueDigest(ctx, nil, record)
 	if err != nil {
-		t.Fatalf("ClaimDueReports: %v", err)
+		t.Fatalf("RunDueDigest: %v", err)
 	}
-	if len(claimed) != 1 {
-		t.Fatalf("expected 1 claimed report, got %d", len(claimed))
+	if claimed == nil {
+		t.Fatal("RunDueDigest claimed no report, want the active due report")
 	}
-	if claimed[0].ID != dueReport.ID {
-		t.Errorf("claimed report ID = %v, want %v", claimed[0].ID, dueReport.ID)
+	if claimed.ID != dueReport.ID {
+		t.Errorf("claimed report ID = %v, want %v", claimed.ID, dueReport.ID)
+	}
+	if len(ran) != 1 || ran[0] != dueReport.ID {
+		t.Errorf("run called with reports %v, want [%v]", ran, dueReport.ID)
+	}
+
+	// The run did not advance the report, so it is still due; skipping it
+	// leaves nothing to claim.
+	claimed, err = s.RunDueDigest(ctx, []uuid.UUID{dueReport.ID}, record)
+	if err != nil {
+		t.Fatalf("RunDueDigest with skip: %v", err)
+	}
+	if claimed != nil {
+		t.Errorf("claimed report %v with the due report skipped, want none", claimed.ID)
+	}
+	if len(ran) != 1 {
+		t.Errorf("run called %d times, want 1", len(ran))
 	}
 }
 
-func TestAdvanceReport(t *testing.T) {
+// mustCreateDueScheduledReport creates an active scheduled report whose
+// next_run_at is an hour in the past, or fatals the test.
+func mustCreateDueScheduledReport(t *testing.T, s *testutil.TestDB, ctx context.Context, orgID uuid.UUID, name string) *store.ScheduledReportRow {
+	t.Helper()
+	row, err := s.CreateScheduledReport(ctx, orgID, store.CreateScheduledReportParams{
+		Name:          name,
+		ScheduledTime: "08:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport(%q): %v", name, err)
+	}
+	return row
+}
+
+func TestRunDueDigest_SkipsReportHeldByAnotherRun(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ReportHeldOrg")
+	due := mustCreateDueScheduledReport(t, s, ctx, org.ID, "HeldReport")
+
+	// The inner run uses another connection while the outer run holds the row.
+	var inner *store.ScheduledReportRow
+	outer, err := s.RunDueDigest(ctx, nil, func(*store.DigestRun) error {
+		var err error
+		inner, err = s.RunDueDigest(ctx, nil, func(*store.DigestRun) error { return nil })
+		return err
+	})
+	if err != nil {
+		t.Fatalf("RunDueDigest: %v", err)
+	}
+	if outer == nil || outer.ID != due.ID {
+		t.Fatalf("outer run claimed %v, want report %v", outer, due.ID)
+	}
+	if inner != nil {
+		t.Errorf("inner run claimed report %v while the outer run held it, want none", inner.ID)
+	}
+}
+
+func TestRunDueDigest_RollsBackWhenRunFails(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ReportRollbackOrg")
+	due := mustCreateDueScheduledReport(t, s, ctx, org.ID, "RollbackReport")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "RollbackChan")
+
+	runErr := errors.New("digest run failed")
+	claimed, err := s.RunDueDigest(ctx, nil, func(run *store.DigestRun) error {
+		if err := run.InsertDelivery(ctx, chanID, json.RawMessage(`{"cves":[]}`)); err != nil {
+			return err
+		}
+		if err := run.Advance(ctx, time.Now(), time.Now().Add(24*time.Hour), nil); err != nil {
+			return err
+		}
+		return runErr
+	})
+	if !errors.Is(err, runErr) {
+		t.Fatalf("RunDueDigest error = %v, want %v", err, runErr)
+	}
+	if claimed == nil || claimed.ID != due.ID {
+		t.Fatalf("RunDueDigest claimed %v, want report %v", claimed, due.ID)
+	}
+
+	var deliveries int
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notification_deliveries WHERE report_id = $1", due.ID).Scan(&deliveries); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveries != 0 {
+		t.Errorf("delivery count = %d after a failed run, want 0", deliveries)
+	}
+	got, err := s.GetScheduledReport(ctx, org.ID, due.ID)
+	if err != nil {
+		t.Fatalf("GetScheduledReport: %v", err)
+	}
+	if got.LastRunAt.Valid {
+		t.Errorf("LastRunAt = %v after a failed run, want unset", got.LastRunAt.Time)
+	}
+	if !got.NextRunAt.Equal(due.NextRunAt) {
+		t.Errorf("NextRunAt = %v after a failed run, want %v", got.NextRunAt, due.NextRunAt)
+	}
+}
+
+// mustAdvanceDueReport runs the due report's digest and advances it with the
+// given values, or fatals the test.
+func mustAdvanceDueReport(t *testing.T, s *testutil.TestDB, ctx context.Context, reportID uuid.UUID, lastRun, nextRun time.Time, sent []store.DigestSentCVE) {
+	t.Helper()
+	claimed, err := s.RunDueDigest(ctx, nil, func(run *store.DigestRun) error {
+		return run.Advance(ctx, lastRun, nextRun, sent)
+	})
+	if err != nil {
+		t.Fatalf("RunDueDigest: %v", err)
+	}
+	if claimed == nil || claimed.ID != reportID {
+		t.Fatalf("RunDueDigest claimed %v, want report %v", claimed, reportID)
+	}
+}
+
+func TestDigestRun_Advance(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
 	org := s.MustCreateOrg(t, ctx, "ReportOrg7")
-	created := mustCreateScheduledReport(t, s, ctx, org.ID, "ToAdvance")
+	created := mustCreateDueScheduledReport(t, s, ctx, org.ID, "ToAdvance")
 
 	lastRun := time.Now().Truncate(time.Microsecond)
 	nextRun := time.Now().Add(24 * time.Hour).Truncate(time.Microsecond)
@@ -240,9 +367,7 @@ func TestAdvanceReport(t *testing.T) {
 		{CVEID: "CVE-2025-0001", DateModifiedCanonical: lastRun.Add(-time.Minute)},
 	}
 
-	if err := s.AdvanceReport(ctx, created.ID, lastRun, nextRun, sent); err != nil {
-		t.Fatalf("AdvanceReport: %v", err)
-	}
+	mustAdvanceDueReport(t, s, ctx, created.ID, lastRun, nextRun, sent)
 
 	got, err := s.GetScheduledReport(ctx, org.ID, created.ID)
 	if err != nil {
@@ -270,17 +395,15 @@ func TestAdvanceReport(t *testing.T) {
 	}
 }
 
-func TestAdvanceReport_NilSentStoresEmptyArray(t *testing.T) {
+func TestDigestRun_AdvanceNilSentStoresEmptyArray(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 
 	org := s.MustCreateOrg(t, ctx, "ReportOrgNilSent")
-	created := mustCreateScheduledReport(t, s, ctx, org.ID, "ToAdvanceNilSent")
+	created := mustCreateDueScheduledReport(t, s, ctx, org.ID, "ToAdvanceNilSent")
 
-	if err := s.AdvanceReport(ctx, created.ID, time.Now(), time.Now().Add(24*time.Hour), nil); err != nil {
-		t.Fatalf("AdvanceReport: %v", err)
-	}
+	mustAdvanceDueReport(t, s, ctx, created.ID, time.Now(), time.Now().Add(24*time.Hour), nil)
 	got, err := s.GetScheduledReport(ctx, org.ID, created.ID)
 	if err != nil {
 		t.Fatalf("GetScheduledReport after advance: %v", err)

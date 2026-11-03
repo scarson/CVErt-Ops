@@ -39,14 +39,16 @@ UPDATE scheduled_reports
 SET deleted_at = now(), updated_at = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL;
 
--- name: ClaimDueReports :many
--- Digest runner: claim up to $1 reports that are due for execution.
+-- name: ClaimDueReport :one
+-- Digest runner: claim the earliest due report that is not in skip_ids and not
+-- held by another run. The row lock lasts until the caller's transaction ends.
 SELECT * FROM scheduled_reports
 WHERE status = 'active'
   AND next_run_at <= now()
   AND deleted_at IS NULL
+  AND id <> ALL(@skip_ids::uuid[])
 ORDER BY next_run_at
-LIMIT $1
+LIMIT 1
 FOR UPDATE SKIP LOCKED;
 
 -- name: AdvanceReport :exec

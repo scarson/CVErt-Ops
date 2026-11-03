@@ -28,7 +28,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-25 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
-| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-23 | §5.C |
+| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-24 | §5.C |
 | 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-44 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
@@ -1910,6 +1910,18 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 ---
 
+### NOTIFY-24: Overlapping Digest Ticks Send the Same Digest Twice
+
+**The Flaw:** `ClaimDueReports` selected due reports `FOR UPDATE SKIP LOCKED` in its own transaction, which committed before the digest ran. The row lock was gone by the time `executeDigestReport` (`internal/notify/digest.go`) queried CVEs and inserted deliveries. Only the final `AdvanceReport`, which moves `next_run_at` into the future, kept the report from being claimed again. The `serve` and `worker` subcommands each start a notify worker, so a second digest tick could run between the claim and the advance and claim the same report.
+
+**Why It Matters:** Every channel bound to the report gets the digest twice. The later `AdvanceReport` also overwrites `last_run_at` and `rescan_sent_cves` with the values from its own run, so the recorded sent versions match only one of the two digests. Nothing logs an error, and the overlap occurs only with two live workers, so single-process tests do not catch it.
+
+**The Fix:** `Store.RunDueDigest` claims one report (`LIMIT 1 FOR UPDATE SKIP LOCKED`) and runs the whole digest in that transaction: CVE query, channel list, delivery inserts, and advance, through `DigestRun` methods bound to the transaction. A concurrent tick skips the locked row. Once the run commits, `next_run_at` is in the future. Any error rolls back the deliveries and the advance together, and the report stays due for the next tick. `runDigest` passes the IDs it has already attempted as `skip`, so a report whose run failed is not claimed again in the same tick. This is allowed because the digest makes no outbound HTTP call. Delivery happens later in the delivery worker. Two alternatives were rejected. Advancing `next_run_at` in the claim transaction delays a run that fails after the claim until the next day, and the inserts can still commit without the advance. Advancing only when `next_run_at` still matches the claimed value needs the same single-transaction plumbing, and the losing run still does all its work before rolling back.
+
+**The Lesson:** `FOR UPDATE SKIP LOCKED` stops a second claimer only while the claiming transaction is open. If the claim commits before the work, something else has to mark the row as taken: a status or lease written in the claim (as `ClaimPendingDeliveries` does with `processing`), or the work done inside the claiming transaction.
+
+---
+
 ### Review Checklist
 
 - [ ] Activation scan runs in silent mode (writes `alert_events` but does NOT enqueue notification deliveries)?
@@ -1931,6 +1943,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - [ ] Timestamp-cursor scans start a re-scan window behind the stored cursor, and re-processing a row in that window is idempotent (NOTIFY-20)?
 - [ ] Digest scans start a re-scan window behind `last_run_at`, take the next cursor before the query, and leave out CVE versions already sent (NOTIFY-21)?
 - [ ] A row-limited digest or report query carries the match count before the limit, and renderers report that count rather than the number of rows (NOTIFY-23)?
+- [ ] A `FOR UPDATE SKIP LOCKED` claim either marks the row as taken before it commits or runs the work inside the claiming transaction (NOTIFY-24)?
 
 ### See Also
 - Webhook SSRF and redirect bypass: see AUTH-17
@@ -2715,7 +2728,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §2 Database & Query | DB-1 – DB-25 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
-| §5 Notification & Alert | NOTIFY-1 – NOTIFY-23 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit |
+| §5 Notification & Alert | NOTIFY-1 – NOTIFY-24 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run |
 | §6 Architecture & Ops | ARCH-1 – ARCH-44 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 
 **Total: ~144 pitfall entries across 6 domains.**

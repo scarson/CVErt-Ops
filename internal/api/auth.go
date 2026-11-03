@@ -784,7 +784,7 @@ type changePasswordOutput struct {
 // changePasswordHandler handles POST /api/v1/auth/change-password.
 // Supports two modes:
 //   - Normal: access_token + current_password → verify old password, set new one.
-//   - Restricted: mfa_pending_token with "password_reset" → skip current_password
+//   - Restricted: mfa_pending_token whose first pending item is "password_reset" → skip current_password
 //     (password may be compromised). Issues full tokens or reissues pending token.
 func (srv *Server) changePasswordHandler(ctx context.Context, input *changePasswordInput) (*changePasswordOutput, error) {
 	var (
@@ -793,7 +793,9 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		isRestricted  bool
 	)
 
-	// Resolve auth context: access token or pending token with "password_reset".
+	// Resolve auth context: access token or pending token whose next step is
+	// "password_reset". Earlier steps (mfa_challenge) must be cleared first so
+	// a password-only holder cannot change the password before proving MFA.
 	if input.AccessToken != "" {
 		claims, err := auth.ParseAccessToken(input.AccessToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 		if err == nil {
@@ -801,16 +803,11 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		}
 	}
 	if userID == uuid.Nil && input.MFAPendingToken != "" {
-		claims, err := auth.ParsePendingToken(input.MFAPendingToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
+		claims, err := srv.validatePendingToken(input.MFAPendingToken, "password_reset")
 		if err == nil {
-			for _, p := range claims.Pending {
-				if p == "password_reset" {
-					userID = claims.UserID
-					pendingClaims = claims
-					isRestricted = true
-					break
-				}
-			}
+			userID = claims.UserID
+			pendingClaims = claims
+			isRestricted = true
 		}
 	}
 	if userID == uuid.Nil {

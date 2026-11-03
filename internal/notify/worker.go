@@ -263,19 +263,17 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 		return &permanentDeliveryError{err: fmt.Errorf("email channel has no recipients")}
 	}
 
-	// Deserialize payload into CVE snapshots.
-	var snaps []cveSnapshot
-	if err := json.Unmarshal(row.Payload, &snaps); err != nil {
-		return fmt.Errorf("unmarshal delivery payload: %w", err)
-	}
-
-	summaries := snapshotsToCVESummaries(snaps, w.externalURL)
-
 	var subject, htmlBody, textBody string
 	var renderErr error
 
 	switch row.Kind {
 	case "alert":
+		// An alert payload is a JSON array of CVE snapshots.
+		var snaps []cveSnapshot
+		if err := json.Unmarshal(row.Payload, &snaps); err != nil {
+			return fmt.Errorf("unmarshal delivery payload: %w", err)
+		}
+		summaries := snapshotsToCVESummaries(snaps, w.externalURL)
 		ruleName := "Alert Rule"
 		if row.RuleID.Valid {
 			if name, err := w.store.GetAlertRuleName(ctx, row.RuleID.UUID); err == nil && name != "" {
@@ -293,6 +291,10 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 			CVErtOpsURL: w.externalURL,
 		})
 	case "digest":
+		var digest digestPayload
+		if err := json.Unmarshal(row.Payload, &digest); err != nil {
+			return fmt.Errorf("unmarshal delivery payload: %w", err)
+		}
 		reportName := "Digest Report"
 		if row.ReportID.Valid {
 			if name, err := w.store.GetScheduledReportName(ctx, row.ReportID.UUID); err == nil && name != "" {
@@ -303,21 +305,7 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 		if org, err := w.store.GetOrgByID(ctx, row.OrgID); err == nil && org != nil {
 			orgName = org.Name
 		}
-		totalCount := len(summaries)
-		truncated := totalCount > 25
-		if truncated {
-			summaries = summaries[:25]
-		}
-		subject, htmlBody, textBody, renderErr = RenderDigest(DigestTemplateData{
-			OrgName:     orgName,
-			ReportName:  reportName,
-			Date:        time.Now().UTC().Format("2006-01-02"),
-			CVEs:        summaries,
-			TotalCount:  totalCount,
-			Truncated:   truncated,
-			ViewAllURL:  w.externalURL,
-			CVErtOpsURL: w.externalURL,
-		})
+		subject, htmlBody, textBody, renderErr = RenderDigest(digestTemplateData(digest, reportName, orgName, w.externalURL))
 	default:
 		return &permanentDeliveryError{err: fmt.Errorf("unsupported delivery kind for email: %s", row.Kind)}
 	}

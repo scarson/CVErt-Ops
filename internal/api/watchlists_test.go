@@ -650,6 +650,78 @@ func TestWatchlist_PatchGroupID(t *testing.T) {
 	}
 }
 
+// TestWatchlist_GroupMustBelongToOrg verifies that create and PATCH reject a
+// group_id that names another org's group, a deleted group or no group.
+func TestWatchlist_GroupMustBelongToOrg(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	aliceLogin := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer aliceLogin.Body.Close() //nolint:errcheck,gosec // G104
+	aliceToken := cookieValue(aliceLogin, "access_token")
+
+	otherOrg := db.MustCreateOrg(t, ctx, "Other Org")
+	otherGroup := db.MustCreateGroup(t, ctx, otherOrg.ID, "Other Team", "another org's group")
+
+	aliceOrgID := mustParseUUID(t, aliceReg.OrgID)
+	deletedGroup := db.MustCreateGroup(t, ctx, aliceOrgID, "Disbanded", "deleted group").ID.String()
+	delResp := doDeleteGroup(t, ctx, ts, aliceToken, aliceReg.OrgID, deletedGroup)
+	defer delResp.Body.Close() //nolint:errcheck,gosec // G104
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete group: got %d, want 204", delResp.StatusCode)
+	}
+
+	createResp := doCreateWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID, `{"name":"Ungrouped"}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201", createResp.StatusCode)
+	}
+	var wl watchlistEntry
+	if err := json.NewDecoder(createResp.Body).Decode(&wl); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		groupID string
+	}{
+		{name: "other org", groupID: otherGroup.ID.String()},
+		{name: "deleted", groupID: deletedGroup},
+		{name: "nonexistent", groupID: uuid.NewString()},
+	}
+	for _, tt := range tests {
+		t.Run("create/"+tt.name, func(t *testing.T) {
+			resp := doCreateWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID,
+				`{"name":"WL `+tt.name+`","group_id":"`+tt.groupID+`"}`)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("got %d, want 422", resp.StatusCode)
+			}
+		})
+		t.Run("patch/"+tt.name, func(t *testing.T) {
+			resp := doPatchWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID, wl.ID,
+				`{"group_id":"`+tt.groupID+`"}`)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("got %d, want 422", resp.StatusCode)
+			}
+		})
+	}
+
+	getResp := doGetWatchlist(t, ctx, ts, aliceToken, aliceReg.OrgID, wl.ID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	var got watchlistEntry
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got.GroupID != nil {
+		t.Errorf("group_id = %s after rejected patches, want none", *got.GroupID)
+	}
+}
+
 // TestWatchlist_DuplicateName verifies that creating a watchlist with a duplicate name returns 409.
 func TestWatchlist_DuplicateName(t *testing.T) {
 	t.Parallel()

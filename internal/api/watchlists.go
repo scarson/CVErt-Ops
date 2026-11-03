@@ -185,10 +185,8 @@ func (srv *Server) createWatchlistHandler(w http.ResponseWriter, r *http.Request
 
 	var groupID uuid.NullUUID
 	if req.GroupID != nil {
-		id, err := uuid.Parse(*req.GroupID)
-		if err != nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-				&huma.ErrorDetail{Message: "invalid group_id", Location: "body.group_id"})
+		id, ok := srv.resolveWatchlistGroup(w, r, orgID, *req.GroupID)
+		if !ok {
 			return
 		}
 		groupID = uuid.NullUUID{UUID: id, Valid: true}
@@ -310,6 +308,31 @@ func (srv *Server) listWatchlistsHandler(w http.ResponseWriter, r *http.Request)
 	writeList(w, entries, nextCursor)
 }
 
+// resolveWatchlistGroup parses a watchlist's group_id and checks that it names
+// an active group in the org. The foreign key on watchlists.group_id does not
+// check the org, because Postgres runs foreign-key checks without RLS. On
+// failure it writes the problem response and returns false.
+func (srv *Server) resolveWatchlistGroup(w http.ResponseWriter, r *http.Request, orgID uuid.UUID, raw string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "invalid group_id", Location: "body.group_id"})
+		return uuid.Nil, false
+	}
+	group, err := srv.store.GetGroupIfActive(r.Context(), orgID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "watchlist: get group", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return uuid.Nil, false
+	}
+	if group == nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "group not found", Location: "body.group_id"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
 // updateWatchlistHandler handles PATCH /api/v1/orgs/{org_id}/watchlists/{id}.
 // Requires member+. Only updates non-nil fields.
 func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request) {
@@ -364,10 +387,8 @@ func (srv *Server) updateWatchlistHandler(w http.ResponseWriter, r *http.Request
 		if req.GroupID.Value == nil {
 			p.GroupID = uuid.NullUUID{}
 		} else {
-			gid, err := uuid.Parse(*req.GroupID.Value)
-			if err != nil {
-				writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-					&huma.ErrorDetail{Message: "invalid group_id", Location: "body.group_id"})
+			gid, ok := srv.resolveWatchlistGroup(w, r, orgID, *req.GroupID.Value)
+			if !ok {
 				return
 			}
 			p.GroupID = uuid.NullUUID{UUID: gid, Valid: true}

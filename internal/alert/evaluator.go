@@ -205,7 +205,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 			e.log.Error("compile rule for "+cfg.metricsLabel, "rule_id", rule.ID, "err", compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRule(ctx, compiled, allCandidateIDs, rule.OrgID, false, false, 0)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, allCandidateIDs, rule.OrgID)
 		if evalErr != nil {
 			e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
 		}
@@ -461,6 +461,32 @@ func (e *Evaluator) evaluateRule(
 	}
 
 	return len(matched), false, len(candidateIDs), nil
+}
+
+// evaluateRuleInChunks runs evaluateRule over candidateIDs in chunks of at most candidateCap
+// IDs. The batch and EPSS paths advance their cursor past every candidate once the run ends,
+// so a rule that hit the cap on the whole change set would never evaluate those CVEs. The
+// candidate query returns at most one row per candidate ID (the only join is the 1:1
+// cve_search_index), so no chunk can exceed the cap. Resolution detection stays correct per
+// chunk because chunks are disjoint. Stops at the first error or partial chunk.
+// Returns (matchCount, partial, candidatesEval, err) summed over the evaluated chunks.
+func (e *Evaluator) evaluateRuleInChunks(
+	ctx context.Context,
+	compiled *dsl.CompiledRule,
+	candidateIDs []string,
+	orgID uuid.UUID,
+) (int, bool, int, error) {
+	var totalMatches, totalEvaluated int
+	for start := 0; start < len(candidateIDs); start += candidateCap {
+		end := min(start+candidateCap, len(candidateIDs))
+		matchCount, partial, candidatesEval, err := e.evaluateRule(ctx, compiled, candidateIDs[start:end], orgID, false, false, 0)
+		totalMatches += matchCount
+		totalEvaluated += candidatesEval
+		if err != nil || partial {
+			return totalMatches, partial, totalEvaluated, err
+		}
+	}
+	return totalMatches, false, totalEvaluated, nil
 }
 
 // queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is

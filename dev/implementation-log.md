@@ -2185,6 +2185,27 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 
 ---
 
+## Fix — Change-Password Pending-Step Order
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/change-password-pending-order`
+
+`POST /auth/change-password` in restricted mode accepted a pending token when `password_reset` appeared anywhere in its pending list. Login for a user with MFA and `force_password_reset` issues `["mfa_challenge", "password_reset"]`, so a holder of the password alone could change it before passing MFA: the password changed, `force_password_reset` was cleared, remember-device tokens were deleted, and the real user was locked out. The handler now resolves the pending token through `validatePendingToken(token, "password_reset")`, which requires the step to be `Pending[0]`, as the MFA challenge and verify endpoints already do (phase 11 MFA design, "Fixed completion order (most sensitive first)").
+
+### Other pending-token consumers
+
+- **MFA challenge and verify** (`validatePendingToken(…, "mfa_challenge")`) and **enrollment setup/confirm via pending token** (`resolveEnrollmentUserID`) already require their step at `Pending[0]`.
+- **Not fixed:** `clearEnrollmentPending`, called after TOTP and email OTP confirm, parses the `mfa_pending_token` cookie without checking `Pending[0]`, the token version, or that the token's user is the user who enrolled. A request authenticated by an access token for one account that also carries another account's pending cookie removes `mfa_enrollment_required` from the second account's token, and issues full tokens for it if nothing else remains. The email OTP setup handler likewise reissues any pending cookie with a fresh TTL when the request is authenticated by an access token.
+- **Not fixed:** the restricted change-password path does not compare the pending token's `token_version` with the database, unlike MFA verify and enrollment.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/api`
+- **Tests:** `internal/api` password, forced-reset, enrollment-order and pending-token tests (40) pass with `TESTCONTAINERS_RYUK_DISABLED=true`, including `TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion` (pending `["password_reset", "mfa_enrollment_required"]`). Full suite not run.
+- **New test:** `TestForcedPasswordReset_RejectsChangeBeforeMFA` — failed with 200 before the fix, passes with 401 after; also checks the password hash and `force_password_reset` are unchanged
+
+---
+
 ## Admin Search Reindex — Endpoint Fix + Worker
 
 > **Date:** 2026-11-02

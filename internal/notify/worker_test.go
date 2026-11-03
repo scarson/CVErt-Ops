@@ -942,7 +942,6 @@ func TestWorker_Digest_IncludesCVECommittedAfterQuery(t *testing.T) {
 	})
 
 	// Second run.
-	completeDigestDeliveries(t, ctx, db, report.ID)
 	if _, err := db.ExecContext(ctx,
 		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
 		report.ID); err != nil {
@@ -1009,7 +1008,6 @@ func TestWorker_Digest_RescanWindowSkipsSentVersions(t *testing.T) {
 		"CVE-2025-RESCAN-CHANGED"); err != nil {
 		t.Fatalf("modify CVE-2025-RESCAN-CHANGED: %v", err)
 	}
-	completeDigestDeliveries(t, ctx, db, report.ID)
 	if _, err := db.ExecContext(ctx,
 		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
 		report.ID); err != nil {
@@ -1028,15 +1026,76 @@ func TestWorker_Digest_RescanWindowSkipsSentVersions(t *testing.T) {
 	}
 }
 
-// completeDigestDeliveries marks the report's pending digest deliveries succeeded.
-// A pending digest delivery for a report and channel makes the next digest's
-// insert for that pair a no-op, so tests that run several digests clear it first.
-func completeDigestDeliveries(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) {
-	t.Helper()
+// TestWorker_Digest_PreviousDeliveryPending covers a digest that runs while the
+// previous digest for the same report and channel is still pending, for example
+// waiting out a retry backoff after an SMTP failure. The CVEs of both digests must
+// reach the channel.
+func TestWorker_Digest_PreviousDeliveryPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestPendingOrg")
+	emailCfg, _ := json.Marshal(map[string]any{
+		"recipients": []string{"pending@example.com"},
+	})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "DigestPendingChan", "email", json.RawMessage(emailCfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestPendingReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanRow.ID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	stamp := report.CreatedAt.Add(time.Millisecond)
+	s.SeedTestCVE(t, "CVE-2025-PENDING-FIRST", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	// The first digest failed once and waits out its retry backoff.
 	if _, err := db.ExecContext(ctx,
-		"UPDATE notification_deliveries SET status = 'succeeded' WHERE report_id = $1 AND status = 'pending'",
-		reportID); err != nil {
-		t.Fatalf("complete digest deliveries: %v", err)
+		`UPDATE notification_deliveries
+		 SET attempt_count = 1, send_after = now() + interval '1 hour',
+		     last_error = 'smtp unavailable', last_error_for_org = 'smtp unavailable'
+		 WHERE report_id = $1 AND status = 'pending'`,
+		report.ID); err != nil {
+		t.Fatalf("put first digest into retry backoff: %v", err)
+	}
+
+	// A CVE that arrives after the first digest.
+	later := time.Now().UTC()
+	s.SeedTestCVE(t, "CVE-2025-PENDING-SECOND", "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &later})
+
+	if _, err := db.ExecContext(ctx,
+		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
+		report.ID); err != nil {
+		t.Fatalf("make report due again: %v", err)
+	}
+	w.RunDigestOnce(ctx)
+
+	counts := digestCVECounts(t, ctx, db, report.ID)
+	for _, id := range []string{"CVE-2025-PENDING-FIRST", "CVE-2025-PENDING-SECOND"} {
+		if counts[id] != 1 {
+			t.Errorf("%s appeared in %d digests, want 1 (all CVE counts: %v)", id, counts[id], counts)
+		}
 	}
 }
 

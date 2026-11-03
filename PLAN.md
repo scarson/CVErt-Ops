@@ -979,6 +979,7 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
   - the run is marked `status=partial` with a warning
   - **no alerts are fired** for that rule/run (fail-closed to avoid incomplete evaluation)
   - operator-facing metric + log entry emitted
+- The cap bounds a single prefilter query. The batch and EPSS evaluators advance their cursor past every CVE in the run, so they must not let the cap drop CVEs from evaluation: they evaluate each rule over the run's changed CVEs in chunks of at most N CVE IDs, and the prefilter returns at most one row per CVE, so no chunk can exceed the cap. The activation scan pages the corpus the same way. A full-corpus query in a single statement (dry-run) remains subject to the fail-closed cap.
 - Compiled `*regexp.Regexp` objects are cached per rule (safe for concurrent use).
 
 **Why these guardrails (multiple angles):**

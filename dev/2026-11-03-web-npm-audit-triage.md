@@ -44,7 +44,9 @@ Every other advisory below is in build, dev-server, test or codegen tooling, whi
 
 ## Left unfixed (moderate only)
 
-Neither of these is reachable here, and neither ships. Each can only be fixed by forcing a version that a parent package's declared range does not allow. That needs an `npm overrides` entry or a major bump, and under `CLAUDE.md` both are decisions for Sam, not something to apply unasked.
+**Decision (Sam, 2026-11-03): accept both advisories until upstream moves. Do not add `npm overrides` for them.**
+
+Neither of these is reachable here, and neither ships. Each can only be fixed by forcing a version that a parent package's declared range does not allow. That needs an `npm overrides` entry or a major bump.
 
 1. **`minimatch` <11.0.1 — GHSA-g3hv-75wg-m249 (DoS via globparts amplification).** It accounts for 18 of the 20 audit entries, through `eslint` 10, `@eslint/config-array`, `@typescript-eslint/*`, `typescript-eslint`, `eslint-plugin-vue`, `vue-eslint-parser`, `@vue/eslint-config-typescript`, `@vitest/eslint-plugin`, `eslint-config-prettier`, `editorconfig`, `glob`, `js-beautify`, `@redocly/openapi-core` and `openapi-typescript`.
    - **Fix status:** the only patched release is 11.0.1+, and no backport exists for 5.x, 9.x or 10.x. The parent ranges are `eslint` `^10.2.4`, `@typescript-eslint/typescript-estree` `^10.2.2`, `editorconfig` `^9.0.1`, and `@redocly/openapi-core`, which pins exactly `5.1.9`.

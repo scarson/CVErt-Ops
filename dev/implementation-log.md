@@ -2252,7 +2252,7 @@ Cleared the critical and all high `npm audit` advisories in `web/` with in-range
 
 - **No `npm audit fix --force`**: its suggestions were downgrades (`openapi-typescript` 6.7.6, `@vue/eslint-config-typescript` 4.0.0).
 - **`@redocly/openapi-core` pinned to 1.34.22, not 1.34.23**: 1.34.23 was one day old.
-- **20 moderates left**: `minimatch` <11 and `glob` <14.0.2, lint/test tooling only, not reachable, and no patched release fits the parents' ranges. Fixing them needs `overrides`, which is Sam's call.
+- **20 moderates left**: `minimatch` <11 and `glob` <14.0.2, lint/test tooling only, not reachable, and no patched release fits the parents' ranges. Sam accepted them until upstream moves; no `overrides`.
 
 ### Gotchas discovered
 

@@ -2195,7 +2195,7 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 ### Quality checks
 
 - **Tests:** `TestOpenAPISpec_EmbeddedFieldsDocumented` failed first (missing promoted fields, `signing_secret` required), then passes; all `OpenAPI|Spec` tests pass; `go vet` clean
-- **Not run:** `TestCreateSSO_LocationHeader` and the channel, delivery and report integration tests touched by the rename. Docker Desktop answers 500 on `/info`, so testcontainers cannot start Postgres.
+- **Integration:** after a Docker Desktop restart (the engine had answered 500 on `/info`), `TestCreateSSO_LocationHeader` failed against the old `writeLocation` call with Location `/sso/{id}`, then passed with the fix. The 148 `internal/api` tests matching `SSO|Channel|Deliver|Report|AlertRule|OpenAPI|Spec` pass.
 - **Lint:** `golangci-lint run ./internal/api/...` 0 issues; web `type-check` and `lint` clean
 
 ---

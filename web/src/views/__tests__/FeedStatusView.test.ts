@@ -3,6 +3,7 @@
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import FeedStatusView from '@/views/FeedStatusView.vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => { path: string }>(() => ({ path: '/admin/feeds' })),
@@ -79,7 +80,6 @@ function mockFeedsError() {
 }
 
 async function mountFeedStatus() {
-  const { default: FeedStatusView } = await import('@/views/FeedStatusView.vue')
   const wrapper = mount(FeedStatusView)
   await flushPromises()
   return wrapper
@@ -166,7 +166,6 @@ describe('FeedStatusView', () => {
   it('shows loading state', async () => {
     mockGET.mockReset()
     mockGET.mockImplementation(() => new Promise(() => {}))
-    const { default: FeedStatusView } = await import('@/views/FeedStatusView.vue')
     const wrapper = mount(FeedStatusView)
     expect(wrapper.text()).toContain('Loading')
   })

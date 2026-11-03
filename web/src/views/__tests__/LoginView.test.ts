@@ -28,6 +28,7 @@ vi.mock('@/lib/api/client', () => ({
 
 import client from '@/lib/api/client'
 import { useAuthStore } from '@/stores/auth'
+import LoginView from '@/views/LoginView.vue'
 
 const mockClient = vi.mocked(client)
 
@@ -38,7 +39,6 @@ function mockProvidersResponse(github = true, google = true) {
 }
 
 async function mountLogin() {
-  const { default: LoginView } = await import('@/views/LoginView.vue')
   return mount(LoginView)
 }
 
@@ -322,6 +322,83 @@ describe('LoginView', () => {
       await googleButton.trigger('click')
 
       expect(hrefSetter).toHaveBeenCalledWith('/api/v1/auth/oauth/google')
+    })
+  })
+  describe('pending sign-in steps', () => {
+    const stepStubs = {
+      MfaChallengeStep: { name: 'MfaChallengeStep', emits: ['complete'], template: '<div data-testid="step-mfa" />' },
+      ForcedPasswordStep: { name: 'ForcedPasswordStep', emits: ['complete'], template: '<div data-testid="step-password" />' },
+      MfaEnrollStep: { name: 'MfaEnrollStep', emits: ['complete'], template: '<div data-testid="step-enroll" />' },
+    }
+
+    async function mountWithSteps() {
+      const { default: LoginView } = await import('@/views/LoginView.vue')
+      return mount(LoginView, { global: { stubs: stepStubs } })
+    }
+
+    async function loginInto(wrapper: Awaited<ReturnType<typeof mountWithSteps>>, pending: string[]) {
+      const auth = useAuthStore()
+      vi.spyOn(auth, 'login').mockImplementation(async () => {
+        auth.pendingSteps = pending
+        return { success: false }
+      })
+      await wrapper.find('input[type="email"]').setValue('mfa@example.com')
+      await wrapper.find('input[type="password"]').setValue('password-123456789')
+      await wrapper.find('form').trigger('submit')
+      await flushPromises()
+    }
+
+    it.each([
+      [['mfa_challenge', 'password_reset'], 'step-mfa'],
+      [['password_reset'], 'step-password'],
+      [['mfa_enrollment_required'], 'step-enroll'],
+    ])('shows the step for pending %j', async (pending, testId) => {
+      const wrapper = await mountWithSteps()
+
+      await loginInto(wrapper, pending)
+
+      expect(wrapper.find(`[data-testid="${testId}"]`).exists()).toBe(true)
+      expect(wrapper.find('input[type="password"]').exists()).toBe(false)
+      expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      expect(mockPush).not.toHaveBeenCalled()
+    })
+
+    it('redirects when a step completes sign-in', async () => {
+      mockRouteQuery.redirect = '/watchlists'
+      const wrapper = await mountWithSteps()
+      await loginInto(wrapper, ['mfa_challenge'])
+
+      wrapper.findComponent({ name: 'MfaChallengeStep' }).vm.$emit('complete')
+      await flushPromises()
+
+      expect(mockPush).toHaveBeenCalledWith('/watchlists')
+    })
+
+    it('shows the next step after the current one finishes', async () => {
+      const wrapper = await mountWithSteps()
+      await loginInto(wrapper, ['mfa_challenge', 'password_reset'])
+
+      useAuthStore().pendingSteps = ['password_reset']
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="step-password"]').exists()).toBe(true)
+    })
+
+    it('explains an unsupported step instead of leaving the user stuck', async () => {
+      const wrapper = await mountWithSteps()
+
+      await loginInto(wrapper, ['webauthn_challenge'])
+
+      expect(wrapper.find('[role="alert"]').text()).toContain('cannot be completed in this app')
+    })
+
+    it('shows the sign-in notice at the password form', async () => {
+      useAuthStore().signInNotice = 'Your sign-in session expired. Sign in again.'
+      const wrapper = await mountWithSteps()
+
+      expect(wrapper.find('[data-testid="sign-in-notice"]').text()).toBe(
+        'Your sign-in session expired. Sign in again.',
+      )
     })
   })
 })

@@ -12,6 +12,14 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
+// digestRescanWindow is how far behind the stored cursor each digest scan starts.
+// date_modified_canonical is stamped by the merge worker's clock before its
+// transaction commits, so a CVE can become visible after a digest's scan while
+// carrying a timestamp earlier than the cursor that digest records. The window
+// lets the next digest pick such CVEs up; the report's rescan_sent_cves keeps the
+// versions already sent out of it (implementation-pitfalls.md NOTIFY-21).
+const digestRescanWindow = 2 * time.Minute
+
 // severityRank maps severity strings to numeric rank for threshold expansion.
 var severityRank = map[string]int{
 	"critical": 4,
@@ -100,15 +108,22 @@ func (w *Worker) runDigest(ctx context.Context) {
 // executeDigestReport processes a single digest report:
 // 1. Compute since-time from COALESCE(last_run_at, created_at)
 // 2. Expand severity threshold
-// 3. Query matching CVEs
+// 3. Query matching CVEs from digestRescanWindow before since, minus versions already sent
 // 4. List active channels for the report
 // 5. Insert delivery row per channel
-// 6. Advance next_run_at
+// 6. Advance last_run_at, next_run_at, and the sent versions in the re-scan window
 func (w *Worker) executeDigestReport(ctx context.Context, report store.ScheduledReportRow) error {
 	// Determine the "since" cutoff — new CVEs since last run or since creation.
 	since := report.CreatedAt
 	if report.LastRunAt.Valid {
 		since = report.LastRunAt.Time
+	}
+
+	// A malformed list only costs repeats in this digest, so it must not stop the report.
+	var sent []store.DigestSentCVE
+	if err := json.Unmarshal(report.RescanSentCves, &sent); err != nil {
+		w.log.Error("decode digest rescan_sent_cves", "report_id", report.ID, "err", err)
+		sent = nil
 	}
 
 	// Expand severity threshold.
@@ -117,16 +132,21 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 		severities = expandSeverityThreshold(report.SeverityThreshold.String)
 	}
 
+	// The next run's cursor is read before the query, so a CVE stamped while this
+	// run is in progress falls after it.
+	cursor := time.Now().UTC()
+
 	// Query matching CVEs.
-	cves, err := w.store.DigestCVEs(ctx, since, severities)
+	cves, err := w.store.DigestCVEs(ctx, since.Add(-digestRescanWindow), severities, sent)
 	if err != nil {
 		return fmt.Errorf("query digest CVEs: %w", err)
 	}
+	sentInWindow := sentInRescanWindow(sent, cves, cursor)
 
 	// Skip if no CVEs and send_on_empty is false.
 	if len(cves) == 0 && !report.SendOnEmpty {
 		// Still advance so we don't re-query the same window.
-		return w.advanceReport(ctx, report)
+		return w.advanceReport(ctx, report, cursor, sentInWindow)
 	}
 
 	// Build the payload as a JSON array of cveSnapshot objects.
@@ -171,11 +191,31 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 		}
 	}
 
-	return w.advanceReport(ctx, report)
+	return w.advanceReport(ctx, report, cursor, sentInWindow)
 }
 
-// advanceReport updates last_run_at and advances next_run_at by one day.
-func (w *Worker) advanceReport(ctx context.Context, report store.ScheduledReportRow) error {
+// sentInRescanWindow returns the sent CVE versions that the next run's scan, which
+// starts digestRescanWindow before cursor, will reach again: those in previous
+// (sent by earlier runs) and in cves (sent by this run).
+func sentInRescanWindow(previous []store.DigestSentCVE, cves []store.DigestCVEsRow, cursor time.Time) []store.DigestSentCVE {
+	floor := cursor.Add(-digestRescanWindow)
+	var kept []store.DigestSentCVE
+	for _, s := range previous {
+		if s.DateModifiedCanonical.After(floor) {
+			kept = append(kept, s)
+		}
+	}
+	for _, row := range cves {
+		if row.DateModifiedCanonical.After(floor) {
+			kept = append(kept, store.DigestSentCVE{CVEID: row.CveID, DateModifiedCanonical: row.DateModifiedCanonical})
+		}
+	}
+	return kept
+}
+
+// advanceReport sets last_run_at to cursor, records the sent CVE versions the next
+// run must leave out, and advances next_run_at by one day.
+func (w *Worker) advanceReport(ctx context.Context, report store.ScheduledReportRow, cursor time.Time, sent []store.DigestSentCVE) error {
 	now := time.Now().UTC()
 	nextRun, err := advanceNextRunAt(report.NextRunAt, report.Timezone)
 	if err != nil {
@@ -188,5 +228,5 @@ func (w *Worker) advanceReport(ctx context.Context, report store.ScheduledReport
 			return fmt.Errorf("skip-forward next_run_at: %w", err)
 		}
 	}
-	return w.store.AdvanceReport(ctx, report.ID, now, nextRun)
+	return w.store.AdvanceReport(ctx, report.ID, cursor, nextRun, sent)
 }

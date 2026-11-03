@@ -35,11 +35,13 @@ type createChannelBody struct {
 
 // patchChannelBody uses pointer fields so only supplied keys are updated.
 type patchChannelBody struct {
-	Name   *string          `json:"name"`
-	Config *json.RawMessage `json:"config"`
+	Name   *string          `json:"name,omitempty"`
+	Config *json.RawMessage `json:"config,omitempty"`
 }
 
-type channelEntry struct {
+// ChannelEntry is the API shape of a notification channel. It is exported so
+// huma documents its fields where channelCreateEntry embeds it.
+type ChannelEntry struct {
 	ID        string          `json:"id"`
 	OrgID     string          `json:"org_id"`
 	Name      string          `json:"name"`
@@ -49,10 +51,10 @@ type channelEntry struct {
 	UpdatedAt string          `json:"updated_at"`
 }
 
-// channelCreateEntry extends channelEntry with the signing secret, returned only at creation.
+// channelCreateEntry extends ChannelEntry with the signing secret, returned only at creation.
 type channelCreateEntry struct {
-	channelEntry
-	SigningSecret string `json:"signing_secret"`
+	ChannelEntry
+	SigningSecret string `json:"signing_secret,omitempty" doc:"Webhook channels only. Shown once, at creation."`
 }
 
 type rotateSecretResponse struct {
@@ -143,7 +145,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	entry := channelEntry{
+	entry := ChannelEntry{
 		ID:        row.ID.String(),
 		OrgID:     row.OrgID.String(),
 		Name:      row.Name,
@@ -155,7 +157,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 	writeLocation(w, r, row.ID.String())
 	if req.Type == "webhook" {
 		writeJSON(w, http.StatusCreated, channelCreateEntry{
-			channelEntry:  entry,
+			ChannelEntry:  entry,
 			SigningSecret: secret,
 		})
 	} else {
@@ -200,7 +202,7 @@ func (srv *Server) getChannelHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, channelEntry{
+	writeJSON(w, http.StatusOK, ChannelEntry{
 		ID:        row.ID.String(),
 		OrgID:     row.OrgID.String(),
 		Name:      row.Name,
@@ -224,9 +226,9 @@ func (srv *Server) listChannelsHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items := make([]channelEntry, len(rows))
+	items := make([]ChannelEntry, len(rows))
 	for i, row := range rows {
-		items[i] = channelEntry{
+		items[i] = ChannelEntry{
 			ID:        row.ID.String(),
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,
@@ -320,7 +322,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, channelEntry{
+	writeJSON(w, http.StatusOK, ChannelEntry{
 		ID:        updated.ID.String(),
 		OrgID:     updated.OrgID.String(),
 		Name:      updated.Name,

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount, flushPromises, VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import WatchlistDetailView from '@/views/WatchlistDetailView.vue'
 
 let mockRouteParams: Record<string, string> = { id: 'wl-123' }
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
@@ -134,7 +135,6 @@ async function clickTestId(testId: string) {
 let wrapper: VueWrapper
 
 async function mountView() {
-  const { default: WatchlistDetailView } = await import('@/views/WatchlistDetailView.vue')
   wrapper = mount(WatchlistDetailView, {
     attachTo: document.body,
   })
@@ -347,6 +347,8 @@ describe('WatchlistDetailView', () => {
         '/orgs/{org_id}/watchlists/{id}',
         expect.objectContaining({
           params: { path: { org_id: TEST_ORG_ID, id: 'wl-123' } },
+          // Only the changed field is sent: an omitted field keeps its value.
+          body: { name: 'Updated Name' },
         }),
       )
 

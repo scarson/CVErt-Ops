@@ -30,12 +30,12 @@ type createSSOBody struct {
 }
 
 type patchSSOBody struct {
-	DisplayName  *string  `json:"display_name"`
-	IssuerURL    *string  `json:"issuer_url"`
-	ClientID     *string  `json:"client_id"`
-	ClientSecret *string  `json:"client_secret"`
-	Scopes       []string `json:"scopes"`
-	Enabled      *bool    `json:"enabled"`
+	DisplayName  *string  `json:"display_name,omitempty"`
+	IssuerURL    *string  `json:"issuer_url,omitempty"`
+	ClientID     *string  `json:"client_id,omitempty"`
+	ClientSecret *string  `json:"client_secret,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+	Enabled      *bool    `json:"enabled,omitempty"`
 }
 
 type ssoResponse struct {
@@ -228,7 +228,8 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	writeLocation(w, r, row.ID.String())
+	// An org has a single SSO connection, addressed by the collection URL itself.
+	w.Header().Set("Location", strings.TrimSuffix(r.URL.Path, "/"))
 	writeJSON(w, http.StatusCreated, resp)
 }
 

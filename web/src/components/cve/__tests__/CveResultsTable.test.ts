@@ -4,6 +4,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import type { components } from '@/lib/api/schema'
+import CveResultsTable from '@/components/cve/CveResultsTable.vue'
 
 type CVEItem = components['schemas']['CVEItem']
 
@@ -37,7 +38,6 @@ function makeCVE(overrides: Partial<CVEItem> = {}): CVEItem {
 }
 
 async function mountTable(props = {}) {
-  const { default: CveResultsTable } = await import('@/components/cve/CveResultsTable.vue')
   return mount(CveResultsTable, {
     props: {
       items: [],

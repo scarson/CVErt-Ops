@@ -72,6 +72,8 @@ describe('auth store', () => {
         email: 'test@example.com',
         display_name: 'Test',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [{ org_id: orgId, name: 'My Org', role: 'admin' }],
       }
       auth.setActiveOrg(orgId)
@@ -85,6 +87,8 @@ describe('auth store', () => {
         email: 'test@example.com',
         display_name: 'Test',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [{ org_id: 'org-a', name: 'Org A', role: 'member' }],
       }
       auth.setActiveOrg('nonexistent-org')
@@ -100,6 +104,8 @@ describe('auth store', () => {
         email: 'test@example.com',
         display_name: 'Test',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
       auth.setActiveOrg('some-org-id')
@@ -371,6 +377,8 @@ describe('auth store', () => {
         email: 'test@example.com',
         display_name: 'Test',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
       auth.setActiveOrg('some-org')
@@ -402,6 +410,8 @@ describe('auth store', () => {
         email: 'test@example.com',
         display_name: 'Test',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
       auth.setActiveOrg('some-org')

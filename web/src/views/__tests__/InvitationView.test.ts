@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import InvitationView from '@/views/InvitationView.vue'
 
 let mockRouteParams: Record<string, string> = { token: 'test-token-abc' }
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
@@ -30,7 +31,6 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 async function mountInvitation() {
-  const { default: InvitationView } = await import('@/views/InvitationView.vue')
   return mount(InvitationView)
 }
 
@@ -98,6 +98,8 @@ describe('InvitationView', () => {
         email: 'sam@example.com',
         display_name: 'Sam Carter',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 
@@ -162,6 +164,8 @@ describe('InvitationView', () => {
         email: 'sam@example.com',
         display_name: 'Sam Carter',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [{ org_id: 'org-old', name: 'Old Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-old')
@@ -179,6 +183,8 @@ describe('InvitationView', () => {
           email: 'sam@example.com',
           display_name: 'Sam Carter',
           is_site_admin: false,
+          force_password_reset: false,
+          has_password: true,
           orgs: [
             { org_id: 'org-old', name: 'Old Org', role: 'admin' },
             { org_id: 'org-new', name: 'Acme Corp', role: 'member' },
@@ -213,6 +219,8 @@ describe('InvitationView', () => {
         email: 'sam@example.com',
         display_name: 'Sam Carter',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 
@@ -242,6 +250,8 @@ describe('InvitationView', () => {
         email: 'sam@example.com',
         display_name: 'Sam Carter',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 
@@ -271,6 +281,8 @@ describe('InvitationView', () => {
         email: 'sam@example.com',
         display_name: 'Sam Carter',
         is_site_admin: false,
+        force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 

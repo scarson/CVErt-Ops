@@ -31,14 +31,14 @@ type createReportBody struct {
 }
 
 type patchReportBody struct {
-	Name              *string   `json:"name"`
-	ScheduledTime     *string   `json:"scheduled_time"`
-	Timezone          *string   `json:"timezone"`
-	SeverityThreshold *string   `json:"severity_threshold"`
-	WatchlistIDs      *[]string `json:"watchlist_ids"`
-	SendOnEmpty       *bool     `json:"send_on_empty"`
-	AISummary         *bool     `json:"ai_summary"`
-	Status            *string   `json:"status"`
+	Name              *string   `json:"name,omitempty"`
+	ScheduledTime     *string   `json:"scheduled_time,omitempty"`
+	Timezone          *string   `json:"timezone,omitempty"`
+	SeverityThreshold *string   `json:"severity_threshold,omitempty"`
+	WatchlistIDs      *[]string `json:"watchlist_ids,omitempty"`
+	SendOnEmpty       *bool     `json:"send_on_empty,omitempty"`
+	AISummary         *bool     `json:"ai_summary,omitempty"`
+	Status            *string   `json:"status,omitempty"`
 }
 
 type reportEntry struct {
@@ -519,9 +519,9 @@ func (srv *Server) listReportChannelsHandler(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	items := make([]channelEntry, len(rows))
+	items := make([]ChannelEntry, len(rows))
 	for i, row := range rows {
-		items[i] = channelEntry{
+		items[i] = ChannelEntry{
 			ID:        row.ID.String(),
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,

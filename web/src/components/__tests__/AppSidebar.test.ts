@@ -34,6 +34,9 @@ vi.mock('vue-sonner', () => ({
 }))
 
 import client from '@/lib/api/client'
+import AppSidebar from '@/components/AppSidebar.vue'
+import OrgSwitcher from '@/components/OrgSwitcher.vue'
+import UserMenu from '@/components/UserMenu.vue'
 
 // Renders the dropdown contents inline so the logout item can be clicked without
 // driving the menu's open/close interaction.
@@ -52,6 +55,8 @@ function seedAuthStore() {
     email: 'sam@example.com',
     display_name: 'Sam Carter',
     is_site_admin: false,
+    force_password_reset: false,
+    has_password: true,
     orgs: [
       { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
       { org_id: 'org-2', name: 'Globex Inc', role: 'member' },
@@ -70,7 +75,6 @@ describe('AppSidebar', () => {
   describe('navigation links', () => {
     it('renders all main navigation links', async () => {
       seedAuthStore()
-      const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
       const text = wrapper.text()
@@ -80,7 +84,6 @@ describe('AppSidebar', () => {
 
     it('renders settings navigation links', async () => {
       seedAuthStore()
-      const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
       const text = wrapper.text()
@@ -91,7 +94,6 @@ describe('AppSidebar', () => {
     it('renders admin navigation links for site admins', async () => {
       const auth = seedAuthStore()
       auth.user!.is_site_admin = true
-      const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
       const text = wrapper.text()
@@ -102,7 +104,6 @@ describe('AppSidebar', () => {
 
     it('hides admin navigation links for non-admins', async () => {
       seedAuthStore()
-      const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
       const text = wrapper.text()
@@ -112,7 +113,6 @@ describe('AppSidebar', () => {
     it('links point to correct routes', async () => {
       const auth = seedAuthStore()
       auth.user!.is_site_admin = true
-      const { default: AppSidebar } = await import('@/components/AppSidebar.vue')
       const wrapper = mount(AppSidebar)
 
       const links = wrapper.findAll('a')
@@ -134,7 +134,6 @@ describe('OrgSwitcher', () => {
 
   it('shows active org name', async () => {
     seedAuthStore()
-    const { default: OrgSwitcher } = await import('@/components/OrgSwitcher.vue')
     const wrapper = mount(OrgSwitcher)
 
     expect(wrapper.text()).toContain('Acme Corp')
@@ -147,6 +146,8 @@ describe('OrgSwitcher', () => {
       email: 'sam@example.com',
       display_name: 'Sam Carter',
       is_site_admin: false,
+      force_password_reset: false,
+      has_password: true,
       orgs: [
         { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
         { org_id: 'org-2', name: 'Globex Inc', role: 'member' },
@@ -154,12 +155,18 @@ describe('OrgSwitcher', () => {
     }
     // No active org set
 
-    const { default: OrgSwitcher } = await import('@/components/OrgSwitcher.vue')
     const wrapper = mount(OrgSwitcher)
 
     expect(wrapper.text()).toContain('Select org')
   })
 })
+
+// Finds a user menu item by its label.
+function menuItem(wrapper: ReturnType<typeof mount>, label: string) {
+  const item = wrapper.findAll('[data-testid="menu-item"]').find((b) => b.text().includes(label))
+  if (!item) throw new Error(`no menu item labelled ${label}`)
+  return item
+}
 
 describe('UserMenu', () => {
   beforeEach(() => {
@@ -170,7 +177,6 @@ describe('UserMenu', () => {
 
   it('shows user display name', async () => {
     seedAuthStore()
-    const { default: UserMenu } = await import('@/components/UserMenu.vue')
     const wrapper = mount(UserMenu)
 
     expect(wrapper.text()).toContain('Sam Carter')
@@ -178,7 +184,6 @@ describe('UserMenu', () => {
 
   it('shows user email', async () => {
     seedAuthStore()
-    const { default: UserMenu } = await import('@/components/UserMenu.vue')
     const wrapper = mount(UserMenu)
 
     expect(wrapper.text()).toContain('sam@example.com')
@@ -191,10 +196,9 @@ describe('UserMenu', () => {
       response: { status: 200 } as Response,
     })
     seedAuthStore()
-    const { default: UserMenu } = await import('@/components/UserMenu.vue')
     const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
 
-    await wrapper.find('[data-testid="menu-item"]').trigger('click')
+    await menuItem(wrapper, 'Log out').trigger('click')
     await flushPromises()
 
     expect(mockPush).toHaveBeenCalledWith('/login')
@@ -212,10 +216,9 @@ describe('UserMenu', () => {
       response: { status: 503 } as Response,
     })
     const auth = seedAuthStore()
-    const { default: UserMenu } = await import('@/components/UserMenu.vue')
     const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
 
-    await wrapper.find('[data-testid="menu-item"]').trigger('click')
+    await menuItem(wrapper, 'Log out').trigger('click')
     await flushPromises()
 
     expect(mockPush).not.toHaveBeenCalled()
@@ -223,5 +226,15 @@ describe('UserMenu', () => {
       'Could not reach the server. Check your connection and try again.',
     )
     expect(auth.isAuthenticated).toBe(true)
+  })
+
+  it('navigates to the account page', async () => {
+    seedAuthStore()
+    const { default: UserMenu } = await import('@/components/UserMenu.vue')
+    const wrapper = mount(UserMenu, { global: { stubs: dropdownStubs } })
+
+    await menuItem(wrapper, 'Account').trigger('click')
+
+    expect(mockPush).toHaveBeenCalledWith({ name: 'account' })
   })
 })

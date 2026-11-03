@@ -181,6 +181,50 @@ func TestSSOConnection_CRUD(t *testing.T) {
 	}
 }
 
+// TestCreateSSO_LocationHeader verifies that the 201 Location header names the
+// org's single SSO connection resource, which GET answers.
+func TestCreateSSO_LocationHeader(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newSSOServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "sso-location@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "sso-location@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, reg.OrgID)
+	if err := db.UpdateOrgTier(ctx, orgID, "enterprise"); err != nil {
+		t.Fatalf("update tier: %v", err)
+	}
+	srv.tierCache.Invalidate(orgID)
+
+	createBody := `{"display_name":"Acme IdP","issuer_url":"https://idp.acme.com","client_id":"acme-client","client_secret":"super-secret","scopes":["openid","email"]}`
+	resp := doCreateSSO(t, ctx, ts, token, reg.OrgID, createBody)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create: got %d, want 201. Body: %s", resp.StatusCode, body)
+	}
+
+	want := "/api/v1/orgs/" + reg.OrgID + "/sso"
+	if loc := resp.Header.Get("Location"); loc != want {
+		t.Fatalf("Location = %q, want %q", loc, want)
+	}
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+want, nil)
+	req.Header.Set("Cookie", "access_token="+token)
+	getResp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	if err != nil {
+		t.Fatalf("get Location: %v", err)
+	}
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	if getResp.StatusCode != http.StatusOK {
+		t.Errorf("GET Location: got %d, want 200", getResp.StatusCode)
+	}
+}
+
 func TestSSOConnection_TierGating(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

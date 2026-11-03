@@ -2108,6 +2108,101 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 
 ---
 
+## OpenAPI Success Statuses + Regenerated API Artifacts
+
+> **Date:** 2026-11-02
+> **Branch:** `claude/openapi-statuses-and-artifacts-712d84` (cut from `fix/openapi-async-status`, which documents the 202 endpoints)
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| 201 Created documented on create endpoints | `internal/api/openapi_spec.go` | `DefaultStatus: http.StatusCreated` on the 9 spec-only create operations whose Chi handlers answer 201 with a Location header: orgs, API keys, channels, groups, reports, saved searches, SSO, watchlists, watchlist items. huma had documented 200 for each. |
+| Status regression table | `internal/api/openapi_test.go` | `TestOpenAPISpec_SuccessStatusMatchesHandler` now covers every 201, 202 and 204 operation in the spec (35 operations, 36 success responses: alert-rule create documents both 201 and 202), including the huma-native `/auth/register` (201) and `DELETE /auth/mfa/methods/{method}` (204). A `noBody` flag asserts that 204 responses document no body. |
+| Regenerated spec | `openapi.json` | Last regenerated 2026-03-16 (`df7ec56`). Adds 11 paths (`/auth/mfa/*`, `/admin/reload-config`, `/admin/security-events`) and 23 component schemas; removes 3. |
+| Regenerated frontend types | `web/src/lib/api/schema.d.ts` | `npm run generate-api` from the new spec. |
+| Test fixtures | `web/src/{components,router,stores,views}/__tests__/*.test.ts` | 27 `/auth/me` fixtures gain `force_password_reset: false`, now a required field of the response type. Type-only; no behaviour change. |
+
+### Key implementation decisions
+
+- **204 endpoints needed no spec change** — huma documents 204 by default for an operation whose output has no `Body` field, and the 19 documented Chi operations whose handlers answer 204 already declare body-less outputs. They are in the test table to guard against a `Body` being added later. Further 201/204 handlers sit on routes with no spec operation (MFA-requirement set and removal, SCIM config create and delete, SCIM v2 users and groups) and are not covered; see the gotcha below.
+- **Removed schemas are renames, not lost endpoints** — `UpdateMemberRoleBody` and `UpdateMemberRoleResponseBody` became `PatchMemberBody` and `PatchMemberResponseBody` when member PATCH gained `active` and `scim_exempt` (`d7e4774`); `SavedSearchExecuteResponse` became `ListResponseCVEItem` when saved-search execute moved to `writeList` (`055b1d0`).
+
+### Gotchas discovered
+
+- **Chi routes with no spec operation** — `/orgs/{org_id}/members/{user_id}/{reset-mfa,force-password-reset,require-mfa}`, `/orgs/{org_id}/mfa-settings`, `/orgs/{org_id}/sso/scim*`, `/orgs/{org_id}/sso/link`, the OAuth/OIDC redirect routes and the SCIM v2 protocol routes (`/orgs/{org_id}/scim/v2/*`) are not in `openapi.json`, so the success-status check cannot cover them.
+- **vitest timeouts under load** — with other sessions and Docker running, 7-9 web unit tests time out at the 5 s default (a different set each run); all 430 pass with `--testTimeout=30000`.
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec*` pass; failed first with 9 create endpoints documenting 200
+- **Frontend:** `npm run type-check` clean, `npm run lint` clean, `vitest run` 430/430 (with 30 s timeout)
+- **Code review:** codex (gpt-6.1-sol, high) — no contract defects; regenerated both artifacts in scratch byte-for-byte identical; two low findings on this entry's coverage counts (fixed)
+
+---
+
+## OpenAPI Operations for Undocumented Chi Routes
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/hungry-khayyam-68844e` (cut from `claude/openapi-statuses-and-artifacts-712d84`, which contains `fix/openapi-async-status`; neither was merged into `dev` yet)
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| Org MFA administration operations | `internal/api/openapi_spec.go` | `registerOrgMFASpecOps`: member `reset-mfa` and `force-password-reset` (200), `require-mfa` POST (201) and DELETE (204), org `PATCH /mfa-settings` (200). |
+| SCIM config operations | `internal/api/openapi_spec.go` | `registerSCIMConfigSpecOps`: `/orgs/{org_id}/sso/scim` POST (201) / GET / PATCH / DELETE (204), `rotate-token`, `groups`, `groups/{id}/mapping`. Reuses the handler DTOs in `scim_admin.go`. |
+| SSO identity-link operation | `internal/api/openapi_spec.go` | `GET /orgs/{org_id}/sso/link` documented as 302 Found with a `Location` header and no body. |
+| Test coverage | `internal/api/openapi_test.go` | 9 paths added to `expectedPaths`; 5 operations added to `TestOpenAPISpec_SuccessStatusMatchesHandler` (two 201 without Location, two 204, one 302 with Location). |
+| Regenerated artifacts | `openapi.json`, `web/src/lib/api/schema.d.ts` | 9 new paths. |
+
+### Key implementation decisions
+
+- **No Location header on the two 201 operations** — `adminRequireMFAHandler` and `createSCIMConfigHandler` do not call `writeLocation`; neither creates a resource with its own URL.
+- **OAuth/OIDC redirect routes and SCIM v2 protocol routes left out** — whether they belong in the spec is a decision for Sam.
+
+### Gotchas discovered
+
+- **`/sso/link` errors are plain text** — the handler reports errors with `http.Error` (text/plain), while huma documents the default error as `application/problem+json`.
+- **PATCH bodies document optional fields as required** — huma treats a field without `omitempty` as required, so `PatchSCIMConfigBody` and `PatchSCIMGroupMappingBody` (and the existing `PatchSSOBody`, `PatchAlertRuleBody`, `PatchReportBody`, `PatchWatchlistBody`, `PatchChannelBody`) list every field as required.
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec` and `TestOpenAPISpec_SuccessStatusMatchesHandler` failed first on the 9 missing paths, then pass; all `OpenAPI|Spec` tests in `internal/api` pass
+- **Lint:** `golangci-lint run ./internal/api/...` 0 issues
+- **Frontend:** `npm run generate-api`, `npm run type-check` and `npm run lint` clean
+
+---
+
+## OpenAPI: Embedded DTO Fields, Optional Signing Secret, SSO Location
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/hungry-khayyam-68844e`
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| Embedded DTO fields documented | `internal/api/channels.go`, `internal/api/deliveries.go` (+ call sites) | `channelEntry` and `deliveryEntry` renamed to `ChannelEntry` and `DeliveryEntry`. huma skips unexported struct fields, embedded ones included, so `ChannelCreateEntry` documented only `signing_secret` and `DeliveryDetail` only `payload`. `encoding/json` promotes them either way, so response bodies are unchanged. |
+| `signing_secret` optional | `internal/api/channels.go` | `json:"signing_secret,omitempty"`: `createChannelHandler` sends it for webhook channels only. A webhook secret is always 64 hex characters, so `omitempty` never drops one. |
+| SSO create Location | `internal/api/sso.go` | `Location` is now `/api/v1/orgs/{org_id}/sso`, the org's single SSO connection. It was `/sso/{id}`, a route that does not exist. |
+| Tests | `internal/api/openapi_test.go`, `internal/api/sso_test.go` | `TestOpenAPISpec_EmbeddedFieldsDocumented`; `TestCreateSSO_LocationHeader` checks the header and that GET on it answers 200. |
+
+### Gotchas discovered
+
+- **`gofmt -r ... -w` over a package rewrites every file** — it reformats files that were not gofmt-clean and writes LF into a CRLF checkout. Restore the files with no content change (`git diff --ignore-cr-at-eol --stat`, then `git restore` with exclusions).
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec_EmbeddedFieldsDocumented` failed first (missing promoted fields, `signing_secret` required), then passes; all `OpenAPI|Spec` tests pass; `go vet` clean
+- **Integration:** after a Docker Desktop restart (the engine had answered 500 on `/info`), `TestCreateSSO_LocationHeader` failed against the old `writeLocation` call with Location `/sso/{id}`, then passed with the fix. The 148 `internal/api` tests matching `SSO|Channel|Deliver|Report|AlertRule|OpenAPI|Spec` pass.
+- **Lint:** `golangci-lint run ./internal/api/...` 0 issues; web `type-check` and `lint` clean
+- **Code review:** codex (gpt-6.1-sol, high) on `origin/dev...HEAD` after merging `dev`; regenerated artifacts matched byte-for-byte. Two findings, both fixed with failing tests first:
+  - `PatchSCIMConfigBody` and `PatchSCIMGroupMappingBody` marked every field required. Their fields are now `omitempty` (request-only structs, so no response changes); `TestOpenAPISpec_PatchBodiesOptional` covers them. The SCIM admin handler tests pass.
+  - `GET /orgs/{org_id}/sso/link` documented a bodyless 302, but `http.Redirect` writes a short `text/html` body for GET. The 302 now documents a `text/html` string body, and the success-status table checks the media type.
+
+---
+
 ## Homelab Integration Phase 1 — Safe-to-Deploy Fixes
 
 > **Date:** 2026-11-02
@@ -2310,6 +2405,311 @@ Cleared the critical and all high `npm audit` advisories in `web/` with in-range
 - `npm run type-check`, `npm run test:unit -- --run --testTimeout=30000` (430 tests), `npm run lint`, `npm run build`: all pass with clean output.
 - `npm audit`: 20 moderate, 0 high, 0 critical (was 24 / 10 / 1).
 - Go suite not run (no Go changes).
+
+---
+
+## Test Reliability — Rate-Limit Spacing and Vitest Cold Imports
+
+**Date:** 2026-11-03
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Rate-limit test | `internal/feed/generic/adapter_test.go` | `TestAdapter_RateLimiting` delays the first request 150ms in the transport and asserts the second request arrives at least 499ms after the first `Fetch` began |
+| Vitest component imports | 24 files under `web/src/**/__tests__/` | Components and views are imported statically at the top of the file instead of by `await import()` inside each test |
+| Router guard tests | `web/src/router/__tests__/guards.test.ts` | A top-level `await` loads every lazily imported route view while the file is collected |
+
+### Key implementation decisions
+
+- **The limiter was correct; the assertion measured the wrong interval.** With rate 2 and burst 1, `rate.Limiter` guarantees that the second `Wait` returns 500ms after the first `Wait` began. The test compared arrival times at the server, and that gap shrinks by however much longer the first request took to arrive, for example the first TCP dial on a loaded host. On Windows it measured 397.5ms. The 1ms allowance covers `durationFromTokens` truncating its float result to whole nanoseconds.
+- **Cold import cost belongs in collection, not in a test.** Vitest applies `testTimeout` to each test but not to collecting a file, so a static import or a top-level `await` keeps the per-file cold transform and import out of every test's budget. The global timeout was left at the 5s default.
+
+### Gotchas discovered
+
+- **A timed-out vitest test keeps running.** Vitest cannot cancel the test's async body. In `WatchlistDetailView.test.ts` the timed-out loading test later finished its import, mounted the view and consumed the next test's `mockResolvedValueOnce`. Its `mockImplementation(() => new Promise(() => {}))` also stayed in place, because `vi.clearAllMocks()` clears calls, not implementations. The 404 test's request then hung and it showed "Loading watchlist...".
+- **Every slow vitest test was the first in its file** (24 of 24 over 500ms; 1.4–3.8s on an idle machine), so the timeouts moved between files from run to run.
+
+### Quality checks
+
+- **Rate-limit test:** a 150ms first-request delay reproduced the failure (347.9ms) with the old assertion. The fixed test passes 20 of 20 runs and `-race`, and fails (152ms) with the limiter set 1000x faster. golangci-lint: 0 issues.
+- **Vitest:** at `--testTimeout=1000`, the old tests reproduced the WatchlistDetailView cascade and the guards timeout, and the fixed tests pass. On an idle machine, summed test time fell from 83.5s to 11.1s and the slowest test from 3835ms to 276ms. With three full suites run at once: the old tests failed 35 tests per run (slowest 12.5s); the fixed tests passed all 430 in each run (slowest 648ms). `type-check` and `lint` are clean.
+- **Full Go suite:** not run; the Docker engine returned HTTP 500 for the whole session.
+
+---
+
+## Alert Evaluator — Candidate Cap No Longer Drops Batch and EPSS Matches
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/alert-candidate-cap-batch`
+> **Source:** investigation of whether batch/EPSS evaluation loses matches when a rule hits the 5,000-row candidate cap
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Chunked evaluation | `internal/alert/evaluator.go` | `evaluateRuleInChunks` runs `evaluateRule` over the run's changed CVE IDs in chunks of at most `candidateCap` IDs; `evaluateBatchPath` calls it for both the batch and EPSS paths. One run row per rule per run, with summed counts |
+| Spec | `PLAN.md` §10.2 | The cap bounds a single prefilter query; batch and EPSS evaluate in chunks; dry-run keeps the fail-closed cap |
+
+### Key implementation decisions
+
+- **Chunk instead of holding the cursor or adding a per-rule cursor**: a rule that overflows the cap on one run overflows on every later run, so holding the global cursor would stall every rule, and a per-rule cursor would still never let the broad rule fire. Chunking produces a complete evaluation, which is what the fail-closed rule protects. Activation already pages the corpus the same way.
+- **Chunk size is `candidateCap`**: the prefilter returns at most one row per candidate ID (the only DSL join is the 1:1 `cve_search_index`), so a chunk of that size cannot overflow. If a later join breaks that, the chunk returns partial and the run is recorded as partial rather than silently dropping CVEs.
+
+### Gotchas discovered
+
+- **The EPSS path had no fallback**: realtime evaluation covers most batch-path changes, but EPSS score changes do not alter `material_hash` and never trigger realtime evaluation. The daily EPSS update touches most of the corpus, so a rule such as `epss_score >= 0.1` was partial on every run and never fired.
+- **A rule error still advances the cursor**: a statement timeout or other error on one rule loses that run's CVEs for that rule. Not addressed here.
+- **PLAN §10.2's partial metric and log entry are not emitted**: after this change only dry-run can return partial, and it reports `Partial` to the caller.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/alert`
+- **New tests:** `TestEvaluateBatch_RuleMatchingMoreThanCandidateCap`, `TestEvaluateEPSS_RuleMatchingMoreThanCandidateCap` (5,100 matching CVEs; failed with 0 events before the fix)
+
+---
+
+## Web SPA Toolchain Majors — TypeScript 6, npm-run-all2 9 (2026-11-03)
+
+Took the two major bumps that the npm audit triage left as follow-ups, both approved by Sam. The full record, including the TypeScript 7 assessment, is the "Follow-up: TypeScript 6 and npm-run-all2 9" section of `dev/2026-11-03-web-npm-audit-triage.md`.
+
+| Area | Files | Change |
+|------|-------|--------|
+| Manifest | `web/package.json` | `typescript` `~6.0.3`, `npm-run-all2` `^9.0.4`, `engines.node` `^24.15.0 \|\| >=26.0.0`, `overrides` letting `openapi-typescript` accept the root `typescript` |
+| Lockfile | `web/package-lock.json` | `typescript` 6.0.3, `npm-run-all2` 9.0.4 and its dependencies (`pidtree` 1, `read-package-json-fast` 6, `which` 7, ...); nothing else moved |
+
+### Key implementation decisions
+
+- **No TypeScript 7, no 6 + 7 side-by-side install**: `vue-tsc` (Volar) and `typescript-eslint` need the 6.0 API, and `tsc` 7.0.2 reports `TS2307` on every `.vue` import, so it could only check the build config files. Revisit when 7.1 is stable and both tools support it.
+- **`overrides` for `openapi-typescript`**: its latest release (7.13.0) declares peer `typescript ^5.x`, which makes `npm ci` fail with ERESOLVE. Codegen output is byte-identical under 6.0.3. Remove the override when upstream widens the peer range (openapi-ts/openapi-typescript#2723).
+- **Node floor raised to `npm-run-all2` 9's range**, without the Node 22 branch.
+- **`npm audit fix` still not applied**: it clears no advisory and would move ESLint's cache chain to versions one release below the keyv/cacheable worm's compromised ones.
+
+### Gotchas discovered
+
+- `npm install` only warns about the `openapi-typescript` peer conflict; `npm ci` fails on it. Check `npm ci` after any peer-range change.
+- Piping `npm ci` into `head` kills the install partway through and leaves a broken tree (`npm ls` then shows `typescript@` with no version).
+- npm 11.19.1 (bundled with Node 24.22.2) warns about `vue-demi`'s postinstall not being covered by `allowScripts`.
+
+### Quality checks
+
+- With Node 24.22.2, from cold caches: `npm run type-check`, `npm run test:unit -- --run --testTimeout=30000` (430 tests), `npm run lint`, `npm run build`: all pass with clean output.
+- `npm ci` succeeds on npm 11.19.1 and 11.4.2; `npm run generate-api` output unchanged; `npm audit` unchanged (20 moderate).
+- Go suite not run (no Go changes).
+
+---
+
+## Test Containers — Owner-Liveness Sweep and Start-Failure Cleanup
+
+**Date:** 2026-11-03
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Owner labels and sweep | `internal/testutil/owner.go` | `ownedContainer` labels each container with the test process's PID and start time; the first call in a test binary force-removes labelled containers whose owner has exited |
+| Postgres start | `internal/testutil/postgres.go` | `startPostgres` (extracted from `NewTestDB`) applies the owner labels and registers termination before checking `Run`'s error |
+| SMTP start | `internal/testutil/smtp.go` | `NewTestSMTP` applies the owner labels and registers termination before checking `Run`'s error |
+| Analysis | `docs/testing/testcontainers-leftover-containers.md` | Why containers piled up with Ryuk disabled, and the sweep's safety rules |
+
+### Key implementation decisions
+
+- **The owner is identified by PID and process start time**, so a reused PID is not mistaken for the original owner. A container whose owner is running is never removed, which makes the sweep safe while other sessions run tests on the same daemon.
+- **Fail safe:** a container without both labels, or whose owner's start time cannot be read, is left alone. A failed sweep is logged, not a test failure.
+- **testcontainers' own Docker client** (`testcontainers.NewDockerClientWithOpts`) lists and removes containers, so the sweep reaches the daemon the containers were started on. `github.com/moby/moby/client`, `github.com/shirou/gopsutil/v4` and `github.com/testcontainers/testcontainers-go` moved from indirect to direct in `go.mod` at the same versions; both new direct modules were checked as maintained.
+- **Terminate errors stay logged**, as before, rather than failing the test as `testcontainers.CleanupContainer` would.
+
+### Gotchas discovered
+
+- **A passing `internal/alert` run never leaked.** The report that it left ~15 containers came from `org.testcontainers.sessionId`, which is a hash of the parent `go test` process. Every package in one `go test ./...` shares it, and the leftovers were from packages killed by the 10-minute timeout.
+- **testcontainers prints its container lifecycle lines only with `-v`.** A non-verbose log cannot show which container a run created.
+
+### Quality checks
+
+- **Unit and integration tests:** `TestOwnerAlive`, `TestOrphaned` (7 cases), `TestRemoveOrphanedContainers` and `TestStartPostgres_RemovesContainerThatFailsToStart` pass; the whole `internal/testutil` package passes (93s). Break-tests: with the PID-reuse check, the orphan check or the error-path ordering removed, the matching test fails (the last reproduced a leaked container that failed to start).
+- **End to end:** `go test -v -timeout=9s -run '^TestEvaluatorBatch$' ./internal/alert/` was killed mid-test and left its container running with owner labels; the next `internal/alert` run removed it and left no labelled container.
+- **golangci-lint:** 0 issues on `internal/testutil`.
+
+---
+
+## Digest Re-scan Window — CVEs Committed After a Digest's Query
+
+> **Date:** 2026-11-03
+> **Commit:** `3a4331a` on `fix/digest-window-gap`
+> **Source:** follow-up to the alert evaluator cursor re-scan window, which covers the same flaw in the batch and EPSS evaluators
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Schema | `migrations/000048_scheduled_report_rescan_sent_cves.*.sql` | `scheduled_reports.rescan_sent_cves JSONB NOT NULL DEFAULT '[]'`, CHECK that it is an array |
+| Queries | `internal/store/queries/cves.sql`, `scheduled_reports.sql` | `DigestCVEs` returns `date_modified_canonical` and leaves out the `(cve_id, date_modified_canonical)` pairs in a JSONB argument. `AdvanceReport` writes the list with the cursor |
+| Store | `internal/store/notification_delivery.go`, `scheduled_report.go` | `DigestSentCVE`, new `sent` parameters on `DigestCVEs` and `AdvanceReport` (nil stores `[]`) |
+| Worker | `internal/notify/digest.go` | Cursor read before the query, scan from `digestRescanWindow` (2 minutes) before `last_run_at`, `sentInRescanWindow` keeps sent versions the next scan reaches |
+| Docs | `dev/implementation-pitfalls.md` NOTIFY-21, `PLAN.md` §12.1 | Digest re-scan window rule |
+
+### Key implementation decisions
+
+- **Overlap plus a sent-version list, not overlap alone**: digests have no `alert_events` uniqueness, so a plain overlap repeats CVEs across digests.
+- **Key is `(cve_id, date_modified_canonical)`, not `material_hash`**: a CVE that changes and changes back gets its old hash again under a new timestamp and must appear again.
+- **Exclusion in SQL before `LIMIT 500`**: filtering in Go after the limit would shrink a full digest below 500 while eligible CVEs exist.
+- **Previous entries still inside the window are carried over**, so the list stays correct if two runs fall within the window of each other.
+- **A malformed list is logged and treated as empty**, so it costs repeats in one digest rather than stopping the report.
+
+### Gotchas discovered
+
+- **DB-16 hit again**: a semicolon in the new migration's comment broke every integration test with `migration failed in line 0`.
+- **A pending digest delivery blocks the next digest for the same report and channel**: `InsertDigestDelivery` is `ON CONFLICT (report_id, channel_id) WHERE status = 'pending' DO NOTHING`. Multi-run digest tests must complete the first delivery (`completeDigestDeliveries`), or the second run's insert is a no-op and the test fails for the wrong reason. In production this also drops a digest's CVEs while the previous digest is still retrying; not addressed here.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/notify`, `internal/store`
+- **Break-tests:** both new notify tests fail on `dev` (late CVE in 0 digests, re-modified CVE missed); `TestWorker_Digest_RescanWindowSkipsSentVersions` fails with the sent-version exclusion disabled (unchanged CVE in 2 digests)
+- **New tests:** `TestWorker_Digest_IncludesCVECommittedAfterQuery`, `TestWorker_Digest_RescanWindowSkipsSentVersions`, `TestDigestCVEs_ExcludesSentVersions`, `TestAdvanceReport_NilSentStoresEmptyArray`, `TestSentInRescanWindow` (fails with the carry-over loop removed), `TestSentInRescanWindow_NothingSent`; sent-list assertion added to `TestAdvanceReport`
+
+---
+
+---
+
+## OpenAPI — PATCH Request Bodies Mark No Field Required
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/patch-bodies-optional`
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| PATCH DTO tags | `internal/api/alert_rules.go`, `channels.go`, `reports.go`, `sso.go`, `watchlists.go` | Every field of `patchAlertRuleBody`, `patchChannelBody`, `patchReportBody`, `patchSSOBody` and `patchWatchlistBody` has `,omitempty` in its `json` tag, as the SCIM PATCH bodies already had |
+| Spec test | `internal/api/openapi_test.go` | `TestOpenAPISpec_PatchBodiesOptional` covers all seven PATCH body schemas |
+| Watchlist rename | `web/src/views/WatchlistDetailView.vue` | The PATCH body carries only the changed fields instead of `null` for the unchanged ones |
+
+### Key implementation decisions
+
+- **`omitempty` only changes the spec here.** huma marks a field required when its `json` tag has no `omitempty`. These structs are only decoded (`decodeJSON`) and used as spec-only request bodies, never encoded, so the tag does not change runtime behavior.
+- **The fields are no longer nullable in the spec.** huma marks a pointer field nullable only when it is required, so the generated TypeScript types changed from `string | null` (required) to `string` (optional). A JSON `null` still decodes to a nil pointer, which the handlers treat as omitted.
+- **Response DTOs needed no nullability change.** Pointer fields without `omitempty` (for example `ScimGroupItem.external_id`) are already `["string", "null"]`, slices are nullable by default in huma 2.37, `json.RawMessage` gets the any (`{}`) schema, and the one map field (`TierResponse.limits`) is never nil.
+
+### Gotchas discovered
+
+- **`patchWatchlistBody.GroupID **string` cannot tell `null` from omission.** `encoding/json` sets the outer pointer to nil for a JSON `null`, so `{"group_id": null}` keeps the current group instead of clearing it, contrary to the struct's doc comment. Not fixed here. Before this change the SPA sent `group_id: null` on every rename, which would have cleared the group if the decoding had worked as documented.
+
+### Quality checks
+
+- **Spec test:** failed for the five schemas before the tag change; passes after.
+- **Go:** `go test ./internal/api/ -run '(?i)patch|OpenAPISpec'` passes; golangci-lint: 0 issues on `internal/api`.
+- **Frontend:** `generate-api`, `type-check` and `lint` clean; `WatchlistDetailView.test.ts` 21/21, including a new assertion on the PATCH body that failed before the view change.
+
+## Alert Evaluator — Rule Failures No Longer Let the Cursor Skip CVEs
+
+> **Date:** 2026-11-03
+> **Branch:** `fix/alert-rule-error-cursor`
+> **Source:** follow-up to the candidate cap fix: a rule that errors or fails to compile also let the batch/EPSS cursor move past CVEs it never evaluated
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Uncompilable rules | `internal/alert/evaluator.go` | `failUncompilableRule` logs the compile failure and moves the rule from `active` to `error` in the realtime, batch and EPSS paths, matching the activation scan |
+| Held cursor | `internal/alert/evaluator.go` | `evaluateBatchPath` keeps the previous cursor when any rule errors or returns partial; `evalCursor.HeldRuns` in `cursor_json` counts consecutive held runs, capped by `batchMaxHeldRuns` (30) and `epssMaxHeldRuns` (3) |
+| Spec | `PLAN.md` §10.3 | Cursor advancement rule for the batched and EPSS-specific jobs |
+
+### Key implementation decisions
+
+- **Hold the global cursor, not a per-rule cursor**: no migration, and re-evaluating the held window is idempotent for healthy rules. A per-rule cursor would isolate the extra work but needs a schema change, activation and re-activation changes, and still needs a cap for a rule that fails on every run.
+- **Cap by consecutive held runs, not cursor age**: after the worker has been down for days, the cursor is already old; an age cap would advance past the first failure without any retry.
+- **A held run still sets `last_success_at`**: the scheduler (`internal/ingest/scheduler.go`) enqueues the next run when `last_success_at + Interval` has passed. Leaving it unset would re-enqueue the daily EPSS job on every scheduler tick and use up its held runs within minutes.
+- **No automatic disable after repeated failures**: a short database outage would fail every rule, and re-enabling runs activation with delivery suppressed, so missed CVEs would never notify.
+
+### Quality checks
+
+- **golangci-lint:** 0 issues on `internal/alert`
+- **New tests:** `TestEvaluateBatch_RuleErrorDoesNotSkipCVEs`, `TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap`, `TestEvaluator_UncompilableRuleSetToError` (batch and realtime subtests). The first two failed before the fix; the realtime subtest was written together with the fix.
+- **Tests run locally:** only the new tests, because of Docker contention on the dev host; CI runs the full `internal/alert` package.
+
+## SPA Sign-In Steps, MFA Enrollment and MFA Management
+
+**Date:** 2026-11-03
+**Branch:** `claude/spa-mfa-sign-in`
+**Design:** `dev/plans/2026-11-03-spa-mfa-sign-in-design.md` (sign-in steps on `/login`, shared enrollment component, `/settings/account`, six backend session fixes)
+
+### What was built
+
+| Part | Files | Description |
+|---|---|---|
+| Session cookie hygiene | `internal/api/auth.go`, `auth_mfa.go`, `auth_password_reset.go`, `oauth_*.go` | Pending logins expire `access_token`/`refresh_token`; every full-token issuance and logout expire `mfa_pending_token`/`mfa_enroll_token` (`clearSignInCookies`) |
+| Typed sign-in 401s | `internal/api/contract.go` (`typedProblem`), `auth.go`, `auth_mfa.go` | `urn:cvert:error:pending-session-invalid`, `invalid-code`, `invalid-password`, `enrollment-expired` |
+| Backend fixes | `auth_mfa.go`, `auth.go`, `auth_password_reset.go` | TOTP setup renews the pending token; `/auth/me` reports `has_password`; forgot-password reset clears `force_password_reset` |
+| Tests | `internal/api/auth_session_test.go` | 16 integration tests for the above |
+| API client | `web/src/lib/api/client.ts`, `problems.ts` | Refresh skip list limited to sign-in endpoints; typed 401s pass through; 403 `password_change_required` handler |
+| Auth store | `web/src/stores/auth.ts` | `pendingSteps`, `mfaMethods`, `signInEmail`, `signInNotice`; step actions (challenge, verify, forced change, finish, expire, cancel) |
+| Sign-in steps | `web/src/views/LoginView.vue`, `web/src/components/auth/*` | MFA check, forced password change and mandatory enrollment rendered on `/login` |
+| MFA components | `web/src/components/mfa/*` | `MfaEnrollment` (TOTP QR via `uqr`, secret key, email OTP), `RecoveryCodesDisplay` |
+| Account page | `web/src/views/AccountView.vue`, `web/src/components/account/*`, router, `UserMenu.vue`, `main.ts` | Password change, MFA methods, recovery codes; forced-reset routing |
+
+### Key implementation decisions
+
+- **Steps stay on `/login`.** The pending token is an HttpOnly cookie and `methods` exist only in the login response, so a reload restarts at the password form.
+- **Enrollment completes sign-in.** Confirm responses carry no `pending`; enrollment is always the last step, so a successful restricted confirm means full cookies are set.
+- **Another user's pending cookie is ignored, not rejected**, following scarson/CVErt-Ops#145 (merged while this branch was open). This branch's first draft rejected the request instead.
+- **`/auth/me` now refreshes on 401.** Before, a reload after the 15-minute access token expired showed a user with a valid refresh token as logged out.
+- **`uqr`** renders the QR as an SVG data URL in an `<img>` (no `v-html`); dependency check passed (zero dependencies, MIT, no advisories).
+
+### Gotchas discovered
+
+- **The OpenAPI generator is `GENERATE_OPENAPI=1 go test ./internal/api -run '^TestOpenAPISpec$'`.** The served `/api/v1/openapi.json` alone lacks the spec-only Chi operations.
+- **`npm install` on this host strips `libc` fields from `package-lock.json`** that a newer npm wrote; restore the lockfile instead of committing that churn.
+- **The dev stack did not start** (`postgres:18-alpine` rejects the compose data mount; `serve` hung after migrations), so no in-browser check was possible.
+
+### Quality checks
+
+- **Go:** the 178 tests in the touched auth test files passed before the merge with dev (666 s); after the merge, 24 targeted tests (this branch's 16 plus the #143/#145 tests and the full TOTP, enrollment and forced-reset flows) pass. `golangci-lint` on `internal/api` reported only a G101 false positive on a problem-type URN, suppressed inline. Full `internal/api` suite and post-merge lint left to CI at Sam's request (host under load).
+- **Web:** `npm run type-check` and `npm run lint` clean; before the merge the full unit suite passed (528 tests, no warnings); after the merge the 18 touched test files pass (205 tests).
+
+---
+
+## Dependabot Triage and Consolidated Dependency Updates (2026-11-03)
+
+Triage of 24 open Dependabot PRs. Most were months old and either superseded on `dev` or pinned versions that no longer cleared current advisories. The live updates were applied together on one branch from `dev` at the versions current supply-chain checks support.
+
+| Dependabot PR(s) | Outcome |
+|------|-------|
+| #114 postcss, #115 js-cookie, #122 undici, #127 js-yaml/redocly, #128 vite, #135 shell-quote (security, base `main`) | Closed: superseded by #142 on `dev` |
+| #101 typescript 6.0.3 | Closed: superseded by #148 on `dev` (adds the `openapi-typescript` peer override that `npm ci` needs) |
+| #102 eslint-plugin-oxlint 1.61.0 | Closed: already on `dev` |
+| #126 x/net, #130 and #111 x/crypto, #131 safeurl, #134 grpc, #106 env, #110 gjson, #112 go-mail, #113 genai | Superseded by the Go module commit on this branch (newer versions) |
+| #123 checkout, #132 setup-node, #133 setup-go, #129 golangci-lint-action | Superseded by the actions commit (newer releases where available) |
+| #100 @tailwindcss/vite, #103 vue-router, #104 plugin-vue | Superseded by the web commit |
+
+### What changed
+
+| Area | Files | Change |
+|------|-------|--------|
+| Go toolchain | `go.mod` | `go 1.26.10`: govulncheck found reachable stdlib advisories in go1.26.2 (crypto/x509, crypto/tls, net/http, net/textproto, html/template) |
+| Go modules | `go.mod`, `go.sum` | x/crypto v0.58.0, x/net v0.62.0, x/text v0.43.0, grpc v1.83.2, safeurl v0.2.5, moby/go-archive v0.3.3, genai v1.77.0, go-mail v0.7.3, gjson v1.20.0, env v11.4.1 |
+| CI | `.github/workflows/ci.yml` | checkout v7.0.1, setup-go v7.0.0, setup-node v7.1.0, golangci-lint-action v9.3.0, pinned by commit SHA |
+| Web | `web/package.json`, `web/package-lock.json` | tailwindcss and @tailwindcss/vite 4.2.4, vue-router 5.0.6, @vitejs/plugin-vue 6.0.10 |
+
+### Key implementation decisions
+
+- **govulncheck 47 → 5 reachable advisories.** Remaining: chi `middleware.RealIP` (GO-2026-5774/5775/5777) and docker/docker (GO-2026-4883/4887, no fixed release, test helpers only).
+- **chi not bumped.** chi 5.3+ only deprecates `RealIP`, without changing its behaviour, and staticcheck SA1019 would fail lint. The actual bug: `RealIP` trusts `X-Forwarded-For`/`True-Client-IP` from any client, and `TRUSTED_PROXIES` (PLAN.md rate-limiting section, documented in `docs/deployment/`) is parsed but never used, so clients can spoof the IP the auth rate limiter keys on. This needs its own fix.
+- **safeurl v0.2.5:** `errors.go` is unchanged since v0.2.2, so the tests' exact refusal text still matches. v0.2.4 adds missing IPv6 blocklist ranges.
+- **grpc floor is 1.83.1, not Dependabot's 1.82.1:** GO-2026-6348 is fixed only in 1.83.1.
+- **vue-router 5.0.6, not 5.0.7:** 5.0.7 moves to Babel 8 through `@babel/generator` 8.1.0 (one day old), which pins a `@jridgewell/gen-mapping` beta. Tailwind 4.3 and vue-router 5.4 were skipped because they change default font stack and scroll restoration.
+- **x/net v0.62.0** also fixes x/net/html advisories GO-2026-6860 and GO-2026-6866, which govulncheck did not list.
+
+### Gotchas discovered
+
+- CI (`.github/workflows/ci.yml`) runs only for pushes and PRs to `main`, so PRs to `dev` get no CI; local targeted tests gate them.
+- CI's govulncheck step fails on every run since 2026-07-05: its docker/docker exception has expired.
+- Local Node 24.14.0 is below the `web/` engines floor (`^24.15.0 || >=26.0.0`, from #148), so every npm command warns EBADENGINE.
+
+### Quality checks
+
+- `go build ./...`, `go vet ./...`, `golangci-lint run`: clean.
+- Go tests: `internal/notify`, `internal/feed/...`, `internal/auth`, `internal/ai`, `internal/config`, `internal/testutil`, `cmd/cvert-ops`, and `internal/api -run 'Channel|Webhook|Login|Password|APIKey|MFA|Register'` pass. Full suite not run.
+- Web: type-check, 430 unit tests, lint and build pass; `npm ci` with npm 11.4.2 succeeds.
 
 ---
 

@@ -4,7 +4,7 @@ Analysis of 2026-11-03. It covers why `postgres:18-alpine` test containers pile 
 
 ## Background
 
-`testutil.NewTestDB` (`internal/testutil/postgres.go`) starts one Postgres container per test and terminates it in `t.Cleanup`. Ryuk, the testcontainers reaper, normally removes containers whose test process has died, but on this Windows development host it exits with status 1 about once a second after a Docker Desktop restart. The tests therefore run with Ryuk disabled, and nothing removes a container that its own test did not terminate.
+At the time of this analysis, `testutil.NewTestDB` (`internal/testutil/postgres.go`) started one Postgres container per test and terminated it in `t.Cleanup`. It now starts one container per test binary, clones a migrated template database per test, and terminates the container from `testutil.Run`, which each package's `TestMain` calls; the findings below are stated for the per-test model, with the shared-container consequences noted. Ryuk, the testcontainers reaper, normally removes containers whose test process has died, but on this Windows development host it exits with status 1 about once a second after a Docker Desktop restart. The tests therefore run with Ryuk disabled, and nothing removes a container that its own test did not terminate.
 
 ## Findings
 
@@ -36,9 +36,11 @@ When `go test -timeout` expires, the test binary panics and exits. Tests that ha
 
 The leftovers counted after one day of full-suite runs fit this: 27 from one full run in which four packages timed out, and 6 from an `internal/api` rerun that timed out. The extra containers slow the shared daemon, which pushes the slowest packages past the timeout again.
 
+With one shared container per test binary, a binary killed by the timeout, or by a panic, skips `testutil.Run`'s cleanup and leaves exactly one Postgres container, plus any SMTP container it started.
+
 ### A container that fails to start is never removed
 
-`tcpostgres.Run` can return a container together with an error, for example when the readiness wait times out on a busy daemon. `NewTestDB` called `t.Fatalf` before registering `Terminate`, so that container was never removed. `NewTestSMTP` (`internal/testutil/smtp.go`) had the same ordering. Both helpers now register termination for any non-nil container before checking the error, which is the order testcontainers documents for `testcontainers.CleanupContainer`. `TestStartPostgres_RemovesContainerThatFailsToStart` uses a wait strategy that cannot succeed and checks that no container remains.
+`tcpostgres.Run` can return a container together with an error, for example when the readiness wait times out on a busy daemon. `NewTestDB` called `t.Fatalf` before registering `Terminate`, so that container was never removed. `NewTestSMTP` (`internal/testutil/smtp.go`) had the same ordering. `NewTestSMTP` now registers termination for any non-nil container before checking the error, which is the order testcontainers documents for `testcontainers.CleanupContainer`. The shared Postgres start, `startCluster`, terminates a non-nil container before returning `Run`'s error. `TestStartCluster_RemovesContainerThatFailsToStart` uses a wait strategy that cannot succeed and checks that no container remains.
 
 ## Fix: owner-liveness sweep
 
@@ -49,7 +51,7 @@ Every container started by the test helpers carries two labels that name the tes
 | `cvert-ops.test.owner-pid` | the test binary's process ID |
 | `cvert-ops.test.owner-start` | that process's start time, in milliseconds since the Unix epoch |
 
-Before a test binary starts its first container, it lists containers carrying these labels and force-removes each one whose owner has exited. An owner has exited when no process has that PID, or when the process with that PID started at a different time (the PID was reused). The code is in `internal/testutil/owner.go`; `startPostgres` and `NewTestSMTP` apply it. A failed sweep is logged with `t.Logf` and does not fail the test.
+Before a test binary starts its first container, it lists containers carrying these labels and force-removes each one whose owner has exited. An owner has exited when no process has that PID, or when the process with that PID started at a different time (the PID was reused). The code is in `internal/testutil/owner.go`. `startCluster` applies it through `ownerOption`, and `NewTestSMTP` through `ownedContainer`. A failed sweep does not fail the test: `ownerOption` reports it on stderr. Every binary in `go test ./...` sweeps when it starts its container, so concurrent sweeps race for the same orphans; a removal that fails because the container is already gone (404) or already being removed (409) counts as done.
 
 This was checked end to end. `go test -v -timeout=9s -run '^TestEvaluatorBatch$' ./internal/alert/` was killed mid-test and left its container running with the owner labels. The next `go test ./internal/alert/` run removed that container before starting its own, then terminated its own, leaving no labelled containers.
 
@@ -60,7 +62,7 @@ Properties:
 - **Self-healing.** Leftovers from a timed-out run are removed by the next run of any package that uses the helpers. No manual step and no Ryuk are needed.
 - **One-time cleanup.** Containers created before the labels existed carry no owner labels, so the sweep ignores them. Remove those once by hand after confirming that no test process owns them.
 
-Process lookup uses `github.com/shirou/gopsutil/v4`, and the container list and removal use the testcontainers Docker client (`github.com/moby/moby/client`). testcontainers-go already depends on both.
+Process lookup uses `github.com/shirou/gopsutil/v4`, and the container list and removal use the testcontainers Docker client (`github.com/moby/moby/client`). testcontainers-go already depends on both. Error classification uses `github.com/containerd/errdefs`, which the Docker client already depends on.
 
 ## Related
 

@@ -149,8 +149,9 @@ func removeOrphanedContainers(ctx context.Context) error {
 }
 
 // alreadyRemoved reports whether a container removal failed only because the
-// container is gone. Every test binary sweeps when it starts its first
-// container, so another binary's sweep often removes an orphan first.
+// container is gone or another removal of it is in progress (409 Conflict).
+// Every test binary sweeps when it starts its first container, so another
+// binary's sweep often removes an orphan first.
 func alreadyRemoved(err error) bool {
-	return cerrdefs.IsNotFound(err)
+	return cerrdefs.IsNotFound(err) || cerrdefs.IsConflict(err)
 }

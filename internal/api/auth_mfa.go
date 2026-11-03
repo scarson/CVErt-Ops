@@ -60,7 +60,7 @@ func (srv *Server) mfaChallengeHandler(ctx context.Context, input *mfaChallengeI
 
 	claims, err := srv.validatePendingToken(input.MFAPendingToken, "mfa_challenge")
 	if err != nil {
-		return nil, huma.Error401Unauthorized("invalid or expired pending token")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "invalid or expired pending token")
 	}
 
 	if input.Body.Method == "totp" {
@@ -170,16 +170,16 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 
 	claims, err := srv.validatePendingToken(input.MFAPendingToken, "mfa_challenge")
 	if err != nil {
-		return nil, huma.Error401Unauthorized("invalid or expired pending token")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "invalid or expired pending token")
 	}
 
 	// Verify token_version matches DB (prevents stale tokens after admin actions).
 	user, err := srv.store.GetUserByID(ctx, claims.UserID)
 	if err != nil || user == nil {
-		return nil, huma.Error401Unauthorized("invalid session")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "invalid session")
 	}
 	if int(user.TokenVersion) != claims.TokenVersion {
-		return nil, huma.Error401Unauthorized("session invalidated — please log in again")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "session invalidated — please log in again")
 	}
 
 	// Verify the code based on method.
@@ -235,7 +235,7 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 				Details:  map[string]any{"method": input.Body.Method},
 			})
 		}
-		return nil, huma.Error401Unauthorized("invalid verification code")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeInvalidCode, "invalid verification code")
 	}
 
 	// MFA verified — clear lockout counter.
@@ -282,8 +282,6 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 		return nil, err
 	}
 	out.SetCookie = cookies
-	// Clear the pending token cookie.
-	out.SetCookie = append(out.SetCookie, clearPendingTokenCookie(srv.cfg.CookieSecure))
 
 	// Handle remember-device if requested.
 	if input.Body.RememberDevice != nil && *input.Body.RememberDevice {
@@ -337,7 +335,8 @@ func (srv *Server) reissuePendingTokenCookies(claims *auth.PendingClaims) ([]str
 	return pendingTokenCookies(token, srv.cfg.CookieSecure, srv.cfg.MFAPendingTokenTTL), nil
 }
 
-// issueFullAuthTokens creates and returns access + refresh token cookies.
+// issueFullAuthTokens creates and returns access + refresh token cookies, plus
+// expirations for the sign-in cookies the completed sign-in no longer needs.
 func (srv *Server) issueFullAuthTokens(ctx context.Context, user *generated.User) ([]string, error) {
 	secret := srv.jwtSecret()
 	jti := uuid.New()
@@ -355,7 +354,10 @@ func (srv *Server) issueFullAuthTokens(ctx context.Context, user *generated.User
 		slog.ErrorContext(ctx, "mfa: create refresh token", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}
-	return authCookies(accessToken, refreshToken, srv.cfg.CookieSecure), nil
+	return append(
+		authCookies(accessToken, refreshToken, srv.cfg.CookieSecure),
+		clearSignInCookies(srv.cfg.CookieSecure)...,
+	), nil
 }
 
 // verifyTOTP validates a TOTP code against the user's enrolled credential.
@@ -536,7 +538,7 @@ type mfaTOTPSetupOutput struct {
 // short-lived enrollment cookie. The secret is NOT persisted to the DB
 // until the user confirms with a valid code.
 func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupInput) (*mfaTOTPSetupOutput, error) {
-	userID, _, err := srv.resolveEnrollmentUserID(ctx, input.AccessToken, input.MFAPendingToken)
+	userID, pending, err := srv.resolveEnrollmentUserID(ctx, input.AccessToken, input.MFAPendingToken)
 	if err != nil {
 		return nil, err
 	}
@@ -598,6 +600,17 @@ func (srv *Server) mfaTOTPSetupHandler(ctx context.Context, input *mfaTOTPSetupI
 	out.Body.QRCodeURI = key.URL()
 	out.Body.Secret = key.Secret()
 	out.SetCookie = enrollmentTokenCookies(enrollToken, srv.cfg.CookieSecure)
+
+	// Reissue the pending token with a fresh TTL so scanning the QR code does not
+	// run the restricted session out before confirm.
+	if pending != nil {
+		cookies, reissueErr := srv.reissuePendingTokenCookies(pending)
+		if reissueErr != nil {
+			slog.ErrorContext(ctx, "totp-setup: reissue pending token", "error", reissueErr)
+		} else {
+			out.SetCookie = append(out.SetCookie, cookies...)
+		}
+	}
 	return out, nil
 }
 
@@ -628,14 +641,14 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 
 	// Parse enrollment token.
 	if input.MFAEnrollToken == "" {
-		return nil, huma.Error401Unauthorized("enrollment token required — call setup first")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeEnrollmentExpired, "enrollment token required — call setup first")
 	}
 	enrollClaims, err := auth.ParseEnrollmentToken(input.MFAEnrollToken, srv.jwtSecret(), srv.jwtPreviousSecretBytes())
 	if err != nil {
-		return nil, huma.Error401Unauthorized("invalid or expired enrollment token")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeEnrollmentExpired, "invalid or expired enrollment token")
 	}
 	if enrollClaims.UserID != userID {
-		return nil, huma.Error401Unauthorized("enrollment token user mismatch")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeEnrollmentExpired, "enrollment token user mismatch")
 	}
 
 	// Decrypt the provisional secret.
@@ -667,7 +680,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 				Details:  map[string]any{"method": "totp", "reason": "invalid_code"},
 			})
 		}
-		return nil, huma.Error401Unauthorized("invalid TOTP code")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeInvalidCode, "invalid TOTP code")
 	}
 
 	// Check not already enrolled (race condition guard).
@@ -856,7 +869,7 @@ func (srv *Server) mfaEmailOTPConfirmHandler(ctx context.Context, input *mfaEmai
 				Details:  map[string]any{"method": "email_otp", "reason": "invalid_code"},
 			})
 		}
-		return nil, huma.Error401Unauthorized("invalid verification code")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeInvalidCode, "invalid verification code")
 	}
 
 	// Persist the credential (no secret for email OTP).
@@ -1136,7 +1149,7 @@ func (srv *Server) reauthenticatePassword(ctx context.Context, userID uuid.UUID,
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 	if !pwOK {
-		return nil, huma.Error401Unauthorized("current password incorrect")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypeInvalidPassword, "current password incorrect")
 	}
 	return user, nil
 }
@@ -1205,7 +1218,6 @@ func (srv *Server) resolveEnrollmentUserID(ctx context.Context, accessToken, pen
 		}
 	}
 
-	// Fall back to pending enrollment token.
 	if pendingToken != "" {
 		pending, err := srv.validateEnrollmentPendingToken(ctx, pendingToken)
 		if err != nil {
@@ -1219,18 +1231,19 @@ func (srv *Server) resolveEnrollmentUserID(ctx context.Context, accessToken, pen
 
 // validateEnrollmentPendingToken checks that the pending token's next step is
 // "mfa_enrollment_required" and that its token_version matches the DB
-// (prevents stale tokens after admin actions).
+// (prevents stale tokens after admin actions). Failures are typed so a client
+// in the middle of sign-in knows to start over.
 func (srv *Server) validateEnrollmentPendingToken(ctx context.Context, pendingToken string) (*auth.PendingClaims, error) {
 	claims, err := srv.validatePendingToken(pendingToken, "mfa_enrollment_required")
 	if err != nil {
-		return nil, huma.Error401Unauthorized("authentication required")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "invalid or expired pending token")
 	}
 	user, err := srv.store.GetUserByID(ctx, claims.UserID)
 	if err != nil || user == nil {
-		return nil, huma.Error401Unauthorized("authentication required")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "authentication required")
 	}
 	if int(user.TokenVersion) != claims.TokenVersion {
-		return nil, huma.Error401Unauthorized("session invalidated — please log in again")
+		return nil, typedProblem(http.StatusUnauthorized, problemTypePendingSessionInvalid, "session invalidated — please log in again")
 	}
 	return claims, nil
 }
@@ -1297,13 +1310,8 @@ func (srv *Server) clearEnrollmentPending(ctx context.Context, claims *auth.Pend
 		slog.ErrorContext(ctx, "mfa: enrollment complete, re-read user", "error", err)
 		return nil, fmt.Errorf("re-read user: %w", err)
 	}
-	authCookies, tokErr := srv.issueFullAuthTokens(ctx, user)
-	if tokErr != nil {
-		return nil, tokErr
-	}
-	// Clear both enrollment and pending cookies, add auth cookies.
-	cookies := append(authCookies, clearPendingTokenCookie(srv.cfg.CookieSecure))
-	return cookies, nil
+	// issueFullAuthTokens also expires the pending and enrollment cookies.
+	return srv.issueFullAuthTokens(ctx, user)
 }
 
 // buildMFARequiredReasons returns the list of reasons why MFA is required

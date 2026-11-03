@@ -134,21 +134,69 @@ describe('refresh middleware', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('does not attempt refresh for auth/me endpoint', async () => {
+  it.each([
+    '/auth/logout',
+    '/auth/register',
+    '/auth/forgot-password',
+    '/auth/reset-password',
+    '/auth/verify-email',
+    '/auth/mfa/challenge',
+    '/auth/mfa/verify',
+  ])('does not attempt refresh for the sign-in endpoint %s', async (path) => {
     const { refreshMiddleware } = await import('../client')
     const fetchMock = vi.fn<typeof fetch>()
     globalThis.fetch = fetchMock
 
-    const meRequest = new Request('http://localhost/api/v1/auth/me')
-    const meResponse = new Response('unauthorized', { status: 401 })
-
+    const request = new Request(`http://localhost/api/v1${path}`, { method: 'POST' })
     const result = await refreshMiddleware.onResponse!({
-      ...middlewareParams(meRequest),
-      response: meResponse,
+      ...middlewareParams(request),
+      response: new Response('unauthorized', { status: 401 }),
     })
 
     expect((result as Response).status).toBe(401)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['/auth/me', '/auth/mfa/methods'])(
+    'refreshes and retries on 401 from the signed-in endpoint %s',
+    async (path) => {
+      const { refreshMiddleware } = await import('../client')
+      const fetchMock = vi.fn<typeof fetch>()
+      fetchMock.mockResolvedValueOnce(new Response('', { status: 200 }))
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      globalThis.fetch = fetchMock
+
+      const result = await refreshMiddleware.onResponse!({
+        ...middlewareParams(new Request(`http://localhost/api/v1${path}`)),
+        response: new Response('unauthorized', { status: 401 }),
+      })
+
+      expect(fetchMock.mock.calls[0]![0]).toBe('/api/v1/auth/refresh')
+      expect((result as Response).status).toBe(200)
+    },
+  )
+
+  it('does not refresh when the 401 carries a typed problem', async () => {
+    const { refreshMiddleware } = await import('../client')
+    const fetchMock = vi.fn<typeof fetch>()
+    globalThis.fetch = fetchMock
+
+    const request = new Request('http://localhost/api/v1/auth/mfa/recovery-codes/regenerate', {
+      method: 'POST',
+    })
+    const response = new Response(
+      JSON.stringify({ type: 'urn:cvert:error:invalid-password', status: 401, detail: 'current password incorrect' }),
+      { status: 401, headers: { 'Content-Type': 'application/problem+json' } },
+    )
+
+    const result = (await refreshMiddleware.onResponse!({
+      ...middlewareParams(request),
+      response,
+    })) as Response
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(result.status).toBe(401)
+    expect(await result.json()).toMatchObject({ type: 'urn:cvert:error:invalid-password' })
   })
 
   it('does not attempt refresh for the refresh endpoint itself', async () => {
@@ -233,6 +281,48 @@ describe('refresh middleware', () => {
     })
 
     expect((result as Response).status).toBe(401)
+  })
+})
+
+describe('password-change-required middleware', () => {
+  afterEach(async () => {
+    const { setPasswordChangeRequiredHandler } = await import('../client')
+    setPasswordChangeRequiredHandler(null)
+  })
+
+  function problemResponse(status: number, type: string) {
+    return new Response(JSON.stringify({ type, status, detail: 'x' }), {
+      status,
+      headers: { 'Content-Type': 'application/problem+json' },
+    })
+  }
+
+  it('calls the registered handler on a 403 password_change_required problem', async () => {
+    const { passwordChangeRequiredMiddleware, setPasswordChangeRequiredHandler } = await import('../client')
+    const handler = vi.fn<() => void>()
+    setPasswordChangeRequiredHandler(handler)
+
+    const result = (await passwordChangeRequiredMiddleware.onResponse!({
+      ...middlewareParams(new Request('http://localhost/api/v1/cves')),
+      response: problemResponse(403, 'password_change_required'),
+    })) as Response
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    // The caller can still read the problem body.
+    expect(await result.json()).toMatchObject({ type: 'password_change_required' })
+  })
+
+  it('ignores other 403 problems', async () => {
+    const { passwordChangeRequiredMiddleware, setPasswordChangeRequiredHandler } = await import('../client')
+    const handler = vi.fn<() => void>()
+    setPasswordChangeRequiredHandler(handler)
+
+    await passwordChangeRequiredMiddleware.onResponse!({
+      ...middlewareParams(new Request('http://localhost/api/v1/cves')),
+      response: problemResponse(403, 'urn:cvert:error:tier-limit'),
+    })
+
+    expect(handler).not.toHaveBeenCalled()
   })
 })
 

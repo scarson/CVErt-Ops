@@ -1,10 +1,10 @@
 <!-- ABOUTME: User avatar and dropdown menu in the sidebar footer. -->
-<!-- ABOUTME: Shows display name, email, and a logout option. -->
+<!-- ABOUTME: Shows display name, email, a link to account settings, and a logout option. -->
 
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { LogOut } from 'lucide-vue-next'
+import { LogOut, UserCog } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import { useAuthStore } from '@/stores/auth'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -72,6 +72,10 @@ const initials = computed(() => {
         </div>
       </DropdownMenuLabel>
       <DropdownMenuSeparator />
+      <DropdownMenuItem @click="router.push({ name: 'account' })">
+        <UserCog class="mr-2 size-4" aria-hidden="true" />
+        Account
+      </DropdownMenuItem>
       <DropdownMenuItem @click="handleLogout">
         <LogOut class="mr-2 size-4" aria-hidden="true" />
         Log out

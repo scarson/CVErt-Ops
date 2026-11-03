@@ -2794,6 +2794,8 @@ export interface components {
             display_name: string;
             email: string;
             force_password_reset: boolean;
+            /** @description False for accounts that sign in only through an external identity provider */
+            has_password: boolean;
             is_site_admin: boolean;
             orgs: components["schemas"]["OrgEntry"][] | null;
             user_id: string;

@@ -2108,6 +2108,101 @@ change, security events, periodic challenge cleanup worker, and full end-to-end 
 
 ---
 
+## OpenAPI Success Statuses + Regenerated API Artifacts
+
+> **Date:** 2026-11-02
+> **Branch:** `claude/openapi-statuses-and-artifacts-712d84` (cut from `fix/openapi-async-status`, which documents the 202 endpoints)
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| 201 Created documented on create endpoints | `internal/api/openapi_spec.go` | `DefaultStatus: http.StatusCreated` on the 9 spec-only create operations whose Chi handlers answer 201 with a Location header: orgs, API keys, channels, groups, reports, saved searches, SSO, watchlists, watchlist items. huma had documented 200 for each. |
+| Status regression table | `internal/api/openapi_test.go` | `TestOpenAPISpec_SuccessStatusMatchesHandler` now covers every 201, 202 and 204 operation in the spec (35 operations, 36 success responses: alert-rule create documents both 201 and 202), including the huma-native `/auth/register` (201) and `DELETE /auth/mfa/methods/{method}` (204). A `noBody` flag asserts that 204 responses document no body. |
+| Regenerated spec | `openapi.json` | Last regenerated 2026-03-16 (`df7ec56`). Adds 11 paths (`/auth/mfa/*`, `/admin/reload-config`, `/admin/security-events`) and 23 component schemas; removes 3. |
+| Regenerated frontend types | `web/src/lib/api/schema.d.ts` | `npm run generate-api` from the new spec. |
+| Test fixtures | `web/src/{components,router,stores,views}/__tests__/*.test.ts` | 27 `/auth/me` fixtures gain `force_password_reset: false`, now a required field of the response type. Type-only; no behaviour change. |
+
+### Key implementation decisions
+
+- **204 endpoints needed no spec change** — huma documents 204 by default for an operation whose output has no `Body` field, and the 19 documented Chi operations whose handlers answer 204 already declare body-less outputs. They are in the test table to guard against a `Body` being added later. Further 201/204 handlers sit on routes with no spec operation (MFA-requirement set and removal, SCIM config create and delete, SCIM v2 users and groups) and are not covered; see the gotcha below.
+- **Removed schemas are renames, not lost endpoints** — `UpdateMemberRoleBody` and `UpdateMemberRoleResponseBody` became `PatchMemberBody` and `PatchMemberResponseBody` when member PATCH gained `active` and `scim_exempt` (`d7e4774`); `SavedSearchExecuteResponse` became `ListResponseCVEItem` when saved-search execute moved to `writeList` (`055b1d0`).
+
+### Gotchas discovered
+
+- **Chi routes with no spec operation** — `/orgs/{org_id}/members/{user_id}/{reset-mfa,force-password-reset,require-mfa}`, `/orgs/{org_id}/mfa-settings`, `/orgs/{org_id}/sso/scim*`, `/orgs/{org_id}/sso/link`, the OAuth/OIDC redirect routes and the SCIM v2 protocol routes (`/orgs/{org_id}/scim/v2/*`) are not in `openapi.json`, so the success-status check cannot cover them.
+- **vitest timeouts under load** — with other sessions and Docker running, 7-9 web unit tests time out at the 5 s default (a different set each run); all 430 pass with `--testTimeout=30000`.
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec*` pass; failed first with 9 create endpoints documenting 200
+- **Frontend:** `npm run type-check` clean, `npm run lint` clean, `vitest run` 430/430 (with 30 s timeout)
+- **Code review:** codex (gpt-6.1-sol, high) — no contract defects; regenerated both artifacts in scratch byte-for-byte identical; two low findings on this entry's coverage counts (fixed)
+
+---
+
+## OpenAPI Operations for Undocumented Chi Routes
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/hungry-khayyam-68844e` (cut from `claude/openapi-statuses-and-artifacts-712d84`, which contains `fix/openapi-async-status`; neither was merged into `dev` yet)
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| Org MFA administration operations | `internal/api/openapi_spec.go` | `registerOrgMFASpecOps`: member `reset-mfa` and `force-password-reset` (200), `require-mfa` POST (201) and DELETE (204), org `PATCH /mfa-settings` (200). |
+| SCIM config operations | `internal/api/openapi_spec.go` | `registerSCIMConfigSpecOps`: `/orgs/{org_id}/sso/scim` POST (201) / GET / PATCH / DELETE (204), `rotate-token`, `groups`, `groups/{id}/mapping`. Reuses the handler DTOs in `scim_admin.go`. |
+| SSO identity-link operation | `internal/api/openapi_spec.go` | `GET /orgs/{org_id}/sso/link` documented as 302 Found with a `Location` header and no body. |
+| Test coverage | `internal/api/openapi_test.go` | 9 paths added to `expectedPaths`; 5 operations added to `TestOpenAPISpec_SuccessStatusMatchesHandler` (two 201 without Location, two 204, one 302 with Location). |
+| Regenerated artifacts | `openapi.json`, `web/src/lib/api/schema.d.ts` | 9 new paths. |
+
+### Key implementation decisions
+
+- **No Location header on the two 201 operations** — `adminRequireMFAHandler` and `createSCIMConfigHandler` do not call `writeLocation`; neither creates a resource with its own URL.
+- **OAuth/OIDC redirect routes and SCIM v2 protocol routes left out** — whether they belong in the spec is a decision for Sam.
+
+### Gotchas discovered
+
+- **`/sso/link` errors are plain text** — the handler reports errors with `http.Error` (text/plain), while huma documents the default error as `application/problem+json`.
+- **PATCH bodies document optional fields as required** — huma treats a field without `omitempty` as required, so `PatchSCIMConfigBody` and `PatchSCIMGroupMappingBody` (and the existing `PatchSSOBody`, `PatchAlertRuleBody`, `PatchReportBody`, `PatchWatchlistBody`, `PatchChannelBody`) list every field as required.
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec` and `TestOpenAPISpec_SuccessStatusMatchesHandler` failed first on the 9 missing paths, then pass; all `OpenAPI|Spec` tests in `internal/api` pass
+- **Lint:** `golangci-lint run ./internal/api/...` 0 issues
+- **Frontend:** `npm run generate-api`, `npm run type-check` and `npm run lint` clean
+
+---
+
+## OpenAPI: Embedded DTO Fields, Optional Signing Secret, SSO Location
+
+> **Date:** 2026-11-03
+> **Branch:** `claude/hungry-khayyam-68844e`
+
+### What was built
+
+| Change | Files | Description |
+|---|---|---|
+| Embedded DTO fields documented | `internal/api/channels.go`, `internal/api/deliveries.go` (+ call sites) | `channelEntry` and `deliveryEntry` renamed to `ChannelEntry` and `DeliveryEntry`. huma skips unexported struct fields, embedded ones included, so `ChannelCreateEntry` documented only `signing_secret` and `DeliveryDetail` only `payload`. `encoding/json` promotes them either way, so response bodies are unchanged. |
+| `signing_secret` optional | `internal/api/channels.go` | `json:"signing_secret,omitempty"`: `createChannelHandler` sends it for webhook channels only. A webhook secret is always 64 hex characters, so `omitempty` never drops one. |
+| SSO create Location | `internal/api/sso.go` | `Location` is now `/api/v1/orgs/{org_id}/sso`, the org's single SSO connection. It was `/sso/{id}`, a route that does not exist. |
+| Tests | `internal/api/openapi_test.go`, `internal/api/sso_test.go` | `TestOpenAPISpec_EmbeddedFieldsDocumented`; `TestCreateSSO_LocationHeader` checks the header and that GET on it answers 200. |
+
+### Gotchas discovered
+
+- **`gofmt -r ... -w` over a package rewrites every file** — it reformats files that were not gofmt-clean and writes LF into a CRLF checkout. Restore the files with no content change (`git diff --ignore-cr-at-eol --stat`, then `git restore` with exclusions).
+
+### Quality checks
+
+- **Tests:** `TestOpenAPISpec_EmbeddedFieldsDocumented` failed first (missing promoted fields, `signing_secret` required), then passes; all `OpenAPI|Spec` tests pass; `go vet` clean
+- **Integration:** after a Docker Desktop restart (the engine had answered 500 on `/info`), `TestCreateSSO_LocationHeader` failed against the old `writeLocation` call with Location `/sso/{id}`, then passed with the fix. The 148 `internal/api` tests matching `SSO|Channel|Deliver|Report|AlertRule|OpenAPI|Spec` pass.
+- **Lint:** `golangci-lint run ./internal/api/...` 0 issues; web `type-check` and `lint` clean
+- **Code review:** codex (gpt-6.1-sol, high) on `origin/dev...HEAD` after merging `dev`; regenerated artifacts matched byte-for-byte. Two findings, both fixed with failing tests first:
+  - `PatchSCIMConfigBody` and `PatchSCIMGroupMappingBody` marked every field required. Their fields are now `omitempty` (request-only structs, so no response changes); `TestOpenAPISpec_PatchBodiesOptional` covers them. The SCIM admin handler tests pass.
+  - `GET /orgs/{org_id}/sso/link` documented a bodyless 302, but `http.Redirect` writes a short `text/html` body for GET. The 302 now documents a `text/html` string body, and the success-status table checks the media type.
+
+---
+
 ## Homelab Integration Phase 1 — Safe-to-Deploy Fixes
 
 > **Date:** 2026-11-02

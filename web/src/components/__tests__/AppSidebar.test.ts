@@ -55,6 +55,7 @@ function seedAuthStore() {
     email: 'sam@example.com',
     display_name: 'Sam Carter',
     is_site_admin: false,
+    force_password_reset: false,
     orgs: [
       { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
       { org_id: 'org-2', name: 'Globex Inc', role: 'member' },
@@ -144,6 +145,7 @@ describe('OrgSwitcher', () => {
       email: 'sam@example.com',
       display_name: 'Sam Carter',
       is_site_admin: false,
+      force_password_reset: false,
       orgs: [
         { org_id: 'org-1', name: 'Acme Corp', role: 'owner' },
         { org_id: 'org-2', name: 'Globex Inc', role: 'member' },

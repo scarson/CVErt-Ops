@@ -195,14 +195,22 @@ SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
 FROM cves WHERE cve_id = $1;
 
 -- name: DigestCVEs :many
--- Fetch CVEs modified since $1, optionally filtered by severity.
+-- Fetch CVEs modified since $1, optionally filtered by severity, leaving out the
+-- CVE versions in $3: a JSON array of {"cve_id", "date_modified_canonical"}
+-- objects a previous digest of the report already sent.
 -- Sort: severity desc (critical > high > medium > low), CVSS v3 tiebreaker.
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, date_modified_canonical
 FROM cves
 WHERE date_modified_canonical > $1
   AND status NOT IN ('rejected', 'withdrawn')
   AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_to_recordset($3::jsonb) AS sent(cve_id text, date_modified_canonical timestamptz)
+      WHERE sent.cve_id = cves.cve_id
+        AND sent.date_modified_canonical = cves.date_modified_canonical
+  )
 ORDER BY
     CASE severity
         WHEN 'critical' THEN 1

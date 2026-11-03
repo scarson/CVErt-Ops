@@ -28,7 +28,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-25 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
-| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-20 | §5.C |
+| 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-21 | §5.C |
 | 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-44 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
@@ -1875,6 +1875,18 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 ---
 
+### NOTIFY-21: Digest Cursor Skips CVEs Committed After the Digest Query
+
+**The Flaw:** The scheduled digest worker (`internal/notify/digest.go`) selected CVEs with `date_modified_canonical > last_run_at`, then set `last_run_at` to the Go clock read after the query and the delivery inserts. The merge pipeline stamps `date_modified_canonical` with the merge worker's Go clock before its upsert and before its transaction commits (`internal/merge/pipeline.go`). A CVE that became visible after the digest query but carried a timestamp at or before the recorded `last_run_at` was left out of that digest and of every later one.
+
+**Why It Matters:** The CVE is silently missing from every digest for the report: no error, no partial run, and the cursor moves on. Three causes lead to it: a merge that commits while the digest runs, a merge stamped during the run (between the query and the clock read), and clock skew between the merge host and the digest host.
+
+**The Fix:** Read the next cursor before the query, and select from `digestRescanWindow` (2 minutes) before the stored cursor. Unlike the alert evaluator, a digest has no `alert_events` row to make re-processing idempotent, so a plain overlap would repeat CVEs across digests. `scheduled_reports.rescan_sent_cves` (migration 000048) holds the CVE versions, as `(cve_id, date_modified_canonical)` pairs, that a digest sent with timestamps inside the next run's window, and `DigestCVEs` leaves those versions out in SQL, before its 500-row limit. `AdvanceReport` writes the list in the same UPDATE as the cursor. The pair key, not `material_hash`, lets a CVE that changes and changes back appear again. Clock skew larger than the window still loses CVEs.
+
+**The Lesson:** NOTIFY-20 (batch/EPSS evaluator cursor skips rows stamped before it) is the same flaw in the alert evaluator, where re-processing a row is idempotent. When re-processing is not idempotent, an overlap window needs its own record of what was already sent. Taking the cursor before the query fixes only the gap caused by run duration, not commit lag or clock skew.
+
+---
+
 ### Review Checklist
 
 - [ ] Activation scan runs in silent mode (writes `alert_events` but does NOT enqueue notification deliveries)?
@@ -1894,6 +1906,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - [ ] `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)` with `ON CONFLICT DO NOTHING RETURNING id`?
 - [ ] Channel deletion pre-flight: DELETE /channels/{id} returns 409 if active alert rules reference the channel (NOTIFY-7)?
 - [ ] Timestamp-cursor scans start a re-scan window behind the stored cursor, and re-processing a row in that window is idempotent (NOTIFY-20)?
+- [ ] Digest scans start a re-scan window behind `last_run_at`, take the next cursor before the query, and leave out CVE versions already sent (NOTIFY-21)?
 
 ### See Also
 - Webhook SSRF and redirect bypass: see AUTH-17
@@ -2678,7 +2691,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §2 Database & Query | DB-1 – DB-25 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
-| §5 Notification & Alert | NOTIFY-1 – NOTIFY-20 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window |
+| §5 Notification & Alert | NOTIFY-1 – NOTIFY-21 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list |
 | §6 Architecture & Ops | ARCH-1 – ARCH-44 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 
 **Total: ~144 pitfall entries across 6 domains.**

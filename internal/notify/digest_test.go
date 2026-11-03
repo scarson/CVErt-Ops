@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/store"
 )
 
 func TestExpandSeverityThreshold(t *testing.T) {
@@ -223,5 +225,46 @@ func TestComputeNextRunAt(t *testing.T) {
 	_, err = ComputeNextRunAt("bad-time", "UTC")
 	if err == nil {
 		t.Error("ComputeNextRunAt with invalid time should return error")
+	}
+}
+
+func TestSentInRescanWindow(t *testing.T) {
+	t.Parallel()
+	cursor := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	floor := cursor.Add(-digestRescanWindow)
+
+	previous := []store.DigestSentCVE{
+		{CVEID: "CVE-PREV-IN", DateModifiedCanonical: floor.Add(time.Microsecond)},
+		{CVEID: "CVE-PREV-AT-FLOOR", DateModifiedCanonical: floor},
+	}
+	cves := []store.DigestCVEsRow{
+		{CveID: "CVE-RUN-IN", DateModifiedCanonical: cursor.Add(-time.Second)},
+		{CveID: "CVE-RUN-AFTER-CURSOR", DateModifiedCanonical: cursor.Add(time.Second)},
+		{CveID: "CVE-RUN-OLD", DateModifiedCanonical: floor.Add(-time.Hour)},
+	}
+
+	got := sentInRescanWindow(previous, cves, cursor)
+
+	// The next scan selects date_modified_canonical > floor, so only versions
+	// strictly after the floor are kept.
+	want := []store.DigestSentCVE{
+		{CVEID: "CVE-PREV-IN", DateModifiedCanonical: floor.Add(time.Microsecond)},
+		{CVEID: "CVE-RUN-IN", DateModifiedCanonical: cursor.Add(-time.Second)},
+		{CVEID: "CVE-RUN-AFTER-CURSOR", DateModifiedCanonical: cursor.Add(time.Second)},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sentInRescanWindow = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i].CVEID != want[i].CVEID || !got[i].DateModifiedCanonical.Equal(want[i].DateModifiedCanonical) {
+			t.Errorf("sentInRescanWindow[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSentInRescanWindow_NothingSent(t *testing.T) {
+	t.Parallel()
+	if got := sentInRescanWindow(nil, nil, time.Now()); len(got) != 0 {
+		t.Errorf("sentInRescanWindow(nil, nil) = %+v, want empty", got)
 	}
 }

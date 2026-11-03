@@ -1885,6 +1885,16 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 
 **The Lesson:** NOTIFY-20 (batch/EPSS evaluator cursor skips rows stamped before it) is the same flaw in the alert evaluator, where re-processing a row is idempotent. When re-processing is not idempotent, an overlap window needs its own record of what was already sent. Taking the cursor before the query fixes only the gap caused by run duration, not commit lag or clock skew.
 
+### NOTIFY-22: Digest Dropped While the Previous Digest Is Still Pending
+
+**The Flaw:** `InsertDigestDelivery` ended in `ON CONFLICT (report_id, channel_id) WHERE status = 'pending' AND kind = 'digest' DO NOTHING`, backed by the partial unique index `uq_deliveries_pending_digest`. `executeDigestReport` (`internal/notify/digest.go`) did not check whether the insert happened and advanced `last_run_at` regardless. While the previous digest for a report and channel waited out a retry backoff (SMTP down, webhook 503), the next digest's insert did nothing, and its CVEs were never sent to that channel. The same index broke retries: a pending-only index does not cover a `processing` row, so the next digest could be inserted while the previous one was in flight. If that send failed, `RetryDelivery` set the row back to `pending`, violated the index (23505), and left the row in `processing`. `ResetStuckDeliveries` updates every stuck row in one statement, so the same conflict then made each recovery run fail.
+
+**Why It Matters:** CVEs are silently missing from a channel's digests: no error, and the cursor moves on. It happens exactly when a channel is already having trouble, so the recipient loses the content that should catch them up after the outage.
+
+**The Fix:** Each digest run inserts its own delivery row (migration 000049 drops `uq_deliveries_pending_digest`). A digest is a dated, self-contained report with its own retry count, backoff, and delivery history. Merging the new payload into the pending row, as the alert debounce does, was rejected: the new CVEs would inherit the old row's attempt count and backoff, and the processing-row conflict would remain. Holding the cursor back for the affected channel was also rejected, because `last_run_at` belongs to the report, not to a channel.
+
+**The Lesson:** `ON CONFLICT DO NOTHING` treats the conflicting row as an equivalent replacement for the new one. That holds only when the two rows carry the same content. A debounce index on a `pending` status also has to account for every transition back into `pending` (retry, stuck-row reset, replay): each one can collide with a row inserted while the original was out of `pending`.
+
 ---
 
 ### Review Checklist

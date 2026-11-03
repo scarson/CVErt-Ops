@@ -875,21 +875,70 @@ func TestInsertDigestDelivery(t *testing.T) {
 		t.Errorf("report_id = %v, want %v", reportID, report.ID)
 	}
 
-	// Idempotent: second insert for same report+channel should not error (ON CONFLICT DO NOTHING).
+	// The next digest for the same report and channel gets its own row while the
+	// first is still pending, so neither digest's payload is lost.
 	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
-		t.Fatalf("InsertDigestDelivery (idempotent): %v", err)
+		t.Fatalf("InsertDigestDelivery (second digest): %v", err)
 	}
 
-	// Should still be exactly one row.
 	var count int
 	countRow := s.DB().QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2`,
+		`SELECT COUNT(*) FROM notification_deliveries WHERE channel_id=$1 AND report_id=$2 AND status='pending'`,
 		chanID, report.ID)
 	if err := countRow.Scan(&count); err != nil {
 		t.Fatalf("count digest deliveries: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 digest delivery row (idempotent), got %d", count)
+	if count != 2 {
+		t.Errorf("pending digest delivery rows = %d, want 2", count)
+	}
+}
+
+// TestRetryDigestDelivery_NewerDigestPending covers a digest delivery that fails
+// while the next digest for the same report and channel is already pending. The
+// retry must return the failed delivery to pending rather than leave it stuck in
+// processing.
+func TestRetryDigestDelivery_NewerDigestPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "DigestRetryOrg")
+	report := mustCreateScheduledReport(t, s, ctx, org.ID, "DigestRetryReport")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestRetryChan")
+
+	payload := json.RawMessage(`[{"cve_id":"CVE-2025-0001","severity":"HIGH"}]`)
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery (first digest): %v", err)
+	}
+	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimPendingDeliveries: %v", err)
+	}
+	var first *store.ClaimedDelivery
+	for i := range claimed {
+		if claimed[i].ReportID.Valid && claimed[i].ReportID.UUID == report.ID {
+			first = &claimed[i]
+		}
+	}
+	if first == nil {
+		t.Fatal("first digest delivery was not claimed")
+	}
+
+	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
+		t.Fatalf("InsertDigestDelivery (second digest): %v", err)
+	}
+	failure := store.DeliveryFailure{Detail: "smtp unavailable", ForOrg: "smtp unavailable"}
+	if err := s.RetryDelivery(ctx, first.ID, 60, failure); err != nil {
+		t.Fatalf("RetryDelivery: %v", err)
+	}
+
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT status FROM notification_deliveries WHERE id = $1`, first.ID).Scan(&status); err != nil {
+		t.Fatalf("scan first digest status: %v", err)
+	}
+	if status != "pending" {
+		t.Errorf("first digest status = %q, want pending", status)
 	}
 }
 

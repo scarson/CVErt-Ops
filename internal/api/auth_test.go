@@ -199,8 +199,10 @@ func TestLoginRateLimited(t *testing.T) {
 	doRegister(t, ctx, ts, "ratelimit@example.com", "test-password-1234")
 
 	// Replace the rate limiter with a tight burst of 2 AFTER registration.
+	// rate.Every(time.Hour) ensures tokens don't replenish between requests
+	// (each login includes argon2 hashing, so three logins can take >1s).
 	srv.rateLimiter.Stop()
-	srv.rateLimiter = newIPRateLimiter(rate.Limit(1), 2, time.Minute)
+	srv.rateLimiter = newIPRateLimiter(rate.Every(time.Hour), 2, time.Minute)
 
 	// First 2 logins: allowed (burst=2).
 	for i := 1; i <= 2; i++ {

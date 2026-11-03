@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/testcontainers/testcontainers-go"
@@ -28,9 +29,9 @@ const (
 )
 
 var (
-	ownerOnce   sync.Once
+	ownerOnce sync.Once
 	ownLabels map[string]string
-	ownerErr    error
+	ownerErr  error
 )
 
 // ownedContainer returns a request option that labels a container with this
@@ -38,16 +39,27 @@ var (
 // containers whose owner has exited.
 func ownedContainer(t testing.TB) testcontainers.CustomizeRequestOption {
 	t.Helper()
+	opt, err := ownerOption()
+	if err != nil {
+		t.Fatalf("owner labels: %v", err)
+	}
+	return opt
+}
+
+// ownerOption is ownedContainer for callers without a testing.TB, such as the
+// shared Postgres cluster. A failed sweep is reported on stderr, not returned:
+// it must not stop the tests.
+func ownerOption() (testcontainers.CustomizeRequestOption, error) {
 	ownerOnce.Do(func() {
 		ownLabels, ownerErr = ownerLabels()
 		if err := removeOrphanedContainers(context.Background()); err != nil {
-			t.Logf("remove containers left by exited test processes: %v", err)
+			fmt.Fprintf(os.Stderr, "testutil: remove containers left by exited test processes: %v\n", err)
 		}
 	})
 	if ownerErr != nil {
-		t.Fatalf("owner labels: %v", ownerErr)
+		return nil, ownerErr
 	}
-	return testcontainers.WithLabels(ownLabels)
+	return testcontainers.WithLabels(ownLabels), nil
 }
 
 // ownerLabels returns the owner labels for this test process.
@@ -128,11 +140,18 @@ func removeOrphanedContainers(ctx context.Context) error {
 		if !orphaned(c.Labels, ownerAlive) {
 			continue
 		}
-		// Another test binary sweeping at the same time may remove it first;
-		// that error is reported but harmless.
-		if _, err := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+		_, err := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+		if err != nil && !alreadyRemoved(err) {
 			errs = append(errs, fmt.Errorf("remove container %s: %w", c.ID, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// alreadyRemoved reports whether a container removal failed only because the
+// container is gone or another removal of it is in progress (409 Conflict).
+// Every test binary sweeps when it starts its first container, so another
+// binary's sweep often removes an orphan first.
+func alreadyRemoved(err error) bool {
+	return cerrdefs.IsNotFound(err) || cerrdefs.IsConflict(err)
 }

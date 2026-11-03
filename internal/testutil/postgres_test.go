@@ -6,6 +6,14 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
+	dockerclient "github.com/docker/docker/client"
+	"github.com/google/uuid"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 func TestNewTestDB_IsolatedDatabasesShareOneCluster(t *testing.T) {
@@ -80,6 +88,40 @@ func TestNewTestDB_DropsDatabaseAtCleanup(t *testing.T) {
 	}
 	if exists {
 		t.Errorf("database %q still exists after its test finished; want it dropped", name)
+	}
+}
+
+// TestStartCluster_RemovesContainerThatFailsToStart verifies a container that
+// was created but never became ready is terminated, not left on the daemon.
+func TestStartCluster_RemovesContainerThatFailsToStart(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	marker := uuid.NewString()
+
+	c, err := startCluster(ctx,
+		testcontainers.WithLabels(map[string]string{"cvert-ops.test.case": marker}),
+		testcontainers.WithWaitStrategy(wait.ForLog("a line postgres never prints").WithStartupTimeout(5*time.Second)),
+	)
+	if err == nil {
+		c.close()
+		t.Fatal("startCluster succeeded although the container never became ready")
+	}
+
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close() //nolint:errcheck
+	list, err := cli.ContainerList(ctx, container.ListOptions{
+		All:     true,
+		Filters: filters.NewArgs(filters.Arg("label", "cvert-ops.test.case="+marker)),
+	})
+	if err != nil {
+		t.Fatalf("list containers: %v", err)
+	}
+	if len(list) != 0 {
+		t.Errorf("container that failed to start is still present: %s", list[0].ID)
+		_ = cli.ContainerRemove(ctx, list[0].ID, container.RemoveOptions{Force: true})
 	}
 }
 

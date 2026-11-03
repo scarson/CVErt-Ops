@@ -24,6 +24,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/sqlc-dev/pqtype v0.3.0
 	github.com/stretchr/testify v1.11.1
+	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/inbucket v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	github.com/tidwall/gjson v1.18.0
@@ -99,7 +100,6 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/testcontainers/testcontainers-go v0.42.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect

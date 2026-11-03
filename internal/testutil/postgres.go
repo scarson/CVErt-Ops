@@ -161,23 +161,33 @@ func NewTestDB(t *testing.T) *TestDB {
 }
 
 // startCluster starts the Postgres container, creates the cvert_ops_app role,
-// and runs all migrations into the template database.
-func startCluster(ctx context.Context) (*cluster, error) {
+// and runs all migrations into the template database. opts are applied after
+// the defaults.
+func startCluster(ctx context.Context, opts ...testcontainers.ContainerCustomizer) (*cluster, error) {
 	pgCtr, err := tcpostgres.Run(ctx,
 		"postgres:18-alpine",
-		tcpostgres.WithDatabase(templateDBName),
-		tcpostgres.WithUsername("cvert_ops_test"),
-		tcpostgres.WithPassword("testpassword"),
-		tcpostgres.BasicWaitStrategies(),
-		// Every parallel test in the binary connects to this one server. The
-		// module already sets fsync=off; durability is irrelevant for tests.
-		testcontainers.WithCmdArgs(
-			"-c", "max_connections=1000",
-			"-c", "synchronous_commit=off",
-			"-c", "full_page_writes=off",
-		),
+		append([]testcontainers.ContainerCustomizer{
+			tcpostgres.WithDatabase(templateDBName),
+			tcpostgres.WithUsername("cvert_ops_test"),
+			tcpostgres.WithPassword("testpassword"),
+			tcpostgres.BasicWaitStrategies(),
+			// Every parallel test in the binary connects to this one server.
+			// The module already sets fsync=off; durability is irrelevant for tests.
+			testcontainers.WithCmdArgs(
+				"-c", "max_connections=1000",
+				"-c", "synchronous_commit=off",
+				"-c", "full_page_writes=off",
+			),
+		}, opts...)...,
 	)
 	if err != nil {
+		// Run returns a container that was created but never became ready
+		// together with the error; nothing else would remove it.
+		if pgCtr != nil {
+			if termErr := pgCtr.Terminate(ctx); termErr != nil {
+				fmt.Fprintf(os.Stderr, "testutil: terminate postgres container that failed to start: %v\n", termErr)
+			}
+		}
 		return nil, fmt.Errorf("start postgres container: %w", err)
 	}
 	c := &cluster{ctr: pgCtr}

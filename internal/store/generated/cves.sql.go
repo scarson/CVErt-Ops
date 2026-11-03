@@ -453,6 +453,42 @@ func (q *Queries) InsertCVEReference(ctx context.Context, arg InsertCVEReference
 	return err
 }
 
+const listCVEIDsAfter = `-- name: ListCVEIDsAfter :many
+SELECT cve_id FROM cves
+WHERE cve_id > $1::text
+ORDER BY cve_id
+LIMIT $2
+`
+
+type ListCVEIDsAfterParams struct {
+	AfterCveID string
+	BatchSize  int32
+}
+
+// Keyset page of CVE IDs for full-corpus walks (search index rebuild).
+func (q *Queries) ListCVEIDsAfter(ctx context.Context, arg ListCVEIDsAfterParams) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listCVEIDsAfter, arg.AfterCveID, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var cve_id string
+		if err := rows.Scan(&cve_id); err != nil {
+			return nil, err
+		}
+		items = append(items, cve_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCVEs = `-- name: ListCVEs :many
 SELECT c.cve_id, c.status, c.date_published, c.date_modified_source_max, c.date_modified_canonical, c.date_first_seen, c.description_primary, c.severity, c.cvss_v3_score, c.cvss_v3_vector, c.cvss_v3_source, c.cvss_v4_score, c.cvss_v4_vector, c.cvss_v4_source, c.cvss_score_diverges, c.cwe_ids, c.exploit_available, c.in_cisa_kev, c.epss_score, c.date_epss_updated, c.material_hash
 FROM cves c
@@ -510,6 +546,71 @@ func (q *Queries) ListCVEs(ctx context.Context, arg ListCVEsParams) ([]CVE, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const listSearchIndexInputs = `-- name: ListSearchIndexInputs :many
+SELECT c.cve_id,
+       c.description_primary,
+       c.cwe_ids,
+       COALESCE(
+           array_agg(DISTINCT p.package_name ORDER BY p.package_name)
+               FILTER (WHERE p.package_name IS NOT NULL),
+           '{}'
+       )::text[] AS package_names
+FROM cves c
+LEFT JOIN cve_affected_packages p ON p.cve_id = c.cve_id
+WHERE c.cve_id = ANY($1::text[])
+GROUP BY c.cve_id
+ORDER BY c.cve_id
+`
+
+type ListSearchIndexInputsRow struct {
+	CveID              string
+	DescriptionPrimary sql.NullString
+	CweIds             []string
+	PackageNames       []string
+}
+
+// The fields UpsertCVESearchIndex builds the tsvector from, for a batch of
+// CVEs. Package names are de-duplicated and sorted, as in the merge pipeline.
+func (q *Queries) ListSearchIndexInputs(ctx context.Context, cveIds []string) ([]ListSearchIndexInputsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSearchIndexInputs, pq.Array(cveIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSearchIndexInputsRow
+	for rows.Next() {
+		var i ListSearchIndexInputsRow
+		if err := rows.Scan(
+			&i.CveID,
+			&i.DescriptionPrimary,
+			pq.Array(&i.CweIds),
+			pq.Array(&i.PackageNames),
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockCVEAdvisoryKeys = `-- name: LockCVEAdvisoryKeys :exec
+SELECT pg_advisory_xact_lock(k)
+FROM (SELECT unnest($1::bigint[]) AS k ORDER BY k) AS ordered
+`
+
+// Takes the per-CVE merge advisory lock (merge.CVEAdvisoryKey) for every key,
+// in ascending key order, until the transaction ends.
+func (q *Queries) LockCVEAdvisoryKeys(ctx context.Context, keys []int64) error {
+	_, err := q.db.ExecContext(ctx, lockCVEAdvisoryKeys, pq.Array(keys))
+	return err
 }
 
 const tombstoneCVE = `-- name: TombstoneCVE :exec

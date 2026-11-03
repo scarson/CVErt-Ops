@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import CveSearchFilters from '@/components/cve/CveSearchFilters.vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => unknown>(() => ({ query: {} })),
@@ -15,7 +16,6 @@ vi.mock('vue-router', () => ({
 }))
 
 async function mountFilters(props = {}) {
-  const { default: CveSearchFilters } = await import('@/components/cve/CveSearchFilters.vue')
   return mount(CveSearchFilters, {
     props: {
       query: '',

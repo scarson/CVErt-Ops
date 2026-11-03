@@ -12,6 +12,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/auth"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -384,6 +385,109 @@ func TestAdminDeliveries_RequiresSiteAdmin(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/deliveries", nil)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("non-admin: got %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestAdminReindex_EnqueuesSearchReindexJob(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "reindex-admin@example.com", "ReindexAdmin", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.SetFirstSiteAdmin(ctx, user.ID); err != nil {
+		t.Fatalf("set site admin: %v", err)
+	}
+
+	secret := "test-jwt-secret-for-admin-reindex"
+	token, err := auth.IssueAccessToken([]byte(secret), user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	postReindex := func() *http.Response {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reindex", nil)
+		req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		return resp
+	}
+
+	resp := postReindex()
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("first reindex: got %d, want 202", resp.StatusCode)
+	}
+	var body struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// The job must land on the queue the worker consumes.
+	var queue, status string
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT queue, status FROM job_queue WHERE id = $1", body.JobID,
+	).Scan(&queue, &status); err != nil {
+		t.Fatalf("read job %q: %v", body.JobID, err)
+	}
+	if queue != merge.SearchReindexQueue {
+		t.Errorf("job queue = %q, want %q", queue, merge.SearchReindexQueue)
+	}
+	if status != "pending" {
+		t.Errorf("job status = %q, want pending", status)
+	}
+
+	// A second request while the first job is pending is rejected.
+	resp2 := postReindex()
+	defer resp2.Body.Close() //nolint:errcheck
+	if resp2.StatusCode != http.StatusConflict {
+		t.Errorf("second reindex: got %d, want 409", resp2.StatusCode)
+	}
+}
+
+func TestAdminReindex_RequiresSiteAdmin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	user, err := db.CreateUser(ctx, "reindex-nonadmin@example.com", "Regular", "fakehash", 1)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	secret := "test-jwt-secret-reindex-nonadmin"
+	token, err := auth.IssueAccessToken([]byte(secret), user.ID, 1, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	srv := newAuthTestServer(t, secret, db)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reindex", nil)
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)

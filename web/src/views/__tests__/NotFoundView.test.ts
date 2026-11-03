@@ -3,6 +3,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import NotFoundView from '@/views/NotFoundView.vue'
 
 vi.mock('vue-router', () => ({
   useRoute: vi.fn<() => unknown>(() => ({ path: '/nonexistent' })),
@@ -15,7 +16,6 @@ vi.mock('vue-router', () => ({
 }))
 
 async function mountNotFound() {
-  const { default: NotFoundView } = await import('@/views/NotFoundView.vue')
   return mount(NotFoundView)
 }
 

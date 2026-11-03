@@ -4,6 +4,7 @@ package merge
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -291,7 +292,23 @@ func TestCollectPackageNames(t *testing.T) {
 		}
 	})
 
-	t.Run("order preservation", func(t *testing.T) {
+	t.Run("sorted lexicographically", func(t *testing.T) {
+		t.Parallel()
+		// PLAN.md §5.3 (array fields sorted before hashing and FTS): feed
+		// reordering of affected packages must not change the tsvector.
+		pkgs := []feed.AffectedPackage{
+			{Ecosystem: "pip", PackageName: "zlib-wrapper"},
+			{Ecosystem: "npm", PackageName: "axios"},
+			{Ecosystem: "pip", PackageName: "flask"},
+		}
+		got := collectPackageNames(pkgs)
+		want := []string{"axios", "flask", "zlib-wrapper"}
+		if !slices.Equal(got, want) {
+			t.Errorf("collectPackageNames = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("duplicates removed from sorted output", func(t *testing.T) {
 		t.Parallel()
 		pkgs := []feed.AffectedPackage{
 			{Ecosystem: "npm", PackageName: "axios"},

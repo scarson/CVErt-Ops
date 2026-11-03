@@ -27,12 +27,12 @@ vi.mock('@/lib/api/client', () => ({
 }))
 
 import { useAuthStore } from '@/stores/auth'
+import VerifyEmailView from '@/views/VerifyEmailView.vue'
 
 const mockFetch = vi.fn<(...args: unknown[]) => unknown>()
 vi.stubGlobal('fetch', mockFetch)
 
 async function mountVerifyEmail() {
-  const { default: VerifyEmailView } = await import('@/views/VerifyEmailView.vue')
   return mount(VerifyEmailView)
 }
 

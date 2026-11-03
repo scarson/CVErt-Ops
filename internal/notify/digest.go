@@ -20,6 +20,17 @@ import (
 // versions already sent out of it (implementation-pitfalls.md NOTIFY-21).
 const digestRescanWindow = 2 * time.Minute
 
+// digestEmailCVECap is the most CVEs one digest email lists (PLAN.md §12.1).
+const digestEmailCVECap = 25
+
+// digestPayload is the payload of a digest delivery. CVEs holds at most the
+// digest query's row limit, highest severity first. TotalCount is the number of
+// CVEs that matched, so a consumer can tell when CVEs holds only part of them.
+type digestPayload struct {
+	TotalCount int           `json:"total_count"`
+	CVEs       []cveSnapshot `json:"cves"`
+}
+
 // severityRank maps severity strings to numeric rank for threshold expansion.
 var severityRank = map[string]int{
 	"critical": 4,
@@ -149,7 +160,7 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 		return w.advanceReport(ctx, report, cursor, sentInWindow)
 	}
 
-	// Build the payload as a JSON array of cveSnapshot objects.
+	// Build the payload from the CVE rows. Every row carries the same total.
 	snaps := make([]cveSnapshot, len(cves))
 	for i, row := range cves {
 		var sev *string
@@ -173,7 +184,11 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 			snaps[i].EPSSScore = &row.EpssScore.Float64
 		}
 	}
-	payload, err := json.Marshal(snaps)
+	digest := digestPayload{CVEs: snaps}
+	if len(cves) > 0 {
+		digest.TotalCount = int(cves[0].TotalCount)
+	}
+	payload, err := json.Marshal(digest)
 	if err != nil {
 		return fmt.Errorf("marshal digest payload: %w", err)
 	}
@@ -192,6 +207,26 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 	}
 
 	return w.advanceReport(ctx, report, cursor, sentInWindow)
+}
+
+// digestTemplateData builds the digest email's template data from a digest
+// payload: the first digestEmailCVECap CVEs and the payload's total, marked
+// truncated when the total exceeds the CVEs listed.
+func digestTemplateData(p digestPayload, reportName, orgName, externalURL string) DigestTemplateData {
+	summaries := snapshotsToCVESummaries(p.CVEs, externalURL)
+	if len(summaries) > digestEmailCVECap {
+		summaries = summaries[:digestEmailCVECap]
+	}
+	return DigestTemplateData{
+		OrgName:     orgName,
+		ReportName:  reportName,
+		Date:        time.Now().UTC().Format("2006-01-02"),
+		CVEs:        summaries,
+		TotalCount:  p.TotalCount,
+		Truncated:   p.TotalCount > len(summaries),
+		ViewAllURL:  externalURL,
+		CVErtOpsURL: externalURL,
+	}
 }
 
 // sentInRescanWindow returns the sent CVE versions that the next run's scan, which

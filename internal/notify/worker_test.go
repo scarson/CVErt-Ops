@@ -718,14 +718,17 @@ func TestWorker_EmailDigestBranch(t *testing.T) {
 	}
 
 	// Insert a digest delivery (simulates what executeDigestReport does).
-	payload, _ := json.Marshal([]map[string]any{{
-		"cve_id":              "CVE-2025-9020",
-		"severity":            "CRITICAL",
-		"cvss_v3_score":       9.8,
-		"description_primary": "Test digest vulnerability",
-		"exploit_available":   true,
-		"in_cisa_kev":         false,
-	}})
+	payload, _ := json.Marshal(map[string]any{
+		"total_count": 1,
+		"cves": []map[string]any{{
+			"cve_id":              "CVE-2025-9020",
+			"severity":            "CRITICAL",
+			"cvss_v3_score":       9.8,
+			"description_primary": "Test digest vulnerability",
+			"exploit_available":   true,
+			"in_cisa_kev":         false,
+		}},
+	})
 	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
 		t.Fatalf("InsertDigestDelivery: %v", err)
 	}
@@ -847,12 +850,19 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 		report.ID).Scan(&payload); err != nil {
 		t.Fatalf("scan payload: %v", err)
 	}
-	var snaps []map[string]any
-	if err := json.Unmarshal(payload, &snaps); err != nil {
+	var digest struct {
+		TotalCount int              `json:"total_count"`
+		CVEs       []map[string]any `json:"cves"`
+	}
+	if err := json.Unmarshal(payload, &digest); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
+	snaps := digest.CVEs
 	if len(snaps) == 0 {
 		t.Fatal("payload contains no CVE snapshots")
+	}
+	if digest.TotalCount != len(snaps) {
+		t.Errorf("payload total_count = %d, want %d (the CVEs it carries)", digest.TotalCount, len(snaps))
 	}
 	if id, _ := snaps[0]["cve_id"].(string); id != "CVE-2025-DIGEST-E2E" {
 		t.Errorf("payload cve_id = %q, want %q", id, "CVE-2025-DIGEST-E2E")
@@ -1029,8 +1039,9 @@ func TestWorker_Digest_RescanWindowSkipsSentVersions(t *testing.T) {
 
 // TestWorker_Digest_MoreCVEsThanQueryLimit covers a digest window holding more
 // matching CVEs than one digest query returns, as after an NVD enrichment burst.
-// 500 high-severity CVEs fill the first digest, so the low-severity CVE stamped in
-// the same window is not in it. It must not be lost: a later digest must carry it.
+// 500 high-severity CVEs fill the digest, so the low-severity CVE stamped in the
+// same window is not in it. The payload must report the true total of 501 so
+// renderers and webhook consumers can tell the digest is incomplete.
 func TestWorker_Digest_MoreCVEsThanQueryLimit(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -1060,14 +1071,7 @@ func TestWorker_Digest_MoreCVEsThanQueryLimit(t *testing.T) {
 		t.Fatalf("BindChannelToReport: %v", err)
 	}
 
-	// The CVEs are stamped an hour ago, outside the re-scan window of the second
-	// run, so only the first run's window contains them.
-	if _, err := db.ExecContext(ctx,
-		"UPDATE scheduled_reports SET created_at = now() - interval '2 hours' WHERE id = $1",
-		report.ID); err != nil {
-		t.Fatalf("backdate created_at: %v", err)
-	}
-	stamp := time.Now().Add(-1 * time.Hour)
+	stamp := report.CreatedAt.Add(time.Millisecond)
 	for i := range 500 {
 		s.SeedTestCVE(t, fmt.Sprintf("CVE-2025-OVERFLOW-%04d", i), "high", &testutil.SeedCVEOpts{DateModifiedCanonical: &stamp})
 	}
@@ -1081,21 +1085,57 @@ func TestWorker_Digest_MoreCVEsThanQueryLimit(t *testing.T) {
 	})
 	w.RunDigestOnce(ctx)
 
-	completeDigestDeliveries(t, ctx, db, report.ID)
-	if _, err := db.ExecContext(ctx,
-		"UPDATE scheduled_reports SET next_run_at = now() - interval '1 minute' WHERE id = $1",
-		report.ID); err != nil {
-		t.Fatalf("make report due again: %v", err)
+	payloads := digestPayloads(t, ctx, db, report.ID)
+	if len(payloads) != 1 {
+		t.Fatalf("got %d digest deliveries, want 1", len(payloads))
 	}
-	w.RunDigestOnce(ctx)
+	p := payloads[0]
+	if p.TotalCount != 501 {
+		t.Errorf("payload total_count = %d, want 501", p.TotalCount)
+	}
+	if len(p.CVEs) != 500 {
+		t.Errorf("payload carries %d CVEs, want 500", len(p.CVEs))
+	}
+	for _, c := range p.CVEs {
+		if c.CVEID == "CVE-2025-OVERFLOW-LOW" {
+			t.Error("payload carries CVE-2025-OVERFLOW-LOW, want the 500 high-severity CVEs ahead of it")
+		}
+	}
+}
 
-	counts := digestCVECounts(t, ctx, db, report.ID)
-	if len(counts) != 501 {
-		t.Errorf("digests carried %d distinct CVEs, want all 501 that matched", len(counts))
+// digestPayloadJSON is the JSON shape of a digest delivery payload.
+type digestPayloadJSON struct {
+	TotalCount int `json:"total_count"`
+	CVEs       []struct {
+		CVEID string `json:"cve_id"`
+	} `json:"cves"`
+}
+
+// digestPayloads returns the payloads of the report's digest deliveries.
+func digestPayloads(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) []digestPayloadJSON {
+	t.Helper()
+	rows, err := db.QueryContext(ctx,
+		"SELECT payload FROM notification_deliveries WHERE report_id = $1", reportID)
+	if err != nil {
+		t.Fatalf("query digest deliveries: %v", err)
 	}
-	if counts["CVE-2025-OVERFLOW-LOW"] != 1 {
-		t.Errorf("CVE-2025-OVERFLOW-LOW appeared in %d digests, want 1", counts["CVE-2025-OVERFLOW-LOW"])
+	defer func() { _ = rows.Close() }()
+	var payloads []digestPayloadJSON
+	for rows.Next() {
+		var raw json.RawMessage
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatalf("scan digest payload: %v", err)
+		}
+		var p digestPayloadJSON
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatalf("unmarshal digest payload %s: %v", raw, err)
+		}
+		payloads = append(payloads, p)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate digest deliveries: %v", err)
+	}
+	return payloads
 }
 
 // completeDigestDeliveries marks the report's pending digest deliveries succeeded.
@@ -1114,30 +1154,11 @@ func completeDigestDeliveries(t *testing.T, ctx context.Context, db *sql.DB, rep
 // the report whose payload contains it.
 func digestCVECounts(t *testing.T, ctx context.Context, db *sql.DB, reportID uuid.UUID) map[string]int {
 	t.Helper()
-	rows, err := db.QueryContext(ctx,
-		"SELECT payload FROM notification_deliveries WHERE report_id = $1", reportID)
-	if err != nil {
-		t.Fatalf("query digest deliveries: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
 	counts := map[string]int{}
-	for rows.Next() {
-		var payload json.RawMessage
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan digest payload: %v", err)
+	for _, p := range digestPayloads(t, ctx, db, reportID) {
+		for _, c := range p.CVEs {
+			counts[c.CVEID]++
 		}
-		var snaps []struct {
-			CVEID string `json:"cve_id"`
-		}
-		if err := json.Unmarshal(payload, &snaps); err != nil {
-			t.Fatalf("unmarshal digest payload: %v", err)
-		}
-		for _, snap := range snaps {
-			counts[snap.CVEID]++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate digest deliveries: %v", err)
 	}
 	return counts
 }
@@ -1272,10 +1293,13 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 		report.ID).Scan(&payload); err != nil {
 		t.Fatalf("scan payload: %v", err)
 	}
-	var snaps []map[string]any
-	if err := json.Unmarshal(payload, &snaps); err != nil {
+	var digest struct {
+		CVEs []map[string]any `json:"cves"`
+	}
+	if err := json.Unmarshal(payload, &digest); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
+	snaps := digest.CVEs
 	// Should have exactly the critical CVE (not the low one).
 	for _, snap := range snaps {
 		sev, _ := snap["severity"].(string)

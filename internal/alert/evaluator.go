@@ -127,6 +127,7 @@ func (e *Evaluator) EvaluateBatch(ctx context.Context) error {
 		metricsLabel:  "batch",
 		getCandidates: e.getCVEsModifiedSince,
 		listRules:     e.rules.ListActiveRulesForEvaluation,
+		maxHeldRuns:   batchMaxHeldRuns,
 	})
 }
 
@@ -138,6 +139,7 @@ func (e *Evaluator) EvaluateEPSS(ctx context.Context) error {
 		metricsLabel:  "epss",
 		getCandidates: e.getCVEsEPSSUpdatedSince,
 		listRules:     e.rules.ListActiveRulesForEPSS,
+		maxHeldRuns:   epssMaxHeldRuns,
 	})
 }
 
@@ -158,17 +160,38 @@ const candidatePageSize = 1000
 // a batch run, which is scheduled every two minutes.
 const cursorRescanWindow = 2 * time.Minute
 
+// A run in which any rule fails to evaluate (an error, or a partial candidate set) keeps
+// the cursor where it was, so the next run re-evaluates the same CVEs for every rule.
+// Re-evaluation is idempotent (see cursorRescanWindow). The cursor is held for at most
+// this many consecutive runs, so a rule that fails on every run cannot stall the cursor
+// and grow every rule's candidate set without bound; the run after the last held run
+// advances the cursor and logs the rules whose CVEs were not evaluated. The batch job runs
+// every 2 minutes (about an hour of retries) and the EPSS job daily (three days).
+const (
+	batchMaxHeldRuns = 30
+	epssMaxHeldRuns  = 3
+)
+
 // batchConfig parameterizes the shared batch/EPSS evaluation loop.
 type batchConfig struct {
 	feedName      string
 	metricsLabel  string
 	getCandidates func(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error)
 	listRules     func(ctx context.Context) ([]store.AlertRuleRow, error)
+	maxHeldRuns   int
+}
+
+// evalCursor is the batch/EPSS cursor stored in feed_sync_state.cursor_json. HeldRuns
+// counts consecutive runs that kept Since because a rule failed to evaluate.
+type evalCursor struct {
+	Since    time.Time `json:"since"`
+	HeldRuns int       `json:"held_runs,omitempty"`
 }
 
 // evaluateBatchPath implements the shared evaluation loop for both EvaluateBatch and
 // EvaluateEPSS. Reads cursor, fetches paginated candidates, runs all rules against
-// each page, records metrics, then advances the cursor only after all pages complete.
+// each page, records metrics, then advances the cursor only after all pages complete
+// and every rule evaluated (see batchMaxHeldRuns).
 func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) error {
 	start := time.Now()
 	cursor, err := e.readCursor(ctx, cfg.feedName)
@@ -178,7 +201,7 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	batchTime := time.Now().UTC()
 
 	// A zero cursor means no previous run: scan everything.
-	since := cursor
+	since := cursor.Since
 	if !since.IsZero() {
 		since = since.Add(-cursorRescanWindow)
 	}
@@ -215,10 +238,11 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 
 	// Short-circuit if no candidates — still write cursor to advance past this window.
 	if len(allCandidateIDs) == 0 {
-		return e.writeCursor(ctx, cfg.feedName, batchTime)
+		return e.writeCursor(ctx, cfg.feedName, evalCursor{Since: batchTime})
 	}
 
 	var totalMatches int
+	var failedRuleIDs []uuid.UUID
 	for i := range rules {
 		rule := &rules[i]
 		compiled, compErr := e.loadAndCompileRule(rule)
@@ -229,6 +253,9 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, allCandidateIDs, rule.OrgID)
 		if evalErr != nil {
 			e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
+		}
+		if evalErr != nil || partial {
+			failedRuleIDs = append(failedRuleIDs, rule.ID)
 		}
 		totalMatches += matchCount
 		status, errMsg := runStatus(partial, evalErr)
@@ -241,8 +268,19 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	metrics.AlertMatchesTotal.WithLabelValues(cfg.metricsLabel).Add(float64(totalMatches))
 	metrics.AlertEvaluationDuration.WithLabelValues(cfg.metricsLabel).Observe(time.Since(start).Seconds())
 
+	if len(failedRuleIDs) > 0 {
+		if cursor.HeldRuns < cfg.maxHeldRuns {
+			held := evalCursor{Since: cursor.Since, HeldRuns: cursor.HeldRuns + 1}
+			e.log.Warn("holding "+cfg.metricsLabel+" cursor: rules failed to evaluate",
+				"rule_ids", failedRuleIDs, "held_runs", held.HeldRuns, "max_held_runs", cfg.maxHeldRuns)
+			return e.writeCursor(ctx, cfg.feedName, held)
+		}
+		e.log.Error("advancing "+cfg.metricsLabel+" cursor past CVEs that failing rules did not evaluate",
+			"rule_ids", failedRuleIDs, "since", cursor.Since, "held_runs", cursor.HeldRuns)
+	}
+
 	// Cursor is written only after ALL pages have been processed.
-	return e.writeCursor(ctx, cfg.feedName, batchTime)
+	return e.writeCursor(ctx, cfg.feedName, evalCursor{Since: batchTime})
 }
 
 // EvaluateActivation runs the activation scan for a newly created rule. Iterates the full
@@ -745,32 +783,30 @@ func scanCVEIDs(rows *sql.Rows, err error) ([]string, error) {
 	return ids, rows.Err()
 }
 
-// readCursor reads the batch/EPSS cursor from feed_sync_state. Returns zero time if no row.
-func (e *Evaluator) readCursor(ctx context.Context, feedName string) (time.Time, error) {
+// readCursor reads the batch/EPSS cursor from feed_sync_state. Returns a zero cursor if no row.
+func (e *Evaluator) readCursor(ctx context.Context, feedName string) (evalCursor, error) {
 	var raw []byte
 	err := e.db.QueryRowContext(ctx,
 		`SELECT cursor_json FROM feed_sync_state WHERE feed_name = $1`, feedName,
 	).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, nil
+		return evalCursor{}, nil
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read cursor %s: %w", feedName, err)
+		return evalCursor{}, fmt.Errorf("read cursor %s: %w", feedName, err)
 	}
-	var cur struct {
-		Since time.Time `json:"since"`
-	}
+	var cur evalCursor
 	if err := json.Unmarshal(raw, &cur); err != nil {
-		return time.Time{}, fmt.Errorf("parse cursor %s: %w", feedName, err)
+		return evalCursor{}, fmt.Errorf("parse cursor %s: %w", feedName, err)
 	}
-	return cur.Since, nil
+	return cur, nil
 }
 
-// writeCursor upserts the batch/EPSS cursor in feed_sync_state.
-func (e *Evaluator) writeCursor(ctx context.Context, feedName string, t time.Time) error {
-	raw, err := json.Marshal(struct {
-		Since time.Time `json:"since"`
-	}{t})
+// writeCursor upserts the batch/EPSS cursor in feed_sync_state. It sets last_success_at
+// for held runs too: the scheduler enqueues the next run from last_success_at, and a held
+// run has completed; the hold itself is recorded in cursor_json.
+func (e *Evaluator) writeCursor(ctx context.Context, feedName string, cur evalCursor) error {
+	raw, err := json.Marshal(cur)
 	if err != nil {
 		return err
 	}

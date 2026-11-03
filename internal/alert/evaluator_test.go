@@ -2180,3 +2180,75 @@ func TestEvaluator_UncompilableRuleSetToError(t *testing.T) {
 		})
 	}
 }
+
+// getCursorHeldRuns reads the "held_runs" value from the feed_sync_state cursor JSON.
+func getCursorHeldRuns(t *testing.T, db *sql.DB, feedName string) int {
+	t.Helper()
+	var raw []byte
+	err := db.QueryRowContext(context.Background(),
+		`SELECT cursor_json FROM feed_sync_state WHERE feed_name = $1`, feedName,
+	).Scan(&raw)
+	if err != nil {
+		t.Fatalf("getCursorHeldRuns for %s: %v", feedName, err)
+	}
+	var cur struct {
+		HeldRuns int `json:"held_runs"`
+	}
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		t.Fatalf("parse cursor for %s: %v", feedName, err)
+	}
+	return cur.HeldRuns
+}
+
+// TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap checks that a rule failing on
+// every run holds the batch cursor for a bounded number of runs, that other rules keep
+// evaluating meanwhile, and that the cursor then advances with an error logged.
+func TestEvaluateBatch_PersistentRuleErrorAdvancesCursorAfterCap(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cveID = "CVE-RULECAP-001"
+	score := 9.0
+	insertCVE(t, tdb.DB(), cveID, "Analyzed", "held cursor cap test", &score, "rulecap-hash-001")
+
+	const cvssCond = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	failing := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+	activateRule(t, ctx, tdb.Store, orgID, failing.ID)
+	healthy := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCond, nil)
+	activateRule(t, ctx, tdb.Store, orgID, healthy.ID)
+
+	st := &eventInsertFailingStore{AlertRuleStore: tdb.Store, ruleID: failing.ID, failuresLeft: -1}
+	ev, logBuf := newLoggedEvaluator(tdb, st)
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("first EvaluateBatch: %v", err)
+	}
+	if n := countAlertEvents(t, tdb.DB(), healthy.ID, cveID); n != 1 {
+		t.Fatalf("want 1 alert_event for the healthy rule, got %d", n)
+	}
+	if !getCursorSince(t, tdb.DB(), "alert:batch").IsZero() {
+		t.Fatal("cursor advanced past a run in which a rule failed")
+	}
+	if n := getCursorHeldRuns(t, tdb.DB(), "alert:batch"); n != 1 {
+		t.Fatalf("held_runs = %d after one failed run, want 1", n)
+	}
+
+	const maxRuns = 100
+	advanced := false
+	for i := 0; i < maxRuns && !advanced; i++ {
+		if err := ev.EvaluateBatch(ctx); err != nil {
+			t.Fatalf("EvaluateBatch run %d: %v", i+2, err)
+		}
+		advanced = !getCursorSince(t, tdb.DB(), "alert:batch").IsZero()
+	}
+	if !advanced {
+		t.Fatalf("cursor still held after %d runs with a persistently failing rule", maxRuns+1)
+	}
+	if n := getCursorHeldRuns(t, tdb.DB(), "alert:batch"); n != 0 {
+		t.Fatalf("held_runs = %d after the cursor advanced, want 0", n)
+	}
+	if !strings.Contains(logBuf.String(), "did not evaluate") {
+		t.Fatalf("want an error logged when the cursor advances past unevaluated CVEs, got log %q", logBuf.String())
+	}
+}

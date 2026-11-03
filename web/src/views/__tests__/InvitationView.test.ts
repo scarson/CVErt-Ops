@@ -99,6 +99,7 @@ describe('InvitationView', () => {
         display_name: 'Sam Carter',
         is_site_admin: false,
         force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 
@@ -164,6 +165,7 @@ describe('InvitationView', () => {
         display_name: 'Sam Carter',
         is_site_admin: false,
         force_password_reset: false,
+        has_password: true,
         orgs: [{ org_id: 'org-old', name: 'Old Org', role: 'admin' }],
       }
       auth.setActiveOrg('org-old')
@@ -182,6 +184,7 @@ describe('InvitationView', () => {
           display_name: 'Sam Carter',
           is_site_admin: false,
           force_password_reset: false,
+          has_password: true,
           orgs: [
             { org_id: 'org-old', name: 'Old Org', role: 'admin' },
             { org_id: 'org-new', name: 'Acme Corp', role: 'member' },
@@ -217,6 +220,7 @@ describe('InvitationView', () => {
         display_name: 'Sam Carter',
         is_site_admin: false,
         force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 
@@ -247,6 +251,7 @@ describe('InvitationView', () => {
         display_name: 'Sam Carter',
         is_site_admin: false,
         force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 
@@ -277,6 +282,7 @@ describe('InvitationView', () => {
         display_name: 'Sam Carter',
         is_site_admin: false,
         force_password_reset: false,
+        has_password: true,
         orgs: [],
       }
 

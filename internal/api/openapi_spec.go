@@ -169,11 +169,12 @@ type specRemoveGroupMemberInput struct {
 
 func registerGroupsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-group",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/groups",
-		Summary:     "Create a group",
-		Tags:        []string{"Groups"},
+		OperationID:   "create-group",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/groups",
+		Summary:       "Create a group",
+		Tags:          []string{"Groups"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateGroupInput, specCreateGroupOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -314,11 +315,12 @@ type specResendInvitationOutput struct {
 
 func registerOrgsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-org",
-		Method:      http.MethodPost,
-		Path:        "/orgs",
-		Summary:     "Create an organization",
-		Tags:        []string{"Organizations"},
+		OperationID:   "create-org",
+		Method:        http.MethodPost,
+		Path:          "/orgs",
+		Summary:       "Create an organization",
+		Tags:          []string{"Organizations"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateOrgInput, specCreateOrgOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -422,11 +424,12 @@ type specRevokeAPIKeyInput struct {
 
 func registerAPIKeysSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-api-key",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/api-keys",
-		Summary:     "Create an API key",
-		Tags:        []string{"API Keys"},
+		OperationID:   "create-api-key",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/api-keys",
+		Summary:       "Create an API key",
+		Tags:          []string{"API Keys"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateAPIKeyInput, specCreateAPIKeyOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -521,11 +524,12 @@ type specDeleteWatchlistItemInput struct {
 
 func registerWatchlistsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-watchlist",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/watchlists",
-		Summary:     "Create a watchlist",
-		Tags:        []string{"Watchlists"},
+		OperationID:   "create-watchlist",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/watchlists",
+		Summary:       "Create a watchlist",
+		Tags:          []string{"Watchlists"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateWatchlistInput, specCreateWatchlistOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -561,11 +565,12 @@ func registerWatchlistsSpecOps(api huma.API) {
 	}, noopHandler[specDeleteWatchlistInput, struct{}]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-watchlist-item",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/watchlists/{id}/items",
-		Summary:     "Add an item to a watchlist",
-		Tags:        []string{"Watchlists"},
+		OperationID:   "create-watchlist-item",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/watchlists/{id}/items",
+		Summary:       "Add an item to a watchlist",
+		Tags:          []string{"Watchlists"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateWatchlistItemInput, specCreateWatchlistItemOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -861,11 +866,12 @@ type specTestChannelOutput struct {
 
 func registerChannelsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-channel",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/channels",
-		Summary:     "Create a notification channel",
-		Tags:        []string{"Channels"},
+		OperationID:   "create-channel",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/channels",
+		Summary:       "Create a notification channel",
+		Tags:          []string{"Channels"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateChannelInput, specCreateChannelOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1055,11 +1061,12 @@ func registerReportsSpecOps(api huma.API) {
 	}, noopHandler[specListReportsInput, specListReportsOutput]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-report",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/reports",
-		Summary:     "Create a scheduled report",
-		Tags:        []string{"Reports"},
+		OperationID:   "create-report",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/reports",
+		Summary:       "Create a scheduled report",
+		Tags:          []string{"Reports"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateReportInput, specCreateReportOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1175,11 +1182,12 @@ func registerSavedSearchesSpecOps(api huma.API) {
 	}, noopHandler[specListSavedSearchesInput, specListSavedSearchesOutput]())
 
 	huma.Register(api, huma.Operation{
-		OperationID: "create-saved-search",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/saved-searches",
-		Summary:     "Create a saved search",
-		Tags:        []string{"Saved Searches"},
+		OperationID:   "create-saved-search",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/saved-searches",
+		Summary:       "Create a saved search",
+		Tags:          []string{"Saved Searches"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateSavedSearchInput, specCreateSavedSearchOutput]())
 
 	huma.Register(api, huma.Operation{
@@ -1264,11 +1272,12 @@ type specDiscoverOutput struct {
 
 func registerSSOSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
-		OperationID: "create-sso",
-		Method:      http.MethodPost,
-		Path:        "/orgs/{org_id}/sso",
-		Summary:     "Create an SSO connection",
-		Tags:        []string{"SSO"},
+		OperationID:   "create-sso",
+		Method:        http.MethodPost,
+		Path:          "/orgs/{org_id}/sso",
+		Summary:       "Create an SSO connection",
+		Tags:          []string{"SSO"},
+		DefaultStatus: http.StatusCreated,
 	}, noopHandler[specCreateSSOInput, specCreateSSOOutput]())
 
 	huma.Register(api, huma.Operation{

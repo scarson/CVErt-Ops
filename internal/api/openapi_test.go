@@ -207,8 +207,8 @@ func TestOpenAPISpec(t *testing.T) {
 }
 
 // TestOpenAPISpec_SuccessStatusMatchesHandler verifies that endpoints whose
-// handlers answer 202 Accepted (or 201 Created) document that status, and do
-// not document a 200 the handler never sends.
+// handlers answer 201 Created, 202 Accepted or 204 No Content document that
+// status, and do not document a 200 the handler never sends.
 func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 	spec := buildOpenAPISpec(t)
 	paths := spec["paths"].(map[string]any)
@@ -218,6 +218,7 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 		method       string
 		wantStatuses []string
 		wantLocation bool
+		noBody       bool
 	}{
 		{path: "/admin/reindex", method: "post", wantStatuses: []string{"202"}},
 		{path: "/admin/feeds/{feed}/run", method: "post", wantStatuses: []string{"202"}},
@@ -225,6 +226,40 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 		{path: "/orgs/{org_id}/invitations", method: "post", wantStatuses: []string{"202"}, wantLocation: true},
 		// 201 when the rule is created ready, 202 when it needs an activation scan.
 		{path: "/orgs/{org_id}/alert-rules", method: "post", wantStatuses: []string{"201", "202"}, wantLocation: true},
+
+		// 201 Created with the new resource and its Location.
+		{path: "/auth/register", method: "post", wantStatuses: []string{"201"}},
+		{path: "/orgs", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/api-keys", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/channels", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/groups", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/reports", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/saved-searches", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/sso", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/watchlists", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+		{path: "/orgs/{org_id}/watchlists/{id}/items", method: "post", wantStatuses: []string{"201"}, wantLocation: true},
+
+		// 204 No Content.
+		{path: "/auth/mfa/methods/{method}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/members/{user_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/invitations/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/api-keys/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/watchlists/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/watchlists/{id}/items/{item_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/channels/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/channels/{id}/clear-secondary", method: "post", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/deliveries/{id}/replay", method: "post", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/alert-rules/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}", method: "put", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/reports/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/reports/{id}/channels/{channel_id}", method: "put", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/reports/{id}/channels/{channel_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/saved-searches/{id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/sso", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/groups/{group_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/groups/{group_id}/members", method: "post", wantStatuses: []string{"204"}, noBody: true},
+		{path: "/orgs/{org_id}/groups/{group_id}/members/{user_id}", method: "delete", wantStatuses: []string{"204"}, noBody: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
@@ -251,7 +286,11 @@ func TestOpenAPISpec_SuccessStatusMatchesHandler(t *testing.T) {
 					continue
 				}
 				content, _ := resp["content"].(map[string]any)
-				if _, ok := content["application/json"]; !ok {
+				if tc.noBody {
+					if len(content) != 0 {
+						t.Errorf("response %s documents a body, which the handler never sends", status)
+					}
+				} else if _, ok := content["application/json"]; !ok {
 					t.Errorf("response %s has no application/json body", status)
 				}
 				if tc.wantLocation {

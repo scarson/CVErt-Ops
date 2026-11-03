@@ -788,7 +788,7 @@ func TestWorker_DigestPipeline_EndToEnd(t *testing.T) {
 		t.Fatalf("CreateNotificationChannel (2): %v", err)
 	}
 
-	// Report with next_run_at in the past so ClaimDueReports picks it up.
+	// Report with next_run_at in the past so RunDueDigest claims it.
 	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
 		Name:          "DigestE2EReport",
 		ScheduledTime: "10:00:00",
@@ -1379,5 +1379,180 @@ func TestWorker_DigestPipeline_SeverityThresholdFiltering(t *testing.T) {
 	}
 	if !found {
 		t.Error("payload should contain CVE-2025-SEV-CRIT (critical severity >= high threshold)")
+	}
+}
+
+// TestWorker_Digest_OverlappingRunsSendOneDigest covers two notify workers (the
+// serve and worker subcommands each run one) whose digest ticks overlap. The
+// second tick runs while the first is between claiming a report and advancing
+// it, and must not send the report's digest a second time.
+func TestWorker_Digest_OverlappingRunsSendOneDigest(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestOverlapOrg")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestOverlapChan")
+	report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+		Name:          "DigestOverlapReport",
+		ScheduledTime: "10:00:00",
+		Timezone:      "UTC",
+		NextRunAt:     time.Now().Add(-1 * time.Hour),
+		SendOnEmpty:   true,
+		Status:        "active",
+	})
+	if err != nil {
+		t.Fatalf("CreateScheduledReport: %v", err)
+	}
+	if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanID); err != nil {
+		t.Fatalf("BindChannelToReport: %v", err)
+	}
+
+	// A SHARE lock on notification_deliveries stops each digest run at its
+	// delivery insert, after the run has claimed the report.
+	blocker, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin blocker tx: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = blocker.Rollback()
+		}
+	}()
+	if _, err := blocker.ExecContext(ctx, "LOCK TABLE notification_deliveries IN SHARE MODE"); err != nil {
+		t.Fatalf("lock notification_deliveries: %v", err)
+	}
+
+	cfg := notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		newTestWorker(s, plainHTTPClient(), cfg).RunDigestOnce(ctx)
+	}()
+	waitForDeliveryInsertWaiters(t, ctx, db, 1, nil)
+
+	// The second run either finds the report not due and returns, or claims it
+	// again and stops at its own delivery insert.
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		newTestWorker(s, plainHTTPClient(), cfg).RunDigestOnce(ctx)
+	}()
+	waitForDeliveryInsertWaiters(t, ctx, db, 2, secondDone)
+
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("release notification_deliveries lock: %v", err)
+	}
+	released = true
+	for _, done := range []chan struct{}{firstDone, secondDone} {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("digest run did not finish after the lock was released")
+		}
+	}
+
+	var deliveryCount int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM notification_deliveries WHERE report_id=$1",
+		report.ID).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveryCount != 1 {
+		t.Errorf("digest delivery count = %d, want 1 (one digest for the one channel)", deliveryCount)
+	}
+}
+
+// TestWorker_Digest_RunsEveryDueReportInOneTick covers a tick with more than
+// one due report: each report runs in its own transaction, and one tick runs
+// them all.
+func TestWorker_Digest_RunsEveryDueReportInOneTick(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	db := s.DB()
+
+	org := s.MustCreateOrg(t, ctx, "DigestManyOrg")
+	chanID, _ := mustCreateNotificationChannel(t, s, ctx, org.ID, "DigestManyChan")
+	var reportIDs []uuid.UUID
+	for _, name := range []string{"DigestManyReport1", "DigestManyReport2"} {
+		report, err := s.CreateScheduledReport(ctx, org.ID, store.CreateScheduledReportParams{
+			Name:          name,
+			ScheduledTime: "10:00:00",
+			Timezone:      "UTC",
+			NextRunAt:     time.Now().Add(-1 * time.Hour),
+			SendOnEmpty:   true,
+			Status:        "active",
+		})
+		if err != nil {
+			t.Fatalf("CreateScheduledReport(%q): %v", name, err)
+		}
+		if err := s.BindChannelToReport(ctx, org.ID, report.ID, chanID); err != nil {
+			t.Fatalf("BindChannelToReport(%q): %v", name, err)
+		}
+		reportIDs = append(reportIDs, report.ID)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	w.RunDigestOnce(ctx)
+
+	for _, id := range reportIDs {
+		var deliveries int
+		var lastRunSet bool
+		if err := db.QueryRowContext(ctx, `
+			SELECT (SELECT COUNT(*) FROM notification_deliveries WHERE report_id = $1),
+			       last_run_at IS NOT NULL
+			FROM scheduled_reports WHERE id = $1`, id).Scan(&deliveries, &lastRunSet); err != nil {
+			t.Fatalf("read report %v state: %v", id, err)
+		}
+		if deliveries != 1 {
+			t.Errorf("report %v delivery count = %d, want 1", id, deliveries)
+		}
+		if !lastRunSet {
+			t.Errorf("report %v last_run_at not set after the tick", id)
+		}
+	}
+}
+
+// waitForDeliveryInsertWaiters waits until want sessions in this test's
+// database are waiting for a lock on notification_deliveries, or until done is
+// closed. A nil done is never closed.
+func waitForDeliveryInsertWaiters(t *testing.T, ctx context.Context, db *sql.DB, want int, done <-chan struct{}) {
+	t.Helper()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(30 * time.Second)
+	for {
+		var waiters int
+		if err := db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM pg_locks
+			WHERE locktype = 'relation'
+			  AND relation = 'notification_deliveries'::regclass
+			  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			  AND NOT granted`).Scan(&waiters); err != nil {
+			t.Fatalf("count lock waiters: %v", err)
+		}
+		if waiters >= want {
+			return
+		}
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d sessions blocked on notification_deliveries, have %d", want, waiters)
+		}
 	}
 }

@@ -7,7 +7,7 @@
 -- retry) is a closed batch with its own attempt count and backoff, and any
 -- number of closed batches may be pending for the same rule and channel.
 -- A unique index on every pending alert delivery made those returns violate the
--- index whenever a newer batch was pending. See implementation-pitfalls.md NOTIFY-24.
+-- index whenever a newer batch was pending. See implementation-pitfalls.md NOTIFY-25.
 ALTER TABLE notification_deliveries
     ADD COLUMN IF NOT EXISTS batch_open BOOLEAN NOT NULL DEFAULT false;
 

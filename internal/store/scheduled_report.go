@@ -1,10 +1,11 @@
 // ABOUTME: Store methods for scheduled_reports digest configuration CRUD.
-// ABOUTME: Runner ops (ClaimDueReports, AdvanceReport) use withBypassTx; API ops use withOrgTx.
+// ABOUTME: The digest runner (RunDueDigest, DigestRun) uses withBypassTx; API ops use withOrgTx.
 package store
 
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -123,36 +124,68 @@ func (s *Store) SoftDeleteScheduledReport(ctx context.Context, orgID, id uuid.UU
 	})
 }
 
-// ClaimDueReports claims up to limit scheduled reports that are due for execution.
-// Uses bypass-RLS (worker context).
-func (s *Store) ClaimDueReports(ctx context.Context, limit int) ([]ScheduledReportRow, error) {
-	var result []ScheduledReportRow
-	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
-		rows, err := q.ClaimDueReports(ctx, int32(limit)) //nolint:gosec // G115: limit is always small
-		if err != nil {
-			return fmt.Errorf("claim due reports: %w", err)
-		}
-		result = rows
-		return nil
-	})
-	return result, err
+// DigestRun is one claimed report's digest run. Its methods run in the
+// transaction that holds the report's row lock, so the delivery rows and the
+// report's advance commit together or not at all, and no other run can claim
+// the report until then.
+type DigestRun struct {
+	Report ScheduledReportRow
+	q      *generated.Queries
 }
 
-// AdvanceReport updates last_run_at, next_run_at, and the sent CVE versions the
-// next run's re-scan window must leave out, after a digest run.
-// Uses bypass-RLS (worker context).
-func (s *Store) AdvanceReport(ctx context.Context, id uuid.UUID, lastRunAt, nextRunAt time.Time, sent []DigestSentCVE) error {
+// RunDueDigest claims the earliest due scheduled report that is not in skip and
+// not held by another run, and calls fn with it in one bypass-RLS (worker
+// context) transaction. The transaction commits if fn returns nil and rolls back
+// otherwise, leaving the report due. Returns the claimed report, or nil when no
+// report is due, together with fn's error.
+func (s *Store) RunDueDigest(ctx context.Context, skip []uuid.UUID, fn func(*DigestRun) error) (*ScheduledReportRow, error) {
+	// A nil array binds as NULL, and id <> ALL(NULL) matches no rows.
+	if skip == nil {
+		skip = []uuid.UUID{}
+	}
+	var claimed *ScheduledReportRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		report, err := q.ClaimDueReport(ctx, skip)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("claim due report: %w", err)
+		}
+		claimed = &report
+		return fn(&DigestRun{Report: report, q: q})
+	})
+	return claimed, err
+}
+
+// CVEs returns the CVEs for this digest; see Store.DigestCVEs.
+func (r *DigestRun) CVEs(ctx context.Context, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
+	return digestCVEs(ctx, r.q, since, severities, sent)
+}
+
+// Channels returns the non-deleted channels bound to the report; see
+// Store.ListActiveChannelsForDigest.
+func (r *DigestRun) Channels(ctx context.Context) ([]generated.ListActiveChannelsForDigestRow, error) {
+	return listActiveChannelsForDigest(ctx, r.q, r.Report.OrgID, r.Report.ID)
+}
+
+// InsertDelivery inserts the report's digest delivery for one channel.
+func (r *DigestRun) InsertDelivery(ctx context.Context, channelID uuid.UUID, payload json.RawMessage) error {
+	return insertDigestDelivery(ctx, r.q, r.Report.OrgID, r.Report.ID, channelID, payload)
+}
+
+// Advance updates last_run_at, next_run_at, and the sent CVE versions the next
+// run's re-scan window must leave out.
+func (r *DigestRun) Advance(ctx context.Context, lastRunAt, nextRunAt time.Time, sent []DigestSentCVE) error {
 	sentJSON, err := marshalDigestSentCVEs(sent)
 	if err != nil {
 		return fmt.Errorf("advance report: %w", err)
 	}
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
-		return q.AdvanceReport(ctx, generated.AdvanceReportParams{
-			ID:             id,
-			LastRunAt:      sql.NullTime{Time: lastRunAt, Valid: true},
-			NextRunAt:      nextRunAt,
-			RescanSentCves: sentJSON,
-		})
+	return r.q.AdvanceReport(ctx, generated.AdvanceReportParams{
+		ID:             r.Report.ID,
+		LastRunAt:      sql.NullTime{Time: lastRunAt, Valid: true},
+		NextRunAt:      nextRunAt,
+		RescanSentCves: sentJSON,
 	})
 }
 
@@ -191,4 +224,3 @@ func (s *Store) GetScheduledReportName(ctx context.Context, reportID uuid.UUID) 
 	})
 	return result, err
 }
-

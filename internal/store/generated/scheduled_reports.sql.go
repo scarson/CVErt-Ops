@@ -43,55 +43,41 @@ func (q *Queries) AdvanceReport(ctx context.Context, arg AdvanceReportParams) er
 	return err
 }
 
-const claimDueReports = `-- name: ClaimDueReports :many
+const claimDueReport = `-- name: ClaimDueReport :one
 SELECT id, org_id, name, scheduled_time, timezone, next_run_at, last_run_at, severity_threshold, watchlist_ids, send_on_empty, ai_summary, status, deleted_at, created_at, updated_at, rescan_sent_cves FROM scheduled_reports
 WHERE status = 'active'
   AND next_run_at <= now()
   AND deleted_at IS NULL
+  AND id <> ALL($1::uuid[])
 ORDER BY next_run_at
-LIMIT $1
+LIMIT 1
 FOR UPDATE SKIP LOCKED
 `
 
-// Digest runner: claim up to $1 reports that are due for execution.
-func (q *Queries) ClaimDueReports(ctx context.Context, limit int32) ([]ScheduledReport, error) {
-	rows, err := q.db.QueryContext(ctx, claimDueReports, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ScheduledReport
-	for rows.Next() {
-		var i ScheduledReport
-		if err := rows.Scan(
-			&i.ID,
-			&i.OrgID,
-			&i.Name,
-			&i.ScheduledTime,
-			&i.Timezone,
-			&i.NextRunAt,
-			&i.LastRunAt,
-			&i.SeverityThreshold,
-			pq.Array(&i.WatchlistIds),
-			&i.SendOnEmpty,
-			&i.AiSummary,
-			&i.Status,
-			&i.DeletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.RescanSentCves,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+// Digest runner: claim the earliest due report that is not in skip_ids and not
+// held by another run. The row lock lasts until the caller's transaction ends.
+func (q *Queries) ClaimDueReport(ctx context.Context, skipIds []uuid.UUID) (ScheduledReport, error) {
+	row := q.db.QueryRowContext(ctx, claimDueReport, pq.Array(skipIds))
+	var i ScheduledReport
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.ScheduledTime,
+		&i.Timezone,
+		&i.NextRunAt,
+		&i.LastRunAt,
+		&i.SeverityThreshold,
+		pq.Array(&i.WatchlistIds),
+		&i.SendOnEmpty,
+		&i.AiSummary,
+		&i.Status,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RescanSentCves,
+	)
+	return i, err
 }
 
 const createScheduledReport = `-- name: CreateScheduledReport :one

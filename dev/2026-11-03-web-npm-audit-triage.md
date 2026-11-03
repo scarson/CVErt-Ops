@@ -55,6 +55,22 @@ Neither of these is reachable here, and neither ships. Each can only be fixed by
    - **Reachability:** `@vue/test-utils` uses `js-beautify` only to format HTML strings in `wrapper.html()`. It never globs the filesystem, and no AbortSignal is involved.
    - **Recommendation:** accept, and re-check when `js-beautify` moves to `glob` 14.
 
+The toolchain major upgrades (TypeScript 6, `npm-run-all2` 9) do not clear either advisory. The registry on 2026-11-03 shows these declared ranges:
+
+| Package (latest) | `minimatch` | `glob` |
+|---|---|---|
+| `eslint` 10.14.0 | `^10.2.6` | |
+| `@eslint/config-array` 0.23.5 | `^10.2.4` | |
+| `@typescript-eslint/typescript-estree` 8.72.1 | `^10.2.2` | |
+| `editorconfig` 3.0.2 | `~10.2.4` | |
+| `js-beautify` 2.0.3 | | `^13.0.6` |
+
+No ESLint 11 exists yet. `@redocly/openapi-core` 2.x drops `minimatch` entirely, but `openapi-typescript` 7.13.0 still requires `@redocly/openapi-core` `^1.34.6`. So the triggers to re-check are:
+
+- ESLint, typescript-eslint and `editorconfig` adopting `minimatch` 11
+- `openapi-typescript` moving to redocly 2
+- `js-beautify` adopting `glob` 14
+
 ## Supply-chain verification
 
 Per `CLAUDE.md` ("Third-Party Dependencies") and the `dependency-check` skill, every target version was checked before the lockfile changed:

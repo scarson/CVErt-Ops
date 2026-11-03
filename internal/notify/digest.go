@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
@@ -102,15 +103,27 @@ func parseTimeOfDay(s string) (int, int, int, error) {
 	return t.Hour(), t.Minute(), t.Second(), nil
 }
 
-// runDigest claims due reports and executes each one.
+// digestReportsPerTick is the most reports one digest tick runs.
+const digestReportsPerTick = 10
+
+// runDigest runs up to digestReportsPerTick due reports, each in its own
+// transaction. More than one notify worker can be live (serve and worker both
+// start one); a report another worker is running is skipped. A report whose run
+// fails is rolled back, stays due, and is left for the next tick.
 func (w *Worker) runDigest(ctx context.Context) {
-	reports, err := w.store.ClaimDueReports(ctx, 10)
-	if err != nil {
-		w.log.Error("claim due reports", "err", err)
-		return
-	}
-	for _, report := range reports {
-		if err := w.executeDigestReport(ctx, report); err != nil {
+	var attempted []uuid.UUID
+	for range digestReportsPerTick {
+		report, err := w.store.RunDueDigest(ctx, attempted, func(run *store.DigestRun) error {
+			return w.executeDigestReport(ctx, run)
+		})
+		if report == nil {
+			if err != nil {
+				w.log.Error("claim due report", "err", err)
+			}
+			return
+		}
+		attempted = append(attempted, report.ID)
+		if err != nil {
 			w.log.Error("execute digest report", "report_id", report.ID, "err", err)
 		}
 	}
@@ -123,7 +136,11 @@ func (w *Worker) runDigest(ctx context.Context) {
 // 4. List active channels for the report
 // 5. Insert delivery row per channel
 // 6. Advance last_run_at, next_run_at, and the sent versions in the re-scan window
-func (w *Worker) executeDigestReport(ctx context.Context, report store.ScheduledReportRow) error {
+// All steps run in run's transaction, so an error leaves no delivery rows and
+// the report unadvanced.
+func (w *Worker) executeDigestReport(ctx context.Context, run *store.DigestRun) error {
+	report := run.Report
+
 	// Determine the "since" cutoff — new CVEs since last run or since creation.
 	since := report.CreatedAt
 	if report.LastRunAt.Valid {
@@ -148,7 +165,7 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 	cursor := time.Now().UTC()
 
 	// Query matching CVEs.
-	cves, err := w.store.DigestCVEs(ctx, since.Add(-digestRescanWindow), severities, sent)
+	cves, err := run.CVEs(ctx, since.Add(-digestRescanWindow), severities, sent)
 	if err != nil {
 		return fmt.Errorf("query digest CVEs: %w", err)
 	}
@@ -157,7 +174,7 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 	// Skip if no CVEs and send_on_empty is false.
 	if len(cves) == 0 && !report.SendOnEmpty {
 		// Still advance so we don't re-query the same window.
-		return w.advanceReport(ctx, report, cursor, sentInWindow)
+		return w.advanceReport(ctx, run, cursor, sentInWindow)
 	}
 
 	// Build the payload from the CVE rows. Every row carries the same total.
@@ -194,19 +211,20 @@ func (w *Worker) executeDigestReport(ctx context.Context, report store.Scheduled
 	}
 
 	// List active channels for this report (bypass-RLS — worker context).
-	channels, err := w.store.ListActiveChannelsForDigest(ctx, report.OrgID, report.ID)
+	channels, err := run.Channels(ctx)
 	if err != nil {
 		return fmt.Errorf("list channels for digest: %w", err)
 	}
 
-	// Insert a delivery row per channel.
+	// Insert a delivery row per channel. A failed insert aborts the transaction,
+	// so the whole run fails and is retried on the next tick.
 	for _, ch := range channels {
-		if err := w.store.InsertDigestDelivery(ctx, report.OrgID, report.ID, ch.ID, payload); err != nil {
-			w.log.Error("insert digest delivery", "report_id", report.ID, "channel_id", ch.ID, "err", err)
+		if err := run.InsertDelivery(ctx, ch.ID, payload); err != nil {
+			return fmt.Errorf("insert digest delivery for channel %s: %w", ch.ID, err)
 		}
 	}
 
-	return w.advanceReport(ctx, report, cursor, sentInWindow)
+	return w.advanceReport(ctx, run, cursor, sentInWindow)
 }
 
 // digestTemplateData builds the digest email's template data from a digest
@@ -250,18 +268,18 @@ func sentInRescanWindow(previous []store.DigestSentCVE, cves []store.DigestCVEsR
 
 // advanceReport sets last_run_at to cursor, records the sent CVE versions the next
 // run must leave out, and advances next_run_at by one day.
-func (w *Worker) advanceReport(ctx context.Context, report store.ScheduledReportRow, cursor time.Time, sent []store.DigestSentCVE) error {
+func (w *Worker) advanceReport(ctx context.Context, run *store.DigestRun, cursor time.Time, sent []store.DigestSentCVE) error {
 	now := time.Now().UTC()
-	nextRun, err := advanceNextRunAt(report.NextRunAt, report.Timezone)
+	nextRun, err := advanceNextRunAt(run.Report.NextRunAt, run.Report.Timezone)
 	if err != nil {
 		return fmt.Errorf("advance next_run_at: %w", err)
 	}
 	// If the computed next run is still in the past (missed runs), skip forward.
 	for !nextRun.After(now) {
-		nextRun, err = advanceNextRunAt(nextRun, report.Timezone)
+		nextRun, err = advanceNextRunAt(nextRun, run.Report.Timezone)
 		if err != nil {
 			return fmt.Errorf("skip-forward next_run_at: %w", err)
 		}
 	}
-	return w.store.AdvanceReport(ctx, report.ID, cursor, nextRun, sent)
+	return run.Advance(ctx, cursor, nextRun, sent)
 }

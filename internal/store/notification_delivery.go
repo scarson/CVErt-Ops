@@ -214,12 +214,17 @@ func (s *Store) ReplayDelivery(ctx context.Context, id, orgID uuid.UUID) error {
 // Uses bypass-RLS (worker context). ON CONFLICT DO NOTHING prevents double-dispatch.
 func (s *Store) InsertDigestDelivery(ctx context.Context, orgID uuid.UUID, reportID, channelID uuid.UUID, payload json.RawMessage) error {
 	return s.withBypassTx(ctx, func(q *generated.Queries) error {
-		return q.InsertDigestDelivery(ctx, generated.InsertDigestDeliveryParams{
-			OrgID:     orgID,
-			ReportID:  uuid.NullUUID{UUID: reportID, Valid: true},
-			ChannelID: channelID,
-			Payload:   payload,
-		})
+		return insertDigestDelivery(ctx, q, orgID, reportID, channelID, payload)
+	})
+}
+
+// insertDigestDelivery inserts a digest delivery for a report+channel in q's transaction.
+func insertDigestDelivery(ctx context.Context, q *generated.Queries, orgID, reportID, channelID uuid.UUID, payload json.RawMessage) error {
+	return q.InsertDigestDelivery(ctx, generated.InsertDigestDeliveryParams{
+		OrgID:     orgID,
+		ReportID:  uuid.NullUUID{UUID: reportID, Valid: true},
+		ChannelID: channelID,
+		Payload:   payload,
 	})
 }
 
@@ -250,19 +255,25 @@ func marshalDigestSentCVEs(sent []DigestSentCVE) (json.RawMessage, error) {
 // Returns up to 500 rows sorted by severity desc; each row's TotalCount is the
 // number of matching CVEs before that limit.
 func (s *Store) DigestCVEs(ctx context.Context, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
+	var result []DigestCVEsRow
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		result, err = digestCVEs(ctx, q, since, severities, sent)
+		return err
+	})
+	return result, err
+}
+
+// digestCVEs runs the DigestCVEs query in q's transaction.
+func digestCVEs(ctx context.Context, q *generated.Queries, since time.Time, severities []string, sent []DigestSentCVE) ([]DigestCVEsRow, error) {
 	sentJSON, err := marshalDigestSentCVEs(sent)
 	if err != nil {
 		return nil, fmt.Errorf("digest cves: %w", err)
 	}
-	var result []DigestCVEsRow
-	err = s.withBypassTx(ctx, func(q *generated.Queries) error {
-		var err error
-		result, err = q.DigestCVEs(ctx, generated.DigestCVEsParams{
-			DateModifiedCanonical: since,
-			Column2:               severities,
-			Column3:               sentJSON,
-		})
-		return err
+	result, err := q.DigestCVEs(ctx, generated.DigestCVEsParams{
+		DateModifiedCanonical: since,
+		Column2:               severities,
+		Column3:               sentJSON,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("digest cves: %w", err)

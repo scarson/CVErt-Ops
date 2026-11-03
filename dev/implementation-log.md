@@ -2535,7 +2535,7 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 ## Digest Re-scan Window — CVEs Committed After a Digest's Query
 
 > **Date:** 2026-11-03
-> **Commit:** `046e4db` on `fix/digest-window-gap`
+> **Commit:** `3a4331a` on `fix/digest-window-gap`
 > **Source:** follow-up to the alert evaluator cursor re-scan window, which covers the same flaw in the batch and EPSS evaluators
 
 ### What was built
@@ -2565,6 +2565,6 @@ Took the two major bumps that the npm audit triage left as follow-ups, both appr
 
 - **golangci-lint:** 0 issues on `internal/notify`, `internal/store`
 - **Break-tests:** both new notify tests fail on `dev` (late CVE in 0 digests, re-modified CVE missed); `TestWorker_Digest_RescanWindowSkipsSentVersions` fails with the sent-version exclusion disabled (unchanged CVE in 2 digests)
-- **New tests:** `TestWorker_Digest_IncludesCVECommittedAfterQuery`, `TestWorker_Digest_RescanWindowSkipsSentVersions`, `TestDigestCVEs_ExcludesSentVersions`, `TestAdvanceReport_NilSentStoresEmptyArray`; sent-list assertion added to `TestAdvanceReport`
+- **New tests:** `TestWorker_Digest_IncludesCVECommittedAfterQuery`, `TestWorker_Digest_RescanWindowSkipsSentVersions`, `TestDigestCVEs_ExcludesSentVersions`, `TestAdvanceReport_NilSentStoresEmptyArray`, `TestSentInRescanWindow` (fails with the carry-over loop removed), `TestSentInRescanWindow_NothingSent`; sent-list assertion added to `TestAdvanceReport`
 
 ---

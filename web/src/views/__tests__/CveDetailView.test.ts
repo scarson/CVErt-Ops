@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import type { components } from '@/lib/api/schema'
+import CveDetailView from '@/views/CveDetailView.vue'
 
 type CVEDetail = components['schemas']['CVEDetail']
 type CVESourceResponse = components['schemas']['CVESourceResponse']
@@ -146,7 +147,6 @@ const NETWORK_FAILURE = {
 }
 
 async function mountView() {
-  const { default: CveDetailView } = await import('@/views/CveDetailView.vue')
   return mount(CveDetailView)
 }
 
@@ -397,7 +397,6 @@ describe('CveDetailView', () => {
       mockGET.mockResolvedValueOnce({ data: makeCVEDetail({ cve_id: 'CVE-2024-12345' }) })
       mockGET.mockResolvedValueOnce({ data: { sources: makeSources() }, error: undefined })
 
-      const { default: CveDetailView } = await import('@/views/CveDetailView.vue')
       const wrapper = mount(CveDetailView)
       await flushPromises()
 

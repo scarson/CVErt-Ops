@@ -38,10 +38,10 @@ func TestAdapter_SimpleFlatArray(t *testing.T) {
 		Mapping: MappingConfig{
 			Root: "items",
 			Fields: map[string]string{
-				"cve_id":        "cve",
-				"description":   "summary",
+				"cve_id":         "cve",
+				"description":    "summary",
 				"cvss_v3_score":  "cvss_score",
-				"severity":      "risk",
+				"severity":       "risk",
 				"cvss_v3_vector": "vector",
 			},
 		},
@@ -78,8 +78,8 @@ func TestAdapter_NestedEnvelope(t *testing.T) {
 		Mapping: MappingConfig{
 			Root: "data.results",
 			Fields: map[string]string{
-				"cve_id":       "id",
-				"description":  "text",
+				"cve_id":        "id",
+				"description":   "text",
 				"cvss_v3_score": "scoring.cvss",
 			},
 		},
@@ -141,7 +141,7 @@ func TestAdapter_CVSS00Preserved(t *testing.T) {
 		Mapping: MappingConfig{
 			Root: "items",
 			Fields: map[string]string{
-				"cve_id":       "cve",
+				"cve_id":        "cve",
 				"cvss_v3_score": "score",
 			},
 		},
@@ -765,9 +765,14 @@ func TestAdapter_RateLimiting(t *testing.T) {
 			Fields: map[string]string{"cve_id": "cve"},
 		},
 	}
-	adapter := NewAdapter(cfg, srv.Client())
+	// The first request is delivered slowly, as a first TCP dial on a loaded
+	// host can be. That latency does not count toward the limiter's spacing.
+	client := srv.Client()
+	client.Transport = &firstRequestDelay{next: client.Transport, delay: 150 * time.Millisecond}
+	adapter := NewAdapter(cfg, client)
 	ctx := context.Background()
 
+	start := time.Now()
 	r1, err := adapter.Fetch(ctx, nil)
 	require.NoError(t, err)
 	assert.False(t, r1.LastPage)
@@ -777,10 +782,30 @@ func TestAdapter_RateLimiting(t *testing.T) {
 	assert.True(t, r2.LastPage)
 
 	require.Len(t, requestTimes, 2)
-	gap := requestTimes[1].Sub(requestTimes[0])
-	// With rate=2/sec, gap should be >= 400ms (allowing some slack).
-	assert.GreaterOrEqual(t, gap.Milliseconds(), int64(400),
-		"requests should be rate-limited, gap was %v", gap)
+	// With rate=2/sec and burst 1, the second Wait returns no earlier than
+	// 500ms after the first Wait began, which was after start. The gap between
+	// the two arrivals at the server is not bounded: it shrinks by however much
+	// longer the first request took to arrive. The 1ms allowance covers the
+	// limiter truncating its float delay to whole nanoseconds.
+	elapsed := requestTimes[1].Sub(start)
+	assert.GreaterOrEqual(t, elapsed, 499*time.Millisecond,
+		"second request should wait for the rate limiter, it arrived %v after the first Fetch began", elapsed)
+}
+
+// firstRequestDelay is an http.RoundTripper that holds back the first request
+// it sends by delay.
+type firstRequestDelay struct {
+	next  http.RoundTripper
+	delay time.Duration
+	sent  bool
+}
+
+func (d *firstRequestDelay) RoundTrip(r *http.Request) (*http.Response, error) {
+	if !d.sent {
+		d.sent = true
+		time.Sleep(d.delay)
+	}
+	return d.next.RoundTrip(r)
 }
 
 func TestAdapter_URLUnreachable(t *testing.T) {

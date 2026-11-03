@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/testcontainers/testcontainers-go"
@@ -139,11 +140,17 @@ func removeOrphanedContainers(ctx context.Context) error {
 		if !orphaned(c.Labels, ownerAlive) {
 			continue
 		}
-		// Another test binary sweeping at the same time may remove it first;
-		// that error is reported but harmless.
-		if _, err := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
+		_, err := cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+		if err != nil && !alreadyRemoved(err) {
 			errs = append(errs, fmt.Errorf("remove container %s: %w", c.ID, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// alreadyRemoved reports whether a container removal failed only because the
+// container is gone. Every test binary sweeps when it starts its first
+// container, so another binary's sweep often removes an orphan first.
+func alreadyRemoved(err error) bool {
+	return cerrdefs.IsNotFound(err)
 }

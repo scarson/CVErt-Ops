@@ -4,6 +4,7 @@ package testutil
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -90,6 +91,29 @@ func containerExists(t *testing.T, id string) bool {
 	defer cli.Close() //nolint:errcheck
 	_, err = cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
 	return err == nil
+}
+
+// TestAlreadyRemoved_RecognisesDaemonNotFound verifies the daemon's answer to
+// removing a container that is already gone is treated as removed. Every test
+// binary sweeps when it starts, so concurrent sweeps race for the same orphans.
+func TestAlreadyRemoved_RecognisesDaemonNotFound(t *testing.T) {
+	ctx := context.Background()
+	cli, err := testcontainers.NewDockerClientWithOpts(ctx)
+	if err != nil {
+		t.Fatalf("docker client: %v", err)
+	}
+	defer cli.Close() //nolint:errcheck
+
+	_, err = cli.ContainerRemove(ctx, "cvert-ops-test-no-such-container", client.ContainerRemoveOptions{Force: true})
+	if err == nil {
+		t.Fatal("removing a nonexistent container succeeded; want a not-found error")
+	}
+	if !alreadyRemoved(err) {
+		t.Errorf("alreadyRemoved(%v) = false; want true for the daemon's not-found error", err)
+	}
+	if alreadyRemoved(errors.New("permission denied")) {
+		t.Error("alreadyRemoved(permission denied) = true; want false")
+	}
 }
 
 func TestRemoveOrphanedContainers(t *testing.T) {

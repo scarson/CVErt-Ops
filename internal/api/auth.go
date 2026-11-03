@@ -819,6 +819,10 @@ func (srv *Server) changePasswordHandler(ctx context.Context, input *changePassw
 		slog.ErrorContext(ctx, "change-password: get user", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}
+	// Verify token_version matches DB (prevents stale tokens after admin actions).
+	if isRestricted && int(user.TokenVersion) != pendingClaims.TokenVersion {
+		return nil, huma.Error401Unauthorized("session invalidated — please log in again")
+	}
 	if !user.PasswordHash.Valid {
 		return nil, huma.Error400BadRequest("account uses OAuth authentication — password change not supported")
 	}

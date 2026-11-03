@@ -278,7 +278,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workerPool.Register("alert_batch", alertBatchHandler(alertEval))
 	workerPool.Register("alert_epss", alertEPSSHandler(alertEval))
 	workerPool.Register("alert_zombie_sweep", alertZombieSweepHandler(alertEval))
-	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	registerMaintenanceJobs(workerPool, st, cfg)
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
 		Name:     "mfa-challenge-cleanup",
 		Interval: 1 * time.Hour,
@@ -483,7 +483,7 @@ func runWorker(cmd *cobra.Command, _ []string) error {
 		close(deliveryDone)
 	}()
 
-	workerPool.Register("retention_cleanup", retentionHandler(st, cfg))
+	registerMaintenanceJobs(workerPool, st, cfg)
 	workerPool.RegisterPeriodic(worker.PeriodicTask{
 		Name:     "mfa-challenge-cleanup",
 		Interval: 1 * time.Hour,
@@ -582,6 +582,31 @@ func alertEPSSHandler(eval *alert.Evaluator) worker.Handler {
 func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
 	return func(ctx context.Context, _ json.RawMessage) error {
 		return eval.SweepZombieActivations(ctx)
+	}
+}
+
+// registerMaintenanceJobs registers the system maintenance queues (retention
+// cleanup and search index rebuild) on p. Both serve and worker call it.
+func registerMaintenanceJobs(p *worker.Pool, st *store.Store, cfg *config.Config) {
+	p.Register("retention_cleanup", retentionHandler(st, cfg))
+	p.Register(merge.SearchReindexQueue, searchReindexHandler(st))
+}
+
+// searchReindexBatchSize is how many CVEs each search index rebuild transaction
+// covers. Each CVE in a batch holds one advisory lock until the batch commits,
+// so this stays well below the shared lock table size.
+const searchReindexBatchSize = 200
+
+// searchReindexHandler returns a worker.Handler that rebuilds cve_search_index
+// for the whole corpus. The job payload carries no parameters.
+func searchReindexHandler(st *store.Store) worker.Handler {
+	return func(ctx context.Context, _ json.RawMessage) error {
+		n, err := merge.RebuildSearchIndex(ctx, st, searchReindexBatchSize)
+		if err != nil {
+			return err
+		}
+		slog.InfoContext(ctx, "search index rebuilt", "cves", n)
+		return nil
 	}
 }
 

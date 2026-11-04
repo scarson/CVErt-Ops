@@ -412,6 +412,7 @@ type NotificationDelivery struct {
 	Kind            string
 	ReportID        uuid.NullUUID
 	LastErrorForOrg sql.NullString
+	BatchOpen       bool
 }
 
 type OrgInvitation struct {

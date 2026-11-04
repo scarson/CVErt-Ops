@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -941,6 +942,188 @@ func TestRetryDigestDelivery_NewerDigestPending(t *testing.T) {
 	if status != "pending" {
 		t.Errorf("first digest status = %q, want pending", status)
 	}
+}
+
+// countAlertDeliveries counts the deliveries for a (rule_id, channel_id) pair in the given status.
+func countAlertDeliveries(t *testing.T, s *testutil.TestDB, ctx context.Context, ruleID, chanID uuid.UUID, status string) int {
+	t.Helper()
+	var count int
+	row := s.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM notification_deliveries WHERE rule_id=$1 AND channel_id=$2 AND status=$3`,
+		ruleID, chanID, status)
+	if err := row.Scan(&count); err != nil {
+		t.Fatalf("countAlertDeliveries: %v", err)
+	}
+	return count
+}
+
+// assertPendingAlertCVEs checks that the pending deliveries for a (rule_id, channel_id)
+// pair hold exactly the given CVE IDs, across all of their payloads.
+func assertPendingAlertCVEs(t *testing.T, s *testutil.TestDB, ctx context.Context, ruleID, chanID uuid.UUID, want ...string) {
+	t.Helper()
+	rows, err := s.DB().QueryContext(ctx, `
+		SELECT elem->>'cve_id'
+		FROM notification_deliveries nd, jsonb_array_elements(nd.payload) AS elem
+		WHERE nd.rule_id=$1 AND nd.channel_id=$2 AND nd.status='pending'
+		ORDER BY 1`, ruleID, chanID)
+	if err != nil {
+		t.Fatalf("assertPendingAlertCVEs: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var got []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("assertPendingAlertCVEs scan: %v", err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("assertPendingAlertCVEs rows: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("pending CVEs = %v, want %v", got, want)
+	}
+}
+
+// TestRetryAlertDelivery_NewerBatchPending covers an alert delivery that fails
+// while a newer batch for the same rule and channel is already pending. The newer
+// batch was inserted while the first one was in flight. The retry must return the
+// failed CVE to pending rather than leave it stuck in processing.
+func TestRetryAlertDelivery_NewerBatchPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RetryBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-1001"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-1002"}`), 0)
+
+	failure := store.DeliveryFailure{Detail: "connection refused", ForOrg: "connection refused"}
+	if err := s.RetryDelivery(ctx, ids[0], 60, failure); err != nil {
+		t.Fatalf("RetryDelivery: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-1001", "CVE-2025-1002")
+}
+
+// TestUpsertDelivery_SkipsRetryingBatch covers a CVE that matches while an earlier
+// batch for the same rule and channel waits out a retry backoff. The CVE must start
+// its own batch, so it neither shortens the backoff nor inherits the attempt count.
+func TestUpsertDelivery_SkipsRetryingBatch(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "RetryingBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-7001"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+	failure := store.DeliveryFailure{Detail: "connection refused", ForOrg: "connection refused"}
+	if err := s.RetryDelivery(ctx, ids[0], 3600, failure); err != nil {
+		t.Fatalf("RetryDelivery: %v", err)
+	}
+
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-7002"}`), 0)
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "pending"); n != 2 {
+		t.Fatalf("pending deliveries = %d, want 2 (retrying batch and a fresh one)", n)
+	}
+	var payload []byte
+	var backoffLeft float64
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT payload, EXTRACT(EPOCH FROM send_after - now()) FROM notification_deliveries WHERE id=$1`,
+		ids[0]).Scan(&payload, &backoffLeft); err != nil {
+		t.Fatalf("read retrying batch: %v", err)
+	}
+	if string(payload) != `[{"cve_id": "CVE-2025-7001"}]` {
+		t.Errorf("retrying batch payload = %s, want only CVE-2025-7001", payload)
+	}
+	if backoffLeft < 3000 {
+		t.Errorf("retrying batch backoff left = %.0fs, want about 3600s", backoffLeft)
+	}
+}
+
+// TestResetStuckDeliveries_NewerAlertBatchPending covers a stuck alert delivery
+// whose rule and channel already have a newer pending batch. Recovery must reset
+// it, and must still reset the stuck deliveries of other rules and channels.
+func TestResetStuckDeliveries_NewerAlertBatchPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "StuckBatch")
+	otherOrgID, otherRuleID, otherChanID := setupDeliveryFixture(t, s, ctx, "StuckOther")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-2001"}`), 0)
+	mustUpsertDelivery(t, s, ctx, otherOrgID, otherRuleID, otherChanID, []byte(`{"cve_id":"CVE-2025-2003"}`), 0)
+	claimAndMarkProcessing(t, s, ctx)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-2002"}`), 0)
+
+	if err := s.ResetStuckDeliveries(ctx, 0); err != nil {
+		t.Fatalf("ResetStuckDeliveries: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries = %d, want 0", n)
+	}
+	if n := countAlertDeliveries(t, s, ctx, otherRuleID, otherChanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries for the other rule = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-2001", "CVE-2025-2002")
+	assertPendingAlertCVEs(t, s, ctx, otherRuleID, otherChanID, "CVE-2025-2003")
+}
+
+// TestResetStuckDeliveries_TwoAlertBatchesStuck covers two stuck alert deliveries
+// for the same rule and channel: the second batch was claimed while the first was
+// still in flight. Recovery resets both in one statement.
+func TestResetStuckDeliveries_TwoAlertBatchesStuck(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "StuckTwo")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-3001"}`), 0)
+	claimAndMarkProcessing(t, s, ctx)
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-3002"}`), 0)
+	claimAndMarkProcessing(t, s, ctx)
+
+	if err := s.ResetStuckDeliveries(ctx, 0); err != nil {
+		t.Fatalf("ResetStuckDeliveries: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "processing"); n != 0 {
+		t.Errorf("processing deliveries = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-3001", "CVE-2025-3002")
+}
+
+// TestReplayAlertDelivery_NewerBatchPending covers replaying a failed alert
+// delivery while a newer batch for the same rule and channel is pending.
+func TestReplayAlertDelivery_NewerBatchPending(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ReplayBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-4001"}`), 0)
+	ids := claimAndMarkProcessing(t, s, ctx)
+	failure := store.DeliveryFailure{Detail: "permanent failure", ForOrg: "permanent failure"}
+	if err := s.ExhaustDelivery(ctx, ids[0], failure); err != nil {
+		t.Fatalf("ExhaustDelivery: %v", err)
+	}
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-4002"}`), 0)
+
+	if err := s.ReplayDelivery(ctx, ids[0], orgID); err != nil {
+		t.Fatalf("ReplayDelivery: %v", err)
+	}
+
+	if n := countAlertDeliveries(t, s, ctx, ruleID, chanID, "failed"); n != 0 {
+		t.Errorf("failed deliveries = %d, want 0", n)
+	}
+	assertPendingAlertCVEs(t, s, ctx, ruleID, chanID, "CVE-2025-4001", "CVE-2025-4002")
 }
 
 func TestDigestCVEs(t *testing.T) {

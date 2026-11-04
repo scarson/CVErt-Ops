@@ -37,7 +37,7 @@ type ClaimPendingDeliveriesRow struct {
 }
 
 // ABOUTME: sqlc queries for the notification_deliveries delivery job queue.
-// ABOUTME: Claim uses FOR UPDATE SKIP LOCKED; debounce uses ON CONFLICT partial index.
+// ABOUTME: Claim uses FOR UPDATE SKIP LOCKED and closes the alert batch; debounce uses ON CONFLICT partial index.
 func (q *Queries) ClaimPendingDeliveries(ctx context.Context, limit int32) ([]ClaimPendingDeliveriesRow, error) {
 	rows, err := q.db.QueryContext(ctx, claimPendingDeliveries, limit)
 	if err != nil {
@@ -270,7 +270,7 @@ func (q *Queries) ListDeliveries(ctx context.Context, arg ListDeliveriesParams) 
 
 const markDeliveriesProcessing = `-- name: MarkDeliveriesProcessing :exec
 UPDATE notification_deliveries
-SET status = 'processing', last_attempted_at = now(), updated_at = now()
+SET status = 'processing', batch_open = false, last_attempted_at = now(), updated_at = now()
 WHERE id = ANY($1::uuid[])
 `
 
@@ -329,6 +329,7 @@ func (q *Queries) OrphanedAlertEvents(ctx context.Context, limit int32) ([]Orpha
 const replayDelivery = `-- name: ReplayDelivery :exec
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,
@@ -350,7 +351,7 @@ func (q *Queries) ReplayDelivery(ctx context.Context, arg ReplayDeliveryParams) 
 
 const resetStuckDeliveries = `-- name: ResetStuckDeliveries :exec
 UPDATE notification_deliveries
-SET status = 'pending', send_after = now(), updated_at = now()
+SET status = 'pending', batch_open = false, send_after = now(), updated_at = now()
 WHERE status = 'processing'
   AND updated_at < now() - ($1 * interval '1 second')
 `
@@ -364,6 +365,7 @@ func (q *Queries) ResetStuckDeliveries(ctx context.Context, dollar_1 interface{}
 const retryDelivery = `-- name: RetryDelivery :exec
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = attempt_count + 1,
     send_after    = now() + ($2 * interval '1 second'),
     last_error    = $3,
@@ -380,6 +382,7 @@ type RetryDeliveryParams struct {
 }
 
 // Sets status back to pending with incremented attempt_count and backoff send_after.
+// The row stays a closed batch: newly matched CVEs go to the open batch instead.
 func (q *Queries) RetryDelivery(ctx context.Context, arg RetryDeliveryParams) error {
 	_, err := q.db.ExecContext(ctx, retryDelivery,
 		arg.ID,

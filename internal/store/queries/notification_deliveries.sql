@@ -1,5 +1,5 @@
 -- ABOUTME: sqlc queries for the notification_deliveries delivery job queue.
--- ABOUTME: Claim uses FOR UPDATE SKIP LOCKED; debounce uses ON CONFLICT partial index.
+-- ABOUTME: Claim uses FOR UPDATE SKIP LOCKED and closes the alert batch; debounce uses ON CONFLICT partial index.
 
 -- name: ClaimPendingDeliveries :many
 SELECT id, org_id, rule_id, channel_id, kind, report_id, attempt_count, payload
@@ -11,7 +11,7 @@ FOR UPDATE SKIP LOCKED;
 
 -- name: MarkDeliveriesProcessing :exec
 UPDATE notification_deliveries
-SET status = 'processing', last_attempted_at = now(), updated_at = now()
+SET status = 'processing', batch_open = false, last_attempted_at = now(), updated_at = now()
 WHERE id = ANY($1::uuid[]);
 
 -- name: CompleteDelivery :exec
@@ -21,8 +21,10 @@ WHERE id = $1;
 
 -- name: RetryDelivery :exec
 -- Sets status back to pending with incremented attempt_count and backoff send_after.
+-- The row stays a closed batch: newly matched CVEs go to the open batch instead.
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = attempt_count + 1,
     send_after    = now() + ($2 * interval '1 second'),
     last_error    = $3,
@@ -43,7 +45,7 @@ WHERE id = $1;
 -- name: ResetStuckDeliveries :exec
 -- Recovery: reset processing rows that haven't been updated in $1 seconds.
 UPDATE notification_deliveries
-SET status = 'pending', send_after = now(), updated_at = now()
+SET status = 'pending', batch_open = false, send_after = now(), updated_at = now()
 WHERE status = 'processing'
   AND updated_at < now() - ($1 * interval '1 second');
 
@@ -93,6 +95,7 @@ VALUES ($1, $2, $3, 'digest', $4, now());
 -- name: ReplayDelivery :exec
 UPDATE notification_deliveries
 SET status        = 'pending',
+    batch_open    = false,
     attempt_count = 0,
     send_after    = now(),
     last_error    = NULL,

@@ -384,7 +384,7 @@ When suppression is necessary, prefer **inline `//nolint:linter // reason`** ove
 
 **Commit frequently** — aim for small, focused commits that are individually CI-passing. Each logical unit (a package, a migration, a handler) should be its own commit. Large commits make review harder and lose context if context is compacted.
 
-**Update `dev/implementation-log.md` after each commit** — record what was built, key implementation decisions, gotchas discovered, and quality check results. This is the primary mechanism for preserving context across compacted sessions.
+**Add an entry to `dev/implementation-log/` after each commit** — one new file per entry, named `YYYY-MM-DDTHHMMZ-<slug>.md` (naming rules in `dev/implementation-log/README.md`). Record what was built, key implementation decisions, gotchas discovered, and quality check results. This is the primary mechanism for preserving context across compacted sessions.
 
 ## Project Layout
 
@@ -456,7 +456,7 @@ Use these proactively — don't wait to be asked.
 | `plan-check` | Before merging any feature — specify the PLAN.md section |
 | `security-review` | Before merging auth, webhook, tenant-isolation, or public API code |
 | `dependency-check` | Before adding any new dependency or specifying one in a plan |
-| `implementation-log` | When finishing a phase or feature block — appends a structured entry |
+| `implementation-log` | When finishing a phase or feature block — writes a structured entry file to `dev/implementation-log/` |
 | `project-health-review` | Periodic critical review — adversarial multi-agent quality assessment |
 
 **Subagents** (if your environment supports them):

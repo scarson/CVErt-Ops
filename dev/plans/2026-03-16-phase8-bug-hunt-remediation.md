@@ -1173,5 +1173,5 @@ cd web && npm run type-check
 After all agents complete:
 1. Run the full verification checklist above
 2. Review all changes with `git diff dev`
-3. Update `dev/implementation-log.md` with a summary of what was fixed
+3. Add an entry to `dev/implementation-log/` summarizing what was fixed
 4. Consider running the bug hunter trio again on the changed files as a regression check

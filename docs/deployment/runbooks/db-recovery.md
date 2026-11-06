@@ -4,14 +4,20 @@
 
 ### Logical Backup (pg_dump)
 
+In the production stack Postgres publishes no host port, so these commands run inside its container. Define the Compose invocation once, from the directory holding the checkout and `.env`. The examples use the default `POSTGRES_USER` and `POSTGRES_DB` (`cvert_ops`):
+
+```bash
+COMPOSE="docker compose -f docker/compose.yml -f docker/compose.prod.yml --profile app --env-file .env"
+```
+
 Best for small-to-medium databases and point-in-time snapshots:
 
 ```bash
 # Custom format (compressed, supports parallel restore)
-pg_dump -Fc -h localhost -U cvert cvert_ops > backup_$(date +%Y%m%d_%H%M%S).dump
+$COMPOSE exec -T postgres pg_dump -Fc -U cvert_ops cvert_ops > backup_$(date +%Y%m%d_%H%M%S).dump
 
 # Plain SQL (human-readable, larger)
-pg_dump -h localhost -U cvert cvert_ops > backup_$(date +%Y%m%d_%H%M%S).sql
+$COMPOSE exec -T postgres pg_dump -U cvert_ops cvert_ops > backup_$(date +%Y%m%d_%H%M%S).sql
 ```
 
 ### Automated Daily Backup
@@ -21,9 +27,11 @@ pg_dump -h localhost -U cvert cvert_ops > backup_$(date +%Y%m%d_%H%M%S).sql
 # /opt/cvert-ops/backup.sh
 BACKUP_DIR=/backups/cvert-ops
 RETENTION_DAYS=30
+COMPOSE="docker compose -f docker/compose.yml -f docker/compose.prod.yml --profile app --env-file .env"
 
+cd /opt/cvert-ops || exit 1
 mkdir -p "$BACKUP_DIR"
-pg_dump -Fc -h localhost -U cvert cvert_ops > "$BACKUP_DIR/cvert_ops_$(date +%Y%m%d_%H%M%S).dump"
+$COMPOSE exec -T postgres pg_dump -Fc -U cvert_ops cvert_ops > "$BACKUP_DIR/cvert_ops_$(date +%Y%m%d_%H%M%S).dump"
 
 # Clean up old backups
 find "$BACKUP_DIR" -name "cvert_ops_*.dump" -mtime +$RETENTION_DAYS -delete
@@ -35,32 +43,22 @@ Add to cron:
 0 2 * * * /opt/cvert-ops/backup.sh >> /var/log/cvert-backup.log 2>&1
 ```
 
-### Docker Compose Backup
-
-If PostgreSQL runs in Docker:
-
-```bash
-docker compose exec -T postgres pg_dump -Fc -U cvert cvert_ops > backup.dump
-```
-
 ## Restore
 
 ### Full Restore from pg_dump
 
 ```bash
 # Stop the application
-docker compose -f docker/compose.yml -f docker/compose.prod.yml \
-  --profile app stop app
+$COMPOSE stop app
 
 # Restore (custom format)
-pg_restore -h localhost -U cvert -d cvert_ops --clean --if-exists backup.dump
+$COMPOSE exec -T postgres pg_restore -U cvert_ops -d cvert_ops --clean --if-exists < backup.dump
 
 # Restore (plain SQL)
-psql -h localhost -U cvert -d cvert_ops < backup.sql
+$COMPOSE exec -T postgres psql -U cvert_ops -d cvert_ops < backup.sql
 
 # Restart
-docker compose -f docker/compose.yml -f docker/compose.prod.yml \
-  --profile app start app
+$COMPOSE start app
 ```
 
 ### Restore to a Fresh Database
@@ -68,29 +66,33 @@ docker compose -f docker/compose.yml -f docker/compose.prod.yml \
 If the database is corrupted beyond repair:
 
 ```bash
-# Drop and recreate
-psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS cvert_ops;"
-psql -h localhost -U postgres -c "CREATE DATABASE cvert_ops OWNER cvert;"
+# Stop the application so nothing holds a connection
+$COMPOSE stop app
+
+# Drop and recreate, connected to the maintenance database
+$COMPOSE exec -T postgres psql -U cvert_ops -d postgres -c "DROP DATABASE IF EXISTS cvert_ops;"
+$COMPOSE exec -T postgres psql -U cvert_ops -d postgres -c "CREATE DATABASE cvert_ops OWNER cvert_ops;"
 
 # Restore
-pg_restore -h localhost -U cvert -d cvert_ops backup.dump
+$COMPOSE exec -T postgres pg_restore -U cvert_ops -d cvert_ops < backup.dump
 
 # Restart application (auto-migrate will run if needed)
-docker compose -f docker/compose.yml -f docker/compose.prod.yml \
-  --profile app restart app
+$COMPOSE start app
 ```
+
+The `cvert_ops_app` role lives in the cluster, not the database, so it and its password survive the drop. If the data volume itself was lost, Postgres recreates the role from `APP_DB_PASSWORD` when it initializes the new volume.
 
 ### Verify After Restore
 
 ```bash
 # Check readiness
-curl -s http://localhost:8080/readyz
+curl -s https://your-domain.com/readyz
 
 # Run doctor
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/admin/doctor
+curl -s -H "Authorization: Bearer $TOKEN" https://your-domain.com/api/v1/admin/doctor
 
 # Check migration status
-docker compose exec app /cvert-ops doctor
+$COMPOSE exec app /cvert-ops doctor
 ```
 
 ## Disaster Recovery Checklist

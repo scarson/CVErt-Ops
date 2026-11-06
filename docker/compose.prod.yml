@@ -1,26 +1,34 @@
 # CVErt Ops — production overlay
 #
-# Usage: docker compose -f docker/compose.yml -f docker/compose.prod.yml --profile app up -d
+# Usage: docker compose -f docker/compose.yml -f docker/compose.prod.yml --profile app --env-file .env up -d
 #
 # This file overrides dev settings for production use. It does NOT modify
 # docker/compose.yml — it is applied as a Docker Compose merge overlay.
 #
 # Required env vars (in .env or exported):
-#   POSTGRES_PASSWORD    — strong random password
+#   POSTGRES_PASSWORD    — strong random password (openssl rand -hex 32)
+#   APP_DB_PASSWORD      — strong random password (openssl rand -hex 32)
 #   JWT_SECRET           — ≥32 random bytes
 #   CADDY_HOST           — your public domain (e.g., cvert.example.com)
 #   EXTERNAL_URL         — https://<CADDY_HOST>
 #
 # Changes from dev:
 #   - Production env defaults (APP_ENV, LOG_LEVEL, LOG_FORMAT, REGISTRATION_MODE)
+#   - Every app setting comes from .env (see the app service below)
+#   - Only Caddy publishes host ports; Postgres has no route to the host
+#   - Mailpit does not run (add --profile mailpit to run it, for example on staging)
 #   - Resource limits on all containers
 #   - Log rotation (json-file driver, 10 MB per file, 5 files)
-#   - App metrics port (9090) on internal network only (not exposed to host)
 #   - Tighter health check intervals
 
 services:
 
   postgres:
+    # Reachable only by the app and migrate services. Backups and psql sessions
+    # go through `docker compose exec postgres`.
+    ports: !reset []
+    networks: !override
+      - cvert-data-net
     deploy:
       resources:
         limits:
@@ -35,9 +43,10 @@ services:
         max-file: "5"
 
   mailpit:
-    # Mailpit is typically not used in production. Override with a real SMTP
-    # relay by setting SMTP_HOST/SMTP_PORT/SMTP_PASSWORD in .env. If you still
-    # want mailpit running (e.g., staging), this block keeps it resource-bounded.
+    # Mailpit is a development mail trap. Production mail goes to the relay named
+    # by SMTP_HOST and SMTP_PORT in .env.
+    profiles: ["mailpit"]
+    ports: !reset []
     deploy:
       resources:
         limits:
@@ -62,12 +71,121 @@ services:
         max-file: "3"
 
   app:
+    # Caddy reaches the app on cvert-public-net; Prometheus can scrape port 9090
+    # from a container on that network.
+    ports: !reset []
     environment:
       APP_ENV:            production
       LOG_LEVEL:          ${LOG_LEVEL:-info}
       LOG_FORMAT:         ${LOG_FORMAT:-json}
       REGISTRATION_MODE:  ${REGISTRATION_MODE:-invite-only}
       COOKIE_SECURE:      "true"
+
+      # Settings below take their value from .env. A setting absent from .env is
+      # not passed to the container, so the app's own default applies. Each one is
+      # listed rather than loading .env with env_file, which would also hand the
+      # app POSTGRES_PASSWORD. docker/compose_test.go fails when a setting the
+      # binary reads is missing here.
+
+      # Database
+      DB_MAX_CONNS:
+      DB_MAX_CONN_IDLE_TIME:
+      DB_STATEMENT_TIMEOUT_MS:
+      DB_LONG_STATEMENT_TIMEOUT_MS:
+
+      # Server
+      LISTEN_ADDR:
+      METRICS_PORT:
+      FRONTEND_URL:
+      CORS_ALLOWED_ORIGINS:
+      CVERTOPS_SECRETS_FILE:
+
+      # Auth
+      JWT_SECRET_PREVIOUS:
+      JWT_ALGORITHM:
+      ARGON2_MAX_CONCURRENT:
+      PASSWORD_RESET_TOKEN_TTL:
+      PASSWORD_RESET_MAX_PER_HOUR:
+      EMAIL_VERIFICATION_TOKEN_TTL:
+      EMAIL_VERIFICATION_MAX_PER_HOUR:
+      LOCKOUT_THRESHOLD:
+      LOCKOUT_DURATION:
+      MFA_REQUIRED_SITE_ADMINS:
+      MFA_REQUIRED_ORG_OWNERS:
+      MFA_EMAIL_OTP_TTL:
+      MFA_EMAIL_OTP_MAX_PER_HOUR:
+      MFA_CHALLENGE_MAX_ATTEMPTS:
+      MFA_PENDING_TOKEN_TTL:
+
+      # OAuth and SSO
+      GITHUB_CLIENT_ID:
+      GITHUB_CLIENT_SECRET:
+      GOOGLE_CLIENT_ID:
+      GOOGLE_CLIENT_SECRET:
+      SSO_ENCRYPTION_KEY:
+      SSO_ENCRYPTION_KEY_PREVIOUS:
+      SCIM_RATE_LIMIT:
+
+      # Email
+      SMTP_HOST:
+      SMTP_PORT:
+      SMTP_FROM:
+      SMTP_USERNAME:
+      SMTP_PASSWORD:
+      SMTP_TLS:
+
+      # AI
+      GEMINI_API_KEY:
+      GEMINI_MODEL:
+      GEMINI_TIMEOUT:
+      GEMINI_MOCK:
+      AI_QUOTA_ENABLED:
+      AI_NL_SEARCH_LIMIT_FREE:
+      AI_NL_SEARCH_LIMIT_PRO:
+      AI_NL_SEARCH_LIMIT_ENTERPRISE:
+      AI_SUMMARIZE_LIMIT_FREE:
+      AI_SUMMARIZE_LIMIT_PRO:
+      AI_SUMMARIZE_LIMIT_ENTERPRISE:
+      AI_CACHE_NL_SEARCH_TTL:
+      AI_CACHE_SUMMARIZE_TTL:
+      AI_LOG_RETENTION_DAYS:
+
+      # SIEM
+      SIEM_SYSLOG_ADDR:
+      SIEM_SYSLOG_FORMAT:
+
+      # Feeds
+      NVD_API_KEY:
+      GITHUB_TOKEN:
+      CVERTOPS_FEEDS_DIR:
+      FEED_SCHEDULER_ENABLED:
+
+      # Notifications
+      NOTIFY_MAX_CONCURRENT_PER_ORG:
+      NOTIFY_DEBOUNCE_SECONDS:
+      WEBHOOK_SECRET_GRACE_HOURS:
+      NOTIFY_CLAIM_BATCH_SIZE:
+      NOTIFY_MAX_ATTEMPTS:
+      NOTIFY_BACKOFF_BASE_SECONDS:
+      WEBHOOK_PRIVATE_HOSTS:
+      WEBHOOK_PRIVATE_CIDRS:
+      WEBHOOK_PRIVATE_PORTS:
+
+      # Rate limiting
+      TRUSTED_PROXIES:
+      RATE_LIMIT_EVICT_TTL:
+
+      # Data retention
+      RETENTION_CLEANUP_ENABLED:
+      RETENTION_CLEANUP_BATCH_SIZE:
+      RETENTION_RAW_PAYLOAD_DAYS:
+      RETENTION_FEED_FETCH_LOG_DAYS:
+      RETENTION_ALERT_EVENTS_DAYS:
+      RETENTION_NOTIFICATION_DELIVERIES_DAYS:
+      RETENTION_AUDIT_LOG_DAYS:
+      RETENTION_JOB_QUEUE_HOURS:
+      RETENTION_SECURITY_EVENTS_DAYS:
+      RETENTION_MAX_RUNTIME_SECONDS:
     deploy:
       resources:
         limits:
@@ -80,12 +198,6 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
-    # Metrics port on internal network only — reachable by Prometheus on cvert-data-net
-    # but not exposed to the public internet.
-    ports:
-      - target: 9090
-        published: 9090
-        protocol: tcp
 
   caddy:
     deploy:

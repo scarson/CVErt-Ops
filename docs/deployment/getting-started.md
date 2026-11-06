@@ -16,36 +16,42 @@ cd cvert-ops
 cp .env.example .env
 ```
 
-Edit `.env` and set the required variables:
+Edit `.env` and set the required variables. Docker Compose builds the app's `DATABASE_URL` from these; `DATABASE_URL` in `.env` is only for running the binary outside Compose:
 
 ```bash
 # Required
-DATABASE_URL=postgres://cvert:yourpassword@localhost:5432/cvert_ops?sslmode=require
+POSTGRES_PASSWORD=generate-a-random-hex-string
+APP_DB_PASSWORD=generate-a-different-random-hex-string
 JWT_SECRET=generate-a-random-32-byte-hex-string
 
 # Required for production
+CADDY_HOST=cvert.example.com
 EXTERNAL_URL=https://cvert.example.com
-COOKIE_SECURE=true
 
 # SMTP — replace with your mail provider in production
-SMTP_HOST=localhost
-SMTP_PORT=1025
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_TLS=true
 SMTP_FROM=noreply@example.com
 ```
 
-Generate a strong JWT secret:
+Generate each secret separately. The two database passwords go into connection URLs, so hex avoids characters that would need URL encoding:
 
 ```bash
 openssl rand -hex 32
 ```
 
-## 2. Generate TLS Certificates (Dev Postgres)
+For local development the values already in `.env.example` work for everything except `JWT_SECRET`.
+
+Postgres applies `APP_DB_PASSWORD` when it first initializes an empty data volume. To change it later, follow the [app database password runbook](runbooks/app-db-password.md).
+
+## 2. Generate the Postgres TLS Certificate
 
 ```bash
 bash docker/postgres-tls/generate-cert.sh
 ```
 
-This creates self-signed TLS certificates for the dev Postgres container. Idempotent — skips if certs already exist.
+This creates the self-signed certificate the Postgres container serves, in development and production. The app connects with `sslmode=require` over the internal Docker network. Idempotent — skips if certs already exist.
 
 ## 3. Start Services
 
@@ -66,7 +72,7 @@ docker compose -f docker/compose.yml -f docker/compose.prod.yml \
 
 ## 4. Run Migrations
 
-Migrations run automatically on app startup (`cvert-ops serve` calls auto-migrate). For manual control:
+With `--profile app`, the one-shot `migrate` service runs as the Postgres superuser before the app starts. For manual control when running the binary outside Compose:
 
 ```bash
 go run ./cmd/cvert-ops migrate
@@ -75,15 +81,16 @@ go run ./cmd/cvert-ops migrate
 Or with the Docker image:
 
 ```bash
-docker compose -f docker/compose.yml --profile app run --rm migrate
+docker compose -f docker/compose.yml --env-file .env --profile app run --rm migrate
 ```
 
 ## 5. Create First Admin User
 
 Register the first user through the API or web UI. Then promote them to site admin via the database:
 
-```sql
-UPDATE users SET is_site_admin = true WHERE email = 'admin@example.com';
+```bash
+docker compose -f docker/compose.yml --env-file .env exec postgres psql -U cvert_ops -d cvert_ops \
+  -c "UPDATE users SET is_site_admin = true WHERE email = 'admin@example.com';"
 ```
 
 Once you have a site admin, they can manage all users, organizations, and system settings through the admin UI at `/admin/dashboard`.
@@ -91,6 +98,12 @@ Once you have a site admin, they can manage all users, organizations, and system
 ## 6. Verify Installation
 
 Run the built-in doctor command to check system health:
+
+```bash
+docker compose -f docker/compose.yml --env-file .env --profile app exec app /cvert-ops doctor
+```
+
+Or outside Compose:
 
 ```bash
 go run ./cmd/cvert-ops doctor
@@ -114,11 +127,12 @@ All checks should show `pass`. Any `warn` or `fail` status includes a message ex
 | Endpoint | URL |
 |----------|-----|
 | Web UI | `http://localhost:5173` (dev) or `https://your-domain.com` (prod) |
-| API | `http://localhost:8080/api/v1/` (dev) |
+| API | `http://localhost:8080/api/v1/` (dev) or `https://your-domain.com/api/v1/` (prod) |
 | Mailpit | `http://localhost:8025` (dev only) |
-| Healthz | `http://localhost:8080/healthz` |
-| Readyz | `http://localhost:8080/readyz` |
-| Metrics | `http://localhost:8080/metrics` |
+| Healthz | `http://localhost:8080/healthz` (dev) or `https://your-domain.com/healthz` (prod) |
+| Readyz | `http://localhost:8080/readyz` (dev) or `https://your-domain.com/readyz` (prod) |
+
+In production only Caddy publishes host ports, so everything else goes through your domain or `docker compose exec`.
 
 ## Environment Variables Reference
 
@@ -126,7 +140,9 @@ All checks should show `pass`. Any `warn` or `fail` status includes a message ex
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
+| `POSTGRES_PASSWORD` | Postgres superuser password (Docker Compose) |
+| `APP_DB_PASSWORD` | Password of the restricted `cvert_ops_app` role (Docker Compose) |
+| `DATABASE_URL` | PostgreSQL connection string (running the binary outside Compose; Compose builds it) |
 | `JWT_SECRET` | HMAC secret for JWT signing (≥32 bytes) |
 
 ### Server
@@ -188,6 +204,7 @@ All checks should show `pass`. Any `warn` or `fail` status includes a message ex
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NVD_API_KEY` | (none) | NVD API key (recommended for higher rate limits) |
+| `GITHUB_TOKEN` | (none) | GitHub token for the GHSA feed (recommended for higher rate limits) |
 | `FEED_SCHEDULER_ENABLED` | `true` | Enable automatic feed scheduling |
 
 ## Next Steps

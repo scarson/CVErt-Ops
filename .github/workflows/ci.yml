@@ -237,6 +237,16 @@ jobs:
       - name: build
         run: go build ./cmd/cvert-ops
 
+  stack-smoke:
+    name: "Stack: Production Compose"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: start the production stack and check it serves requests
+        run: bash docker/smoke-test.sh
+
   build-web:
     name: "Build: Web"
     runs-on: ubuntu-latest

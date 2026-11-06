@@ -297,6 +297,7 @@ Mailpit UI: http://localhost:8025
 - `cve_search_index(cve_id, fts_document tsvector)` is a separate 1:1 table — never put FTS on `cves`; GIN rewrites on every timestamp/score update cause severe write amplification
 - `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: normalize CVSS vectors to canonical spec metric order; sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
 - Merge re-reads all `cve_sources` rows and recomputes the canonical `cves` row from scratch on every source write — not incremental; field precedence is per-field (§5.1)
+- `cves.severity` is stored in the case the feed sent; compare with `lower(cves.severity)` (implementation-pitfalls.md ARCH-46)
 
 **Feed adapters**
 - Implement `FeedAdapter` interface; pure functions with injected HTTP client; each manages its own upstream rate limiter

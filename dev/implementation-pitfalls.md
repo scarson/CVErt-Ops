@@ -2656,6 +2656,20 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 
 ---
 
+### ARCH-46: `cves.severity` Is Stored in the Case the Feed Sent
+
+**The Flaw:** The NVD and MITRE adapters store severity in uppercase and the GHSA adapter in lowercase, while the rule DSL, digest thresholds and the web UI's filter use lowercase, and all of them compared with `=`.
+
+**Why It Matters:** Measured on 2026-11-06 with live NVD data: a rule on `severity eq critical` matched no NVD-scored CVE, a digest with a severity threshold left out every one, and the web UI's severity filter returned nothing. Each reported success.
+
+**Why Tests Missed It:** Store tests seeded lowercase values and API tests seeded and queried uppercase ones, so each side agreed with itself.
+
+**The Fix:** Compare with `lower(cves.severity)` and lowercase input. Do not normalize the stored value without a plan for `material_hash`, which includes severity: a changed hash fires alerts for every matching rule.
+
+**The Lesson:** When values cross a boundary between components, test with what the real source sends. Seeding the value a query expects proves only that the query matches itself.
+
+---
+
 ### Review Checklist
 
 - [ ] `import _ "time/tzdata"` present in `main.go`?

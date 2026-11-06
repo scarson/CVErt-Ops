@@ -18,7 +18,7 @@ const (
 
 type fieldSpec struct {
 	kind       fieldKind
-	sqlExpr    string   // unaliased column reference; empty for kindAffected
+	sqlExpr    string // unaliased column reference; empty for kindAffected
 	validOps   []string
 	nullable   bool
 	enumValues []string // non-nil for kindEnum and kindAffected with enum sub-fields
@@ -30,29 +30,30 @@ var ecosystemEnum = []string{
 	"hex", "pub", "swift", "cocoapods", "packagist",
 }
 
-var numericOps     = []string{"gt", "gte", "lt", "lte", "eq", "neq"}
-var setOps         = []string{"eq", "neq", "in", "not_in"}
-var arrayOps       = []string{"contains_any", "contains_all"}
-var textOps        = []string{"contains", "starts_with", "ends_with", "regex"}
+var numericOps = []string{"gt", "gte", "lt", "lte", "eq", "neq"}
+var setOps = []string{"eq", "neq", "in", "not_in"}
+var arrayOps = []string{"contains_any", "contains_all"}
+var textOps = []string{"contains", "starts_with", "ends_with", "regex"}
 var textOpsNoRegex = []string{"contains", "starts_with", "ends_with"}
-var ftsOps         = []string{"matches"}
+var ftsOps = []string{"matches"}
 
 // fields is the authoritative registry of all supported DSL fields.
 var fields = map[string]fieldSpec{
-	"cve_id":                   {kindString,   "cves.cve_id",                   append(setOps, "regex"), false, nil},
-	"severity":                 {kindEnum,     "cves.severity",                 setOps,        false, severityEnum},
-	"cvss_v3_score":            {kindFloat,    "cves.cvss_v3_score",            numericOps,    true,  nil},
-	"cvss_v4_score":            {kindFloat,    "cves.cvss_v4_score",            numericOps,    true,  nil},
-	"epss_score":               {kindFloat,    "cves.epss_score",               numericOps,    true,  nil},
-	"date_published":           {kindTime,     "cves.date_published",           numericOps,    true,  nil},
-	"date_modified_source_max": {kindTime,     "cves.date_modified_source_max", numericOps,    false, nil},
-	"cwe_ids":                  {kindStrArray, "cves.cwe_ids",                  arrayOps,      false, nil},
-	"in_cisa_kev":              {kindBool,     "cves.in_cisa_kev",              []string{"eq"}, false, nil},
-	"exploit_available":        {kindBool,     "cves.exploit_available",        []string{"eq"}, false, nil},
-	"affected.ecosystem":       {kindAffected, "",                              setOps,         false, ecosystemEnum},
-	"affected.package":         {kindAffected, "",                              textOpsNoRegex, false, nil},
-	"description_primary":      {kindText,     "cves.description_primary",      textOps,        false, nil},
-	"fts_query":               {kindFTS,      "",                              ftsOps,         false, nil},
+	"cve_id": {kindString, "cves.cve_id", append(setOps, "regex"), false, nil},
+	// Rule values are lowercase, and feeds store severity in either case.
+	"severity":                 {kindEnum, "lower(cves.severity)", setOps, false, severityEnum},
+	"cvss_v3_score":            {kindFloat, "cves.cvss_v3_score", numericOps, true, nil},
+	"cvss_v4_score":            {kindFloat, "cves.cvss_v4_score", numericOps, true, nil},
+	"epss_score":               {kindFloat, "cves.epss_score", numericOps, true, nil},
+	"date_published":           {kindTime, "cves.date_published", numericOps, true, nil},
+	"date_modified_source_max": {kindTime, "cves.date_modified_source_max", numericOps, false, nil},
+	"cwe_ids":                  {kindStrArray, "cves.cwe_ids", arrayOps, false, nil},
+	"in_cisa_kev":              {kindBool, "cves.in_cisa_kev", []string{"eq"}, false, nil},
+	"exploit_available":        {kindBool, "cves.exploit_available", []string{"eq"}, false, nil},
+	"affected.ecosystem":       {kindAffected, "", setOps, false, ecosystemEnum},
+	"affected.package":         {kindAffected, "", textOpsNoRegex, false, nil},
+	"description_primary":      {kindText, "cves.description_primary", textOps, false, nil},
+	"fts_query":                {kindFTS, "", ftsOps, false, nil},
 }
 
 // FieldDescription describes a queryable field for external consumers.

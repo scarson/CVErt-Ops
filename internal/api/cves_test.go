@@ -658,6 +658,42 @@ func TestListCVEs_SeverityFilter(t *testing.T) {
 	}
 }
 
+// TestListCVEs_SeverityFilterMatchesStoredCase verifies the filter accepts either
+// case and matches values as feeds store them: NVD and MITRE uppercase, GHSA lowercase.
+func TestListCVEs_SeverityFilterMatchesStoredCase(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	db.SeedTestCVE(t, "CVE-2026-1101", "CRITICAL", nil)
+	db.SeedTestCVE(t, "CVE-2026-1102", "critical", nil)
+	db.SeedTestCVE(t, "CVE-2026-1103", "LOW", nil)
+
+	for _, value := range []string{"critical", "CRITICAL"} {
+		t.Run(value, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?severity="+value, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Header.Set("Cookie", "access_token="+token)
+			resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+			if err != nil {
+				t.Fatalf("GET /cves: %v", err)
+			}
+			defer resp.Body.Close() //nolint:errcheck
+
+			var body cveListResponse
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if len(body.Items) != 2 {
+				t.Fatalf("items length = %d, want 2", len(body.Items))
+			}
+		})
+	}
+}
+
 // TestListCVEs_ResponseShape verifies the JSON structure of list response items
 // includes all expected fields.
 func TestListCVEs_ResponseShape(t *testing.T) {

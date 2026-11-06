@@ -1328,6 +1328,46 @@ func TestDigestCVEs_StatusFilter(t *testing.T) {
 	}
 }
 
+// TestDigestCVEs_SeverityMatchesStoredCase verifies a threshold, which is lowercase,
+// filters and ranks values as feeds store them: NVD and MITRE uppercase, GHSA lowercase.
+func TestDigestCVEs_SeverityMatchesStoredCase(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		cveID    string
+		severity string
+		score    float64
+	}{
+		{"CVE-2025-HIGH", "HIGH", 8.9},
+		{"CVE-2025-CRIT", "CRITICAL", 9.0},
+		{"CVE-2025-GHSA", "critical", 9.5},
+		{"CVE-2025-LOW", "LOW", 2.0},
+	} {
+		_, err := s.DB().ExecContext(ctx, `
+			INSERT INTO cves (cve_id, severity, cvss_v3_score, material_hash, date_modified_canonical)
+			VALUES ($1, $2, $3, $4, now())`,
+			tc.cveID, tc.severity, tc.score, uuid.New().String())
+		if err != nil {
+			t.Fatalf("insert %s: %v", tc.cveID, err)
+		}
+	}
+
+	rows, err := s.DigestCVEs(ctx, time.Now().Add(-time.Hour), []string{"critical", "high"}, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.CveID)
+	}
+	want := []string{"CVE-2025-GHSA", "CVE-2025-CRIT", "CVE-2025-HIGH"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("digest = %v, want %v", got, want)
+	}
+}
+
 func TestDigestCVEs_ExcludesSentVersions(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -133,8 +134,13 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.CVE
 	}
 
 	// Severity filter — IN ($1, $2, ...) is safe since severity has 5 possible values.
+	// Compared in lower case: feeds store it in either case, and clients may send either.
 	if len(p.Severity) > 0 {
-		sb = sb.Where(sq.Eq{"cves.severity": p.Severity})
+		lowered := make([]string, len(p.Severity))
+		for i, severity := range p.Severity {
+			lowered[i] = strings.ToLower(severity)
+		}
+		sb = sb.Where(sq.Eq{"lower(cves.severity)": lowered})
 	}
 
 	// CVSS score range.

@@ -209,7 +209,7 @@ SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
 FROM cves
 WHERE date_modified_canonical > $1
   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
-  AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
+  AND ($2::text[] IS NULL OR lower(severity) = ANY($2::text[]))
   AND NOT EXISTS (
       SELECT 1
       FROM jsonb_to_recordset($3::jsonb) AS sent(cve_id text, date_modified_canonical timestamptz)
@@ -217,7 +217,7 @@ WHERE date_modified_canonical > $1
         AND sent.date_modified_canonical = cves.date_modified_canonical
   )
 ORDER BY
-    CASE severity
+    CASE lower(severity)
         WHEN 'critical' THEN 1
         WHEN 'high'     THEN 2
         WHEN 'medium'   THEN 3

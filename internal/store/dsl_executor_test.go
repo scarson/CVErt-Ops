@@ -90,6 +90,42 @@ func TestExecuteDSLQuery_StatusFilter(t *testing.T) {
 	}
 }
 
+// TestExecuteDSLQuery_SeverityMatchesStoredCase verifies a rule, which only accepts
+// lowercase severities, matches values as feeds store them: NVD and MITRE uppercase,
+// GHSA lowercase.
+func TestExecuteDSLQuery_SeverityMatchesStoredCase(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	s.SeedTestCVE(t, "CVE-2024-NVD", "CRITICAL", nil)
+	s.SeedTestCVE(t, "CVE-2024-GHSA", "critical", nil)
+	s.SeedTestCVE(t, "CVE-2024-LOW", "LOW", nil)
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+	got := map[string]bool{}
+	for _, r := range results {
+		got[r.CveID] = true
+	}
+	if len(got) != 2 || !got["CVE-2024-NVD"] || !got["CVE-2024-GHSA"] {
+		t.Fatalf("matched %v, want CVE-2024-NVD and CVE-2024-GHSA", got)
+	}
+}
+
 func TestExecuteDSLQuery_Pagination(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

@@ -7,7 +7,8 @@
 Always back up before upgrading:
 
 ```bash
-pg_dump -Fc -h localhost -U cvert cvert_ops > backup_pre_upgrade_$(date +%Y%m%d_%H%M%S).dump
+docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+  exec -T postgres pg_dump -Fc -U cvert_ops cvert_ops > backup_pre_upgrade_$(date +%Y%m%d_%H%M%S).dump
 ```
 
 ### 2. Pull the Latest Image
@@ -89,12 +90,15 @@ docker compose -f docker/compose.yml -f docker/compose.prod.yml \
 If migration rollback doesn't cleanly restore the schema:
 
 ```bash
-# Drop and recreate the database
-psql -h localhost -U postgres -c "DROP DATABASE cvert_ops;"
-psql -h localhost -U postgres -c "CREATE DATABASE cvert_ops OWNER cvert;"
+COMPOSE="docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env"
+
+# Start only Postgres, then drop and recreate the database
+$COMPOSE up -d postgres
+$COMPOSE exec -T postgres psql -U cvert_ops -d postgres -c "DROP DATABASE cvert_ops;"
+$COMPOSE exec -T postgres psql -U cvert_ops -d postgres -c "CREATE DATABASE cvert_ops OWNER cvert_ops;"
 
 # Restore from backup
-pg_restore -h localhost -U cvert -d cvert_ops backup_pre_upgrade.dump
+$COMPOSE exec -T postgres pg_restore -U cvert_ops -d cvert_ops < backup_pre_upgrade.dump
 
 # Restart the previous version
 docker compose -f docker/compose.yml -f docker/compose.prod.yml \

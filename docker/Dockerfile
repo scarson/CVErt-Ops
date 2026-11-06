@@ -1,6 +1,17 @@
 # syntax=docker/dockerfile:1
 
-# ─── Stage 1: Build ───────────────────────────────────────────────────────────
+# ─── Stage 1: Frontend ────────────────────────────────────────────────────────
+# Builds the SPA that web/embed.go compiles into the binary.
+FROM node:24-alpine AS frontend
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY web/ ./
+RUN npm run build-only
+
+
+# ─── Stage 2: Build ───────────────────────────────────────────────────────────
 FROM golang:1.26-alpine AS builder
 
 # git is required by some go module tooling; ca-certificates for go get over TLS
@@ -19,6 +30,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # -trimpath: remove local file-system paths from the binary.
 # -s -w: strip symbol table and DWARF, reducing binary size ~30%.
 COPY . .
+COPY --from=frontend /web/dist ./web/dist
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux go build \
@@ -36,7 +48,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         ./cmd/healthcheck
 
 
-# ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
+# ─── Stage 3: Runtime ─────────────────────────────────────────────────────────
 # distroless/static-debian12 includes CA certificates and timezone data
 # while having no shell, no package manager, and minimal attack surface.
 # Decision D1 in PLAN.md explains this choice over scratch.

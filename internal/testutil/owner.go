@@ -39,17 +39,17 @@ var (
 // containers whose owner has exited.
 func ownedContainer(t testing.TB) testcontainers.CustomizeRequestOption {
 	t.Helper()
-	opt, err := ownerOption()
+	opt, err := OwnerOption()
 	if err != nil {
 		t.Fatalf("owner labels: %v", err)
 	}
 	return opt
 }
 
-// ownerOption is ownedContainer for callers without a testing.TB, such as the
+// OwnerOption is ownedContainer for callers without a testing.TB, such as the
 // shared Postgres cluster. A failed sweep is reported on stderr, not returned:
 // it must not stop the tests.
-func ownerOption() (testcontainers.CustomizeRequestOption, error) {
+func OwnerOption() (testcontainers.CustomizeRequestOption, error) {
 	ownerOnce.Do(func() {
 		ownLabels, ownerErr = ownerLabels()
 		if err := removeOrphanedContainers(context.Background()); err != nil {

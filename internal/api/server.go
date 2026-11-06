@@ -243,13 +243,16 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.Use(csrfProtect)
 	apiRouter.Use(noCacheMiddleware)
 	apiRouter.Use(rejectAPIKeyQueryParams)
-	humaConfig := huma.DefaultConfig("CVErt Ops API", "0.1.0")
-	humaConfig.Info.Description = "Vulnerability intelligence and alerting API"
-	api := humachi.New(apiRouter, humaConfig)
+	api := humachi.New(apiRouter, newHumaConfig())
 	srv.humaAPI = api
 	registerAuthRoutes(api, srv)
 	registerMFARoutes(api, srv)
 	registerCVERoutes(api, srv)
+
+	// Chi-backed routes below are declared separately for the served spec.
+	specOnlyAPI := newSpecOnlyAPI()
+	registerAllSpecOps(specOnlyAPI)
+	mergeSpecPaths(api, specOnlyAPI)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
 	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)

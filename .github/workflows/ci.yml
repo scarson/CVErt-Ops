@@ -213,6 +213,11 @@ jobs:
       - name: test
         run: npx vitest run
 
+      - name: generated API types match openapi.json
+        run: |
+          npm run generate-api
+          git diff --exit-code src/lib/api/schema.d.ts
+
   build:
     name: Build
     runs-on: ubuntu-latest

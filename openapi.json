@@ -5232,6 +5232,19 @@
         ],
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "An API key (cvo_...) in the Authorization header. Keys are never accepted in a query parameter.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "cookieAuth": {
+        "description": "The browser session cookie set by login.",
+        "in": "cookie",
+        "name": "access_token",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
@@ -5317,10 +5330,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Cross-org audit log",
         "tags": [
           "Admin System"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/config": {
@@ -5349,10 +5368,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "View runtime configuration",
         "tags": [
           "Admin System"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/deliveries": {
@@ -5407,10 +5432,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List deliveries",
         "tags": [
           "Admin Deliveries"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/deliveries/retry-failed": {
@@ -5449,10 +5480,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Bulk retry failed deliveries",
         "tags": [
           "Admin Deliveries"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/deliveries/{id}/retry": {
@@ -5491,10 +5528,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Retry delivery",
         "tags": [
           "Admin Deliveries"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/doctor": {
@@ -5523,10 +5566,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "System health diagnostics",
         "tags": [
           "Admin System"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/feeds": {
@@ -5554,10 +5603,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List feed sync status",
         "tags": [
           "Admin Feeds"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/feeds/{feed}/logs": {
@@ -5612,10 +5667,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List feed fetch logs",
         "tags": [
           "Admin Feeds"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/feeds/{feed}/pause": {
@@ -5653,10 +5714,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Pause feed sync",
         "tags": [
           "Admin Feeds"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/feeds/{feed}/resume": {
@@ -5694,10 +5761,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Resume feed sync",
         "tags": [
           "Admin Feeds"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/feeds/{feed}/run": {
@@ -5735,10 +5808,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Trigger feed sync",
         "tags": [
           "Admin Feeds"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/orgs": {
@@ -5785,10 +5864,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List organizations",
         "tags": [
           "Admin Orgs"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/orgs/{org_id}": {
@@ -5837,10 +5922,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update organization",
         "tags": [
           "Admin Orgs"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/orgs/{org_id}/usage": {
@@ -5880,10 +5971,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get organization usage",
         "tags": [
           "Admin Orgs"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/reindex": {
@@ -5911,10 +6008,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Trigger search reindex",
         "tags": [
           "Admin System"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/reload-config": {
@@ -5942,10 +6045,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Reload configuration from secrets file",
         "tags": [
           "Admin System"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/security-events": {
@@ -6046,10 +6155,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List security events",
         "tags": [
           "Admin Security Events"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/users": {
@@ -6096,10 +6211,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List users",
         "tags": [
           "Admin Users"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/users/{user_id}/disable": {
@@ -6138,10 +6259,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Disable user",
         "tags": [
           "Admin Users"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/users/{user_id}/enable": {
@@ -6180,10 +6307,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Enable user",
         "tags": [
           "Admin Users"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/users/{user_id}/reset-password": {
@@ -6222,10 +6355,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Force password reset",
         "tags": [
           "Admin Users"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/users/{user_id}/unlock": {
@@ -6264,10 +6403,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Unlock user",
         "tags": [
           "Admin Users"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/admin/version": {
@@ -6295,10 +6440,16 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Build version and metadata",
         "tags": [
           "Admin System"
-        ]
+        ],
+        "x-min-role": "site-admin"
       }
     },
     "/auth/change-password": {
@@ -6363,6 +6514,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Change the authenticated user's password",
         "tags": [
           "auth"
@@ -6533,6 +6689,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Accept an invitation and join the org",
         "tags": [
           "auth"
@@ -6637,7 +6798,8 @@
         "summary": "Log out and clear auth cookies",
         "tags": [
           "auth"
-        ]
+        ],
+        "x-own-credential": true
       }
     },
     "/auth/me": {
@@ -6676,6 +6838,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get the current user's profile and org memberships",
         "tags": [
           "auth"
@@ -6730,7 +6897,8 @@
         "tags": [
           "auth",
           "mfa"
-        ]
+        ],
+        "x-own-credential": true
       }
     },
     "/auth/mfa/email-otp/confirm": {
@@ -6795,7 +6963,8 @@
         "tags": [
           "auth",
           "mfa"
-        ]
+        ],
+        "x-own-credential": true
       }
     },
     "/auth/mfa/email-otp/setup": {
@@ -6839,6 +7008,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Send email OTP verification code for enrollment",
         "tags": [
           "auth",
@@ -6880,6 +7054,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List enrolled MFA methods and enforcement status",
         "tags": [
           "auth",
@@ -6938,6 +7117,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Remove an MFA method (requires password re-auth)",
         "tags": [
           "auth",
@@ -6989,6 +7173,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Regenerate recovery codes (requires password re-auth)",
         "tags": [
           "auth",
@@ -7065,7 +7254,8 @@
         "tags": [
           "auth",
           "mfa"
-        ]
+        ],
+        "x-own-credential": true
       }
     },
     "/auth/mfa/totp/setup": {
@@ -7116,6 +7306,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Generate TOTP secret and QR code URI",
         "tags": [
           "auth",
@@ -7178,7 +7373,8 @@
         "tags": [
           "auth",
           "mfa"
-        ]
+        ],
+        "x-own-credential": true
       }
     },
     "/auth/providers": {
@@ -7251,7 +7447,8 @@
         "summary": "Rotate the refresh token and issue a new access token",
         "tags": [
           "auth"
-        ]
+        ],
+        "x-own-credential": true
       }
     },
     "/auth/register": {
@@ -7331,6 +7528,11 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Resend email verification (requires authentication)",
         "tags": [
           "auth"
@@ -7574,6 +7776,14 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Search CVEs",
         "tags": [
           "CVEs"
@@ -7618,6 +7828,14 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get CVE detail",
         "tags": [
           "CVEs"
@@ -7662,6 +7880,14 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get CVE source payloads",
         "tags": [
           "CVEs"
@@ -7710,6 +7936,14 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create an organization",
         "tags": [
           "Organizations"
@@ -7754,10 +7988,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get an organization",
         "tags": [
           "Organizations"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-org",
@@ -7806,10 +8049,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update an organization",
         "tags": [
           "Organizations"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/ai/nl-search": {
@@ -7879,10 +8131,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Natural language CVE search",
         "tags": [
           "AI"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/ai/summarize/{cve_id}": {
@@ -7929,10 +8190,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Summarize a CVE",
         "tags": [
           "AI"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/alert-events": {
@@ -8023,10 +8293,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List alert events",
         "tags": [
           "Alert Events"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/alert-rules": {
@@ -8087,10 +8366,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List alert rules",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-alert-rule",
@@ -8163,10 +8451,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create an alert rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/alert-rules/validate": {
@@ -8217,10 +8514,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Validate alert rule DSL",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/alert-rules/{id}": {
@@ -8265,10 +8571,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete an alert rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "member"
       },
       "get": {
         "operationId": "get-alert-rule",
@@ -8318,10 +8633,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get an alert rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-alert-rule",
@@ -8381,10 +8705,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update an alert rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/alert-rules/{id}/channels": {
@@ -8436,10 +8769,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List channels bound to a rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}": {
@@ -8495,10 +8837,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Unbind a channel from a rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "member"
       },
       "put": {
         "operationId": "bind-rule-channel",
@@ -8552,10 +8903,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Bind a channel to a rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/alert-rules/{id}/dry-run": {
@@ -8607,10 +8967,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Dry-run an alert rule",
         "tags": [
           "Alert Rules"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/api-keys": {
@@ -8651,10 +9020,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List API keys",
         "tags": [
           "API Keys"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-api-key",
@@ -8710,10 +9088,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create an API key",
         "tags": [
           "API Keys"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/api-keys/{id}": {
@@ -8758,10 +9145,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Revoke an API key",
         "tags": [
           "API Keys"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/audit-log": {
@@ -8873,10 +9269,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List audit log entries",
         "tags": [
           "Audit Log"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/channels": {
@@ -8917,10 +9322,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List notification channels",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-channel",
@@ -8976,10 +9390,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create a notification channel",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/channels/{id}": {
@@ -9024,10 +9447,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete a notification channel",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "admin"
       },
       "get": {
         "operationId": "get-channel",
@@ -9077,10 +9509,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get a notification channel",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-channel",
@@ -9140,10 +9581,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update a notification channel",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/channels/{id}/clear-secondary": {
@@ -9188,10 +9638,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Clear secondary signing secret",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/channels/{id}/rotate-secret": {
@@ -9243,10 +9702,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Rotate signing secret",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/channels/{id}/test": {
@@ -9298,10 +9766,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Test a notification channel",
         "tags": [
           "Channels"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/deliveries": {
@@ -9393,10 +9870,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List deliveries",
         "tags": [
           "Deliveries"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/deliveries/{id}": {
@@ -9448,10 +9934,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get a delivery",
         "tags": [
           "Deliveries"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/deliveries/{id}/replay": {
@@ -9496,10 +9991,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Replay a delivery",
         "tags": [
           "Deliveries"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/groups": {
@@ -9540,10 +10044,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List groups",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-group",
@@ -9599,10 +10112,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create a group",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/groups/{group_id}": {
@@ -9647,10 +10169,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete a group",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "admin"
       },
       "get": {
         "operationId": "get-group",
@@ -9700,10 +10231,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get a group",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-group",
@@ -9763,10 +10303,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update a group",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/groups/{group_id}/members": {
@@ -9818,10 +10367,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List group members",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "add-group-member",
@@ -9874,10 +10432,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Add a member to a group",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/groups/{group_id}/members/{user_id}": {
@@ -9933,10 +10500,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Remove a member from a group",
         "tags": [
           "Groups"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/ingest": {
@@ -9985,10 +10561,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Ingest CVE patches",
         "tags": [
           "Ingest"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/invitations": {
@@ -10029,10 +10614,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List pending invitations",
         "tags": [
           "Invitations"
-        ]
+        ],
+        "x-min-role": "admin"
       },
       "post": {
         "operationId": "create-invitation",
@@ -10088,10 +10682,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create an invitation",
         "tags": [
           "Invitations"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/invitations/{id}": {
@@ -10136,10 +10739,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Cancel an invitation",
         "tags": [
           "Invitations"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/invitations/{id}/resend": {
@@ -10191,10 +10803,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Resend an invitation email",
         "tags": [
           "Invitations"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/members": {
@@ -10235,10 +10856,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List organization members",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/members/{user_id}": {
@@ -10283,10 +10913,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Remove a member from the organization",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "admin"
       },
       "patch": {
         "operationId": "update-member-role",
@@ -10346,10 +10985,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update a member's role",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/members/{user_id}/force-password-reset": {
@@ -10401,10 +11049,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Force a member to reset their password",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/members/{user_id}/require-mfa": {
@@ -10449,10 +11106,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Remove a member's MFA requirement",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "admin"
       },
       "post": {
         "operationId": "require-member-mfa",
@@ -10502,10 +11168,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Require MFA for a member",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/members/{user_id}/reset-mfa": {
@@ -10557,10 +11232,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Reset a member's MFA",
         "tags": [
           "Members"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/mfa-settings": {
@@ -10611,10 +11295,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update organization MFA settings",
         "tags": [
           "Organizations"
-        ]
+        ],
+        "x-min-role": "owner"
       }
     },
     "/orgs/{org_id}/reports": {
@@ -10655,10 +11348,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List scheduled reports",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-report",
@@ -10714,10 +11416,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create a scheduled report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/reports/{id}": {
@@ -10762,10 +11473,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete a scheduled report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "member"
       },
       "get": {
         "operationId": "get-report",
@@ -10815,10 +11535,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get a scheduled report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-report",
@@ -10878,10 +11607,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update a scheduled report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/reports/{id}/channels": {
@@ -10933,10 +11671,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List channels bound to a report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/reports/{id}/channels/{channel_id}": {
@@ -10992,10 +11739,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Unbind a channel from a report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "member"
       },
       "put": {
         "operationId": "bind-report-channel",
@@ -11049,10 +11805,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Bind a channel to a report",
         "tags": [
           "Reports"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/saved-searches": {
@@ -11114,10 +11879,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List saved searches",
         "tags": [
           "Saved Searches"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-saved-search",
@@ -11173,10 +11947,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create a saved search",
         "tags": [
           "Saved Searches"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/saved-searches/{id}": {
@@ -11221,10 +12004,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete a saved search",
         "tags": [
           "Saved Searches"
-        ]
+        ],
+        "x-min-role": "member"
       },
       "get": {
         "operationId": "get-saved-search",
@@ -11274,10 +12066,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get a saved search",
         "tags": [
           "Saved Searches"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-saved-search",
@@ -11337,10 +12138,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update a saved search",
         "tags": [
           "Saved Searches"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/saved-searches/{id}/execute": {
@@ -11413,10 +12223,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Execute a saved search",
         "tags": [
           "Saved Searches"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/sso": {
@@ -11450,10 +12269,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete SSO connection",
         "tags": [
           "SSO"
-        ]
+        ],
+        "x-min-role": "owner"
       },
       "get": {
         "operationId": "get-sso",
@@ -11492,10 +12320,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get SSO connection",
         "tags": [
           "SSO"
-        ]
+        ],
+        "x-min-role": "owner"
       },
       "patch": {
         "operationId": "patch-sso",
@@ -11544,10 +12381,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update SSO connection",
         "tags": [
           "SSO"
-        ]
+        ],
+        "x-min-role": "owner"
       },
       "post": {
         "operationId": "create-sso",
@@ -11603,10 +12449,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create an SSO connection",
         "tags": [
           "SSO"
-        ]
+        ],
+        "x-min-role": "owner"
       }
     },
     "/orgs/{org_id}/sso/domains": {
@@ -11657,10 +12512,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Set SSO email domains",
         "tags": [
           "SSO"
-        ]
+        ],
+        "x-min-role": "owner"
       }
     },
     "/orgs/{org_id}/sso/link": {
@@ -11710,10 +12574,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Start linking the caller's account to the org's SSO identity",
         "tags": [
           "SSO"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/sso/scim": {
@@ -11747,10 +12620,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete SCIM configuration",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "owner"
       },
       "get": {
         "operationId": "get-scim-config",
@@ -11789,10 +12671,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get SCIM configuration",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "admin"
       },
       "patch": {
         "operationId": "patch-scim-config",
@@ -11841,10 +12732,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update SCIM configuration",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "owner"
       },
       "post": {
         "description": "The response carries the SCIM bearer token; it is not shown again.",
@@ -11884,10 +12784,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create SCIM configuration",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "owner"
       }
     },
     "/orgs/{org_id}/sso/scim/groups": {
@@ -11928,10 +12837,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List SCIM-provisioned groups",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/sso/scim/groups/{id}/mapping": {
@@ -11993,10 +12911,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Map a SCIM group to a role or notification group",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "admin"
       }
     },
     "/orgs/{org_id}/sso/scim/rotate-token": {
@@ -12037,10 +12964,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Rotate the SCIM bearer token",
         "tags": [
           "SCIM"
-        ]
+        ],
+        "x-min-role": "owner"
       }
     },
     "/orgs/{org_id}/tier": {
@@ -12079,10 +13015,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get org tier and limits",
         "tags": [
           "Tier"
-        ]
+        ],
+        "x-min-role": "viewer"
       }
     },
     "/orgs/{org_id}/watchlists": {
@@ -12133,10 +13078,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List watchlists",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-watchlist",
@@ -12192,10 +13146,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Create a watchlist",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/watchlists/{id}": {
@@ -12240,10 +13203,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Delete a watchlist",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "member"
       },
       "get": {
         "operationId": "get-watchlist",
@@ -12293,10 +13265,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Get a watchlist",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "patch": {
         "operationId": "update-watchlist",
@@ -12356,10 +13337,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Update a watchlist",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/watchlists/{id}/items": {
@@ -12431,10 +13421,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "List watchlist items",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "viewer"
       },
       "post": {
         "operationId": "create-watchlist-item",
@@ -12501,10 +13500,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Add an item to a watchlist",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "member"
       }
     },
     "/orgs/{org_id}/watchlists/{id}/items/{item_id}": {
@@ -12560,10 +13568,19 @@
             "description": "Error"
           }
         },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
         "summary": "Remove an item from a watchlist",
         "tags": [
           "Watchlists"
-        ]
+        ],
+        "x-min-role": "member"
       }
     }
   },

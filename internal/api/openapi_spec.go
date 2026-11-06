@@ -24,14 +24,26 @@ func noopHandler[I, O any]() func(context.Context, *I) (*O, error) {
 	}
 }
 
+// newHumaConfig returns the configuration shared by the production and spec-only
+// Huma APIs. Huma derives schema examples from it, so mergeSpecPaths would see
+// differing schemas if the two APIs were configured differently.
+func newHumaConfig() huma.Config {
+	cfg := huma.DefaultConfig("CVErt Ops API", "0.1.0")
+	cfg.Info.Description = "Vulnerability intelligence and alerting API"
+	// Spec paths are relative to where the API router is mounted. Clients and the
+	// documentation page read the prefix from here.
+	cfg.Servers = []*huma.Server{{URL: "/api/v1"}}
+	return cfg
+}
+
 // newSpecOnlyAPI creates a throwaway Huma API instance for spec generation.
 func newSpecOnlyAPI() huma.API {
 	r := chi.NewMux()
-	return humachi.New(r, huma.DefaultConfig("CVErt Ops Spec-Only", "0.0.0"))
+	return humachi.New(r, newHumaConfig())
 }
 
 // registerAllSpecOps registers spec-only declarations for all Chi-backed
-// route families. Called during OpenAPI spec generation to produce a merged spec.
+// route families, which Handler merges into the served spec.
 func registerAllSpecOps(api huma.API) {
 	registerGroupsSpecOps(api)
 	registerOrgsSpecOps(api)

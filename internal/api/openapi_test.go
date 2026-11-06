@@ -1,4 +1,4 @@
-// ABOUTME: Generates the OpenAPI 3.1 spec from huma route registrations without a database.
+// ABOUTME: Tests the served OpenAPI spec without a database: coverage of every route, schemas, statuses.
 // ABOUTME: Run with GENERATE_OPENAPI=1 to write openapi.json to the repo root.
 package api
 
@@ -9,14 +9,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/scarson/cvert-ops/internal/config"
 )
 
-// buildOpenAPISpec serves the production huma spec merged with the spec-only
-// Chi route declarations and returns it decoded.
-func buildOpenAPISpec(t *testing.T) map[string]any {
+// newOpenAPITestHandler returns the production handler of a server with no database.
+func newOpenAPITestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	cfg := &config.Config{
 		JWTSecret:   "test-secret-for-openapi-generation",
@@ -28,28 +30,141 @@ func buildOpenAPISpec(t *testing.T) map[string]any {
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(srv.Close)
+	return srv.Handler()
+}
 
-	handler := srv.Handler()
-
-	// Merge spec-only Chi route declarations into the production huma API.
-	specAPI := newSpecOnlyAPI()
-	registerAllSpecOps(specAPI)
-	mergeSpecPaths(srv.humaAPI, specAPI)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
+// fetchSpec requests a spec document from handler and returns it decoded.
+func fetchSpec(t *testing.T, handler http.Handler, path string) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1/openapi.json: status %d, body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("GET %s: status %d, body: %s", path, rec.Code, rec.Body.String())
 	}
-
-	// Verify valid JSON.
 	var spec map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
+		t.Fatalf("GET %s: invalid JSON: %v", path, err)
 	}
 	return spec
+}
+
+// buildOpenAPISpec returns the spec the production server serves.
+func buildOpenAPISpec(t *testing.T) map[string]any {
+	t.Helper()
+	return fetchSpec(t, newOpenAPITestHandler(t), "/api/v1/openapi.json")
+}
+
+// undocumentedRoutePrefixes lists route families deliberately left out of the
+// spec, under /api/v1.
+var undocumentedRoutePrefixes = []string{
+	"/auth/oauth/", // browser redirects to and from OAuth providers
+	"/auth/oidc/",  // browser redirects to and from OIDC providers
+	"/docs",        // huma's API documentation page
+	"/openapi",     // huma's spec documents
+	"/schemas/",    // huma's JSON schema documents
+}
+
+// isUndocumentedRoute reports whether a route under /api/v1 is deliberately
+// left out of the spec.
+func isUndocumentedRoute(path string) bool {
+	// SCIM v2 is defined by RFC 7644, which clients implement directly.
+	if strings.HasPrefix(path, "/orgs/{org_id}/scim/v2/") {
+		return true
+	}
+	for _, prefix := range undocumentedRoutePrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestOpenAPISpec_MatchesRoutes fails when a route has no spec entry, or a spec
+// entry has no route. Spec-only declarations are written by hand beside chi
+// routes, so nothing else keeps the two together.
+func TestOpenAPISpec_MatchesRoutes(t *testing.T) {
+	handler := newOpenAPITestHandler(t)
+	routes, ok := handler.(chi.Routes)
+	if !ok {
+		t.Fatalf("Handler() returned %T, which does not expose its routes", handler)
+	}
+
+	const apiPrefix = "/api/v1"
+	served := map[string]bool{}
+	err := chi.Walk(routes, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		path, underAPI := strings.CutPrefix(route, apiPrefix)
+		if !underAPI {
+			return nil
+		}
+		path = strings.TrimSuffix(path, "/")
+		if !isUndocumentedRoute(path) {
+			served[method+" "+path] = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk routes: %v", err)
+	}
+
+	documented := map[string]bool{}
+	paths := fetchSpec(t, handler, apiPrefix+"/openapi.json")["paths"].(map[string]any)
+	for path, item := range paths {
+		for method := range item.(map[string]any) {
+			documented[strings.ToUpper(method)+" "+path] = true
+		}
+	}
+
+	for route := range served {
+		if !documented[route] {
+			t.Errorf("%s is routed but not in the spec", route)
+		}
+	}
+	for op := range documented {
+		if !served[op] {
+			t.Errorf("%s is in the spec but not routed", op)
+		}
+	}
+}
+
+// TestOpenAPIDocsPage_LoadsSpecFromBasePath verifies the documentation page asks
+// for the spec where it is served.
+func TestOpenAPIDocsPage_LoadsSpecFromBasePath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/docs", nil)
+	rec := httptest.NewRecorder()
+	newOpenAPITestHandler(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/docs: status %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "/api/v1/openapi") {
+		t.Errorf("docs page does not load the spec from /api/v1: %s", rec.Body.String())
+	}
+}
+
+// TestOpenAPISpec_ServedDocumentsDescribeBasePath verifies a client reading the
+// spec can reach the API, in both the 3.1 document and the 3.0 downgrade that
+// code generators consume.
+func TestOpenAPISpec_ServedDocumentsDescribeBasePath(t *testing.T) {
+	handler := newOpenAPITestHandler(t)
+	for _, doc := range []string{"/api/v1/openapi.json", "/api/v1/openapi-3.0.json"} {
+		t.Run(doc, func(t *testing.T) {
+			spec := fetchSpec(t, handler, doc)
+			servers, _ := spec["servers"].([]any)
+			if len(servers) != 1 {
+				t.Fatalf("servers = %v, want one entry", spec["servers"])
+			}
+			if got := servers[0].(map[string]any)["url"]; got != "/api/v1" {
+				t.Errorf("server url = %v, want /api/v1", got)
+			}
+			paths := spec["paths"].(map[string]any)
+			if _, ok := paths["/orgs/{org_id}/watchlists"]; !ok {
+				t.Error("chi-backed route /orgs/{org_id}/watchlists missing from the served document")
+			}
+			if _, ok := paths["/cves"]; !ok {
+				t.Error("huma route /cves missing from the served document")
+			}
+		})
+	}
 }
 
 func TestOpenAPISpec(t *testing.T) {
@@ -202,17 +317,31 @@ func TestOpenAPISpec(t *testing.T) {
 		}
 	}
 
-	// Write to repo root when GENERATE_OPENAPI is set.
+	// Write to repo root when GENERATE_OPENAPI is set; otherwise the committed
+	// file, which the web client's types are generated from, must match.
+	outPath := filepath.Join("..", "..", "openapi.json")
 	if os.Getenv("GENERATE_OPENAPI") != "" {
 		pretty, err := json.MarshalIndent(spec, "", "  ")
 		if err != nil {
 			t.Fatalf("marshal indent: %v", err)
 		}
-		outPath := filepath.Join("..", "..", "openapi.json")
 		if err := os.WriteFile(outPath, append(pretty, '\n'), 0644); err != nil { //nolint:gosec // G306: OpenAPI spec is a repo artifact meant to be world-readable
 			t.Fatalf("write %s: %v", outPath, err)
 		}
 		t.Logf("wrote %s (%d bytes)", outPath, len(pretty))
+		return
+	}
+	committedBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	// Compared parsed: a Windows checkout holds the file with CRLF line endings.
+	var committed map[string]any
+	if err := json.Unmarshal(committedBytes, &committed); err != nil {
+		t.Fatalf("parse %s: %v", outPath, err)
+	}
+	if !reflect.DeepEqual(spec, committed) {
+		t.Errorf("%s does not match the served spec. Regenerate it with GENERATE_OPENAPI=1 go test -run '^TestOpenAPISpec$' ./internal/api/, then cd web && npm run generate-api", outPath)
 	}
 }
 

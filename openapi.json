@@ -7,7 +7,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/AddGroupMemberBody.json"
+              "/api/v1/schemas/AddGroupMemberBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -28,7 +28,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-bulk-retry-deliveriesResponse.json"
+              "/api/v1/schemas/Admin-bulk-retry-deliveriesResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -54,7 +54,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-disable-userResponse.json"
+              "/api/v1/schemas/Admin-disable-userResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -79,7 +79,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-enable-userResponse.json"
+              "/api/v1/schemas/Admin-enable-userResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -104,7 +104,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-patch-orgRequest.json"
+              "/api/v1/schemas/Admin-patch-orgRequest.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -125,7 +125,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-reindexResponse.json"
+              "/api/v1/schemas/Admin-reindexResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -146,7 +146,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-reload-configResponse.json"
+              "/api/v1/schemas/Admin-reload-configResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -167,7 +167,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-reset-passwordResponse.json"
+              "/api/v1/schemas/Admin-reset-passwordResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -192,7 +192,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-retry-deliveryResponse.json"
+              "/api/v1/schemas/Admin-retry-deliveryResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -222,7 +222,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-unlock-userResponse.json"
+              "/api/v1/schemas/Admin-unlock-userResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -247,7 +247,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Admin-versionResponse.json"
+              "/api/v1/schemas/Admin-versionResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -342,7 +342,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/AdminOrgResponse.json"
+              "/api/v1/schemas/AdminOrgResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -594,7 +594,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/AlertRuleEntry.json"
+              "/api/v1/schemas/AlertRuleEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -792,7 +792,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/AuthProvidersOutputBody.json"
+              "/api/v1/schemas/AuthProvidersOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -821,7 +821,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CVEDetail.json"
+              "/api/v1/schemas/CVEDetail.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1025,7 +1025,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ChangePasswordInputBody.json"
+              "/api/v1/schemas/ChangePasswordInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1054,7 +1054,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ChangePasswordOutputBody.json"
+              "/api/v1/schemas/ChangePasswordOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1079,7 +1079,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ChannelCreateEntry.json"
+              "/api/v1/schemas/ChannelCreateEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1126,7 +1126,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ChannelEntry.json"
+              "/api/v1/schemas/ChannelEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1169,7 +1169,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateAPIKeyBody.json"
+              "/api/v1/schemas/CreateAPIKeyBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1197,7 +1197,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateAPIKeyResponse.json"
+              "/api/v1/schemas/CreateAPIKeyResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1237,7 +1237,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateAlertRuleBody.json"
+              "/api/v1/schemas/CreateAlertRuleBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1282,7 +1282,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateChannelBody.json"
+              "/api/v1/schemas/CreateChannelBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1309,7 +1309,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateGroupBody.json"
+              "/api/v1/schemas/CreateGroupBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1334,7 +1334,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateInvitationBody.json"
+              "/api/v1/schemas/CreateInvitationBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1359,7 +1359,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateOrgBody.json"
+              "/api/v1/schemas/CreateOrgBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1380,7 +1380,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateOrgResponseBody.json"
+              "/api/v1/schemas/CreateOrgResponseBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1405,7 +1405,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateReportBody.json"
+              "/api/v1/schemas/CreateReportBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1465,7 +1465,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateSSOBody.json"
+              "/api/v1/schemas/CreateSSOBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1515,7 +1515,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateSavedSearchRequest.json"
+              "/api/v1/schemas/CreateSavedSearchRequest.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1545,7 +1545,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateWatchlistBody.json"
+              "/api/v1/schemas/CreateWatchlistBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1580,7 +1580,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/CreateWatchlistItemBody.json"
+              "/api/v1/schemas/CreateWatchlistItemBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1629,7 +1629,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/DeliveryDetail.json"
+              "/api/v1/schemas/DeliveryDetail.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1762,7 +1762,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/DiscoverBody.json"
+              "/api/v1/schemas/DiscoverBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1783,7 +1783,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/DiscoverResponse.json"
+              "/api/v1/schemas/DiscoverResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1804,7 +1804,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/DryRunResponse.json"
+              "/api/v1/schemas/DryRunResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -1887,7 +1887,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ErrorModel.json"
+              "/api/v1/schemas/ErrorModel.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2035,7 +2035,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ForgotPasswordInputBody.json"
+              "/api/v1/schemas/ForgotPasswordInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2059,7 +2059,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ForgotPasswordOutputBody.json"
+              "/api/v1/schemas/ForgotPasswordOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2080,7 +2080,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/GetCVESourcesBody.json"
+              "/api/v1/schemas/GetCVESourcesBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2107,7 +2107,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/GetInvitationOutputBody.json"
+              "/api/v1/schemas/GetInvitationOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2136,7 +2136,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/GroupEntry.json"
+              "/api/v1/schemas/GroupEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2283,7 +2283,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/IngestRequest.json"
+              "/api/v1/schemas/IngestRequest.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2314,7 +2314,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/IngestResponse.json"
+              "/api/v1/schemas/IngestResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2351,7 +2351,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/InvitationEntry.json"
+              "/api/v1/schemas/InvitationEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2405,7 +2405,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListCVEsBody.json"
+              "/api/v1/schemas/ListCVEsBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2435,7 +2435,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseAdminDeliveryRow.json"
+              "/api/v1/schemas/ListResponseAdminDeliveryRow.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2465,7 +2465,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseAdminOrgRow.json"
+              "/api/v1/schemas/ListResponseAdminOrgRow.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2495,7 +2495,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseAdminUserRow.json"
+              "/api/v1/schemas/ListResponseAdminUserRow.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2525,7 +2525,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseAuditRow.json"
+              "/api/v1/schemas/ListResponseAuditRow.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2555,7 +2555,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseCVEItem.json"
+              "/api/v1/schemas/ListResponseCVEItem.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2585,7 +2585,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseFeedLogEntry.json"
+              "/api/v1/schemas/ListResponseFeedLogEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2615,7 +2615,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseFeedStatusEntry.json"
+              "/api/v1/schemas/ListResponseFeedStatusEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2645,7 +2645,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListResponseSecurityEventRow.json"
+              "/api/v1/schemas/ListResponseSecurityEventRow.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2675,7 +2675,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ListSCIMGroupsResponse.json"
+              "/api/v1/schemas/ListSCIMGroupsResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2702,7 +2702,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/LoginInputBody.json"
+              "/api/v1/schemas/LoginInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2733,7 +2733,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/LoginOutputBody.json"
+              "/api/v1/schemas/LoginOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2793,7 +2793,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MeOutputBody.json"
+              "/api/v1/schemas/MeOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2884,7 +2884,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaChallengeInputBody.json"
+              "/api/v1/schemas/MfaChallengeInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2910,7 +2910,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaEmailOTPConfirmInputBody.json"
+              "/api/v1/schemas/MfaEmailOTPConfirmInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2934,7 +2934,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaEmailOTPConfirmOutputBody.json"
+              "/api/v1/schemas/MfaEmailOTPConfirmOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -2978,7 +2978,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaMethodsOutputBody.json"
+              "/api/v1/schemas/MfaMethodsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3026,7 +3026,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaRegenerateCodesInputBody.json"
+              "/api/v1/schemas/MfaRegenerateCodesInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3049,7 +3049,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaRegenerateCodesOutputBody.json"
+              "/api/v1/schemas/MfaRegenerateCodesOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3077,7 +3077,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaRemoveMethodInputBody.json"
+              "/api/v1/schemas/MfaRemoveMethodInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3100,7 +3100,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaTOTPConfirmInputBody.json"
+              "/api/v1/schemas/MfaTOTPConfirmInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3124,7 +3124,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaTOTPConfirmOutputBody.json"
+              "/api/v1/schemas/MfaTOTPConfirmOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3149,7 +3149,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaTOTPSetupOutputBody.json"
+              "/api/v1/schemas/MfaTOTPSetupOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3176,7 +3176,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaVerifyInputBody.json"
+              "/api/v1/schemas/MfaVerifyInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3214,7 +3214,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/MfaVerifyOutputBody.json"
+              "/api/v1/schemas/MfaVerifyOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3254,7 +3254,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/NlSearchRequest.json"
+              "/api/v1/schemas/NlSearchRequest.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3275,7 +3275,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/NlSearchResponse.json"
+              "/api/v1/schemas/NlSearchResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3335,7 +3335,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/OrgResponseBody.json"
+              "/api/v1/schemas/OrgResponseBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3364,7 +3364,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchAlertRuleBody.json"
+              "/api/v1/schemas/PatchAlertRuleBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3398,7 +3398,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchChannelBody.json"
+              "/api/v1/schemas/PatchChannelBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3417,7 +3417,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchMemberBody.json"
+              "/api/v1/schemas/PatchMemberBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3441,7 +3441,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchMemberResponseBody.json"
+              "/api/v1/schemas/PatchMemberResponseBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3477,7 +3477,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchReportBody.json"
+              "/api/v1/schemas/PatchReportBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3519,7 +3519,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchSCIMConfigBody.json"
+              "/api/v1/schemas/PatchSCIMConfigBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3540,7 +3540,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchSCIMGroupMappingBody.json"
+              "/api/v1/schemas/PatchSCIMGroupMappingBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3564,7 +3564,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchSSOBody.json"
+              "/api/v1/schemas/PatchSSOBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3603,7 +3603,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchSavedSearchRequest.json"
+              "/api/v1/schemas/PatchSavedSearchRequest.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3628,7 +3628,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PatchWatchlistBody.json"
+              "/api/v1/schemas/PatchWatchlistBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3655,7 +3655,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Pause-feedResponse.json"
+              "/api/v1/schemas/Pause-feedResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3680,7 +3680,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/PutSSODomainsBody.json"
+              "/api/v1/schemas/PutSSODomainsBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3729,7 +3729,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/RegisterInputBody.json"
+              "/api/v1/schemas/RegisterInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3764,7 +3764,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/RegisterOutputBody.json"
+              "/api/v1/schemas/RegisterOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3788,7 +3788,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ReportEntry.json"
+              "/api/v1/schemas/ReportEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3865,7 +3865,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ResendVerificationOutputBody.json"
+              "/api/v1/schemas/ResendVerificationOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3886,7 +3886,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ResetPasswordInputBody.json"
+              "/api/v1/schemas/ResetPasswordInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3916,7 +3916,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ResetPasswordOutputBody.json"
+              "/api/v1/schemas/ResetPasswordOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3954,7 +3954,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Resume-feedResponse.json"
+              "/api/v1/schemas/Resume-feedResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3979,7 +3979,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/RotateSecretResponse.json"
+              "/api/v1/schemas/RotateSecretResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4000,7 +4000,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/RotateTokenResponse.json"
+              "/api/v1/schemas/RotateTokenResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4025,7 +4025,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SavedSearchEntry.json"
+              "/api/v1/schemas/SavedSearchEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4067,7 +4067,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ScimConfigResponse.json"
+              "/api/v1/schemas/ScimConfigResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4160,7 +4160,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ScimGroupResponse.json"
+              "/api/v1/schemas/ScimGroupResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4252,7 +4252,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListAPIKeysOutputBody.json"
+              "/api/v1/schemas/SpecListAPIKeysOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4279,7 +4279,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListAlertEventsOutputBody.json"
+              "/api/v1/schemas/SpecListAlertEventsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4309,7 +4309,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListAlertRulesOutputBody.json"
+              "/api/v1/schemas/SpecListAlertRulesOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4339,7 +4339,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListAuditLogOutputBody.json"
+              "/api/v1/schemas/SpecListAuditLogOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4369,7 +4369,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListChannelsOutputBody.json"
+              "/api/v1/schemas/SpecListChannelsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4396,7 +4396,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListDeliveriesOutputBody.json"
+              "/api/v1/schemas/SpecListDeliveriesOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4426,7 +4426,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListGroupMembersOutputBody.json"
+              "/api/v1/schemas/SpecListGroupMembersOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4453,7 +4453,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListGroupsOutputBody.json"
+              "/api/v1/schemas/SpecListGroupsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4480,7 +4480,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListInvitationsOutputBody.json"
+              "/api/v1/schemas/SpecListInvitationsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4507,7 +4507,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListMembersOutputBody.json"
+              "/api/v1/schemas/SpecListMembersOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4534,7 +4534,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListReportChannelsOutputBody.json"
+              "/api/v1/schemas/SpecListReportChannelsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4561,7 +4561,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListReportsOutputBody.json"
+              "/api/v1/schemas/SpecListReportsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4588,7 +4588,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListRuleChannelsOutputBody.json"
+              "/api/v1/schemas/SpecListRuleChannelsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4615,7 +4615,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListSavedSearchesOutputBody.json"
+              "/api/v1/schemas/SpecListSavedSearchesOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4642,7 +4642,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListWatchlistItemsOutputBody.json"
+              "/api/v1/schemas/SpecListWatchlistItemsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4672,7 +4672,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecListWatchlistsOutputBody.json"
+              "/api/v1/schemas/SpecListWatchlistsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4702,7 +4702,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecMemberActionOutputBody.json"
+              "/api/v1/schemas/SpecMemberActionOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4727,7 +4727,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecPutSSODomainsOutputBody.json"
+              "/api/v1/schemas/SpecPutSSODomainsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4754,7 +4754,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SpecUpdateOrgMFASettingsOutputBody.json"
+              "/api/v1/schemas/SpecUpdateOrgMFASettingsOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4784,7 +4784,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SsoResponse.json"
+              "/api/v1/schemas/SsoResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4857,7 +4857,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/SummarizeResponse.json"
+              "/api/v1/schemas/SummarizeResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4890,7 +4890,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/TestChannelResponse.json"
+              "/api/v1/schemas/TestChannelResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4914,7 +4914,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/TierResponse.json"
+              "/api/v1/schemas/TierResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4942,7 +4942,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/Trigger-feedResponse.json"
+              "/api/v1/schemas/Trigger-feedResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4963,7 +4963,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/UpdateGroupBody.json"
+              "/api/v1/schemas/UpdateGroupBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4984,7 +4984,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/UpdateOrgBody.json"
+              "/api/v1/schemas/UpdateOrgBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5002,7 +5002,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/UpdateOrgMFASettingsBody.json"
+              "/api/v1/schemas/UpdateOrgMFASettingsBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5027,7 +5027,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ValidateRuleBody.json"
+              "/api/v1/schemas/ValidateRuleBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5060,7 +5060,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/ValidateRuleResponse.json"
+              "/api/v1/schemas/ValidateRuleResponse.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5109,7 +5109,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/VerifyEmailInputBody.json"
+              "/api/v1/schemas/VerifyEmailInputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5132,7 +5132,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/VerifyEmailOutputBody.json"
+              "/api/v1/schemas/VerifyEmailOutputBody.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5153,7 +5153,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/WatchlistEntry.json"
+              "/api/v1/schemas/WatchlistEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -5197,7 +5197,7 @@
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "https://example.com/schemas/WatchlistItemEntry.json"
+              "/api/v1/schemas/WatchlistItemEntry.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -12566,5 +12566,10 @@
         ]
       }
     }
-  }
+  },
+  "servers": [
+    {
+      "url": "/api/v1"
+    }
+  ]
 }

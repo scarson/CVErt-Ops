@@ -96,7 +96,7 @@ For each category below, state ✅ (no issues), ❌ (issue found), or N/A (not a
 
 - **Dry-run path that commits `alert_events`:** Any dry-run code path that doesn't unconditionally ROLLBACK (or use a read-only code path)? A committed dry-run poisons the dedup baseline.
 
-- **Rejected CVE filtering missing:** Any evaluation query missing `AND cves.status NOT IN ('rejected', 'withdrawn')`? Rejected CVEs trigger spurious alerts when NVD strips their scores.
+- **Rejected CVE filtering missing:** Any evaluation query missing `AND COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')`? Rejected CVEs trigger spurious alerts when NVD strips their scores. A bare `status NOT IN (...)` also silently drops every CVE with a NULL status.
 
 ---
 

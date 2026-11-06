@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -578,6 +579,84 @@ func TestEvaluatorActivation(t *testing.T) {
 	if n := countRuns(t, tdb.DB(), row.ID); n == 0 {
 		t.Fatal("want at least 1 alert_rule_run, got 0")
 	}
+}
+
+// TestEvaluator_CVEWithoutStatus verifies every evaluation path matches a CVE whose
+// sources supply no status, such as one known only from CISA KEV. NULL NOT IN (...)
+// is NULL, so a status filter that does not handle NULL drops these CVEs silently.
+func TestEvaluator_CVEWithoutStatus(t *testing.T) {
+	const cveID = "CVE-NOSTATUS-001"
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	score := 9.0
+
+	paths := []struct {
+		name string
+		run  func(ctx context.Context, ev *alert.Evaluator, ruleID, orgID uuid.UUID) error
+	}{
+		{"Realtime", func(ctx context.Context, ev *alert.Evaluator, _, _ uuid.UUID) error {
+			return ev.EvaluateRealtime(ctx, cveID)
+		}},
+		{"Batch", func(ctx context.Context, ev *alert.Evaluator, _, _ uuid.UUID) error {
+			return ev.EvaluateBatch(ctx)
+		}},
+		{"Activation", func(ctx context.Context, ev *alert.Evaluator, ruleID, orgID uuid.UUID) error {
+			return ev.EvaluateActivation(ctx, ruleID, orgID)
+		}},
+	}
+	for _, path := range paths {
+		t.Run(path.name, func(t *testing.T) {
+			tdb := testutil.NewTestDB(t)
+			ev := newTestEvaluator(t, tdb)
+			ctx := context.Background()
+			orgID := createTestOrg(t, tdb.DB())
+			insertCVE(t, tdb.DB(), cveID, "", "no status", &score, "nostatushash")
+			rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+			activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+			if err := path.run(ctx, ev, rule.ID, orgID); err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+				t.Fatalf("want 1 alert_event, got %d", n)
+			}
+		})
+	}
+
+	t.Run("EPSS", func(t *testing.T) {
+		tdb := testutil.NewTestDB(t)
+		ev := newTestEvaluator(t, tdb)
+		ctx := context.Background()
+		orgID := createTestOrg(t, tdb.DB())
+		epss := 0.95
+		insertCVEWithEPSS(t, tdb.DB(), cveID, "", "no status", &score, &epss, "nostatushash")
+		rule := mustEPSSRule(t, ctx, tdb.Store, orgID, "and", `[{"field":"epss_score","operator":"gte","value":0.9}]`, true)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateEPSS(ctx); err != nil {
+			t.Fatalf("EvaluateEPSS: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event, got %d", n)
+		}
+	})
+
+	t.Run("DryRun", func(t *testing.T) {
+		tdb := testutil.NewTestDB(t)
+		ev := newTestEvaluator(t, tdb)
+		ctx := context.Background()
+		orgID := createTestOrg(t, tdb.DB())
+		insertCVE(t, tdb.DB(), cveID, "", "no status", &score, "nostatushash")
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		result, err := ev.DryRun(ctx, rule.ID, orgID)
+		if err != nil {
+			t.Fatalf("DryRun: %v", err)
+		}
+		if !slices.Contains(result.SampleCVEs, cveID) {
+			t.Fatalf("SampleCVEs = %v, want %s", result.SampleCVEs, cveID)
+		}
+	})
 }
 
 func TestEvaluatorSweepZombieActivations(t *testing.T) {

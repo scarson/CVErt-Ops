@@ -208,7 +208,7 @@ SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
        count(*) OVER () AS total_count
 FROM cves
 WHERE date_modified_canonical > $1
-  AND status NOT IN ('rejected', 'withdrawn')
+  AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
   AND ($2::text[] IS NULL OR severity = ANY($2::text[]))
   AND NOT EXISTS (
       SELECT 1

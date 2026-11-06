@@ -1684,7 +1684,7 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 **Why It Matters:** `SELECT * FROM cves` or loading CVEs into a `[]CVE` slice allocates memory for 250,000+ records simultaneously. On constrained containers (homelab Raspberry Pi, default Docker resource limits), this OOM-kills the worker, crashes the scan, and leaves the rule in a zombie state (see NOTIFY-5). Even without OOM, the query holds a large result set in the DB connection buffer.
 
-**The Fix:** Activation scans must use keyset pagination in 1,000-row batches: `WHERE cve_id > $last_id AND status != 'rejected' ORDER BY cve_id ASC LIMIT 1000`. Per-iteration memory is bounded regardless of corpus size.
+**The Fix:** Activation scans must use keyset pagination in 1,000-row batches: `WHERE cve_id > $last_id AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn') ORDER BY cve_id ASC LIMIT 1000` (NOTIFY-10 gives the reason for this status filter). Per-iteration memory is bounded regardless of corpus size.
 
 **The Lesson:** Any worker that processes the full CVE corpus must paginate — not load. This applies to: activation scans, batch alert evaluation, search index rebuilds, and retention cleanup. Assume corpus size is unbounded; design accordingly.
 
@@ -1735,9 +1735,9 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 **Why It Matters:** When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change. Alert rules that previously matched the CVE re-fire, paging security analysts for a CVE that no longer exists as a real vulnerability. Repeated false pages cause immediate alert fatigue and product abandonment.
 
-**The Fix:** All alert evaluation passes (realtime, batch, EPSS-specific, activation scan) must add `AND cves.status != 'rejected'` to their queries. Status `withdrawn` (where applicable per feed) must also be excluded.
+**The Fix:** All alert evaluation passes (realtime, batch, EPSS-specific, activation scan) and digests must add `AND COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')` to their queries. Feeds send the status in mixed case (`Rejected` from NVD, `REJECTED` from MITRE), so compare it in lower case. A CVE known only from a feed with no status, such as CISA KEV, has a NULL status and must still match; `NULL NOT IN (...)` is NULL, so without `COALESCE` the row is dropped with no error. Measured on 2026-11-06: an in-KEV rule matched none of 1,769 KEV CVEs, and digests sent `Rejected` CVEs.
 
-**The Lesson:** Alert evaluation must be status-aware. Not all CVE record updates represent genuine new threat intelligence; a status change to `rejected` is the opposite. Any alert system that fires on every `material_hash` change without checking status will spam analysts with rejections.
+**The Lesson:** Alert evaluation must be status-aware. Not all CVE record updates represent genuine new threat intelligence; a status change to `rejected` is the opposite. Any alert system that fires on every `material_hash` change without checking status will spam analysts with rejections. Test an exclusion filter with NULL and with each spelling the source sends, not only with the excluded value in its canonical form.
 
 ---
 
@@ -1942,7 +1942,7 @@ When a webhook endpoint goes down, all deliveries targeting it fail and are sche
 - [ ] Activation scan is async (`status = 'activating'`, background job, handler returns 202)?
 - [ ] Activation scan paginates in 1,000-row batches (keyset pagination, not full-corpus load)?
 - [ ] Zombie rule sweeper runs periodically (detects `activating` + stale `locked_at`, transitions to `error`)?
-- [ ] All evaluation passes filter `cves.status NOT IN ('rejected', 'withdrawn')`?
+- [ ] All evaluation passes and digests filter `COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')`, so that mixed-case statuses are excluded and CVEs with no status still match?
 - [ ] Fan-out uses `sync.WaitGroup` with independent per-channel error recording (not `errgroup`)?
 - [ ] Delivery loop uses `continue` on per-channel HTTP failures (never `return err`)?
 - [ ] DB transaction committed BEFORE outbound webhook HTTP call (three-phase: claim → HTTP → update)?

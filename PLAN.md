@@ -1038,7 +1038,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
   for {
       rows, _ := tx.Query(ctx, `
           SELECT cve_id, ... FROM cves
-          WHERE cve_id > $1 AND status != 'rejected'
+          WHERE cve_id > $1 AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
           ORDER BY cve_id ASC LIMIT 1000
       `, lastCVEID)
       batch := scanRows(rows)
@@ -1052,7 +1052,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
 
 **Rejected CVE filtering in all evaluation passes (required):**
 
-The alert evaluation engine (realtime, batch, EPSS-specific, and activation scan) must add `AND cves.status NOT IN ('rejected', 'withdrawn')` to all evaluation queries. When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change that would fire alerts for every rule that previously matched. Paging security analysts for rejected CVEs causes immediate alert fatigue and product abandonment.
+The alert evaluation engine (realtime, batch, EPSS-specific, and activation scan) must add `AND COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')` to all evaluation queries. When NVD or MITRE rejects a CVE, they update its description to `** REJECT **...` and strip CVSS scores — this triggers a `material_hash` change that would fire alerts for every rule that previously matched. Paging security analysts for rejected CVEs causes immediate alert fatigue and product abandonment. The status is compared in lower case because feeds send `Rejected` and `REJECTED`. NULL means no source supplied a status, as with a CVE known only from CISA KEV; such a CVE must still match, and a bare `NOT IN` drops it because `NULL NOT IN (...)` is NULL.
 
 **Tombstone handling — explicitly clear scores on rejection (required):** When a feed adapter ingests a CVE with `vulnStatus == "Rejected"` (NVD) or a non-null `withdrawn`/`withdrawn_at` field (OSV/GHSA), the merge pipeline MUST execute a hard-override UPDATE that explicitly NULLs out historical scores and clears affected packages: `SET cvss_v3_score = NULL, cvss_v4_score = NULL, cvss_v3_vector = NULL, cvss_v4_vector = NULL, epss_score = NULL, status = 'rejected'` (or `'withdrawn'`). Standard partial upsert logic (which only updates fields present in the payload) will preserve the historical CVSS 9.8 score because it is absent from the rejected payload — the system then continues evaluating this CVE using stale critical scores, spamming analysts with alerts for threats that no longer exist.
 

@@ -556,7 +556,8 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	combined := sq.And{
 		compiled.SQL,
-		sq.Expr("lower(cves.status) NOT IN ('rejected', 'withdrawn')"),
+		// COALESCE keeps CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
+		sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
 	}
 	if len(candidateIDs) > 0 {
 		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
@@ -681,26 +682,26 @@ func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, a
 	case since.IsZero() && afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE lower(status) NOT IN ('rejected', 'withdrawn')
+			 WHERE COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $1`, limit)
 	case since.IsZero():
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE cve_id > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_modified_canonical > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
 	default:
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_modified_canonical > $1
 			   AND cve_id > $2
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
@@ -718,27 +719,27 @@ func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE epss_score IS NOT NULL
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $1`, limit)
 	case since.IsZero():
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE cve_id > $1
 			   AND epss_score IS NOT NULL
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_epss_updated > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
 	default:
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_epss_updated > $1
 			   AND cve_id > $2
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
@@ -754,13 +755,13 @@ func (e *Evaluator) getCVEsBatch(ctx context.Context, afterID string, limit int)
 	if afterID == "" {
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE lower(status) NOT IN ('rejected', 'withdrawn')
+			 WHERE COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $1`, limit)
 	} else {
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE cve_id > $1
-			   AND lower(status) NOT IN ('rejected', 'withdrawn')
+			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)

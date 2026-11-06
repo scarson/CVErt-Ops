@@ -1833,108 +1833,28 @@ export interface components {
             readonly $schema?: string;
             user_id: string;
         };
-        "Admin-bulk-retry-deliveriesResponse": {
+        AdminBulkRetryResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-bulk-retry-deliveriesResponse.json
+             * @example /api/v1/schemas/AdminBulkRetryResult.json
              */
             readonly $schema?: string;
             /** Format: int64 */
             rows_affected: number;
             status: string;
         };
-        "Admin-disable-userResponse": {
+        AdminDeliveryRetryResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-disable-userResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-enable-userResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-enable-userResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-patch-orgRequest": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-patch-orgRequest.json
-             */
-            readonly $schema?: string;
-            suspend?: boolean;
-            tier?: string;
-        };
-        "Admin-reindexResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-reindexResponse.json
-             */
-            readonly $schema?: string;
-            job_id: string;
-        };
-        "Admin-reload-configResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-reload-configResponse.json
-             */
-            readonly $schema?: string;
-            message: string;
-        };
-        "Admin-reset-passwordResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-reset-passwordResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-retry-deliveryResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-retry-deliveryResponse.json
+             * @example /api/v1/schemas/AdminDeliveryRetryResult.json
              */
             readonly $schema?: string;
             delivery_id: string;
             /** Format: int64 */
             rows_affected: number;
             status: string;
-        };
-        "Admin-unlock-userResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-unlock-userResponse.json
-             */
-            readonly $schema?: string;
-            status: string;
-            user_id: string;
-        };
-        "Admin-versionResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Admin-versionResponse.json
-             */
-            readonly $schema?: string;
-            build_time: string;
-            commit: string;
-            go_version: string;
-            version: string;
         };
         AdminDeliveryRow: {
             /** Format: int32 */
@@ -1956,6 +1876,25 @@ export interface components {
             status: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        AdminFeedStateResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminFeedStateResponse.json
+             */
+            readonly $schema?: string;
+            feed: string;
+            status: string;
+        };
+        AdminJobResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminJobResponse.json
+             */
+            readonly $schema?: string;
+            job_id: string;
         };
         AdminOrgResponse: {
             /**
@@ -1989,6 +1928,25 @@ export interface components {
             suspended_at: string | null;
             tier: string;
         };
+        AdminPatchOrgBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminPatchOrgBody.json
+             */
+            readonly $schema?: string;
+            suspend?: boolean;
+            tier?: string;
+        };
+        AdminReloadResult: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminReloadResult.json
+             */
+            readonly $schema?: string;
+            message: string;
+        };
         AdminUserRow: {
             /** Format: date-time */
             created_at: string;
@@ -2005,6 +1963,28 @@ export interface components {
             locked_at: string | null;
             /** Format: int64 */
             org_count: number;
+        };
+        AdminUserStatusResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminUserStatusResponse.json
+             */
+            readonly $schema?: string;
+            status: string;
+            user_id: string;
+        };
+        AdminVersionInfo: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/AdminVersionInfo.json
+             */
+            readonly $schema?: string;
+            build_time: string;
+            commit: string;
+            go_version: string;
+            version: string;
         };
         AffectedCPEResponse: {
             cpe: string;
@@ -2966,11 +2946,11 @@ export interface components {
             readonly $schema?: string;
             query: string;
         };
-        NlSearchResponse: {
+        NlSearchResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/NlSearchResponse.json
+             * @example /api/v1/schemas/NlSearchResult.json
              */
             readonly $schema?: string;
             cached: boolean;
@@ -3116,16 +3096,6 @@ export interface components {
             group_id?: string | null;
             name?: string;
         };
-        "Pause-feedResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Pause-feedResponse.json
-             */
-            readonly $schema?: string;
-            feed: string;
-            status: string;
-        };
         PutSSODomainsBody: {
             /**
              * Format: uri
@@ -3220,16 +3190,6 @@ export interface components {
             methods?: string[] | null;
             /** @description Remaining auth steps (empty = no MFA required) */
             pending: string[] | null;
-        };
-        "Resume-feedResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Resume-feedResponse.json
-             */
-            readonly $schema?: string;
-            feed: string;
-            status: string;
         };
         RotateSecretResponse: {
             /**
@@ -3530,11 +3490,11 @@ export interface components {
             model: string;
             summary: string;
         };
-        TestChannelResponse: {
+        TestChannelResult: {
             /**
              * Format: uri
              * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/TestChannelResponse.json
+             * @example /api/v1/schemas/TestChannelResult.json
              */
             readonly $schema?: string;
             error?: string;
@@ -3551,15 +3511,6 @@ export interface components {
                 [key: string]: components["schemas"]["LimitEntry"];
             };
             tier: string;
-        };
-        "Trigger-feedResponse": {
-            /**
-             * Format: uri
-             * @description A URL to the JSON Schema for this object.
-             * @example /api/v1/schemas/Trigger-feedResponse.json
-             */
-            readonly $schema?: string;
-            job_id: string;
         };
         UpdateGroupBody: {
             /**
@@ -3792,7 +3743,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-bulk-retry-deliveriesResponse"];
+                    "application/json": components["schemas"]["AdminBulkRetryResult"];
                 };
             };
             /** @description Error */
@@ -3823,7 +3774,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-retry-deliveryResponse"];
+                    "application/json": components["schemas"]["AdminDeliveryRetryResult"];
                 };
             };
             /** @description Error */
@@ -3948,7 +3899,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Pause-feedResponse"];
+                    "application/json": components["schemas"]["AdminFeedStateResponse"];
                 };
             };
             /** @description Error */
@@ -3979,7 +3930,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Resume-feedResponse"];
+                    "application/json": components["schemas"]["AdminFeedStateResponse"];
                 };
             };
             /** @description Error */
@@ -4010,7 +3961,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Trigger-feedResponse"];
+                    "application/json": components["schemas"]["AdminJobResponse"];
                 };
             };
             /** @description Error */
@@ -4067,7 +4018,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Admin-patch-orgRequest"];
+                "application/json": components["schemas"]["AdminPatchOrgBody"];
             };
         };
         responses: {
@@ -4139,7 +4090,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-reindexResponse"];
+                    "application/json": components["schemas"]["AdminJobResponse"];
                 };
             };
             /** @description Error */
@@ -4168,7 +4119,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-reload-configResponse"];
+                    "application/json": components["schemas"]["AdminReloadResult"];
                 };
             };
             /** @description Error */
@@ -4275,7 +4226,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-disable-userResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -4306,7 +4257,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-enable-userResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -4337,7 +4288,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-reset-passwordResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -4368,7 +4319,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-unlock-userResponse"];
+                    "application/json": components["schemas"]["AdminUserStatusResponse"];
                 };
             };
             /** @description Error */
@@ -4397,7 +4348,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Admin-versionResponse"];
+                    "application/json": components["schemas"]["AdminVersionInfo"];
                 };
             };
             /** @description Error */
@@ -5428,7 +5379,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NlSearchResponse"];
+                    "application/json": components["schemas"]["NlSearchResult"];
                 };
             };
             /** @description Error */
@@ -6284,7 +6235,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TestChannelResponse"];
+                    "application/json": components["schemas"]["TestChannelResult"];
                 };
             };
             /** @description Error */

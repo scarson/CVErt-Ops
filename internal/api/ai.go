@@ -32,7 +32,7 @@ type nlSearchRequest struct {
 	Query string `json:"query"`
 }
 
-type nlSearchResponse struct {
+type nlSearchResult struct {
 	InterpretedQuery json.RawMessage `json:"interpreted_query"`
 	Results          []CVEItem       `json:"results"`
 	NextCursor       string          `json:"next_cursor,omitempty"`
@@ -217,7 +217,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	metrics.AIRequestsTotal.WithLabelValues(feature, "ok").Inc()
 	metrics.AIRequestDuration.WithLabelValues(feature).Observe(time.Since(start).Seconds())
 
-	writeJSON(w, http.StatusOK, nlSearchResponse{
+	writeJSON(w, http.StatusOK, nlSearchResult{
 		InterpretedQuery: queryJSON,
 		Results:          items,
 		NextCursor:       nextCursor,

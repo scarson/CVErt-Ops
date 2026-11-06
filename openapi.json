@@ -22,13 +22,13 @@
         ],
         "type": "object"
       },
-      "Admin-bulk-retry-deliveriesResponse": {
+      "AdminBulkRetryResult": {
         "additionalProperties": false,
         "properties": {
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "/api/v1/schemas/Admin-bulk-retry-deliveriesResponse.json"
+              "/api/v1/schemas/AdminBulkRetryResult.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -48,151 +48,13 @@
         ],
         "type": "object"
       },
-      "Admin-disable-userResponse": {
+      "AdminDeliveryRetryResult": {
         "additionalProperties": false,
         "properties": {
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "/api/v1/schemas/Admin-disable-userResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "user_id"
-        ],
-        "type": "object"
-      },
-      "Admin-enable-userResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-enable-userResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "user_id"
-        ],
-        "type": "object"
-      },
-      "Admin-patch-orgRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-patch-orgRequest.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "suspend": {
-            "type": "boolean"
-          },
-          "tier": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "Admin-reindexResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-reindexResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "job_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "job_id"
-        ],
-        "type": "object"
-      },
-      "Admin-reload-configResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-reload-configResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "type": "object"
-      },
-      "Admin-reset-passwordResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-reset-passwordResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "user_id"
-        ],
-        "type": "object"
-      },
-      "Admin-retry-deliveryResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-retry-deliveryResponse.json"
+              "/api/v1/schemas/AdminDeliveryRetryResult.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -213,64 +75,6 @@
           "status",
           "delivery_id",
           "rows_affected"
-        ],
-        "type": "object"
-      },
-      "Admin-unlock-userResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-unlock-userResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          },
-          "user_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "user_id"
-        ],
-        "type": "object"
-      },
-      "Admin-versionResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Admin-versionResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "build_time": {
-            "type": "string"
-          },
-          "commit": {
-            "type": "string"
-          },
-          "go_version": {
-            "type": "string"
-          },
-          "version": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "version",
-          "commit",
-          "build_time",
-          "go_version"
         ],
         "type": "object"
       },
@@ -333,6 +137,52 @@
           "send_after",
           "created_at",
           "updated_at"
+        ],
+        "type": "object"
+      },
+      "AdminFeedStateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/AdminFeedStateResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "feed": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "feed"
+        ],
+        "type": "object"
+      },
+      "AdminJobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/AdminJobResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
         ],
         "type": "object"
       },
@@ -437,6 +287,48 @@
         ],
         "type": "object"
       },
+      "AdminPatchOrgBody": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/AdminPatchOrgBody.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "suspend": {
+            "type": "boolean"
+          },
+          "tier": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "AdminReloadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/AdminReloadResult.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
       "AdminUserRow": {
         "additionalProperties": false,
         "properties": {
@@ -496,6 +388,64 @@
           "locked_at",
           "force_password_reset",
           "org_count"
+        ],
+        "type": "object"
+      },
+      "AdminUserStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/AdminUserStatusResponse.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "AdminVersionInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/AdminVersionInfo.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "build_time": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "go_version": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "commit",
+          "build_time",
+          "go_version"
         ],
         "type": "object"
       },
@@ -3269,13 +3219,13 @@
         ],
         "type": "object"
       },
-      "NlSearchResponse": {
+      "NlSearchResult": {
         "additionalProperties": false,
         "properties": {
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "/api/v1/schemas/NlSearchResponse.json"
+              "/api/v1/schemas/NlSearchResult.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -3649,31 +3599,6 @@
         },
         "type": "object"
       },
-      "Pause-feedResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Pause-feedResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "feed": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "feed"
-        ],
-        "type": "object"
-      },
       "PutSSODomainsBody": {
         "additionalProperties": false,
         "properties": {
@@ -3945,31 +3870,6 @@
         },
         "required": [
           "pending"
-        ],
-        "type": "object"
-      },
-      "Resume-feedResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Resume-feedResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "feed": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "feed"
         ],
         "type": "object"
       },
@@ -4884,13 +4784,13 @@
         ],
         "type": "object"
       },
-      "TestChannelResponse": {
+      "TestChannelResult": {
         "additionalProperties": false,
         "properties": {
           "$schema": {
             "description": "A URL to the JSON Schema for this object.",
             "examples": [
-              "/api/v1/schemas/TestChannelResponse.json"
+              "/api/v1/schemas/TestChannelResult.json"
             ],
             "format": "uri",
             "readOnly": true,
@@ -4933,27 +4833,6 @@
         "required": [
           "tier",
           "limits"
-        ],
-        "type": "object"
-      },
-      "Trigger-feedResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "$schema": {
-            "description": "A URL to the JSON Schema for this object.",
-            "examples": [
-              "/api/v1/schemas/Trigger-feedResponse.json"
-            ],
-            "format": "uri",
-            "readOnly": true,
-            "type": "string"
-          },
-          "job_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "job_id"
         ],
         "type": "object"
       },
@@ -5463,7 +5342,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-bulk-retry-deliveriesResponse"
+                  "$ref": "#/components/schemas/AdminBulkRetryResult"
                 }
               }
             },
@@ -5511,7 +5390,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-retry-deliveryResponse"
+                  "$ref": "#/components/schemas/AdminDeliveryRetryResult"
                 }
               }
             },
@@ -5697,7 +5576,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Pause-feedResponse"
+                  "$ref": "#/components/schemas/AdminFeedStateResponse"
                 }
               }
             },
@@ -5744,7 +5623,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Resume-feedResponse"
+                  "$ref": "#/components/schemas/AdminFeedStateResponse"
                 }
               }
             },
@@ -5791,7 +5670,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Trigger-feedResponse"
+                  "$ref": "#/components/schemas/AdminJobResponse"
                 }
               }
             },
@@ -5894,7 +5773,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Admin-patch-orgRequest"
+                "$ref": "#/components/schemas/AdminPatchOrgBody"
               }
             }
           },
@@ -5991,7 +5870,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-reindexResponse"
+                  "$ref": "#/components/schemas/AdminJobResponse"
                 }
               }
             },
@@ -6028,7 +5907,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-reload-configResponse"
+                  "$ref": "#/components/schemas/AdminReloadResult"
                 }
               }
             },
@@ -6242,7 +6121,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-disable-userResponse"
+                  "$ref": "#/components/schemas/AdminUserStatusResponse"
                 }
               }
             },
@@ -6290,7 +6169,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-enable-userResponse"
+                  "$ref": "#/components/schemas/AdminUserStatusResponse"
                 }
               }
             },
@@ -6338,7 +6217,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-reset-passwordResponse"
+                  "$ref": "#/components/schemas/AdminUserStatusResponse"
                 }
               }
             },
@@ -6386,7 +6265,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-unlock-userResponse"
+                  "$ref": "#/components/schemas/AdminUserStatusResponse"
                 }
               }
             },
@@ -6423,7 +6302,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Admin-versionResponse"
+                  "$ref": "#/components/schemas/AdminVersionInfo"
                 }
               }
             },
@@ -8114,7 +7993,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NlSearchResponse"
+                  "$ref": "#/components/schemas/NlSearchResult"
                 }
               }
             },
@@ -9749,7 +9628,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TestChannelResponse"
+                  "$ref": "#/components/schemas/TestChannelResult"
                 }
               }
             },

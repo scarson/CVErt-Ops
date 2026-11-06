@@ -1309,7 +1309,7 @@ func TestTestChannel_EmailNoSMTP(t *testing.T) {
 		t.Fatalf("test channel: got %d, want 502", resp.StatusCode)
 	}
 
-	var result testChannelResponse
+	var result testChannelResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode test response: %v", err)
 	}

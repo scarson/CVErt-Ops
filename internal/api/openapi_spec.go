@@ -943,7 +943,7 @@ type specTestChannelInput struct {
 	ID    string `path:"id" format:"uuid" doc:"Channel ID"`
 }
 type specTestChannelOutput struct {
-	Body testChannelResponse
+	Body testChannelResult
 }
 
 func registerChannelsSpecOps(api huma.API) {
@@ -1564,7 +1564,7 @@ func registerAISpecOps(api huma.API) {
 		Limit  int    `query:"limit,omitempty" doc:"Results per page (1-100, default 25)"`
 		Body   nlSearchRequest
 	}, struct {
-		Body nlSearchResponse
+		Body nlSearchResult
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1617,6 +1617,50 @@ func registerOrgTierSpecOps(api huma.API) {
 
 // ── Admin Feeds spec ops ────────────────────────────────────────────────────
 
+// Bodies of admin operations. A named type sets the schema's name; an anonymous
+// body would take <OperationID>Response, the name oapi-codegen gives its own
+// wrapper type for that operation, and the generated client would not compile.
+type adminJobResponse struct {
+	JobID string `json:"job_id"`
+}
+
+type adminFeedStateResponse struct {
+	Status string `json:"status"`
+	Feed   string `json:"feed"`
+}
+
+type adminUserStatusResponse struct {
+	Status string `json:"status"`
+	UserID string `json:"user_id"`
+}
+
+type adminVersionInfo struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildTime string `json:"build_time"`
+	GoVersion string `json:"go_version"`
+}
+
+type adminReloadResult struct {
+	Message string `json:"message"`
+}
+
+type adminPatchOrgBody struct {
+	Tier    *string `json:"tier,omitempty"`
+	Suspend *bool   `json:"suspend,omitempty"`
+}
+
+type adminDeliveryRetryResult struct {
+	Status       string `json:"status"`
+	DeliveryID   string `json:"delivery_id"`
+	RowsAffected int64  `json:"rows_affected"`
+}
+
+type adminBulkRetryResult struct {
+	Status       string `json:"status"`
+	RowsAffected int64  `json:"rows_affected"`
+}
+
 func registerAdminFeedsSpecOps(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "list-feeds",
@@ -1638,9 +1682,7 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
-		Body struct {
-			JobID string `json:"job_id"`
-		}
+		Body adminJobResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1652,10 +1694,7 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			Feed   string `json:"feed"`
-		}
+		Body adminFeedStateResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1667,10 +1706,7 @@ func registerAdminFeedsSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Feed string `path:"feed"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			Feed   string `json:"feed"`
-		}
+		Body adminFeedStateResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1699,9 +1735,7 @@ func registerAdminSystemSpecOps(api huma.API) {
 		Tags:          []string{"Admin System"},
 		DefaultStatus: http.StatusAccepted,
 	}, noopHandler[struct{}, struct {
-		Body struct {
-			JobID string `json:"job_id"`
-		}
+		Body adminJobResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1738,12 +1772,7 @@ func registerAdminSystemSpecOps(api huma.API) {
 		Summary:     "Build version and metadata",
 		Tags:        []string{"Admin System"},
 	}, noopHandler[struct{}, struct {
-		Body struct {
-			Version   string `json:"version"`
-			Commit    string `json:"commit"`
-			BuildTime string `json:"build_time"`
-			GoVersion string `json:"go_version"`
-		}
+		Body adminVersionInfo
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1767,9 +1796,7 @@ func registerAdminReloadSpecOps(api huma.API) {
 		Summary:     "Reload configuration from secrets file",
 		Tags:        []string{"Admin System"},
 	}, noopHandler[struct{}, struct {
-		Body struct {
-			Message string `json:"message"`
-		}
+		Body adminReloadResult
 	}]())
 }
 
@@ -1797,10 +1824,7 @@ func registerAdminOrgsSpecOps(api huma.API) {
 		Tags:        []string{"Admin Orgs"},
 	}, noopHandler[struct {
 		OrgID string `path:"org_id" format:"uuid"`
-		Body  struct {
-			Tier    *string `json:"tier,omitempty"`
-			Suspend *bool   `json:"suspend,omitempty"`
-		}
+		Body  adminPatchOrgBody
 	}, struct {
 		Body adminOrgResponse
 	}]())
@@ -1843,10 +1867,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1858,10 +1879,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1873,10 +1891,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1888,10 +1903,7 @@ func registerAdminUsersSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		UserID string `path:"user_id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status string `json:"status"`
-			UserID string `json:"user_id"`
-		}
+		Body adminUserStatusResponse
 	}]())
 }
 
@@ -1921,11 +1933,7 @@ func registerAdminDeliveriesSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		ID string `path:"id" format:"uuid"`
 	}, struct {
-		Body struct {
-			Status       string `json:"status"`
-			DeliveryID   string `json:"delivery_id"`
-			RowsAffected int64  `json:"rows_affected"`
-		}
+		Body adminDeliveryRetryResult
 	}]())
 
 	huma.Register(api, huma.Operation{
@@ -1937,10 +1945,7 @@ func registerAdminDeliveriesSpecOps(api huma.API) {
 	}, noopHandler[struct {
 		Limit int `query:"limit,omitempty"`
 	}, struct {
-		Body struct {
-			Status       string `json:"status"`
-			RowsAffected int64  `json:"rows_affected"`
-		}
+		Body adminBulkRetryResult
 	}]())
 }
 

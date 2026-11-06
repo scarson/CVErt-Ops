@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -164,6 +165,42 @@ func TestOpenAPISpec_ServedDocumentsDescribeBasePath(t *testing.T) {
 				t.Error("huma route /cves missing from the served document")
 			}
 		})
+	}
+}
+
+// TestOpenAPISpec_SchemaNamesFitGeneratedClients verifies a client generated from
+// the 3.0 document compiles. oapi-codegen emits a Go type for each schema and, for
+// each operation, types named after its operation ID; a schema with one of those
+// names redeclares the type, and the generated package does not build.
+func TestOpenAPISpec_SchemaNamesFitGeneratedClients(t *testing.T) {
+	spec := fetchSpec(t, newOpenAPITestHandler(t), "/api/v1/openapi-3.0.json")
+
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+	wellFormed := regexp.MustCompile(`^[A-Z][A-Za-z0-9]*$`)
+	for name := range schemas {
+		if !wellFormed.MatchString(name) {
+			t.Errorf("schema %q is not a plain type name; give the body a named Go type", name)
+		}
+	}
+
+	for path, item := range spec["paths"].(map[string]any) {
+		for method, raw := range item.(map[string]any) {
+			op, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			operationID, _ := op["operationId"].(string)
+			var goName strings.Builder
+			for _, part := range strings.Split(operationID, "-") {
+				goName.WriteString(strings.ToUpper(part[:1]) + part[1:])
+			}
+			for _, suffix := range []string{"Response", "Params", "JSONBody", "JSONRequestBody"} {
+				if _, taken := schemas[goName.String()+suffix]; taken {
+					t.Errorf("%s %s: schema %s has the name a generated client gives this operation's type",
+						strings.ToUpper(method), path, goName.String()+suffix)
+				}
+			}
+		}
 	}
 }
 

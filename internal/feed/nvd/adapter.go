@@ -95,26 +95,61 @@ func New(client *http.Client) *Adapter {
 // Fetch fetches one page of CVEs from the NVD API. It uses the cursor to
 // determine the current date window and page offset. On each successful page,
 // it returns a non-nil NextCursor pointing to the next page or window.
-// When all windows up to now are exhausted, NextCursor is nil.
+// When all windows up to now are exhausted, NextCursor is a "caught up" cursor
+// and LastPage is true.
+//
+// The ingest handler ends a run on an empty page, and NVD has no modifications in
+// its earliest windows, so Fetch walks past empty windows to the next page with
+// data. Each request passes through the rate limiter, and the walk ends because
+// every window starts later than the one before it.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
 	cur, err := parseCursor(cursorJSON)
 	if err != nil {
 		return nil, fmt.Errorf("nvd: parse cursor: %w", err)
 	}
 
+	for {
+		patches, nextCursor, lastPage, err := a.fetchPage(ctx, cur)
+		if err != nil {
+			return nil, err
+		}
+		if len(patches) == 0 && !lastPage {
+			cur = *nextCursor
+			continue
+		}
+
+		nextCursorJSON, err := json.Marshal(nextCursor)
+		if err != nil {
+			return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
+		}
+		return &feed.FetchResult{
+			Patches: patches,
+			SourceMeta: feed.SourceMeta{
+				SourceName: SourceName,
+				FetchedAt:  time.Now().UTC(),
+			},
+			NextCursor: nextCursorJSON,
+			LastPage:   lastPage,
+		}, nil
+	}
+}
+
+// fetchPage requests the page cur points at and returns its patches, the cursor
+// after it, and whether it is the final page of this run.
+func (a *Adapter) fetchPage(ctx context.Context, cur Cursor) ([]feed.CanonicalPatch, *Cursor, bool, error) {
 	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("nvd: rate limit: %w", err)
+		return nil, nil, false, fmt.Errorf("nvd: rate limit: %w", err)
 	}
 
 	resp, nvdTimestamp, err := a.doRequest(ctx, cur)
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck,gosec // drain for connection reuse
-		return nil, fmt.Errorf("nvd: HTTP %d for window [%s, %s] startIndex=%d",
+		return nil, nil, false, fmt.Errorf("nvd: HTTP %d for window [%s, %s] startIndex=%d",
 			resp.StatusCode,
 			cur.WindowStart.Format(time.RFC3339),
 			cur.WindowEnd.Format(time.RFC3339),
@@ -125,7 +160,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 	const maxNVDResponseSize = 50 << 20 // 50 MB
 	patches, totalResults, responseTimestamp, err := parseNVDResponse(io.LimitReader(resp.Body, maxNVDResponseSize))
 	if err != nil {
-		return nil, fmt.Errorf("nvd: parse response: %w", err)
+		return nil, nil, false, fmt.Errorf("nvd: parse response: %w", err)
 	}
 
 	// Prefer response-body timestamp over HTTP Date header for clock-skew safety.
@@ -138,22 +173,8 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		effectiveNow = time.Now().UTC()
 	}
 
-	// Determine NextCursor.
 	nextCursor, lastPage := computeNextCursor(cur, totalResults, effectiveNow)
-	nextCursorJSON, err := json.Marshal(nextCursor)
-	if err != nil {
-		return nil, fmt.Errorf("nvd: marshal next cursor: %w", err)
-	}
-
-	return &feed.FetchResult{
-		Patches: patches,
-		SourceMeta: feed.SourceMeta{
-			SourceName: SourceName,
-			FetchedAt:  time.Now().UTC(),
-		},
-		NextCursor: nextCursorJSON,
-		LastPage:   lastPage,
-	}, nil
+	return patches, nextCursor, lastPage, nil
 }
 
 // doRequest builds and executes the NVD API request for the given cursor.
@@ -249,9 +270,12 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*C
 	// Current window exhausted — compute the next window.
 	// Apply 15-minute overlap to catch eventual-consistency stragglers.
 	nextWindowStart := cur.WindowEnd.Add(-overlapDuration)
-	if nextWindowStart.After(effectiveNow) || !effectiveNow.After(cur.WindowEnd) {
-		// All windows processed. Return a "caught up" cursor so the handler
-		// persists a valid checkpoint instead of regressing to the previous page.
+	if effectiveNow.Sub(cur.WindowEnd) <= overlapDuration {
+		// All windows processed. effectiveNow advances on every response, so it is
+		// usually slightly past WindowEnd here; a further window would only re-read
+		// this one. Return a "caught up" cursor so the handler persists a valid
+		// checkpoint instead of regressing to the previous page. The next run starts
+		// from it, so modifications after WindowEnd are still read.
 		return &Cursor{
 			WindowStart: cur.WindowEnd.Add(-overlapDuration),
 			WindowEnd:   effectiveNow,
@@ -286,15 +310,15 @@ type nvdVulnWrapper struct {
 
 // nvdCVE is the per-CVE object in the NVD API 2.0 response.
 type nvdCVE struct {
-	ID           string           `json:"id"`
-	VulnStatus   string           `json:"vulnStatus"`
-	Published    string           `json:"published"`
-	LastModified string           `json:"lastModified"`
-	Descriptions []nvdDescription `json:"descriptions"`
-	Metrics      nvdMetrics       `json:"metrics"`
-	Weaknesses   []nvdWeakness    `json:"weaknesses"`
-	Configurations []nvdConfig    `json:"configurations"`
-	References   []nvdReference   `json:"references"`
+	ID             string           `json:"id"`
+	VulnStatus     string           `json:"vulnStatus"`
+	Published      string           `json:"published"`
+	LastModified   string           `json:"lastModified"`
+	Descriptions   []nvdDescription `json:"descriptions"`
+	Metrics        nvdMetrics       `json:"metrics"`
+	Weaknesses     []nvdWeakness    `json:"weaknesses"`
+	Configurations []nvdConfig      `json:"configurations"`
+	References     []nvdReference   `json:"references"`
 }
 
 type nvdDescription struct {
@@ -311,7 +335,7 @@ type nvdMetrics struct {
 }
 
 type nvdCVSSMetric struct {
-	Source   string  `json:"source"`
+	Source   string      `json:"source"`
 	CVSSData nvdCVSSData `json:"cvssData"`
 }
 
@@ -335,9 +359,9 @@ type nvdNode struct {
 }
 
 type nvdCPEMatch struct {
-	Criteria              string `json:"criteria"`
-	MatchCriteriaID       string `json:"matchCriteriaId"`
-	Vulnerable            bool   `json:"vulnerable"`
+	Criteria        string `json:"criteria"`
+	MatchCriteriaID string `json:"matchCriteriaId"`
+	Vulnerable      bool   `json:"vulnerable"`
 }
 
 type nvdReference struct {
@@ -572,4 +596,3 @@ func pickPreferred(entries []nvdCVSSMetric) *nvdCVSSMetric {
 	}
 	return nil
 }
-

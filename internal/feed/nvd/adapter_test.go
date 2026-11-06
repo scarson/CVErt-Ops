@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -188,6 +189,26 @@ func TestComputeNextCursor(t *testing.T) {
 		}
 		if next.StartIndex != 0 {
 			t.Errorf("StartIndex = %d, want 0", next.StartIndex)
+		}
+	})
+
+	t.Run("window end within the overlap of effectiveNow returns caught-up cursor", func(t *testing.T) {
+		t.Parallel()
+		cur := Cursor{
+			WindowStart: baseTime.Add(-48 * time.Hour),
+			WindowEnd:   baseTime,
+		}
+		effectiveNow := baseTime.Add(2 * time.Second)
+		next, lastPage := computeNextCursor(cur, 100, effectiveNow)
+		if !lastPage {
+			t.Error("expected lastPage=true: a next window would only re-read this one")
+		}
+		if !next.WindowStart.Equal(baseTime.Add(-overlapDuration)) {
+			t.Errorf("WindowStart = %v, want %v", next.WindowStart, baseTime.Add(-overlapDuration))
+		}
+		// The next run starts here, so modifications after baseTime are not skipped.
+		if !next.WindowEnd.Equal(effectiveNow) {
+			t.Errorf("WindowEnd = %v, want %v", next.WindowEnd, effectiveNow)
 		}
 	})
 
@@ -1292,6 +1313,128 @@ func TestFetch_LastPage(t *testing.T) {
 	}
 	if len(result.Patches) != 2 {
 		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+}
+
+const emptyNVDResponse = `{"totalResults":0,"timestamp":"2025-06-01T12:00:00.000","vulnerabilities":[]}`
+
+// newScriptedAdapter returns an adapter whose server answers each request with
+// respond(n), n counting from 1, and a function reporting the lastModStartDate
+// values it received.
+func newScriptedAdapter(t *testing.T, respond func(n int) string) (*Adapter, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var starts []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		starts = append(starts, r.URL.Query().Get("lastModStartDate"))
+		n := len(starts)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(respond(n)))
+	}))
+	t.Cleanup(ts.Close)
+
+	adapter := &Adapter{
+		client:      &http.Client{Transport: &redirectTransport{targetURL: ts.URL, inner: http.DefaultTransport}},
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+	}
+	return adapter, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), starts...)
+	}
+}
+
+// The handler ends a run on an empty page, and NVD has no modifications in its
+// earliest windows, so Fetch walks past empty windows to the next page with data.
+func TestFetch_WalksPastEmptyWindows(t *testing.T) {
+	t.Parallel()
+
+	adapter, starts := newScriptedAdapter(t, func(n int) string {
+		if n <= 2 {
+			return emptyNVDResponse
+		}
+		return validNVDResponse
+	})
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(result.Patches) != 2 {
+		t.Fatalf("len(Patches) = %d, want 2", len(result.Patches))
+	}
+	if result.LastPage {
+		t.Error("LastPage = true, want false: later windows remain")
+	}
+	got := starts()
+	if len(got) != 3 {
+		t.Fatalf("requests = %d, want 3: %v", len(got), got)
+	}
+	if got[0] >= got[1] || got[1] >= got[2] {
+		t.Errorf("window starts do not advance: %v", got)
+	}
+}
+
+func TestFetch_AllWindowsEmptyEndsOnLastPage(t *testing.T) {
+	t.Parallel()
+
+	adapter, starts := newScriptedAdapter(t, func(int) string { return emptyNVDResponse })
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !result.LastPage {
+		t.Error("LastPage = false, want true: every window up to now is empty")
+	}
+	if len(result.Patches) != 0 {
+		t.Errorf("len(Patches) = %d, want 0", len(result.Patches))
+	}
+	if len(starts()) < 2 {
+		t.Errorf("requests = %d, want the walk to continue past the first window", len(starts()))
+	}
+}
+
+// NVD's timestamp advances on every response, so a window ending at the previous
+// response's timestamp is always slightly behind. The run must still end, or it
+// loops for as long as anything was modified in the last 15 minutes.
+func TestFetch_RunEndsWhenResponseTimestampAdvances(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+	adapter, _ := newScriptedAdapter(t, func(n int) string {
+		timestamp := start.Add(time.Duration(n) * 2 * time.Second).Format("2006-01-02T15:04:05.000")
+		return strings.Replace(validNVDResponse, "2025-06-01T12:00:00.000", timestamp, 1)
+	})
+	cursor, _ := json.Marshal(Cursor{
+		WindowStart: start.Add(-48 * time.Hour),
+		WindowEnd:   start.Add(-time.Hour),
+	})
+
+	const maxCalls = 5
+	for call := 1; ; call++ {
+		if call > maxCalls {
+			t.Fatalf("no LastPage after %d calls", maxCalls)
+		}
+		result, err := adapter.Fetch(context.Background(), cursor)
+		if err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if result.LastPage {
+			return
+		}
+		cursor = result.NextCursor
 	}
 }
 

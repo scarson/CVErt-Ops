@@ -771,9 +771,11 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	}
 
 	// PgBouncer transaction-pooling compatibility (PLAN.md §19.2).
-	if cfg.DBQueryExecMode == "simple_protocol" {
-		poolCfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	execMode, err := store.ParseQueryExecMode(cfg.DBQueryExecMode)
+	if err != nil {
+		return nil, err
 	}
+	poolCfg.ConnConfig.DefaultQueryExecMode = execMode
 
 	// Global per-query statement timeout prevents runaway queries from holding
 	// connections indefinitely (PLAN.md §19.2).

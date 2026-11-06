@@ -166,7 +166,7 @@ In production only Caddy publishes host ports, so everything else goes through y
 | `DB_MAX_CONNS` | `25` | Max pool connections |
 | `DB_MAX_CONN_IDLE_TIME` | `5m` | Max idle connection lifetime |
 | `DB_STATEMENT_TIMEOUT_MS` | `14000` | Statement timeout in milliseconds |
-| `DB_QUERY_EXEC_MODE` | `simple_protocol` | pgx query exec mode (`simple_protocol` for PgBouncer) |
+| `DB_QUERY_EXEC_MODE` | `cache_describe` | pgx query exec mode: `cache_describe` (works through PgBouncer) or `extended_protocol` (direct connections only) |
 
 ### Authentication
 

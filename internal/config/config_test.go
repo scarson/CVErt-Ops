@@ -129,7 +129,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"DBMaxConnIdleTime", cfg.DBMaxConnIdleTime, 5 * time.Minute},
 		{"DBStatementTimeoutMS", cfg.DBStatementTimeoutMS, 14000},
 		{"DBLongStatementTimeoutMS", cfg.DBLongStatementTimeoutMS, 120000},
-		{"DBQueryExecMode", cfg.DBQueryExecMode, "simple_protocol"},
+		{"DBQueryExecMode", cfg.DBQueryExecMode, "cache_describe"},
 		// Server
 		{"ListenAddr", cfg.ListenAddr, ":8080"},
 		{"AppEnv", cfg.AppEnv, "development"},

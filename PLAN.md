@@ -581,14 +581,14 @@ RLS is implemented alongside org table migrations in Phase 2, not deferred. See 
   CREATE POLICY org_isolation ON watchlists
       USING (
           current_setting('app.bypass_rls', TRUE) = 'on'
-          OR org_id = current_setting('app.org_id', TRUE)::uuid
+          OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
       )
       WITH CHECK (
           current_setting('app.bypass_rls', TRUE) = 'on'
-          OR org_id = current_setting('app.org_id', TRUE)::uuid
+          OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
       );
   ```
-  Both `app.org_id` and `app.bypass_rls` use `missing_ok=TRUE`. When `app.org_id` is unset, `current_setting` returns NULL and `NULL::uuid = org_id` evaluates to NULL (FALSE in USING) — fail-closed. When `app.bypass_rls` is unset, `current_setting` returns NULL and `NULL = 'on'` is NULL (FALSE) — bypass is inactive by default. `FORCE ROW LEVEL SECURITY` prevents the table owner (superuser role) from bypassing the policy. Apply to all org-scoped tables.
+  Both `app.org_id` and `app.bypass_rls` use `missing_ok=TRUE`. When `app.org_id` is unset, `current_setting` returns NULL and `NULL::uuid = org_id` evaluates to NULL (FALSE in USING) — fail-closed. `NULLIF` is required: once a session has run `SET LOCAL app.org_id`, Postgres leaves the setting as an empty string rather than NULL after the transaction ends, and `''::uuid` raises an error even when `app.bypass_rls` is on. When `app.bypass_rls` is unset, `current_setting` returns NULL and `NULL = 'on'` is NULL (FALSE) — bypass is inactive by default. `FORCE ROW LEVEL SECURITY` prevents the table owner (superuser role) from bypassing the policy. Apply to all org-scoped tables.
 
 - **Background worker escape hatch (required):** Background workers (batch alert evaluator, EPSS evaluator, retention cleanup) operate outside any user HTTP session and have no `app.org_id` context. Without a bypass, the fail-closed RLS policy hides all rows from workers — they silently read 0 alert rules, evaluate 0 rules, and fire 0 alerts. Workers must set the bypass flag inside their transaction before querying org-scoped tables:
   ```go
@@ -613,7 +613,7 @@ RLS is implemented alongside org table migrations in Phase 2, not deferred. See 
 
 RLS policies on parent tables do not automatically protect child/join tables. An RLS policy using `EXISTS (SELECT 1 FROM parent WHERE parent.id = child.parent_id AND org_id = ...)` executes a nested loop join on every row scanned — destroying read performance for large orgs. Omitting RLS on child tables entirely lets any authenticated user access rows by guessing a parent ID (e.g., guess a `watchlist_id` to read/delete `watchlist_items` for another org).
 
-**Required:** Every tenant-owned table — including all child and join tables — MUST contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index, and an RLS policy using the same `org_id = current_setting('app.org_id', TRUE)::uuid` pattern. The `org_id` is redundant with the parent's `org_id` (denormalized) — this is intentional and correct. Do NOT normalize it out.
+**Required:** Every tenant-owned table — including all child and join tables — MUST contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index, and an RLS policy using the same `org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid` pattern. The `org_id` is redundant with the parent's `org_id` (denormalized) — this is intentional and correct. Do NOT normalize it out.
 
 Tables requiring `org_id` denormalization (non-exhaustive): `watchlist_items`, `alert_events`, `notification_deliveries`, `group_members`, `cve_annotations`, `report_runs`, `alert_rule_runs`. Any future child table added to the schema must also include `org_id` in the migration.
 
@@ -1893,15 +1893,15 @@ Enterprise and high-availability deployments routinely place PgBouncer (or simil
 
 `pgx` v5 (used by `pgxpool`) defaults to **extended query protocol with named prepared statements**. When a prepared statement is created on backend connection A, it exists only on that backend. When PgBouncer routes the next query to backend B, Postgres returns: `ERROR: prepared statement "pgx_N" does not exist`. This immediately crashes the query, and with a pooled connection, may crash the entire worker goroutine or trigger a cascade of errors across the pool.
 
-**Required:** Configure pgxpool to use the simple query protocol (no named prepared statements) when connecting through a pooler:
+**Required:** Configure pgxpool to use a query mode with no named prepared statements:
 ```go
 config, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 if err != nil { log.Fatal(err) }
-// Use simple protocol — compatible with PgBouncer transaction pooling mode
-config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+// Compatible with PgBouncer transaction pooling mode: each execution re-sends the SQL as an unnamed statement.
+config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
 pool, err := pgxpool.NewWithConfig(ctx, config)
 ```
-Alternatively, append `?default_query_exec_mode=simple_protocol` to `DATABASE_URL`. Expose a `DB_QUERY_EXEC_MODE` env var (default `simple_protocol`) so operators who connect directly to Postgres can opt into extended protocol for performance. Self-hosted single-instance deployments without PgBouncer work correctly with either mode; the simple protocol has negligible performance impact at our scale.
+Expose a `DB_QUERY_EXEC_MODE` env var (default `cache_describe`) so operators who connect directly to Postgres can opt into `extended_protocol` for performance. Do not use `QueryExecModeSimpleProtocol` or `QueryExecModeExec`: they assume parameter types from Go types, so a `[]byte` is sent as `bytea` and `jsonb` columns reject it. `cache_describe` caches statement descriptions per connection, so run schema migrations before starting the new binary.
 
 **Database connection pool sizing (required):**
 

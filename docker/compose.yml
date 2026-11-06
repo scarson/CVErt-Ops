@@ -142,8 +142,8 @@ services:
       # The migrate service retains the superuser connection for DDL operations.
       DATABASE_URL: >-
         postgresql://cvert_ops_app:${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-cvert_ops}?sslmode=require
-      # PLAN.md §19.2: simple_protocol for PgBouncer compatibility (safe for direct connections too)
-      DB_QUERY_EXEC_MODE: simple_protocol
+      # PLAN.md §19.2: cache_describe for PgBouncer compatibility (safe for direct connections too)
+      DB_QUERY_EXEC_MODE: cache_describe
 
       # Auth — JWT_SECRET is required; server exits at startup if missing or < 32 bytes
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (min 32 random bytes)}

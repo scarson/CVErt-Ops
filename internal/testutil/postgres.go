@@ -97,6 +97,8 @@ type TestDB struct {
 	AppStore *store.Store
 	// URL is the superuser connection string for this test's database.
 	URL string
+	// AppURL connects to the same database as cvert_ops_app.
+	AppURL string
 }
 
 // NewTestDB returns a TestDB backed by a new database cloned from the test
@@ -136,8 +138,14 @@ func NewTestDB(t *testing.T) *TestDB {
 	dbURL := shared.url
 	dbURL.Path = "/" + name
 
-	// Superuser pool for data setup (bypasses RLS).
-	pool, err := pgxpool.New(ctx, dbURL.String())
+	// Superuser pool for data setup (bypasses RLS). Both pools use the query mode
+	// a deployment runs, so tests encode parameters the way production does.
+	poolCfg, err := pgxpool.ParseConfig(dbURL.String())
+	if err != nil {
+		t.Fatalf("parse pool config: %v", err)
+	}
+	poolCfg.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		t.Fatalf("pgxpool: %v", err)
 	}
@@ -150,16 +158,21 @@ func NewTestDB(t *testing.T) *TestDB {
 	}
 	appPoolCfg.ConnConfig.User = "cvert_ops_app"
 	appPoolCfg.ConnConfig.Password = "apptestpw"
+	appPoolCfg.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode
 	appPool, err := pgxpool.NewWithConfig(ctx, appPoolCfg)
 	if err != nil {
 		t.Fatalf("pgxpool (cvert_ops_app): %v", err)
 	}
 	t.Cleanup(appPool.Close)
 
+	appURL := dbURL
+	appURL.User = url.UserPassword(appPoolCfg.ConnConfig.User, appPoolCfg.ConnConfig.Password)
+
 	return &TestDB{
 		Store:    store.New(pool),
 		AppStore: store.New(appPool),
 		URL:      dbURL.String(),
+		AppURL:   appURL.String(),
 	}
 }
 

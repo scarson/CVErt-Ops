@@ -87,6 +87,28 @@ func TestLogValue_EmptySecretsNotMasked(t *testing.T) {
 	}
 }
 
+func TestLoadMigration_NeedsOnlyDatabaseURL(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://app@localhost/db")
+	t.Setenv("JWT_SECRET", "")
+
+	cfg, err := LoadMigration()
+	if err != nil {
+		t.Fatalf("LoadMigration: %v", err)
+	}
+	if got := cfg.URL(); got != "postgres://app@localhost/db" {
+		t.Errorf("URL() = %q, want DATABASE_URL", got)
+	}
+
+	t.Setenv("DATABASE_URL_MIGRATE", "postgres://admin@localhost/db")
+	cfg, err = LoadMigration()
+	if err != nil {
+		t.Fatalf("LoadMigration with DATABASE_URL_MIGRATE: %v", err)
+	}
+	if got := cfg.URL(); got != "postgres://admin@localhost/db" {
+		t.Errorf("URL() = %q, want DATABASE_URL_MIGRATE", got)
+	}
+}
+
 func TestLoad_Defaults(t *testing.T) {
 	// Set only the required env vars; all envDefault fields should get defaults.
 	t.Setenv("DATABASE_URL", "postgres://test:test@localhost/test")

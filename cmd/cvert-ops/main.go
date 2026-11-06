@@ -641,14 +641,14 @@ func migrateCmd() *cobra.Command {
 }
 
 func runMigrate(_ *cobra.Command, _ []string) error {
-	cfg, err := config.Load()
+	cfg, err := config.LoadMigration()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
 	slog.Info("running migrations")
 
-	db, err := openMigrateDB(cfg)
+	db, err := openMigrateDB(cfg.URL())
 	if err != nil {
 		return err
 	}
@@ -659,14 +659,18 @@ func runMigrate(_ *cobra.Command, _ []string) error {
 
 // autoMigrate acquires a Postgres advisory lock and runs pending migrations.
 // The advisory lock prevents concurrent migration runs when multiple instances
-// start simultaneously (e.g., Kubernetes rolling update). The lock is released
-// on return via defer.
+// start simultaneously (e.g., Kubernetes rolling update). The lock belongs to the
+// session, so it is released when migrateUp closes the connection.
 //
 // The lock and migrations share the same *sql.DB connection — this is critical
 // because pg_advisory_lock is session-scoped and must protect the same session
 // that executes the DDL.
 func autoMigrate(ctx context.Context, cfg *config.Config) error {
-	db, err := openMigrateDB(cfg)
+	migrateURL := cfg.DatabaseURL
+	if cfg.DatabaseURLMigrate != "" {
+		migrateURL = cfg.DatabaseURLMigrate
+	}
+	db, err := openMigrateDB(migrateURL)
 	if err != nil {
 		return err
 	}
@@ -682,16 +686,13 @@ func autoMigrate(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("ping: %w", err)
 	}
 
-	// Acquire advisory lock — blocks until available, released on disconnect
-	// or explicit unlock. hashtext('cvertops-migrate') returns a stable int32.
+	// Acquire advisory lock — blocks until available, released on disconnect.
+	// There is no explicit unlock: the migration driver holds the pool's only
+	// connection until it closes, and closing it ends the session.
+	// hashtext('cvertops-migrate') returns a stable int32.
 	if _, err := db.ExecContext(ctx, "SELECT pg_advisory_lock(hashtext('cvertops-migrate'))"); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
 	}
-	defer func() {
-		if _, unlockErr := db.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock(hashtext('cvertops-migrate'))"); unlockErr != nil {
-			slog.Error("auto-migrate: failed to release advisory lock", "error", unlockErr)
-		}
-	}()
 
 	return migrateUp(db)
 }
@@ -699,11 +700,7 @@ func autoMigrate(ctx context.Context, cfg *config.Config) error {
 // openMigrateDB opens a database/sql connection for running migrations.
 // golang-migrate requires *sql.DB; this uses pgx's stdlib adapter.
 // Uses DATABASE_URL_MIGRATE if set, otherwise falls back to DATABASE_URL.
-func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
-	migrateURL := cfg.DatabaseURL
-	if cfg.DatabaseURLMigrate != "" {
-		migrateURL = cfg.DatabaseURLMigrate
-	}
+func openMigrateDB(migrateURL string) (*sql.DB, error) {
 	connCfg, err := pgx.ParseConfig(migrateURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse db url: %w", err)
@@ -714,7 +711,8 @@ func openMigrateDB(cfg *config.Config) (*sql.DB, error) {
 	return stdlib.OpenDB(*connCfg), nil
 }
 
-// migrateUp applies all pending migrations on the given database connection.
+// migrateUp applies all pending migrations on the given database connection,
+// then closes db.
 func migrateUp(db *sql.DB) error {
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
@@ -730,6 +728,11 @@ func migrateUp(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate init: %w", err)
 	}
+	defer func() {
+		if srcErr, dbErr := m.Close(); srcErr != nil || dbErr != nil {
+			slog.Error("close migrator", "source_error", srcErr, "database_error", dbErr)
+		}
+	}()
 
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("migrate up: %w", err)

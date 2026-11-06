@@ -95,6 +95,8 @@ type TestDB struct {
 	*store.Store // superuser store — bypasses RLS (for data setup)
 	// AppStore connects as cvert_ops_app (NOBYPASSRLS) — use for RLS isolation tests.
 	AppStore *store.Store
+	// URL is the superuser connection string for this test's database.
+	URL string
 }
 
 // NewTestDB returns a TestDB backed by a new database cloned from the test
@@ -157,6 +159,7 @@ func NewTestDB(t *testing.T) *TestDB {
 	return &TestDB{
 		Store:    store.New(pool),
 		AppStore: store.New(appPool),
+		URL:      dbURL.String(),
 	}
 }
 
@@ -164,7 +167,7 @@ func NewTestDB(t *testing.T) *TestDB {
 // and runs all migrations into the template database. opts are applied after
 // the defaults.
 func startCluster(ctx context.Context, opts ...testcontainers.ContainerCustomizer) (*cluster, error) {
-	owner, err := ownerOption()
+	owner, err := OwnerOption()
 	if err != nil {
 		return nil, fmt.Errorf("owner labels: %w", err)
 	}
@@ -252,7 +255,7 @@ func migrateTemplate(ctx context.Context, connStr string) error {
 	defer db.Close() //nolint:errcheck
 
 	// Migrations reference cvert_ops_app in GRANT statements — create the role
-	// before running migrations. In production this is done by docker/init.sql.
+	// before running migrations. In production this is done by docker/init-app-role.sh.
 	// A known password is set so RLS integration tests can connect as this role.
 	if _, err := db.ExecContext(ctx, `
 		DO $$ BEGIN

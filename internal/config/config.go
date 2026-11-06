@@ -178,6 +178,32 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// Migration holds the settings `cvert-ops migrate` reads. The migrate command
+// only connects to the database, so it does not require the rest of Config:
+// the one-shot migrate container never receives the JWT signing key.
+type Migration struct {
+	DatabaseURL        string `env:"DATABASE_URL,required"`
+	DatabaseURLMigrate string `env:"DATABASE_URL_MIGRATE"`
+}
+
+// LoadMigration parses and returns Migration from environment variables.
+func LoadMigration() (*Migration, error) {
+	cfg := &Migration{}
+	if err := env.Parse(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// URL returns the connection string migrations run on: DatabaseURLMigrate, or
+// DatabaseURL if that is unset.
+func (m *Migration) URL() string {
+	if m.DatabaseURLMigrate != "" {
+		return m.DatabaseURLMigrate
+	}
+	return m.DatabaseURL
+}
+
 // IsDevelopment reports whether the application is running in development mode.
 func (c *Config) IsDevelopment() bool {
 	return c.AppEnv == "development"

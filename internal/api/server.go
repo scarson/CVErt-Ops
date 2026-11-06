@@ -253,6 +253,7 @@ func (srv *Server) Handler() http.Handler {
 	specOnlyAPI := newSpecOnlyAPI()
 	registerAllSpecOps(specOnlyAPI)
 	mergeSpecPaths(api, specOnlyAPI)
+	applyOperationSecurity(api)
 
 	// ── SSO discovery (public, no auth, rate limited by IP) ─────────────────────
 	apiRouter.With(srv.authRateLimit()).Post("/auth/discover", srv.discoverHandler)

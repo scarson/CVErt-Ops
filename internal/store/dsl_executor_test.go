@@ -54,6 +54,42 @@ func TestExecuteDSLQuery_BasicFilter(t *testing.T) {
 	}
 }
 
+// TestExecuteDSLQuery_StatusFilter verifies a CVE with no status is returned and a
+// rejected one is not.
+func TestExecuteDSLQuery_StatusFilter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	for cveID, status := range map[string]any{"CVE-2024-NOSTATUS": nil, "CVE-2024-REJECTED": "Rejected"} {
+		_, err := s.DB().ExecContext(ctx, `
+			INSERT INTO cves (cve_id, status, severity, material_hash) VALUES ($1, $2, 'critical', $3)`,
+			cveID, status, uuid.New().String())
+		if err != nil {
+			t.Fatalf("insert %s: %v", cveID, err)
+		}
+	}
+
+	rule := dsl.Rule{
+		Logic: dsl.LogicAnd,
+		Conditions: []dsl.Condition{
+			{Field: "severity", Op: "eq", Value: json.RawMessage(`"critical"`)},
+		},
+	}
+	compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, "", 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery: %v", err)
+	}
+	if len(results) != 1 || results[0].CveID != "CVE-2024-NOSTATUS" {
+		t.Fatalf("results = %+v, want only CVE-2024-NOSTATUS", results)
+	}
+}
+
 func TestExecuteDSLQuery_Pagination(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

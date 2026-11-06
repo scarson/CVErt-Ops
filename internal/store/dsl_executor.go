@@ -136,8 +136,9 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		sb = sb.Where(compiled.SQL)
 	}
 
-	// Filter out rejected and withdrawn CVEs (§10 alert evaluation).
-	sb = sb.Where("lower(cves.status) NOT IN ('rejected', 'withdrawn')")
+	// Filter out rejected and withdrawn CVEs (§10 alert evaluation). COALESCE keeps
+	// CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
+	sb = sb.Where("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')")
 
 	// Keyset cursor: WHERE (date_modified_canonical, cve_id) < (last_date, last_id).
 	cur, err := decodeDSLCursor(cursor)

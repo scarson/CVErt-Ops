@@ -1284,6 +1284,50 @@ func TestDigestCVEs_ExcludesRejectedAndWithdrawn(t *testing.T) {
 	}
 }
 
+// TestDigestCVEs_StatusFilter verifies the filter reads statuses as feeds send them:
+// NVD sends "Rejected" and MITRE "REJECTED", and a CVE known only from a feed with
+// no status, such as CISA KEV, has none.
+func TestDigestCVEs_StatusFilter(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		cveID  string
+		status any
+		want   bool
+	}{
+		{"CVE-2025-NOSTATUS", nil, true},
+		{"CVE-2025-ANALYZED", "Analyzed", true},
+		{"CVE-2025-NVDREJ", "Rejected", false},
+		{"CVE-2025-MITREREJ", "REJECTED", false},
+		{"CVE-2025-WITHDRAWN", "Withdrawn", false},
+	}
+	for _, tc := range cases {
+		_, err := s.DB().ExecContext(ctx, `
+			INSERT INTO cves (cve_id, status, severity, description_primary, material_hash, date_modified_canonical)
+			VALUES ($1, $2, 'critical', 'status filter', $3, now())`,
+			tc.cveID, tc.status, uuid.New().String())
+		if err != nil {
+			t.Fatalf("insert %s: %v", tc.cveID, err)
+		}
+	}
+
+	rows, err := s.DigestCVEs(ctx, time.Now().Add(-time.Hour), nil, nil)
+	if err != nil {
+		t.Fatalf("DigestCVEs: %v", err)
+	}
+	found := map[string]bool{}
+	for _, row := range rows {
+		found[row.CveID] = true
+	}
+	for _, tc := range cases {
+		if found[tc.cveID] != tc.want {
+			t.Errorf("%s (status %v): in digest = %v, want %v", tc.cveID, tc.status, found[tc.cveID], tc.want)
+		}
+	}
+}
+
 func TestDigestCVEs_ExcludesSentVersions(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

@@ -324,7 +324,7 @@ Mailpit UI: http://localhost:8025
 - Realtime: fires on CVE upsert when `material_hash` changes
 - Batch: periodic job using `date_modified_canonical > last_cursor`; skips rules whose only conditions reference `epss_score`
 - EPSS-specific: daily job using `date_epss_updated > last_cursor`; only rules with `epss_score` conditions
-- All paths: filter `cves.status NOT IN ('rejected', 'withdrawn')`; regex rules fail-closed if candidate cap (5,000) exceeded
+- All paths: filter `COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')`: feeds send mixed case, and CVEs with no status must still match (implementation-pitfalls.md NOTIFY-10); regex rules fail-closed if candidate cap (5,000) exceeded
 - New rule activation: handler inserts rule with `status='activating'`, enqueues scan job, returns 202 immediately — never runs the scan inline
 - `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)`; inserts use `ON CONFLICT DO NOTHING RETURNING id` — fan-out only if the row was actually inserted
 

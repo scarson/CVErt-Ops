@@ -100,7 +100,7 @@ func newPrivateDestServer(t *testing.T, db *testutil.TestDB, hosts, cidrs, ports
 
 // testLoopbackChannel registers a webhook channel at a loopback receiver that
 // answers with status, tests it, and returns the response status and body.
-func testLoopbackChannel(t *testing.T, cidrs string, status int) (int, testChannelResponse) {
+func testLoopbackChannel(t *testing.T, cidrs string, status int) (int, testChannelResult) {
 	t.Helper()
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(status)
@@ -133,7 +133,7 @@ func testLoopbackChannel(t *testing.T, cidrs string, status int) (int, testChann
 
 	resp := doTestChannel(t, ctx, ts, token, reg.OrgID, ch.ID)
 	defer resp.Body.Close() //nolint:errcheck,gosec
-	var result testChannelResponse
+	var result testChannelResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("decode test channel response: %v", err)
 	}

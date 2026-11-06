@@ -477,7 +477,7 @@ func (srv *Server) clearSecondarySecretHandler(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type testChannelResponse struct {
+type testChannelResult struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 }
@@ -520,7 +520,7 @@ func (srv *Server) testChannelHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := testChannelResponse{Success: testErr == nil}
+	resp := testChannelResult{Success: testErr == nil}
 	status := http.StatusOK
 	if testErr != nil {
 		resp.Error = testErr.Error()

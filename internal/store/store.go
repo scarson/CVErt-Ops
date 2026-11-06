@@ -14,6 +14,25 @@ import (
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
+// DefaultQueryExecMode is how a deployment sends queries unless DB_QUERY_EXEC_MODE
+// says otherwise. pgx learns each statement's parameter types once per connection,
+// so a []byte reaches a jsonb column as JSON and a bytea column as bytes. Every
+// execution re-sends the SQL as an unnamed statement, so no statement outlives a
+// PgBouncer transaction-mode server assignment.
+const DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe
+
+// ParseQueryExecMode returns the pgx mode a DB_QUERY_EXEC_MODE value names.
+func ParseQueryExecMode(name string) (pgx.QueryExecMode, error) {
+	switch name {
+	case "cache_describe":
+		return pgx.QueryExecModeCacheDescribe, nil
+	case "extended_protocol":
+		return pgx.QueryExecModeCacheStatement, nil
+	default:
+		return 0, fmt.Errorf("DB_QUERY_EXEC_MODE %q: must be cache_describe or extended_protocol", name)
+	}
+}
+
 // Store is the central data access object. Callers should use the domain
 // methods on the embedded sub-types (CVEStore, FeedStore, JobStore) rather
 // than the raw queries or pool directly.

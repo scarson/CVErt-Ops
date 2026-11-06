@@ -29,7 +29,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
 | 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-25 | §5.C |
-| 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-44 | §6.C |
+| 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-45 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
 | B | [Unified Summary Table](#appendix-b-unified-summary-table) | All pitfalls at a glance, with severity and status | — | — |
 | C | [Document Maintenance Guide](#appendix-c-document-maintenance-guide) | How to update this document correctly | — | — |
@@ -470,11 +470,11 @@ func advisoryKey(domain, id string) int64 {
 CREATE POLICY org_isolation ON watchlists
     USING (
         current_setting('app.bypass_rls', TRUE) = 'on'
-        OR org_id = current_setting('app.org_id', TRUE)::uuid
+        OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
     )
     WITH CHECK (
         current_setting('app.bypass_rls', TRUE) = 'on'
-        OR org_id = current_setting('app.org_id', TRUE)::uuid
+        OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
     );
 ```
 Worker transaction helper (only valid call site):
@@ -585,7 +585,7 @@ Both steps are inside the merge transaction. If the transaction rolls back, the 
 
 **Why It Matters:** Omitting RLS on child tables lets any authenticated user access/modify rows by guessing a parent UUID. `EXISTS` subquery policies execute a nested loop join on every scanned row, destroying read performance for large orgs. In both cases, tenant isolation is either absent or unacceptably slow.
 
-**The Fix:** Every tenant-owned table — including all child and join tables — must contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index and an RLS policy using `org_id = current_setting('app.org_id', TRUE)::uuid`. The redundancy (parent and child both carry `org_id`) is intentional. Do NOT normalize it out.
+**The Fix:** Every tenant-owned table — including all child and join tables — must contain an `org_id UUID NOT NULL` column with a `BTREE(org_id)` index and an RLS policy using `org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid`. The redundancy (parent and child both carry `org_id`) is intentional. Do NOT normalize it out.
 
 **The Lesson:** RLS policies protect only the table they're defined on. There is no automatic inheritance to child tables. Any time you normalize `org_id` out of a child table (relying on a parent join to establish ownership), you lose both the RLS protection and the index-based performance it provides.
 
@@ -1473,15 +1473,17 @@ The opaque cursor encodes both values. `cve_id` is globally unique, so this comp
 
 **Why It Matters:** An enterprise user places PgBouncer in front of Postgres in transaction pooling mode (the standard configuration for handling hundreds of application connections). pgx creates a named prepared statement (`pgx_0`, `pgx_1`, ...) on backend connection A. PgBouncer routes the next query to backend connection B. Postgres B has no record of the prepared statement and returns `ERROR: prepared statement "pgx_0" does not exist`. The error propagates through pgxpool; pgxpool may mark the connection as broken. Under load, this repeats continuously — the API and worker pools experience constant query failures, appearing as database errors or connection resets. The entire application is effectively down under enterprise deployment topology even though Postgres itself is healthy.
 
-**The Fix:** Configure pgxpool to use `QueryExecModeSimpleProtocol` by default:
+**The Fix:** Configure pgxpool to use `QueryExecModeCacheDescribe` by default:
 ```go
 config, _ := pgxpool.ParseConfig(cfg.DatabaseURL)
-config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+config.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode // pgx.QueryExecModeCacheDescribe
 pool, _ := pgxpool.NewWithConfig(ctx, config)
 ```
-Simple protocol sends SQL as plain text strings without named prepared statements — fully compatible with all PgBouncer modes, all pooler configurations, and direct Postgres connections. The performance difference at our scale (hundreds of queries/sec, not millions) is negligible. Expose `DB_QUERY_EXEC_MODE` env var so advanced users can opt into extended protocol if connecting directly to Postgres without a pooler.
+This mode describes a statement once per connection to learn its parameter types, then sends each execution as an unnamed statement, so nothing depends on which backend PgBouncer assigns next. Expose `DB_QUERY_EXEC_MODE` env var so advanced users can opt into named prepared statements (`extended_protocol`) if connecting directly to Postgres without a pooler.
 
-**The Lesson:** pgx's default query execution mode is optimized for direct-to-Postgres performance with persistent connections. It is fundamentally incompatible with connection poolers operating in transaction pooling mode. This incompatibility is not surfaced in development (single direct connection) but manifests immediately in enterprise deployments. Any Go application using pgx that might be deployed with PgBouncer must configure the query execution mode at initialization time.
+Do not use `QueryExecModeSimpleProtocol` or `QueryExecModeExec`. They assume parameter types from Go types, and pgx documents that "`[]byte` values are encoded as PostgreSQL bytea". Every `json.RawMessage` or `[]byte` argument to a `jsonb` column then fails with `invalid input syntax for type json`. An earlier version of this entry prescribed simple protocol: feed sync state, audit log, security events and notification payloads all failed in production while the tests passed, because the test pools used pgx's default mode.
+
+**The Lesson:** pgx's default query execution mode is optimized for direct-to-Postgres performance with persistent connections. It is fundamentally incompatible with connection poolers operating in transaction pooling mode. This incompatibility is not surfaced in development (single direct connection) but manifests immediately in enterprise deployments. Any Go application using pgx that might be deployed with PgBouncer must configure the query execution mode at initialization time. Tests must run in the mode production runs: a query mode changes how every parameter is encoded, and `testutil.NewTestDB` uses `store.DefaultQueryExecMode` for this reason.
 
 ---
 
@@ -2640,6 +2642,20 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 
 ---
 
+### ARCH-45: A Custom Setting Is an Empty String After SET LOCAL, Not NULL
+
+**The Flaw:** Every RLS policy compared `org_id = current_setting('app.org_id', TRUE)::uuid`, on the understanding that an unset setting returns NULL and matches no rows. That holds only on a session that has never set it. Once a transaction runs `SET LOCAL app.org_id`, Postgres keeps the custom setting defined for the rest of the session and reverts its value to the empty string.
+
+**Why It Matters:** `''::uuid` raises `invalid input syntax for type uuid: ""`. The error fires during planning as well as execution, so `app.bypass_rls = 'on'` does not avoid it even though it is the first branch of the `OR`. Connection pools reuse sessions, so after an org request has used a connection, API key lookup on that connection returns 500. Failures grow as more of the pool serves org requests, and bypass workers fail the same way.
+
+**Why Tests Missed It:** `TestDB.Store` connects as a superuser, which skips RLS entirely. The app-role tests rarely run a bypass transaction on a connection that had just served an org one.
+
+**The Fix:** `org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid`. An empty setting becomes NULL, so the comparison matches nothing and the policy fails closed. `TestRLS_EveryPolicyFailsClosedOnSessionWithEmptyOrgSetting` sweeps every table with RLS, including tables added later.
+
+**The Lesson:** Testing a security control as a role that bypasses it says nothing about the control. Exercise RLS as the application role, on one session across consecutive transactions, as a pool does.
+
+---
+
 ### Review Checklist
 
 - [ ] `import _ "time/tzdata"` present in `main.go`?
@@ -2742,7 +2758,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
 | §5 Notification & Alert | NOTIFY-1 – NOTIFY-25 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run, alert debounce index over open batches only |
-| §6 Architecture & Ops | ARCH-1 – ARCH-44 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
+| §6 Architecture & Ops | ARCH-1 – ARCH-45 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 
 **Total: ~144 pitfall entries across 6 domains.**
 

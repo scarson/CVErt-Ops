@@ -19,6 +19,7 @@ CADDY_HTTP_PORT=$http_port
 CADDY_HTTPS_PORT=$https_port
 EXTERNAL_URL=https://localhost:$https_port
 FEED_SCHEDULER_ENABLED=false
+REGISTRATION_MODE=open
 EOF
 
 # container_name is fixed in compose.yml; clearing it lets Compose derive names from the project.
@@ -106,5 +107,48 @@ if [ -n "$published" ]; then
     fail "services other than caddy publish ports: $published"
 fi
 echo "ok: only caddy publishes host ports"
+
+# The rest runs as a real client: a browser session creates an org and an API key,
+# then the key alone reads and writes. These run on connections that have already
+# served org-scoped requests and write jsonb, so they fail if RLS policies or the
+# query mode break under the restricted role.
+api="$base/api/v1"
+json='Content-Type: application/json'
+jar="$work/cookies.txt"
+email="smoke-$(date +%s)@example.test"
+password="$(openssl rand -hex 16)"
+field() { sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"; }
+
+curl -sk -o /dev/null -H "$json" -d "{\"email\":\"$email\",\"password\":\"$password\"}" "$api/auth/register"
+login_status="$(curl -sk -o /dev/null -w '%{http_code}' -c "$jar" -H "$json" \
+    -d "{\"email\":\"$email\",\"password\":\"$password\"}" "$api/auth/login")"
+[ "$login_status" = 200 ] || fail "login returned $login_status"
+
+session() { curl -sk -b "$jar" -H 'X-Requested-By: CVErt-Ops' -H "$json" "$@"; }
+org_id="$(session -d '{"name":"smoke"}' "$api/orgs" | field org_id)"
+[ -n "$org_id" ] || fail "creating an org returned no org_id"
+api_key="$(session -d '{"name":"smoke","role":"member"}' "$api/orgs/$org_id/api-keys" | field raw_key)"
+[ -n "$api_key" ] || fail "creating an API key returned no key"
+
+keyed() { curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $api_key" -H "$json" "$@"; }
+# A pool has many connections, so repeat the read to reach those an org request
+# used; the free tier's rate limit caps how many this can be.
+for _ in $(seq 1 5); do
+    status="$(keyed "$api/orgs/$org_id/watchlists")"
+    [ "$status" = 200 ] || fail "listing watchlists with the API key returned $status"
+done
+echo "ok: the API key reads"
+
+status="$(keyed -d '{"name":"smoke","description":"smoke","group_id":null}' "$api/orgs/$org_id/watchlists")"
+[ "$status" = 201 ] || fail "creating a watchlist with the API key returned $status"
+echo "ok: the API key writes"
+
+# Audit and security events are written after the response, on their own schedule.
+sleep 3
+errors="$(compose logs --no-color app | grep '"level":"ERROR"' || true)"
+if [ -n "$errors" ]; then
+    fail "the app logged errors: $errors"
+fi
+echo "ok: the app logged no errors"
 
 echo "smoke test passed"

@@ -21,8 +21,9 @@ type Config struct {
 	DBMaxConnIdleTime        time.Duration `env:"DB_MAX_CONN_IDLE_TIME"  envDefault:"5m"`
 	DBStatementTimeoutMS     int           `env:"DB_STATEMENT_TIMEOUT_MS"      envDefault:"14000"`
 	DBLongStatementTimeoutMS int           `env:"DB_LONG_STATEMENT_TIMEOUT_MS" envDefault:"120000"`
-	// DBQueryExecMode: "simple_protocol" (PgBouncer-compatible) or "extended_protocol".
-	DBQueryExecMode string `env:"DB_QUERY_EXEC_MODE" envDefault:"simple_protocol"`
+	// DBQueryExecMode: "cache_describe" (PgBouncer-compatible) or "extended_protocol"
+	// (named prepared statements, for direct connections only).
+	DBQueryExecMode string `env:"DB_QUERY_EXEC_MODE" envDefault:"cache_describe"`
 
 	// ── Server ───────────────────────────────────────────────────────────────────
 	ListenAddr             string `env:"LISTEN_ADDR"              envDefault:":8080"`

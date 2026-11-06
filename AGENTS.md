@@ -311,7 +311,7 @@ Mailpit UI: http://localhost:8025
 
 **Tenant isolation (dual-layer)**
 - Layer 1: `orgID` parameter on every org-scoped method. Layer 2: `SET LOCAL app.org_id = $1` per-transaction + Postgres RLS policies
-- Fail-closed: unset `app.org_id` → `NULL::uuid = org_id` evaluates to NULL (false in WHERE) → 0 rows returned
+- Fail-closed: unset `app.org_id` → `NULL::uuid = org_id` evaluates to NULL (false in WHERE) → 0 rows returned. Policies wrap the setting in `NULLIF(..., '')`: after any `SET LOCAL app.org_id`, Postgres leaves the session's value as `''`, and `''::uuid` raises an error (implementation-pitfalls.md ARCH-45)
 - `FORCE ROW LEVEL SECURITY` + app DB role `NOBYPASSRLS` on all org-scoped tables
 - `org_id` denormalized on every child/join table — RLS on a parent does NOT protect its children
 - Transaction helper selection (see `implementation-pitfalls.md` §2.17 for full rationale):
@@ -348,7 +348,7 @@ Mailpit UI: http://localhost:8025
 **Binary init (`cmd/cvert-ops/main.go`)**
 - `import _ "time/tzdata"` — embeds IANA timezone database (distroless container has no `/usr/share/zoneinfo`)
 - `import _ "github.com/KimMachineGun/automemlimit"` — auto-sets GOMEMLIMIT from cgroup limit; prevents OOM-kill in containers
-- pgxpool: `DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol` for PgBouncer transaction-mode compatibility
+- pgxpool: `DefaultQueryExecMode = pgx.QueryExecModeCacheDescribe` for PgBouncer transaction-mode compatibility; never simple protocol, which sends `[]byte` as `bytea` and breaks every jsonb write
 - DB connection retry loop on startup — Postgres isn't ready immediately in Docker Compose
 
 ## Conventions

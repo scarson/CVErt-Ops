@@ -20,7 +20,7 @@ Work through each section. For each item mark **✅ OK**, **❌ FAIL** (with wha
   ```sql
   USING (
       current_setting('app.bypass_rls', TRUE) = 'on'
-      OR org_id = current_setting('app.org_id', TRUE)::uuid
+      OR org_id = NULLIF(current_setting('app.org_id', TRUE), '')::uuid
   )
   WITH CHECK ( ... same ... )
   ```

@@ -11,8 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	dockerclient "github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 )
 
 // TestRyuk_ReapsOrphanedContainers verifies that when a test process exits
@@ -60,7 +59,7 @@ func TestRyuk_ReapsOrphanedContainers(t *testing.T) {
 	t.Logf("crash helper started container %s and exited", containerID)
 
 	// Connect to Docker and poll until the container is gone.
-	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
 	}
@@ -69,30 +68,29 @@ func TestRyuk_ReapsOrphanedContainers(t *testing.T) {
 	start := time.Now()
 	deadline := start.Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		info, inspectErr := cli.ContainerInspect(ctx, containerID)
+		info, inspectErr := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 		if inspectErr != nil {
 			// Container not found — Ryuk reaped it successfully.
 			t.Logf("container %s reaped by Ryuk after %s", containerID, time.Since(start).Round(time.Second))
 			return
 		}
-		// ContainerJSON embeds *ContainerJSONBase — guard against nil before
-		// accessing State (zero value has nil embedded pointer).
-		if info.ContainerJSONBase != nil && info.State != nil && !info.State.Running {
+		// State is a pointer and may be nil in the inspect response.
+		if info.Container.State != nil && !info.Container.State.Running {
 			t.Logf("container %s stopped, waiting for removal...", containerID)
 		}
 		time.Sleep(1 * time.Second)
 	}
 
 	// Last check — maybe it was removed right at the deadline.
-	_, inspectErr := cli.ContainerInspect(ctx, containerID)
+	_, inspectErr := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if inspectErr != nil {
 		t.Logf("container %s reaped by Ryuk (at deadline)", containerID)
 		return
 	}
 
 	// Clean up the orphan ourselves, then fail.
-	_ = cli.ContainerStop(ctx, containerID, container.StopOptions{})
-	_ = cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
+	_, _ = cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{})
+	_, _ = cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{Force: true})
 	t.Fatalf("Ryuk did NOT reap container %s within 30s — container was orphaned.\n"+
 		"Check that ryuk.disabled is not set in ~/.testcontainers.properties\n"+
 		"Crash helper stderr:\n%s", containerID, stderr.String())
@@ -116,4 +114,3 @@ func findProjectRoot(t *testing.T) string {
 		dir = parent
 	}
 }
-

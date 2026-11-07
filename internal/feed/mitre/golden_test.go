@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/feed/mitre"
@@ -106,7 +107,7 @@ func TestFetch_GoldenFiles(t *testing.T) {
 	result := fetchGolden(t)
 
 	if !result.LastPage {
-		t.Error("MITRE should always return LastPage=true")
+		t.Error("the golden ZIP fits in one page, want LastPage=true")
 	}
 
 	if len(result.Patches) == 0 {
@@ -123,8 +124,41 @@ func TestFetch_GoldenFiles(t *testing.T) {
 	t.Logf("parsed %d MITRE patches from golden ZIP", len(result.Patches))
 }
 
+// The golden ZIP's entries share one modified time, as the real archive's do, so
+// an incremental run must choose records by cveMetadata.dateUpdated.
+func TestFetch_GoldenIncrementalReturnsRecordsUpdatedAfterCursor(t *testing.T) {
+	cutoff := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	var want []string
+	for _, p := range fetchGolden(t).Patches {
+		if p.DateModified != nil && p.DateModified.After(cutoff) {
+			want = append(want, p.CVEID)
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("golden ZIP has no record updated after the cutoff")
+	}
+
+	result := fetchGoldenFrom(t, []byte(`{"last_modified":"2026-07-01T00:00:00Z"}`))
+
+	got := make([]string, 0, len(result.Patches))
+	for _, p := range result.Patches {
+		got = append(got, p.CVEID)
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("incremental run returned %v, want %v", got, want)
+	}
+}
+
 // fetchGolden serves the curated cvelistV5 ZIP through a test server and runs the adapter over it.
 func fetchGolden(t *testing.T) *feed.FetchResult {
+	t.Helper()
+	return fetchGoldenFrom(t, nil)
+}
+
+// fetchGoldenFrom runs one Fetch over the curated cvelistV5 ZIP from the given cursor.
+func fetchGoldenFrom(t *testing.T, cursor []byte) *feed.FetchResult {
 	t.Helper()
 	goldenDir := filepath.Join("testdata", "golden")
 	zipData, err := os.ReadFile(filepath.Join(goldenDir, "cvelistV5.zip"))
@@ -148,8 +182,9 @@ func fetchGolden(t *testing.T) *feed.FetchResult {
 	}
 
 	adapter := mitre.New(client)
+	t.Cleanup(adapter.Close)
 
-	result, err := adapter.Fetch(context.Background(), nil)
+	result, err := adapter.Fetch(context.Background(), cursor)
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}

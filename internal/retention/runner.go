@@ -24,6 +24,9 @@ type Config struct {
 	JobQueueHours      int
 	AILogDays          int
 	SecurityEventsDays int
+	// WatchlistItemsDays is how long a soft-deleted watchlist item is kept before
+	// it is purged. Values below minWatchlistItemsDays are raised to it.
+	WatchlistItemsDays int
 	// Per-table retention windows (tier-gated tables — fallback defaults).
 	AlertEventsDays int
 	NotifDelivDays  int
@@ -93,6 +96,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		return r.store.CleanupSecurityEvents(ctx, cutoff, batch)
 	}, start.AddDate(0, 0, -r.cfg.SecurityEventsDays))
 
+	r.cleanupTable(ctx, "watchlist_items", deadline, func(ctx context.Context, cutoff time.Time, batch int) (int64, error) {
+		return r.store.CleanupWatchlistItems(ctx, cutoff, batch)
+	}, start.AddDate(0, 0, -r.watchlistItemsDays()))
+
 	// Check for context cancellation between global and tier-gated phases.
 	if err := ctx.Err(); err != nil {
 		return err
@@ -107,6 +114,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	elapsed := r.now().Sub(start)
 	r.log.Info("retention cleanup finished", "elapsed", elapsed)
 	return ctx.Err()
+}
+
+// minWatchlistItemsDays is the shortest time a soft-deleted watchlist item is kept.
+// The batch and EPSS alert evaluators read CVE items removed since their cursor to
+// resolve the removed CVEs' alert events. The EPSS evaluator runs daily and can hold
+// its cursor for three runs, so the run that finally advances it reads items removed
+// up to four days earlier. Seven days adds room for a missed daily run.
+const minWatchlistItemsDays = 7
+
+// watchlistItemsDays returns the configured watchlist item retention window, raised
+// to minWatchlistItemsDays if it is shorter.
+func (r *Runner) watchlistItemsDays() int {
+	if r.cfg.WatchlistItemsDays < minWatchlistItemsDays {
+		r.log.Warn("watchlist item retention window below minimum, using minimum",
+			"configured_days", r.cfg.WatchlistItemsDays, "minimum_days", minWatchlistItemsDays)
+		return minWatchlistItemsDays
+	}
+	return r.cfg.WatchlistItemsDays
 }
 
 // cleanupTierGated handles org-scoped tables with tier-configurable retention windows.

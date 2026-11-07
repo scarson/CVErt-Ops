@@ -1219,22 +1219,21 @@ func TestFetch_Success(t *testing.T) {
 func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {
 	t.Parallel()
 
-	oldTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	newTime := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC)
-
-	oldHeader := &zip.FileHeader{Modified: oldTime, Method: zip.Deflate}
-	newHeader := &zip.FileHeader{Modified: newTime, Method: zip.Deflate}
+	// The real archive gives every entry the same modified time, so only
+	// cveMetadata.dateUpdated tells old records from new ones.
+	commitTime := time.Date(2024, 6, 20, 0, 0, 0, 0, time.UTC)
+	header := func() *zip.FileHeader { return &zip.FileHeader{Modified: commitTime, Method: zip.Deflate} }
 
 	zipData := buildMITREZip(t, []zipEntry{
 		{
 			name:    "cvelistV5-main/cves/2024/0xxx/CVE-2024-0001.json",
-			content: minimalCVE5JSON("CVE-2024-0001"),
-			header:  oldHeader,
+			content: recordJSON("CVE-2024-0001", "2024-01-01T00:00:00Z"),
+			header:  header(),
 		},
 		{
 			name:    "cvelistV5-main/cves/2024/0xxx/CVE-2024-0002.json",
-			content: minimalCVE5JSON("CVE-2024-0002"),
-			header:  newHeader,
+			content: recordJSON("CVE-2024-0002", "2024-06-15T00:00:00Z"),
+			header:  header(),
 		},
 	})
 
@@ -1339,6 +1338,7 @@ func TestFetch_MalformedEntrySkipped(t *testing.T) {
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
+	logs := captureWarnings(adapter)
 	result, err := adapter.Fetch(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("Fetch returned error: %v", err)
@@ -1349,5 +1349,8 @@ func TestFetch_MalformedEntrySkipped(t *testing.T) {
 	}
 	if result.Patches[0].CVEID != "CVE-2024-1234" {
 		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "CVE-2024-1234")
+	}
+	if got := logs.String(); !strings.Contains(got, "CVE-2024-0001.json") {
+		t.Errorf("log = %q, want a warning naming the malformed CVE-2024-0001.json", got)
 	}
 }

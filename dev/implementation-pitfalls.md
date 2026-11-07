@@ -221,6 +221,8 @@ for _, entry := range zr.File {
 ```
 For a full `import-bulk` run `lastCursor` is the zero `time.Time`, so `lastCursor.IsZero()` is true and the pre-filter is a no-op — all entries are processed.
 
+**Only where the archive stamps each entry with its own change time.** GitHub's archive of a repository branch stamps every entry with the commit time. In the cvelistV5 archive downloaded on 2026-11-07, all 420,947 CVE entries carried one time, so the pre-filter kept every entry once upstream had a newer commit, and skipped every entry otherwise. The MITRE adapter therefore selects records by `cveMetadata.dateUpdated`, read by decoding each entry only as far as `cveMetadata` (`internal/feed/mitre/archive.go`). Before relying on entry times, check that they differ across the entries of a real archive.
+
 **The Lesson:** ZIP archives expose file metadata (name, size, modification time, compression method) in the central directory without requiring each entry to be opened. Always check available metadata before performing I/O. For incremental processing of large archives, a single timestamp comparison can eliminate 99.9% of redundant work. Never assume that "checking inside" is the only option when the file system or archive format provides a pre-filter.
 
 ---
@@ -379,7 +381,7 @@ When building or reviewing a feed adapter, verify each of the following:
 - [ ] **Timestamp fallback parser** — all feed timestamps parsed via multi-layout fallback, never raw `time.RFC3339` (FEED-3)
 - [ ] **No `defer` in loops** — archive iteration uses explicit `Close()` at every exit path (FEED-5)
 - [ ] **URL params via `url.Values`** — no string concatenation for query parameters (FEED-6)
-- [ ] **ZIP pre-filter** — `FileHeader.Modified.After(lastCursor)` checked before `entry.Open()` (FEED-7)
+- [ ] **ZIP pre-filter** — `FileHeader.Modified.After(lastCursor)` checked before `entry.Open()`, where the archive stamps per-entry change times; cvelistV5 does not (FEED-7)
 - [ ] **`strings.Clone` on extracted fields** — all string fields from shared decoder/gjson buffers cloned before storing (FEED-8)
 - [ ] **Canonical ID resolution** — OSV/GHSA records use CVE alias as PK when available; native ID stored as `source_id` (FEED-12)
 - [ ] **PK migration for late aliases** — adapter detects when existing native-PK record gains a CVE alias and triggers atomic PK rename (FEED-17)

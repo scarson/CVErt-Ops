@@ -225,6 +225,11 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		}
 
 		if err := a.applyRowFn(ctx, db, cveID, score, asOfDate); err != nil {
+			// Every remaining row would fail the same way, and returning a cursor
+			// would record the run as complete with rows still unapplied.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, fmt.Errorf("epss: apply interrupted at %s: %w", cveID, ctxErr)
+			}
 			slog.WarnContext(ctx, "epss: skipping row with DB error",
 				"cve_id", cveID, "error", err)
 			continue
@@ -238,7 +243,6 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 
 	return nextCursorJSON, nil
 }
-
 
 // applyRow executes the two-statement EPSS pattern for a single CVE inside an
 // advisory-locked transaction. Both statements run unconditionally — do NOT

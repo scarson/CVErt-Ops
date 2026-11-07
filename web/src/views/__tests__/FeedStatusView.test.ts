@@ -187,6 +187,30 @@ describe('FeedStatusView', () => {
     expect(wrapper.text()).toContain('42 upserted')
   })
 
+  it('does not render a partial run as an error', async () => {
+    mockGET.mockReset()
+    mockGET.mockResolvedValueOnce({
+      data: {
+        items: [
+          {
+            ...mockFeedItems[0],
+            recent_logs: [{ ...mockFeedItems[0]!.recent_logs[0], status: 'partial' }],
+          },
+        ],
+      },
+      error: undefined,
+    })
+
+    const wrapper = await mountFeedStatus()
+    await wrapper.find('button[aria-label^="Toggle logs"]').trigger('click')
+    await flushPromises()
+
+    const badge = wrapper.findAll('[data-slot="badge"]').find((el) => el.text() === 'partial')
+    expect(badge).toBeDefined()
+    expect(badge!.classes()).not.toContain('bg-destructive')
+    expect(badge!.classes()).toContain('bg-secondary')
+  })
+
   it('collapses log rows when chevron is clicked again', async () => {
     const wrapper = await mountFeedStatus()
 

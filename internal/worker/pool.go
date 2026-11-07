@@ -33,18 +33,27 @@ const (
 	staleCheckInterval = 1 * time.Minute
 
 	// staleThreshold is the age at which a 'running' job is considered stuck.
-	// Must be >= maxJobDuration so a job isn't reclaimed before its allowed runtime expires.
-	staleThreshold = 10 * time.Minute
+	// Must be >= maxJobDuration plus the outcome writes that follow the deadline
+	// (the handler's, then the pool's, each bounded by recordOutcomeTimeout). A job
+	// reclaimed during those writes could start on a second worker while the first
+	// is finishing, and the first worker's CompleteJob or FailJob would then
+	// overwrite the status of the running job.
+	staleThreshold = maxJobDuration + 2*time.Minute
 
 	// maxJobDuration caps how long a single job can run. Prevents unbounded
 	// shutdown hangs when in-flight jobs use context.WithoutCancel.
 	maxJobDuration = 10 * time.Minute
 
-	// recordOutcomeTimeout bounds the CompleteJob/FailJob write that follows a
-	// job, which runs on its own context so an expired job context cannot
-	// prevent it.
+	// recordOutcomeTimeout bounds the writes made on an OutcomeContext.
 	recordOutcomeTimeout = 10 * time.Second
 )
+
+// OutcomeContext returns a context for recording how a job ended. It is detached
+// from jobCtx, which may have expired at maxJobDuration, so an expired job context
+// cannot prevent the write, and it is bounded by recordOutcomeTimeout.
+func OutcomeContext(jobCtx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(jobCtx), recordOutcomeTimeout)
+}
 
 // PeriodicTask runs on a fixed interval alongside the job queue polling.
 type PeriodicTask struct {
@@ -218,7 +227,7 @@ func (p *Pool) processOne(ctx context.Context, queue string) {
 	// The job context may have expired by now (a handler that ran to
 	// maxJobDuration). Record the outcome on a context that outlives it, or the
 	// write fails and the job stays 'running' until stale recovery requeues it.
-	recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), recordOutcomeTimeout)
+	recordCtx, cancelRecord := OutcomeContext(ctx)
 	defer cancelRecord()
 
 	if err != nil {

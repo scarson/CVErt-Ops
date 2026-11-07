@@ -78,6 +78,10 @@ type deliveryDetail struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// firstPageCursorTime is the created_at bound for a delivery list request with no cursor.
+// It is later than any created_at a delivery can have.
+var firstPageCursorTime = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
+
 // deliveryCursor encodes the keyset pagination position for delivery lists.
 type deliveryCursor struct {
 	T  string `json:"t"`  // created_at RFC3339Nano
@@ -125,8 +129,10 @@ func (srv *Server) listDeliveriesHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Keyset cursor.
-	cursorTime := time.Now().UTC()
+	// Keyset cursor. With no cursor, the bound is later than any created_at so the first
+	// page starts at the newest row. created_at comes from the database clock, which can
+	// lead the app clock, so the bound must not come from time.Now().
+	cursorTime := firstPageCursorTime
 	cursorID := uuid.Max
 	if c := q.Get("cursor"); c != "" {
 		var cur deliveryCursor

@@ -262,3 +262,25 @@ func (q *Queries) CleanupSecurityEvents(ctx context.Context, arg CleanupSecurity
 	}
 	return result.RowsAffected()
 }
+
+const cleanupWatchlistItems = `-- name: CleanupWatchlistItems :execrows
+WITH doomed AS (
+    SELECT id FROM watchlist_items
+    WHERE deleted_at < $1::timestamptz
+    ORDER BY deleted_at LIMIT $2::int
+)
+DELETE FROM watchlist_items wi USING doomed WHERE wi.id = doomed.id
+`
+
+type CleanupWatchlistItemsParams struct {
+	Cutoff    time.Time
+	BatchSize int32
+}
+
+func (q *Queries) CleanupWatchlistItems(ctx context.Context, arg CleanupWatchlistItemsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, cleanupWatchlistItems, arg.Cutoff, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

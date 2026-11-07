@@ -8,7 +8,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 

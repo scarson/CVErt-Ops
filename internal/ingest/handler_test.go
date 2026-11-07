@@ -817,3 +817,103 @@ func TestFeedHandler_RealtimeEval_ErrorDoesNotFailIngest(t *testing.T) {
 		t.Errorf("expected error detail in log, got: %s", logBuf.String())
 	}
 }
+
+// closingAdapter is a mockAdapter that holds a resource for its run, as the
+// archive adapters hold their downloaded archive.
+type closingAdapter struct {
+	*mockAdapter
+	closeErr error
+	mu       sync.Mutex
+	closed   int
+}
+
+func (c *closingAdapter) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed++
+	return c.closeErr
+}
+
+func (c *closingAdapter) closeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// The handler closes an adapter that holds resources once the run ends, however
+// it ends, so a run stopped part-way through an archive does not leave the
+// download behind.
+func TestFeedHandler_ClosesAdapterWhenRunEnds(t *testing.T) {
+	cases := []struct {
+		name    string
+		ctx     func(t *testing.T) context.Context
+		fetch   func(ctx context.Context, cursor json.RawMessage) (*feed.FetchResult, error)
+		wantErr bool
+	}{
+		{
+			name: "complete",
+			ctx:  func(*testing.T) context.Context { return context.Background() },
+			fetch: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+				return deadlineTestPage(`{"page":2}`, true, "CVE-2025-0001"), nil
+			},
+		},
+		{
+			name: "stopped at time limit",
+			ctx:  nearDeadlineContext,
+			fetch: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+				return deadlineTestPage(`{"page":2}`, false, "CVE-2025-0001"), nil
+			},
+		},
+		{
+			name: "failed",
+			ctx:  func(*testing.T) context.Context { return context.Background() },
+			fetch: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+				return nil, fmt.Errorf("upstream unavailable")
+			},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.NewTestDB(t)
+			captureLogs(t)
+			adapter := &closingAdapter{mockAdapter: &mockAdapter{fetchFunc: tc.fetch}}
+			handler := handlerWithStore(db.Store, db.Store, nil, (&mockMerge{}).fn, mockFactory(adapter), nil, nil)
+
+			payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+			err := handler(tc.ctx(t), payload)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("handler error = %v, want error: %v", err, tc.wantErr)
+			}
+			if got := adapter.closeCount(); got != 1 {
+				t.Errorf("Close called %d times, want 1", got)
+			}
+		})
+	}
+}
+
+// A failure to release the adapter's resources is logged and does not change
+// the run's outcome, which is already recorded.
+func TestFeedHandler_AdapterCloseError_LoggedNotReturned(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	logBuf := captureLogs(t)
+	adapter := &closingAdapter{
+		mockAdapter: &mockAdapter{fetchFunc: func(context.Context, json.RawMessage) (*feed.FetchResult, error) {
+			return deadlineTestPage(`{"page":2}`, true, "CVE-2025-0001"), nil
+		}},
+		closeErr: fmt.Errorf("remove downloaded archive: access denied"),
+	}
+	handler := handlerWithStore(db.Store, db.Store, nil, (&mockMerge{}).fn, mockFactory(adapter), nil, nil)
+
+	payload, _ := json.Marshal(Payload{FeedName: "test-feed"})
+	if err := handler(context.Background(), payload); err != nil {
+		t.Fatalf("handler error = %v, want nil", err)
+	}
+	if !strings.Contains(logBuf.String(), "feed adapter close failed") || !strings.Contains(logBuf.String(), "access denied") {
+		t.Errorf("close error not logged; logs:\n%s", logBuf.String())
+	}
+	state, log := feedStateAndLatestLog(t, db)
+	if state.LastSuccessAt == nil || log.Status != "success" {
+		t.Errorf("LastSuccessAt = %v, log status = %q; want a recorded success", state.LastSuccessAt, log.Status)
+	}
+}

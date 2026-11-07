@@ -1246,7 +1246,7 @@ func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {
 
 	// Cursor: last_modified = 2024-03-01 (between old and new entries).
 	cursorTime := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	cursorJSON, _ := json.Marshal(Cursor{LastModified: cursorTime})
+	cursorJSON, _ := json.Marshal(feed.ArchiveCursor{LastModified: cursorTime})
 
 	adapter := newTestAdapter(ts)
 	result, err := adapter.Fetch(context.Background(), cursorJSON)
@@ -1349,5 +1349,48 @@ func TestFetch_MalformedEntrySkipped(t *testing.T) {
 	}
 	if result.Patches[0].CVEID != "CVE-2024-1234" {
 		t.Errorf("CVEID = %q, want %q", result.Patches[0].CVEID, "CVE-2024-1234")
+	}
+}
+
+// A first backfill is returned in pages, so the feed handler checkpoints each
+// page and a later job resumes the pass instead of restarting it.
+func TestFetch_FirstBackfillIsPaged(t *testing.T) {
+	t.Parallel()
+
+	zipData := buildMITREZip(t, []zipEntry{
+		{name: "cvelistV5-main/cves/2024/0xxx/CVE-2024-0003.json", content: minimalCVE5JSON("CVE-2024-0003")},
+		{name: "cvelistV5-main/cves/2024/0xxx/CVE-2024-0001.json", content: minimalCVE5JSON("CVE-2024-0001")},
+		{name: "cvelistV5-main/cves/2024/0xxx/CVE-2024-0002.json", content: minimalCVE5JSON("CVE-2024-0002")},
+	})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	if adapter.pager.PageSize != feed.ArchivePageSize {
+		t.Errorf("PageSize = %d, want feed.ArchivePageSize (%d)", adapter.pager.PageSize, feed.ArchivePageSize)
+	}
+	adapter.pager.PageSize = 2
+	var closer io.Closer = adapter
+	defer closer.Close() //nolint:errcheck
+
+	page1, err := adapter.Fetch(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Fetch page 1: %v", err)
+	}
+	if page1.LastPage || len(page1.Patches) != 2 || page1.Patches[0].CVEID != "CVE-2024-0001" {
+		t.Fatalf("page 1: LastPage=%v patches=%d first=%q; want 2 patches from CVE-2024-0001, not last",
+			page1.LastPage, len(page1.Patches), page1.Patches[0].CVEID)
+	}
+	page2, err := adapter.Fetch(context.Background(), page1.NextCursor)
+	if err != nil {
+		t.Fatalf("Fetch page 2: %v", err)
+	}
+	if !page2.LastPage || len(page2.Patches) != 1 || page2.Patches[0].CVEID != "CVE-2024-0003" {
+		t.Fatalf("page 2: LastPage=%v patches=%d; want only CVE-2024-0003 on the last page", page2.LastPage, len(page2.Patches))
+	}
+	if page2.SourceMeta.SourceName != SourceName {
+		t.Errorf("SourceName = %q, want %q", page2.SourceMeta.SourceName, SourceName)
 	}
 }

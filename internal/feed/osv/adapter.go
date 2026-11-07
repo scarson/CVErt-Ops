@@ -5,9 +5,11 @@
 // ecosystems. Each advisory is a JSON file conforming to the OSV schema v1:
 // https://ossf.github.io/osv-schema/
 //
-// Cursor format: {"last_modified": "2024-01-15T10:00:00Z"}
-// The adapter pre-filters ZIP entries via FileHeader.Modified and only parses
-// entries newer than the cursor (same pattern as the MITRE adapter).
+// Cursor format: feed.ArchiveCursor, as for the MITRE adapter. Between passes it
+// is {"last_modified": "2024-01-15T10:00:00Z"}, and the adapter pre-filters ZIP
+// entries via FileHeader.Modified, parsing only entries newer than it. During a
+// pass the cursor also holds the pass start time and the last entry name read,
+// so a pass larger than one worker job continues in the next job.
 //
 // Alias resolution: if aliases[] contains a CVE ID, it becomes the canonical
 // cve_id. The native OSV/GHSA/RUSTSEC ID becomes source_id. The merge pipeline
@@ -19,10 +21,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -39,15 +39,11 @@ const (
 	bulkZIPURL = "https://osv-vulnerabilities.storage.googleapis.com/all.zip"
 )
 
-// Cursor is the JSON-serializable sync state for the OSV adapter.
-type Cursor struct {
-	LastModified time.Time `json:"last_modified"`
-}
-
-// Adapter implements feed.Adapter for the OSV bulk feed.
+// Adapter implements feed.Adapter for the OSV bulk feed. One Adapter serves one
+// feed run: it keeps the downloaded archive between the pages of the run, and
+// Close removes it.
 type Adapter struct {
-	client      *http.Client
-	rateLimiter *rate.Limiter
+	pager *feed.ArchivePager
 }
 
 // New creates an OSV adapter. Pass nil client to use http.DefaultClient.
@@ -55,83 +51,30 @@ func New(client *http.Client) *Adapter {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	// Single bulk archive per run; 1 req/5s is a generous rate limit.
-	return &Adapter{
-		client:      feed.WrapClientWithUA(client),
-		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
-	}
+	return &Adapter{pager: &feed.ArchivePager{
+		Client: feed.WrapClientWithUA(client),
+		// One bulk archive download per run; 1 req/5s is a generous rate limit.
+		RateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
+		URL:         bulkZIPURL,
+		TempPattern: "cvert-osv-*.zip",
+		SourceName:  SourceName,
+		PageSize:    feed.ArchivePageSize,
+		IsEntry:     isAdvisoryEntry,
+		Parse:       parseEntry,
+	}}
 }
 
-// Fetch downloads the OSV all.zip, streams it to a temp file, and parses all
-// advisory entries modified after the cursor's LastModified timestamp.
-// On the first run (nil/zero cursor) all entries are parsed (full backfill).
-//
-// NextCursor carries the new last-modified timestamp for the handler to persist.
-// The handler MUST NOT call Fetch again in a tight loop — re-invocation is via
-// scheduling.
+// Fetch returns the next page of advisories modified after the cursor's
+// LastModified, or of every advisory on a first run (full backfill). The first
+// page of a pass, and the first page in each later job of the pass, downloads
+// all.zip.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
-	var cur Cursor
-	if len(cursorJSON) > 0 {
-		if err := json.Unmarshal(cursorJSON, &cur); err != nil {
-			return nil, fmt.Errorf("osv: parse cursor: %w", err)
-		}
-	}
+	return a.pager.Fetch(ctx, cursorJSON)
+}
 
-	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("osv: rate limit: %w", err)
-	}
-
-	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-osv-*.zip", feed.MaxDownloadSize)
-	if err != nil {
-		return nil, fmt.Errorf("osv: download zip: %w", err)
-	}
-	defer func() { _ = os.Remove(tmpFile.Name()) }() //nolint:gosec // G703: path from os.CreateTemp
-	defer tmpFile.Close()                             //nolint:errcheck
-
-	info, err := tmpFile.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("osv: stat temp file: %w", err)
-	}
-
-	zr, err := zip.NewReader(tmpFile, info.Size())
-	if err != nil {
-		return nil, fmt.Errorf("osv: open zip: %w", err)
-	}
-
-	fetchedAt := time.Now().UTC()
-	var patches []feed.CanonicalPatch
-
-	for _, entry := range zr.File {
-		if !isAdvisoryEntry(entry.Name) {
-			continue
-		}
-		// FileHeader.Modified pre-filter: skip unchanged entries on incremental syncs.
-		if !cur.LastModified.IsZero() && !entry.Modified.After(cur.LastModified) {
-			continue
-		}
-
-		patch, err := parseEntry(entry)
-		if err != nil || patch == nil {
-			// Skip malformed or empty entries; do not abort the whole run.
-			continue
-		}
-		patches = append(patches, *patch)
-	}
-
-	newCursorJSON, err := json.Marshal(Cursor{LastModified: fetchedAt})
-	if err != nil {
-		return nil, fmt.Errorf("osv: marshal cursor: %w", err)
-	}
-
-	return &feed.FetchResult{
-		Patches: patches,
-		SourceMeta: feed.SourceMeta{
-			SourceName: SourceName,
-			FetchedAt:  fetchedAt,
-		},
-		NextCursor: newCursorJSON,
-		LastPage:   true,
-	}, nil
+// Close removes the archive downloaded for this run, if a pass is still open.
+func (a *Adapter) Close() error {
+	return a.pager.Close()
 }
 
 // isAdvisoryEntry returns true if the ZIP entry is an OSV advisory JSON file.
@@ -164,22 +107,22 @@ func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
 
 // osvAdvisory represents an OSV schema v1 advisory record.
 type osvAdvisory struct {
-	ID        string          `json:"id"`
-	Aliases   []string        `json:"aliases"`
-	Published string          `json:"published"`
-	Modified  string          `json:"modified"`
-	Withdrawn string          `json:"withdrawn"` // non-empty = withdrawn; absent on active advisories
-	Summary   string          `json:"summary"`
-	Details   string          `json:"details"`
-	Affected  []osvAffected   `json:"affected"`
-	Severity  []osvSeverity   `json:"severity"`
+	ID         string         `json:"id"`
+	Aliases    []string       `json:"aliases"`
+	Published  string         `json:"published"`
+	Modified   string         `json:"modified"`
+	Withdrawn  string         `json:"withdrawn"` // non-empty = withdrawn; absent on active advisories
+	Summary    string         `json:"summary"`
+	Details    string         `json:"details"`
+	Affected   []osvAffected  `json:"affected"`
+	Severity   []osvSeverity  `json:"severity"`
 	References []osvReference `json:"references"`
 }
 
 // osvAffected describes a package + version ranges affected by the advisory.
 type osvAffected struct {
-	Package osvPackage        `json:"package"`
-	Ranges  []osvRange        `json:"ranges"`
+	Package osvPackage `json:"package"`
+	Ranges  []osvRange `json:"ranges"`
 	// Versions is a flat list of affected versions (string slice or similar).
 	// Not mapped to CanonicalPatch; range-based data is preferred.
 }

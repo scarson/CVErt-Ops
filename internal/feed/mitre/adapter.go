@@ -1,11 +1,12 @@
 // ABOUTME: Feed adapter for the MITRE CVE 5.0 bulk feed (cvelistV5 ZIP from GitHub).
-// ABOUTME: Downloads ZIP archive, pre-filters by modified time, parses CVE 5.0 JSON entries.
+// ABOUTME: Downloads ZIP archive, pre-filters by modified time, parses CVE 5.0 JSON entries in pages.
 //
-// Cursor format: {"last_modified": "2024-01-15T10:00:00Z"}
-// The feed handler persists SourceMeta.FetchedAt as the new cursor value after
-// each successful run. On the next run, the cursor is used to pre-filter ZIP
-// entries via FileHeader.Modified, skipping unchanged files (~2000× I/O reduction
-// for incremental syncs on a 100,000+ entry archive).
+// Cursor format: feed.ArchiveCursor. Between passes it is
+// {"last_modified": "2024-01-15T10:00:00Z"}, the download time of the archive
+// that began the last completed pass; entries whose FileHeader.Modified is not
+// after it are skipped without being opened. During a pass the cursor also holds
+// the pass start time and the last entry name read, so a pass larger than one
+// worker job continues in the next job.
 package mitre
 
 import (
@@ -13,11 +14,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -34,16 +33,11 @@ const (
 	bulkZIPURL = "https://github.com/CVEProject/cvelistV5/archive/refs/heads/main.zip"
 )
 
-// Cursor is the JSON-serializable sync state for the MITRE adapter.
-// The feed handler stores this in feed_sync_state.cursor_json after each run.
-type Cursor struct {
-	LastModified time.Time `json:"last_modified"`
-}
-
-// Adapter implements feed.FeedAdapter for the MITRE CVE bulk feed.
+// Adapter implements feed.Adapter for the MITRE CVE bulk feed. One Adapter
+// serves one feed run: it keeps the downloaded archive between the pages of the
+// run, and Close removes it.
 type Adapter struct {
-	client      *http.Client
-	rateLimiter *rate.Limiter
+	pager *feed.ArchivePager
 }
 
 // New creates a MITRE adapter. The provided http.Client is used for all
@@ -52,93 +46,29 @@ func New(client *http.Client) *Adapter {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	// Single-file download per run — use a generous limiter as GitHub courtesy.
-	return &Adapter{
-		client:      feed.WrapClientWithUA(client),
-		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
-	}
+	return &Adapter{pager: &feed.ArchivePager{
+		Client: feed.WrapClientWithUA(client),
+		// One archive download per run — a generous limiter as GitHub courtesy.
+		RateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
+		URL:         bulkZIPURL,
+		TempPattern: "cvert-mitre-*.zip",
+		SourceName:  SourceName,
+		PageSize:    feed.ArchivePageSize,
+		IsEntry:     isCVEEntry,
+		Parse:       parseEntry,
+	}}
 }
 
-// Fetch downloads the cvelistV5 ZIP, streams it to a temp file, and parses
-// all entries modified after the cursor's LastModified timestamp (or all entries
-// on the first run when cursor is nil/zero).
-//
-// MITRE publishes a single flat archive — there is no pagination.
-// NextCursor is always nil. The feed handler should save:
-//
-//	Cursor{LastModified: result.SourceMeta.FetchedAt}
-//
-// to feed_sync_state.cursor_json after a successful run.
+// Fetch returns the next page of cvelistV5 entries modified after the cursor's
+// LastModified, or of every entry on a first run. The first page of a pass, and
+// the first page in each later job of the pass, downloads the archive.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
-	var cur Cursor
-	if len(cursorJSON) > 0 {
-		if err := json.Unmarshal(cursorJSON, &cur); err != nil {
-			return nil, fmt.Errorf("mitre: parse cursor: %w", err)
-		}
-	}
+	return a.pager.Fetch(ctx, cursorJSON)
+}
 
-	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("mitre: rate limit: %w", err)
-	}
-
-	// Stream the ZIP to a temp file — archive/zip.NewReader requires io.ReaderAt.
-	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip", feed.MaxDownloadSize)
-	if err != nil {
-		return nil, fmt.Errorf("mitre: download zip: %w", err)
-	}
-	defer func() { _ = os.Remove(tmpFile.Name()) }() //nolint:gosec // G703: path from os.CreateTemp
-	defer tmpFile.Close()                            //nolint:errcheck
-
-	info, err := tmpFile.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("mitre: stat temp file: %w", err)
-	}
-
-	zr, err := zip.NewReader(tmpFile, info.Size())
-	if err != nil {
-		return nil, fmt.Errorf("mitre: open zip: %w", err)
-	}
-
-	fetchedAt := time.Now().UTC()
-	var patches []feed.CanonicalPatch
-
-	for _, entry := range zr.File {
-		if !isCVEEntry(entry.Name) {
-			continue
-		}
-		// FileHeader.Modified pre-filter: skip unchanged entries on incremental syncs.
-		// entry.Modified is embedded from zip.FileHeader and available without
-		// opening the entry (no I/O cost).
-		if !cur.LastModified.IsZero() && !entry.Modified.After(cur.LastModified) {
-			continue
-		}
-
-		patch, err := parseEntry(entry)
-		if err != nil || patch == nil {
-			// Skip malformed or empty entries; do not abort the whole run.
-			continue
-		}
-		patches = append(patches, *patch)
-	}
-
-	// Return the new cursor so the handler can persist it to feed_sync_state.
-	newCursorJSON, err := json.Marshal(Cursor{LastModified: fetchedAt})
-	if err != nil {
-		return nil, fmt.Errorf("mitre: marshal cursor: %w", err)
-	}
-
-	return &feed.FetchResult{
-		Patches: patches,
-		SourceMeta: feed.SourceMeta{
-			SourceName: SourceName,
-			FetchedAt:  fetchedAt,
-		},
-		// Single-archive feed — no pagination, but NextCursor carries the new
-		// last-modified timestamp for the handler to persist as the next-run cursor.
-		// The handler MUST NOT call Fetch again in a tight loop.
-		NextCursor: newCursorJSON,
-		LastPage:   true,
-	}, nil
+// Close removes the archive downloaded for this run, if a pass is still open.
+func (a *Adapter) Close() error {
+	return a.pager.Close()
 }
 
 // isCVEEntry returns true if the ZIP entry path is a CVE JSON file.

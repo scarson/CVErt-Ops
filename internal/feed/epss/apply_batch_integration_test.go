@@ -161,6 +161,65 @@ func TestApply_UnchangedScoreKeepsUpdateTime(t *testing.T) {
 	}
 }
 
+// When the first ingest of a CVE runs at the same time as an EPSS apply that
+// scores it, the score ends on the cves row and no staging row is left, whichever
+// transaction goes first (PLAN.md §5.3), and neither side fails.
+//
+// The race the shared advisory lock prevents (an ingest committing between the
+// apply's two statements, so the update finds no cves row and the staging insert
+// then finds one) has a window too narrow for this test to hit reliably.
+// TestApply_WaitsForMergeAdvisoryLock is the test that fails without the lock.
+func TestApply_ConcurrentFirstIngestKeepsScore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	const n = 200
+	ids := make([]string, n)
+	rows := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("CVE-2024-%d", 20000+i)
+		rows[i] = fmt.Sprintf("%s,0.%03d,0.5", ids[i], i+1)
+	}
+	adapter := fileAdapter(t, rows...)
+
+	var applyErr, ingestErr error
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		_, applyErr = adapter.Apply(ctx, db.DB(), nil)
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for _, id := range ids {
+			if err := merge.Ingest(ctx, db.Store, feed.CanonicalPatch{CVEID: id, Status: "published"}, "nvd"); err != nil {
+				ingestErr = fmt.Errorf("merge.Ingest %s: %w", id, err)
+				return
+			}
+		}
+	}()
+	<-done
+	<-done
+	if applyErr != nil {
+		t.Fatalf("Apply: %v", applyErr)
+	}
+	if ingestErr != nil {
+		t.Fatal(ingestErr)
+	}
+
+	for i, id := range ids {
+		want := float64(i+1) / 1000
+		if got := cveEPSS(t, db.DB(), id); !got.score.Valid || got.score.Float64 != want {
+			t.Errorf("%s epss_score = %v, want %v", id, got.score, want)
+		}
+	}
+	if staged := stagedScores(t, db.DB()); len(staged) != 0 {
+		t.Errorf("epss_staging = %v, want empty once every CVE is ingested", staged)
+	}
+}
+
 // The apply takes the merge pipeline's per-CVE advisory lock (PLAN.md §5.3),
 // so it waits while a merge of that CVE is in progress and writes after it.
 func TestApply_WaitsForMergeAdvisoryLock(t *testing.T) {

@@ -16,7 +16,7 @@
 - **A one-hour rescan window.** The list is exported separately from the advisories, so an advisory can appear after one with a later time. Re-reading the last hour costs a few hundred to a few thousand fetches a day. The MITRE adapter uses the same window for the same reason.
 - **One page size for both kinds of run.** At 20 fetches a second a 1,000-advisory page takes 50 seconds to fetch and about 77 to merge, inside the handler's 3-minute page reserve.
 - **`ArchivePager` pages by name only.** An earlier version of this change filtered entries by their ZIP modified time and ended a pass at the archive's newest entry time. OSV's entries all carry MS-DOS time 0, so that filter has no user, and the pager was reduced to name-ordered paging.
-- The handler's empty-page stop is unchanged. A non-final page of either kind holds at least one advisory unless every advisory on it is missing from the bucket or unreadable.
+- The handler's empty-page stop is unchanged. Both kinds of page skip missing or unreadable advisories and keep reading, so a page that is not the last always holds a full page of advisories and never reaches that stop.
 
 ## Gotchas
 

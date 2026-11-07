@@ -437,6 +437,18 @@ func TestProcessOne_CompleteJobError(t *testing.T) {
 // runStaleRecovery tests
 // ──────────────────────────────────────────────────────────────────────────────
 
+// A job that runs to maxJobDuration is still writing its outcome after the
+// deadline: the handler's own outcome writes, then the pool's CompleteJob or
+// FailJob. Recovery must not reclaim it during those writes, or a second worker
+// can start the job while the first is finishing.
+func TestStaleThreshold_CoversJobDeadlineAndOutcomeWrites(t *testing.T) {
+	t.Parallel()
+	latestJobEnd := maxJobDuration + 2*recordOutcomeTimeout
+	if staleThreshold < latestJobEnd {
+		t.Errorf("staleThreshold = %v, want at least %v (maxJobDuration plus two outcome writes)", time.Duration(staleThreshold), latestJobEnd)
+	}
+}
+
 func TestRunStaleRecovery_CallsRecoverAndStops(t *testing.T) {
 	t.Parallel()
 

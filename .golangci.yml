@@ -12,6 +12,7 @@ linters:
     - staticcheck    # SA + S1 + QF rules (replaces deprecated megacheck)
     # Security (OWASP patterns — critical for a security product)
     - gosec          # G104 errcheck, G107 URL injection, G201-204 SQL, G401-501 crypto
+    - depguard       # Keeps libraries that need a safety layer behind their wrapper
     # HTTP / network hygiene
     - bodyclose      # HTTP response bodies must be closed (prevents conn-pool leaks)
     - noctx          # http.NewRequest must use context-aware variant
@@ -23,6 +24,16 @@ linters:
     - sloglint       # slog usage patterns (key-value pairs, context propagation)
 
   settings:
+    depguard:
+      rules:
+        version-comparison:
+          files:
+            - "$all"
+            - "!**/internal/version/*.go"
+          deny:
+            - pkg: "github.com/google/osv-scalibr"
+              desc: "use internal/version: this library accepts malformed versions and sorts them as real ones, which can report a false 'not affected'"
+
     exhaustruct:
       # Only enforce completeness for http.Server — catches the Slowloris-critical
       # missing ReadHeaderTimeout / ReadTimeout / IdleTimeout fields.

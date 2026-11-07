@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
@@ -747,10 +746,7 @@ func TestFetch_Success(t *testing.T) {
 		},
 	})
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
@@ -786,52 +782,6 @@ func TestFetch_Success(t *testing.T) {
 	}
 }
 
-func TestFetch_IncrementalSkipsOldEntries(t *testing.T) {
-	t.Parallel()
-
-	oldTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	newTime := time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC)
-
-	oldHeader := &zip.FileHeader{Modified: oldTime, Method: zip.Deflate}
-	newHeader := &zip.FileHeader{Modified: newTime, Method: zip.Deflate}
-
-	zipData := buildOSVZip(t, []zipEntry{
-		{
-			name:    "Go/GHSA-old0-old0-old0.json",
-			content: minimalOSVAdvisoryJSON("GHSA-old0-old0-old0", nil),
-			header:  oldHeader,
-		},
-		{
-			name:    "Go/GHSA-new0-new0-new0.json",
-			content: minimalOSVAdvisoryJSON("GHSA-new0-new0-new0", nil),
-			header:  newHeader,
-		},
-	})
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
-	defer ts.Close()
-
-	// Cursor: last_modified = 2024-03-01 (between old and new entries).
-	cursorTime := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	cursorJSON, _ := json.Marshal(feed.ArchiveCursor{LastModified: cursorTime})
-
-	adapter := newTestAdapter(ts)
-	result, err := adapter.Fetch(context.Background(), cursorJSON)
-	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
-	}
-
-	if len(result.Patches) != 1 {
-		t.Fatalf("Patches len = %d, want 1 (old entry should be skipped)", len(result.Patches))
-	}
-	if result.Patches[0].SourceID != "GHSA-new0-new0-new0" {
-		t.Errorf("SourceID = %q, want %q", result.Patches[0].SourceID, "GHSA-new0-new0-new0")
-	}
-}
-
 func TestFetch_HTTPError(t *testing.T) {
 	t.Parallel()
 
@@ -860,10 +810,7 @@ func TestFetch_AliasResolution(t *testing.T) {
 		},
 	})
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
@@ -898,10 +845,7 @@ func TestFetch_NonJSONEntriesSkipped(t *testing.T) {
 		},
 	})
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)
@@ -928,9 +872,7 @@ func TestFetch_FirstBackfillIsPaged(t *testing.T) {
 		{name: "Go/GO-2024-1.json", content: minimalOSVAdvisoryJSON("GO-2024-1", []string{"CVE-2024-1111"})},
 		{name: "npm/GHSA-aaaa-bbbb-cccc.json", content: minimalOSVAdvisoryJSON("GHSA-aaaa-bbbb-cccc", nil)},
 	})
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(zipData)
-	}))
+	ts := httptest.NewServer(newTestBucket(zipData, backfillCSV))
 	defer ts.Close()
 
 	adapter := newTestAdapter(ts)

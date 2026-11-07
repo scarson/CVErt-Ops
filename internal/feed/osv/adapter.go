@@ -1,19 +1,19 @@
-// ABOUTME: Feed adapter for the OSV (Open Source Vulnerabilities) bulk feed.
-// ABOUTME: Downloads all.zip from GCS, pre-filters by modified time, resolves CVE aliases.
+// ABOUTME: Feed adapter for the OSV (Open Source Vulnerabilities) bucket: all.zip backfill, modified_id.csv increments.
+// ABOUTME: Pages both kinds of run so they resume across worker jobs, and resolves CVE aliases.
 //
-// OSV publishes a single all.zip archive containing all advisories across all
-// ecosystems. Each advisory is a JSON file conforming to the OSV schema v1:
+// OSV publishes its data in the osv-vulnerabilities GCS bucket
+// (https://google.github.io/osv.dev/data/): all.zip with every advisory across
+// all ecosystems, one JSON object per advisory at <ecosystem>/<id>.json, and
+// modified_id.csv, which lists "<modified time>,<ecosystem>/<id>" for every
+// advisory, newest first. Each advisory conforms to the OSV schema v1:
 // https://ossf.github.io/osv-schema/
 //
-// Cursor format: feed.ArchiveCursor. Between passes it is
-// {"last_modified": "2024-01-15T10:00:00Z"}, and the adapter pre-filters ZIP
-// entries via FileHeader.Modified, parsing only entries newer than it. During a
-// pass the cursor also holds the latest entry time of the archive the pass
-// started on and the last entry name read, so a pass larger than one worker job
-// continues in the next job.
-//
-// all.zip stamps every entry with the same zero MS-DOS time, so the pre-filter
-// selects every entry and each pass reads the whole archive.
+// A first run (zero cursor) is a backfill: it reads all.zip in entry-name
+// order, one page per Fetch, downloading the archive once per job. all.zip
+// stamps every entry with the same zero MS-DOS time, so its entry times cannot
+// say what changed. Later runs therefore read modified_id.csv up to the cursor
+// and fetch only the advisories listed as changed. See Cursor for how both
+// kinds of run resume.
 //
 // Alias resolution: if aliases[] contains a CVE ID, it becomes the canonical
 // cve_id. The native OSV/GHSA/RUSTSEC ID becomes source_id. The merge pipeline
@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -39,15 +40,27 @@ const (
 	// SourceName is the canonical feed name stored in cve_sources.
 	SourceName = "osv"
 
+	// bucketURL is the base URL of the osv-vulnerabilities bucket.
+	bucketURL = "https://osv-vulnerabilities.storage.googleapis.com/"
+
 	// bulkZIPURL is the OSV GCS all-ecosystems bulk archive.
-	bulkZIPURL = "https://osv-vulnerabilities.storage.googleapis.com/all.zip"
+	bulkZIPURL = bucketURL + "all.zip"
+
+	// modifiedIDsURL lists every advisory as "<modified time>,<ecosystem>/<id>",
+	// newest first.
+	modifiedIDsURL = bucketURL + "modified_id.csv"
 )
 
-// Adapter implements feed.Adapter for the OSV bulk feed. One Adapter serves one
-// feed run: it keeps the downloaded archive between the pages of the run, and
+// Adapter implements feed.Adapter for the OSV bucket. One Adapter serves one
+// feed run: it keeps a downloaded archive between the pages of a backfill, and
 // Close removes it.
 type Adapter struct {
-	pager *feed.ArchivePager
+	client *http.Client
+	pager  *feed.ArchivePager
+	// listLimiter paces reads of modified_id.csv, one per page.
+	listLimiter *rate.Limiter
+	// recordLimiter paces single-advisory fetches on an incremental run.
+	recordLimiter *rate.Limiter
 }
 
 // New creates an OSV adapter. Pass nil client to use http.DefaultClient.
@@ -55,28 +68,64 @@ func New(client *http.Client) *Adapter {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &Adapter{pager: &feed.ArchivePager{
-		Client: feed.WrapClientWithUA(client),
-		// One bulk archive download per run; 1 req/5s is a generous rate limit.
-		RateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
-		URL:         bulkZIPURL,
-		TempPattern: "cvert-osv-*.zip",
-		SourceName:  SourceName,
-		PageSize:    feed.ArchivePageSize,
-		IsEntry:     isAdvisoryEntry,
-		Parse:       parseEntry,
-	}}
+	client = feed.WrapClientWithUA(client)
+	return &Adapter{
+		client: client,
+		pager: &feed.ArchivePager{
+			Client: client,
+			// One bulk archive download per job; 1 req/5s is a generous rate limit.
+			RateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
+			URL:         bulkZIPURL,
+			TempPattern: "cvert-osv-*.zip",
+			SourceName:  SourceName,
+			PageSize:    feed.ArchivePageSize,
+			IsEntry:     isAdvisoryEntry,
+			Parse:       parseEntry,
+		},
+		listLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
+		// 20 advisories a second fetches a 1,000-advisory page in 50 seconds,
+		// faster than the page merges, and is light load on a public bucket.
+		recordLimiter: rate.NewLimiter(rate.Every(50*time.Millisecond), 1),
+	}
 }
 
-// Fetch returns the next page of advisories modified after the cursor's
-// LastModified, or of every advisory on a first run (full backfill). The first
-// page of a pass, and the first page in each later job of the pass, downloads
-// all.zip.
+// Fetch returns the next page of a backfill when the cursor has no
+// LastModified, and the next page of advisories changed since LastModified
+// otherwise.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
-	return a.pager.Fetch(ctx, cursorJSON)
+	var cur Cursor
+	if len(cursorJSON) > 0 {
+		if err := json.Unmarshal(cursorJSON, &cur); err != nil {
+			return nil, fmt.Errorf("osv: parse cursor: %w", err)
+		}
+	}
+	var (
+		patches []feed.CanonicalPatch
+		next    Cursor
+		done    bool
+		err     error
+	)
+	if cur.LastModified.IsZero() {
+		patches, next, done, err = a.backfillPage(ctx, cur)
+	} else {
+		patches, next, done, err = a.changesPage(ctx, cur)
+	}
+	if err != nil {
+		return nil, err
+	}
+	nextJSON, err := json.Marshal(next)
+	if err != nil {
+		return nil, fmt.Errorf("osv: marshal cursor: %w", err)
+	}
+	return &feed.FetchResult{
+		Patches:    patches,
+		SourceMeta: feed.SourceMeta{SourceName: SourceName, FetchedAt: time.Now().UTC()},
+		NextCursor: nextJSON,
+		LastPage:   done,
+	}, nil
 }
 
-// Close removes the archive downloaded for this run, if a pass is still open.
+// Close removes the archive downloaded for this run, if a backfill is still open.
 func (a *Adapter) Close() error {
 	return a.pager.Close()
 }
@@ -99,6 +148,12 @@ func parseEntry(entry *zip.File) (*feed.CanonicalPatch, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseRecord(raw)
+}
+
+// parseRecord decodes one advisory's JSON into a patch carrying the raw JSON.
+// A nil patch with a nil error means the advisory has no ID.
+func parseRecord(raw []byte) (*feed.CanonicalPatch, error) {
 	patch, err := parseAdvisory(bytes.NewReader(raw))
 	if err != nil || patch == nil {
 		return patch, err

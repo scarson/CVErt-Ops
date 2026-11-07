@@ -1,17 +1,15 @@
-// ABOUTME: Pages a feed published as one ZIP archive, so a pass larger than one worker job resumes in the next job.
-// ABOUTME: Used by the OSV adapter; the cursor records the archive snapshot time and the last entry name read.
+// ABOUTME: Pages a downloaded ZIP archive in entry-name order, so reading it can span several worker jobs.
+// ABOUTME: Used by the OSV adapter for a first backfill; a later job resumes after the last entry name read.
 package feed
 
 import (
 	"archive/zip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"sort"
-	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -22,40 +20,14 @@ import (
 // page reserve.
 const ArchivePageSize = 1000
 
-// archiveTimeResolution is the precision of a ZIP entry's modified time: the
-// MS-DOS time field counts in two-second steps. A pass ends with its cursor one
-// step before the latest record time it saw, so a record changed within that
-// same step after the archive was generated is read by the next pass.
-const archiveTimeResolution = 2 * time.Second
-
-// ArchiveCursor is the sync state of a feed published as one ZIP archive.
+// ArchivePager downloads a ZIP archive and returns its record entries in pages,
+// in entry-name order. Within one job the downloaded archive is kept between
+// pages; a later job downloads the current archive and continues after the last
+// entry name read. Names, not positions, identify where to continue, because the
+// upstream archive may have changed between jobs.
 //
-// Between passes it holds only LastModified. During a pass it also holds
-// Snapshot and ResumeAfter, so a later job can continue the pass from a new
-// download.
-type ArchiveCursor struct {
-	// LastModified is the baseline of the current pass: entries modified at or
-	// before it are skipped. Zero on a first pass, which reads every entry.
-	LastModified time.Time `json:"last_modified"`
-	// Snapshot is the latest record modified time in the archive that began the
-	// current pass. The archive was generated before it was downloaded, so a
-	// record changed after Snapshot may be missing from it even if it changed
-	// before the download; the next pass therefore starts from Snapshot, less
-	// archiveTimeResolution, not from the download time.
-	Snapshot time.Time `json:"snapshot,omitzero"`
-	// ResumeAfter is the name of the last entry read by the last completed page.
-	// The pass continues with entries whose names sort after it.
-	ResumeAfter string `json:"resume_after,omitempty"`
-}
-
-// ArchivePager fetches a ZIP archive and returns its entries in pages, in
-// entry-name order. Within one job the downloaded archive is kept between Fetch
-// calls; a later job downloads the current archive and continues after the
-// cursor's entry name. Names, not positions, identify where to continue, because
-// the upstream archive may have changed between jobs.
-//
-// The pager removes the downloaded archive when a pass ends; Close removes it
-// when a job ends part-way through a pass. An ArchivePager is not safe for
+// The pager removes the downloaded archive when the last page is read; Close
+// removes it when a job ends part-way through. An ArchivePager is not safe for
 // concurrent use.
 type ArchivePager struct {
 	Client      *http.Client
@@ -63,7 +35,7 @@ type ArchivePager struct {
 	URL         string
 	// TempPattern is the os.CreateTemp pattern for the downloaded archive.
 	TempPattern string
-	// SourceName prefixes errors and is reported in SourceMeta.
+	// SourceName prefixes errors.
 	SourceName string
 	PageSize   int
 	// IsEntry reports whether an archive entry holds a record.
@@ -74,33 +46,30 @@ type ArchivePager struct {
 	archive *downloadedArchive
 }
 
-// downloadedArchive is an archive held between the Fetch calls of one job.
-type downloadedArchive struct {
-	file      *os.File
-	entries   []*zip.File // record entries, sorted by name
-	fetchedAt time.Time
-	latest    time.Time // latest record modified time; zero with no records
+// ArchivePage is one page of an archive.
+type ArchivePage struct {
+	Patches []CanonicalPatch
+	// Last is the name of the last entry this page read; the next page resumes
+	// after it.
+	Last string
+	// Done reports that no entries remain after this page.
+	Done bool
 }
 
-// Fetch returns the next page of the pass that cursorJSON describes, or the
-// first page of a new pass when the cursor is not mid-pass.
-func (p *ArchivePager) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*FetchResult, error) {
+// downloadedArchive is an archive held between the pages of one job.
+type downloadedArchive struct {
+	file    *os.File
+	entries []*zip.File // record entries, sorted by name
+}
+
+// Page returns the next page of record entries whose names sort after
+// resumeAfter. An empty resumeAfter starts a new read on a fresh download.
+func (p *ArchivePager) Page(ctx context.Context, resumeAfter string) (*ArchivePage, error) {
 	if p.PageSize < 1 {
 		return nil, fmt.Errorf("%s: archive page size %d is below 1", p.SourceName, p.PageSize)
 	}
-	var cur ArchiveCursor
-	if len(cursorJSON) > 0 {
-		if err := json.Unmarshal(cursorJSON, &cur); err != nil {
-			return nil, fmt.Errorf("%s: parse cursor: %w", p.SourceName, err)
-		}
-	}
-	resuming := cur.ResumeAfter != ""
-	if resuming && cur.Snapshot.IsZero() {
-		return nil, fmt.Errorf("%s: cursor resumes after %q but has no snapshot", p.SourceName, cur.ResumeAfter)
-	}
-
-	// A new pass reads the current archive, never one held from an earlier pass.
-	if !resuming {
+	// A new read uses the current archive, never one held from an earlier read.
+	if resumeAfter == "" {
 		if err := p.Close(); err != nil {
 			return nil, err
 		}
@@ -111,73 +80,38 @@ func (p *ArchivePager) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*
 		}
 	}
 
-	snapshot := p.archive.latest
-	if resuming {
-		snapshot = cur.Snapshot
-	}
-
 	entries := p.archive.entries
-	i := 0
-	if resuming {
-		i = sort.Search(len(entries), func(k int) bool { return entries[k].Name > cur.ResumeAfter })
-	}
+	i := sort.Search(len(entries), func(k int) bool { return entries[k].Name > resumeAfter })
 
-	var patches []CanonicalPatch
-	for ; i < len(entries) && len(patches) < p.PageSize; i++ {
-		entry := entries[i]
-		// The modified time is in the central directory, so skipping costs no I/O.
-		if !cur.LastModified.IsZero() && !entry.Modified.After(cur.LastModified) {
-			continue
-		}
-		patch, err := p.Parse(entry)
-		if err != nil || patch == nil {
-			// Skip malformed or empty entries; do not abort the pass.
-			continue
-		}
-		patches = append(patches, *patch)
+	page := &ArchivePage{Last: resumeAfter}
+	for ; i < len(entries) && len(page.Patches) < p.PageSize; i++ {
+		page.add(p.Parse(entries[i]))
 	}
 	// Keep entries with the same name on one page: the next page starts after the
 	// name, so a duplicate left behind would be skipped.
 	for ; i > 0 && i < len(entries) && entries[i].Name == entries[i-1].Name; i++ {
-		if !cur.LastModified.IsZero() && !entries[i].Modified.After(cur.LastModified) {
-			continue
-		}
-		if patch, err := p.Parse(entries[i]); err == nil && patch != nil {
-			patches = append(patches, *patch)
-		}
+		page.add(p.Parse(entries[i]))
+	}
+	if i > 0 {
+		page.Last = entries[i-1].Name
 	}
 
-	result := &FetchResult{
-		Patches:    patches,
-		SourceMeta: SourceMeta{SourceName: p.SourceName, FetchedAt: p.archive.fetchedAt},
-	}
-	// The pass ends one time step before the snapshot. With no records there is
-	// no snapshot, and the baseline stays where it was. The next baseline can be
-	// earlier than this one: a baseline later than every entry in the archive,
-	// such as a download time, would otherwise skip the archive on every pass.
-	next := ArchiveCursor{LastModified: cur.LastModified}
-	if !snapshot.IsZero() {
-		next.LastModified = snapshot.Add(-archiveTimeResolution)
-	}
-	if i < len(entries) {
-		next = ArchiveCursor{
-			LastModified: cur.LastModified,
-			Snapshot:     snapshot,
-			ResumeAfter:  entries[i-1].Name,
-		}
-	} else {
-		result.LastPage = true
+	if i >= len(entries) {
+		page.Done = true
 		if err := p.Close(); err != nil {
 			return nil, err
 		}
 	}
+	return page, nil
+}
 
-	nextJSON, err := json.Marshal(next)
-	if err != nil {
-		return nil, fmt.Errorf("%s: marshal cursor: %w", p.SourceName, err)
+// add appends a parsed entry, skipping malformed or empty ones so one bad entry
+// does not abort the read.
+func (page *ArchivePage) add(patch *CanonicalPatch, err error) {
+	if err != nil || patch == nil {
+		return
 	}
-	result.NextCursor = nextJSON
-	return result, nil
+	page.Patches = append(page.Patches, *patch)
 }
 
 // download fetches the archive to a temp file and indexes its record entries.
@@ -191,21 +125,13 @@ func (p *ArchivePager) download(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("%s: download zip: %w", p.SourceName, err)
 	}
-	fetchedAt := time.Now().UTC()
-
 	entries, err := p.recordEntries(f)
 	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp
 		return err
 	}
-	var latest time.Time
-	for _, e := range entries {
-		if e.Modified.After(latest) {
-			latest = e.Modified
-		}
-	}
-	p.archive = &downloadedArchive{file: f, entries: entries, fetchedAt: fetchedAt, latest: latest}
+	p.archive = &downloadedArchive{file: f, entries: entries}
 	return nil
 }
 

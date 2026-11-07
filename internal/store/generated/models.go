@@ -20,6 +20,7 @@ type WatchlistItemType string
 const (
 	WatchlistItemTypePackage WatchlistItemType = "package"
 	WatchlistItemTypeCpe     WatchlistItemType = "cpe"
+	WatchlistItemTypeCve     WatchlistItemType = "cve"
 )
 
 func (e *WatchlistItemType) Scan(src interface{}) error {
@@ -634,4 +635,5 @@ type WatchlistItem struct {
 	CpeNormalized sql.NullString
 	CreatedAt     time.Time
 	DeletedAt     sql.NullTime
+	CveID         sql.NullString
 }

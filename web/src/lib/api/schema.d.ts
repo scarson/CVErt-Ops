@@ -1794,7 +1794,11 @@ export interface paths {
         };
         /** List watchlist items */
         get: operations["list-watchlist-items"];
-        put?: never;
+        /**
+         * Replace all items in a watchlist
+         * @description Makes the watchlist hold exactly the items in the request, in one transaction, and returns how many were added, removed and left unchanged. Repeating a request changes nothing. Takes at most 10000 items within the 1 MiB request limit. Rules bound to the watchlist stay active and are not re-activated: their next evaluation run alerts on an added CVE item that already matches them.
+         */
+        put: operations["replace-watchlist-items"];
         /** Add an item to a watchlist */
         post: operations["create-watchlist-item"];
         delete?: never;
@@ -2340,11 +2344,14 @@ export interface components {
              * @example /api/v1/schemas/CreateWatchlistItemBody.json
              */
             readonly $schema?: string;
-            cpe_normalized: string | null;
-            ecosystem: string | null;
-            item_type: string;
-            namespace: string | null;
-            package_name: string | null;
+            cpe_normalized?: string;
+            /** @description CVE identifier such as CVE-2024-3094. Stored in upper case. */
+            cve_id?: string;
+            ecosystem?: string;
+            /** @enum {string} */
+            item_type: "package" | "cpe" | "cve";
+            namespace?: string;
+            package_name?: string;
         };
         DeliveryDetail: {
             /**
@@ -3136,6 +3143,16 @@ export interface components {
             org_id?: string;
             user_id: string;
         };
+        ReplaceWatchlistItemsBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/ReplaceWatchlistItemsBody.json
+             */
+            readonly $schema?: string;
+            /** @description The complete list of items the watchlist should hold. An empty array removes every item. */
+            items: components["schemas"]["CreateWatchlistItemBody"][] | null;
+        };
         ReportEntry: {
             /**
              * Format: uri
@@ -3611,11 +3628,36 @@ export interface components {
             readonly $schema?: string;
             cpe_normalized?: string;
             created_at: string;
+            cve_id?: string;
             ecosystem?: string;
             id: string;
-            item_type: string;
+            /** @enum {string} */
+            item_type: "package" | "cpe" | "cve";
             namespace?: string;
             package_name?: string;
+        };
+        WatchlistItemsReplaced: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/WatchlistItemsReplaced.json
+             */
+            readonly $schema?: string;
+            /**
+             * Format: int64
+             * @description Items that were not on the watchlist and were added
+             */
+            added: number;
+            /**
+             * Format: int64
+             * @description Items that were on the watchlist, not in the request, and were removed
+             */
+            removed: number;
+            /**
+             * Format: int64
+             * @description Items that were already on the watchlist and were left as they are
+             */
+            unchanged: number;
         };
     };
     responses: never;
@@ -8238,6 +8280,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SpecListWatchlistItemsOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "replace-watchlist-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Organization ID */
+                org_id: string;
+                /** @description Watchlist ID */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplaceWatchlistItemsBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistItemsReplaced"];
                 };
             };
             /** @description Error */

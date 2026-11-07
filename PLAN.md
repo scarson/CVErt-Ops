@@ -908,11 +908,26 @@ Ingest MITRE CWE list into `cwe_dictionary(cwe_id TEXT PK, name TEXT, descriptio
 A watchlist is an org-defined set of things the org cares about:
 - Packages: `(ecosystem, name, optional namespace)`
 - CPE patterns / exact CPEs
+- CVE IDs (`cve_id`), for CVEs the org already knows it has, such as the findings of a host scanner that keeps its own per-host inventory
 - Vendors/products (optional convenience)
 
 ### 9.2 Matching Semantics
 - For packages: match if CVE has affected package entry with same ecosystem + normalized package name.
 - For CPE: match exact or prefix-pattern match (define pattern rule: "startsWith on normalized CPE string").
+- For CVE IDs: match if the CVE's ID equals the item's `cve_id`, which is stored in upper case. An item can name a CVE that is not in the corpus; it starts matching when a feed delivers that CVE.
+
+**Replacing a whole list:** `PUT /orgs/{org_id}/watchlists/{id}/items` (member+) makes the watchlist hold exactly the items in the request, in one transaction, and returns counts of `added`, `removed` and `unchanged` items.
+- A request takes at most 10,000 items, about 500 KB of CVE items inside the 1 MiB request limit. A list of long package or CPE items can reach the request limit first.
+- Items already on the list keep their rows, so repeating a request changes nothing. Dropped items are soft-deleted.
+- An empty `items` array clears the list. A missing `items` key is rejected, so that a client bug cannot read as a request to clear it.
+- One invalid item rejects the whole request, and nothing changes.
+
+**When a listed CVE alerts:** changing a watchlist never changes the status of a rule bound to it and never runs an activation scan. Instead, the batch and EPSS evaluation paths add to their candidates the CVE items added to or removed from each rule's bound watchlists since their cursor (§10).
+- A CVE that already matches a bound rule when it is listed, such as one already in CISA KEV, alerts on the next run: the next batch run (every 2 minutes), or the next EPSS run (daily) for an EPSS-only rule.
+- A removed CVE stops matching, and the next run marks its open event `last_match_state = false`.
+- Each rule alerts once per CVE and `material_hash`. Listing a CVE again with no material change does not alert again, and its event keeps `last_match_state = false` until the CVE next changes materially.
+- A rule's activation scan records its matches with delivery suppressed, including CVEs already on the list. To be alerted about CVEs that already match, create the rule first and then push the list.
+- This applies to CVE items only. A package or CPE item added to a list matches a CVE when that CVE next changes, because adding a package could otherwise alert on its whole history.
 
 **Version comparison (required pattern):** The current watchlist item model (`ecosystem + name + optional namespace`) does not include a version constraint at MVP. Any version comparison — a version range on watchlist items (e.g., "alert only for versions ≤ 2.3.4"), an `affected.version` field in the alert DSL (§10.1), or a version check endpoint — MUST use the comparison rules native to the advisory's ecosystem, never string comparison or semver applied across ecosystems. Both produce silent wrong answers: `"2.10.0" < "2.9.0"` as strings, and semver orders Maven's `1.0-sp` below `1.0`, cannot read PEP 440's `1.0.post1`, and ignores dpkg epochs and `~`.
 
@@ -2280,6 +2295,7 @@ See section 18.1 for full schema.
 - `DELETE /api/v1/orgs/{org_id}/watchlists/{id}` — delete (member+)
 - `GET /api/v1/orgs/{org_id}/watchlists/{id}/items` — list items (viewer+)
 - `POST /api/v1/orgs/{org_id}/watchlists/{id}/items` — add item (member+)
+- `PUT /api/v1/orgs/{org_id}/watchlists/{id}/items` — replace all items (member+, at most 10,000, see §9.2)
 - `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item (member+)
 
 **Notification channels (chi-registered, admin+ for mutations):**

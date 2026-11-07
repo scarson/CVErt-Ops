@@ -120,6 +120,7 @@ var operationAccess = map[string]accessRule{
 	"DELETE /orgs/{org_id}/watchlists/{id}":                 roleOp("member"),
 	"GET /orgs/{org_id}/watchlists/{id}/items":              roleOp("viewer"),
 	"POST /orgs/{org_id}/watchlists/{id}/items":             roleOp("member"),
+	"PUT /orgs/{org_id}/watchlists/{id}/items":              roleOp("member"),
 	"DELETE /orgs/{org_id}/watchlists/{id}/items/{item_id}": roleOp("member"),
 
 	// Notification channels.

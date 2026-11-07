@@ -357,6 +357,7 @@ func (srv *Server) Handler() http.Handler {
 					r.Route("/items", func(r chi.Router) {
 						r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listWatchlistItemsHandler)
 						r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createWatchlistItemHandler)
+					r.With(srv.RequireOrgRole(RoleMember)).Put("/", srv.replaceWatchlistItemsHandler)
 						r.With(srv.RequireOrgRole(RoleMember)).Delete("/{item_id}", srv.deleteWatchlistItemHandler)
 					})
 				})

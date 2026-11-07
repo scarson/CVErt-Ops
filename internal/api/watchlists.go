@@ -1,14 +1,16 @@
 // ABOUTME: HTTP handlers for watchlist and watchlist item management.
-// ABOUTME: Supports package (ecosystem+name) and CPE item types with validation.
+// ABOUTME: Supports package (ecosystem+name), CPE and CVE item types, added singly or replaced as a whole list.
 package api
 
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
@@ -26,6 +28,19 @@ var validEcosystems = map[string]bool{
 	"cargo": true, "rubygems": true, "nuget": true, "hex": true,
 	"pub": true, "swift": true, "cocoapods": true, "packagist": true,
 }
+
+// maxReplaceWatchlistItems is the most items one replace request may name. A CVE item is
+// about 50 bytes of JSON, so a list at this cap is about 500 KB and fits the 1 MiB request
+// limit. A list of long package or CPE items reaches the request limit first.
+const maxReplaceWatchlistItems = 10000
+
+// Length limits on watchlist item fields, matching the column CHECK constraints.
+const (
+	maxWatchlistPackageNameLen = 255
+	maxWatchlistNamespaceLen   = 255
+	maxWatchlistCPELen         = 512
+	maxWatchlistCVEIDLen       = 32
+)
 
 // ── Request / response types ──────────────────────────────────────────────────
 
@@ -54,22 +69,36 @@ type watchlistEntry struct {
 }
 
 
+// createWatchlistItemBody fields beyond item_type apply to one item type each:
+// ecosystem, package_name and namespace to package, cpe_normalized to cpe, cve_id to cve.
 type createWatchlistItemBody struct {
-	ItemType      string  `json:"item_type"`
-	Ecosystem     *string `json:"ecosystem"`
-	PackageName   *string `json:"package_name"`
-	Namespace     *string `json:"namespace"`
-	CpeNormalized *string `json:"cpe_normalized"`
-}
-
-type watchlistItemEntry struct {
-	ID            string  `json:"id"`
-	ItemType      string  `json:"item_type"`
+	ItemType      string  `json:"item_type" enum:"package,cpe,cve"`
 	Ecosystem     *string `json:"ecosystem,omitempty"`
 	PackageName   *string `json:"package_name,omitempty"`
 	Namespace     *string `json:"namespace,omitempty"`
 	CpeNormalized *string `json:"cpe_normalized,omitempty"`
+	CveID         *string `json:"cve_id,omitempty" doc:"CVE identifier such as CVE-2024-3094. Stored in upper case."`
+}
+
+type watchlistItemEntry struct {
+	ID            string  `json:"id"`
+	ItemType      string  `json:"item_type" enum:"package,cpe,cve"`
+	Ecosystem     *string `json:"ecosystem,omitempty"`
+	PackageName   *string `json:"package_name,omitempty"`
+	Namespace     *string `json:"namespace,omitempty"`
+	CpeNormalized *string `json:"cpe_normalized,omitempty"`
+	CveID         *string `json:"cve_id,omitempty"`
 	CreatedAt     string  `json:"created_at"`
+}
+
+type replaceWatchlistItemsBody struct {
+	Items []createWatchlistItemBody `json:"items" maxItems:"10000" doc:"The complete list of items the watchlist should hold. An empty array removes every item."`
+}
+
+type watchlistItemsReplaced struct {
+	Added     int `json:"added" doc:"Items that were not on the watchlist and were added"`
+	Removed   int `json:"removed" doc:"Items that were on the watchlist, not in the request, and were removed"`
+	Unchanged int `json:"unchanged" doc:"Items that were already on the watchlist and were left as they are"`
 }
 
 
@@ -124,7 +153,80 @@ func watchlistItemToEntry(item store.WatchlistItemRow) watchlistItemEntry {
 	if item.CpeNormalized.Valid {
 		e.CpeNormalized = &item.CpeNormalized.String
 	}
+	if item.CveID.Valid {
+		e.CveID = &item.CveID.String
+	}
 	return e
+}
+
+// validWatchlistItemText reports whether s can be stored in a watchlist item text field:
+// not blank, within maxLen characters, and without the NUL byte Postgres text rejects.
+func validWatchlistItemText(s string, maxLen int) bool {
+	return strings.TrimSpace(s) != "" && utf8.RuneCountInString(s) <= maxLen && !strings.ContainsRune(s, 0)
+}
+
+// parseWatchlistItem validates a watchlist item from a request and returns its store
+// parameters, or the validation failure. loc is the item's location in the request body.
+func parseWatchlistItem(req createWatchlistItemBody, loc string) (store.CreateWatchlistItemParams, *huma.ErrorDetail) {
+	invalid := func(message, field string) (store.CreateWatchlistItemParams, *huma.ErrorDetail) {
+		return store.CreateWatchlistItemParams{}, &huma.ErrorDetail{Message: message, Location: loc + field}
+	}
+
+	switch req.ItemType {
+	case "package":
+		if req.Ecosystem == nil || req.PackageName == nil {
+			return invalid("ecosystem and package_name are required for package items", "")
+		}
+		eco := strings.ToLower(*req.Ecosystem)
+		if !validEcosystems[eco] {
+			return invalid("unknown ecosystem", ".ecosystem")
+		}
+		if !validWatchlistItemText(*req.PackageName, maxWatchlistPackageNameLen) {
+			return invalid(fmt.Sprintf("package_name must be 1 to %d characters", maxWatchlistPackageNameLen), ".package_name")
+		}
+		namespace := req.Namespace
+		if namespace != nil && *namespace == "" {
+			namespace = nil
+		}
+		if namespace != nil && !validWatchlistItemText(*namespace, maxWatchlistNamespaceLen) {
+			return invalid(fmt.Sprintf("namespace must be at most %d characters", maxWatchlistNamespaceLen), ".namespace")
+		}
+		return store.CreateWatchlistItemParams{
+			ItemType:    store.WatchlistItemType("package"),
+			Ecosystem:   &eco,
+			PackageName: req.PackageName,
+			Namespace:   namespace,
+		}, nil
+	case "cpe":
+		if req.CpeNormalized == nil {
+			return invalid("cpe_normalized is required for cpe items", ".cpe_normalized")
+		}
+		if !strings.HasPrefix(*req.CpeNormalized, "cpe:2.3:") {
+			return invalid("cpe_normalized must start with cpe:2.3:", ".cpe_normalized")
+		}
+		if !validWatchlistItemText(*req.CpeNormalized, maxWatchlistCPELen) {
+			return invalid(fmt.Sprintf("cpe_normalized must be at most %d characters", maxWatchlistCPELen), ".cpe_normalized")
+		}
+		return store.CreateWatchlistItemParams{
+			ItemType:      store.WatchlistItemType("cpe"),
+			CpeNormalized: req.CpeNormalized,
+		}, nil
+	case "cve":
+		if req.CveID == nil {
+			return invalid("cve_id is required for cve items", ".cve_id")
+		}
+		// cves.cve_id is upper case and the watchlist filter compares it exactly.
+		cveID := strings.ToUpper(*req.CveID)
+		if len(cveID) > maxWatchlistCVEIDLen || !isValidCVEID(cveID) {
+			return invalid("cve_id must be a CVE identifier such as CVE-2024-3094", ".cve_id")
+		}
+		return store.CreateWatchlistItemParams{
+			ItemType: store.WatchlistItemType("cve"),
+			CveID:    &cveID,
+		}, nil
+	default:
+		return invalid("item_type must be 'package', 'cpe' or 'cve'", ".item_type")
+	}
 }
 
 // isUniqueViolation returns true if err (or any wrapped error) is a Postgres unique constraint violation.
@@ -496,44 +598,22 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var p store.CreateWatchlistItemParams
-	switch req.ItemType {
-	case "package":
-		if req.Ecosystem == nil || req.PackageName == nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-				&huma.ErrorDetail{Message: "ecosystem and package_name are required for package items", Location: "body"})
-			return
-		}
-		eco := strings.ToLower(*req.Ecosystem)
-		if !validEcosystems[eco] {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-				&huma.ErrorDetail{Message: "unknown ecosystem", Location: "body.ecosystem"})
-			return
-		}
-		p = store.CreateWatchlistItemParams{
-			ItemType:    store.WatchlistItemType("package"),
-			Ecosystem:   &eco,
-			PackageName: req.PackageName,
-			Namespace:   req.Namespace,
-		}
-	case "cpe":
-		if req.CpeNormalized == nil {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-				&huma.ErrorDetail{Message: "cpe_normalized is required for cpe items", Location: "body.cpe_normalized"})
-			return
-		}
-		if !strings.HasPrefix(*req.CpeNormalized, "cpe:2.3:") {
-			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-				&huma.ErrorDetail{Message: "cpe_normalized must start with cpe:2.3:", Location: "body.cpe_normalized"})
-			return
-		}
-		p = store.CreateWatchlistItemParams{
-			ItemType:      store.WatchlistItemType("cpe"),
-			CpeNormalized: req.CpeNormalized,
-		}
-	default:
-		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
-			&huma.ErrorDetail{Message: "item_type must be 'package' or 'cpe'", Location: "body.item_type"})
+	p, detail := parseWatchlistItem(req, "body")
+	if detail != nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
+		return
+	}
+
+	// Foreign-key checks run without RLS, so the insert alone would accept another org's
+	// watchlist ID, and the row would then occupy that watchlist's unique index.
+	owned, err := srv.store.ValidateWatchlistsOwnership(r.Context(), orgID, []uuid.UUID{watchlistID})
+	if err != nil {
+		slog.ErrorContext(r.Context(), "check watchlist ownership", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !owned {
+		writeProblem(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -550,6 +630,82 @@ func (srv *Server) createWatchlistItemHandler(w http.ResponseWriter, r *http.Req
 
 	writeLocation(w, r, item.ID.String())
 	writeJSON(w, http.StatusCreated, watchlistItemToEntry(*item))
+}
+
+// replaceWatchlistItemsHandler handles PUT /api/v1/orgs/{org_id}/watchlists/{id}/items.
+// Requires member+. Makes the watchlist hold exactly the items in the request, in one
+// transaction. Items already on the watchlist keep their rows, so repeating a request
+// changes nothing. An empty array clears the watchlist. A missing items key is rejected, so
+// that a client bug cannot read as a request to clear it.
+func (srv *Server) replaceWatchlistItemsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+
+	watchlistID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid watchlist id")
+		return
+	}
+
+	var req replaceWatchlistItemsBody
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+		return
+	}
+	if req.Items == nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "items is required: send an empty array to clear the watchlist", Location: "body.items"})
+		return
+	}
+	if len(req.Items) > maxReplaceWatchlistItems {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: fmt.Sprintf("items must hold at most %d items", maxReplaceWatchlistItems), Location: "body.items"})
+		return
+	}
+
+	items := make([]store.CreateWatchlistItemParams, 0, len(req.Items))
+	for i, raw := range req.Items {
+		item, detail := parseWatchlistItem(raw, fmt.Sprintf("body.items[%d]", i))
+		if detail != nil {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
+			return
+		}
+		items = append(items, item)
+	}
+
+	result, err := srv.store.ReplaceWatchlistItems(r.Context(), orgID, watchlistID, items)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeProblem(w, http.StatusConflict, "items name the same package more than once with different namespaces")
+			return
+		}
+		slog.ErrorContext(r.Context(), "replace watchlist items", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if result == nil {
+		writeProblem(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, watchlistItemsReplaced{
+		Added:     result.Added,
+		Removed:   result.Removed,
+		Unchanged: result.Unchanged,
+	})
+	if result.Added > 0 || result.Removed > 0 {
+		srv.auditLog(r, audit.Entry{
+			OrgID:      orgID,
+			Action:     "update",
+			EntityType: "watchlist",
+			EntityID:   watchlistID.String(),
+			Success:    true,
+			Metadata:   map[string]any{"items_added": result.Added, "items_removed": result.Removed},
+		})
+	}
 }
 
 // listWatchlistItemsHandler handles GET /api/v1/orgs/{org_id}/watchlists/{id}/items.

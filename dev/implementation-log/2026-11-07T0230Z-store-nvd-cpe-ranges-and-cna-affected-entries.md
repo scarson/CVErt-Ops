@@ -2,7 +2,7 @@
 
 ## What was built
 
-- Migration `000052`: `cve_cpe_matches` (one row per distinct NVD `cpeMatch`, with the four range fields and `vulnerable`) and `cve_cna_affected` (one row per distinct CNA `affected[]` entry, with `versions` as JSONB).
+- Migration `000053`: `cve_cpe_matches` (one row per distinct NVD `cpeMatch`, with the four range fields and `vulnerable`) and `cve_cna_affected` (one row per distinct CNA `affected[]` entry, with `versions` as JSONB).
 - `feed.CPEMatch`, `feed.CNAAffected`, `feed.CNAVersion`, `feed.CNAVersionChange`, and the `cpe_matches` and `cna_affected` fields on `CanonicalPatch`.
 - The NVD adapter emits a `CPEMatch` for every entry. The MITRE adapter emits a `CNAAffected` for every CNA `affected[]` entry.
 - `merge.resolve` unions both across sources, removing exact repeats. `merge.Ingest` deletes and re-inserts both tables. Both are in the rename and delete lists of the late-binding CVE ID move.

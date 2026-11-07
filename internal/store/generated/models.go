@@ -225,6 +225,29 @@ type CveAffectedPackage struct {
 	Events       pqtype.NullRawMessage
 }
 
+type CveCnaAffected struct {
+	ID            uuid.UUID
+	CveID         string
+	Vendor        sql.NullString
+	Product       sql.NullString
+	PackageName   sql.NullString
+	CollectionUrl sql.NullString
+	DefaultStatus sql.NullString
+	Versions      json.RawMessage
+}
+
+type CveCpeMatch struct {
+	ID                    uuid.UUID
+	CveID                 string
+	Cpe                   string
+	CpeNormalized         string
+	VersionStartIncluding sql.NullString
+	VersionStartExcluding sql.NullString
+	VersionEndIncluding   sql.NullString
+	VersionEndExcluding   sql.NullString
+	Vulnerable            bool
+}
+
 type CveRawPayload struct {
 	ID         uuid.UUID
 	CveID      string

@@ -42,6 +42,8 @@ vi.mock('@/lib/api/client', () => ({
 function makeCVEDetail(overrides: Partial<CVEDetail> = {}): CVEDetail {
   return {
     cve_id: 'CVE-2024-12345',
+    affected_cpe_matches: [],
+    cna_affected: [],
     description_primary: 'A critical vulnerability in Apache Log4j allows remote code execution.',
     cvss_v3_score: 9.8,
     cvss_v3_vector: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H',

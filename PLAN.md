@@ -382,6 +382,8 @@ Within the same DB transaction:
 - `cve_references`
 - `cve_affected_packages` (ecosystem + package + version range)
 - `cve_affected_cpes` (CPE URIs)
+- `cve_cpe_matches` (NVD CPE match entries with version ranges and the `vulnerable` flag)
+- `cve_cna_affected` (CNA product and version data, available before NVD analysis)
 - `cwe_dictionary` (optional; see 8.2)
 - `cve_raw_payloads` (audit/debug)
 
@@ -2170,7 +2172,13 @@ PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constrai
 PK `id uuid`. Columns: `cve_id`, `ecosystem`, `package_name`, `namespace`, `range_type`, `introduced`, `fixed`, `last_affected`, `events jsonb`. Indexes: `(ecosystem, package_name)`, `cve_id`.
 
 ### `cve_affected_cpes`
-PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: `UNIQUE(cve_id, cpe_normalized)`. Indexes: `cpe_normalized`, `cve_id`.
+PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: `UNIQUE(cve_id, cpe_normalized)`. Indexes: `cpe_normalized`, `cve_id`. Holds every CPE a source names, including NVD `vulnerable: false` platforms. It is a `material_hash` input and what CPE watchlist items match.
+
+### `cve_cpe_matches`
+PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`, `version_start_including`, `version_start_excluding`, `version_end_including`, `version_end_excluding`, `vulnerable boolean not null`. FK `cve_id` to `cves` (`ON DELETE CASCADE`, deferred, because the late-binding CVE ID move updates child tables first). Index: `cve_id`. One row per distinct NVD `cpeMatch` entry, since NVD repeats a criteria string with a different range per release branch. Not a `material_hash` input. "What is affected" reads only `vulnerable` rows.
+
+### `cve_cna_affected`
+PK `id uuid`. Columns: `cve_id`, `vendor`, `product`, `package_name`, `collection_url`, `default_status`, `versions jsonb not null default '[]'`. FK as `cve_cpe_matches`. Index: `cve_id`. One row per distinct CVE 5 `containers.cna.affected[]` entry, from the MITRE record when it has any, else from the copy NVD relays in `cve.affected[]`. `versions` holds `version`, `less_than`, `less_than_or_equal`, `status`, `version_type`, and `changes`. Not a `material_hash` input.
 
 
 ### `epss_staging`

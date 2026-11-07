@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -86,7 +87,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, fmt.Errorf("mitre: download zip: %w", err)
 	}
 	defer func() { _ = os.Remove(tmpFile.Name()) }() //nolint:gosec // G703: path from os.CreateTemp
-	defer tmpFile.Close()                             //nolint:errcheck
+	defer tmpFile.Close()                            //nolint:errcheck
 
 	info, err := tmpFile.Stat()
 	if err != nil {
@@ -191,7 +192,7 @@ type cve5Containers struct {
 
 type cve5CNA struct {
 	Descriptions []cve5Description `json:"descriptions"`
-	Affected     []cve5Affected    `json:"affected"`
+	Affected     json.RawMessage   `json:"affected"`
 	References   []cve5Reference   `json:"references"`
 	ProblemTypes []cve5ProblemType `json:"problemTypes"`
 	Metrics      []cve5MetricEntry `json:"metrics"`
@@ -211,10 +212,10 @@ type cve5Reference struct {
 	Tags []string `json:"tags"`
 }
 
-type cve5Affected struct {
+// cve5AffectedCPEs reads only the CPE list from an affected[] entry.
+// feed.ParseCNAAffected reads the product and version fields from the same array.
+type cve5AffectedCPEs struct {
 	CPEs []string `json:"cpes"`
-	// Versions is polymorphic across CVE 5.0 history; not parsed into CanonicalPatch.
-	Versions json.RawMessage `json:"versions"`
 }
 
 type cve5ProblemType struct {
@@ -309,8 +310,14 @@ func parseCVE5(r io.Reader) (*feed.CanonicalPatch, error) {
 	}
 
 	// CPEs from affected[].cpes (deduplicated by normalized form).
+	var affectedCPEs []cve5AffectedCPEs
+	if len(cna.Affected) > 0 {
+		if err := json.Unmarshal(cna.Affected, &affectedCPEs); err != nil {
+			slog.Warn("skipping malformed CNA CPE list", "feed", SourceName, "cve_id", meta.CVEID, "error", err)
+		}
+	}
 	cpeSeen := make(map[string]struct{})
-	for _, aff := range cna.Affected {
+	for _, aff := range affectedCPEs {
 		for _, cpeStr := range aff.CPEs {
 			normalized := strings.ToLower(strings.Clone(feed.StripNullBytes(cpeStr)))
 			if _, ok := cpeSeen[normalized]; ok {
@@ -323,6 +330,9 @@ func parseCVE5(r io.Reader) (*feed.CanonicalPatch, error) {
 			})
 		}
 	}
+
+	// CNA product and version data, as the CNA sent it.
+	patch.CNAAffected = feed.ParseCNAAffected(cna.Affected, patch.CVEID)
 
 	// CVSS: prefer CNA metrics, fall back to first ADP that has scores.
 	applyCVSS(patch, cna.Metrics)
@@ -376,4 +386,3 @@ func applyCVSS(patch *feed.CanonicalPatch, metrics []cve5MetricEntry) {
 		}
 	}
 }
-

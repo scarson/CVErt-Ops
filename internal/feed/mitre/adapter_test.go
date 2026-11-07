@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -457,6 +458,155 @@ func TestParseCVE5_AffectedCPEs(t *testing.T) {
 		}
 		if patch.AffectedCPEs[0].CPENormalized != "cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*" {
 			t.Errorf("CPENormalized = %q, want lowercase", patch.AffectedCPEs[0].CPENormalized)
+		}
+	})
+}
+
+func TestParseCVE5_CNAAffected(t *testing.T) {
+	t.Parallel()
+
+	parseAffected := func(t *testing.T, affected string) []feed.CNAAffected {
+		t.Helper()
+		patch, err := parseCVE5(strings.NewReader(`{
+			"cveMetadata": {"cveId": "CVE-2024-0020", "state": "PUBLISHED"},
+			"containers": {"cna": {"affected": ` + affected + `}}
+		}`))
+		if err != nil {
+			t.Fatalf("parseCVE5: %v", err)
+		}
+		if patch == nil {
+			t.Fatal("parseCVE5 returned nil patch")
+		}
+		return patch.CNAAffected
+	}
+
+	t.Run("entry identified only by package", func(t *testing.T) {
+		t.Parallel()
+
+		// Trimmed from the real CVE-2013-0340 record, which names no vendor or product.
+		got := parseAffected(t, `[{
+			"collectionURL": "https://github.com/libexpat/libexpat/",
+			"packageName": "libexpat",
+			"defaultStatus": "unaffected",
+			"versions": [{"status": "affected", "version": "0", "lessThan": "2.4.0", "versionType": "semver"}]
+		}]`)
+
+		want := []feed.CNAAffected{{
+			PackageName:   "libexpat",
+			CollectionURL: "https://github.com/libexpat/libexpat/",
+			DefaultStatus: "unaffected",
+			Versions:      []feed.CNAVersion{{Version: "0", LessThan: "2.4.0", Status: "affected", VersionType: "semver"}},
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CNAAffected = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("version changes kept", func(t *testing.T) {
+		t.Parallel()
+
+		// Trimmed from the real CVE-2024-0007 record.
+		got := parseAffected(t, `[{
+			"vendor": "Palo Alto Networks",
+			"product": "PAN-OS",
+			"versions": [{
+				"changes": [{"at": "8.1.24-h1", "status": "unaffected"}],
+				"lessThan": "8.1.24-h1", "status": "affected", "version": "8.1", "versionType": "custom"
+			}]
+		}]`)
+
+		want := []feed.CNAVersionChange{{At: "8.1.24-h1", Status: "unaffected"}}
+		if len(got) != 1 || len(got[0].Versions) != 1 || !reflect.DeepEqual(got[0].Versions[0].Changes, want) {
+			t.Errorf("CNAAffected = %+v, want changes %+v", got, want)
+		}
+	})
+
+	t.Run("entry with no versions keeps its default status", func(t *testing.T) {
+		t.Parallel()
+
+		got := parseAffected(t, `[{"vendor": "Acme", "product": "Widget", "defaultStatus": "affected"}]`)
+
+		want := []feed.CNAAffected{{Vendor: "Acme", Product: "Widget", DefaultStatus: "affected"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CNAAffected = %+v, want %+v", got, want)
+		}
+	})
+
+	// With its versions gone, "defaultStatus: unaffected" would call an affected
+	// product unaffected, so the status goes too.
+	t.Run("malformed versions lose that entry's versions and default status, not the CVE", func(t *testing.T) {
+		t.Parallel()
+
+		got := parseAffected(t, `[
+			{"vendor": "Acme", "product": "Widget", "defaultStatus": "unaffected", "versions": "all"},
+			{"vendor": "Acme", "product": "Gadget", "defaultStatus": "unaffected", "versions": [{"version": 7, "status": "affected"}]},
+			{"vendor": "Acme", "product": "Gizmo", "defaultStatus": "unaffected", "versions": [{"version": "1.0", "status": "affected"}]}
+		]`)
+
+		want := []feed.CNAAffected{
+			{Vendor: "Acme", Product: "Widget"},
+			{Vendor: "Acme", Product: "Gadget"},
+			{Vendor: "Acme", Product: "Gizmo", DefaultStatus: "unaffected", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CNAAffected = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("a malformed entry or array does not lose the CVE", func(t *testing.T) {
+		t.Parallel()
+
+		got := parseAffected(t, `[{"vendor": 123, "product": "Widget"}, {"vendor": "Acme", "product": "Gizmo"}]`)
+		want := []feed.CNAAffected{{Vendor: "Acme", Product: "Gizmo"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CNAAffected = %+v, want %+v", got, want)
+		}
+
+		if got := parseAffected(t, `"not an array"`); len(got) != 0 {
+			t.Errorf("CNAAffected = %+v, want none", got)
+		}
+	})
+
+	t.Run("entry with no identity and no versions is skipped", func(t *testing.T) {
+		t.Parallel()
+
+		got := parseAffected(t, `[{"cpes": ["cpe:2.3:a:vendor:product:1.0:*:*:*:*:*:*:*"]}]`)
+
+		if len(got) != 0 {
+			t.Errorf("CNAAffected = %+v, want none", got)
+		}
+	})
+
+	t.Run("null bytes stripped", func(t *testing.T) {
+		t.Parallel()
+
+		got := parseAffected(t, `[{
+			"vendor": "Ac\u0000me", "product": "Wid\u0000get", "packageName": "wid\u0000get",
+			"collectionURL": "https://ex\u0000ample.com", "defaultStatus": "unaff\u0000ected",
+			"versions": [{
+				"version": "1\u0000.0", "lessThan": "2\u0000.0", "lessThanOrEqual": "3\u0000.0",
+				"status": "aff\u0000ected", "versionType": "sem\u0000ver",
+				"changes": [{"at": "1\u0000.5", "status": "unaff\u0000ected"}]
+			}]
+		}]`)
+
+		want := []feed.CNAAffected{{
+			Vendor:        "Acme",
+			Product:       "Widget",
+			PackageName:   "widget",
+			CollectionURL: "https://example.com",
+			DefaultStatus: "unaffected",
+			Versions: []feed.CNAVersion{{
+				Version:         "1.0",
+				LessThan:        "2.0",
+				LessThanOrEqual: "3.0",
+				Status:          "affected",
+				VersionType:     "semver",
+				Changes:         []feed.CNAVersionChange{{At: "1.5", Status: "unaffected"}},
+			}},
+		}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CNAAffected = %+v, want %+v", got, want)
 		}
 	})
 }

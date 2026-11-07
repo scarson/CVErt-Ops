@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS cve_cna_affected CASCADE;
+DROP TABLE IF EXISTS cve_cpe_matches CASCADE;

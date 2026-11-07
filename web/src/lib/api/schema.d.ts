@@ -2085,6 +2085,38 @@ export interface components {
             google: boolean;
             registration_mode: string;
         };
+        CNAAffectedResponse: {
+            collection_url?: string;
+            /** @description Status of versions the versions list does not mention: affected, unaffected or unknown. */
+            default_status?: string;
+            package_name?: string;
+            product?: string;
+            vendor?: string;
+            versions: components["schemas"]["CNAVersionResponse"][] | null;
+        };
+        CNAVersionChangeResponse: {
+            at?: string;
+            status?: string;
+        };
+        CNAVersionResponse: {
+            /** @description Versions inside the range where status stops applying, such as a backported fix. */
+            changes?: components["schemas"]["CNAVersionChangeResponse"][] | null;
+            less_than?: string;
+            less_than_or_equal?: string;
+            /** @description affected, unaffected or unknown. */
+            status?: string;
+            /** @description Start of the range when less_than or less_than_or_equal is set, otherwise a single version. Free text unless version_type names a scheme. */
+            version?: string;
+            version_type?: string;
+        };
+        CPEMatchResponse: {
+            cpe: string;
+            cpe_normalized: string;
+            version_end_excluding?: string;
+            version_end_including?: string;
+            version_start_excluding?: string;
+            version_start_including?: string;
+        };
         CVEDetail: {
             /**
              * Format: uri
@@ -2092,8 +2124,13 @@ export interface components {
              * @example /api/v1/schemas/CVEDetail.json
              */
             readonly $schema?: string;
+            /** @description NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields. */
+            affected_cpe_matches: components["schemas"]["CPEMatchResponse"][] | null;
+            /** @description Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches. */
             affected_cpes: components["schemas"]["AffectedCPEResponse"][] | null;
             affected_packages: components["schemas"]["AffectedPackageResponse"][] | null;
+            /** @description Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none. */
+            cna_affected: components["schemas"]["CNAAffectedResponse"][] | null;
             cve_id: string;
             cvss_score_diverges: boolean;
             /** Format: double */

@@ -3,7 +3,10 @@
 package merge
 
 import (
+	"cmp"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"sort"
@@ -39,6 +42,11 @@ var (
 
 	// pkgPriority governs: affected package version ranges.
 	pkgPriority = []string{SourceOSV, SourceGHSA, SourceNVD, SourceMITRE, SourceRedHat, SourceMSRC}
+
+	// cnaPriority governs: CNA affected entries. MITRE holds the CNA's record and
+	// NVD relays a copy, so one source's entries are used whole: a union would keep
+	// both versions of an entry while one copy lags the other.
+	cnaPriority = []string{SourceMITRE, SourceNVD}
 )
 
 // ResolvedReference is a reference URL with a pre-computed canonical form
@@ -54,27 +62,29 @@ type ResolvedReference struct {
 // rules (PLAN.md §5.1 + §5.2).
 type ResolvedCVE struct {
 	// Scalar fields mapped to the cves table.
-	Status               string
-	DatePublished        *time.Time
+	Status                string
+	DatePublished         *time.Time
 	DateModifiedSourceMax *time.Time // max source_date_modified across all sources
-	DescriptionPrimary   *string
-	Severity             string
-	CVSSv3Score          *float64
-	CVSSv3Vector         string
-	CVSSv3Source         string // source_name that provided the winning v3 CVSS
-	CVSSv4Score          *float64
-	CVSSv4Vector         string
-	CVSSv4Source         string // source_name that provided the winning v4 CVSS
-	CVSSScoreDiverges    bool
-	CWEIDs               []string // sorted, deduped union across all sources
-	ExploitAvailable     bool
-	InCISAKEV            bool
-	IsWithdrawn          bool
+	DescriptionPrimary    *string
+	Severity              string
+	CVSSv3Score           *float64
+	CVSSv3Vector          string
+	CVSSv3Source          string // source_name that provided the winning v3 CVSS
+	CVSSv4Score           *float64
+	CVSSv4Vector          string
+	CVSSv4Source          string // source_name that provided the winning v4 CVSS
+	CVSSScoreDiverges     bool
+	CWEIDs                []string // sorted, deduped union across all sources
+	ExploitAvailable      bool
+	InCISAKEV             bool
+	IsWithdrawn           bool
 
 	// Child table data.
 	References       []ResolvedReference
 	AffectedPackages []feed.AffectedPackage
 	AffectedCPEs     []feed.AffectedCPE
+	CPEMatches       []feed.CPEMatch    // not a material_hash input
+	CNAAffected      []feed.CNAAffected // not a material_hash input
 }
 
 // resolve builds a ResolvedCVE from the given cve_sources rows by applying
@@ -271,7 +281,76 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 		}
 	}
 
+	r.CPEMatches = unionCPEMatches(patches)
+
+	var err error
+	if r.CNAAffected, err = resolveCNAAffected(patches); err != nil {
+		return ResolvedCVE{}, err
+	}
+
 	return r, nil
+}
+
+// unionCPEMatches returns every distinct CPE match across all sources, sorted so
+// the result does not depend on map iteration. NVD repeats whole entries across
+// configurations, and two entries that differ in any field are both kept.
+func unionCPEMatches(patches map[string]feed.CanonicalPatch) []feed.CPEMatch {
+	seen := make(map[feed.CPEMatch]struct{})
+	var matches []feed.CPEMatch
+	for _, p := range patches {
+		for _, m := range p.CPEMatches {
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			matches = append(matches, m)
+		}
+	}
+	slices.SortFunc(matches, func(a, b feed.CPEMatch) int {
+		return cmp.Or(
+			cmp.Compare(a.CPENormalized, b.CPENormalized),
+			cmp.Compare(a.CPE, b.CPE),
+			cmp.Compare(a.VersionStartIncluding, b.VersionStartIncluding),
+			cmp.Compare(a.VersionStartExcluding, b.VersionStartExcluding),
+			cmp.Compare(a.VersionEndIncluding, b.VersionEndIncluding),
+			cmp.Compare(a.VersionEndExcluding, b.VersionEndExcluding),
+			cmp.Compare(boolRank(a.Vulnerable), boolRank(b.Vulnerable)),
+		)
+	})
+	return matches
+}
+
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// resolveCNAAffected returns the distinct CNA affected entries of the
+// highest-priority source that has any, ordered by their JSON form. CNAs repeat
+// whole entries within one record.
+func resolveCNAAffected(patches map[string]feed.CanonicalPatch) ([]feed.CNAAffected, error) {
+	for _, src := range slices.Concat(cnaPriority, otherSources(patches, cnaPriority)) {
+		p, ok := patches[src]
+		if !ok || len(p.CNAAffected) == 0 {
+			continue
+		}
+		byKey := make(map[string]feed.CNAAffected, len(p.CNAAffected))
+		for _, a := range p.CNAAffected {
+			key, err := json.Marshal(a)
+			if err != nil {
+				return nil, fmt.Errorf("marshal CNA affected entry: %w", err)
+			}
+			byKey[string(key)] = a
+		}
+		entries := make([]feed.CNAAffected, 0, len(byKey))
+		for _, key := range slices.Sorted(maps.Keys(byKey)) {
+			entries = append(entries, byKey[key])
+		}
+		return entries, nil
+	}
+	return nil, nil
 }
 
 // firstStr returns the first non-empty string produced by field() when

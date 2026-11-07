@@ -765,6 +765,113 @@
         ],
         "type": "object"
       },
+      "CNAAffectedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "collection_url": {
+            "type": "string"
+          },
+          "default_status": {
+            "description": "Status of versions the versions list does not mention: affected, unaffected or unknown.",
+            "type": "string"
+          },
+          "package_name": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/CNAVersionResponse"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "versions"
+        ],
+        "type": "object"
+      },
+      "CNAVersionChangeResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CNAVersionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "description": "Versions inside the range where status stops applying, such as a backported fix.",
+            "items": {
+              "$ref": "#/components/schemas/CNAVersionChangeResponse"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "less_than": {
+            "type": "string"
+          },
+          "less_than_or_equal": {
+            "type": "string"
+          },
+          "status": {
+            "description": "affected, unaffected or unknown.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Start of the range when less_than or less_than_or_equal is set, otherwise a single version. Free text unless version_type names a scheme.",
+            "type": "string"
+          },
+          "version_type": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "CPEMatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cpe": {
+            "type": "string"
+          },
+          "cpe_normalized": {
+            "type": "string"
+          },
+          "version_end_excluding": {
+            "type": "string"
+          },
+          "version_end_including": {
+            "type": "string"
+          },
+          "version_start_excluding": {
+            "type": "string"
+          },
+          "version_start_including": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cpe",
+          "cpe_normalized"
+        ],
+        "type": "object"
+      },
       "CVEDetail": {
         "additionalProperties": false,
         "properties": {
@@ -777,7 +884,18 @@
             "readOnly": true,
             "type": "string"
           },
+          "affected_cpe_matches": {
+            "description": "NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields.",
+            "items": {
+              "$ref": "#/components/schemas/CPEMatchResponse"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "affected_cpes": {
+            "description": "Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches.",
             "items": {
               "$ref": "#/components/schemas/AffectedCPEResponse"
             },
@@ -789,6 +907,16 @@
           "affected_packages": {
             "items": {
               "$ref": "#/components/schemas/AffectedPackageResponse"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "cna_affected": {
+            "description": "Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none.",
+            "items": {
+              "$ref": "#/components/schemas/CNAAffectedResponse"
             },
             "type": [
               "array",
@@ -865,6 +993,8 @@
         "required": [
           "affected_packages",
           "affected_cpes",
+          "affected_cpe_matches",
+          "cna_affected",
           "references",
           "cve_id",
           "date_modified",

@@ -74,6 +74,8 @@ type CanonicalPatch struct {
 	References         []ReferenceEntry  `json:"references,omitempty"`
 	AffectedPackages   []AffectedPackage `json:"affected_packages,omitempty"`
 	AffectedCPEs       []AffectedCPE     `json:"affected_cpes,omitempty"`
+	CPEMatches         []CPEMatch        `json:"cpe_matches,omitempty"`
+	CNAAffected        []CNAAffected     `json:"cna_affected,omitempty"`
 	VendorEnrichment   *VendorEnrichment `json:"vendor_enrichment,omitempty"`
 	IsWithdrawn        bool              `json:"is_withdrawn,omitempty"`
 	// RawPayload is the unmodified upstream JSON for this specific CVE record.
@@ -117,4 +119,52 @@ type AffectedPackage struct {
 type AffectedCPE struct {
 	CPE           string `json:"cpe"`
 	CPENormalized string `json:"cpe_normalized"`
+}
+
+// CPEMatch is one NVD configurations cpeMatch entry. NVD repeats a criteria
+// string with a different range per release branch, so a CVE can hold several
+// CPEMatch values for one AffectedCPE. Vulnerable is false for a "running on"
+// platform that only qualifies another CPE in the configuration. CPEMatch is not
+// a material_hash input.
+type CPEMatch struct {
+	CPE                   string `json:"cpe"`
+	CPENormalized         string `json:"cpe_normalized"`
+	VersionStartIncluding string `json:"version_start_including,omitempty"`
+	VersionStartExcluding string `json:"version_start_excluding,omitempty"`
+	VersionEndIncluding   string `json:"version_end_including,omitempty"`
+	VersionEndExcluding   string `json:"version_end_excluding,omitempty"`
+	Vulnerable            bool   `json:"vulnerable"`
+}
+
+// CNAAffected is one CVE 5 containers.cna.affected[] entry, with fields as the
+// CNA sent them. CVE 5 requires either vendor and product, or collectionURL and
+// packageName, so any of the identifying fields can be empty. DefaultStatus
+// applies to versions the Versions list does not mention. CNAAffected is not a
+// material_hash input.
+type CNAAffected struct {
+	Vendor        string       `json:"vendor,omitempty"`
+	Product       string       `json:"product,omitempty"`
+	PackageName   string       `json:"package_name,omitempty"`
+	CollectionURL string       `json:"collection_url,omitempty"`
+	DefaultStatus string       `json:"default_status,omitempty"`
+	Versions      []CNAVersion `json:"versions,omitempty"`
+}
+
+// CNAVersion is one CVE 5 versions[] element. Version is free text unless
+// VersionType names a scheme. Changes lists the versions inside the range where
+// Status stops applying, such as a backported fix.
+type CNAVersion struct {
+	Version         string             `json:"version,omitempty"`
+	LessThan        string             `json:"less_than,omitempty"`
+	LessThanOrEqual string             `json:"less_than_or_equal,omitempty"`
+	Status          string             `json:"status,omitempty"`
+	VersionType     string             `json:"version_type,omitempty"`
+	Changes         []CNAVersionChange `json:"changes,omitempty"`
+}
+
+// CNAVersionChange is one CVE 5 versions[].changes[] element: from At onward
+// within the enclosing range, the status is Status.
+type CNAVersionChange struct {
+	At     string `json:"at,omitempty"`
+	Status string `json:"status,omitempty"`
 }

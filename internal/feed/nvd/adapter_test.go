@@ -770,6 +770,53 @@ func TestCveToCanonical(t *testing.T) {
 	})
 }
 
+func TestCveToCanonical_MalformedAffectedKeepsTheCVE(t *testing.T) {
+	t.Parallel()
+
+	for _, affected := range []string{`"not an array"`, `[{"source": 7}]`} {
+		p := cveToCanonical(nvdCVE{
+			ID:               "CVE-2024-5008",
+			SourceIdentifier: "cna@example.com",
+			Affected:         json.RawMessage(affected),
+		})
+		if p == nil || p.CVEID != "CVE-2024-5008" {
+			t.Fatalf("affected %s: patch = %+v, want the CVE kept", affected, p)
+		}
+		if len(p.CNAAffected) != 0 {
+			t.Errorf("affected %s: CNAAffected = %+v, want none", affected, p.CNAAffected)
+		}
+	}
+}
+
+func TestCveToCanonical_CPEMatchesStripNullBytes(t *testing.T) {
+	t.Parallel()
+
+	p := cveToCanonical(nvdCVE{
+		ID: "CVE-2024-5007",
+		Configurations: []nvdConfig{{Nodes: []nvdNode{{CPEMatch: []nvdCPEMatch{{
+			Criteria:              "cpe:2.3:a:vendor:\x00product:*:*:*:*:*:*:*:*",
+			VersionStartIncluding: "1.\x000",
+			VersionStartExcluding: "1.\x001",
+			VersionEndIncluding:   "2.\x000",
+			VersionEndExcluding:   "2.\x001",
+			Vulnerable:            true,
+		}}}}}},
+	})
+
+	want := feed.CPEMatch{
+		CPE:                   "cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*",
+		CPENormalized:         "cpe:2.3:a:vendor:product:*:*:*:*:*:*:*:*",
+		VersionStartIncluding: "1.0",
+		VersionStartExcluding: "1.1",
+		VersionEndIncluding:   "2.0",
+		VersionEndExcluding:   "2.1",
+		Vulnerable:            true,
+	}
+	if len(p.CPEMatches) != 1 || p.CPEMatches[0] != want {
+		t.Errorf("CPEMatches = %+v, want [%+v]", p.CPEMatches, want)
+	}
+}
+
 func TestCveToCanonical_NullByteStripping(t *testing.T) {
 	t.Parallel()
 

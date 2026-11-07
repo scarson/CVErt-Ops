@@ -319,6 +319,18 @@ type nvdCVE struct {
 	Weaknesses     []nvdWeakness    `json:"weaknesses"`
 	Configurations []nvdConfig      `json:"configurations"`
 	References     []nvdReference   `json:"references"`
+	// SourceIdentifier names the CVE's CNA, which is one of the sources in Affected.
+	SourceIdentifier string `json:"sourceIdentifier"`
+	// Affected stays raw so that malformed data costs the product data and not
+	// the whole CVE: see cnaAffected.
+	Affected json.RawMessage `json:"affected,omitempty"`
+}
+
+// nvdAffected is one element of cve.affected[]: a source and that source's copy
+// of a CVE 5 affected[] array.
+type nvdAffected struct {
+	Source       string          `json:"source"`
+	AffectedData json.RawMessage `json:"affectedData"`
 }
 
 type nvdDescription struct {
@@ -359,9 +371,13 @@ type nvdNode struct {
 }
 
 type nvdCPEMatch struct {
-	Criteria        string `json:"criteria"`
-	MatchCriteriaID string `json:"matchCriteriaId"`
-	Vulnerable      bool   `json:"vulnerable"`
+	Criteria              string `json:"criteria"`
+	MatchCriteriaID       string `json:"matchCriteriaId"`
+	Vulnerable            bool   `json:"vulnerable"`
+	VersionStartIncluding string `json:"versionStartIncluding,omitempty"`
+	VersionStartExcluding string `json:"versionStartExcluding,omitempty"`
+	VersionEndIncluding   string `json:"versionEndIncluding,omitempty"`
+	VersionEndExcluding   string `json:"versionEndExcluding,omitempty"`
 }
 
 type nvdReference struct {
@@ -508,7 +524,9 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		})
 	}
 
-	// CPEs from configurations (deduplicated by normalized form).
+	// CPEs from configurations. AffectedCPEs holds each criteria string once and
+	// includes vulnerable: false entries, because it is a material_hash input and
+	// what CPE watchlist items match. CPEMatches holds every entry with its range.
 	cpeSeen := make(map[string]struct{})
 	for _, cfg := range cve.Configurations {
 		for _, node := range cfg.Nodes {
@@ -517,6 +535,15 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 					continue
 				}
 				normalized := strings.ToLower(strings.Clone(feed.StripNullBytes(match.Criteria)))
+				patch.CPEMatches = append(patch.CPEMatches, feed.CPEMatch{
+					CPE:                   strings.Clone(feed.StripNullBytes(match.Criteria)),
+					CPENormalized:         normalized,
+					VersionStartIncluding: strings.Clone(feed.StripNullBytes(match.VersionStartIncluding)),
+					VersionStartExcluding: strings.Clone(feed.StripNullBytes(match.VersionStartExcluding)),
+					VersionEndIncluding:   strings.Clone(feed.StripNullBytes(match.VersionEndIncluding)),
+					VersionEndExcluding:   strings.Clone(feed.StripNullBytes(match.VersionEndExcluding)),
+					Vulnerable:            match.Vulnerable,
+				})
 				if _, ok := cpeSeen[normalized]; ok {
 					continue
 				}
@@ -529,11 +556,35 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		}
 	}
 
+	patch.CNAAffected = cnaAffected(cve)
+
 	// CVSS: prefer v3.1 over v3.0; add v4.0 if available.
 	// NVD source "nvd@nist.gov" is preferred; use first entry if no NVD source.
 	applyNVDCVSS(patch, cve.Metrics)
 
 	return patch
+}
+
+// cnaAffected returns the CNA's product and version data that NVD relays in
+// cve.affected[], which is present before NVD analyses a CVE. The element whose
+// source is the CVE's sourceIdentifier is the CNA's own; other elements come from
+// other organisations and are skipped.
+func cnaAffected(cve nvdCVE) []feed.CNAAffected {
+	if len(cve.Affected) == 0 || cve.SourceIdentifier == "" {
+		return nil
+	}
+	var relayed []nvdAffected
+	if err := json.Unmarshal(cve.Affected, &relayed); err != nil {
+		slog.Warn("skipping malformed affected array", "feed", SourceName, "cve_id", cve.ID, "error", err)
+		return nil
+	}
+	var entries []feed.CNAAffected
+	for _, r := range relayed {
+		if r.Source == cve.SourceIdentifier {
+			entries = append(entries, feed.ParseCNAAffected(r.AffectedData, cve.ID)...)
+		}
+	}
+	return entries
 }
 
 // applyNVDCVSS sets CVSS fields on patch, preferring v3.1 over v3.0 and the

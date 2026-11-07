@@ -36,8 +36,8 @@ type FetchResult struct {
 	NextCursor json.RawMessage
 	// LastPage signals that this is the final page of results for this run.
 	// The caller should persist NextCursor but not call Fetch again.
-	// Single-Fetch adapters (KEV, MITRE, GHSA, OSV, MSRC) always set this to true.
-	// True paginators (NVD, Red Hat) set it on their final page.
+	// Single-Fetch adapters (KEV, GHSA, OSV, MSRC) always set this to true.
+	// True paginators (NVD, Red Hat, MITRE) set it on their final page.
 	// The zero value (false) is safe — it means "keep paginating," so forgetting
 	// to set it produces correct-but-wasteful behavior, never data loss.
 	LastPage bool

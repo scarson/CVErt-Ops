@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -51,8 +50,8 @@ func buildOSVArchive(t *testing.T, count int) []byte {
 
 // A first OSV backfill with more entries than one page stops at the job time
 // limit after a page, and the next job resumes the pass where it stopped and
-// completes it. Every CVE is merged once, and the final cursor is the
-// incremental cursor at the time the pass began.
+// completes it. Every CVE is merged once, and the final cursor sits just before
+// the latest entry time of the archive the pass started on.
 func TestFeedHandler_OSVBackfillContinuesAcrossJobs(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	captureLogs(t)
@@ -77,7 +76,6 @@ func TestFeedHandler_OSVBackfillContinuesAcrossJobs(t *testing.T) {
 	payload, _ := json.Marshal(Payload{FeedName: "osv"})
 
 	// First job: one page, then the time limit ends the run.
-	jobStart := time.Now().UTC()
 	if err := handler(nearDeadlineContext(t), payload); err != nil {
 		t.Fatalf("first job: %v", err)
 	}
@@ -89,7 +87,7 @@ func TestFeedHandler_OSVBackfillContinuesAcrossJobs(t *testing.T) {
 	if err := json.Unmarshal(state.CursorJSON, &mid); err != nil {
 		t.Fatalf("unmarshal cursor %s: %v", state.CursorJSON, err)
 	}
-	if mid.ResumeAfter == "" || mid.PassStartedAt.Before(jobStart) {
+	if mid.ResumeAfter == "" || mid.Snapshot.IsZero() {
 		t.Fatalf("cursor after first job = %s, want a mid-pass cursor from this pass", state.CursorJSON)
 	}
 	if state.LastSuccessAt != nil {
@@ -114,8 +112,8 @@ func TestFeedHandler_OSVBackfillContinuesAcrossJobs(t *testing.T) {
 	if err := json.Unmarshal(state.CursorJSON, &final); err != nil {
 		t.Fatalf("unmarshal cursor %s: %v", state.CursorJSON, err)
 	}
-	if !final.LastModified.Equal(mid.PassStartedAt) || !final.PassStartedAt.IsZero() || final.ResumeAfter != "" {
-		t.Errorf("final cursor = %s, want only last_modified at the pass start %v", state.CursorJSON, mid.PassStartedAt)
+	if !final.LastModified.Before(mid.Snapshot) || !final.Snapshot.IsZero() || final.ResumeAfter != "" {
+		t.Errorf("final cursor = %s, want only last_modified just before the pass's snapshot %v", state.CursorJSON, mid.Snapshot)
 	}
 
 	seen := make(map[string]int, total)

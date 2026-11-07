@@ -1,5 +1,5 @@
 // ABOUTME: Pages a feed published as one ZIP archive, so a pass larger than one worker job resumes in the next job.
-// ABOUTME: Used by the OSV adapter; the cursor records the pass start time and the last entry name read.
+// ABOUTME: Used by the OSV adapter; the cursor records the archive snapshot time and the last entry name read.
 package feed
 
 import (
@@ -22,19 +22,27 @@ import (
 // page reserve.
 const ArchivePageSize = 1000
 
+// archiveTimeResolution is the precision of a ZIP entry's modified time: the
+// MS-DOS time field counts in two-second steps. A pass ends with its cursor one
+// step before the latest record time it saw, so a record changed within that
+// same step after the archive was generated is read by the next pass.
+const archiveTimeResolution = 2 * time.Second
+
 // ArchiveCursor is the sync state of a feed published as one ZIP archive.
 //
-// Between passes it holds only LastModified, the download time of the archive
-// that began the last completed pass. During a pass it also holds PassStartedAt
-// and ResumeAfter, so a later job can continue the pass from a new download.
+// Between passes it holds only LastModified. During a pass it also holds
+// Snapshot and ResumeAfter, so a later job can continue the pass from a new
+// download.
 type ArchiveCursor struct {
 	// LastModified is the baseline of the current pass: entries modified at or
 	// before it are skipped. Zero on a first pass, which reads every entry.
 	LastModified time.Time `json:"last_modified"`
-	// PassStartedAt is the download time of the archive that began the current
-	// pass. It becomes LastModified when the pass ends, so every upstream change
-	// made after the pass began is read by the next pass.
-	PassStartedAt time.Time `json:"pass_started_at,omitzero"`
+	// Snapshot is the latest record modified time in the archive that began the
+	// current pass. The archive was generated before it was downloaded, so a
+	// record changed after Snapshot may be missing from it even if it changed
+	// before the download; the next pass therefore starts from Snapshot, less
+	// archiveTimeResolution, not from the download time.
+	Snapshot time.Time `json:"snapshot,omitzero"`
 	// ResumeAfter is the name of the last entry read by the last completed page.
 	// The pass continues with entries whose names sort after it.
 	ResumeAfter string `json:"resume_after,omitempty"`
@@ -71,6 +79,7 @@ type downloadedArchive struct {
 	file      *os.File
 	entries   []*zip.File // record entries, sorted by name
 	fetchedAt time.Time
+	latest    time.Time // latest record modified time; zero with no records
 }
 
 // Fetch returns the next page of the pass that cursorJSON describes, or the
@@ -86,8 +95,8 @@ func (p *ArchivePager) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*
 		}
 	}
 	resuming := cur.ResumeAfter != ""
-	if resuming && cur.PassStartedAt.IsZero() {
-		return nil, fmt.Errorf("%s: cursor resumes after %q but has no pass_started_at", p.SourceName, cur.ResumeAfter)
+	if resuming && cur.Snapshot.IsZero() {
+		return nil, fmt.Errorf("%s: cursor resumes after %q but has no snapshot", p.SourceName, cur.ResumeAfter)
 	}
 
 	// A new pass reads the current archive, never one held from an earlier pass.
@@ -102,9 +111,9 @@ func (p *ArchivePager) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*
 		}
 	}
 
-	passStartedAt := p.archive.fetchedAt
+	snapshot := p.archive.latest
 	if resuming {
-		passStartedAt = cur.PassStartedAt
+		snapshot = cur.Snapshot
 	}
 
 	entries := p.archive.entries
@@ -142,12 +151,19 @@ func (p *ArchivePager) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*
 		Patches:    patches,
 		SourceMeta: SourceMeta{SourceName: p.SourceName, FetchedAt: p.archive.fetchedAt},
 	}
-	next := ArchiveCursor{LastModified: passStartedAt}
+	// The pass ends one time step before the snapshot. With no records there is
+	// no snapshot, and the baseline stays where it was. The next baseline can be
+	// earlier than this one: a baseline later than every entry in the archive,
+	// such as a download time, would otherwise skip the archive on every pass.
+	next := ArchiveCursor{LastModified: cur.LastModified}
+	if !snapshot.IsZero() {
+		next.LastModified = snapshot.Add(-archiveTimeResolution)
+	}
 	if i < len(entries) {
 		next = ArchiveCursor{
-			LastModified:  cur.LastModified,
-			PassStartedAt: passStartedAt,
-			ResumeAfter:   entries[i-1].Name,
+			LastModified: cur.LastModified,
+			Snapshot:     snapshot,
+			ResumeAfter:  entries[i-1].Name,
 		}
 	} else {
 		result.LastPage = true
@@ -183,7 +199,13 @@ func (p *ArchivePager) download(ctx context.Context) error {
 		_ = os.Remove(f.Name()) //nolint:gosec // G703: path from os.CreateTemp
 		return err
 	}
-	p.archive = &downloadedArchive{file: f, entries: entries, fetchedAt: fetchedAt}
+	var latest time.Time
+	for _, e := range entries {
+		if e.Modified.After(latest) {
+			latest = e.Modified
+		}
+	}
+	p.archive = &downloadedArchive{file: f, entries: entries, fetchedAt: fetchedAt, latest: latest}
 	return nil
 }
 

@@ -8,8 +8,12 @@
 // Cursor format: feed.ArchiveCursor. Between passes it is
 // {"last_modified": "2024-01-15T10:00:00Z"}, and the adapter pre-filters ZIP
 // entries via FileHeader.Modified, parsing only entries newer than it. During a
-// pass the cursor also holds the pass start time and the last entry name read,
-// so a pass larger than one worker job continues in the next job.
+// pass the cursor also holds the latest entry time of the archive the pass
+// started on and the last entry name read, so a pass larger than one worker job
+// continues in the next job.
+//
+// all.zip stamps every entry with the same zero MS-DOS time, so the pre-filter
+// selects every entry and each pass reads the whole archive.
 //
 // Alias resolution: if aliases[] contains a CVE ID, it becomes the canonical
 // cve_id. The native OSV/GHSA/RUSTSEC ID becomes source_id. The merge pipeline

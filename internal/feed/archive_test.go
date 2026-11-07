@@ -144,23 +144,25 @@ func fetchPage(t *testing.T, p *ArchivePager, cursor json.RawMessage) *FetchResu
 var archiveEpoch = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // A full pass is split into pages in entry-name order, with one download per
-// job. Each page's cursor records where to resume and when the pass began; the
-// last page's cursor is the plain incremental cursor at the pass start.
+// job. Each page's cursor records where to resume and the latest entry time in
+// the archive the pass started on; the last page's cursor is the plain
+// incremental cursor at that time.
 func TestArchivePager_SplitsPassIntoPages(t *testing.T) {
 	t.Parallel()
-	// Stored out of name order; pages follow name order.
+	latest := archiveEpoch.Add(3 * time.Hour)
+	// Stored out of name order; pages follow name order. The README is not a
+	// record, so its later time is not the archive's latest entry time.
 	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{
 		entry("a/5.json", archiveEpoch),
 		entry("a/1.json", archiveEpoch),
-		entry("a/4.json", archiveEpoch),
-		{name: "README.md", content: "not an entry", modified: archiveEpoch},
+		entry("a/4.json", latest),
+		{name: "README.md", content: "not an entry", modified: latest.Add(time.Hour)},
 		entry("a/2.json", archiveEpoch),
 		{name: "a/3.json", content: "{not json", modified: archiveEpoch},
 	}))
 	pager := newTestPager(srv, 2)
 	t.Cleanup(func() { _ = pager.Close() })
 
-	before := time.Now().UTC()
 	page1 := fetchPage(t, pager, nil)
 	if got, want := patchIDs(page1), []string{"a/1.json", "a/2.json"}; !slices.Equal(got, want) {
 		t.Fatalf("page 1 = %v, want %v", got, want)
@@ -172,8 +174,8 @@ func TestArchivePager_SplitsPassIntoPages(t *testing.T) {
 	if c1.ResumeAfter != "a/2.json" {
 		t.Errorf("page 1 ResumeAfter = %q, want a/2.json", c1.ResumeAfter)
 	}
-	if c1.PassStartedAt.Before(before) || !c1.PassStartedAt.Equal(page1.SourceMeta.FetchedAt) {
-		t.Errorf("page 1 PassStartedAt = %v, want the download time %v", c1.PassStartedAt, page1.SourceMeta.FetchedAt)
+	if !c1.Snapshot.Equal(latest) {
+		t.Errorf("page 1 Snapshot = %v, want the latest record time %v", c1.Snapshot, latest)
 	}
 	if !c1.LastModified.IsZero() {
 		t.Errorf("page 1 LastModified = %v, want zero: a first pass has no baseline", c1.LastModified)
@@ -188,9 +190,9 @@ func TestArchivePager_SplitsPassIntoPages(t *testing.T) {
 		t.Fatal("page 2 reached the end of the archive and is not marked as the last page")
 	}
 	final := decodeArchiveCursor(t, page2.NextCursor)
-	want := ArchiveCursor{LastModified: c1.PassStartedAt}
-	if !final.LastModified.Equal(want.LastModified) || !final.PassStartedAt.IsZero() || final.ResumeAfter != "" {
-		t.Errorf("final cursor = %+v, want %+v", final, want)
+	want := latest.Add(-archiveTimeResolution)
+	if !final.LastModified.Equal(want) || !final.Snapshot.IsZero() || final.ResumeAfter != "" {
+		t.Errorf("final cursor = %s, want only last_modified at %v", page2.NextCursor, want)
 	}
 	if srv.downloadCount() != 1 {
 		t.Errorf("downloads = %d, want 1: pages of one job share the archive", srv.downloadCount())
@@ -198,8 +200,8 @@ func TestArchivePager_SplitsPassIntoPages(t *testing.T) {
 }
 
 // A later job resumes after the saved entry name, from a new download, and keeps
-// the pass's start time, so the final cursor covers every change made upstream
-// since the pass began.
+// the snapshot of the archive the pass started on, so the final cursor covers
+// every change made upstream since that archive.
 func TestArchivePager_ResumesInNewJob(t *testing.T) {
 	t.Parallel()
 	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{
@@ -213,8 +215,14 @@ func TestArchivePager_ResumesInNewJob(t *testing.T) {
 	if err := job1.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	passStart := decodeArchiveCursor(t, page1.NextCursor).PassStartedAt
+	snapshot := decodeArchiveCursor(t, page1.NextCursor).Snapshot
 
+	// The archive the second job downloads has a later entry.
+	srv.replace(buildTestArchive(t, []testArchiveEntry{
+		entry("a/1.json", archiveEpoch),
+		entry("a/2.json", archiveEpoch),
+		entry("a/3.json", archiveEpoch.Add(2*time.Hour)),
+	}))
 	job2 := newTestPager(srv, 2)
 	t.Cleanup(func() { _ = job2.Close() })
 	page2 := fetchPage(t, job2, page1.NextCursor)
@@ -228,23 +236,24 @@ func TestArchivePager_ResumesInNewJob(t *testing.T) {
 		t.Errorf("downloads = %d, want 2: a new job downloads the archive again", srv.downloadCount())
 	}
 	final := decodeArchiveCursor(t, page2.NextCursor)
-	if !final.LastModified.Equal(passStart) {
-		t.Errorf("final LastModified = %v, want the pass start %v, not the second download time", final.LastModified, passStart)
+	if !snapshot.Equal(archiveEpoch) {
+		t.Errorf("Snapshot = %v, want the first archive's latest record time %v", snapshot, archiveEpoch)
 	}
-	if !page2.SourceMeta.FetchedAt.After(passStart) && !page2.SourceMeta.FetchedAt.Equal(passStart) {
-		t.Errorf("FetchedAt = %v, want this job's download time", page2.SourceMeta.FetchedAt)
+	if want := snapshot.Add(-archiveTimeResolution); !final.LastModified.Equal(want) {
+		t.Errorf("final LastModified = %v, want %v from the first archive's snapshot, not the second archive's", final.LastModified, want)
 	}
 }
 
 // When the upstream archive changes between jobs, the resumed pass reads the new
 // archive after the resume key. A change behind the key is not read in this
 // pass, and the next incremental run picks it up because its modified time is
-// later than the pass start.
+// later than the snapshot of the archive the pass started on.
 func TestArchivePager_UpstreamChangeBetweenJobs_NothingMissed(t *testing.T) {
 	t.Parallel()
+	older := archiveEpoch.Add(-24 * time.Hour)
 	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{
-		entry("a/1.json", archiveEpoch),
-		entry("a/3.json", archiveEpoch),
+		entry("a/1.json", older),
+		entry("a/3.json", older),
 		entry("a/5.json", archiveEpoch),
 	}))
 
@@ -256,12 +265,12 @@ func TestArchivePager_UpstreamChangeBetweenJobs_NothingMissed(t *testing.T) {
 	}
 
 	// Upstream adds a/2.json (behind the key) and a/4.json (ahead of it) and
-	// updates a/1.json, all after the pass started.
-	changed := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	// updates a/1.json, all after the archive the pass started on.
+	changed := archiveEpoch.Add(time.Hour)
 	srv.replace(buildTestArchive(t, []testArchiveEntry{
 		entry("a/1.json", changed),
 		entry("a/2.json", changed),
-		entry("a/3.json", archiveEpoch),
+		entry("a/3.json", older),
 		entry("a/4.json", changed),
 		entry("a/5.json", archiveEpoch),
 	}))
@@ -281,6 +290,86 @@ func TestArchivePager_UpstreamChangeBetweenJobs_NothingMissed(t *testing.T) {
 	next := fetchPage(t, job3, page2.NextCursor)
 	if got, want := patchIDs(next), []string{"a/1.json", "a/2.json"}; !slices.Equal(got, want) {
 		t.Fatalf("first page of the next pass = %v, want the entries changed behind the key %v", got, want)
+	}
+}
+
+// An archive is generated before it is downloaded. A record changed in that gap
+// is missing from the archive and stamped before the download, so the next pass
+// must start from the archive's own latest record time, not the download time.
+func TestArchivePager_ChangeBetweenGenerationAndDownload_ReadNextPass(t *testing.T) {
+	t.Parallel()
+	older := archiveEpoch.Add(-24 * time.Hour)
+	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{
+		entry("a/1.json", older),
+		entry("a/2.json", archiveEpoch),
+	}))
+	job1 := newTestPager(srv, 5)
+	pass1 := fetchPage(t, job1, nil)
+	_ = job1.Close()
+	if !pass1.LastPage {
+		t.Fatal("first pass did not end on its only page")
+	}
+
+	// Stamped after the first archive was generated, long before it was downloaded.
+	srv.replace(buildTestArchive(t, []testArchiveEntry{
+		entry("a/1.json", older),
+		entry("a/2.json", archiveEpoch),
+		entry("a/3.json", archiveEpoch.Add(30*time.Minute)),
+	}))
+	job2 := newTestPager(srv, 5)
+	t.Cleanup(func() { _ = job2.Close() })
+	pass2 := fetchPage(t, job2, pass1.NextCursor)
+	// a/2.json is the first archive's newest record, read again because the
+	// cursor sits one time step before it.
+	if got, want := patchIDs(pass2), []string{"a/2.json", "a/3.json"}; !slices.Equal(got, want) {
+		t.Fatalf("next pass = %v, want %v", got, want)
+	}
+}
+
+// An archive with no records ends the pass without moving the baseline.
+func TestArchivePager_NoRecords_KeepsBaseline(t *testing.T) {
+	t.Parallel()
+	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{
+		{name: "README.md", content: "not an entry", modified: archiveEpoch.Add(time.Hour)},
+	}))
+	cursor, _ := json.Marshal(ArchiveCursor{LastModified: archiveEpoch})
+	pager := newTestPager(srv, 2)
+	t.Cleanup(func() { _ = pager.Close() })
+
+	r := fetchPage(t, pager, cursor)
+	if len(r.Patches) != 0 || !r.LastPage {
+		t.Fatalf("got %d patches, LastPage=%v; want 0 patches on the last page", len(r.Patches), r.LastPage)
+	}
+	if c := decodeArchiveCursor(t, r.NextCursor); !c.LastModified.Equal(archiveEpoch) {
+		t.Errorf("final LastModified = %v, want the baseline %v", c.LastModified, archiveEpoch)
+	}
+}
+
+// OSV's export stamps every entry with the same zero DOS time. A cursor saved as
+// a download time is later than every entry time and selects nothing; the next
+// cursor follows the archive's own times instead, so the following pass reads
+// the archive again rather than never reading it.
+func TestArchivePager_BaselineAfterEveryEntryTime_NextPassReadsArchive(t *testing.T) {
+	t.Parallel()
+	dosZero := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{
+		entry("a/1.json", dosZero),
+		entry("a/2.json", dosZero),
+	}))
+	cursor, _ := json.Marshal(ArchiveCursor{LastModified: archiveEpoch})
+
+	job1 := newTestPager(srv, 5)
+	pass1 := fetchPage(t, job1, cursor)
+	_ = job1.Close()
+	if len(pass1.Patches) != 0 {
+		t.Fatalf("pass with a later baseline read %v, want nothing", patchIDs(pass1))
+	}
+
+	job2 := newTestPager(srv, 5)
+	t.Cleanup(func() { _ = job2.Close() })
+	pass2 := fetchPage(t, job2, pass1.NextCursor)
+	if got, want := patchIDs(pass2), []string{"a/1.json", "a/2.json"}; !slices.Equal(got, want) {
+		t.Fatalf("next pass = %v, want %v", got, want)
 	}
 }
 
@@ -330,8 +419,9 @@ func TestArchivePager_NothingNew_EmptyLastPage(t *testing.T) {
 	if len(r.Patches) != 0 || !r.LastPage {
 		t.Fatalf("got %d patches, LastPage=%v; want 0 patches on the last page", len(r.Patches), r.LastPage)
 	}
-	if c := decodeArchiveCursor(t, r.NextCursor); !c.LastModified.Equal(r.SourceMeta.FetchedAt) {
-		t.Errorf("final LastModified = %v, want the download time %v", c.LastModified, r.SourceMeta.FetchedAt)
+	want := archiveEpoch.Add(-archiveTimeResolution)
+	if c := decodeArchiveCursor(t, r.NextCursor); !c.LastModified.Equal(want) {
+		t.Errorf("final LastModified = %v, want one time step before the latest record time, %v", c.LastModified, want)
 	}
 }
 
@@ -417,7 +507,7 @@ func TestArchivePager_NewPassDownloadsAgain(t *testing.T) {
 	}
 }
 
-func TestArchivePager_RejectsResumeWithoutPassStart(t *testing.T) {
+func TestArchivePager_RejectsResumeWithoutSnapshot(t *testing.T) {
 	t.Parallel()
 	srv := newArchiveServer(t, buildTestArchive(t, []testArchiveEntry{entry("a/1.json", archiveEpoch)}))
 	pager := newTestPager(srv, 2)
@@ -425,7 +515,7 @@ func TestArchivePager_RejectsResumeWithoutPassStart(t *testing.T) {
 
 	_, err := pager.Fetch(context.Background(), json.RawMessage(`{"last_modified":"0001-01-01T00:00:00Z","resume_after":"a/1.json"}`))
 	if err == nil {
-		t.Fatal("Fetch accepted a resume cursor without pass_started_at")
+		t.Fatal("Fetch accepted a resume cursor without snapshot")
 	}
 	if srv.downloadCount() != 0 {
 		t.Errorf("downloads = %d, want 0: the cursor is checked first", srv.downloadCount())

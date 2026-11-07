@@ -736,6 +736,51 @@ func TestListDeliveries_Envelope(t *testing.T) {
 	}
 }
 
+// TestListDeliveries_FirstPageIncludesRowsAheadOfAppClock verifies that the first page
+// lists a delivery whose created_at, set by the database clock, is later than the app's
+// clock. The database host's clock can lead the app host's.
+func TestListDeliveries_FirstPageIncludesRowsAheadOfAppClock(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	orgID := mustParseUUID(t, aliceReg.OrgID)
+	channelID := createTestDelivery(t, ctx, db, orgID, "skew")
+	deliveryID := getDeliveryIDByChannel(t, ctx, db, orgID, channelID)
+
+	// Simulate a database clock 5 seconds ahead of the app clock.
+	if _, err := db.DB().ExecContext(ctx,
+		"UPDATE notification_deliveries SET created_at = now() + interval '5 seconds' WHERE id = $1",
+		deliveryID,
+	); err != nil {
+		t.Fatalf("move created_at ahead: %v", err)
+	}
+
+	resp := doListDeliveries(t, ctx, ts, token, aliceReg.OrgID, nil)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list deliveries: got %d, want 200", resp.StatusCode)
+	}
+
+	var envelope struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(envelope.Items) != 1 || envelope.Items[0].ID != deliveryID.String() {
+		t.Fatalf("items = %+v, want one item with id %s", envelope.Items, deliveryID)
+	}
+}
+
 // TestListDeliveries_MalformedCursor verifies that an old-format cursor returns 400.
 func TestListDeliveries_MalformedCursor(t *testing.T) {
 	t.Parallel()

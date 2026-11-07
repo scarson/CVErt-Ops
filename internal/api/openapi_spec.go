@@ -598,6 +598,15 @@ type specListWatchlistItemsOutput struct {
 	}
 }
 
+type specReplaceWatchlistItemsInput struct {
+	OrgID       string                    `path:"org_id" format:"uuid" doc:"Organization ID"`
+	WatchlistID string                    `path:"id" format:"uuid" doc:"Watchlist ID"`
+	Body        replaceWatchlistItemsBody `json:"body"`
+}
+type specReplaceWatchlistItemsOutput struct {
+	Body watchlistItemsReplaced
+}
+
 type specDeleteWatchlistItemInput struct {
 	OrgID       string `path:"org_id" format:"uuid" doc:"Organization ID"`
 	WatchlistID string `path:"id" format:"uuid" doc:"Watchlist ID"`
@@ -662,6 +671,18 @@ func registerWatchlistsSpecOps(api huma.API) {
 		Summary:     "List watchlist items",
 		Tags:        []string{"Watchlists"},
 	}, noopHandler[specListWatchlistItemsInput, specListWatchlistItemsOutput]())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "replace-watchlist-items",
+		Method:      http.MethodPut,
+		Path:        "/orgs/{org_id}/watchlists/{id}/items",
+		Summary:     "Replace all items in a watchlist",
+		Description: "Makes the watchlist hold exactly the items in the request, in one transaction, " +
+			"and returns how many were added, removed and left unchanged. Repeating a request changes nothing. " +
+			"Takes at most 10000 items within the 1 MiB request limit. Rules bound to the watchlist stay active and " +
+			"are not re-activated: their next evaluation run alerts on an added CVE item that already matches them.",
+		Tags: []string{"Watchlists"},
+	}, noopHandler[specReplaceWatchlistItemsInput, specReplaceWatchlistItemsOutput]())
 
 	huma.Register(api, huma.Operation{
 		OperationID: "delete-watchlist-item",

@@ -532,22 +532,38 @@ func TestParseCVE5_CNAAffected(t *testing.T) {
 		}
 	})
 
-	t.Run("malformed versions lose that entry's versions, not the CVE", func(t *testing.T) {
+	// With its versions gone, "defaultStatus: unaffected" would call an affected
+	// product unaffected, so the status goes too.
+	t.Run("malformed versions lose that entry's versions and default status, not the CVE", func(t *testing.T) {
 		t.Parallel()
 
 		got := parseAffected(t, `[
-			{"vendor": "Acme", "product": "Widget", "versions": "all"},
-			{"vendor": "Acme", "product": "Gadget", "versions": [{"version": 7, "status": "affected"}]},
-			{"vendor": "Acme", "product": "Gizmo", "versions": [{"version": "1.0", "status": "affected"}]}
+			{"vendor": "Acme", "product": "Widget", "defaultStatus": "unaffected", "versions": "all"},
+			{"vendor": "Acme", "product": "Gadget", "defaultStatus": "unaffected", "versions": [{"version": 7, "status": "affected"}]},
+			{"vendor": "Acme", "product": "Gizmo", "defaultStatus": "unaffected", "versions": [{"version": "1.0", "status": "affected"}]}
 		]`)
 
 		want := []feed.CNAAffected{
 			{Vendor: "Acme", Product: "Widget"},
 			{Vendor: "Acme", Product: "Gadget"},
-			{Vendor: "Acme", Product: "Gizmo", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}},
+			{Vendor: "Acme", Product: "Gizmo", DefaultStatus: "unaffected", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("CNAAffected = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("a malformed entry or array does not lose the CVE", func(t *testing.T) {
+		t.Parallel()
+
+		got := parseAffected(t, `[{"vendor": 123, "product": "Widget"}, {"vendor": "Acme", "product": "Gizmo"}]`)
+		want := []feed.CNAAffected{{Vendor: "Acme", Product: "Gizmo"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CNAAffected = %+v, want %+v", got, want)
+		}
+
+		if got := parseAffected(t, `"not an array"`); len(got) != 0 {
+			t.Errorf("CNAAffected = %+v, want none", got)
 		}
 	})
 

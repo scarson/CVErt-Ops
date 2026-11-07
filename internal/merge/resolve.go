@@ -42,6 +42,11 @@ var (
 
 	// pkgPriority governs: affected package version ranges.
 	pkgPriority = []string{SourceOSV, SourceGHSA, SourceNVD, SourceMITRE, SourceRedHat, SourceMSRC}
+
+	// cnaPriority governs: CNA affected entries. MITRE holds the CNA's record and
+	// NVD relays a copy, so one source's entries are used whole: a union would keep
+	// both versions of an entry while one copy lags the other.
+	cnaPriority = []string{SourceMITRE, SourceNVD}
 )
 
 // ResolvedReference is a reference URL with a pre-computed canonical form
@@ -279,7 +284,7 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 	r.CPEMatches = unionCPEMatches(patches)
 
 	var err error
-	if r.CNAAffected, err = unionCNAAffected(patches); err != nil {
+	if r.CNAAffected, err = resolveCNAAffected(patches); err != nil {
 		return ResolvedCVE{}, err
 	}
 
@@ -322,11 +327,16 @@ func boolRank(b bool) int {
 	return 0
 }
 
-// unionCNAAffected returns every distinct CNA affected entry across all sources,
-// ordered by its JSON form. CNAs repeat whole entries within one record.
-func unionCNAAffected(patches map[string]feed.CanonicalPatch) ([]feed.CNAAffected, error) {
-	byKey := make(map[string]feed.CNAAffected)
-	for _, p := range patches {
+// resolveCNAAffected returns the distinct CNA affected entries of the
+// highest-priority source that has any, ordered by their JSON form. CNAs repeat
+// whole entries within one record.
+func resolveCNAAffected(patches map[string]feed.CanonicalPatch) ([]feed.CNAAffected, error) {
+	for _, src := range slices.Concat(cnaPriority, otherSources(patches, cnaPriority)) {
+		p, ok := patches[src]
+		if !ok || len(p.CNAAffected) == 0 {
+			continue
+		}
+		byKey := make(map[string]feed.CNAAffected, len(p.CNAAffected))
 		for _, a := range p.CNAAffected {
 			key, err := json.Marshal(a)
 			if err != nil {
@@ -334,16 +344,13 @@ func unionCNAAffected(patches map[string]feed.CanonicalPatch) ([]feed.CNAAffecte
 			}
 			byKey[string(key)] = a
 		}
+		entries := make([]feed.CNAAffected, 0, len(byKey))
+		for _, key := range slices.Sorted(maps.Keys(byKey)) {
+			entries = append(entries, byKey[key])
+		}
+		return entries, nil
 	}
-	keys := slices.Sorted(maps.Keys(byKey))
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	entries := make([]feed.CNAAffected, 0, len(keys))
-	for _, key := range keys {
-		entries = append(entries, byKey[key])
-	}
-	return entries, nil
+	return nil, nil
 }
 
 // firstStr returns the first non-empty string produced by field() when

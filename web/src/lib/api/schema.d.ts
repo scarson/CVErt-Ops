@@ -2120,12 +2120,12 @@ export interface components {
              * @example /api/v1/schemas/CVEDetail.json
              */
             readonly $schema?: string;
-            /** @description NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until NVD analyses the CVE. A CPE that carries its version in the string has no range fields. */
+            /** @description NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields. */
             affected_cpe_matches: components["schemas"]["CPEMatchResponse"][] | null;
             /** @description Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches. */
             affected_cpes: components["schemas"]["AffectedCPEResponse"][] | null;
             affected_packages: components["schemas"]["AffectedPackageResponse"][] | null;
-            /** @description Products and versions as the CVE Numbering Authority published them. Available before NVD analyses the CVE. */
+            /** @description Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none. */
             cna_affected: components["schemas"]["CNAAffectedResponse"][] | null;
             cve_id: string;
             cvss_score_diverges: boolean;

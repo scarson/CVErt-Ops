@@ -65,23 +65,37 @@ func TestResolveCPEMatchesKeepEveryDistinctEntry(t *testing.T) {
 	}
 }
 
-func TestResolveCNAAffectedRemovesRepeatsAcrossSources(t *testing.T) {
+func TestResolveCNAAffectedUsesOneSourceWithoutRepeats(t *testing.T) {
 	t.Parallel()
 
 	widget := feed.CNAAffected{Vendor: "Acme", Product: "Widget", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}}
+	widgetEarlierCopy := feed.CNAAffected{Vendor: "Acme", Product: "Widget", Versions: []feed.CNAVersion{{Version: "0.9", Status: "affected"}}}
 	gadget := feed.CNAAffected{Vendor: "Acme", Product: "Gadget", DefaultStatus: "unaffected"}
+	mitre := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget, gadget, widget}})
+	nvd := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widgetEarlierCopy}})
+	nvdEmpty := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1"})
+	mitreEmpty := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1"})
 
-	r, err := resolve([]generated.CveSource{
-		makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget, gadget, widget}}),
-		makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{gadget}}),
-	})
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
+	tests := []struct {
+		name    string
+		sources []generated.CveSource
+		want    []feed.CNAAffected
+	}{
+		{"MITRE wins over NVD's copy", []generated.CveSource{nvd, mitre}, []feed.CNAAffected{gadget, widget}},
+		{"NVD's copy used when MITRE has none", []generated.CveSource{mitreEmpty, nvd}, []feed.CNAAffected{widgetEarlierCopy}},
+		{"no source has entries", []generated.CveSource{mitreEmpty, nvdEmpty}, nil},
 	}
-
-	want := []feed.CNAAffected{gadget, widget}
-	if !reflect.DeepEqual(r.CNAAffected, want) {
-		t.Errorf("CNAAffected = %+v, want %+v", r.CNAAffected, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, err := resolve(tc.sources)
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if !reflect.DeepEqual(r.CNAAffected, tc.want) {
+				t.Errorf("CNAAffected = %+v, want %+v", r.CNAAffected, tc.want)
+			}
+		})
 	}
 }
 

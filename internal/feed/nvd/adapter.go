@@ -319,6 +319,18 @@ type nvdCVE struct {
 	Weaknesses     []nvdWeakness    `json:"weaknesses"`
 	Configurations []nvdConfig      `json:"configurations"`
 	References     []nvdReference   `json:"references"`
+	// SourceIdentifier names the CVE's CNA, which is one of the sources in Affected.
+	SourceIdentifier string `json:"sourceIdentifier"`
+	// Affected stays raw so that malformed data costs the product data and not
+	// the whole CVE: see cnaAffected.
+	Affected json.RawMessage `json:"affected,omitempty"`
+}
+
+// nvdAffected is one element of cve.affected[]: a source and that source's copy
+// of a CVE 5 affected[] array.
+type nvdAffected struct {
+	Source       string          `json:"source"`
+	AffectedData json.RawMessage `json:"affectedData"`
 }
 
 type nvdDescription struct {
@@ -544,11 +556,35 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		}
 	}
 
+	patch.CNAAffected = cnaAffected(cve)
+
 	// CVSS: prefer v3.1 over v3.0; add v4.0 if available.
 	// NVD source "nvd@nist.gov" is preferred; use first entry if no NVD source.
 	applyNVDCVSS(patch, cve.Metrics)
 
 	return patch
+}
+
+// cnaAffected returns the CNA's product and version data that NVD relays in
+// cve.affected[], which is present before NVD analyses a CVE. The element whose
+// source is the CVE's sourceIdentifier is the CNA's own; other elements come from
+// other organisations and are skipped.
+func cnaAffected(cve nvdCVE) []feed.CNAAffected {
+	if len(cve.Affected) == 0 || cve.SourceIdentifier == "" {
+		return nil
+	}
+	var relayed []nvdAffected
+	if err := json.Unmarshal(cve.Affected, &relayed); err != nil {
+		slog.Warn("skipping malformed affected array", "feed", SourceName, "cve_id", cve.ID, "error", err)
+		return nil
+	}
+	var entries []feed.CNAAffected
+	for _, r := range relayed {
+		if r.Source == cve.SourceIdentifier {
+			entries = append(entries, feed.ParseCNAAffected(r.AffectedData, cve.ID)...)
+		}
+	}
+	return entries
 }
 
 // applyNVDCVSS sets CVSS fields on patch, preferring v3.1 over v3.0 and the

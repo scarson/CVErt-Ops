@@ -2159,7 +2159,7 @@ PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: `UNIQUE(cv
 PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`, `version_start_including`, `version_start_excluding`, `version_end_including`, `version_end_excluding`, `vulnerable boolean not null`. FK `cve_id` to `cves` (`ON DELETE CASCADE`, deferred, because the late-binding CVE ID move updates child tables first). Index: `cve_id`. One row per distinct NVD `cpeMatch` entry, since NVD repeats a criteria string with a different range per release branch. Not a `material_hash` input. "What is affected" reads only `vulnerable` rows.
 
 ### `cve_cna_affected`
-PK `id uuid`. Columns: `cve_id`, `vendor`, `product`, `package_name`, `collection_url`, `default_status`, `versions jsonb not null default '[]'`. FK as `cve_cpe_matches`. Index: `cve_id`. One row per distinct CVE 5 `containers.cna.affected[]` entry. `versions` holds `version`, `less_than`, `less_than_or_equal`, `status`, `version_type`, and `changes`. Not a `material_hash` input.
+PK `id uuid`. Columns: `cve_id`, `vendor`, `product`, `package_name`, `collection_url`, `default_status`, `versions jsonb not null default '[]'`. FK as `cve_cpe_matches`. Index: `cve_id`. One row per distinct CVE 5 `containers.cna.affected[]` entry, from the MITRE record when it has any, else from the copy NVD relays in `cve.affected[]`. `versions` holds `version`, `less_than`, `less_than_or_equal`, `status`, `version_type`, and `changes`. Not a `material_hash` input.
 
 
 ### `epss_staging`

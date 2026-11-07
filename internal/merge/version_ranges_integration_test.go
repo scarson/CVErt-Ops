@@ -5,6 +5,7 @@ package merge_test
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/feed"
@@ -138,37 +139,65 @@ func TestIngest_RecomputesRangesFromSources(t *testing.T) {
 	}
 }
 
+// The CVE is unanalysed by NVD. Its CNA data arrives from either feed alone, and
+// both together store one row, not one per feed.
 func TestIngest_StoresCNAAffectedForCVEWithoutNVDAnalysis(t *testing.T) {
-	s := testutil.NewTestDB(t)
-	ctx := context.Background()
-	cveID := "CVE-2026-107832"
+	const cveID = "CVE-2026-107832"
 
-	for _, source := range []string{"nvd", "mitre"} {
-		if err := merge.Ingest(ctx, s.Store, testutil.GoldenPatch(t, source, cveID), source); err != nil {
-			t.Fatalf("Ingest %s: %v", source, err)
+	for _, tc := range []struct {
+		name    string
+		sources []string
+	}{
+		{"NVD relay alone", []string{"nvd"}},
+		{"MITRE alone", []string{"mitre"}},
+		{"both", []string{"nvd", "mitre"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testutil.NewTestDB(t)
+			ctx := context.Background()
+			for _, source := range tc.sources {
+				if err := merge.Ingest(ctx, s.Store, testutil.GoldenPatch(t, source, cveID), source); err != nil {
+					t.Fatalf("Ingest %s: %v", source, err)
+				}
+			}
+
+			if got := countRows(t, s, "cve_cpe_matches", cveID); got != 0 {
+				t.Errorf("cve_cpe_matches has %d rows, want 0", got)
+			}
+			rows, err := generated.New(s.DB()).GetCVECNAAffected(ctx, cveID)
+			if err != nil {
+				t.Fatalf("GetCVECNAAffected: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+			}
+			row := rows[0]
+			if row.Vendor.String != "fastify" || row.Product.String != "fastify" || row.DefaultStatus.String != "unaffected" {
+				t.Errorf("row = %s/%s default %s", row.Vendor.String, row.Product.String, row.DefaultStatus.String)
+			}
+			var versions []feed.CNAVersion
+			if err := json.Unmarshal(row.Versions, &versions); err != nil {
+				t.Fatalf("versions JSON: %v", err)
+			}
+			if len(versions) != 2 || versions[0].LessThan != "5.12.6" || versions[1].Status != "unaffected" {
+				t.Errorf("versions = %+v", versions)
+			}
+		})
+	}
+}
+
+// NVD's relay is treated as a copy of the MITRE record, which is only safe while
+// the two agree. Real records from both feeds pin that they do.
+func TestGoldenNVDRelayMatchesMITRERecord(t *testing.T) {
+	for _, cveID := range []string{"CVE-2026-107832", "CVE-2026-56847", "CVE-2026-111497"} {
+		nvd := testutil.GoldenPatch(t, "nvd", cveID)
+		mitre := testutil.GoldenPatch(t, "mitre", cveID)
+		if len(nvd.CNAAffected) == 0 {
+			t.Errorf("%s: NVD relay carries no CNA data", cveID)
 		}
-	}
-
-	if got := countRows(t, s, "cve_cpe_matches", cveID); got != 0 {
-		t.Errorf("cve_cpe_matches has %d rows, want 0", got)
-	}
-	rows, err := generated.New(s.DB()).GetCVECNAAffected(ctx, cveID)
-	if err != nil {
-		t.Fatalf("GetCVECNAAffected: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
-	}
-	row := rows[0]
-	if row.Vendor.String != "fastify" || row.Product.String != "fastify" || row.DefaultStatus.String != "unaffected" {
-		t.Errorf("row = %s/%s default %s", row.Vendor.String, row.Product.String, row.DefaultStatus.String)
-	}
-	var versions []feed.CNAVersion
-	if err := json.Unmarshal(row.Versions, &versions); err != nil {
-		t.Fatalf("versions JSON: %v", err)
-	}
-	if len(versions) != 2 || versions[0].LessThan != "5.12.6" || versions[1].Status != "unaffected" {
-		t.Errorf("versions = %+v", versions)
+		if !reflect.DeepEqual(nvd.CNAAffected, mitre.CNAAffected) {
+			t.Errorf("%s: NVD relay %+v differs from MITRE %+v", cveID, nvd.CNAAffected, mitre.CNAAffected)
+		}
 	}
 }
 
@@ -194,10 +223,10 @@ func TestIngest_CNAAffectedWithoutVersionsStoresEmptyArray(t *testing.T) {
 	}
 }
 
-// Deploying this change re-merges CVEs whose stored normalized_json has no ranges.
-// The stored hash and date_modified_canonical must not move, or every matching
-// rule fires again. The golden CVEs cover vulnerable: false platform CPEs and one
-// criteria string repeated across branches, which are the two inputs at risk.
+// A CVE stored without ranges gets them on its next merge. The stored hash and
+// date_modified_canonical must not move then, or every matching rule fires again.
+// The golden CVEs cover vulnerable: false platform CPEs and one criteria string
+// repeated across branches, which are the two inputs at risk.
 func TestIngest_AddingRangesLeavesMaterialHashAndModifiedDateAlone(t *testing.T) {
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()

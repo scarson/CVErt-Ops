@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"sync/atomic"
@@ -95,6 +96,34 @@ func TestFetch_GoldenCPEMatches_NotYetAnalysedHasNone(t *testing.T) {
 	}
 	if len(p.CPEMatches) != 0 {
 		t.Errorf("CPEMatches = %+v, want none before NVD analysis", p.CPEMatches)
+	}
+}
+
+// NVD relays the CNA's affected[] before it analyses a CVE.
+func TestFetch_GoldenCNAAffected_RelayedBeforeAnalysis(t *testing.T) {
+	p := goldenPatches(t)["CVE-2026-107832"]
+
+	want := []feed.CNAAffected{{
+		Vendor:        "fastify",
+		Product:       "fastify",
+		DefaultStatus: "unaffected",
+		Versions: []feed.CNAVersion{
+			{Version: "5.12.2", LessThan: "5.12.6", Status: "affected", VersionType: "semver"},
+			{Version: "5.12.6", Status: "unaffected", VersionType: "semver"},
+		},
+	}}
+	if !reflect.DeepEqual(p.CNAAffected, want) {
+		t.Errorf("CNAAffected = %+v, want %+v", p.CNAAffected, want)
+	}
+}
+
+// cve.affected[] also holds other organisations' data. Only the entry from the
+// CVE's own sourceIdentifier is the CNA's: here Google's, not Siemens's.
+func TestFetch_GoldenCNAAffected_OnlyFromTheCVEsOwnCNA(t *testing.T) {
+	p := goldenPatches(t)["CVE-2026-111497"]
+
+	if len(p.CNAAffected) != 1 || p.CNAAffected[0].Vendor != "Google" || p.CNAAffected[0].Product != "Brotli" {
+		t.Errorf("CNAAffected = %+v, want only Google Brotli", p.CNAAffected)
 	}
 }
 

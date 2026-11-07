@@ -320,7 +320,7 @@ func (q *Queries) GetCVEAffectedPackages(ctx context.Context, cveID string) ([]C
 const getCVECNAAffected = `-- name: GetCVECNAAffected :many
 SELECT id, cve_id, vendor, product, package_name, collection_url, default_status, versions FROM cve_cna_affected
 WHERE cve_id = $1
-ORDER BY vendor, product, package_name, id
+ORDER BY vendor, product, package_name, collection_url, default_status, versions::text
 `
 
 func (q *Queries) GetCVECNAAffected(ctx context.Context, cveID string) ([]CveCnaAffected, error) {

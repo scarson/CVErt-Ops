@@ -770,6 +770,24 @@ func TestCveToCanonical(t *testing.T) {
 	})
 }
 
+func TestCveToCanonical_MalformedAffectedKeepsTheCVE(t *testing.T) {
+	t.Parallel()
+
+	for _, affected := range []string{`"not an array"`, `[{"source": 7}]`} {
+		p := cveToCanonical(nvdCVE{
+			ID:               "CVE-2024-5008",
+			SourceIdentifier: "cna@example.com",
+			Affected:         json.RawMessage(affected),
+		})
+		if p == nil || p.CVEID != "CVE-2024-5008" {
+			t.Fatalf("affected %s: patch = %+v, want the CVE kept", affected, p)
+		}
+		if len(p.CNAAffected) != 0 {
+			t.Errorf("affected %s: CNAAffected = %+v, want none", affected, p.CNAAffected)
+		}
+	}
+}
+
 func TestCveToCanonical_CPEMatchesStripNullBytes(t *testing.T) {
 	t.Parallel()
 

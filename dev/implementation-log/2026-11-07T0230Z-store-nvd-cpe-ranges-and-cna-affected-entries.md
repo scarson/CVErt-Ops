@@ -18,9 +18,8 @@
 
 ## Gotchas
 
-- `cve_raw_payloads` cannot fill existing NVD data: the adapter re-marshals its own types into that payload, and those types had no range fields. MITRE payloads are complete but retained for 90 days. Existing CVEs fill by re-ingesting: clearing `feed_sync_state.cursor_json` for `nvd` and `mitre` makes the next runs walk everything. Hashes do not move, so no alerts fire.
+- `cve_raw_payloads` cannot fill existing NVD data: the adapter re-marshals its own types into that payload, and those types had no range fields. MITRE payloads are complete but retained for 90 days. For how existing CVEs fill, see the entry "Read CNA data from NVD's relay".
 - The comment in the MITRE adapter calling `versions` polymorphic does not match the current corpus: every one of 1,366,778 version elements has string fields.
-- Real NVD responses now relay CNA data in `cve.affected[]`. This work reads CNA data from the MITRE feed only.
 - A fresh worktree needs `web/dist` copied in before `internal/api` compiles, and `TESTCONTAINERS_RYUK_DISABLED=true` while other sessions use Docker.
 
 ## Quality checks

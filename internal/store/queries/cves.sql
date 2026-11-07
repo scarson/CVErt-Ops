@@ -221,7 +221,7 @@ ORDER BY cpe_normalized, version_start_including, version_start_excluding,
 -- name: GetCVECNAAffected :many
 SELECT * FROM cve_cna_affected
 WHERE cve_id = $1
-ORDER BY vendor, product, package_name, id;
+ORDER BY vendor, product, package_name, collection_url, default_status, versions::text;
 
 -- name: GetCVESnapshot :one
 -- Returns the fields needed for alert delivery payloads.

@@ -1,11 +1,12 @@
 // ABOUTME: Feed adapter for the MITRE CVE 5.0 bulk feed (cvelistV5 ZIP from GitHub).
-// ABOUTME: Downloads ZIP archive, pre-filters by modified time, parses CVE 5.0 JSON entries.
+// ABOUTME: Walks the records updated since the cursor in pages that resume across jobs, and parses CVE 5.0 JSON.
 //
-// Cursor format: {"last_modified": "2024-01-15T10:00:00Z"}
-// The feed handler persists SourceMeta.FetchedAt as the new cursor value after
-// each successful run. On the next run, the cursor is used to pre-filter ZIP
-// entries via FileHeader.Modified, skipping unchanged files (~2000× I/O reduction
-// for incremental syncs on a 100,000+ entry archive).
+// Every entry in the GitHub archive carries the same modified time, the commit
+// time, so a record's cveMetadata.dateUpdated is what shows it changed. A walk
+// returns the records updated after Cursor.LastModified in CVE ID order, one
+// page per Fetch. Within a job the adapter downloads the archive once and keeps
+// it between pages; a later job downloads the then-current archive and resumes
+// after Cursor.After.
 package mitre
 
 import (
@@ -19,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -35,15 +37,45 @@ const (
 )
 
 // Cursor is the JSON-serializable sync state for the MITRE adapter.
-// The feed handler stores this in feed_sync_state.cursor_json after each run.
+// The feed handler stores this in feed_sync_state.cursor_json after each page.
 type Cursor struct {
+	// LastModified selects the records a walk returns: those whose
+	// cveMetadata.dateUpdated is after it. The zero time selects every record.
 	LastModified time.Time `json:"last_modified"`
+	// After is the CVE ID of the last record a walk in progress has returned.
+	After string `json:"after,omitempty"`
+	// Snapshot is the latest dateUpdated in the archive a walk in progress
+	// started on. It is zero when no walk is in progress.
+	Snapshot time.Time `json:"snapshot,omitzero"`
 }
 
-// Adapter implements feed.FeedAdapter for the MITRE CVE bulk feed.
+const (
+	// rescanWindow is how far before a walk's Snapshot the next walk starts.
+	// dateUpdated is stamped upstream, not when the record reaches the archive,
+	// so a record can reach the archive after one with a later dateUpdated. On
+	// the real archive about 5 to 50 records a day fall in one hour, and
+	// merging them again changes nothing.
+	rescanWindow = time.Hour
+
+	// defaultPageSize is the number of records one Fetch returns. At the 13
+	// merges a second seen on a real backfill a page takes about 77 seconds,
+	// so a job's first page, which also downloads the archive (about 66
+	// seconds) and reads every record's dateUpdated (about 27 seconds), still
+	// fits within the ingest handler's three-minute page reserve.
+	defaultPageSize = 1000
+)
+
+// Adapter implements feed.FeedAdapter for the MITRE CVE bulk feed. An Adapter
+// serves one job: it keeps the archive it downloads until the walk reaches its
+// last page, Close is called, or the context of the downloading Fetch ends.
 type Adapter struct {
 	client      *http.Client
 	rateLimiter *rate.Limiter
+	pageSize    int
+	log         *slog.Logger
+
+	mu      sync.Mutex
+	archive *archive
 }
 
 // New creates a MITRE adapter. The provided http.Client is used for all
@@ -56,19 +88,35 @@ func New(client *http.Client) *Adapter {
 	return &Adapter{
 		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
+		pageSize:    defaultPageSize,
+		log:         slog.Default(),
 	}
 }
 
-// Fetch downloads the cvelistV5 ZIP, streams it to a temp file, and parses
-// all entries modified after the cursor's LastModified timestamp (or all entries
-// on the first run when cursor is nil/zero).
+// Close removes the downloaded archive, if the adapter holds one.
+func (a *Adapter) Close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.releaseLocked()
+}
+
+// releaseLocked removes the held archive. The caller holds a.mu.
+func (a *Adapter) releaseLocked() {
+	if a.archive != nil {
+		a.archive.remove()
+		a.archive = nil
+	}
+}
+
+// Fetch returns the next page of records updated after cursor.LastModified,
+// in CVE ID order after cursor.After. A nil cursor starts a walk of every record.
 //
-// MITRE publishes a single flat archive — there is no pagination.
-// NextCursor is always nil. The feed handler should save:
-//
-//	Cursor{LastModified: result.SourceMeta.FetchedAt}
-//
-// to feed_sync_state.cursor_json after a successful run.
+// The first page of a walk records the archive's latest dateUpdated as the
+// cursor's Snapshot. The last page returns a cursor whose LastModified is that
+// Snapshot less rescanWindow. A record that changes after the walk has passed
+// it, or a new record that sorts before the walk's position, has a later
+// dateUpdated than anything in the archive the walk started on, so the next
+// walk returns it.
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
 	var cur Cursor
 	if len(cursorJSON) > 0 {
@@ -76,53 +124,61 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			return nil, fmt.Errorf("mitre: parse cursor: %w", err)
 		}
 	}
-
-	if err := a.rateLimiter.Wait(ctx); err != nil {
-		return nil, fmt.Errorf("mitre: rate limit: %w", err)
+	// A position belongs to a walk; without the walk's Snapshot, start a new one.
+	if cur.Snapshot.IsZero() {
+		cur.After = ""
 	}
 
-	// Stream the ZIP to a temp file — archive/zip.NewReader requires io.ReaderAt.
-	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip", feed.MaxDownloadSize)
-	if err != nil {
-		return nil, fmt.Errorf("mitre: download zip: %w", err)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.archive == nil {
+		if err := a.download(ctx); err != nil {
+			return nil, err
+		}
 	}
-	defer func() { _ = os.Remove(tmpFile.Name()) }() //nolint:gosec // G703: path from os.CreateTemp
-	defer tmpFile.Close()                            //nolint:errcheck
-
-	info, err := tmpFile.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("mitre: stat temp file: %w", err)
+	ar := a.archive
+	if !ar.covers(cur) {
+		if err := ar.selectRecords(ctx, a.log, cur.LastModified, cur.After); err != nil {
+			return nil, fmt.Errorf("mitre: select records: %w", err)
+		}
+	}
+	snapshot := cur.Snapshot
+	if snapshot.IsZero() {
+		// The selection just read every record in the archive.
+		snapshot = ar.latest
 	}
 
-	zr, err := zip.NewReader(tmpFile, info.Size())
-	if err != nil {
-		return nil, fmt.Errorf("mitre: open zip: %w", err)
-	}
-
-	fetchedAt := time.Now().UTC()
-	var patches []feed.CanonicalPatch
-
-	for _, entry := range zr.File {
-		if !isCVEEntry(entry.Name) {
+	i := ar.firstAfter(cur.After)
+	last := cur.After
+	patches := make([]feed.CanonicalPatch, 0, min(a.pageSize, len(ar.selected)-i))
+	for ; i < len(ar.selected) && len(patches) < a.pageSize; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("mitre: read records: %w", err)
+		}
+		rec := ar.selected[i]
+		last = rec.cveID
+		patch, err := parseEntry(rec.file)
+		if err != nil {
+			a.log.WarnContext(ctx, "skipping unreadable CVE record", "feed", SourceName, "entry", rec.file.Name, "error", err)
 			continue
 		}
-		// FileHeader.Modified pre-filter: skip unchanged entries on incremental syncs.
-		// entry.Modified is embedded from zip.FileHeader and available without
-		// opening the entry (no I/O cost).
-		if !cur.LastModified.IsZero() && !entry.Modified.After(cur.LastModified) {
-			continue
-		}
-
-		patch, err := parseEntry(entry)
-		if err != nil || patch == nil {
-			// Skip malformed or empty entries; do not abort the whole run.
+		if patch == nil {
 			continue
 		}
 		patches = append(patches, *patch)
 	}
 
-	// Return the new cursor so the handler can persist it to feed_sync_state.
-	newCursorJSON, err := json.Marshal(Cursor{LastModified: fetchedAt})
+	lastPage := i >= len(ar.selected)
+	next := Cursor{LastModified: cur.LastModified, After: last, Snapshot: snapshot}
+	if lastPage {
+		next = Cursor{LastModified: cur.LastModified}
+		if !snapshot.IsZero() {
+			next.LastModified = snapshot.Add(-rescanWindow)
+		}
+		a.releaseLocked()
+	}
+	nextJSON, err := json.Marshal(next)
 	if err != nil {
 		return nil, fmt.Errorf("mitre: marshal cursor: %w", err)
 	}
@@ -131,14 +187,43 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		Patches: patches,
 		SourceMeta: feed.SourceMeta{
 			SourceName: SourceName,
-			FetchedAt:  fetchedAt,
+			FetchedAt:  time.Now().UTC(),
 		},
-		// Single-archive feed — no pagination, but NextCursor carries the new
-		// last-modified timestamp for the handler to persist as the next-run cursor.
-		// The handler MUST NOT call Fetch again in a tight loop.
-		NextCursor: newCursorJSON,
-		LastPage:   true,
+		NextCursor: nextJSON,
+		LastPage:   lastPage,
 	}, nil
+}
+
+// download fetches the archive to a temp file and holds it until the walk
+// ends, Close is called, or ctx ends. The caller holds a.mu.
+func (a *Adapter) download(ctx context.Context) error {
+	if err := a.rateLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("mitre: rate limit: %w", err)
+	}
+	// Stream the ZIP to a temp file — archive/zip.NewReader requires io.ReaderAt.
+	tmpFile, err := feed.DownloadToTemp(ctx, a.client, bulkZIPURL, "cvert-mitre-*.zip", feed.MaxDownloadSize)
+	if err != nil {
+		return fmt.Errorf("mitre: download zip: %w", err)
+	}
+	ar, err := openArchive(tmpFile)
+	if err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpFile.Name()) //nolint:gosec // G703: path from os.CreateTemp
+		return fmt.Errorf("mitre: %w", err)
+	}
+	// The ingest handler does not close adapters; the job context ends with the job.
+	ar.stopRelease = context.AfterFunc(ctx, func() { a.releaseArchive(ar) })
+	a.archive = ar
+	return nil
+}
+
+// releaseArchive removes ar if the adapter still holds it.
+func (a *Adapter) releaseArchive(ar *archive) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.archive == ar {
+		a.releaseLocked()
+	}
 }
 
 // isCVEEntry returns true if the ZIP entry path is a CVE JSON file.

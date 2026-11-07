@@ -3,8 +3,11 @@
 package retention_test
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +29,7 @@ func defaultConfig() retention.Config {
 		AlertEventsDays:    365,
 		NotifDelivDays:     90,
 		AuditLogDays:       365,
+		WatchlistItemsDays: 30,
 	}
 }
 
@@ -697,5 +701,104 @@ func TestRunner_ErrorIsolation(t *testing.T) {
 	}
 	if feedRemaining != 0 {
 		t.Errorf("feed_fetch_log remaining = %d, want 0 (error in earlier table should not block)", feedRemaining)
+	}
+}
+
+// seedRemovedWatchlistItem inserts a CVE watchlist item created 100 days ago. A nil
+// deletedAt seeds a live item. Returns the item ID.
+func seedRemovedWatchlistItem(t *testing.T, db *testutil.TestDB, watchlistID, orgID uuid.UUID, cveID string, deletedAt *time.Time) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := db.Pool().QueryRow(context.Background(),
+		`INSERT INTO watchlist_items (watchlist_id, org_id, item_type, cve_id, created_at, deleted_at)
+		 VALUES ($1, $2, 'cve', $3, now() - interval '100 days', $4) RETURNING id`,
+		watchlistID, orgID, cveID, deletedAt,
+	).Scan(&id); err != nil {
+		t.Fatalf("seed watchlist item: %v", err)
+	}
+	return id
+}
+
+func watchlistItemExists(t *testing.T, db *testutil.TestDB, id uuid.UUID) bool {
+	t.Helper()
+	var exists bool
+	if err := db.Pool().QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM watchlist_items WHERE id = $1)`, id,
+	).Scan(&exists); err != nil {
+		t.Fatalf("check watchlist item: %v", err)
+	}
+	return exists
+}
+
+func TestRunner_WatchlistItems(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	removedOld := now.Add(-40 * 24 * time.Hour)
+	removedRecent := now.Add(-5 * 24 * time.Hour)
+
+	org := db.MustCreateOrg(t, ctx, "RetWatchlistOrg")
+	wl, err := db.CreateWatchlist(ctx, org.ID, uuid.NullUUID{}, "retention", sql.NullString{})
+	if err != nil {
+		t.Fatalf("create watchlist: %v", err)
+	}
+	oldID := seedRemovedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0001", &removedOld)
+	recentID := seedRemovedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0002", &removedRecent)
+	liveID := seedRemovedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0003", nil)
+
+	cfg := defaultConfig()
+	cfg.WatchlistItemsDays = 30
+	if err := retention.NewRunner(db.Store, cfg, slog.Default()).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if watchlistItemExists(t, db, oldID) {
+		t.Error("item removed 40 days ago survived a 30-day retention window")
+	}
+	if !watchlistItemExists(t, db, recentID) {
+		t.Error("item removed 5 days ago was purged inside a 30-day retention window")
+	}
+	if !watchlistItemExists(t, db, liveID) {
+		t.Error("live item was purged")
+	}
+}
+
+// TestRunner_WatchlistItemsMinimumWindow checks that a configured window shorter than
+// the alert evaluators need is raised to the minimum.
+func TestRunner_WatchlistItemsMinimumWindow(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	removedTenDays := now.Add(-10 * 24 * time.Hour)
+	removedThreeDays := now.Add(-3 * 24 * time.Hour)
+
+	org := db.MustCreateOrg(t, ctx, "RetWatchlistMinOrg")
+	wl, err := db.CreateWatchlist(ctx, org.ID, uuid.NullUUID{}, "retention", sql.NullString{})
+	if err != nil {
+		t.Fatalf("create watchlist: %v", err)
+	}
+	tenDaysID := seedRemovedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0001", &removedTenDays)
+	threeDaysID := seedRemovedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0002", &removedThreeDays)
+
+	cfg := defaultConfig()
+	cfg.WatchlistItemsDays = 1
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	if err := retention.NewRunner(db.Store, cfg, logger).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN msg=\"watchlist item retention window below minimum, using minimum\" configured_days=1 minimum_days=7") {
+		t.Errorf("missing minimum-window warning in logs: %s", logs.String())
+	}
+
+	if watchlistItemExists(t, db, tenDaysID) {
+		t.Error("item removed 10 days ago survived the 7-day minimum window")
+	}
+	if !watchlistItemExists(t, db, threeDaysID) {
+		t.Error("item removed 3 days ago was purged inside the 7-day minimum window")
 	}
 }

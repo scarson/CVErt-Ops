@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -635,5 +636,92 @@ func TestHasPendingOrRunningJob(t *testing.T) {
 	}
 	if !has {
 		t.Error("expected true with pending job")
+	}
+}
+
+// seedWatchlistItem inserts a watchlist item with explicit timestamps and returns its ID.
+// A nil deletedAt seeds a live item; cveID and pkg select the item type.
+func seedWatchlistItem(t *testing.T, db *testutil.TestDB, watchlistID, orgID uuid.UUID, cveID, pkg string, createdAt time.Time, deletedAt *time.Time) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	var err error
+	if cveID != "" {
+		err = db.Pool().QueryRow(context.Background(),
+			`INSERT INTO watchlist_items (watchlist_id, org_id, item_type, cve_id, created_at, deleted_at)
+			 VALUES ($1, $2, 'cve', $3, $4, $5) RETURNING id`,
+			watchlistID, orgID, cveID, createdAt, deletedAt,
+		).Scan(&id)
+	} else {
+		err = db.Pool().QueryRow(context.Background(),
+			`INSERT INTO watchlist_items (watchlist_id, org_id, item_type, ecosystem, package_name, created_at, deleted_at)
+			 VALUES ($1, $2, 'package', 'npm', $3, $4, $5) RETURNING id`,
+			watchlistID, orgID, pkg, createdAt, deletedAt,
+		).Scan(&id)
+	}
+	if err != nil {
+		t.Fatalf("seed watchlist item: %v", err)
+	}
+	return id
+}
+
+// TestCleanupWatchlistItems_RemovedBeforeCutoff runs as cvert_ops_app, the role the
+// retention worker connects as, so it also checks that the role may DELETE.
+func TestCleanupWatchlistItems_RemovedBeforeCutoff(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	longAgo := now.Add(-100 * 24 * time.Hour)
+	removedOld := now.Add(-40 * 24 * time.Hour)
+	removedRecent := now.Add(-5 * 24 * time.Hour)
+
+	org := db.MustCreateOrg(t, ctx, "WatchlistItemRetOrg")
+	wl, err := db.CreateWatchlist(ctx, org.ID, uuid.NullUUID{}, "retention", sql.NullString{})
+	if err != nil {
+		t.Fatalf("create watchlist: %v", err)
+	}
+
+	seedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0001", "", longAgo, &removedOld)
+	seedWatchlistItem(t, db, wl.ID, org.ID, "", "left-pad", longAgo, &removedOld)
+	recentID := seedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0002", "", longAgo, &removedRecent)
+	liveID := seedWatchlistItem(t, db, wl.ID, org.ID, "CVE-2024-0003", "", longAgo, nil)
+
+	cutoff := now.Add(-30 * 24 * time.Hour)
+
+	// Batch size bounds each call.
+	n, err := db.AppStore.CleanupWatchlistItems(ctx, cutoff, 1)
+	if err != nil {
+		t.Fatalf("CleanupWatchlistItems: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("first batch deleted = %d, want 1", n)
+	}
+	n, err = db.AppStore.CleanupWatchlistItems(ctx, cutoff, 100)
+	if err != nil {
+		t.Fatalf("CleanupWatchlistItems: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("second batch deleted = %d, want 1", n)
+	}
+
+	rows, err := db.Pool().Query(ctx, `SELECT id FROM watchlist_items WHERE org_id = $1`, org.ID)
+	if err != nil {
+		t.Fatalf("list remaining: %v", err)
+	}
+	defer rows.Close()
+	remaining := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		remaining[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(remaining) != 2 || !remaining[recentID] || !remaining[liveID] {
+		t.Errorf("remaining = %v, want only the recently removed item %s and the live item %s", remaining, recentID, liveID)
 	}
 }

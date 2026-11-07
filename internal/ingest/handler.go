@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -119,6 +120,15 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 		adapter, err := factory(p.FeedName, client)
 		if err != nil {
 			return fmt.Errorf("create adapter for %q: %w", p.FeedName, err)
+		}
+		// An adapter that holds resources for its run, such as a downloaded
+		// archive it pages through, releases them when the run ends.
+		if closer, ok := adapter.(io.Closer); ok {
+			defer func() {
+				if closeErr := closer.Close(); closeErr != nil {
+					slog.Error("feed adapter close failed", "feed", p.FeedName, "error", closeErr)
+				}
+			}()
 		}
 
 		// Read current cursor from sync state.

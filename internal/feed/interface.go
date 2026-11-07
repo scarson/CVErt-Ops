@@ -17,6 +17,10 @@ import (
 // checkpoint; returning nil causes the cursor to regress to the previous
 // page's value, resulting in redundant API calls on subsequent runs.
 //
+// An adapter that holds resources across the Fetch calls of one run, such as
+// a downloaded archive, can implement io.Closer; the feed handler closes it
+// when the run ends.
+//
 // The type name is Adapter (not FeedAdapter) to avoid the feed.FeedAdapter stutter.
 type Adapter interface {
 	Fetch(ctx context.Context, cursor json.RawMessage) (*FetchResult, error)
@@ -36,8 +40,9 @@ type FetchResult struct {
 	NextCursor json.RawMessage
 	// LastPage signals that this is the final page of results for this run.
 	// The caller should persist NextCursor but not call Fetch again.
-	// Single-Fetch adapters (KEV, GHSA, OSV, MSRC) always set this to true.
-	// True paginators (NVD, Red Hat, MITRE) set it on their final page.
+	// Single-Fetch adapters (KEV, GHSA, MSRC) always set this to true.
+	// True paginators (NVD, Red Hat, MITRE) set it on their final page, as
+	// does OSV, which pages one downloaded archive.
 	// The zero value (false) is safe — it means "keep paginating," so forgetting
 	// to set it produces correct-but-wasteful behavior, never data loss.
 	LastPage bool

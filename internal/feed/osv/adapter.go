@@ -5,8 +5,8 @@
 // ecosystems. Each advisory is a JSON file conforming to the OSV schema v1:
 // https://ossf.github.io/osv-schema/
 //
-// Cursor format: feed.ArchiveCursor, as for the MITRE adapter. Between passes it
-// is {"last_modified": "2024-01-15T10:00:00Z"}, and the adapter pre-filters ZIP
+// Cursor format: feed.ArchiveCursor. Between passes it is
+// {"last_modified": "2024-01-15T10:00:00Z"}, and the adapter pre-filters ZIP
 // entries via FileHeader.Modified, parsing only entries newer than it. During a
 // pass the cursor also holds the pass start time and the last entry name read,
 // so a pass larger than one worker job continues in the next job.

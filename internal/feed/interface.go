@@ -18,7 +18,7 @@ import (
 // page's value, resulting in redundant API calls on subsequent runs.
 //
 // An adapter that holds resources across the Fetch calls of one run, such as
-// a downloaded archive, also implements io.Closer; the feed handler closes it
+// a downloaded archive, can implement io.Closer; the feed handler closes it
 // when the run ends.
 //
 // The type name is Adapter (not FeedAdapter) to avoid the feed.FeedAdapter stutter.
@@ -41,8 +41,8 @@ type FetchResult struct {
 	// LastPage signals that this is the final page of results for this run.
 	// The caller should persist NextCursor but not call Fetch again.
 	// Single-Fetch adapters (KEV, GHSA, MSRC) always set this to true.
-	// True paginators (NVD, Red Hat) set it on their final page, as do the
-	// archive adapters (MITRE, OSV), which page one downloaded archive.
+	// True paginators (NVD, Red Hat, MITRE) set it on their final page, as
+	// does OSV, which pages one downloaded archive.
 	// The zero value (false) is safe — it means "keep paginating," so forgetting
 	// to set it produces correct-but-wasteful behavior, never data loss.
 	LastPage bool

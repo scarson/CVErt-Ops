@@ -1,5 +1,5 @@
 // ABOUTME: Pages a feed published as one ZIP archive, so a pass larger than one worker job resumes in the next job.
-// ABOUTME: Used by the MITRE and OSV adapters; the cursor records the pass start time and the last entry name read.
+// ABOUTME: Used by the OSV adapter; the cursor records the pass start time and the last entry name read.
 package feed
 
 import (

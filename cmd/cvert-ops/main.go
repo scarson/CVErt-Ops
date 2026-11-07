@@ -622,6 +622,7 @@ func retentionHandler(st *store.Store, cfg *config.Config) worker.Handler {
 			JobQueueHours:      cfg.RetentionJobQueueHours,
 			AILogDays:          cfg.AILogRetentionDays,
 			SecurityEventsDays: cfg.RetentionSecurityEventsDays,
+			WatchlistItemsDays: cfg.RetentionWatchlistItemsDays,
 			AlertEventsDays:    cfg.RetentionAlertEventsDays,
 			NotifDelivDays:     cfg.RetentionNotifDeliveriesDays,
 			AuditLogDays:       cfg.RetentionAuditLogDays,

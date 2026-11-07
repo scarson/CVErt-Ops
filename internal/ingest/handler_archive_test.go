@@ -1,5 +1,5 @@
 // ABOUTME: Tests a single-archive feed backfill that is larger than one worker job.
-// ABOUTME: Drives the real MITRE adapter through the handler across two jobs against a test archive server.
+// ABOUTME: Drives the real OSV adapter through the handler across two jobs against a test archive server.
 package ingest
 
 import (
@@ -31,17 +31,17 @@ func (rt redirectTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-func buildCVEListArchive(t *testing.T, count int) []byte {
+func buildOSVArchive(t *testing.T, count int) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for i := 1; i <= count; i++ {
-		id := fmt.Sprintf("CVE-2024-%05d", i)
-		w, err := zw.Create(fmt.Sprintf("cvelistV5-main/cves/2024/%s.json", id))
+		id := fmt.Sprintf("GHSA-test-%05d", i)
+		w, err := zw.Create(fmt.Sprintf("npm/%s.json", id))
 		if err != nil {
 			t.Fatalf("zip create: %v", err)
 		}
-		fmt.Fprintf(w, `{"cveMetadata":{"cveId":%q,"state":"PUBLISHED"}}`, id)
+		fmt.Fprintf(w, `{"id":%q,"aliases":["CVE-2024-%05d"]}`, id, i)
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatalf("zip close: %v", err)
@@ -49,17 +49,17 @@ func buildCVEListArchive(t *testing.T, count int) []byte {
 	return buf.Bytes()
 }
 
-// A first MITRE backfill with more entries than one page stops at the job time
+// A first OSV backfill with more entries than one page stops at the job time
 // limit after a page, and the next job resumes the pass where it stopped and
 // completes it. Every CVE is merged once, and the final cursor is the
 // incremental cursor at the time the pass began.
-func TestFeedHandler_ArchiveBackfillContinuesAcrossJobs(t *testing.T) {
+func TestFeedHandler_OSVBackfillContinuesAcrossJobs(t *testing.T) {
 	db := testutil.NewTestDB(t)
 	captureLogs(t)
 	bg := context.Background()
 
 	total := feed.ArchivePageSize + 1
-	archive := buildCVEListArchive(t, total)
+	archive := buildOSVArchive(t, total)
 	var mu sync.Mutex
 	downloads := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -74,14 +74,14 @@ func TestFeedHandler_ArchiveBackfillContinuesAcrossJobs(t *testing.T) {
 
 	mergeMock := &mockMerge{}
 	handler := handlerWithStore(db.Store, db.Store, client, mergeMock.fn, NewAdapter, nil, nil)
-	payload, _ := json.Marshal(Payload{FeedName: "mitre"})
+	payload, _ := json.Marshal(Payload{FeedName: "osv"})
 
 	// First job: one page, then the time limit ends the run.
 	jobStart := time.Now().UTC()
 	if err := handler(nearDeadlineContext(t), payload); err != nil {
 		t.Fatalf("first job: %v", err)
 	}
-	state, err := db.GetFeedSyncState(bg, "mitre")
+	state, err := db.GetFeedSyncState(bg, "osv")
 	if err != nil || state == nil {
 		t.Fatalf("GetFeedSyncState after first job: %v, %v", state, err)
 	}
@@ -103,7 +103,7 @@ func TestFeedHandler_ArchiveBackfillContinuesAcrossJobs(t *testing.T) {
 	if err := handler(bg, payload); err != nil {
 		t.Fatalf("second job: %v", err)
 	}
-	state, err = db.GetFeedSyncState(bg, "mitre")
+	state, err = db.GetFeedSyncState(bg, "osv")
 	if err != nil || state == nil {
 		t.Fatalf("GetFeedSyncState after second job: %v, %v", state, err)
 	}

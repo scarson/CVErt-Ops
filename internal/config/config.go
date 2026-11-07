@@ -162,7 +162,10 @@ type Config struct {
 	RetentionAuditLogDays        int `env:"RETENTION_AUDIT_LOG_DAYS"                envDefault:"365"`
 	RetentionJobQueueHours       int `env:"RETENTION_JOB_QUEUE_HOURS"               envDefault:"24"`
 	RetentionSecurityEventsDays  int `env:"RETENTION_SECURITY_EVENTS_DAYS"          envDefault:"90"`
-	RetentionMaxRuntimeSeconds   int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
+	// Days a soft-deleted watchlist item is kept before it is purged; values below 7
+	// are raised to 7 so the alert evaluators can still resolve removed CVEs.
+	RetentionWatchlistItemsDays int `env:"RETENTION_WATCHLIST_ITEMS_DAYS"          envDefault:"30"`
+	RetentionMaxRuntimeSeconds  int `env:"RETENTION_MAX_RUNTIME_SECONDS"           envDefault:"300"`
 
 	// ── Logging ──────────────────────────────────────────────────────────────────
 	LogLevel  string `env:"LOG_LEVEL"  envDefault:"info"`

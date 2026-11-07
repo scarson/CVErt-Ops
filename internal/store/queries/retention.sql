@@ -90,3 +90,11 @@ WITH doomed AS (
     ORDER BY created_at LIMIT @batch_size::int
 )
 DELETE FROM audit_log al USING doomed WHERE al.id = doomed.id;
+
+-- name: CleanupWatchlistItems :execrows
+WITH doomed AS (
+    SELECT id FROM watchlist_items
+    WHERE deleted_at < @cutoff::timestamptz
+    ORDER BY deleted_at LIMIT @batch_size::int
+)
+DELETE FROM watchlist_items wi USING doomed WHERE wi.id = doomed.id;

@@ -182,7 +182,7 @@ func fetchGoldenFrom(t *testing.T, cursor []byte) *feed.FetchResult {
 	}
 
 	adapter := mitre.New(client)
-	t.Cleanup(adapter.Close)
+	t.Cleanup(func() { _ = adapter.Close() })
 
 	result, err := adapter.Fetch(context.Background(), cursor)
 	if err != nil {

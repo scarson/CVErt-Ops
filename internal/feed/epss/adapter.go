@@ -1,5 +1,5 @@
 // ABOUTME: EPSS (Exploit Prediction Scoring System) enrichment adapter.
-// ABOUTME: Downloads daily EPSS CSV scores and applies them via advisory-locked per-row DB writes.
+// ABOUTME: Downloads daily EPSS CSV scores and applies them in advisory-locked batches of DB writes.
 //
 // Unlike CVE feed adapters, this package does NOT implement feed.Adapter —
 // it writes directly to the database via the two-statement IS DISTINCT FROM pattern
@@ -7,9 +7,9 @@
 //
 // EPSS is published daily by FIRST.org at https://epss.empiricalsecurity.com/ as a
 // gzip-compressed CSV file containing ~250,000 scored CVEs. The adapter downloads
-// the file, parses the score_date from the comment on line 1, and applies each score
-// inside an advisory-locked per-row transaction that coordinates with the CVE merge
-// pipeline to prevent TOCTOU races (PLAN.md §5.3).
+// the file, parses the score_date from the comment on line 1, and applies the scores
+// in batches, each inside one transaction that holds the per-CVE advisory lock the
+// CVE merge pipeline takes, to prevent TOCTOU races (PLAN.md §5.3).
 //
 // CSV format (live-verified 2026-02-25):
 //
@@ -26,6 +26,7 @@ package epss
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"database/sql"
@@ -70,15 +71,34 @@ type Cursor struct {
 	ModelVersion string `json:"model_version,omitempty"`
 }
 
+// defaultBatchSize is how many CSV rows each apply transaction covers. Each CVE
+// in a batch holds one advisory lock until the batch commits, so this stays well
+// below the shared lock table size (max_locks_per_transaction × max_connections,
+// 6,400 with Postgres defaults).
+const defaultBatchSize = 500
+
+// scoreRow is one parsed row of the EPSS CSV.
+type scoreRow struct {
+	cveID string
+	score float64
+}
+
+// applyBatchFunc is the signature for the batched DB write function. It must not
+// keep rows after it returns; Apply reuses the slice for the next batch.
+type applyBatchFunc func(ctx context.Context, db *sql.DB, rows []scoreRow, asOfDate time.Time) error
+
 // applyRowFunc is the signature for the per-row DB write function.
 type applyRowFunc func(ctx context.Context, db *sql.DB, cveID string, score float64, asOfDate time.Time) error
 
 // Adapter downloads and applies EPSS scores to the canonical CVE corpus.
 // It does NOT implement feed.Adapter — call Apply for each sync cycle.
 type Adapter struct {
-	client      *http.Client
-	rateLimiter *rate.Limiter
-	applyRowFn  applyRowFunc
+	client       *http.Client
+	rateLimiter  *rate.Limiter
+	batchSize    int
+	applyBatchFn applyBatchFunc
+	// applyRowFn applies the rows of a batch that failed, one at a time.
+	applyRowFn applyRowFunc
 }
 
 // New creates an EPSS adapter. Pass nil to use http.DefaultClient.
@@ -90,9 +110,11 @@ func New(client *http.Client) *Adapter {
 	// One file per day; 24h limiter enforces that at the adapter level even if the
 	// scheduler fires early.
 	return &Adapter{
-		client:      feed.WrapClientWithUA(client),
-		rateLimiter: rate.NewLimiter(rate.Every(24*time.Hour), 1),
-		applyRowFn:  applyRow,
+		client:       feed.WrapClientWithUA(client),
+		rateLimiter:  rate.NewLimiter(rate.Every(24*time.Hour), 1),
+		batchSize:    defaultBatchSize,
+		applyBatchFn: applyBatch,
+		applyRowFn:   applyRow,
 	}
 }
 
@@ -100,8 +122,9 @@ func New(client *http.Client) *Adapter {
 //
 // Download is skipped when the cursor's score_date (UTC date component) matches
 // today — the file is published once daily, roughly 12:00–14:00 UTC. When a
-// download does occur, each of the ~250,000 rows is applied inside its own
-// advisory-locked transaction coordinating with the merge pipeline (PLAN.md §5.3).
+// download does occur, the ~250,000 rows are applied in batches of batchSize, each
+// in one advisory-locked transaction coordinating with the merge pipeline
+// (PLAN.md §5.3).
 //
 // IMPORTANT: Do not inspect RowsAffected from either DB statement. Both the
 // IS DISTINCT FROM guard (Statement 1) and the WHERE NOT EXISTS guard (Statement 2)
@@ -152,8 +175,15 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		return nil, fmt.Errorf("epss: HTTP %d", resp.StatusCode)
 	}
 
+	// Read the whole compressed file before applying any row. The feed client's
+	// timeout covers reading the body, so applying rows while the body streams
+	// in would let a slow apply fail the download partway through the file.
 	const maxEPSSSize = 50 << 20 // 50 MB (compressed stream limit)
-	gz, err := gzip.NewReader(io.LimitReader(resp.Body, maxEPSSSize))
+	compressed, err := io.ReadAll(io.LimitReader(resp.Body, maxEPSSSize))
+	if err != nil {
+		return nil, fmt.Errorf("epss: download: %w", err)
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(compressed))
 	if err != nil {
 		return nil, fmt.Errorf("epss: gzip reader: %w", err)
 	}
@@ -199,6 +229,7 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		return nil, fmt.Errorf("epss: read csv header: %w", err)
 	}
 
+	batch := make([]scoreRow, 0, a.batchSize)
 	for {
 		record, err := cr.Read()
 		if err == io.EOF {
@@ -224,15 +255,17 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 			continue
 		}
 
-		if err := a.applyRowFn(ctx, db, cveID, score, asOfDate); err != nil {
-			// Every remaining row would fail the same way, and returning a cursor
-			// would record the run as complete with rows still unapplied.
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, fmt.Errorf("epss: apply interrupted at %s: %w", cveID, ctxErr)
+		batch = append(batch, scoreRow{cveID: cveID, score: score})
+		if len(batch) == a.batchSize {
+			if err := a.applyRows(ctx, db, batch, asOfDate); err != nil {
+				return nil, err
 			}
-			slog.WarnContext(ctx, "epss: skipping row with DB error",
-				"cve_id", cveID, "error", err)
-			continue
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		if err := a.applyRows(ctx, db, batch, asOfDate); err != nil {
+			return nil, err
 		}
 	}
 
@@ -244,9 +277,110 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 	return nextCursorJSON, nil
 }
 
+// applyRows applies one batch. When the batch fails for any reason other than
+// the end of ctx, its rows are applied one at a time, so a row the database
+// rejects costs only that row. Returns an error only when ctx has ended.
+func (a *Adapter) applyRows(ctx context.Context, db *sql.DB, rows []scoreRow, asOfDate time.Time) error {
+	err := a.applyBatchFn(ctx, db, rows, asOfDate)
+	if err == nil {
+		return nil
+	}
+	// Every remaining row would fail the same way, and returning a cursor
+	// would record the run as complete with rows still unapplied.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("epss: apply interrupted at %s: %w", rows[0].cveID, ctxErr)
+	}
+	slog.WarnContext(ctx, "epss: batch failed; applying its rows one at a time",
+		"first_cve_id", rows[0].cveID, "rows", len(rows), "error", err)
+
+	for _, r := range rows {
+		if err := a.applyRowFn(ctx, db, r.cveID, r.score, asOfDate); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("epss: apply interrupted at %s: %w", r.cveID, ctxErr)
+			}
+			slog.WarnContext(ctx, "epss: skipping row with DB error",
+				"cve_id", r.cveID, "error", err)
+		}
+	}
+	return nil
+}
+
+// applyBatch executes the two-statement EPSS pattern for a batch of rows inside
+// one transaction. Both statements run unconditionally — do NOT inspect
+// RowsAffected (PLAN.md §5.3).
+//
+// The transaction first takes the merge pipeline's advisory lock
+// (merge.CVEAdvisoryKey) for every CVE in the batch, in ascending key order, as
+// the search index rebuild does. This prevents the TOCTOU race where a concurrent
+// CVE ingest inserts a row after Statement 1 runs but before Statement 2 can write
+// to epss_staging. Merge's late-binding PK migration takes a second lock out of
+// key order, so a batch can deadlock with it; Postgres then aborts one of the two
+// transactions, and when it aborts the batch, applyRows applies the rows one at a
+// time, holding one lock at a time.
+func applyBatch(ctx context.Context, db *sql.DB, rows []scoreRow, asOfDate time.Time) error {
+	cveIDs, scores := latestScores(rows)
+	keys := make([]int64, len(cveIDs))
+	for i, id := range cveIDs {
+		keys[i] = merge.CVEAdvisoryKey(id)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	// Rollback is a no-op after Commit; always safe to defer.
+	defer func() { _ = tx.Rollback() }()
+
+	q := generated.New(tx)
+
+	if err := q.LockCVEAdvisoryKeys(ctx, keys); err != nil {
+		return fmt.Errorf("advisory locks: %w", err)
+	}
+
+	// Statement 1: update cves.epss_score for each CVE that exists AND whose score
+	// changed. IS DISTINCT FROM handles NULL-safe comparison per row.
+	if err := q.UpdateCVEEPSSBatch(ctx, generated.UpdateCVEEPSSBatchParams{
+		CveIds:     cveIDs,
+		EpssScores: scores,
+	}); err != nil {
+		return fmt.Errorf("update cve epss: %w", err)
+	}
+
+	// Statement 2: stage the score of each CVE that does not yet exist in cves.
+	// WHERE NOT EXISTS is evaluated DB-side within this transaction.
+	if err := q.UpsertEPSSStagingBatch(ctx, generated.UpsertEPSSStagingBatchParams{
+		CveIds:     cveIDs,
+		EpssScores: scores,
+		AsOfDate:   asOfDate,
+	}); err != nil {
+		return fmt.Errorf("upsert epss staging: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// latestScores returns the CVE IDs in rows, each once, paired with the last score
+// rows gives each one. Applying the rows one at a time in file order ends with the
+// same scores, and the batch statements need unique CVE IDs.
+func latestScores(rows []scoreRow) ([]string, []float64) {
+	index := make(map[string]int, len(rows))
+	cveIDs := make([]string, 0, len(rows))
+	scores := make([]float64, 0, len(rows))
+	for _, r := range rows {
+		if i, seen := index[r.cveID]; seen {
+			scores[i] = r.score
+			continue
+		}
+		index[r.cveID] = len(cveIDs)
+		cveIDs = append(cveIDs, r.cveID)
+		scores = append(scores, r.score)
+	}
+	return cveIDs, scores
+}
+
 // applyRow executes the two-statement EPSS pattern for a single CVE inside an
-// advisory-locked transaction. Both statements run unconditionally — do NOT
-// inspect RowsAffected (PLAN.md §5.3).
+// advisory-locked transaction. Apply uses it for the rows of a batch that failed.
+// Both statements run unconditionally — do NOT inspect RowsAffected (PLAN.md §5.3).
 //
 // Advisory lock key matches the merge pipeline exactly (merge.CVEAdvisoryKey),
 // preventing the TOCTOU race where a concurrent CVE ingest inserts a row after

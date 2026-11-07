@@ -1,0 +1,228 @@
+// ABOUTME: Integration tests for the batched EPSS apply against a real Postgres database.
+// ABOUTME: Covers the two-statement write, staging of unknown CVEs, and the merge advisory lock.
+package epss_test
+
+import (
+	"bytes"
+	"compress/gzip"
+	"context"
+	"database/sql"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/feed/epss"
+	"github.com/scarson/cvert-ops/internal/merge"
+	"github.com/scarson/cvert-ops/internal/testutil"
+)
+
+// applyFile serves rows as an EPSS file dated the day before and applies it
+// with a new adapter, so the adapter's daily rate limit never blocks a call.
+func applyFile(t *testing.T, db *sql.DB, rows ...string) {
+	t.Helper()
+	if _, err := fileAdapter(t, rows...).Apply(context.Background(), db, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+}
+
+// fileAdapter returns a new adapter whose download serves rows as an EPSS file
+// dated the day before.
+func fileAdapter(t *testing.T, rows ...string) *epss.Adapter {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	yesterday := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	fmt.Fprintf(gz, "#model_version:v2025.03.14,score_date:%s\n", yesterday) //nolint:errcheck // test helper
+	fmt.Fprintln(gz, "cve,epss,percentile")                                  //nolint:errcheck // test helper
+	fmt.Fprintln(gz, strings.Join(rows, "\n"))                               //nolint:errcheck // test helper
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	body := buf.Bytes()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &http.Client{Transport: testutil.NewURLRewriteTransport(
+		"https://epss.empiricalsecurity.com", srv.URL, http.DefaultTransport)}
+	return epss.New(client)
+}
+
+func seedCVE(t *testing.T, db *testutil.TestDB, cveID string) {
+	t.Helper()
+	if err := merge.Ingest(context.Background(), db.Store, feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+	}, "nvd"); err != nil {
+		t.Fatalf("merge.Ingest %s: %v", cveID, err)
+	}
+}
+
+type epssState struct {
+	score   sql.NullFloat64
+	updated sql.NullTime
+}
+
+func cveEPSS(t *testing.T, db *sql.DB, cveID string) epssState {
+	t.Helper()
+	var s epssState
+	if err := db.QueryRowContext(context.Background(),
+		"SELECT epss_score, date_epss_updated FROM cves WHERE cve_id = $1", cveID,
+	).Scan(&s.score, &s.updated); err != nil {
+		t.Fatalf("read %s: %v", cveID, err)
+	}
+	return s
+}
+
+func stagedScores(t *testing.T, db *sql.DB) map[string]float64 {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), "SELECT cve_id, epss_score FROM epss_staging")
+	if err != nil {
+		t.Fatalf("read staging: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	got := map[string]float64{}
+	for rows.Next() {
+		var id string
+		var score float64
+		if err := rows.Scan(&id, &score); err != nil {
+			t.Fatalf("scan staging: %v", err)
+		}
+		got[id] = score
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("staging rows: %v", err)
+	}
+	return got
+}
+
+// Scores for known CVEs land on cves, scores for unknown CVEs land in
+// epss_staging and nowhere else, and a CVE listed twice keeps its later score.
+func TestApply_WritesKnownCVEsAndStagesUnknownCVEs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	db := testutil.NewTestDB(t)
+	seedCVE(t, db, "CVE-2024-1001")
+	seedCVE(t, db, "CVE-2024-1002")
+
+	applyFile(t, db.DB(),
+		"CVE-2024-1001,0.5,0.9",
+		"CVE-2024-1002,0,0.1",
+		"CVE-2024-9001,0.7,0.95",
+		"CVE-2024-1001,0.6,0.92",
+	)
+
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); !got.score.Valid || got.score.Float64 != 0.6 {
+		t.Errorf("CVE-2024-1001 epss_score = %v, want 0.6 (the later row)", got.score)
+	}
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1002"); !got.score.Valid || got.score.Float64 != 0 {
+		t.Errorf("CVE-2024-1002 epss_score = %v, want 0 (not NULL)", got.score)
+	}
+	staged := stagedScores(t, db.DB())
+	if fmt.Sprint(staged) != fmt.Sprint(map[string]float64{"CVE-2024-9001": 0.7}) {
+		t.Errorf("epss_staging = %v, want only CVE-2024-9001 = 0.7", staged)
+	}
+}
+
+// date_epss_updated moves only when a CVE's score changes, so the EPSS alert
+// evaluator does not re-evaluate CVEs whose scores are the same as yesterday.
+func TestApply_UnchangedScoreKeepsUpdateTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	db := testutil.NewTestDB(t)
+	seedCVE(t, db, "CVE-2024-1001")
+	seedCVE(t, db, "CVE-2024-1002")
+
+	applyFile(t, db.DB(), "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.3,0.5", "CVE-2024-9001,0.7,0.9")
+	firstSame := cveEPSS(t, db.DB(), "CVE-2024-1001")
+	firstChanged := cveEPSS(t, db.DB(), "CVE-2024-1002")
+
+	applyFile(t, db.DB(), "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.4,0.6", "CVE-2024-9001,0.8,0.9")
+
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); !got.updated.Time.Equal(firstSame.updated.Time) {
+		t.Errorf("unchanged score moved date_epss_updated from %v to %v", firstSame.updated.Time, got.updated.Time)
+	}
+	got := cveEPSS(t, db.DB(), "CVE-2024-1002")
+	if got.score.Float64 != 0.4 || !got.updated.Time.After(firstChanged.updated.Time) {
+		t.Errorf("changed score: got %v at %v, want 0.4 after %v", got.score, got.updated.Time, firstChanged.updated.Time)
+	}
+	if staged := stagedScores(t, db.DB()); staged["CVE-2024-9001"] != 0.8 {
+		t.Errorf("epss_staging = %v, want CVE-2024-9001 updated to 0.8", staged)
+	}
+}
+
+// The apply takes the merge pipeline's per-CVE advisory lock (PLAN.md §5.3),
+// so it waits while a merge of that CVE is in progress and writes after it.
+func TestApply_WaitsForMergeAdvisoryLock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	seedCVE(t, db, "CVE-2024-1001")
+
+	// Stand-in for a merge in progress: hold the merge lock for the CVE.
+	mergeTx, err := db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = mergeTx.Rollback() }()
+	if _, err := mergeTx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)",
+		merge.CVEAdvisoryKey("CVE-2024-1001")); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+
+	adapter := fileAdapter(t, "CVE-2024-1001,0.5,0.9")
+	var applyErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, applyErr = adapter.Apply(ctx, db.DB(), nil)
+	}()
+
+	// Wait until the apply is blocked on an advisory lock.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := db.DB().QueryRowContext(ctx,
+			"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted").Scan(&waiting); err != nil {
+			t.Fatalf("read pg_locks: %v", err)
+		}
+		if waiting > 0 {
+			break
+		}
+		select {
+		case <-done:
+			t.Fatal("Apply finished while the merge lock was held")
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Apply never waited on an advisory lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); got.score.Valid {
+		t.Errorf("epss_score = %v while the merge lock was held, want NULL", got.score)
+	}
+
+	if err := mergeTx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	<-done
+	if applyErr != nil {
+		t.Fatalf("Apply: %v", applyErr)
+	}
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); got.score.Float64 != 0.5 {
+		t.Errorf("epss_score = %v after the merge lock was released, want 0.5", got.score)
+	}
+}

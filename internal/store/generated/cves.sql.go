@@ -834,6 +834,28 @@ func (q *Queries) UpdateCVEEPSS(ctx context.Context, arg UpdateCVEEPSSParams) er
 	return err
 }
 
+const updateCVEEPSSBatch = `-- name: UpdateCVEEPSSBatch :exec
+UPDATE cves AS c
+SET epss_score = s.epss_score, date_epss_updated = now()
+FROM (
+    SELECT unnest($1::text[]) AS cve_id,
+           unnest($2::double precision[]) AS epss_score
+) AS s
+WHERE c.cve_id = s.cve_id AND c.epss_score IS DISTINCT FROM s.epss_score
+`
+
+type UpdateCVEEPSSBatchParams struct {
+	CveIds     []string
+	EpssScores []float64
+}
+
+// Two-statement EPSS pattern step 1 for a batch: update each live CVE row whose
+// score changed. cve_ids[i] pairs with epss_scores[i]; cve_ids must not repeat.
+func (q *Queries) UpdateCVEEPSSBatch(ctx context.Context, arg UpdateCVEEPSSBatchParams) error {
+	_, err := q.db.ExecContext(ctx, updateCVEEPSSBatch, pq.Array(arg.CveIds), pq.Array(arg.EpssScores))
+	return err
+}
+
 const upsertCVE = `-- name: UpsertCVE :exec
 INSERT INTO cves (
     cve_id, status, date_published, date_modified_source_max,
@@ -1008,5 +1030,34 @@ type UpsertEPSSStagingParams struct {
 // statement and UpdateCVEEPSS run unconditionally for every CSV row.
 func (q *Queries) UpsertEPSSStaging(ctx context.Context, arg UpsertEPSSStagingParams) error {
 	_, err := q.db.ExecContext(ctx, upsertEPSSStaging, arg.Column1, arg.Column2, arg.Column3)
+	return err
+}
+
+const upsertEPSSStagingBatch = `-- name: UpsertEPSSStagingBatch :exec
+INSERT INTO epss_staging (cve_id, epss_score, as_of_date)
+SELECT s.cve_id, s.epss_score, $1::date
+FROM (
+    SELECT unnest($2::text[]) AS cve_id,
+           unnest($3::double precision[]) AS epss_score
+) AS s
+WHERE NOT EXISTS (SELECT 1 FROM cves WHERE cves.cve_id = s.cve_id)
+ON CONFLICT (cve_id) DO UPDATE
+    SET epss_score  = EXCLUDED.epss_score,
+        as_of_date  = EXCLUDED.as_of_date,
+        ingested_at = now()
+    WHERE epss_staging.epss_score IS DISTINCT FROM EXCLUDED.epss_score
+`
+
+type UpsertEPSSStagingBatchParams struct {
+	AsOfDate   time.Time
+	CveIds     []string
+	EpssScores []float64
+}
+
+// Two-statement EPSS pattern step 2 for a batch: stage each score whose CVE does
+// not yet exist in cves. Same guards as UpsertEPSSStaging; cve_ids must not
+// repeat, because ON CONFLICT DO UPDATE cannot change one row twice.
+func (q *Queries) UpsertEPSSStagingBatch(ctx context.Context, arg UpsertEPSSStagingBatchParams) error {
+	_, err := q.db.ExecContext(ctx, upsertEPSSStagingBatch, arg.AsOfDate, pq.Array(arg.CveIds), pq.Array(arg.EpssScores))
 	return err
 }

@@ -177,6 +177,7 @@ func TestLoad_Defaults(t *testing.T) {
 		{"RetentionNotifDeliveriesDays", cfg.RetentionNotifDeliveriesDays, 90},
 		{"RetentionAuditLogDays", cfg.RetentionAuditLogDays, 365},
 		{"RetentionJobQueueHours", cfg.RetentionJobQueueHours, 24},
+		{"RetentionWatchlistItemsDays", cfg.RetentionWatchlistItemsDays, 30},
 		{"RetentionMaxRuntimeSeconds", cfg.RetentionMaxRuntimeSeconds, 300},
 		// MFA
 		{"MFARequiredSiteAdmins", cfg.MFARequiredSiteAdmins, false},

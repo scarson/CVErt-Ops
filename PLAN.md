@@ -2088,6 +2088,7 @@ Retention defaults should be generous enough to be useful out-of-the-box but bou
 | `notification_deliveries` | 90 days | Enterprise: configurable | Delivery log; useful for debugging. |
 | `report_runs` | 1 year | Enterprise: configurable | Includes rendered report content. |
 | `ai_usage_counters` | Indefinite (rolled up monthly) | — | Daily granularity retained for 90 days; monthly aggregates kept indefinitely for billing/audit. |
+| `watchlist_items` (removed items) | 30 days after removal (`RETENTION_WATCHLIST_ITEMS_DAYS`), minimum 7 | — | Removing an item, or replacing a watchlist's items, soft-deletes rows; the cleanup job hard-deletes rows whose `deleted_at` is older than the window. Live items are never purged. The batch and EPSS alert evaluators read CVE items removed since their cursor to resolve those CVEs' events, and the EPSS evaluator can hold its cursor for three daily runs (§10.3, cursor advancement), so a configured window below 7 days is raised to 7. |
 
 ### 21.3 Cleanup Implementation
 
@@ -2124,6 +2125,7 @@ WHERE p.id = doomed.id;
 - `notification_deliveries(created_at)` (or whichever timestamp drives retention)
 - `feed_fetch_log(started_at)`
 - `alert_rule_runs(started_at)`
+- `watchlist_items(deleted_at) WHERE deleted_at IS NOT NULL` (partial: holds only removed items)
 - etc.
 
 **Logging:**

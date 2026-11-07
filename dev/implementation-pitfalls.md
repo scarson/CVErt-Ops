@@ -2067,22 +2067,29 @@ Also: `succeeded`/`dead` rows are pruned after 24 hours by the retention cleanup
 
 ---
 
-### ARCH-8: Semver Version Range Matching Cannot Use String Comparison
+### ARCH-8: Version Comparison Must Use the Ecosystem's Native Ordering
 
-**The Issue:** No version range field exists in the DSL (§10.1) or watchlist items (§9.2) at MVP. If one is added without explicit library guidance, the "obvious" implementation uses string comparison.
+**The Issue:** No version range field exists in the DSL (§10.1) or watchlist items (§9.2) at MVP. If one is added without explicit guidance, the "obvious" implementation uses string comparison or a semver library for every ecosystem.
 
-**Why String Comparison Fails Silently:** Semver is not lexicographically ordered. `"2.10.0" < "2.9.0"` in string comparison (because `"1" < "9"`), but `v2.10.0 > v2.9.0` per semver spec. A range check `version <= "2.9.0"` would falsely include `2.10.0`, `2.11.0`, `2.100.0` — all of which should NOT match. Alternatively, it falsely excludes them depending on the comparison direction. The bugs are silent: no error, no panic, just wrong match results.
+**Why Both Fail Silently:** Versions are not lexicographically ordered: `"2.10.0" < "2.9.0"` in string comparison (because `"1" < "9"`), so a range check `version <= "2.9.0"` falsely includes `2.10.0`. Semver is only correct for ecosystems that follow it. It orders Maven's `1.0-sp` below `1.0` (Maven orders it above), cannot read PEP 440's `1.0.post1`, and ignores dpkg's epoch (`1:1.0` is above `2.0`) and tilde (`1.0~rc1` is below `1.0`). The bugs are silent: no error, no panic, just wrong match results, including a false "not affected".
 
-**The Decision:** Any future implementation of version range matching — in watchlist items OR in an `affected.version` DSL field — must use `github.com/Masterminds/semver/v3` constraint checking:
+**The Decision:** Every version comparison goes through `internal/version` (PLAN.md §9.2 holds the rule): `Check` for an OSV ecosystem, `CheckNumeric` for a product with no ecosystem. Both return `Affected`, `NotAffected` or `CannotEvaluate`, whose zero value is `CannotEvaluate`.
 ```go
-constraint, _ := semver.NewConstraint("<= 2.9.0")
-version, _ := semver.NewVersion("2.10.0")
-matches := constraint.Check(version) // correctly false
+status, err := version.Check("Ubuntu:26.04:LTS", "8.5.4-0ubuntu1.4",
+	version.Range{Introduced: "0", Fixed: "8.5.4-0ubuntu1.5"})
+// status is version.Affected; err is non-nil exactly when status is CannotEvaluate
 ```
 
-**The Lesson:** Semantic versioning is not string sorting. Strings and semver share a superficial resemblance (both are character sequences) but have fundamentally different ordering. Never use `strings.Compare`, `<`, or `>` on version strings. Always use a semver-aware library. This is a common mistake that produces wrong results across the entire version range without any runtime indication of failure.
+**Never call `github.com/google/osv-scalibr/semantic` directly.** A depguard rule in `.golangci.yml` enforces this. `semantic.Parse` returns no error for nearly any string outside Debian epochs: `banana` parses in every ecosystem, and sorts below `1.0.0` in npm and PyPI but above it in Debian. PyPI keeps anything outside PEP 440 as a "legacy" version below all others. `internal/version` checks each ecosystem's syntax first for this reason.
 
-**Status:** Preventive guidance — semver not yet implemented. Masterminds/semver not in go.mod.
+**Three traps in the data, all handled in `internal/version`:**
+- `introduced: "0"` means "before every version" and must not be compared: `0~rc1` and `0.0.0-alpha` sort below a literal `0` but are affected.
+- A stored range with no upper bound is ambiguous. GHSA stores `Introduced: "0", Fixed: ""` when no patched version exists, whatever the advisory's real upper limit is, so it reports "cannot evaluate".
+- OSV `GIT` ranges hold commit hashes, which can start with a digit and look like versions in a loose syntax. They report "cannot evaluate".
+
+**The Lesson:** Version ordering belongs to the ecosystem, not to a format the versions happen to resemble. Never use `strings.Compare`, `<`, or `>` on version strings, and never apply one ecosystem's rules to another. When the answer gates a security decision, a parser's success is not evidence the input was a version: check what it does with garbage before trusting it, and make "I cannot tell" a result rather than letting it fall through to "not affected".
+
+**Status:** Implemented in `internal/version`. No caller yet: watchlists and the DSL have no version fields, and no check endpoint exists.
 
 ---
 

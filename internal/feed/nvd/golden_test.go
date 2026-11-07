@@ -3,12 +3,14 @@
 package nvd_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync/atomic"
 	"testing"
@@ -19,8 +21,115 @@ import (
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
+// goldenPatches returns the patches the adapter builds from the captured responses, keyed by CVE ID.
+func goldenPatches(t *testing.T) map[string]feed.CanonicalPatch {
+	t.Helper()
+	patches, _ := fetchGolden(t)
+	byID := make(map[string]feed.CanonicalPatch, len(patches))
+	for _, p := range patches {
+		byID[p.CVEID] = p
+	}
+	return byID
+}
+
+// nodeJSCriteria is the real criteria string NVD uses for Node.js itself.
+const nodeJSCriteria = "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*"
+
+func TestFetch_GoldenCPEMatches_OneCriteriaKeepsEveryBranchRange(t *testing.T) {
+	p := goldenPatches(t)["CVE-2026-56847"]
+
+	want := []feed.CPEMatch{
+		{CPE: nodeJSCriteria, CPENormalized: nodeJSCriteria, VersionStartIncluding: "22.0", VersionEndIncluding: "22.23.1", Vulnerable: true},
+		{CPE: nodeJSCriteria, CPENormalized: nodeJSCriteria, VersionStartIncluding: "24.0.0", VersionEndIncluding: "24.18.0", Vulnerable: true},
+		{CPE: nodeJSCriteria, CPENormalized: nodeJSCriteria, VersionStartIncluding: "26.0.0", VersionEndIncluding: "26.5.0", Vulnerable: true},
+	}
+	if !slices.Equal(p.CPEMatches, want) {
+		t.Errorf("CPEMatches = %+v, want %+v", p.CPEMatches, want)
+	}
+	if len(p.AffectedCPEs) != 1 || p.AffectedCPEs[0].CPENormalized != nodeJSCriteria {
+		t.Errorf("AffectedCPEs = %+v, want the one criteria string", p.AffectedCPEs)
+	}
+}
+
+func TestFetch_GoldenCPEMatches_VersionEndExcluding(t *testing.T) {
+	p := goldenPatches(t)["CVE-2026-111497"]
+
+	want := feed.CPEMatch{
+		CPE:                   nodeJSCriteria,
+		CPENormalized:         nodeJSCriteria,
+		VersionStartIncluding: "23.0.0",
+		VersionEndExcluding:   "24.22.1",
+		Vulnerable:            true,
+	}
+	if !slices.Contains(p.CPEMatches, want) {
+		t.Errorf("CPEMatches missing %+v; got %+v", want, p.CPEMatches)
+	}
+}
+
+// A firmware CVE names its hardware as vulnerable: false. The hardware stays in
+// AffectedCPEs, which is a material_hash input and what CPE watchlist items match.
+func TestFetch_GoldenCPEMatches_RunningOnPlatformKeepsItsFlag(t *testing.T) {
+	p := goldenPatches(t)["CVE-2017-12542"]
+
+	const (
+		firmware = "cpe:2.3:o:hp:integrated_lights-out_4_firmware:*:*:*:*:*:*:*:*"
+		hardware = "cpe:2.3:h:hp:integrated_lights-out_4:-:*:*:*:*:*:*:*"
+	)
+	want := []feed.CPEMatch{
+		{CPE: firmware, CPENormalized: firmware, VersionEndExcluding: "2.53", Vulnerable: true},
+		{CPE: hardware, CPENormalized: hardware, Vulnerable: false},
+	}
+	if !slices.Equal(p.CPEMatches, want) {
+		t.Errorf("CPEMatches = %+v, want %+v", p.CPEMatches, want)
+	}
+	if !slices.ContainsFunc(p.AffectedCPEs, func(c feed.AffectedCPE) bool { return c.CPENormalized == hardware }) {
+		t.Errorf("AffectedCPEs dropped the vulnerable: false hardware CPE: %+v", p.AffectedCPEs)
+	}
+}
+
+func TestFetch_GoldenCPEMatches_NotYetAnalysedHasNone(t *testing.T) {
+	p := goldenPatches(t)["CVE-2026-107832"]
+
+	if p.CVEID == "" {
+		t.Fatal("CVE-2026-107832 missing from golden page")
+	}
+	if len(p.CPEMatches) != 0 {
+		t.Errorf("CPEMatches = %+v, want none before NVD analysis", p.CPEMatches)
+	}
+}
+
+// The raw payload is re-marshalled from the adapter's types, so it keeps a range
+// only if those types decode it.
+func TestFetch_GoldenRawPayloadKeepsRanges(t *testing.T) {
+	p := goldenPatches(t)["CVE-2026-111497"]
+
+	if !bytes.Contains(p.RawPayload, []byte(`"versionEndExcluding":"24.22.1"`)) {
+		t.Error("RawPayload lost versionEndExcluding")
+	}
+}
+
 // TestFetch_GoldenFiles runs the NVD adapter against captured real API responses.
 func TestFetch_GoldenFiles(t *testing.T) {
+	allPatches, requests := fetchGolden(t)
+
+	if len(allPatches) == 0 {
+		t.Fatal("expected patches from golden file, got 0")
+	}
+
+	// Verify each patch has required fields.
+	for i, p := range allPatches {
+		if p.CVEID == "" {
+			t.Errorf("patch[%d]: empty CVEID", i)
+		}
+	}
+
+	t.Logf("parsed %d patches from golden files across %d request(s)", len(allPatches), requests)
+}
+
+// fetchGolden serves the captured pages through a test server and returns every
+// patch the adapter builds from them, plus the number of requests it made.
+func fetchGolden(t *testing.T) ([]feed.CanonicalPatch, int64) {
+	t.Helper()
 	goldenDir := filepath.Join("testdata", "golden")
 	entries, err := os.ReadDir(goldenDir)
 	if err != nil {
@@ -99,17 +208,5 @@ func TestFetch_GoldenFiles(t *testing.T) {
 		cursor = result.NextCursor
 	}
 
-	if len(allPatches) == 0 {
-		t.Fatal("expected patches from golden file, got 0")
-	}
-
-	// Verify each patch has required fields.
-	for i, p := range allPatches {
-		if p.CVEID == "" {
-			t.Errorf("patch[%d]: empty CVEID", i)
-		}
-	}
-
-	t.Logf("parsed %d patches from golden files across %d request(s)",
-		len(allPatches), requestCount.Load())
+	return allPatches, requestCount.Load()
 }

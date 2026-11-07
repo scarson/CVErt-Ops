@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -86,7 +87,7 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, fmt.Errorf("mitre: download zip: %w", err)
 	}
 	defer func() { _ = os.Remove(tmpFile.Name()) }() //nolint:gosec // G703: path from os.CreateTemp
-	defer tmpFile.Close()                             //nolint:errcheck
+	defer tmpFile.Close()                            //nolint:errcheck
 
 	info, err := tmpFile.Stat()
 	if err != nil {
@@ -212,9 +213,29 @@ type cve5Reference struct {
 }
 
 type cve5Affected struct {
-	CPEs []string `json:"cpes"`
-	// Versions is polymorphic across CVE 5.0 history; not parsed into CanonicalPatch.
+	CPEs          []string `json:"cpes"`
+	Vendor        string   `json:"vendor"`
+	Product       string   `json:"product"`
+	PackageName   string   `json:"packageName"`
+	CollectionURL string   `json:"collectionURL"`
+	DefaultStatus string   `json:"defaultStatus"`
+	// Versions stays raw so that a CNA's malformed versions[] costs that entry's
+	// versions and not the whole CVE: see parseCNAVersions.
 	Versions json.RawMessage `json:"versions"`
+}
+
+type cve5Version struct {
+	Version         string              `json:"version"`
+	LessThan        string              `json:"lessThan"`
+	LessThanOrEqual string              `json:"lessThanOrEqual"`
+	Status          string              `json:"status"`
+	VersionType     string              `json:"versionType"`
+	Changes         []cve5VersionChange `json:"changes"`
+}
+
+type cve5VersionChange struct {
+	At     string `json:"at"`
+	Status string `json:"status"`
 }
 
 type cve5ProblemType struct {
@@ -324,6 +345,22 @@ func parseCVE5(r io.Reader) (*feed.CanonicalPatch, error) {
 		}
 	}
 
+	// CNA product and version data, as the CNA sent it.
+	for _, aff := range cna.Affected {
+		entry := feed.CNAAffected{
+			Vendor:        cleanCNAString(aff.Vendor),
+			Product:       cleanCNAString(aff.Product),
+			PackageName:   cleanCNAString(aff.PackageName),
+			CollectionURL: cleanCNAString(aff.CollectionURL),
+			DefaultStatus: cleanCNAString(aff.DefaultStatus),
+			Versions:      parseCNAVersions(aff.Versions),
+		}
+		if entry.Vendor == "" && entry.Product == "" && entry.PackageName == "" && len(entry.Versions) == 0 {
+			continue
+		}
+		patch.CNAAffected = append(patch.CNAAffected, entry)
+	}
+
 	// CVSS: prefer CNA metrics, fall back to first ADP that has scores.
 	applyCVSS(patch, cna.Metrics)
 	if patch.CVSSv3Score == nil && patch.CVSSv4Score == nil {
@@ -336,6 +373,44 @@ func parseCVE5(r io.Reader) (*feed.CanonicalPatch, error) {
 	}
 
 	return patch, nil
+}
+
+// parseCNAVersions converts a raw CVE 5 versions[] array. It returns nil when the
+// array does not decode: the entry keeps its product and default status, and the
+// rest of the CVE record still merges.
+func parseCNAVersions(raw json.RawMessage) []feed.CNAVersion {
+	if len(raw) == 0 {
+		return nil
+	}
+	var versions []cve5Version
+	if err := json.Unmarshal(raw, &versions); err != nil {
+		slog.Warn("skipping malformed CNA versions", "feed", SourceName, "error", err)
+		return nil
+	}
+	out := make([]feed.CNAVersion, 0, len(versions))
+	for _, v := range versions {
+		version := feed.CNAVersion{
+			Version:         cleanCNAString(v.Version),
+			LessThan:        cleanCNAString(v.LessThan),
+			LessThanOrEqual: cleanCNAString(v.LessThanOrEqual),
+			Status:          cleanCNAString(v.Status),
+			VersionType:     cleanCNAString(v.VersionType),
+		}
+		for _, c := range v.Changes {
+			version.Changes = append(version.Changes, feed.CNAVersionChange{
+				At:     cleanCNAString(c.At),
+				Status: cleanCNAString(c.Status),
+			})
+		}
+		out = append(out, version)
+	}
+	return out
+}
+
+// cleanCNAString removes NUL, which Postgres rejects in text and in jsonb even
+// when escaped, and detaches the string from the decode buffer.
+func cleanCNAString(s string) string {
+	return strings.Clone(feed.StripNullBytes(s))
 }
 
 // applyCVSS sets CVSS v3/v4 fields on patch from the given metrics slice.
@@ -376,4 +451,3 @@ func applyCVSS(patch *feed.CanonicalPatch, metrics []cve5MetricEntry) {
 		}
 	}
 }
-

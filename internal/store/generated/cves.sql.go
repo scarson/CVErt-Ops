@@ -35,6 +35,26 @@ func (q *Queries) DeleteCVEAffectedPackages(ctx context.Context, cveID string) e
 	return err
 }
 
+const deleteCVECNAAffected = `-- name: DeleteCVECNAAffected :exec
+DELETE FROM cve_cna_affected WHERE cve_id = $1
+`
+
+// Delete all CNA affected rows before re-inserting in merge pipeline (§5.1).
+func (q *Queries) DeleteCVECNAAffected(ctx context.Context, cveID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCVECNAAffected, cveID)
+	return err
+}
+
+const deleteCVECPEMatches = `-- name: DeleteCVECPEMatches :exec
+DELETE FROM cve_cpe_matches WHERE cve_id = $1
+`
+
+// Delete all CPE match rows before re-inserting in merge pipeline (§5.1).
+func (q *Queries) DeleteCVECPEMatches(ctx context.Context, cveID string) error {
+	_, err := q.db.ExecContext(ctx, deleteCVECPEMatches, cveID)
+	return err
+}
+
 const deleteCVEReferences = `-- name: DeleteCVEReferences :exec
 DELETE FROM cve_references WHERE cve_id = $1
 `
@@ -297,6 +317,44 @@ func (q *Queries) GetCVEAffectedPackages(ctx context.Context, cveID string) ([]C
 	return items, nil
 }
 
+const getCVECNAAffected = `-- name: GetCVECNAAffected :many
+SELECT id, cve_id, vendor, product, package_name, collection_url, default_status, versions FROM cve_cna_affected
+WHERE cve_id = $1
+ORDER BY vendor, product, package_name, id
+`
+
+func (q *Queries) GetCVECNAAffected(ctx context.Context, cveID string) ([]CveCnaAffected, error) {
+	rows, err := q.db.QueryContext(ctx, getCVECNAAffected, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveCnaAffected
+	for rows.Next() {
+		var i CveCnaAffected
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Vendor,
+			&i.Product,
+			&i.PackageName,
+			&i.CollectionUrl,
+			&i.DefaultStatus,
+			&i.Versions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCVEReferences = `-- name: GetCVEReferences :many
 SELECT id, cve_id, url, url_canonical, tags FROM cve_references WHERE cve_id = $1 ORDER BY url_canonical
 `
@@ -364,6 +422,47 @@ func (q *Queries) GetCVESnapshot(ctx context.Context, cveID string) (GetCVESnaps
 	return i, err
 }
 
+const getCVEVulnerableCPEMatches = `-- name: GetCVEVulnerableCPEMatches :many
+SELECT id, cve_id, cpe, cpe_normalized, version_start_including, version_start_excluding, version_end_including, version_end_excluding, vulnerable FROM cve_cpe_matches
+WHERE cve_id = $1 AND vulnerable
+ORDER BY cpe_normalized, version_start_including, version_start_excluding,
+         version_end_including, version_end_excluding
+`
+
+// CPE matches for what a CVE affects: skips "running on" platform CPEs.
+func (q *Queries) GetCVEVulnerableCPEMatches(ctx context.Context, cveID string) ([]CveCpeMatch, error) {
+	rows, err := q.db.QueryContext(ctx, getCVEVulnerableCPEMatches, cveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CveCpeMatch
+	for rows.Next() {
+		var i CveCpeMatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.CveID,
+			&i.Cpe,
+			&i.CpeNormalized,
+			&i.VersionStartIncluding,
+			&i.VersionStartExcluding,
+			&i.VersionEndIncluding,
+			&i.VersionEndExcluding,
+			&i.Vulnerable,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getEPSSStaging = `-- name: GetEPSSStaging :one
 SELECT cve_id, epss_score, as_of_date, ingested_at FROM epss_staging WHERE cve_id = $1
 `
@@ -428,6 +527,71 @@ func (q *Queries) InsertAffectedPackage(ctx context.Context, arg InsertAffectedP
 		arg.Fixed,
 		arg.LastAffected,
 		arg.Events,
+	)
+	return err
+}
+
+const insertCNAAffected = `-- name: InsertCNAAffected :exec
+INSERT INTO cve_cna_affected (
+    cve_id, vendor, product, package_name, collection_url, default_status, versions
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertCNAAffectedParams struct {
+	CveID         string
+	Vendor        sql.NullString
+	Product       sql.NullString
+	PackageName   sql.NullString
+	CollectionUrl sql.NullString
+	DefaultStatus sql.NullString
+	Versions      json.RawMessage
+}
+
+func (q *Queries) InsertCNAAffected(ctx context.Context, arg InsertCNAAffectedParams) error {
+	_, err := q.db.ExecContext(ctx, insertCNAAffected,
+		arg.CveID,
+		arg.Vendor,
+		arg.Product,
+		arg.PackageName,
+		arg.CollectionUrl,
+		arg.DefaultStatus,
+		arg.Versions,
+	)
+	return err
+}
+
+const insertCPEMatch = `-- name: InsertCPEMatch :exec
+INSERT INTO cve_cpe_matches (
+    cve_id, cpe, cpe_normalized,
+    version_start_including, version_start_excluding,
+    version_end_including, version_end_excluding,
+    vulnerable
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertCPEMatchParams struct {
+	CveID                 string
+	Cpe                   string
+	CpeNormalized         string
+	VersionStartIncluding sql.NullString
+	VersionStartExcluding sql.NullString
+	VersionEndIncluding   sql.NullString
+	VersionEndExcluding   sql.NullString
+	Vulnerable            bool
+}
+
+func (q *Queries) InsertCPEMatch(ctx context.Context, arg InsertCPEMatchParams) error {
+	_, err := q.db.ExecContext(ctx, insertCPEMatch,
+		arg.CveID,
+		arg.Cpe,
+		arg.CpeNormalized,
+		arg.VersionStartIncluding,
+		arg.VersionStartExcluding,
+		arg.VersionEndIncluding,
+		arg.VersionEndExcluding,
+		arg.Vulnerable,
 	)
 	return err
 }

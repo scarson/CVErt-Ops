@@ -32,7 +32,7 @@ import (
 //  5. Compute material_hash — detect material changes
 //  6. Upsert cves — update canonical row (IS DISTINCT FROM guard on hash)
 //  7. Tombstone — NULL out CVSS/EPSS/KEV if status is rejected/withdrawn
-//  8. Delete + re-insert child tables — references, packages, CPEs
+//  8. Delete + re-insert child tables — references, packages, CPEs, CPE matches, CNA affected
 //     8.5. Upsert vendor enrichment — optional, only vendor-specific adapters
 //  9. Apply staged EPSS — drain epss_staging for this CVE (always delete)
 //  10. Upsert FTS index — update cve_search_index (IS DISTINCT FROM guard)
@@ -240,6 +240,12 @@ func Ingest(
 		}
 	}
 
+	// CPE match ranges and CNA affected entries. Neither is a material_hash input,
+	// so a change here alone does not fire alerts or bump date_modified_canonical.
+	if err := replaceVersionRanges(ctx, q, patch.CVEID, resolved); err != nil {
+		return err
+	}
+
 	// Step 8.5: upsert vendor enrichment (optional — only vendor-specific adapters populate this).
 	if patch.VendorEnrichment != nil {
 		enrichmentJSON := patch.VendorEnrichment.Data
@@ -292,6 +298,54 @@ func Ingest(
 	}
 
 	return tx.Commit()
+}
+
+// replaceVersionRanges rewrites a CVE's cve_cpe_matches and cve_cna_affected rows
+// from the resolved sources.
+func replaceVersionRanges(ctx context.Context, q *generated.Queries, cveID string, resolved ResolvedCVE) error {
+	if err := q.DeleteCVECPEMatches(ctx, cveID); err != nil {
+		return fmt.Errorf("merge: delete CPE matches: %w", err)
+	}
+	for _, m := range resolved.CPEMatches {
+		if err := q.InsertCPEMatch(ctx, generated.InsertCPEMatchParams{
+			CveID:                 cveID,
+			Cpe:                   m.CPE,
+			CpeNormalized:         m.CPENormalized,
+			VersionStartIncluding: dbutil.NullString(m.VersionStartIncluding),
+			VersionStartExcluding: dbutil.NullString(m.VersionStartExcluding),
+			VersionEndIncluding:   dbutil.NullString(m.VersionEndIncluding),
+			VersionEndExcluding:   dbutil.NullString(m.VersionEndExcluding),
+			Vulnerable:            m.Vulnerable,
+		}); err != nil {
+			return fmt.Errorf("merge: insert CPE match: %w", err)
+		}
+	}
+
+	if err := q.DeleteCVECNAAffected(ctx, cveID); err != nil {
+		return fmt.Errorf("merge: delete CNA affected: %w", err)
+	}
+	for _, a := range resolved.CNAAffected {
+		versions := a.Versions
+		if versions == nil {
+			versions = []feed.CNAVersion{}
+		}
+		versionsJSON, err := json.Marshal(versions)
+		if err != nil {
+			return fmt.Errorf("merge: marshal CNA versions: %w", err)
+		}
+		if err := q.InsertCNAAffected(ctx, generated.InsertCNAAffectedParams{
+			CveID:         cveID,
+			Vendor:        dbutil.NullString(a.Vendor),
+			Product:       dbutil.NullString(a.Product),
+			PackageName:   dbutil.NullString(a.PackageName),
+			CollectionUrl: dbutil.NullString(a.CollectionURL),
+			DefaultStatus: dbutil.NullString(a.DefaultStatus),
+			Versions:      versionsJSON,
+		}); err != nil {
+			return fmt.Errorf("merge: insert CNA affected: %w", err)
+		}
+	}
+	return nil
 }
 
 // --- sql.Null* conversion helpers ---
@@ -411,6 +465,8 @@ func migrateCVEPKRename(ctx context.Context, tx *sql.Tx, oldID, newID string) er
 		{"update references", "UPDATE cve_references SET cve_id = $2 WHERE cve_id = $1"},
 		{"update packages", "UPDATE cve_affected_packages SET cve_id = $2 WHERE cve_id = $1"},
 		{"update CPEs", "UPDATE cve_affected_cpes SET cve_id = $2 WHERE cve_id = $1"},
+		{"update CPE matches", "UPDATE cve_cpe_matches SET cve_id = $2 WHERE cve_id = $1"},
+		{"update CNA affected", "UPDATE cve_cna_affected SET cve_id = $2 WHERE cve_id = $1"},
 		{"update vendor enrichment", "UPDATE cve_vendor_enrichment SET cve_id = $2 WHERE cve_id = $1"},
 		{"update raw payloads", "UPDATE cve_raw_payloads SET cve_id = $2 WHERE cve_id = $1"},
 		{"update EPSS staging", "UPDATE epss_staging SET cve_id = $2 WHERE cve_id = $1"},
@@ -452,6 +508,8 @@ func migrateCVEPKMerge(ctx context.Context, tx *sql.Tx, oldID, newID string) err
 		{"delete old references", "DELETE FROM cve_references WHERE cve_id = $1"},
 		{"delete old packages", "DELETE FROM cve_affected_packages WHERE cve_id = $1"},
 		{"delete old CPEs", "DELETE FROM cve_affected_cpes WHERE cve_id = $1"},
+		{"delete old CPE matches", "DELETE FROM cve_cpe_matches WHERE cve_id = $1"},
+		{"delete old CNA affected", "DELETE FROM cve_cna_affected WHERE cve_id = $1"},
 		{"delete old vendor enrichment", "DELETE FROM cve_vendor_enrichment WHERE cve_id = $1"},
 		{"delete old raw payloads", "DELETE FROM cve_raw_payloads WHERE cve_id = $1"},
 		{"delete old EPSS staging", "DELETE FROM epss_staging WHERE cve_id = $1"},

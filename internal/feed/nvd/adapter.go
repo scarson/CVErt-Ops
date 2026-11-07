@@ -359,9 +359,13 @@ type nvdNode struct {
 }
 
 type nvdCPEMatch struct {
-	Criteria        string `json:"criteria"`
-	MatchCriteriaID string `json:"matchCriteriaId"`
-	Vulnerable      bool   `json:"vulnerable"`
+	Criteria              string `json:"criteria"`
+	MatchCriteriaID       string `json:"matchCriteriaId"`
+	Vulnerable            bool   `json:"vulnerable"`
+	VersionStartIncluding string `json:"versionStartIncluding,omitempty"`
+	VersionStartExcluding string `json:"versionStartExcluding,omitempty"`
+	VersionEndIncluding   string `json:"versionEndIncluding,omitempty"`
+	VersionEndExcluding   string `json:"versionEndExcluding,omitempty"`
 }
 
 type nvdReference struct {
@@ -508,7 +512,9 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 		})
 	}
 
-	// CPEs from configurations (deduplicated by normalized form).
+	// CPEs from configurations. AffectedCPEs holds each criteria string once and
+	// includes vulnerable: false entries, because it is a material_hash input and
+	// what CPE watchlist items match. CPEMatches holds every entry with its range.
 	cpeSeen := make(map[string]struct{})
 	for _, cfg := range cve.Configurations {
 		for _, node := range cfg.Nodes {
@@ -517,6 +523,15 @@ func cveToCanonical(cve nvdCVE) *feed.CanonicalPatch {
 					continue
 				}
 				normalized := strings.ToLower(strings.Clone(feed.StripNullBytes(match.Criteria)))
+				patch.CPEMatches = append(patch.CPEMatches, feed.CPEMatch{
+					CPE:                   strings.Clone(feed.StripNullBytes(match.Criteria)),
+					CPENormalized:         normalized,
+					VersionStartIncluding: strings.Clone(feed.StripNullBytes(match.VersionStartIncluding)),
+					VersionStartExcluding: strings.Clone(feed.StripNullBytes(match.VersionStartExcluding)),
+					VersionEndIncluding:   strings.Clone(feed.StripNullBytes(match.VersionEndIncluding)),
+					VersionEndExcluding:   strings.Clone(feed.StripNullBytes(match.VersionEndExcluding)),
+					Vulnerable:            match.Vulnerable,
+				})
 				if _, ok := cpeSeen[normalized]; ok {
 					continue
 				}

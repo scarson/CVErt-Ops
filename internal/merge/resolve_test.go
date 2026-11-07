@@ -3,6 +3,8 @@ package merge
 import (
 	"database/sql"
 	"encoding/json"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -35,6 +37,53 @@ func f64Ptr(f float64) *float64 { return &f }
 
 // boolPtr is a convenience helper for *bool literals in test data.
 func boolPtr(b bool) *bool { return &b }
+
+// ── CPE matches + CNA affected ────────────────────────────────────────────────
+
+func TestResolveCPEMatchesKeepEveryDistinctEntry(t *testing.T) {
+	t.Parallel()
+
+	const cpe = "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*"
+	branch24 := feed.CPEMatch{CPE: cpe, CPENormalized: cpe, VersionStartIncluding: "24.0.0", VersionEndExcluding: "24.22.1", Vulnerable: true}
+	branch22 := feed.CPEMatch{CPE: cpe, CPENormalized: cpe, VersionStartIncluding: "22.0.0", VersionEndExcluding: "22.23.4", Vulnerable: true}
+	branch22NotVulnerable := branch22
+	branch22NotVulnerable.Vulnerable = false
+
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceNVD, feed.CanonicalPatch{
+			CVEID:      "CVE-1",
+			CPEMatches: []feed.CPEMatch{branch24, branch22, branch24, branch22NotVulnerable},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	want := []feed.CPEMatch{branch22NotVulnerable, branch22, branch24}
+	if !slices.Equal(r.CPEMatches, want) {
+		t.Errorf("CPEMatches = %+v, want %+v", r.CPEMatches, want)
+	}
+}
+
+func TestResolveCNAAffectedRemovesRepeatsAcrossSources(t *testing.T) {
+	t.Parallel()
+
+	widget := feed.CNAAffected{Vendor: "Acme", Product: "Widget", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}}
+	gadget := feed.CNAAffected{Vendor: "Acme", Product: "Gadget", DefaultStatus: "unaffected"}
+
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget, gadget, widget}}),
+		makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{gadget}}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	want := []feed.CNAAffected{gadget, widget}
+	if !reflect.DeepEqual(r.CNAAffected, want) {
+		t.Errorf("CNAAffected = %+v, want %+v", r.CNAAffected, want)
+	}
+}
 
 // ── Status + IsWithdrawn ──────────────────────────────────────────────────────
 
@@ -652,8 +701,8 @@ func TestFirstStrFallsBackToUnknownSource(t *testing.T) {
 	t.Parallel()
 
 	patches := map[string]feed.CanonicalPatch{
-		SourceNVD:  {CVEID: "CVE-1", Status: ""},
-		"custom":   {CVEID: "CVE-1", Status: "Custom-Status"},
+		SourceNVD: {CVEID: "CVE-1", Status: ""},
+		"custom":  {CVEID: "CVE-1", Status: "Custom-Status"},
 	}
 	got := firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
 	if got != "Custom-Status" {
@@ -872,8 +921,8 @@ func TestResolve_PrioritySlicesNotCorrupted(t *testing.T) {
 	vec := "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
 
 	unknownPatch := feed.CanonicalPatch{
-		CVEID:       "CVE-2025-7777",
-		CVSSv3Score: &score,
+		CVEID:        "CVE-2025-7777",
+		CVSSv3Score:  &score,
 		CVSSv3Vector: &vec,
 	}
 

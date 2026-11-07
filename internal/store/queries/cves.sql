@@ -86,6 +86,14 @@ DELETE FROM cve_affected_packages WHERE cve_id = $1;
 -- Delete all CPE rows before re-inserting in merge pipeline (§5.1).
 DELETE FROM cve_affected_cpes WHERE cve_id = $1;
 
+-- name: DeleteCVECPEMatches :exec
+-- Delete all CPE match rows before re-inserting in merge pipeline (§5.1).
+DELETE FROM cve_cpe_matches WHERE cve_id = $1;
+
+-- name: DeleteCVECNAAffected :exec
+-- Delete all CNA affected rows before re-inserting in merge pipeline (§5.1).
+DELETE FROM cve_cna_affected WHERE cve_id = $1;
+
 -- name: InsertCVERawPayload :exec
 INSERT INTO cve_raw_payloads (cve_id, source_name, payload)
 VALUES ($1, $2, $3);
@@ -106,6 +114,21 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 INSERT INTO cve_affected_cpes (cve_id, cpe, cpe_normalized)
 VALUES ($1, $2, $3)
 ON CONFLICT (cve_id, cpe_normalized) DO NOTHING;
+
+-- name: InsertCPEMatch :exec
+INSERT INTO cve_cpe_matches (
+    cve_id, cpe, cpe_normalized,
+    version_start_including, version_start_excluding,
+    version_end_including, version_end_excluding,
+    vulnerable
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: InsertCNAAffected :exec
+INSERT INTO cve_cna_affected (
+    cve_id, vendor, product, package_name, collection_url, default_status, versions
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: UpsertCVESearchIndex :exec
 -- Weights: A=description (highest), B=CWE names, C=package names, D=CVE ID.
@@ -187,6 +210,18 @@ SELECT * FROM cve_affected_packages WHERE cve_id = $1 ORDER BY ecosystem, packag
 
 -- name: GetCVEAffectedCPEs :many
 SELECT * FROM cve_affected_cpes WHERE cve_id = $1 ORDER BY cpe_normalized;
+
+-- name: GetCVEVulnerableCPEMatches :many
+-- CPE matches for what a CVE affects: skips "running on" platform CPEs.
+SELECT * FROM cve_cpe_matches
+WHERE cve_id = $1 AND vulnerable
+ORDER BY cpe_normalized, version_start_including, version_start_excluding,
+         version_end_including, version_end_excluding;
+
+-- name: GetCVECNAAffected :many
+SELECT * FROM cve_cna_affected
+WHERE cve_id = $1
+ORDER BY vendor, product, package_name, id;
 
 -- name: GetCVESnapshot :one
 -- Returns the fields needed for alert delivery payloads.

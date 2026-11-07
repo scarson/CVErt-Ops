@@ -73,6 +73,20 @@ func (s *Store) GetCVEDetail(ctx context.Context, cveID string) (
 	return cve, refs, pkgs, cpes, nil
 }
 
+// GetCVEVersionRanges returns what a CVE affects by version: its vulnerable NVD
+// CPE matches, which skip "running on" platforms, and its CNA affected entries.
+func (s *Store) GetCVEVersionRanges(ctx context.Context, cveID string) ([]generated.CveCpeMatch, []generated.CveCnaAffected, error) {
+	matches, err := s.q.GetCVEVulnerableCPEMatches(ctx, cveID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get CPE matches: %w", err)
+	}
+	cnaAffected, err := s.q.GetCVECNAAffected(ctx, cveID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get CNA affected: %w", err)
+	}
+	return matches, cnaAffected, nil
+}
+
 // ListCVEs returns a page of CVE rows ordered by date_modified_canonical desc,
 // cve_id. This is the base query for the no-filter paginated case; the API
 // layer uses squirrel for dynamic filter queries.

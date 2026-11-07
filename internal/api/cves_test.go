@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/scarson/cvert-ops/internal/merge"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -819,6 +822,126 @@ func TestGetCVE_Exists(t *testing.T) {
 	}
 	if detail.CWEIDs == nil {
 		t.Error("cwe_ids should be [] not null")
+	}
+}
+
+// getCVEVersionData fetches a CVE and decodes its version range fields.
+func getCVEVersionData(t *testing.T, ts *httptest.Server, token, cveID string) CVEDetail {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, ts.URL+"/api/v1/cves/"+cveID, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Cookie", "access_token="+token)
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+	if err != nil {
+		t.Fatalf("GET /cves/%s: %v", cveID, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /cves/%s: got status %d, want %d", cveID, resp.StatusCode, http.StatusOK)
+	}
+	var detail CVEDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	return detail
+}
+
+func strRef(s string) *string { return &s }
+
+// A CVE NVD has analysed returns its ranges, one per release branch, from real golden records.
+func TestGetCVE_ReturnsCPEMatchRanges(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+	const nodeJS = "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*"
+
+	const cveID = "CVE-2026-111497"
+	if err := merge.Ingest(ctx, db.Store, testutil.GoldenPatch(t, "nvd", cveID), "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	want := CPEMatchResponse{
+		CPE:                   nodeJS,
+		CPENormalized:         nodeJS,
+		VersionStartIncluding: strRef("23.0.0"),
+		VersionEndExcluding:   strRef("24.22.1"),
+	}
+	if !slices.ContainsFunc(detail.AffectedCPEMatches, func(m CPEMatchResponse) bool { return reflect.DeepEqual(m, want) }) {
+		t.Errorf("affected_cpe_matches missing %+v; got %d entries", want, len(detail.AffectedCPEMatches))
+	}
+	var nodeRanges int
+	for _, m := range detail.AffectedCPEMatches {
+		if m.CPENormalized == nodeJS {
+			nodeRanges++
+		}
+	}
+	if nodeRanges != 3 {
+		t.Errorf("got %d Node.js ranges, want 3 (one per branch)", nodeRanges)
+	}
+	if detail.CNAAffected == nil {
+		t.Error("cna_affected should be [] not null")
+	}
+}
+
+// affected_cpe_matches answers what is affected, so it skips a "running on"
+// platform. affected_cpes still names it, which is what CPE watchlist items match.
+func TestGetCVE_CPEMatchesSkipNotVulnerablePlatform(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+	const hardware = "cpe:2.3:h:hp:integrated_lights-out_4:-:*:*:*:*:*:*:*"
+
+	const cveID = "CVE-2017-12542"
+	if err := merge.Ingest(ctx, db.Store, testutil.GoldenPatch(t, "nvd", cveID), "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	if len(detail.AffectedCPEMatches) != 1 {
+		t.Fatalf("affected_cpe_matches = %+v, want the firmware only", detail.AffectedCPEMatches)
+	}
+	if got := detail.AffectedCPEMatches[0]; got.CPENormalized == hardware || got.VersionEndExcluding == nil || *got.VersionEndExcluding != "2.53" {
+		t.Errorf("affected_cpe_matches[0] = %+v, want the firmware below 2.53", got)
+	}
+	if !slices.ContainsFunc(detail.AffectedCPEs, func(c AffectedCPEResponse) bool { return c.CPENormalized == hardware }) {
+		t.Errorf("affected_cpes = %+v, want the hardware CPE kept", detail.AffectedCPEs)
+	}
+}
+
+// A CVE NVD has not analysed has no configurations, so the CNA's data is the answer.
+func TestGetCVE_ReturnsCNAAffectedBeforeNVDAnalysis(t *testing.T) {
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	const cveID = "CVE-2026-107832"
+	for _, source := range []string{"nvd", "mitre"} {
+		if err := merge.Ingest(ctx, db.Store, testutil.GoldenPatch(t, source, cveID), source); err != nil {
+			t.Fatalf("Ingest %s: %v", source, err)
+		}
+	}
+
+	detail := getCVEVersionData(t, ts, token, cveID)
+
+	if detail.AffectedCPEMatches == nil || len(detail.AffectedCPEMatches) != 0 {
+		t.Errorf("affected_cpe_matches = %+v, want []", detail.AffectedCPEMatches)
+	}
+	want := []CNAAffectedResponse{{
+		Vendor:        strRef("fastify"),
+		Product:       strRef("fastify"),
+		DefaultStatus: strRef("unaffected"),
+		Versions: []CNAVersionResponse{
+			{Version: "5.12.2", LessThan: "5.12.6", Status: "affected", VersionType: "semver"},
+			{Version: "5.12.6", Status: "unaffected", VersionType: "semver"},
+		},
+	}}
+	if !reflect.DeepEqual(detail.CNAAffected, want) {
+		t.Errorf("cna_affected = %+v, want %+v", detail.CNAAffected, want)
 	}
 }
 

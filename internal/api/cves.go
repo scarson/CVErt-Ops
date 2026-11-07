@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -81,11 +82,13 @@ type CVEItem struct {
 // CVEDetail extends CVEItem with child-table data.
 type CVEDetail struct {
 	CVEItem
-	CVSSv3Vector     *string                   `json:"cvss_v3_vector,omitempty"`
-	CVSSv4Vector     *string                   `json:"cvss_v4_vector,omitempty"`
-	AffectedPackages []AffectedPackageResponse `json:"affected_packages"`
-	AffectedCPEs     []AffectedCPEResponse     `json:"affected_cpes"`
-	References       []ReferenceResponse       `json:"references"`
+	CVSSv3Vector       *string                   `json:"cvss_v3_vector,omitempty"`
+	CVSSv4Vector       *string                   `json:"cvss_v4_vector,omitempty"`
+	AffectedPackages   []AffectedPackageResponse `json:"affected_packages"`
+	AffectedCPEs       []AffectedCPEResponse     `json:"affected_cpes" doc:"Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches."`
+	AffectedCPEMatches []CPEMatchResponse        `json:"affected_cpe_matches" doc:"NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until NVD analyses the CVE. A CPE that carries its version in the string has no range fields."`
+	CNAAffected        []CNAAffectedResponse     `json:"cna_affected" doc:"Products and versions as the CVE Numbering Authority published them. Available before NVD analyses the CVE."`
+	References         []ReferenceResponse       `json:"references"`
 }
 
 // AffectedPackageResponse is the API representation of a cve_affected_packages row.
@@ -102,6 +105,43 @@ type AffectedPackageResponse struct {
 type AffectedCPEResponse struct {
 	CPE           string `json:"cpe"`
 	CPENormalized string `json:"cpe_normalized"`
+}
+
+// CPEMatchResponse is the API representation of a vulnerable cve_cpe_matches row.
+type CPEMatchResponse struct {
+	CPE                   string  `json:"cpe"`
+	CPENormalized         string  `json:"cpe_normalized"`
+	VersionStartIncluding *string `json:"version_start_including,omitempty"`
+	VersionStartExcluding *string `json:"version_start_excluding,omitempty"`
+	VersionEndIncluding   *string `json:"version_end_including,omitempty"`
+	VersionEndExcluding   *string `json:"version_end_excluding,omitempty"`
+}
+
+// CNAAffectedResponse is the API representation of a cve_cna_affected row.
+type CNAAffectedResponse struct {
+	Vendor        *string              `json:"vendor,omitempty"`
+	Product       *string              `json:"product,omitempty"`
+	PackageName   *string              `json:"package_name,omitempty"`
+	CollectionURL *string              `json:"collection_url,omitempty"`
+	DefaultStatus *string              `json:"default_status,omitempty" doc:"Status of versions the versions list does not mention: affected, unaffected or unknown."`
+	Versions      []CNAVersionResponse `json:"versions"`
+}
+
+// CNAVersionResponse is one element of a CNA's versions list. Its JSON field names
+// match feed.CNAVersion, the form stored in cve_cna_affected.versions.
+type CNAVersionResponse struct {
+	Version         string                     `json:"version,omitempty" doc:"Start of the range when less_than or less_than_or_equal is set, otherwise a single version. Free text unless version_type names a scheme."`
+	LessThan        string                     `json:"less_than,omitempty"`
+	LessThanOrEqual string                     `json:"less_than_or_equal,omitempty"`
+	Status          string                     `json:"status,omitempty" doc:"affected, unaffected or unknown."`
+	VersionType     string                     `json:"version_type,omitempty"`
+	Changes         []CNAVersionChangeResponse `json:"changes,omitempty" doc:"Versions inside the range where status stops applying, such as a backported fix."`
+}
+
+// CNAVersionChangeResponse is one element of a CNA version's changes list.
+type CNAVersionChangeResponse struct {
+	At     string `json:"at,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 // ReferenceResponse is the API representation of a cve_references row.
@@ -420,12 +460,22 @@ func getCVEHandler(s *store.Store) func(context.Context, *GetCVEInput) (*GetCVEO
 		if cve == nil {
 			return nil, huma.Error404NotFound("CVE not found", nil)
 		}
+		matches, cnaRows, err := s.GetCVEVersionRanges(ctx, input.CVEID)
+		if err != nil {
+			return nil, fmt.Errorf("get cve version ranges: %w", err)
+		}
+		cnaAffected, err := cnaAffectedResponses(cnaRows)
+		if err != nil {
+			return nil, err
+		}
 
 		detail := &CVEDetail{
-			CVEItem:          cveToItem(*cve),
-			AffectedPackages: make([]AffectedPackageResponse, 0, len(pkgs)),
-			AffectedCPEs:     make([]AffectedCPEResponse, 0, len(cpes)),
-			References:       make([]ReferenceResponse, 0, len(refs)),
+			CVEItem:            cveToItem(*cve),
+			AffectedPackages:   make([]AffectedPackageResponse, 0, len(pkgs)),
+			AffectedCPEs:       make([]AffectedCPEResponse, 0, len(cpes)),
+			AffectedCPEMatches: cpeMatchResponses(matches),
+			CNAAffected:        cnaAffected,
+			References:         make([]ReferenceResponse, 0, len(refs)),
 		}
 
 		if cve.CvssV3Vector.Valid {
@@ -475,6 +525,52 @@ func getCVEHandler(s *store.Store) func(context.Context, *GetCVEInput) (*GetCVEO
 
 		return &GetCVEOutput{Body: detail}, nil
 	}
+}
+
+// cpeMatchResponses converts cve_cpe_matches rows. The result is never nil, so the
+// field serializes as [] rather than null.
+func cpeMatchResponses(rows []generated.CveCpeMatch) []CPEMatchResponse {
+	out := make([]CPEMatchResponse, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, CPEMatchResponse{
+			CPE:                   m.Cpe,
+			CPENormalized:         m.CpeNormalized,
+			VersionStartIncluding: nullableString(m.VersionStartIncluding),
+			VersionStartExcluding: nullableString(m.VersionStartExcluding),
+			VersionEndIncluding:   nullableString(m.VersionEndIncluding),
+			VersionEndExcluding:   nullableString(m.VersionEndExcluding),
+		})
+	}
+	return out
+}
+
+// cnaAffectedResponses converts cve_cna_affected rows. The result is never nil,
+// so the field serializes as [] rather than null.
+func cnaAffectedResponses(rows []generated.CveCnaAffected) ([]CNAAffectedResponse, error) {
+	out := make([]CNAAffectedResponse, 0, len(rows))
+	for _, a := range rows {
+		versions := []CNAVersionResponse{}
+		if err := json.Unmarshal(a.Versions, &versions); err != nil {
+			return nil, fmt.Errorf("decode CNA versions for %s: %w", a.CveID, err)
+		}
+		out = append(out, CNAAffectedResponse{
+			Vendor:        nullableString(a.Vendor),
+			Product:       nullableString(a.Product),
+			PackageName:   nullableString(a.PackageName),
+			CollectionURL: nullableString(a.CollectionUrl),
+			DefaultStatus: nullableString(a.DefaultStatus),
+			Versions:      versions,
+		})
+	}
+	return out, nil
+}
+
+// nullableString maps SQL NULL to an omitted JSON field.
+func nullableString(s sql.NullString) *string {
+	if !s.Valid {
+		return nil
+	}
+	return &s.String
 }
 
 // ── GET /cves/{cve_id}/sources ────────────────────────────────────────────────

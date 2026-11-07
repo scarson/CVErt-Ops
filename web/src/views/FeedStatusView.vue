@@ -4,6 +4,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import client from '@/lib/api/client'
+import { feedLogBadgeVariant } from '@/lib/feedLogStatus'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
@@ -251,7 +252,7 @@ onUnmounted(() => {
               <TableCell colspan="6" class="text-sm">
                 <div class="flex items-center gap-4">
                   <Badge
-                    :variant="log.status === 'success' ? 'default' : 'destructive'"
+                    :variant="feedLogBadgeVariant(log.status)"
                     class="text-xs"
                   >
                     {{ log.status }}

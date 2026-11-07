@@ -5,6 +5,7 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,11 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/worker"
 )
+
+// pageReserve is the job time a run keeps free: with less than this left before
+// the job deadline and pages still to fetch, the run ends between pages. It covers
+// one NVD page, 2,000 CVEs, at the roughly 13 CVEs per second seen on a real backfill.
+const pageReserve = 3 * time.Minute
 
 // Payload is the JSON payload for feed_ingest jobs.
 type Payload struct {
@@ -139,8 +145,10 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 		lastSuccessfulCursor := cursor
 		var itemsFetched int32
 		var itemsUpserted int32
+		var pageCompleted bool
+		var stoppedAtTimeLimit bool
 
-		// Pagination loop with three-layer termination.
+		// Pagination loop with three-layer termination, plus the job time limit.
 		var fetchErr error
 		for {
 			var result *feed.FetchResult
@@ -217,6 +225,7 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 			// NextCursor on every page (including the last); see feed.Adapter doc.
 			lastSuccessfulCursor = result.NextCursor
 			cursor = result.NextCursor
+			pageCompleted = true
 
 			// Persist cursor progress after each page for crash recovery.
 			// Carry forward existing failure tracking so a crash between here
@@ -248,6 +257,25 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 			if len(result.Patches) == 0 {
 				break
 			}
+
+			// Pages remain, but the next one may not fit in this job: end the run
+			// here so the next job continues from the saved cursor.
+			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < pageReserve {
+				stoppedAtTimeLimit = true
+				break
+			}
+		}
+
+		// A page that overran pageReserve and hit the job deadline, after earlier
+		// pages completed, is the same outcome: the backfill advanced, and the next
+		// job merges the interrupted page again. With no completed page the run made
+		// no progress and stays a failure, so a page too large for one job is
+		// reported instead of being retried forever.
+		if fetchErr != nil && pageCompleted && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			slog.Warn("feed page interrupted by job deadline, next job repeats it",
+				"feed", p.FeedName, "error", fetchErr)
+			fetchErr = nil
+			stoppedAtTimeLimit = true
 		}
 
 		// Report fetch outcome to circuit breaker so it can track consecutive failures.
@@ -255,11 +283,15 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 
 		now := time.Now()
 
+		// The job context may have expired, and the outcome must still be recorded.
+		outcomeCtx, cancelOutcome := worker.OutcomeContext(ctx)
+		defer cancelOutcome()
+
 		if fetchErr != nil {
 			// Persist failure state with last successful cursor.
 			failures := prevFailures + 1
 			backoff := now.Add(backoffDuration(failures))
-			if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
+			if syncErr := syncSt.UpsertFeedSyncState(outcomeCtx, store.FeedSyncState{
 				FeedName:            p.FeedName,
 				CursorJSON:          lastSuccessfulCursor,
 				LastSuccessAt:       prevLastSuccess,
@@ -271,7 +303,7 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 				slog.Error("feed sync state write failed on error path",
 					"feed", p.FeedName, "error", syncErr)
 			}
-			if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+			if _, logErr := syncSt.InsertFeedFetchLog(outcomeCtx, store.FeedFetchLog{
 				FeedName:      p.FeedName,
 				StartedAt:     start,
 				EndedAt:       &now,
@@ -300,11 +332,20 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 			return fetchErr
 		}
 
-		// Success: persist final cursor and reset failure counters.
-		if syncErr := syncSt.UpsertFeedSyncState(ctx, store.FeedSyncState{
+		// Success: persist final cursor and reset failure counters. A run stopped at
+		// the time limit has not caught up, so it leaves LastSuccessAt alone. That
+		// keeps the feed due, and the scheduler starts the next job on its next tick,
+		// with fresh attempts, unless the feed has since been paused.
+		lastSuccess := &now
+		logStatus := "success"
+		if stoppedAtTimeLimit {
+			lastSuccess = prevLastSuccess
+			logStatus = "partial"
+		}
+		if syncErr := syncSt.UpsertFeedSyncState(outcomeCtx, store.FeedSyncState{
 			FeedName:            p.FeedName,
 			CursorJSON:          lastSuccessfulCursor,
-			LastSuccessAt:       &now,
+			LastSuccessAt:       lastSuccess,
 			LastAttemptAt:       &now,
 			ConsecutiveFailures: 0,
 			LastError:           "",
@@ -313,11 +354,11 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 				"feed", p.FeedName, "error", syncErr)
 			return fmt.Errorf("persist sync state for %s: %w", p.FeedName, syncErr)
 		}
-		if _, logErr := syncSt.InsertFeedFetchLog(ctx, store.FeedFetchLog{
+		if _, logErr := syncSt.InsertFeedFetchLog(outcomeCtx, store.FeedFetchLog{
 			FeedName:      p.FeedName,
 			StartedAt:     start,
 			EndedAt:       &now,
-			Status:        "success",
+			Status:        logStatus,
 			ItemsFetched:  itemsFetched,
 			ItemsUpserted: itemsUpserted,
 			CursorBefore:  cursorBefore,
@@ -331,8 +372,19 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 		metrics.FeedItemsFetchedTotal.WithLabelValues(p.FeedName).Add(float64(itemsFetched))
 		metrics.FeedItemsMergedTotal.WithLabelValues(p.FeedName).Add(float64(itemsUpserted))
 		metrics.FeedFetchDuration.WithLabelValues(p.FeedName).Observe(time.Since(start).Seconds())
-		metrics.FeedLastSuccessTimestamp.WithLabelValues(p.FeedName).SetToCurrentTime()
 		metrics.FeedConsecutiveFailures.WithLabelValues(p.FeedName).Set(0)
+
+		if stoppedAtTimeLimit {
+			slog.Info("feed ingest stopped at job time limit, next job continues",
+				"feed", p.FeedName,
+				"items_fetched", itemsFetched,
+				"items_upserted", itemsUpserted,
+				"duration", time.Since(start),
+			)
+			return nil
+		}
+
+		metrics.FeedLastSuccessTimestamp.WithLabelValues(p.FeedName).SetToCurrentTime()
 
 		slog.Info("feed ingest completed",
 			"feed", p.FeedName,

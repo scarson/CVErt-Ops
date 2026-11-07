@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -253,6 +254,52 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 	// Verify warning was logged.
 	if !strings.Contains(logBuf.String(), "skipping row with DB error") {
 		t.Errorf("expected warning log about skipping row, got: %s", logBuf.String())
+	}
+}
+
+// A row that fails because the job context ended is not a poison row. The run
+// must report the interruption, or the handler records a partial run as complete
+// and the same-day cursor check skips the remaining rows until the next day's file.
+func TestApply_ContextEndsDuringRows_ReturnsError(t *testing.T) {
+	var attempted []string
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.5,0.9",
+		"CVE-2024-0002,0.3,0.7",
+		"CVE-2024-0003,0.8,0.95",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := &Adapter{
+		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		applyRowFn: func(ctx context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+			attempted = append(attempted, cveID)
+			if cveID == "CVE-2024-0002" {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	result, err := adapter.Apply(ctx, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Apply error = %v, want context.Canceled", err)
+	}
+	if result != nil {
+		t.Errorf("Apply returned cursor %s, want nil for an interrupted run", result)
+	}
+	if len(attempted) != 2 {
+		t.Errorf("attempted rows = %v, want the run to stop at the interrupted row", attempted)
 	}
 }
 

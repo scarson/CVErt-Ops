@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -236,8 +237,13 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 		}
 	}
 
+	listChanges, err := e.getWatchlistCVEChangesSince(ctx, since)
+	if err != nil {
+		return fmt.Errorf("get watchlist changes for %s: %w", cfg.feedName, err)
+	}
+
 	// Short-circuit if no candidates — still write cursor to advance past this window.
-	if len(allCandidateIDs) == 0 {
+	if len(allCandidateIDs) == 0 && len(listChanges) == 0 {
 		return e.writeCursor(ctx, cfg.feedName, evalCursor{Since: batchTime})
 	}
 
@@ -245,12 +251,16 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 	var failedRuleIDs []uuid.UUID
 	for i := range rules {
 		rule := &rules[i]
+		ruleCandidateIDs := candidatesForRule(allCandidateIDs, rule.WatchlistIds, listChanges)
+		if len(ruleCandidateIDs) == 0 {
+			continue
+		}
 		compiled, compErr := e.loadAndCompileRule(rule)
 		if compErr != nil {
 			e.failUncompilableRule(ctx, rule, cfg.metricsLabel, compErr)
 			continue
 		}
-		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, allCandidateIDs, rule.OrgID)
+		matchCount, partial, candidatesEval, evalErr := e.evaluateRuleInChunks(ctx, compiled, ruleCandidateIDs, rule.OrgID)
 		if evalErr != nil {
 			e.log.Error("evaluate rule "+cfg.metricsLabel, "rule_id", rule.ID, "err", evalErr)
 		}
@@ -743,6 +753,53 @@ func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
+}
+
+// getWatchlistCVEChangesSince returns, per watchlist, the CVE IDs added to or removed from
+// it after since. A CVE already in the corpus when it is listed has no reason to appear in
+// the modified-date or EPSS scans, so a rule bound to the watchlist would not see it until
+// the CVE next changed. A removed CVE is included so the rule resolves its event.
+// Re-evaluating an unchanged CVE is idempotent (see cursorRescanWindow).
+func (e *Evaluator) getWatchlistCVEChangesSince(ctx context.Context, since time.Time) (map[uuid.UUID][]string, error) {
+	changes := make(map[uuid.UUID][]string)
+	err := e.bypassTx(ctx, 0, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT watchlist_id, cve_id FROM watchlist_items
+			WHERE item_type = 'cve' AND GREATEST(created_at, deleted_at) > $1`, since)
+		if err != nil {
+			return err
+		}
+		defer rows.Close() //nolint:errcheck
+		for rows.Next() {
+			var watchlistID uuid.UUID
+			var cveID string
+			if err := rows.Scan(&watchlistID, &cveID); err != nil {
+				return err
+			}
+			changes[watchlistID] = append(changes[watchlistID], cveID)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+// candidatesForRule returns the CVE IDs a rule evaluates in one batch or EPSS run: the
+// run's change set plus the CVEs added to or removed from the watchlists the rule is bound
+// to. Each ID appears once, because evaluateRuleInChunks relies on disjoint chunks.
+func candidatesForRule(changeSet []string, watchlistIDs []uuid.UUID, listChanges map[uuid.UUID][]string) []string {
+	var listed []string
+	for _, id := range watchlistIDs {
+		listed = append(listed, listChanges[id]...)
+	}
+	if len(listed) == 0 {
+		return changeSet
+	}
+	merged := slices.Concat(changeSet, listed)
+	slices.Sort(merged)
+	return slices.Compact(merged)
 }
 
 // getCVEsBatch fetches the next page of non-rejected CVE IDs ordered by cve_id ASC,

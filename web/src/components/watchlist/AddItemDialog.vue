@@ -27,11 +27,12 @@ import { Package, Cpu } from 'lucide-vue-next'
 
 export interface WatchlistItemEntry {
   id: string
-  item_type: 'package' | 'cpe'
+  item_type: 'package' | 'cpe' | 'cve'
   ecosystem?: string
   package_name?: string
   namespace?: string
   cpe_normalized?: string
+  cve_id?: string
   created_at: string
 }
 
@@ -109,15 +110,11 @@ async function handleAdd() {
           item_type: 'package' as const,
           ecosystem: ecosystem.value,
           package_name: packageName.value.trim(),
-          namespace: namespace.value.trim() || null,
-          cpe_normalized: null,
+          ...(namespace.value.trim() && { namespace: namespace.value.trim() }),
         }
       : {
           item_type: 'cpe' as const,
           cpe_normalized: cpeNormalized.value.trim(),
-          ecosystem: null,
-          package_name: null,
-          namespace: null,
         }
 
   try {

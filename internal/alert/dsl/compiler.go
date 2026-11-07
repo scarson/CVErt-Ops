@@ -114,27 +114,43 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 // watchlistExpr builds the EXISTS subquery that restricts results to CVEs matching at least
 // one item in the given watchlists. orgID is embedded explicitly because worker transactions
 // use bypass_rls and do not rely on app.org_id being set.
+//
+// Each item type has its own EXISTS so the planner can use that type's partial index. A
+// watchlist can hold thousands of CVE items, and one EXISTS with an OR across the types
+// would scan all of them for every candidate CVE.
 func watchlistExpr(watchlistIDs []uuid.UUID, orgID uuid.UUID) sq.Sqlizer {
-	return sq.Expr(`EXISTS (
-    SELECT 1 FROM watchlist_items wi
-    WHERE wi.watchlist_id = ANY(?)
-      AND wi.org_id       = ?
-      AND wi.deleted_at IS NULL
-      AND (
-          (wi.item_type = 'package' AND EXISTS (
-              SELECT 1 FROM cve_affected_packages cap
-              WHERE cap.cve_id = cves.cve_id
-                AND lower(cap.ecosystem)    = lower(wi.ecosystem)
-                AND lower(cap.package_name) = lower(wi.package_name)
-          ))
-          OR
-          (wi.item_type = 'cpe' AND EXISTS (
-              SELECT 1 FROM cve_affected_cpes cac
-              WHERE cac.cve_id           = cves.cve_id
-                AND cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
-          ))
-      )
-)`, pq.Array(watchlistIDs), orgID)
+	ids := pq.Array(watchlistIDs)
+	return sq.Expr(`(
+    EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cve'
+          AND wi.deleted_at IS NULL
+          AND wi.cve_id       = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_packages cap
+          ON lower(cap.ecosystem)    = lower(wi.ecosystem)
+         AND lower(cap.package_name) = lower(wi.package_name)
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'package'
+          AND wi.deleted_at IS NULL
+          AND cap.cve_id      = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_cpes cac
+          ON cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cpe'
+          AND wi.deleted_at IS NULL
+          AND cac.cve_id      = cves.cve_id
+    )
+)`, ids, orgID, ids, orgID, ids, orgID)
 }
 
 // conditionToSQL converts a single validated Condition to a squirrel Sqlizer.

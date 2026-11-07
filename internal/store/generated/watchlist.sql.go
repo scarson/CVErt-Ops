@@ -83,9 +83,9 @@ func (q *Queries) CreateWatchlist(ctx context.Context, arg CreateWatchlistParams
 }
 
 const createWatchlistItem = `-- name: CreateWatchlistItem :one
-INSERT INTO watchlist_items (watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, created_at, deleted_at
+INSERT INTO watchlist_items (watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, cve_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, created_at, deleted_at, cve_id
 `
 
 type CreateWatchlistItemParams struct {
@@ -96,6 +96,7 @@ type CreateWatchlistItemParams struct {
 	PackageName   sql.NullString
 	Namespace     sql.NullString
 	CpeNormalized sql.NullString
+	CveID         sql.NullString
 }
 
 func (q *Queries) CreateWatchlistItem(ctx context.Context, arg CreateWatchlistItemParams) (WatchlistItem, error) {
@@ -107,6 +108,7 @@ func (q *Queries) CreateWatchlistItem(ctx context.Context, arg CreateWatchlistIt
 		arg.PackageName,
 		arg.Namespace,
 		arg.CpeNormalized,
+		arg.CveID,
 	)
 	var i WatchlistItem
 	err := row.Scan(
@@ -120,6 +122,7 @@ func (q *Queries) CreateWatchlistItem(ctx context.Context, arg CreateWatchlistIt
 		&i.CpeNormalized,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.CveID,
 	)
 	return i, err
 }
@@ -152,7 +155,7 @@ func (q *Queries) GetWatchlist(ctx context.Context, arg GetWatchlistParams) (Wat
 }
 
 const getWatchlistItem = `-- name: GetWatchlistItem :one
-SELECT wi.id, wi.watchlist_id, wi.org_id, wi.item_type, wi.ecosystem, wi.package_name, wi.namespace, wi.cpe_normalized, wi.created_at, wi.deleted_at FROM watchlist_items wi
+SELECT wi.id, wi.watchlist_id, wi.org_id, wi.item_type, wi.ecosystem, wi.package_name, wi.namespace, wi.cpe_normalized, wi.created_at, wi.deleted_at, wi.cve_id FROM watchlist_items wi
 JOIN watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL
 WHERE wi.id = $1 AND wi.watchlist_id = $2 AND wi.org_id = $3 AND wi.deleted_at IS NULL
 LIMIT 1
@@ -178,8 +181,117 @@ func (q *Queries) GetWatchlistItem(ctx context.Context, arg GetWatchlistItemPara
 		&i.CpeNormalized,
 		&i.CreatedAt,
 		&i.DeletedAt,
+		&i.CveID,
 	)
 	return i, err
+}
+
+const insertWatchlistItems = `-- name: InsertWatchlistItems :exec
+INSERT INTO watchlist_items (watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, cve_id)
+SELECT $1, $2, u.item_type::watchlist_item_type,
+       NULLIF(u.ecosystem, ''), NULLIF(u.package_name, ''), NULLIF(u.namespace, ''),
+       NULLIF(u.cpe_normalized, ''), NULLIF(u.cve_id, '')
+FROM ROWS FROM (
+    unnest($3::text[]),
+    unnest($4::text[]),
+    unnest($5::text[]),
+    unnest($6::text[]),
+    unnest($7::text[]),
+    unnest($8::text[])
+) AS u(item_type, ecosystem, package_name, namespace, cpe_normalized, cve_id)
+`
+
+type InsertWatchlistItemsParams struct {
+	WatchlistID  uuid.UUID
+	OrgID        uuid.UUID
+	ItemTypes    []string
+	Ecosystems   []string
+	PackageNames []string
+	Namespaces   []string
+	Cpes         []string
+	CveIds       []string
+}
+
+// Inserts many items in one statement. Each array holds one value per item, with an
+// empty string for a column the item type does not use. A multi-row VALUES list would
+// exceed the 65535 parameter limit at the replace cap.
+func (q *Queries) InsertWatchlistItems(ctx context.Context, arg InsertWatchlistItemsParams) error {
+	_, err := q.db.ExecContext(ctx, insertWatchlistItems,
+		arg.WatchlistID,
+		arg.OrgID,
+		pq.Array(arg.ItemTypes),
+		pq.Array(arg.Ecosystems),
+		pq.Array(arg.PackageNames),
+		pq.Array(arg.Namespaces),
+		pq.Array(arg.Cpes),
+		pq.Array(arg.CveIds),
+	)
+	return err
+}
+
+const listLiveWatchlistItems = `-- name: ListLiveWatchlistItems :many
+SELECT id, watchlist_id, org_id, item_type, ecosystem, package_name, namespace, cpe_normalized, created_at, deleted_at, cve_id FROM watchlist_items
+WHERE watchlist_id = $1 AND org_id = $2 AND deleted_at IS NULL
+`
+
+type ListLiveWatchlistItemsParams struct {
+	WatchlistID uuid.UUID
+	OrgID       uuid.UUID
+}
+
+func (q *Queries) ListLiveWatchlistItems(ctx context.Context, arg ListLiveWatchlistItemsParams) ([]WatchlistItem, error) {
+	rows, err := q.db.QueryContext(ctx, listLiveWatchlistItems, arg.WatchlistID, arg.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WatchlistItem
+	for rows.Next() {
+		var i WatchlistItem
+		if err := rows.Scan(
+			&i.ID,
+			&i.WatchlistID,
+			&i.OrgID,
+			&i.ItemType,
+			&i.Ecosystem,
+			&i.PackageName,
+			&i.Namespace,
+			&i.CpeNormalized,
+			&i.CreatedAt,
+			&i.DeletedAt,
+			&i.CveID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockWatchlist = `-- name: LockWatchlist :one
+SELECT id FROM watchlists
+WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+FOR UPDATE
+`
+
+type LockWatchlistParams struct {
+	ID    uuid.UUID
+	OrgID uuid.UUID
+}
+
+// Serializes writers to a watchlist's items: FOR UPDATE also blocks the foreign-key
+// check of a concurrent item insert until the holder commits.
+func (q *Queries) LockWatchlist(ctx context.Context, arg LockWatchlistParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, lockWatchlist, arg.ID, arg.OrgID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const softDeleteWatchlist = `-- name: SoftDeleteWatchlist :exec
@@ -216,6 +328,22 @@ func (q *Queries) SoftDeleteWatchlistItem(ctx context.Context, arg SoftDeleteWat
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const softDeleteWatchlistItemsByID = `-- name: SoftDeleteWatchlistItemsByID :exec
+UPDATE watchlist_items
+SET deleted_at = now()
+WHERE id = ANY($1::uuid[]) AND org_id = $2 AND deleted_at IS NULL
+`
+
+type SoftDeleteWatchlistItemsByIDParams struct {
+	Ids   []uuid.UUID
+	OrgID uuid.UUID
+}
+
+func (q *Queries) SoftDeleteWatchlistItemsByID(ctx context.Context, arg SoftDeleteWatchlistItemsByIDParams) error {
+	_, err := q.db.ExecContext(ctx, softDeleteWatchlistItemsByID, pq.Array(arg.Ids), arg.OrgID)
+	return err
 }
 
 const updateWatchlist = `-- name: UpdateWatchlist :one

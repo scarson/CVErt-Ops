@@ -30,6 +30,7 @@ import {
   X,
   Package,
   Cpu,
+  ShieldAlert,
   Loader2,
 } from 'lucide-vue-next'
 
@@ -39,6 +40,7 @@ const auth = useAuthStore()
 
 const watchlist = ref<WatchlistEntry | null>(null)
 const items = ref<WatchlistItemEntry[]>([])
+const itemsHasMore = ref(false)
 const loading = ref(true)
 const notFound = ref(false)
 const error = ref('')
@@ -91,6 +93,7 @@ async function fetchItems() {
 
     if (!fetchError) {
       items.value = (data.items ?? []) as WatchlistItemEntry[]
+      itemsHasMore.value = !!data.next_cursor
     } else {
       itemsError.value = 'Failed to load items. Please try again.'
     }
@@ -179,6 +182,9 @@ function onItemAdded(item: WatchlistItemEntry) {
 function formatIdentifier(item: WatchlistItemEntry): string {
   if (item.item_type === 'package') {
     return `${item.ecosystem}/${item.package_name}`
+  }
+  if (item.item_type === 'cve') {
+    return item.cve_id ?? ''
   }
   return item.cpe_normalized ?? ''
 }
@@ -361,6 +367,7 @@ watch(
                 data-testid="item-type-badge"
               >
                 <Package v-if="item.item_type === 'package'" class="mr-1 size-3" aria-hidden="true" />
+                <ShieldAlert v-else-if="item.item_type === 'cve'" class="mr-1 size-3" aria-hidden="true" />
                 <Cpu v-else class="mr-1 size-3" aria-hidden="true" />
                 {{ item.item_type }}
               </Badge>
@@ -385,6 +392,15 @@ watch(
           </TableRow>
         </TableBody>
       </Table>
+
+      <!-- This page shows the first page of items only -->
+      <p
+        v-if="itemsHasMore"
+        class="text-muted-foreground text-sm"
+        data-testid="items-partial-note"
+      >
+        Showing the first {{ items.length }} of {{ watchlist.item_count }} items.
+      </p>
     </template>
     </div>
 

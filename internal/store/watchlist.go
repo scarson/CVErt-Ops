@@ -43,6 +43,14 @@ type CreateWatchlistItemParams struct {
 	PackageName   *string
 	Namespace     *string
 	CpeNormalized *string
+	CveID         *string
+}
+
+// ReplaceWatchlistItemsResult counts what a replace did to a watchlist's live items.
+type ReplaceWatchlistItemsResult struct {
+	Added     int
+	Removed   int
+	Unchanged int
 }
 
 // WatchlistStore defines the DB operations needed by watchlist HTTP handlers.
@@ -56,6 +64,7 @@ type WatchlistStore interface {
 	CreateWatchlistItem(ctx context.Context, orgID, watchlistID uuid.UUID, p CreateWatchlistItemParams) (*generated.WatchlistItem, error)
 	ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID, itemType *WatchlistItemType, afterID *uuid.UUID, limit int) ([]generated.WatchlistItem, error)
 	DeleteWatchlistItem(ctx context.Context, orgID, watchlistID, itemID uuid.UUID) (bool, error)
+	ReplaceWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID, items []CreateWatchlistItemParams) (*ReplaceWatchlistItemsResult, error)
 	ValidateWatchlistsOwnership(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (bool, error)
 }
 
@@ -212,6 +221,7 @@ func (s *Store) CreateWatchlistItem(ctx context.Context, orgID, watchlistID uuid
 			PackageName:   dbutil.NullStringPtr(p.PackageName),
 			Namespace:     dbutil.NullStringPtr(p.Namespace),
 			CpeNormalized: dbutil.NullStringPtr(p.CpeNormalized),
+			CveID:         dbutil.NullStringPtr(p.CveID),
 		})
 		return err
 	})
@@ -221,12 +231,126 @@ func (s *Store) CreateWatchlistItem(ctx context.Context, orgID, watchlistID uuid
 	return &row, nil
 }
 
+// watchlistItemIdentity is the full content of a watchlist item. A replace keeps a live
+// item whose identity is in the requested list and treats any other difference, such as
+// a changed namespace, as one item removed and another added.
+type watchlistItemIdentity struct {
+	itemType      string
+	ecosystem     string
+	packageName   string
+	namespace     string
+	cpeNormalized string
+	cveID         string
+}
+
+func paramsIdentity(p CreateWatchlistItemParams) watchlistItemIdentity {
+	return watchlistItemIdentity{
+		itemType:      string(p.ItemType),
+		ecosystem:     valueOrEmpty(p.Ecosystem),
+		packageName:   valueOrEmpty(p.PackageName),
+		namespace:     valueOrEmpty(p.Namespace),
+		cpeNormalized: valueOrEmpty(p.CpeNormalized),
+		cveID:         valueOrEmpty(p.CveID),
+	}
+}
+
+func rowIdentity(item generated.WatchlistItem) watchlistItemIdentity {
+	return watchlistItemIdentity{
+		itemType:      string(item.ItemType),
+		ecosystem:     item.Ecosystem.String,
+		packageName:   item.PackageName.String,
+		namespace:     item.Namespace.String,
+		cpeNormalized: item.CpeNormalized.String,
+		cveID:         item.CveID.String,
+	}
+}
+
+func valueOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// ReplaceWatchlistItems makes the watchlist's live items equal to items in one transaction.
+// Items already live keep their rows, items no longer wanted are soft-deleted, and the rest
+// are inserted. Repeated entries in items count once. Returns (nil, nil) if the watchlist is
+// not found or has been soft-deleted. Field validation is the caller's responsibility, and
+// an item must not use an empty string for a column that applies to its type.
+func (s *Store) ReplaceWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID, items []CreateWatchlistItemParams) (*ReplaceWatchlistItemsResult, error) {
+	wanted := make(map[watchlistItemIdentity]struct{}, len(items))
+	for _, item := range items {
+		wanted[paramsIdentity(item)] = struct{}{}
+	}
+
+	var result *ReplaceWatchlistItemsResult
+	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
+		_, err := q.LockWatchlist(ctx, generated.LockWatchlistParams{ID: watchlistID, OrgID: orgID})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("lock watchlist: %w", err)
+		}
+
+		live, err := q.ListLiveWatchlistItems(ctx, generated.ListLiveWatchlistItemsParams{WatchlistID: watchlistID, OrgID: orgID})
+		if err != nil {
+			return fmt.Errorf("list live items: %w", err)
+		}
+
+		var removedIDs []uuid.UUID
+		unchanged := 0
+		for _, item := range live {
+			identity := rowIdentity(item)
+			if _, keep := wanted[identity]; keep {
+				delete(wanted, identity)
+				unchanged++
+			} else {
+				removedIDs = append(removedIDs, item.ID)
+			}
+		}
+
+		// Removals run first: a package whose namespace changed has the same unique index
+		// key as its replacement.
+		if len(removedIDs) > 0 {
+			if err := q.SoftDeleteWatchlistItemsByID(ctx, generated.SoftDeleteWatchlistItemsByIDParams{Ids: removedIDs, OrgID: orgID}); err != nil {
+				return fmt.Errorf("remove items: %w", err)
+			}
+		}
+		if len(wanted) > 0 {
+			if err := q.InsertWatchlistItems(ctx, insertWatchlistItemsParams(orgID, watchlistID, wanted)); err != nil {
+				return fmt.Errorf("add items: %w", err)
+			}
+		}
+
+		result = &ReplaceWatchlistItemsResult{Added: len(wanted), Removed: len(removedIDs), Unchanged: unchanged}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("replace watchlist items: %w", err)
+	}
+	return result, nil
+}
+
+func insertWatchlistItemsParams(orgID, watchlistID uuid.UUID, items map[watchlistItemIdentity]struct{}) generated.InsertWatchlistItemsParams {
+	p := generated.InsertWatchlistItemsParams{WatchlistID: watchlistID, OrgID: orgID}
+	for item := range items {
+		p.ItemTypes = append(p.ItemTypes, item.itemType)
+		p.Ecosystems = append(p.Ecosystems, item.ecosystem)
+		p.PackageNames = append(p.PackageNames, item.packageName)
+		p.Namespaces = append(p.Namespaces, item.namespace)
+		p.Cpes = append(p.Cpes, item.cpeNormalized)
+		p.CveIds = append(p.CveIds, item.cveID)
+	}
+	return p
+}
+
 // ListWatchlistItems returns items for a watchlist, with an optional item_type filter.
 // Paginated by id ASC; caller passes afterID from the last item to get the next page.
 // Caller passes Limit+1 to detect whether a next page exists.
 func (s *Store) ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.UUID, itemType *WatchlistItemType, afterID *uuid.UUID, limit int) ([]generated.WatchlistItem, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	sb := psql.Select("wi.id, wi.watchlist_id, wi.org_id, wi.item_type, wi.ecosystem, wi.package_name, wi.namespace, wi.cpe_normalized, wi.created_at, wi.deleted_at").
+	sb := psql.Select("wi.id, wi.watchlist_id, wi.org_id, wi.item_type, wi.ecosystem, wi.package_name, wi.namespace, wi.cpe_normalized, wi.created_at, wi.deleted_at, wi.cve_id").
 		From("watchlist_items wi").
 		Join("watchlists w ON w.id = wi.watchlist_id AND w.deleted_at IS NULL").
 		Where(sq.Eq{"wi.watchlist_id": watchlistID, "wi.org_id": orgID}).
@@ -259,7 +383,7 @@ func (s *Store) ListWatchlistItems(ctx context.Context, orgID, watchlistID uuid.
 			if err := rows.Scan(
 				&item.ID, &item.WatchlistID, &item.OrgID, &item.ItemType,
 				&item.Ecosystem, &item.PackageName, &item.Namespace, &item.CpeNormalized,
-				&item.CreatedAt, &item.DeletedAt,
+				&item.CreatedAt, &item.DeletedAt, &item.CveID,
 			); err != nil {
 				return fmt.Errorf("list watchlist items: scan: %w", err)
 			}

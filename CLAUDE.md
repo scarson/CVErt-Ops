@@ -298,6 +298,7 @@ Mailpit UI: http://localhost:8025
 | CLI | cobra (subcommands: serve, worker, migrate) |
 | SSRF | doyensec/safeurl for all outbound webhooks |
 | Metrics | prometheus/client_golang at /metrics |
+| Version comparison | `internal/version`, wrapping google/osv-scalibr/semantic: ecosystem-native ordering, "cannot evaluate" over "not affected" (PLAN.md §9.2) |
 | Frontend | Vue 3 + Vite + TypeScript + Tailwind 4 + shadcn-vue (reka-ui) |
 | Frontend state | Pinia + VueUse |
 | Frontend API | openapi-fetch (typed from OpenAPI schema) |
@@ -429,6 +430,7 @@ internal/secure/     # security event pipeline (async writer + rate limiting)
 internal/store/      # repository layer (sqlc + squirrel)
 internal/testutil/   # shared test helpers
 internal/tier/       # subscription tier logic
+internal/version/    # version checks against affected ranges, by ecosystem
 internal/worker/     # job queue + goroutine pool
 migrations/          # SQL files (embedded)
 templates/           # notification + watchlist templates (embedded)

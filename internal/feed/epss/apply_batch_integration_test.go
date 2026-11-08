@@ -8,7 +8,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,10 +22,16 @@ import (
 
 // applyFile serves rows as an EPSS file dated the day before and applies it
 // with a new adapter, so the adapter's rate limit never delays a call.
+// It fails on any logged warning: a batch that fails is retried row by row and
+// reaches the same scores, so the warning is the only sign that batching broke.
 func applyFile(t *testing.T, db *sql.DB, rows ...string) {
 	t.Helper()
+	warnings := epss.CaptureWarnings(t)
 	if _, err := fileAdapter(t, rows...).Apply(context.Background(), db, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("Apply logged warnings: %s", warnings.String())
 	}
 }
 
@@ -105,21 +110,10 @@ func stagedScores(t *testing.T, db *sql.DB) map[string]float64 {
 	return got
 }
 
-// captureWarnLogs routes slog warnings to the returned buffer for the rest of the
-// test. Tests that use it cannot run in parallel, because it replaces slog.Default.
-func captureWarnLogs(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(orig) })
-	return &buf
-}
-
 // Apply through the real driver against a server that refuses connections must
 // report the failure, not return a cursor for a file with no rows applied.
 func TestApply_UnreachableDatabase_FailsRun(t *testing.T) {
-	logs := captureWarnLogs(t)
+	logs := epss.CaptureWarnings(t)
 
 	db, err := sql.Open("pgx", "postgres://cvert:cvert@127.0.0.1:1/cvert?sslmode=disable&connect_timeout=5")
 	if err != nil {
@@ -148,7 +142,7 @@ func TestApply_ConstraintViolation_FailsRun(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires testcontainer")
 	}
-	logs := captureWarnLogs(t)
+	logs := epss.CaptureWarnings(t)
 
 	db := testutil.NewTestDB(t)
 	if _, err := db.DB().ExecContext(context.Background(),
@@ -176,7 +170,7 @@ func TestApply_RowRejectedByPostgres_CostsOnlyThatRow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires testcontainer")
 	}
-	logs := captureWarnLogs(t)
+	logs := epss.CaptureWarnings(t)
 
 	db := testutil.NewTestDB(t)
 	seedCVE(t, db, "CVE-2024-1001")
@@ -186,11 +180,13 @@ func TestApply_RowRejectedByPostgres_CostsOnlyThatRow(t *testing.T) {
 		t.Fatalf("add constraint: %v", err)
 	}
 
-	applyFile(t, db.DB(),
+	if _, err := fileAdapter(t,
 		"CVE-2024-1001,0.5,0.9",
 		"CVE-2024-9002,0.2,0.1",
 		"CVE-2024-9001,0.7,0.95",
-	)
+	).Apply(context.Background(), db.DB(), nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
 
 	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); !got.score.Valid || got.score.Float64 != 0.5 {
 		t.Errorf("CVE-2024-1001 epss_score = %v, want 0.5", got.score)
@@ -243,11 +239,21 @@ func TestApply_UnchangedScoreKeepsUpdateTime(t *testing.T) {
 	seedCVE(t, db, "CVE-2024-1001")
 	seedCVE(t, db, "CVE-2024-1002")
 
-	applyFile(t, db.DB(), "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.3,0.5", "CVE-2024-9001,0.7,0.9")
+	applyFile(t, db.DB(), "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.3,0.5",
+		"CVE-2024-9001,0.7,0.9", "CVE-2024-9002,0.2,0.4")
 	firstSame := cveEPSS(t, db.DB(), "CVE-2024-1001")
 	firstChanged := cveEPSS(t, db.DB(), "CVE-2024-1002")
 
-	applyFile(t, db.DB(), "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.4,0.6", "CVE-2024-9001,0.8,0.9")
+	// Backdate the staged row whose score stays the same, so that any write to
+	// it shows in its dates.
+	backdated := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.DB().ExecContext(context.Background(),
+		"UPDATE epss_staging SET as_of_date = $1::timestamptz::date, ingested_at = $1::timestamptz WHERE cve_id = 'CVE-2024-9002'", backdated); err != nil {
+		t.Fatalf("backdate staging row: %v", err)
+	}
+
+	applyFile(t, db.DB(), "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.4,0.6",
+		"CVE-2024-9001,0.8,0.9", "CVE-2024-9002,0.2,0.4")
 
 	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); !got.updated.Time.Equal(firstSame.updated.Time) {
 		t.Errorf("unchanged score moved date_epss_updated from %v to %v", firstSame.updated.Time, got.updated.Time)
@@ -258,6 +264,97 @@ func TestApply_UnchangedScoreKeepsUpdateTime(t *testing.T) {
 	}
 	if staged := stagedScores(t, db.DB()); staged["CVE-2024-9001"] != 0.8 {
 		t.Errorf("epss_staging = %v, want CVE-2024-9001 updated to 0.8", staged)
+	}
+
+	var asOf, ingested time.Time
+	if err := db.DB().QueryRowContext(context.Background(),
+		"SELECT as_of_date, ingested_at FROM epss_staging WHERE cve_id = 'CVE-2024-9002'",
+	).Scan(&asOf, &ingested); err != nil {
+		t.Fatalf("read staging row: %v", err)
+	}
+	if !asOf.Equal(backdated) || !ingested.Equal(backdated) {
+		t.Errorf("unchanged staged score was rewritten: as_of_date %v, ingested_at %v, want both %v", asOf, ingested, backdated)
+	}
+}
+
+// A file longer than one batch is applied across several transactions, and
+// every batch writes known CVEs to cves and stages unknown ones. applyFile fails
+// if any batch had to fall back to row-by-row writes.
+func TestApply_FileLongerThanOneBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	db := testutil.NewTestDB(t)
+
+	const n = 1201
+	known := map[int]bool{0: true, 600: true, 1200: true}
+	rows := make([]string, n)
+	for i := range rows {
+		id := fmt.Sprintf("CVE-2024-%d", 30000+i)
+		if known[i] {
+			seedCVE(t, db, id)
+		}
+		rows[i] = fmt.Sprintf("%s,0.%04d,0.5", id, i+1)
+	}
+
+	applyFile(t, db.DB(), rows...)
+
+	for i := range known {
+		id := fmt.Sprintf("CVE-2024-%d", 30000+i)
+		want := float64(i+1) / 10000
+		if got := cveEPSS(t, db.DB(), id); !got.score.Valid || got.score.Float64 != want {
+			t.Errorf("%s epss_score = %v, want %v", id, got.score, want)
+		}
+	}
+	staged := stagedScores(t, db.DB())
+	if len(staged) != n-len(known) {
+		t.Errorf("staged %d rows, want %d", len(staged), n-len(known))
+	}
+	if got, want := staged["CVE-2024-31199"], float64(1200)/10000; got != want {
+		t.Errorf("staged score in the last batch = %v, want %v", got, want)
+	}
+}
+
+// A row the database rejects aborts its whole batch. The other rows of that
+// batch still land through the row-by-row path, and only the rejected row is lost.
+func TestApply_RowRejectedByDatabaseCostsOnlyThatRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	db := testutil.NewTestDB(t)
+	seedCVE(t, db, "CVE-2024-1001")
+	seedCVE(t, db, "CVE-2024-1002")
+	warnings := epss.CaptureWarnings(t)
+
+	if _, err := db.DB().ExecContext(context.Background(),
+		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (cve_id <> 'CVE-2024-9002')"); err != nil {
+		t.Fatalf("add constraint: %v", err)
+	}
+
+	adapter := fileAdapter(t,
+		"CVE-2024-1001,0.5,0.9",
+		"CVE-2024-9002,0.6,0.9",
+		"CVE-2024-1002,0.7,0.9",
+		"CVE-2024-9001,0.8,0.9",
+	)
+	if _, err := adapter.Apply(context.Background(), db.DB(), nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); got.score.Float64 != 0.5 {
+		t.Errorf("CVE-2024-1001 epss_score = %v, want 0.5", got.score)
+	}
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1002"); got.score.Float64 != 0.7 {
+		t.Errorf("CVE-2024-1002 epss_score = %v, want 0.7", got.score)
+	}
+	staged := stagedScores(t, db.DB())
+	if fmt.Sprint(staged) != fmt.Sprint(map[string]float64{"CVE-2024-9001": 0.8}) {
+		t.Errorf("epss_staging = %v, want only CVE-2024-9001 = 0.8", staged)
+	}
+	for _, want := range []string{"batch failed; applying its rows one at a time", "skipping row with DB error"} {
+		if !strings.Contains(warnings.String(), want) {
+			t.Errorf("expected warning %q, got: %s", want, warnings.String())
+		}
 	}
 }
 

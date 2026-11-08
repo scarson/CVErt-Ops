@@ -85,14 +85,31 @@ func getPayloadLength(t *testing.T, s *testutil.TestDB, ctx context.Context, rul
 	return len(items)
 }
 
+// resetAnyProcessingDelivery is a stuck-delivery threshold that selects every
+// processing delivery, including one whose updated_at is ahead of now() because
+// the database clock stepped backward.
+const resetAnyProcessingDelivery = -time.Minute
+
+// claimDeliveries claims every delivery written to be sent now, which atomically
+// marks them processing.
+func claimDeliveries(t *testing.T, s *testutil.TestDB, ctx context.Context) []store.ClaimedDelivery {
+	t.Helper()
+	var claimed []store.ClaimedDelivery
+	s.ClaimUntilDeliveriesAttempted(t, ctx, func() {
+		batch, err := s.ClaimPendingDeliveries(ctx, 10)
+		if err != nil {
+			t.Fatalf("ClaimPendingDeliveries: %v", err)
+		}
+		claimed = append(claimed, batch...)
+	})
+	return claimed
+}
+
 // claimAndMarkProcessing claims pending deliveries (which atomically marks them
 // processing) and returns the IDs of the claimed deliveries.
 func claimAndMarkProcessing(t *testing.T, s *testutil.TestDB, ctx context.Context) []uuid.UUID {
 	t.Helper()
-	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries: %v", err)
-	}
+	claimed := claimDeliveries(t, s, ctx)
 	if len(claimed) == 0 {
 		t.Fatal("expected at least 1 claimed delivery, got 0")
 	}
@@ -136,6 +153,27 @@ func TestUpsertDelivery_CreatesThenDebounces(t *testing.T) {
 	}
 }
 
+// TestClaimAndMarkProcessing_DeliveryAheadOfDatabaseClock covers a delivery whose
+// send_after is later than the next transaction's now(), the state left by the
+// database clock stepping backward between the two transactions.
+func TestClaimAndMarkProcessing_DeliveryAheadOfDatabaseClock(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ClockAhead")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-8001"}`), 0)
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE notification_deliveries SET send_after = now() + interval '300 milliseconds' WHERE rule_id = $1`,
+		ruleID); err != nil {
+		t.Fatalf("move send_after ahead of the database clock: %v", err)
+	}
+
+	if ids := claimAndMarkProcessing(t, s, ctx); len(ids) != 1 {
+		t.Errorf("claimed deliveries = %d, want 1", len(ids))
+	}
+}
+
 func TestClaimPendingDeliveries_SkipsNotReady(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -158,10 +196,7 @@ func TestClaimPendingDeliveries_SkipsNotReady(t *testing.T) {
 	orgID2, ruleID2, chanID2 := setupDeliveryFixture(t, s, ctx, "2b")
 	mustUpsertDelivery(t, s, ctx, orgID2, ruleID2, chanID2, []byte(`{"cve_id":"CVE-2024-0011"}`), 0)
 
-	ready, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries (ready): %v", err)
-	}
+	ready := claimDeliveries(t, s, ctx)
 	if len(ready) != 1 {
 		t.Errorf("expected 1 claimed delivery, got %d", len(ready))
 	}
@@ -319,9 +354,8 @@ func TestResetStuckDeliveries(t *testing.T) {
 		t.Fatalf("expected processing after mark, got %q", status)
 	}
 
-	// Reset with 0s threshold: any processing row updated before "now" qualifies.
-	// We use time.Duration(0) which passes 0 seconds to the query.
-	if err := s.ResetStuckDeliveries(ctx, 0); err != nil {
+	// A threshold below zero makes every processing row qualify.
+	if err := s.ResetStuckDeliveries(ctx, resetAnyProcessingDelivery); err != nil {
 		t.Fatalf("ResetStuckDeliveries: %v", err)
 	}
 
@@ -462,10 +496,7 @@ func TestListDeliveries_FilterByStatus(t *testing.T) {
 	mustUpsertDelivery(t, s, ctx, orgID, ruleID2, chanID2, []byte(`{"cve_id":"CVE-2024-0081"}`), 0)
 
 	// Claim and complete only the second delivery.
-	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries: %v", err)
-	}
+	claimed := claimDeliveries(t, s, ctx)
 	// Find the one for ruleID2.
 	var id2 uuid.UUID
 	for _, c := range claimed {
@@ -912,10 +943,7 @@ func TestRetryDigestDelivery_NewerDigestPending(t *testing.T) {
 	if err := s.InsertDigestDelivery(ctx, org.ID, report.ID, chanID, payload); err != nil {
 		t.Fatalf("InsertDigestDelivery (first digest): %v", err)
 	}
-	claimed, err := s.ClaimPendingDeliveries(ctx, 10)
-	if err != nil {
-		t.Fatalf("ClaimPendingDeliveries: %v", err)
-	}
+	claimed := claimDeliveries(t, s, ctx)
 	var first *store.ClaimedDelivery
 	for i := range claimed {
 		if claimed[i].ReportID.Valid && claimed[i].ReportID.UUID == report.ID {
@@ -1062,7 +1090,7 @@ func TestResetStuckDeliveries_NewerAlertBatchPending(t *testing.T) {
 	claimAndMarkProcessing(t, s, ctx)
 	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-2002"}`), 0)
 
-	if err := s.ResetStuckDeliveries(ctx, 0); err != nil {
+	if err := s.ResetStuckDeliveries(ctx, resetAnyProcessingDelivery); err != nil {
 		t.Fatalf("ResetStuckDeliveries: %v", err)
 	}
 
@@ -1090,7 +1118,7 @@ func TestResetStuckDeliveries_TwoAlertBatchesStuck(t *testing.T) {
 	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2025-3002"}`), 0)
 	claimAndMarkProcessing(t, s, ctx)
 
-	if err := s.ResetStuckDeliveries(ctx, 0); err != nil {
+	if err := s.ResetStuckDeliveries(ctx, resetAnyProcessingDelivery); err != nil {
 		t.Fatalf("ResetStuckDeliveries: %v", err)
 	}
 

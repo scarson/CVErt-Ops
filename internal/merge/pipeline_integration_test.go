@@ -822,7 +822,11 @@ func TestIngest_AliasPromotion_AsAppRole(t *testing.T) {
 				t.Fatalf("Ingest (GHSA with CVE alias): %v", err)
 			}
 
-			if old, _ := s.GetCVE(ctx, oldID); old != nil {
+			old, err := s.GetCVE(ctx, oldID)
+			if err != nil {
+				t.Fatalf("GetCVE (native GHSA ID): %v", err)
+			}
+			if old != nil {
 				t.Error("native GHSA ID should not exist after promotion")
 			}
 			if promoted := s.MustGetCVE(t, ctx, newID); promoted == nil {

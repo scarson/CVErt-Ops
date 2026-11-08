@@ -1,5 +1,10 @@
+-- ABOUTME: Revokes the table privileges migration 000055 granted to cvert_ops_app.
+-- ABOUTME: Docker Compose installs must restore them after this runs.
+
 -- On Docker Compose installs these REVOKEs also remove the same privileges
--- granted through the default privileges in docker/init-app-role.sh.
+-- granted through the default privileges in docker/init-app-role.sh. The
+-- rollback procedure in docs/deployment/upgrading.md has the command that
+-- restores them.
 
 REVOKE SELECT ON schema_migrations FROM cvert_ops_app;
 

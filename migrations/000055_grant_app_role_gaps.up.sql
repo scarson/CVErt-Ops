@@ -1,3 +1,6 @@
+-- ABOUTME: Grants cvert_ops_app the table privileges for statements the application runs.
+-- ABOUTME: Covers security events, retention purges, CVE alias promotion and the schema version check.
+
 -- Privileges cvert_ops_app needs for statements the application runs. Docker
 -- Compose installs also receive table privileges from the default privileges in
 -- docker/init-app-role.sh. Every other install has only what migrations grant.

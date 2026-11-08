@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/scarson/cvert-ops/internal/feed"
 )
 
@@ -240,7 +242,7 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 		},
 		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
 			if cveID == "CVE-2024-0002" {
-				return fmt.Errorf("simulated DB error")
+				return fmt.Errorf("upsert epss staging: %w", &pgconn.PgError{Code: "22021"})
 			}
 			applied = append(applied, cveID)
 			return nil
@@ -638,6 +640,190 @@ func TestApply_FailedRunSucceedsOnLaterAttempt(t *testing.T) {
 				t.Errorf("server received %d requests, want 2", got)
 			}
 		})
+	}
+}
+
+// A malformed CVE ID never reaches the database, because a row the database cannot
+// store would otherwise stop every retry of the file at that row.
+func TestApply_SkipsRowsWithMalformedCVEID(t *testing.T) {
+	logs := captureWarnings(t)
+
+	oversized := "CVE-2024-" + strings.Repeat("9", 6400)
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.1,0.9",
+		"not-a-cve-id,0.2,0.9",
+		oversized + ",0.3,0.9",
+		"CVE-2024-\xff,0.4,0.9",
+		"CVE-2024-0002,0.5,0.9",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	var applied []string
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+	adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+		for _, r := range rows {
+			applied = append(applied, r.cveID)
+		}
+		return nil
+	}
+
+	cursor, err := adapter.Apply(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(cursor) == 0 {
+		t.Error("Apply returned an empty cursor")
+	}
+	if fmt.Sprint(applied) != fmt.Sprint([]string{"CVE-2024-0001", "CVE-2024-0002"}) {
+		t.Errorf("applied %d IDs, want only the two well-formed ones: %.100q", len(applied), applied)
+	}
+	if got := strings.Count(logs.String(), "skip row with malformed CVE ID"); got != 3 {
+		t.Errorf("logged %d malformed-row warnings, want 3: %.300s", got, logs.String())
+	}
+	if strings.Contains(logs.String(), oversized) {
+		t.Error("the warning logged the whole oversized ID")
+	}
+}
+
+// An EPSS score is a probability. NaN and infinity pass strconv.ParseFloat and
+// float8 accepts them, but the API cannot marshal them to JSON and Postgres orders
+// NaN above every number, so they must not reach the database.
+func TestApply_SkipsRowsWithScoreOutsideProbabilityRange(t *testing.T) {
+	logs := captureWarnings(t)
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0,0.9",
+		"CVE-2024-0002,NaN,0.9",
+		"CVE-2024-0003,Inf,0.9",
+		"CVE-2024-0004,-Inf,0.9",
+		"CVE-2024-0005,-0.1,0.9",
+		"CVE-2024-0006,1.5,0.9",
+		"CVE-2024-0007,1,0.9",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	var applied []scoreRow
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+	adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+		applied = append(applied, rows...)
+		return nil
+	}
+
+	if _, err := adapter.Apply(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	want := []scoreRow{{"CVE-2024-0001", 0}, {"CVE-2024-0007", 1}}
+	if fmt.Sprint(applied) != fmt.Sprint(want) {
+		t.Errorf("applied = %v, want %v", applied, want)
+	}
+	if got := strings.Count(logs.String(), "skip row with score outside 0 to 1"); got != 5 {
+		t.Errorf("logged %d out-of-range warnings, want 5: %s", got, logs.String())
+	}
+}
+
+// Only a data exception costs just that row. Every other failure,
+// including an error that is not from Postgres at all, must stop the run.
+func TestIsRowRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"invalid byte sequence", &pgconn.PgError{Code: "22021"}, true},
+		{"numeric out of range", &pgconn.PgError{Code: "22003"}, true},
+		{"check constraint", &pgconn.PgError{Code: "23514"}, false},
+		{"not-null constraint", &pgconn.PgError{Code: "23502"}, false},
+		{"index key too large", &pgconn.PgError{Code: "54000"}, false},
+		{"wrapped rejection", fmt.Errorf("update cve epss: %w", &pgconn.PgError{Code: "22021"}), true},
+		{"admin shutdown", &pgconn.PgError{Code: "57P01"}, false},
+		{"too many connections", &pgconn.PgError{Code: "53300"}, false},
+		{"read-only transaction", &pgconn.PgError{Code: "25006"}, false},
+		{"permission denied", &pgconn.PgError{Code: "42501"}, false},
+		{"deadlock", &pgconn.PgError{Code: "40P01"}, false},
+		{"not a Postgres error", errors.New("connection refused"), false},
+		{"bad connection", driver.ErrBadConn, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isRowRejected(tc.err); got != tc.want {
+				t.Errorf("isRowRejected(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// A database outage must fail the run. Reporting it as a success would advance the
+// cursor past a file with no rows applied, and the same-day cursor check would then
+// skip that file. The run stops at the first failing row, because each row after it
+// would wait on the same outage, and a later attempt can apply the file.
+func TestApply_DatabaseOutage_FailsRunAndLaterAttemptSucceeds(t *testing.T) {
+	logs := captureWarnings(t)
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.5,0.9",
+		"CVE-2024-0002,0.3,0.7",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	errConnLost := errors.New("connection lost")
+	outage := true
+	var attemptedDuringOutage []string
+	var applied []string
+
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+	adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+		if outage {
+			return errConnLost
+		}
+		for _, r := range rows {
+			applied = append(applied, r.cveID)
+		}
+		return nil
+	}
+	adapter.applyRowFn = func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+		attemptedDuringOutage = append(attemptedDuringOutage, cveID)
+		return errConnLost
+	}
+
+	cursor, err := adapter.Apply(context.Background(), nil, nil)
+	if !errors.Is(err, errConnLost) {
+		t.Fatalf("Apply during the outage: error = %v, want %v", err, errConnLost)
+	}
+	if cursor != nil {
+		t.Errorf("Apply during the outage returned cursor %s, want nil", cursor)
+	}
+	if len(attemptedDuringOutage) != 1 {
+		t.Errorf("rows attempted during the outage = %v, want the run to stop at the first", attemptedDuringOutage)
+	}
+	if !strings.Contains(logs.String(), "batch failed") {
+		t.Errorf("expected a warning about the failed batch, got: %s", logs.String())
+	}
+
+	outage = false
+	elapseLimiterTime(adapter.rateLimiter, minDownloadInterval)
+
+	cursor, err = adapter.Apply(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Apply after the outage: %v", err)
+	}
+	if len(cursor) == 0 {
+		t.Error("Apply after the outage returned an empty cursor")
+	}
+	if len(applied) != 2 {
+		t.Errorf("applied after the outage = %v, want both rows", applied)
 	}
 }
 

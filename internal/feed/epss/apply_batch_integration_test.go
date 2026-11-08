@@ -110,6 +110,59 @@ func stagedScores(t *testing.T, db *sql.DB) map[string]float64 {
 	return got
 }
 
+// Apply through the real driver against a server that refuses connections must
+// report the failure, not return a cursor for a file with no rows applied.
+func TestApply_UnreachableDatabase_FailsRun(t *testing.T) {
+	logs := epss.CaptureWarnings(t)
+
+	db, err := sql.Open("pgx", "postgres://cvert:cvert@127.0.0.1:1/cvert?sslmode=disable&connect_timeout=5")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cursor, err := fileAdapter(t, "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.4,0.8").
+		Apply(context.Background(), db, nil)
+	if err == nil {
+		t.Fatalf("Apply succeeded against an unreachable database, cursor %s", cursor)
+	}
+	if cursor != nil {
+		t.Errorf("Apply returned cursor %s, want nil", cursor)
+	}
+	if !strings.Contains(logs.String(), "batch failed") {
+		t.Errorf("expected a warning about the failed batch, got: %s", logs.String())
+	}
+}
+
+// A constraint violation means the schema does not fit the EPSS statements, not
+// that one row is bad, because they write nothing a constraint can refuse for one
+// row's data. Removing a column default makes every staging insert raise 23502;
+// that run must fail and leave the cursor unchanged.
+func TestApply_ConstraintViolation_FailsRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	logs := epss.CaptureWarnings(t)
+
+	db := testutil.NewTestDB(t)
+	if _, err := db.DB().ExecContext(context.Background(),
+		"ALTER TABLE epss_staging ALTER COLUMN ingested_at DROP DEFAULT",
+	); err != nil {
+		t.Fatalf("drop default: %v", err)
+	}
+
+	cursor, err := fileAdapter(t, "CVE-2024-9001,0.7,0.95").Apply(context.Background(), db.DB(), nil)
+	if err == nil || !strings.Contains(err.Error(), "23502") {
+		t.Fatalf("Apply error = %v, want one reporting SQLSTATE 23502", err)
+	}
+	if cursor != nil {
+		t.Errorf("Apply returned cursor %s, want nil", cursor)
+	}
+	if !strings.Contains(logs.String(), "batch failed") {
+		t.Errorf("expected a warning about the failed batch, got: %s", logs.String())
+	}
+}
+
 // Scores for known CVEs land on cves, scores for unknown CVEs land in
 // epss_staging and nowhere else, and a CVE listed twice keeps its later score.
 func TestApply_WritesKnownCVEsAndStagesUnknownCVEs(t *testing.T) {
@@ -227,6 +280,7 @@ func TestApply_FileLongerThanOneBatch(t *testing.T) {
 
 // A row the database rejects aborts its whole batch. The other rows of that
 // batch still land through the row-by-row path, and only the rejected row is lost.
+// The constraint divides by zero for one CVE ID, which raises SQLSTATE 22012.
 func TestApply_RowRejectedByDatabaseCostsOnlyThatRow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires testcontainer")
@@ -237,7 +291,7 @@ func TestApply_RowRejectedByDatabaseCostsOnlyThatRow(t *testing.T) {
 	warnings := epss.CaptureWarnings(t)
 
 	if _, err := db.DB().ExecContext(context.Background(),
-		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (cve_id <> 'CVE-2024-9002')"); err != nil {
+		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (1 / (CASE WHEN cve_id = 'CVE-2024-9002' THEN 0 ELSE 1 END) = 1)"); err != nil {
 		t.Fatalf("add constraint: %v", err)
 	}
 

@@ -32,9 +32,11 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -42,6 +44,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/merge"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
@@ -78,6 +81,11 @@ type Cursor struct {
 	// shift non-incrementally when the model is updated.
 	ModelVersion string `json:"model_version,omitempty"`
 }
+
+// maxCVEIDLength is the longest CVE ID Apply writes. Postgres refuses an index key
+// over about 2,700 bytes, and a row it cannot store would stop every retry of the
+// file at that row. Real CVE IDs are under 20 bytes.
+const maxCVEIDLength = 64
 
 // defaultBatchSize is how many CSV rows each apply transaction covers. Each CVE
 // in a batch holds one advisory lock until the batch commits, so this stays well
@@ -245,6 +253,13 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		if cveID == "" {
 			continue
 		}
+		if len(cveID) > maxCVEIDLength || !feed.IsCVEID(cveID) {
+			slog.WarnContext(ctx, "epss: skip row with malformed CVE ID",
+				"cve_id", cveID[:min(len(cveID), maxCVEIDLength)],
+				"length", len(cveID),
+			)
+			continue
+		}
 
 		score, parseErr := strconv.ParseFloat(strings.TrimSpace(record[1]), 64)
 		if parseErr != nil {
@@ -252,6 +267,15 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 				"cve_id", cveID,
 				"score_raw", record[1],
 				"err", parseErr,
+			)
+			continue
+		}
+		// ParseFloat accepts NaN and infinity. The API cannot marshal them to JSON,
+		// and Postgres orders NaN above every number, so alert rules would match it.
+		if math.IsNaN(score) || score < 0 || score > 1 {
+			slog.WarnContext(ctx, "epss: skip row with score outside 0 to 1",
+				"cve_id", cveID,
+				"score", score,
 			)
 			continue
 		}
@@ -280,7 +304,8 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 
 // applyRows applies one batch. When the batch fails for any reason other than
 // the end of ctx, its rows are applied one at a time, so a row the database
-// rejects costs only that row. Returns an error only when ctx has ended.
+// rejects costs only that row. Returns an error when ctx has ended or a row fails
+// for any other reason, because a returned cursor records the run as complete.
 func (a *Adapter) applyRows(ctx context.Context, db *sql.DB, rows []scoreRow, asOfDate time.Time) error {
 	err := a.applyBatchFn(ctx, db, rows, asOfDate)
 	if err == nil {
@@ -299,11 +324,24 @@ func (a *Adapter) applyRows(ctx context.Context, db *sql.DB, rows []scoreRow, as
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return fmt.Errorf("epss: apply interrupted at %s: %w", r.cveID, ctxErr)
 			}
+			if !isRowRejected(err) {
+				return fmt.Errorf("epss: apply failed at %s: %w", r.cveID, err)
+			}
 			slog.WarnContext(ctx, "epss: skipping row with DB error",
 				"cve_id", r.cveID, "error", err)
 		}
 	}
 	return nil
+}
+
+// isRowRejected reports whether err is Postgres refusing a value in a row: SQLSTATE
+// class 22 (data exception). Any other failure says nothing about the row and would
+// affect the rows after it too. That includes a lost connection, a server shutting
+// down, and a constraint violation: the EPSS statements always supply every column
+// they write and resolve key conflicts, so a violation means the schema is wrong.
+func isRowRejected(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && strings.HasPrefix(pgErr.Code, "22")
 }
 
 // applyBatch executes the two-statement EPSS pattern for a batch of rows inside

@@ -18,7 +18,7 @@
 ## Gotchas
 
 - `TestApply_SkipsPoisonRows` returned a plain `fmt.Errorf` for its bad row, which is not what a refused row looks like. Its row hook now returns a `*pgconn.PgError`; the assertions are unchanged.
-- A CVE ID that is not valid UTF-8 does not reach Postgres unchanged on the batch path. `pq.Array` sends `text[]` as a string, pgx's text-array parser (`pgtype/array.go`) reads it rune by rune, and the invalid byte is written back as U+FFFD, so Postgres accepts the row and stores the replaced ID. A direct single-row insert of the same value fails with 22021. The CVE ID check now drops such a row before it reaches the driver. The integration test for a refused row uses a `CHECK` expression it adds itself, which divides by zero for one CVE ID and raises 22012.
+- A CVE ID that is not valid UTF-8 does not reach Postgres unchanged on the batch path. `pq.Array` sends `text[]` as a string, pgx's text-array parser (`pgtype/array.go`) reads it rune by rune, and the invalid byte is written back as U+FFFD, so Postgres accepts the row and stores the replaced ID. A direct single-row insert of the same value fails with 22021. The CVE ID check now drops such a row before it reaches the driver. `TestApply_RowRejectedByDatabaseCostsOnlyThatRow` needs a real refused row, so it adds a `CHECK` expression that divides by zero for one CVE ID and raises 22012. It first used a plain `CHECK` (23514), which now fails the run by design.
 
 ## Known limits
 
@@ -29,7 +29,7 @@
 - `TestApply_DatabaseOutage_FailsRunAndLaterAttemptSucceeds` and `TestApply_UnreachableDatabase_FailsRun` (real driver, connection refused) failed before the change because `Apply` returned a cursor, and pass after it. The first also proves a later attempt the same day applies the file.
 - `TestApply_ConstraintViolation_FailsRun` (real 23502 after dropping the column default) and `TestApply_SkipsRowsWithMalformedCVEID` (the 6,400-byte ID, a non-CVE ID and invalid UTF-8) failed before the matching change and pass after it.
 - `TestApply_SkipsRowsWithScoreOutsideProbabilityRange` failed before the score check (`NaN`, `Inf`, `-Inf`, `-0.1` and `1.5` all reached the batch) and passes after it.
-- `TestApply_RowRejectedByPostgres_CostsOnlyThatRow` (real Postgres, real SQLSTATE through the driver) and `TestApply_SkipsPoisonRows` were break-tested with `isRowRejected` forced to false and failed with `epss: apply failed at ...`.
+- The test of a row refused by real Postgres, with a real SQLSTATE through the driver, and `TestApply_SkipsPoisonRows` were break-tested with `isRowRejected` forced to false and failed with `epss: apply failed at ...`.
 - An executing review with live probes (read-only errors, statement timeouts, connections terminated during writes and commits, deferred constraint rejection) confirmed the outage paths and found the constraint and oversized-ID problems that this entry's decisions address.
 - `go test ./internal/feed/ ./internal/feed/epss/ ./internal/ingest/ -count=1` passes with a real Postgres (`TESTCONTAINERS_RYUK_DISABLED=true`, because of the known reaper `removing` failure on this host).
 - `golangci-lint run` reports 0 issues on `internal/feed/`, `internal/feed/epss/...` and `internal/ingest/...`.

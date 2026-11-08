@@ -163,43 +163,6 @@ func TestApply_ConstraintViolation_FailsRun(t *testing.T) {
 	}
 }
 
-// A data exception raised by Postgres and returned through the real driver must
-// cost only that row: the run succeeds and the other rows are applied. The
-// constraint divides by zero for one CVE ID, which raises SQLSTATE 22012.
-func TestApply_RowRejectedByPostgres_CostsOnlyThatRow(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires testcontainer")
-	}
-	logs := epss.CaptureWarnings(t)
-
-	db := testutil.NewTestDB(t)
-	seedCVE(t, db, "CVE-2024-1001")
-	if _, err := db.DB().ExecContext(context.Background(),
-		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (1 / (CASE WHEN cve_id = 'CVE-2024-9002' THEN 0 ELSE 1 END) = 1)",
-	); err != nil {
-		t.Fatalf("add constraint: %v", err)
-	}
-
-	if _, err := fileAdapter(t,
-		"CVE-2024-1001,0.5,0.9",
-		"CVE-2024-9002,0.2,0.1",
-		"CVE-2024-9001,0.7,0.95",
-	).Apply(context.Background(), db.DB(), nil); err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); !got.score.Valid || got.score.Float64 != 0.5 {
-		t.Errorf("CVE-2024-1001 epss_score = %v, want 0.5", got.score)
-	}
-	staged := stagedScores(t, db.DB())
-	if fmt.Sprint(staged) != fmt.Sprint(map[string]float64{"CVE-2024-9001": 0.7}) {
-		t.Errorf("epss_staging = %v, want only CVE-2024-9001 = 0.7", staged)
-	}
-	if !strings.Contains(logs.String(), "skipping row with DB error") {
-		t.Errorf("expected a warning about the skipped row, got: %s", logs.String())
-	}
-}
-
 // Scores for known CVEs land on cves, scores for unknown CVEs land in
 // epss_staging and nowhere else, and a CVE listed twice keeps its later score.
 func TestApply_WritesKnownCVEsAndStagesUnknownCVEs(t *testing.T) {
@@ -317,6 +280,7 @@ func TestApply_FileLongerThanOneBatch(t *testing.T) {
 
 // A row the database rejects aborts its whole batch. The other rows of that
 // batch still land through the row-by-row path, and only the rejected row is lost.
+// The constraint divides by zero for one CVE ID, which raises SQLSTATE 22012.
 func TestApply_RowRejectedByDatabaseCostsOnlyThatRow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires testcontainer")
@@ -327,7 +291,7 @@ func TestApply_RowRejectedByDatabaseCostsOnlyThatRow(t *testing.T) {
 	warnings := epss.CaptureWarnings(t)
 
 	if _, err := db.DB().ExecContext(context.Background(),
-		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (cve_id <> 'CVE-2024-9002')"); err != nil {
+		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (1 / (CASE WHEN cve_id = 'CVE-2024-9002' THEN 0 ELSE 1 END) = 1)"); err != nil {
 		t.Fatalf("add constraint: %v", err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/scarson/cvert-ops/internal/feed"
 )
 
@@ -232,7 +234,7 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 		},
 		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
 			if cveID == "CVE-2024-0002" {
-				return fmt.Errorf("simulated DB error")
+				return fmt.Errorf("upsert epss staging: %w", &pgconn.PgError{Code: "22021"})
 			}
 			applied = append(applied, cveID)
 			return nil
@@ -618,6 +620,115 @@ func TestApply_FailedRunSucceedsOnLaterAttempt(t *testing.T) {
 				t.Errorf("server received %d requests, want 2", got)
 			}
 		})
+	}
+}
+
+// Only a refusal of the row's data costs just that row. Every other failure,
+// including an error that is not from Postgres at all, must stop the run.
+func TestIsRowRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"invalid byte sequence", &pgconn.PgError{Code: "22021"}, true},
+		{"numeric out of range", &pgconn.PgError{Code: "22003"}, true},
+		{"check constraint", &pgconn.PgError{Code: "23514"}, true},
+		{"wrapped rejection", fmt.Errorf("update cve epss: %w", &pgconn.PgError{Code: "22021"}), true},
+		{"admin shutdown", &pgconn.PgError{Code: "57P01"}, false},
+		{"too many connections", &pgconn.PgError{Code: "53300"}, false},
+		{"read-only transaction", &pgconn.PgError{Code: "25006"}, false},
+		{"permission denied", &pgconn.PgError{Code: "42501"}, false},
+		{"deadlock", &pgconn.PgError{Code: "40P01"}, false},
+		{"not a Postgres error", errors.New("connection refused"), false},
+		{"bad connection", driver.ErrBadConn, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isRowRejected(tc.err); got != tc.want {
+				t.Errorf("isRowRejected(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// captureWarnLogs routes slog warnings to the returned buffer for the rest of the
+// test. Tests that use it cannot run in parallel, because it replaces slog.Default.
+func captureWarnLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
+// A database outage must fail the run. Reporting it as a success would advance the
+// cursor past a file with no rows applied, and the same-day cursor check would then
+// skip that file. The run stops at the first failing row, because each row after it
+// would wait on the same outage, and a later attempt can apply the file.
+func TestApply_DatabaseOutage_FailsRunAndLaterAttemptSucceeds(t *testing.T) {
+	logs := captureWarnLogs(t)
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.5,0.9",
+		"CVE-2024-0002,0.3,0.7",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	errConnLost := errors.New("connection lost")
+	outage := true
+	var attemptedDuringOutage []string
+	var applied []string
+
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+	adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+		if outage {
+			return errConnLost
+		}
+		for _, r := range rows {
+			applied = append(applied, r.cveID)
+		}
+		return nil
+	}
+	adapter.applyRowFn = func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+		attemptedDuringOutage = append(attemptedDuringOutage, cveID)
+		return errConnLost
+	}
+
+	cursor, err := adapter.Apply(context.Background(), nil, nil)
+	if !errors.Is(err, errConnLost) {
+		t.Fatalf("Apply during the outage: error = %v, want %v", err, errConnLost)
+	}
+	if cursor != nil {
+		t.Errorf("Apply during the outage returned cursor %s, want nil", cursor)
+	}
+	if len(attemptedDuringOutage) != 1 {
+		t.Errorf("rows attempted during the outage = %v, want the run to stop at the first", attemptedDuringOutage)
+	}
+	if !strings.Contains(logs.String(), "batch failed") {
+		t.Errorf("expected a warning about the failed batch, got: %s", logs.String())
+	}
+
+	outage = false
+	elapseLimiterTime(adapter.rateLimiter, minDownloadInterval)
+
+	cursor, err = adapter.Apply(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Apply after the outage: %v", err)
+	}
+	if len(cursor) == 0 {
+		t.Error("Apply after the outage returned an empty cursor")
+	}
+	if len(applied) != 2 {
+		t.Errorf("applied after the outage = %v, want both rows", applied)
 	}
 }
 

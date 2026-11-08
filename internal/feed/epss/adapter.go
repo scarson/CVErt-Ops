@@ -32,6 +32,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/scarson/cvert-ops/internal/feed"
 	"github.com/scarson/cvert-ops/internal/merge"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
@@ -280,7 +282,8 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 
 // applyRows applies one batch. When the batch fails for any reason other than
 // the end of ctx, its rows are applied one at a time, so a row the database
-// rejects costs only that row. Returns an error only when ctx has ended.
+// rejects costs only that row. Returns an error when ctx has ended or a row fails
+// for any other reason, because a returned cursor records the run as complete.
 func (a *Adapter) applyRows(ctx context.Context, db *sql.DB, rows []scoreRow, asOfDate time.Time) error {
 	err := a.applyBatchFn(ctx, db, rows, asOfDate)
 	if err == nil {
@@ -299,11 +302,26 @@ func (a *Adapter) applyRows(ctx context.Context, db *sql.DB, rows []scoreRow, as
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return fmt.Errorf("epss: apply interrupted at %s: %w", r.cveID, ctxErr)
 			}
+			if !isRowRejected(err) {
+				return fmt.Errorf("epss: apply failed at %s: %w", r.cveID, err)
+			}
 			slog.WarnContext(ctx, "epss: skipping row with DB error",
 				"cve_id", r.cveID, "error", err)
 		}
 	}
 	return nil
+}
+
+// isRowRejected reports whether err is Postgres refusing a row's data: SQLSTATE
+// class 22 (data exception) or 23 (integrity constraint violation). Any other
+// failure, such as a lost connection or a server shutting down, says nothing about
+// the row and would affect the rows after it too.
+func isRowRejected(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23")
 }
 
 // applyBatch executes the two-statement EPSS pattern for a batch of rows inside

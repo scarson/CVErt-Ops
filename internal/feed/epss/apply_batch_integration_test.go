@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,6 +103,70 @@ func stagedScores(t *testing.T, db *sql.DB) map[string]float64 {
 		t.Fatalf("staging rows: %v", err)
 	}
 	return got
+}
+
+// Apply through the real driver against a server that refuses connections must
+// report the failure, not return a cursor for a file with no rows applied.
+func TestApply_UnreachableDatabase_FailsRun(t *testing.T) {
+	var logs bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	db, err := sql.Open("pgx", "postgres://cvert:cvert@127.0.0.1:1/cvert?sslmode=disable&connect_timeout=5")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cursor, err := fileAdapter(t, "CVE-2024-1001,0.5,0.9", "CVE-2024-1002,0.4,0.8").
+		Apply(context.Background(), db, nil)
+	if err == nil {
+		t.Fatalf("Apply succeeded against an unreachable database, cursor %s", cursor)
+	}
+	if cursor != nil {
+		t.Errorf("Apply returned cursor %s, want nil", cursor)
+	}
+	if !strings.Contains(logs.String(), "batch failed") {
+		t.Errorf("expected a warning about the failed batch, got: %s", logs.String())
+	}
+}
+
+// A constraint violation raised by Postgres and returned through the real driver
+// must cost only that row: the run succeeds and the other rows are applied.
+func TestApply_RowRejectedByPostgres_CostsOnlyThatRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	var logs bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	db := testutil.NewTestDB(t)
+	seedCVE(t, db, "CVE-2024-1001")
+	if _, err := db.DB().ExecContext(context.Background(),
+		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (cve_id <> 'CVE-2024-9002')",
+	); err != nil {
+		t.Fatalf("add constraint: %v", err)
+	}
+
+	applyFile(t, db.DB(),
+		"CVE-2024-1001,0.5,0.9",
+		"CVE-2024-9002,0.2,0.1",
+		"CVE-2024-9001,0.7,0.95",
+	)
+
+	if got := cveEPSS(t, db.DB(), "CVE-2024-1001"); !got.score.Valid || got.score.Float64 != 0.5 {
+		t.Errorf("CVE-2024-1001 epss_score = %v, want 0.5", got.score)
+	}
+	staged := stagedScores(t, db.DB())
+	if fmt.Sprint(staged) != fmt.Sprint(map[string]float64{"CVE-2024-9001": 0.7}) {
+		t.Errorf("epss_staging = %v, want only CVE-2024-9001 = 0.7", staged)
+	}
+	if !strings.Contains(logs.String(), "skipping row with DB error") {
+		t.Errorf("expected a warning about the skipped row, got: %s", logs.String())
+	}
 }
 
 // Scores for known CVEs land on cves, scores for unknown CVEs land in

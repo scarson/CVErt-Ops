@@ -19,7 +19,8 @@
 - Measurements on 2026-11-08, from a probe in a Linux container reading `CLOCK_REALTIME` (on one thread in the first run, compared across 6 threads in the other two): the Docker Desktop VM's wall clock stepped forward by roughly 220 to 400 ms every 30 seconds, over 19 minutes of probing that covered a run with little other load, all 20 vCPUs saturated, and a full `go test ./...` run. It recorded no backward reading. About 167,000 upsert-then-claim cycles in the first two of those periods missed no claim.
 - The Windows `Kernel-General` event log shows a real backward host step of 1.353 s at 2026-11-08T19:35Z, so backward steps occur on this machine. It records no step during the failing runs at about 21:36Z and 21:46Z on 2026-11-07. An NTP sample arrived at 21:44:06Z, shortly before the second run; a correction applied gradually does not produce that event. The trigger for those two failures remains unconfirmed.
 - CPU saturation alone did not reproduce the failure.
-- `TestRebuildSearchIndex_RetriesBatchAfterDeadlock` in `internal/merge` failed once in a full run during this work, with "expected the rebuild to be the deadlock victim", and passed 5 of 5 alone. It has a separate cause and is not addressed here.
+- The 20 busy-loop containers used to saturate the VM were started with a 210-second `timeout` entrypoint but did not exit, and ran from about 23:12Z until they were removed by hand at about 23:49Z. Every test run for this change after 23:12Z, including both full runs and the `-count=3` run, had all 20 vCPUs busy. The full run the probe watched was therefore not a normal full run.
+- `TestRebuildSearchIndex_RetriesBatchAfterDeadlock` in `internal/merge` failed once in the first full run, under that saturation, with "expected the rebuild to be the deadlock victim". It passed in the second full run, also saturated, and 5 of 5 alone. It has a separate cause and is not addressed here.
 
 ## Quality checks
 

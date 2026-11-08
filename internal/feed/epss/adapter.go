@@ -56,6 +56,14 @@ const (
 	// the redirect automatically. The old domain epss.cyentia.com redirects
 	// HTTP 301 to this domain; use the canonical URL directly (verified 2026-02-25).
 	feedURL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
+
+	// minDownloadInterval is the shortest time between two downloads of the EPSS
+	// file by one adapter. The job queue retries a failed run within seconds, and
+	// this spacing stops those retries from fetching the whole file in quick
+	// succession. It is short so that a failed run can still succeed the same day.
+	// The same-day cursor check and the scheduler's 24-hour interval are what hold
+	// successful runs to one download a day.
+	minDownloadInterval = time.Minute
 )
 
 // Cursor is the JSON-serializable sync state for the EPSS adapter.
@@ -102,16 +110,14 @@ type Adapter struct {
 }
 
 // New creates an EPSS adapter. Pass nil to use http.DefaultClient.
-// The adapter is rate-limited to one download per 24 hours.
+// The adapter is rate-limited to one download per minDownloadInterval.
 func New(client *http.Client) *Adapter {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	// One file per day; 24h limiter enforces that at the adapter level even if the
-	// scheduler fires early.
 	return &Adapter{
 		client:       feed.WrapClientWithUA(client),
-		rateLimiter:  rate.NewLimiter(rate.Every(24*time.Hour), 1),
+		rateLimiter:  rate.NewLimiter(rate.Every(minDownloadInterval), 1),
 		batchSize:    defaultBatchSize,
 		applyBatchFn: applyBatch,
 		applyRowFn:   applyRow,
@@ -151,12 +157,7 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		}
 	}
 
-	// Safety net: the 24h rate limiter can block a worker goroutine for the full
-	// reservation period if the cursor-based skip (above) fails to short-circuit.
-	// Cap the wait so a corrupted cursor or early scheduler fire fails fast.
-	rlCtx, rlCancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer rlCancel()
-	if err := a.rateLimiter.Wait(rlCtx); err != nil {
+	if err := a.rateLimiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("epss: rate limit: %w", err)
 	}
 

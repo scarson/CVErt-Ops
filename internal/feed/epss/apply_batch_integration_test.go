@@ -21,7 +21,7 @@ import (
 )
 
 // applyFile serves rows as an EPSS file dated the day before and applies it
-// with a new adapter, so the adapter's daily rate limit never blocks a call.
+// with a new adapter, so the adapter's rate limit never delays a call.
 func applyFile(t *testing.T, db *sql.DB, rows ...string) {
 	t.Helper()
 	if _, err := fileAdapter(t, rows...).Apply(context.Background(), db, nil); err != nil {

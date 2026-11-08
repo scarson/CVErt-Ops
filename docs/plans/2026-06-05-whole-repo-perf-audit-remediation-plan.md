@@ -174,6 +174,9 @@ recorded here as the persistent record (none are severity/effort deferrals):
 **Why flagged:** batching the apply changes the PLAN.md §5.3 advisory-lock + two-statement TOCTOU contract
 shared with the merge pipeline. **Decision needed:** chunked-batch (keep per-CVE locks) vs staging-table
 set-apply (new locking discipline). **Recommended:** chunked batches first (lower risk).
+**Resolved 2026-11-07:** chunked batches of 500 rows, each one transaction holding the per-CVE merge
+locks in ascending key order, with a row-by-row fallback for a failed batch. Measurements and design
+in `dev/implementation-log/` entry "EPSS daily apply fits the job limit" (2026-11-07).
 
 ### `material_hash` JCS removal  (finding S1-P4, task W6 merge batch)
 **Impact:** Major   **Location:** `internal/merge/hash.go:81-94`

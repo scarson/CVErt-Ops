@@ -198,6 +198,17 @@ func makeEPSSGzip(t *testing.T, rows []string) []byte {
 	return buf.Bytes()
 }
 
+// captureWarnings routes slog warnings to the returned buffer until the test
+// ends. It replaces the global logger, so the calling test must not be parallel.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+	return &buf
+}
+
 func TestApply_SkipsPoisonRows(t *testing.T) {
 	// Not parallel: mutates slog.Default.
 	var applied []string
@@ -215,15 +226,17 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 	defer srv.Close()
 
 	// Capture slog output to verify warning is logged.
-	var logBuf bytes.Buffer
-	origHandler := slog.Default().Handler()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+	logBuf := captureWarnings(t)
 
 	// Route all requests to the test server (Apply uses a hardcoded feedURL constant).
+	// The batch holding the poison row fails, so its rows are applied one at a time.
 	adapter := &Adapter{
 		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
 		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		batchSize:   3,
+		applyBatchFn: func(_ context.Context, _ *sql.DB, _ []scoreRow, _ time.Time) error {
+			return fmt.Errorf("simulated DB error")
+		},
 		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
 			if cveID == "CVE-2024-0002" {
 				return fmt.Errorf("simulated DB error")
@@ -281,6 +294,62 @@ func TestApply_ContextEndsDuringRows_ReturnsError(t *testing.T) {
 	adapter := &Adapter{
 		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
 		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		batchSize:   1,
+		applyBatchFn: func(ctx context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+			attempted = append(attempted, rows[0].cveID)
+			if rows[0].cveID == "CVE-2024-0002" {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+			t.Errorf("row %s applied one at a time after the context ended", cveID)
+			return nil
+		},
+	}
+
+	result, err := adapter.Apply(ctx, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Apply error = %v, want context.Canceled", err)
+	}
+	if result != nil {
+		t.Errorf("Apply returned cursor %s, want nil for an interrupted run", result)
+	}
+	if len(attempted) != 2 {
+		t.Errorf("attempted rows = %v, want the run to stop at the interrupted row", attempted)
+	}
+}
+
+// A context that ends while a failed batch is being applied row by row also
+// stops the run, rather than skipping each remaining row as a poison row.
+func TestApply_ContextEndsDuringRowFallback_ReturnsError(t *testing.T) {
+	// Not parallel: mutates slog.Default.
+	var attempted []string
+	logBuf := captureWarnings(t)
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.5,0.9",
+		"CVE-2024-0002,0.3,0.7",
+		"CVE-2024-0003,0.8,0.95",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := &Adapter{
+		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		batchSize:   3,
+		applyBatchFn: func(_ context.Context, _ *sql.DB, _ []scoreRow, _ time.Time) error {
+			return fmt.Errorf("simulated DB error")
+		},
 		applyRowFn: func(ctx context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
 			attempted = append(attempted, cveID)
 			if cveID == "CVE-2024-0002" {
@@ -300,6 +369,179 @@ func TestApply_ContextEndsDuringRows_ReturnsError(t *testing.T) {
 	}
 	if len(attempted) != 2 {
 		t.Errorf("attempted rows = %v, want the run to stop at the interrupted row", attempted)
+	}
+	if !strings.Contains(logBuf.String(), "batch failed; applying its rows one at a time") {
+		t.Errorf("expected warning about the failed batch, got: %s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "skipping row with DB error") {
+		t.Errorf("interrupted row was logged as a poison row: %s", logBuf.String())
+	}
+}
+
+// Apply hands rows to the database in batches of batchSize, in file order, and
+// applies a final short batch. Rows that are skipped before the database (an
+// empty CVE ID or an unparseable score) are not part of any batch.
+func TestApply_AppliesRowsInBatches(t *testing.T) {
+	// Not parallel: mutates slog.Default.
+	logBuf := captureWarnings(t)
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.1,0.9",
+		"CVE-2024-0002,0.2,0.9",
+		",0.5,0.5",
+		"CVE-2024-0003,0.3,0.9",
+		"CVE-2024-0004,not-a-number,0.9",
+		"CVE-2024-0005,0.5,0.9",
+		"CVE-2024-0006,0.6,0.9",
+		"CVE-2024-0007,0,0.9",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	var batches [][]scoreRow
+	adapter := &Adapter{
+		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		batchSize:   3,
+		applyBatchFn: func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+			// Apply reuses the batch slice, so keep a copy.
+			batches = append(batches, append([]scoreRow(nil), rows...))
+			return nil
+		},
+		applyRowFn: func(_ context.Context, _ *sql.DB, cveID string, _ float64, _ time.Time) error {
+			t.Errorf("row %s applied one at a time, want only batches", cveID)
+			return nil
+		},
+	}
+
+	if _, err := adapter.Apply(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	want := [][]scoreRow{
+		{{"CVE-2024-0001", 0.1}, {"CVE-2024-0002", 0.2}, {"CVE-2024-0003", 0.3}},
+		{{"CVE-2024-0005", 0.5}, {"CVE-2024-0006", 0.6}, {"CVE-2024-0007", 0}},
+	}
+	if fmt.Sprint(batches) != fmt.Sprint(want) {
+		t.Errorf("batches = %v, want %v", batches, want)
+	}
+	if !strings.Contains(logBuf.String(), "skip row with unparseable score") {
+		t.Errorf("expected warning about the unparseable score, got: %s", logBuf.String())
+	}
+}
+
+// A file whose row count is not a multiple of batchSize ends with a short batch.
+func TestApply_AppliesFinalShortBatch(t *testing.T) {
+	t.Parallel()
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.1,0.9",
+		"CVE-2024-0002,0.2,0.9",
+		"CVE-2024-0003,0.3,0.9",
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	var sizes []int
+	adapter := &Adapter{
+		client:      feed.WrapClientWithUA(&http.Client{Transport: &redirectTransport{target: srv.URL}}),
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		batchSize:   2,
+		applyBatchFn: func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+			sizes = append(sizes, len(rows))
+			return nil
+		},
+	}
+
+	if _, err := adapter.Apply(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if fmt.Sprint(sizes) != "[2 1]" {
+		t.Errorf("batch sizes = %v, want [2 1]", sizes)
+	}
+}
+
+// The feed client's timeout covers reading the response body. Applying rows
+// must not count against it, or a slow apply fails the download partway
+// through the file.
+func TestApply_SlowApplyDoesNotHitClientTimeout(t *testing.T) {
+	t.Parallel()
+
+	// Enough distinct rows that the compressed body is far larger than the
+	// buffers between the socket and the CSV reader.
+	rows := make([]string, 20000)
+	for i := range rows {
+		rows[i] = fmt.Sprintf("CVE-2024-%d,0.%05d,0.5", 10000+i, (i*7919)%100000)
+	}
+	body := makeEPSSGzip(t, rows)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	const clientTimeout = 300 * time.Millisecond
+	applied := 0
+	slept := false
+	adapter := &Adapter{
+		client: feed.WrapClientWithUA(&http.Client{
+			Transport: &redirectTransport{target: srv.URL},
+			Timeout:   clientTimeout,
+		}),
+		rateLimiter: rate.NewLimiter(rate.Inf, 1),
+		batchSize:   100,
+		applyBatchFn: func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+			if !slept {
+				slept = true
+				time.Sleep(2 * clientTimeout)
+			}
+			applied += len(rows)
+			return nil
+		},
+	}
+
+	if _, err := adapter.Apply(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if applied != len(rows) {
+		t.Errorf("applied %d rows, want %d", applied, len(rows))
+	}
+}
+
+// latestScores keeps one score per CVE ID, the last one in the batch, which is
+// the score that applying the rows one at a time in file order ends with.
+func TestLatestScores_KeepsLastScorePerCVE(t *testing.T) {
+	t.Parallel()
+
+	ids, scores := latestScores([]scoreRow{
+		{"CVE-2024-0001", 0.1},
+		{"CVE-2024-0002", 0.2},
+		{"CVE-2024-0001", 0.3},
+		{"CVE-2024-0003", 0},
+	})
+
+	got := map[string]float64{}
+	for i, id := range ids {
+		if _, dup := got[id]; dup {
+			t.Errorf("CVE %s appears twice in %v", id, ids)
+		}
+		got[id] = scores[i]
+	}
+	want := map[string]float64{"CVE-2024-0001": 0.3, "CVE-2024-0002": 0.2, "CVE-2024-0003": 0}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("latestScores = %v, want %v", got, want)
+	}
+	if len(ids) != len(scores) {
+		t.Errorf("len(ids) = %d, len(scores) = %d, want equal", len(ids), len(scores))
 	}
 }
 

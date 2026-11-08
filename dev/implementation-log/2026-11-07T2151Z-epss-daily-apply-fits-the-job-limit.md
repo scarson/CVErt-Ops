@@ -14,10 +14,10 @@ Measured on Postgres 18 (`postgres:18-alpine` in Docker Desktop on Windows) with
 | Apply | Per-row transactions (before) | Batches of 500 (after) |
 |---|---|---|
 | 300,000 rows, every score new | 22 m 10 s (226 rows/s) | 8.1 s |
-| 300,000 rows, every score changed | ≈19–25 min (extrapolated from 20,000 rows at 233 rows/s) | 8.4 s |
+| 300,000 rows, 99.5% of scores changed (rounding to five decimals leaves 0.5% equal) | ≈19–25 min (extrapolated from 20,000 rows at 233 rows/s) | 8.4 s |
 | 300,000 rows, no score changed | ≈19 min (extrapolated from 20,000 rows at 268 rows/s) | 3.5 s |
 
-Before the change, a full file needed more than twice the 10-minute job limit, and more than four times the 5-minute feed client timeout that also applied (see Key decisions). Every run failed, and because each attempt restarted at the first row, the rows past roughly the first 70,000 were never applied. After the change, a full file takes under 2% of the job limit.
+Before the change, a full file needed more than twice the 10-minute job limit, and more than four times the 5-minute feed client timeout that also applied (see Key decisions). Every run failed, and because each attempt restarted at the first row, the rows past roughly the first 70,000 were never applied. After the change, a full file took 8.1 seconds in this run, and 61 seconds in an independent rerun of the same harness on the same host while other sessions were using Docker. That is between 1.4% and 10% of the job limit. These timings apply to this host and synthetic file.
 
 The harness was a test that started its own durable container, seeded `cves` with one `INSERT ... SELECT unnest(...)`, served a generated file through `httptest`, and timed `Apply`.
 
@@ -27,6 +27,7 @@ The harness was a test that started its own durable container, seeded `cves` wit
 - The locking strategy follows the recommendation recorded in `docs/plans/2026-06-05-whole-repo-perf-audit-remediation-plan.md` (appendix entry "EPSS batch-apply locking strategy": chunked batches that keep the per-CVE locks, not a staging-table set-apply with a new locking discipline). It reuses the locking that `merge.RebuildSearchIndex` already uses for its batches.
 - 500 rows per batch. Each CVE in a batch holds one advisory lock until commit, and advisory locks use the shared lock table (`max_locks_per_transaction` × `max_connections`, 6,400 with Postgres defaults). The search index rebuild uses 200 for the same reason. 500 keeps one batch under a tenth of the table.
 - Deadlocks are not retried in a loop. Merge's late-binding PK migration takes a second lock out of key order, so a batch can deadlock with it. Postgres aborts one transaction; if it aborts the batch, the row-by-row fallback applies those rows holding one lock at a time, which cannot deadlock with merge.
+- A CVE listed twice in one batch gets its last score, but the batch does not repeat the intermediate writes. With a stored score of 0.5 and rows 0.6 then 0.5, row-by-row writes would move `date_epss_updated`, and an existing staging row's `as_of_date` and `ingested_at`; the batch leaves them alone. The final score is the same, and the batch treats the row as the unchanged score it is. The golden fixture lists each CVE once, so splitting batches around repeated IDs would add code for input not seen in the feed.
 - The download is buffered because `feed.BuildFeedClient` sets `http.Client.Timeout` (300 seconds for EPSS), and that timeout covers reading the body. When rows were applied while the body streamed in, the effective limit on the apply was 5 minutes, not the 10-minute job limit.
 
 ## Gotchas
@@ -42,6 +43,9 @@ The harness was a test that started its own durable container, seeded `cves` wit
 ## Quality checks
 
 - New unit tests failed before the change (no batch hook) and pass after it. `TestApply_SlowApplyDoesNotHitClientTimeout` was break-tested against the streaming download and failed with `read csv row: context deadline exceeded (Client.Timeout or context cancellation while reading body)`.
+- An independent executing review found that the row-by-row fallback hid a broken `applyBatch`: with `applyBatch` always returning an error, every test still passed. The integration helper `applyFile` now fails on any logged warning, and `TestApply_FileLongerThanOneBatch` applies 1,201 rows through the real batch path. With the same break, `TestApply_WritesKnownCVEsAndStagesUnknownCVEs`, `TestApply_UnchangedScoreKeepsUpdateTime` and `TestApply_FileLongerThanOneBatch` fail.
+- `TestApply_UnchangedScoreKeepsUpdateTime` covers an unchanged staged score. It failed with the `IS DISTINCT FROM` guard removed from `UpsertEPSSStagingBatch`, with `unchanged staged score was rewritten`.
+- `TestApply_RowRejectedByDatabaseCostsOnlyThatRow` makes Postgres reject one row through a CHECK constraint and confirms the rest of its batch lands through the row-by-row path.
 - `TestApply_WaitsForMergeAdvisoryLock` was break-tested with the lock call given no keys and failed with "Apply finished while the merge lock was held".
 - `go test ./internal/feed/epss/ -count=1` passes with a real Postgres (`TESTCONTAINERS_RYUK_DISABLED=true`, because of the known reaper `removing` failure on this host), including the golden file test.
 - `golangci-lint run` is clean on `internal/feed/epss/...` and `internal/store/...`. `pitfall-check` found no issues.

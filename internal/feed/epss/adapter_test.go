@@ -199,6 +199,17 @@ func makeEPSSGzip(t *testing.T, rows []string) []byte {
 	return buf.Bytes()
 }
 
+// captureWarnings routes slog warnings to the returned buffer until the test
+// ends. It replaces the global logger, so the calling test must not be parallel.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	origHandler := slog.Default().Handler()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+	return &buf
+}
+
 func TestApply_SkipsPoisonRows(t *testing.T) {
 	// Not parallel: mutates slog.Default.
 	var applied []string
@@ -216,10 +227,7 @@ func TestApply_SkipsPoisonRows(t *testing.T) {
 	defer srv.Close()
 
 	// Capture slog output to verify warning is logged.
-	var logBuf bytes.Buffer
-	origHandler := slog.Default().Handler()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(slog.New(origHandler)) })
+	logBuf := captureWarnings(t)
 
 	// Route all requests to the test server (Apply uses a hardcoded feedURL constant).
 	// The batch holding the poison row fails, so its rows are applied one at a time.
@@ -317,7 +325,9 @@ func TestApply_ContextEndsDuringRows_ReturnsError(t *testing.T) {
 // A context that ends while a failed batch is being applied row by row also
 // stops the run, rather than skipping each remaining row as a poison row.
 func TestApply_ContextEndsDuringRowFallback_ReturnsError(t *testing.T) {
+	// Not parallel: mutates slog.Default.
 	var attempted []string
+	logBuf := captureWarnings(t)
 
 	body := makeEPSSGzip(t, []string{
 		"CVE-2024-0001,0.5,0.9",
@@ -361,13 +371,20 @@ func TestApply_ContextEndsDuringRowFallback_ReturnsError(t *testing.T) {
 	if len(attempted) != 2 {
 		t.Errorf("attempted rows = %v, want the run to stop at the interrupted row", attempted)
 	}
+	if !strings.Contains(logBuf.String(), "batch failed; applying its rows one at a time") {
+		t.Errorf("expected warning about the failed batch, got: %s", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "skipping row with DB error") {
+		t.Errorf("interrupted row was logged as a poison row: %s", logBuf.String())
+	}
 }
 
 // Apply hands rows to the database in batches of batchSize, in file order, and
 // applies a final short batch. Rows that are skipped before the database (an
 // empty CVE ID or an unparseable score) are not part of any batch.
 func TestApply_AppliesRowsInBatches(t *testing.T) {
-	t.Parallel()
+	// Not parallel: mutates slog.Default.
+	logBuf := captureWarnings(t)
 
 	body := makeEPSSGzip(t, []string{
 		"CVE-2024-0001,0.1,0.9",
@@ -412,6 +429,9 @@ func TestApply_AppliesRowsInBatches(t *testing.T) {
 	}
 	if fmt.Sprint(batches) != fmt.Sprint(want) {
 		t.Errorf("batches = %v, want %v", batches, want)
+	}
+	if !strings.Contains(logBuf.String(), "skip row with unparseable score") {
+		t.Errorf("expected warning about the unparseable score, got: %s", logBuf.String())
 	}
 }
 
@@ -498,8 +518,8 @@ func TestApply_SlowApplyDoesNotHitClientTimeout(t *testing.T) {
 	}
 }
 
-// latestScores keeps one score per CVE ID, the last one in the batch, matching
-// the result of applying the rows one at a time in file order.
+// latestScores keeps one score per CVE ID, the last one in the batch, which is
+// the score that applying the rows one at a time in file order ends with.
 func TestLatestScores_KeepsLastScorePerCVE(t *testing.T) {
 	t.Parallel()
 

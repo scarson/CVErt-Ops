@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -555,6 +556,119 @@ func (t *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	newReq.URL.Scheme = "http"
 	newReq.URL.Host = strings.TrimPrefix(t.target, "http://")
 	return http.DefaultTransport.RoundTrip(newReq) //nolint:gosec // G704: test URL
+}
+
+// elapseLimiterTime moves the limiter's clock forward by d, so a test can observe
+// a call made after d without sleeping. Reserving zero tokens at a future time
+// credits the refill for d and spends nothing.
+func elapseLimiterTime(l *rate.Limiter, d time.Duration) {
+	l.AllowN(time.Now().Add(d), 0)
+}
+
+// A failed run keeps the cursor unchanged, so the file still has to be applied.
+// The job's later attempts and the scheduler's later runs must be able to do that
+// in the same process on the same day; otherwise one transient failure loses a
+// day of scores.
+func TestApply_FailedRunSucceedsOnLaterAttempt(t *testing.T) {
+	t.Parallel()
+
+	body := makeEPSSGzip(t, []string{"CVE-2024-0001,0.5,0.9"})
+
+	tests := []struct {
+		name string
+		// failDownload makes the first request return HTTP 500. Otherwise the
+		// download succeeds and the job context ends while rows are applied.
+		failDownload bool
+		wantFirstErr string
+	}{
+		{name: "upstream error during the download", failDownload: true, wantFirstErr: "HTTP 500"},
+		{name: "job context ends after the download", failDownload: false, wantFirstErr: "apply interrupted"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if requests.Add(1) == 1 && tc.failDownload {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Write(body) //nolint:errcheck,gosec // test helper
+			}))
+			defer srv.Close()
+
+			firstRunCtx, endFirstRun := context.WithCancel(context.Background())
+			defer endFirstRun()
+
+			interruptNextApply := !tc.failDownload
+			var applied []string
+			adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+			adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+				if interruptNextApply {
+					interruptNextApply = false
+					endFirstRun()
+					return context.Canceled
+				}
+				for _, r := range rows {
+					applied = append(applied, r.cveID)
+				}
+				return nil
+			}
+
+			_, err := adapter.Apply(firstRunCtx, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.wantFirstErr) {
+				t.Fatalf("first Apply error = %v, want one containing %q", err, tc.wantFirstErr)
+			}
+
+			elapseLimiterTime(adapter.rateLimiter, minDownloadInterval)
+
+			cursor, err := adapter.Apply(context.Background(), nil, nil)
+			if err != nil {
+				t.Fatalf("second Apply: %v", err)
+			}
+			if len(cursor) == 0 {
+				t.Error("second Apply returned an empty cursor")
+			}
+			if len(applied) != 1 || applied[0] != "CVE-2024-0001" {
+				t.Errorf("applied = %v, want [CVE-2024-0001]", applied)
+			}
+			if got := requests.Load(); got != 2 {
+				t.Errorf("server received %d requests, want 2", got)
+			}
+		})
+	}
+}
+
+// The job queue retries a failed run within seconds. Such a retry must not fetch
+// the file again until minDownloadInterval has passed.
+func TestApply_RetrySoonerThanDownloadInterval_DoesNotDownload(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+
+	if _, err := adapter.Apply(context.Background(), nil, nil); err == nil {
+		t.Fatal("first Apply: expected the HTTP 500 to fail the run")
+	}
+
+	// A deadline shorter than the interval makes the limiter refuse at once.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := adapter.Apply(ctx, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "rate limit") {
+		t.Fatalf("second Apply error = %v, want a rate limit error", err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1", got)
+	}
 }
 
 // TestNullByteStripping verifies that CVE IDs containing null bytes are cleaned

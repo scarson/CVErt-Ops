@@ -21,7 +21,7 @@ import (
 )
 
 // applyFile serves rows as an EPSS file dated the day before and applies it
-// with a new adapter, so the adapter's daily rate limit never blocks a call.
+// with a new adapter, so the adapter's rate limit never delays a call.
 // It fails on any logged warning: a batch that fails is retried row by row and
 // reaches the same scores, so the warning is the only sign that batching broke.
 func applyFile(t *testing.T, db *sql.DB, rows ...string) {

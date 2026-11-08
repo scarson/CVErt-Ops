@@ -16,7 +16,7 @@ import (
 
 func TestSecurityEventWriter_WritesEvent(t *testing.T) {
 	db := testutil.NewTestDB(t)
-	w := secure.NewEventWriter(db.Store)
+	w := secure.NewEventWriter(db.AppStore)
 	defer w.Stop()
 
 	ctx := context.Background()

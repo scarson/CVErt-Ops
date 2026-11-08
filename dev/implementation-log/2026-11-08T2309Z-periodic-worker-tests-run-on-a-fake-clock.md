@@ -27,4 +27,4 @@
 - **`go test ./internal/worker/ -count=1`:** pass, with `TESTCONTAINERS_RYUK_DISABLED=true` after the Testcontainers reaper failed with status "removing" on the first attempt
 - **`golangci-lint run ./internal/worker/`:** 0 issues
 - **Break-tests of `pool.go`, reverted afterwards:** a doubled ticker interval failed both tests; a task left running after `Start` returned failed `StopsOnContextCancel` with `before=3, after=8`
-- **Full suite:** not run locally; CI gates the merge
+- **Full suite:** not run locally; CI runs it on the PR from `dev` to `main`, and PRs to `dev` have no CI

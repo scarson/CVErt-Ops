@@ -668,6 +668,45 @@ func TestApply_SkipsRowsWithMalformedCVEID(t *testing.T) {
 	}
 }
 
+// An EPSS score is a probability. NaN and infinity pass strconv.ParseFloat and
+// float8 accepts them, but the API cannot marshal them to JSON and Postgres orders
+// NaN above every number, so they must not reach the database.
+func TestApply_SkipsRowsWithScoreOutsideProbabilityRange(t *testing.T) {
+	logs := captureWarnLogs(t)
+
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0,0.9",
+		"CVE-2024-0002,NaN,0.9",
+		"CVE-2024-0003,Inf,0.9",
+		"CVE-2024-0004,-Inf,0.9",
+		"CVE-2024-0005,-0.1,0.9",
+		"CVE-2024-0006,1.5,0.9",
+		"CVE-2024-0007,1,0.9",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	var applied []scoreRow
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+	adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+		applied = append(applied, rows...)
+		return nil
+	}
+
+	if _, err := adapter.Apply(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	want := []scoreRow{{"CVE-2024-0001", 0}, {"CVE-2024-0007", 1}}
+	if fmt.Sprint(applied) != fmt.Sprint(want) {
+		t.Errorf("applied = %v, want %v", applied, want)
+	}
+	if got := strings.Count(logs.String(), "skip row with score outside 0 to 1"); got != 5 {
+		t.Errorf("logged %d out-of-range warnings, want 5: %s", got, logs.String())
+	}
+}
+
 // Only a data exception costs just that row. Every other failure,
 // including an error that is not from Postgres at all, must stop the run.
 func TestIsRowRejected(t *testing.T) {

@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -266,6 +267,15 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 				"cve_id", cveID,
 				"score_raw", record[1],
 				"err", parseErr,
+			)
+			continue
+		}
+		// ParseFloat accepts NaN and infinity. The API cannot marshal them to JSON,
+		// and Postgres orders NaN above every number, so alert rules would match it.
+		if math.IsNaN(score) || score < 0 || score > 1 {
+			slog.WarnContext(ctx, "epss: skip row with score outside 0 to 1",
+				"cve_id", cveID,
+				"score", score,
 			)
 			continue
 		}

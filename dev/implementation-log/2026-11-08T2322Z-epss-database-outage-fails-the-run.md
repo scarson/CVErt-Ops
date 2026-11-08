@@ -5,6 +5,7 @@
 - `epss.Adapter.applyRows` now fails the run when a row fails for any reason other than Postgres refusing that row's data. Before this, every row error with a live job context was logged and skipped, so during a database outage `Apply` returned the new cursor with no rows applied. The handler recorded a success, and when the file was dated today the same-day cursor check skipped it until the next file.
 - `isRowRejected` identifies a refusal: a `*pgconn.PgError` with SQLSTATE class 22 (data exception).
 - `Apply` skips a row whose CVE ID does not match `feed.IsCVEID` or is longer than `maxCVEIDLength` (64 bytes), with a warning, before it reaches a batch. Failing the run on a row the database cannot store would otherwise stop every retry at that row: a 6,400-byte ID raises 54000 from the `epss_staging` primary key index.
+- `Apply` skips a row whose score is `NaN` or outside 0 to 1, with a warning. `strconv.ParseFloat` accepts `NaN` and `Inf` and `float8` stores them, but `epss_score` is a `*float64` in API responses and notification payloads, and `encoding/json` cannot marshal those values. Postgres also orders `NaN` above every number, so an alert rule such as `epss_score > 0.9` would match it.
 
 ## Key decisions
 
@@ -27,6 +28,7 @@
 
 - `TestApply_DatabaseOutage_FailsRunAndLaterAttemptSucceeds` and `TestApply_UnreachableDatabase_FailsRun` (real driver, connection refused) failed before the change because `Apply` returned a cursor, and pass after it. The first also proves a later attempt the same day applies the file.
 - `TestApply_ConstraintViolation_FailsRun` (real 23502 after dropping the column default) and `TestApply_SkipsRowsWithMalformedCVEID` (the 6,400-byte ID, a non-CVE ID and invalid UTF-8) failed before the matching change and pass after it.
+- `TestApply_SkipsRowsWithScoreOutsideProbabilityRange` failed before the score check (`NaN`, `Inf`, `-Inf`, `-0.1` and `1.5` all reached the batch) and passes after it.
 - `TestApply_RowRejectedByPostgres_CostsOnlyThatRow` (real Postgres, real SQLSTATE through the driver) and `TestApply_SkipsPoisonRows` were break-tested with `isRowRejected` forced to false and failed with `epss: apply failed at ...`.
 - An executing review with live probes (read-only errors, statement timeouts, connections terminated during writes and commits, deferred constraint rejection) confirmed the outage paths and found the constraint and oversized-ID problems that this entry's decisions address.
 - `go test ./internal/feed/ ./internal/feed/epss/ ./internal/ingest/ -count=1` passes with a real Postgres (`TESTCONTAINERS_RYUK_DISABLED=true`, because of the known reaper `removing` failure on this host).

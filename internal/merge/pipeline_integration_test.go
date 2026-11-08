@@ -766,6 +766,76 @@ func TestIngest_ConcurrentWriteSerializesCorrectly(t *testing.T) {
 	}
 }
 
+// TestIngest_AliasPromotion_AsAppRole runs late-binding PK migration as
+// cvert_ops_app, whose privileges come only from migration GRANTs. Renaming
+// deletes the old cve_search_index row; merging into an existing CVE also
+// deletes the old cves row.
+func TestIngest_AliasPromotion_AsAppRole(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		targetExists bool
+	}{
+		{name: "rename when the CVE ID is new", targetExists: false},
+		{name: "merge when the CVE ID already exists", targetExists: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s := testutil.NewTestDB(t)
+			ctx := context.Background()
+
+			oldID := "GHSA-role-test-aaaa"
+			newID := "CVE-2024-99930"
+			pkgs := []feed.AffectedPackage{
+				{Ecosystem: "npm", PackageName: "role-pkg", Introduced: "1.0.0", Fixed: "1.0.5"},
+			}
+
+			if err := merge.Ingest(ctx, s.AppStore, feed.CanonicalPatch{
+				CVEID:            oldID,
+				SourceID:         oldID,
+				Status:           "published",
+				AffectedPackages: pkgs,
+			}, "ghsa"); err != nil {
+				t.Fatalf("Ingest (native GHSA ID): %v", err)
+			}
+
+			if tt.targetExists {
+				desc := "NVD description"
+				if err := merge.Ingest(ctx, s.AppStore, feed.CanonicalPatch{
+					CVEID:              newID,
+					Status:             "published",
+					DescriptionPrimary: &desc,
+				}, "nvd"); err != nil {
+					t.Fatalf("Ingest (NVD): %v", err)
+				}
+			}
+
+			if err := merge.Ingest(ctx, s.AppStore, feed.CanonicalPatch{
+				CVEID:            newID,
+				SourceID:         oldID,
+				Status:           "published",
+				AffectedPackages: pkgs,
+			}, "ghsa"); err != nil {
+				t.Fatalf("Ingest (GHSA with CVE alias): %v", err)
+			}
+
+			old, err := s.GetCVE(ctx, oldID)
+			if err != nil {
+				t.Fatalf("GetCVE (native GHSA ID): %v", err)
+			}
+			if old != nil {
+				t.Error("native GHSA ID should not exist after promotion")
+			}
+			if promoted := s.MustGetCVE(t, ctx, newID); promoted == nil {
+				t.Error("CVE ID should exist after promotion")
+			}
+		})
+	}
+}
+
 // TestIngest_MigrateCVEPK_TargetExists verifies that migrateCVEPK handles the
 // collision case where the target CVE ID already exists. When GHSA-xxxx was
 // ingested first and CVE-2024-9999 was independently ingested from NVD, a

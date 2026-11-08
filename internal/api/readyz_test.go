@@ -113,6 +113,36 @@ func TestReadyzHandler_DirtyMigration_Returns503(t *testing.T) {
 	}
 }
 
+// The server connects as cvert_ops_app, which sees schema_migrations only
+// through a migration GRANT.
+func TestReadyzHandler_AppRole_ReportsCurrentMigrations(t *testing.T) {
+	t.Parallel()
+
+	db := testutil.NewTestDB(t)
+
+	var version int
+	if err := db.Pool().QueryRow(context.Background(), "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1").Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+
+	handler := readyzHandler(db.AppStore.Pool(), version)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("readyz as app role: got %d, want 200", rec.Code)
+	}
+
+	var resp readyzResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Checks.Migrations.Status != "current" {
+		t.Errorf("migration status = %q, want %q", resp.Checks.Migrations.Status, "current")
+	}
+}
+
 // Ensure the handler signature compiles with a real pool type.
 var _ = func(db *pgxpool.Pool) {
 	_ = readyzHandler(db, 34)

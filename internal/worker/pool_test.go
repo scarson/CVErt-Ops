@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/uuid"
@@ -696,70 +697,84 @@ func TestRunQueue_ConcurrencyOneIsSequential(t *testing.T) {
 	}
 }
 
+// The periodic tests run in a synctest bubble: its clock advances only when
+// every goroutine in the bubble is durably blocked, so the number of ticks
+// delivered before a sleep ends does not depend on host CPU load.
+
 func TestRegisterPeriodic_ExecutesAtInterval(t *testing.T) {
 	t.Parallel()
-	p := New(&fakeJobStore{})
+	synctest.Test(t, func(t *testing.T) {
+		p := New(&fakeJobStore{})
 
-	var count atomic.Int32
-	p.RegisterPeriodic(PeriodicTask{
-		Name:     "test-periodic",
-		Interval: 50 * time.Millisecond,
-		Fn: func(_ context.Context) error {
-			count.Add(1)
-			return nil
-		},
+		var count atomic.Int32
+		p.RegisterPeriodic(PeriodicTask{
+			Name:     "test-periodic",
+			Interval: 50 * time.Millisecond,
+			Fn: func(_ context.Context) error {
+				count.Add(1)
+				return nil
+			},
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			p.Start(ctx)
+			close(done)
+		}()
+
+		// Wait enough time for exactly 2 executions: ticks fall at 50 ms and
+		// 100 ms, and the next one is at 150 ms.
+		time.Sleep(125 * time.Millisecond)
+		cancel()
+		<-done
+
+		got := count.Load()
+		if got != 2 {
+			t.Errorf("periodic task executed %d times, want 2", got)
+		}
 	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		p.Start(ctx)
-		close(done)
-	}()
-
-	// Wait enough time for at least 2 executions.
-	time.Sleep(200 * time.Millisecond)
-	cancel()
-	<-done
-
-	got := count.Load()
-	if got < 2 {
-		t.Errorf("periodic task executed %d times, want at least 2", got)
-	}
 }
 
 func TestRegisterPeriodic_StopsOnContextCancel(t *testing.T) {
 	t.Parallel()
-	p := New(&fakeJobStore{})
+	synctest.Test(t, func(t *testing.T) {
+		p := New(&fakeJobStore{})
 
-	var count atomic.Int32
-	p.RegisterPeriodic(PeriodicTask{
-		Name:     "stop-test",
-		Interval: 20 * time.Millisecond,
-		Fn: func(_ context.Context) error {
-			count.Add(1)
-			return nil
-		},
+		var count atomic.Int32
+		p.RegisterPeriodic(PeriodicTask{
+			Name:     "stop-test",
+			Interval: 20 * time.Millisecond,
+			Fn: func(_ context.Context) error {
+				count.Add(1)
+				return nil
+			},
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			p.Start(ctx)
+			close(done)
+		}()
+
+		// Let it run briefly then cancel: ticks fall at 20, 40 and 60 ms, and
+		// the next one is at 80 ms.
+		time.Sleep(70 * time.Millisecond)
+		cancel()
+		<-done
+
+		countAtCancel := count.Load()
+		if countAtCancel != 3 {
+			t.Errorf("periodic task executed %d times before cancel, want 3", countAtCancel)
+		}
+
+		// After cancel, no more executions should happen.
+		time.Sleep(100 * time.Millisecond)
+		countAfterWait := count.Load()
+
+		if countAfterWait != countAtCancel {
+			t.Errorf("periodic task ran after cancel: before=%d, after=%d", countAtCancel, countAfterWait)
+		}
 	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		p.Start(ctx)
-		close(done)
-	}()
-
-	// Let it run briefly then cancel.
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-	<-done
-
-	countAtCancel := count.Load()
-	// After cancel, no more executions should happen.
-	time.Sleep(100 * time.Millisecond)
-	countAfterWait := count.Load()
-
-	if countAfterWait != countAtCancel {
-		t.Errorf("periodic task ran after cancel: before=%d, after=%d", countAtCancel, countAfterWait)
-	}
 }

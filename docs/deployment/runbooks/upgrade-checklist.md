@@ -100,6 +100,7 @@ If any verification step fails:
    docker compose run --rm migrate \
      -path /migrations -database "$DATABASE_URL" down 1
    ```
+   If this rolls back migration 55 on a Docker Compose install, restore the table privileges it revoked: see the command under "Roll Back Database Migrations" in [Upgrading](../upgrading.md).
 3. Restore the previous image version
 4. If migration rollback fails, restore from backup:
    ```bash

@@ -77,6 +77,18 @@ docker compose run --rm migrate \
 
 Repeat until you reach the pre-upgrade migration version.
 
+If you rolled back migration 55 on a Docker Compose install, restore the table privileges it revoked. Compose installs held these before migration 55 through the default privileges in `docker/init-app-role.sh`. Without them, `/readyz` returns 503, and security events, retention and CVE alias promotion fail with `permission denied`:
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.prod.yml --env-file .env \
+  exec -T postgres psql -U cvert_ops -d cvert_ops -v ON_ERROR_STOP=1 -c "
+    GRANT SELECT ON schema_migrations TO cvert_ops_app;
+    GRANT SELECT, INSERT, DELETE ON security_events TO cvert_ops_app;
+    GRANT DELETE ON ai_usage_counters, cves, cve_search_index TO cvert_ops_app;"
+```
+
+Other installs did not hold these privileges before migration 55 and can skip this step.
+
 ### 3. Restore the Previous Image
 
 ```bash

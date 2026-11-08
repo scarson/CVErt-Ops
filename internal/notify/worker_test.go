@@ -36,6 +36,64 @@ func newTestWorker(s *testutil.TestDB, client *http.Client, cfg notify.WorkerCon
 	return notify.NewWorker(s.Store, client, cfg, notify.SmtpConfig{}, "")
 }
 
+// runClaimUntilAttempted runs the worker's claim tick until every delivery written
+// to be sent now has been attempted.
+func runClaimUntilAttempted(t *testing.T, s *testutil.TestDB, ctx context.Context, w *notify.Worker) {
+	t.Helper()
+	s.ClaimUntilDeliveriesAttempted(t, ctx, func() { w.RunOnce(ctx) })
+}
+
+// TestRunClaimUntilAttempted_DeliveryAheadOfDatabaseClock covers a delivery whose
+// send_after is later than the next transaction's now(), the state left by the
+// database clock stepping backward between the two transactions.
+func TestRunClaimUntilAttempted_DeliveryAheadOfDatabaseClock(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	org := s.MustCreateOrg(t, ctx, "WorkerClockAheadOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "WorkerClockAheadRule")
+	cfg, _ := json.Marshal(map[string]string{"url": srv.URL})
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, "WorkerClockAheadChan", "webhook", json.RawMessage(cfg))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanRow.ID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload, _ := json.Marshal(map[string]string{"cve_id": "CVE-2025-9011"})
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanRow.ID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+	if _, err := s.DB().ExecContext(ctx,
+		"UPDATE notification_deliveries SET send_after = now() + interval '300 milliseconds' WHERE channel_id = $1",
+		chanRow.ID); err != nil {
+		t.Fatalf("move send_after ahead of the database clock: %v", err)
+	}
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status FROM notification_deliveries WHERE channel_id=$1", chanRow.ID).Scan(&status); err != nil {
+		t.Fatalf("scan delivery row: %v", err)
+	}
+	if status != "succeeded" {
+		t.Errorf("delivery status = %q, want %q", status, "succeeded")
+	}
+}
+
 func TestWorker_ClaimsAndDeliversPendingRow(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
@@ -75,7 +133,7 @@ func TestWorker_ClaimsAndDeliversPendingRow(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// The test server must have received exactly one call.
 	if n := called.Load(); n != 1 {
@@ -130,7 +188,7 @@ func TestWorker_RetryOnNon2xx(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// After one failed attempt the row should be requeued (pending) with attempt_count=1.
 	var status string
@@ -204,7 +262,7 @@ func TestWorker_RefusedDestinationWithheldFromOrg(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanRow.ID)
 	if !strings.Contains(lastError, "127.0.0.1") {
@@ -257,7 +315,7 @@ func TestWorker_ExhaustsAfterMaxAttempts(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// With attempt_count starting at 3, nextAttempt=4 >= MaxAttempts=4, so must be exhausted.
 	var status string
@@ -298,7 +356,7 @@ func TestWorker_ExhaustsIfChannelDeleted(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 5,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	var status string
 	if err := s.DB().QueryRowContext(ctx,
@@ -350,7 +408,7 @@ func TestWorker_ExhaustsUnknownChannelType(t *testing.T) {
 		BackoffBaseSeconds:  1,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// Unknown channel type should be exhausted immediately.
 	var status string
@@ -418,7 +476,7 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 		Port: 25,
 		From: "test@example.com",
 	}, "https://cvert.example.com")
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// Connection failure is transient — should be retried (pending with attempt_count=1).
 	var status string
@@ -524,30 +582,25 @@ func TestWorker_BackoffSeconds_ReflectedInSendAfter(t *testing.T) {
 		t.Fatalf("UpsertDelivery: %v", err)
 	}
 
-	beforeRetry := time.Now()
 	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
 		ClaimBatchSize:      10,
 		MaxAttempts:         5,
 		BackoffBaseSeconds:  10,
 		MaxConcurrentPerOrg: 4,
 	})
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// After first failure (attempt=1), backoff = 10 * 2^0 * [0.5,1.5) = [5,15) seconds.
-	var sendAfter time.Time
+	// The retry sets send_after and updated_at from one now(), so their difference is the backoff.
+	var backoffSeconds float64
 	if err := s.DB().QueryRowContext(ctx,
-		"SELECT send_after FROM notification_deliveries WHERE channel_id=$1",
-		chanID).Scan(&sendAfter); err != nil {
-		t.Fatalf("scan send_after: %v", err)
+		"SELECT EXTRACT(EPOCH FROM send_after - updated_at) FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&backoffSeconds); err != nil {
+		t.Fatalf("scan backoff: %v", err)
 	}
 
-	minExpected := beforeRetry.Add(5 * time.Second)
-	maxExpected := beforeRetry.Add(16 * time.Second) // 15s + 1s tolerance
-	if sendAfter.Before(minExpected) {
-		t.Errorf("send_after %v is before minimum expected %v", sendAfter, minExpected)
-	}
-	if sendAfter.After(maxExpected) {
-		t.Errorf("send_after %v is after maximum expected %v", sendAfter, maxExpected)
+	if backoffSeconds < 5 || backoffSeconds >= 15 {
+		t.Errorf("backoff = %.3fs, want within [5s, 15s)", backoffSeconds)
 	}
 }
 
@@ -744,7 +797,7 @@ func TestWorker_EmailDigestBranch(t *testing.T) {
 		Port: 25,
 		From: "test@example.com",
 	}, "https://cvert.example.com")
-	w.RunOnce(ctx)
+	runClaimUntilAttempted(t, s, ctx, w)
 
 	// Digest delivery should retry on SMTP failure (pending with attempt_count=1).
 	var status string

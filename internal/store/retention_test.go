@@ -494,7 +494,7 @@ func TestCleanupAIUsageCounters_DailyOnly(t *testing.T) {
 	}
 
 	cutoff := now.AddDate(0, 0, -90)
-	n, err := db.CleanupAIUsageCounters(ctx, cutoff, 100)
+	n, err := db.AppStore.CleanupAIUsageCounters(ctx, cutoff, 100)
 	if err != nil {
 		t.Fatalf("CleanupAIUsageCounters: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestCleanupSecurityEvents(t *testing.T) {
 	}
 
 	cutoff := now.Add(-50 * 24 * time.Hour)
-	n, err := db.CleanupSecurityEvents(ctx, cutoff, 100)
+	n, err := db.AppStore.CleanupSecurityEvents(ctx, cutoff, 100)
 	if err != nil {
 		t.Fatalf("CleanupSecurityEvents: %v", err)
 	}

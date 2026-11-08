@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -109,7 +110,7 @@ func (s *archiveServer) downloadCount() int {
 func (s *archiveServer) adapter(pageSize int) *Adapter {
 	a := newTestAdapter(s.srv)
 	a.pageSize = pageSize
-	s.t.Cleanup(a.Close)
+	s.t.Cleanup(func() { _ = a.Close() })
 	return a
 }
 
@@ -395,6 +396,19 @@ func captureWarnings(a *Adapter) *bytes.Buffer {
 	return &buf
 }
 
+// The feed handler closes an adapter that implements io.Closer when its run
+// ends, and both archive feeds return pages of the same size.
+func TestNew_IsCloserWithArchivePageSize(t *testing.T) {
+	t.Parallel()
+	a := New(nil)
+	if _, ok := any(a).(io.Closer); !ok {
+		t.Error("Adapter does not implement io.Closer, so the feed handler will not close it")
+	}
+	if a.pageSize != feed.ArchivePageSize {
+		t.Errorf("pageSize = %d, want feed.ArchivePageSize (%d)", a.pageSize, feed.ArchivePageSize)
+	}
+}
+
 func archiveFileGone(path string) bool {
 	_, err := os.Stat(path)
 	return errors.Is(err, fs.ErrNotExist)
@@ -449,7 +463,9 @@ func TestClose_RemovesArchiveMidWalk(t *testing.T) {
 	}
 	path := heldArchivePath(t, a)
 
-	a.Close()
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	if !archiveFileGone(path) {
 		t.Errorf("archive %s still exists after Close", path)

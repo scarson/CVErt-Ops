@@ -56,18 +56,16 @@ const (
 	// the real archive about 5 to 50 records a day fall in one hour, and
 	// merging them again changes nothing.
 	rescanWindow = time.Hour
-
-	// defaultPageSize is the number of records one Fetch returns. At the 13
-	// merges a second seen on a real backfill a page takes about 77 seconds,
-	// so a job's first page, which also downloads the archive (about 66
-	// seconds) and reads every record's dateUpdated (about 27 seconds), still
-	// fits within the ingest handler's three-minute page reserve.
-	defaultPageSize = 1000
 )
 
 // Adapter implements feed.FeedAdapter for the MITRE CVE bulk feed. An Adapter
 // serves one job: it keeps the archive it downloads until the walk reaches its
 // last page, Close is called, or the context of the downloading Fetch ends.
+//
+// One Fetch returns feed.ArchivePageSize records. A job's first page also
+// downloads the archive (about 66 seconds) and reads every record's
+// dateUpdated (about 27 seconds), and with a page's merges still fits within
+// the ingest handler's three-minute page reserve.
 type Adapter struct {
 	client      *http.Client
 	rateLimiter *rate.Limiter
@@ -88,16 +86,18 @@ func New(client *http.Client) *Adapter {
 	return &Adapter{
 		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(5*time.Second), 1),
-		pageSize:    defaultPageSize,
+		pageSize:    feed.ArchivePageSize,
 		log:         slog.Default(),
 	}
 }
 
-// Close removes the downloaded archive, if the adapter holds one.
-func (a *Adapter) Close() {
+// Close removes the downloaded archive, if the adapter holds one. The feed
+// handler calls it when a run ends. It always returns nil.
+func (a *Adapter) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.releaseLocked()
+	return nil
 }
 
 // releaseLocked removes the held archive. The caller holds a.mu.

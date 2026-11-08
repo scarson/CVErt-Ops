@@ -105,13 +105,21 @@ func stagedScores(t *testing.T, db *sql.DB) map[string]float64 {
 	return got
 }
 
+// captureWarnLogs routes slog warnings to the returned buffer for the rest of the
+// test. Tests that use it cannot run in parallel, because it replaces slog.Default.
+func captureWarnLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
 // Apply through the real driver against a server that refuses connections must
 // report the failure, not return a cursor for a file with no rows applied.
 func TestApply_UnreachableDatabase_FailsRun(t *testing.T) {
-	var logs bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(orig) })
+	logs := captureWarnLogs(t)
 
 	db, err := sql.Open("pgx", "postgres://cvert:cvert@127.0.0.1:1/cvert?sslmode=disable&connect_timeout=5")
 	if err != nil {
@@ -132,21 +140,48 @@ func TestApply_UnreachableDatabase_FailsRun(t *testing.T) {
 	}
 }
 
-// A constraint violation raised by Postgres and returned through the real driver
-// must cost only that row: the run succeeds and the other rows are applied.
+// A constraint violation means the schema does not fit the EPSS statements, not
+// that one row is bad, because they write nothing a constraint can refuse for one
+// row's data. Removing a column default makes every staging insert raise 23502;
+// that run must fail and leave the cursor unchanged.
+func TestApply_ConstraintViolation_FailsRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires testcontainer")
+	}
+	logs := captureWarnLogs(t)
+
+	db := testutil.NewTestDB(t)
+	if _, err := db.DB().ExecContext(context.Background(),
+		"ALTER TABLE epss_staging ALTER COLUMN ingested_at DROP DEFAULT",
+	); err != nil {
+		t.Fatalf("drop default: %v", err)
+	}
+
+	cursor, err := fileAdapter(t, "CVE-2024-9001,0.7,0.95").Apply(context.Background(), db.DB(), nil)
+	if err == nil || !strings.Contains(err.Error(), "23502") {
+		t.Fatalf("Apply error = %v, want one reporting SQLSTATE 23502", err)
+	}
+	if cursor != nil {
+		t.Errorf("Apply returned cursor %s, want nil", cursor)
+	}
+	if !strings.Contains(logs.String(), "batch failed") {
+		t.Errorf("expected a warning about the failed batch, got: %s", logs.String())
+	}
+}
+
+// A data exception raised by Postgres and returned through the real driver must
+// cost only that row: the run succeeds and the other rows are applied. The
+// constraint divides by zero for one CVE ID, which raises SQLSTATE 22012.
 func TestApply_RowRejectedByPostgres_CostsOnlyThatRow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires testcontainer")
 	}
-	var logs bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	t.Cleanup(func() { slog.SetDefault(orig) })
+	logs := captureWarnLogs(t)
 
 	db := testutil.NewTestDB(t)
 	seedCVE(t, db, "CVE-2024-1001")
 	if _, err := db.DB().ExecContext(context.Background(),
-		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (cve_id <> 'CVE-2024-9002')",
+		"ALTER TABLE epss_staging ADD CONSTRAINT rejects_one_cve CHECK (1 / (CASE WHEN cve_id = 'CVE-2024-9002' THEN 0 ELSE 1 END) = 1)",
 	); err != nil {
 		t.Fatalf("add constraint: %v", err)
 	}

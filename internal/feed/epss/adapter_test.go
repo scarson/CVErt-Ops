@@ -623,7 +623,52 @@ func TestApply_FailedRunSucceedsOnLaterAttempt(t *testing.T) {
 	}
 }
 
-// Only a refusal of the row's data costs just that row. Every other failure,
+// A malformed CVE ID never reaches the database, because a row the database cannot
+// store would otherwise stop every retry of the file at that row.
+func TestApply_SkipsRowsWithMalformedCVEID(t *testing.T) {
+	logs := captureWarnLogs(t)
+
+	oversized := "CVE-2024-" + strings.Repeat("9", 6400)
+	body := makeEPSSGzip(t, []string{
+		"CVE-2024-0001,0.1,0.9",
+		"not-a-cve-id,0.2,0.9",
+		oversized + ",0.3,0.9",
+		"CVE-2024-\xff,0.4,0.9",
+		"CVE-2024-0002,0.5,0.9",
+	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write(body) //nolint:errcheck,gosec // test helper
+	}))
+	defer srv.Close()
+
+	var applied []string
+	adapter := New(&http.Client{Transport: &redirectTransport{target: srv.URL}})
+	adapter.applyBatchFn = func(_ context.Context, _ *sql.DB, rows []scoreRow, _ time.Time) error {
+		for _, r := range rows {
+			applied = append(applied, r.cveID)
+		}
+		return nil
+	}
+
+	cursor, err := adapter.Apply(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(cursor) == 0 {
+		t.Error("Apply returned an empty cursor")
+	}
+	if fmt.Sprint(applied) != fmt.Sprint([]string{"CVE-2024-0001", "CVE-2024-0002"}) {
+		t.Errorf("applied %d IDs, want only the two well-formed ones: %.100q", len(applied), applied)
+	}
+	if got := strings.Count(logs.String(), "skip row with malformed CVE ID"); got != 3 {
+		t.Errorf("logged %d malformed-row warnings, want 3: %.300s", got, logs.String())
+	}
+	if strings.Contains(logs.String(), oversized) {
+		t.Error("the warning logged the whole oversized ID")
+	}
+}
+
+// Only a data exception costs just that row. Every other failure,
 // including an error that is not from Postgres at all, must stop the run.
 func TestIsRowRejected(t *testing.T) {
 	t.Parallel()
@@ -635,7 +680,9 @@ func TestIsRowRejected(t *testing.T) {
 	}{
 		{"invalid byte sequence", &pgconn.PgError{Code: "22021"}, true},
 		{"numeric out of range", &pgconn.PgError{Code: "22003"}, true},
-		{"check constraint", &pgconn.PgError{Code: "23514"}, true},
+		{"check constraint", &pgconn.PgError{Code: "23514"}, false},
+		{"not-null constraint", &pgconn.PgError{Code: "23502"}, false},
+		{"index key too large", &pgconn.PgError{Code: "54000"}, false},
 		{"wrapped rejection", fmt.Errorf("update cve epss: %w", &pgconn.PgError{Code: "22021"}), true},
 		{"admin shutdown", &pgconn.PgError{Code: "57P01"}, false},
 		{"too many connections", &pgconn.PgError{Code: "53300"}, false},

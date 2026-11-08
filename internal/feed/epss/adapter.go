@@ -81,6 +81,11 @@ type Cursor struct {
 	ModelVersion string `json:"model_version,omitempty"`
 }
 
+// maxCVEIDLength is the longest CVE ID Apply writes. Postgres refuses an index key
+// over about 2,700 bytes, and a row it cannot store would stop every retry of the
+// file at that row. Real CVE IDs are under 20 bytes.
+const maxCVEIDLength = 64
+
 // defaultBatchSize is how many CSV rows each apply transaction covers. Each CVE
 // in a batch holds one advisory lock until the batch commits, so this stays well
 // below the shared lock table size (max_locks_per_transaction × max_connections,
@@ -247,6 +252,13 @@ func (a *Adapter) Apply(ctx context.Context, db *sql.DB, cursorJSON json.RawMess
 		if cveID == "" {
 			continue
 		}
+		if len(cveID) > maxCVEIDLength || !feed.IsCVEID(cveID) {
+			slog.WarnContext(ctx, "epss: skip row with malformed CVE ID",
+				"cve_id", cveID[:min(len(cveID), maxCVEIDLength)],
+				"length", len(cveID),
+			)
+			continue
+		}
 
 		score, parseErr := strconv.ParseFloat(strings.TrimSpace(record[1]), 64)
 		if parseErr != nil {
@@ -312,16 +324,14 @@ func (a *Adapter) applyRows(ctx context.Context, db *sql.DB, rows []scoreRow, as
 	return nil
 }
 
-// isRowRejected reports whether err is Postgres refusing a row's data: SQLSTATE
-// class 22 (data exception) or 23 (integrity constraint violation). Any other
-// failure, such as a lost connection or a server shutting down, says nothing about
-// the row and would affect the rows after it too.
+// isRowRejected reports whether err is Postgres refusing a value in a row: SQLSTATE
+// class 22 (data exception). Any other failure says nothing about the row and would
+// affect the rows after it too. That includes a lost connection, a server shutting
+// down, and a constraint violation: the EPSS statements always supply every column
+// they write and resolve key conflicts, so a violation means the schema is wrong.
 func isRowRejected(err error) bool {
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	return strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23")
+	return errors.As(err, &pgErr) && strings.HasPrefix(pgErr.Code, "22")
 }
 
 // applyBatch executes the two-statement EPSS pattern for a batch of rows inside

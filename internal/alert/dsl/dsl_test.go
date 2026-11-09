@@ -5,11 +5,13 @@ package dsl_test
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
@@ -1054,7 +1056,7 @@ func TestValidate_StrArrayInvalidValue(t *testing.T) {
 
 func TestValidate_AffectedEcosystemIn(t *testing.T) {
 	t.Parallel()
-	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","pypi"]}]}`)
+	r := mustParse(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]}]}`)
 	errs, _, _ := dsl.Validate(r, false)
 	if hasError(errs) {
 		t.Errorf("expected no errors for valid affected.ecosystem in, got %v", errs)
@@ -1475,7 +1477,7 @@ func TestCompile_AffectedEcosystemNeq(t *testing.T) {
 
 func TestCompile_AffectedEcosystemIn(t *testing.T) {
 	t.Parallel()
-	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","pypi"]}]}`, nil)
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]}]}`, nil)
 	sql, args := sqlOf(t, c)
 	if !strings.Contains(sql, "EXISTS") {
 		t.Errorf("expected EXISTS for in: %q", sql)
@@ -1497,6 +1499,67 @@ func TestCompile_AffectedEcosystemNotIn(t *testing.T) {
 	}
 	if !strings.Contains(sql, "ANY(") {
 		t.Errorf("expected ANY() for not_in: %q", sql)
+	}
+}
+
+func TestValidate_AffectedEcosystemRejectsNonCanonicalNames(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"pypi", "cargo", "go", "maven", "NPM", "cobol", "Debian:"} {
+		r := mustParse(t, fmt.Sprintf(`{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":%q}]}`, v))
+		errs, _, _ := dsl.Validate(r, false)
+		if len(errs) == 0 {
+			t.Errorf("value %q: expected a validation error", v)
+			continue
+		}
+		if !strings.Contains(errs[0].Message, "PyPI") {
+			t.Errorf("value %q: message %q does not list canonical names", v, errs[0].Message)
+		}
+	}
+}
+
+func TestValidate_AffectedEcosystemAcceptsDistroValues(t *testing.T) {
+	t.Parallel()
+	for _, v := range []string{"PyPI", "crates.io", "Debian", "Debian:13", "Ubuntu:26.04:LTS", "Red Hat:enterprise_linux:8::appstream"} {
+		r := mustParse(t, fmt.Sprintf(`{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":[%q]}]}`, v))
+		if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+			t.Errorf("value %q: unexpected errors %v", v, errs)
+		}
+	}
+}
+
+func TestCompile_AffectedEcosystemMatchesExactOrSuffixed(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"Red Hat"}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if !strings.Contains(sql, "lower(cap.ecosystem) LIKE ANY(") {
+		t.Errorf("unexpected SQL %q", sql)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d: %v", len(args), args)
+	}
+	patterns, ok := args[0].(*pq.StringArray)
+	if !ok {
+		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
+	}
+	if want := (pq.StringArray{"red hat", "red hat:%"}); !reflect.DeepEqual(*patterns, want) {
+		t.Errorf("patterns = %v, want %v", *patterns, want)
+	}
+}
+
+func TestCompile_AffectedEcosystemEscapesLikeMetacharacters(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"Red Hat:enterprise_linux:8"}]}`, nil)
+	_, args := sqlOf(t, c)
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d: %v", len(args), args)
+	}
+	patterns, ok := args[0].(*pq.StringArray)
+	if !ok {
+		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
+	}
+	want := pq.StringArray{`red hat:enterprise\_linux:8`, `red hat:enterprise\_linux:8:%`}
+	if !reflect.DeepEqual(*patterns, want) {
+		t.Errorf("patterns = %v, want %v", *patterns, want)
 	}
 }
 
@@ -1607,15 +1670,15 @@ func TestExportFieldDescriptions(t *testing.T) {
 
 	// Check type descriptions
 	typeChecks := map[string]string{
-		"cvss_v3_score":      "number",
-		"date_published":     "datetime (RFC 3339)",
-		"in_cisa_kev":        "boolean",
-		"cve_id":             "string",
-		"severity":           "enum",
-		"cwe_ids":            "string array",
+		"cvss_v3_score":       "number",
+		"date_published":      "datetime (RFC 3339)",
+		"in_cisa_kev":         "boolean",
+		"cve_id":              "string",
+		"severity":            "enum",
+		"cwe_ids":             "string array",
 		"description_primary": "text",
-		"affected.ecosystem": "affected product",
-		"fts_query":          "full-text search",
+		"affected.ecosystem":  "affected product",
+		"fts_query":           "full-text search",
 	}
 	for name, wantType := range typeChecks {
 		if got := byName[name].TypeDesc; got != wantType {

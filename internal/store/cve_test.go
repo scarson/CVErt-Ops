@@ -5,10 +5,13 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/merge"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -316,6 +319,80 @@ func TestSearchCVEs_EcosystemAndPackageNameFilter(t *testing.T) {
 	}
 	if results[0].CveID != "CVE-2024-8061" {
 		t.Errorf("expected CVE-2024-8061, got %s", results[0].CveID)
+	}
+}
+
+// TestSearchCVEs_EcosystemMatchesReleasesAndFoldsPackageName checks the ecosystem filter
+// matches a stored name exactly or as a prefix ending at a colon, and that a package name
+// is compared in the folded form for the row's ecosystem.
+func TestSearchCVEs_EcosystemMatchesReleasesAndFoldsPackageName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	const (
+		debian13   = "CVE-2026-8101"
+		debian12   = "CVE-2026-8102"
+		ubuntuPro  = "CVE-2026-8103"
+		npmExpress = "CVE-2026-8104"
+		pypiFooBar = "CVE-2026-8105"
+		npmFooBar  = "CVE-2026-8106"
+	)
+	seeds := []struct{ cveID, ecosystem, packageName string }{
+		{debian13, "Debian:13", "openssl"},
+		{debian12, "Debian:12", "openssl"},
+		{ubuntuPro, "Ubuntu:Pro:24.04:LTS", "openssl"},
+		{npmExpress, "npm", "express"},
+		{pypiFooBar, "PyPI", "foo_bar"},
+		{npmFooBar, "npm", "foo-bar"},
+	}
+	for _, s := range seeds {
+		patch := feed.CanonicalPatch{ //nolint:exhaustruct // test: only the fields the filter reads
+			CVEID:  s.cveID,
+			Status: "Published",
+			AffectedPackages: []feed.AffectedPackage{ //nolint:exhaustruct // test
+				{Ecosystem: s.ecosystem, PackageName: s.packageName},
+			},
+		}
+		if err := merge.Ingest(ctx, db.Store, patch, "osv"); err != nil {
+			t.Fatalf("merge.Ingest(%s): %v", s.cveID, err)
+		}
+	}
+
+	tests := []struct {
+		name        string
+		ecosystem   string
+		packageName *string
+		want        []string
+	}{
+		{name: "name without a release matches every release", ecosystem: "Debian", want: []string{debian13, debian12}},
+		{name: "name with a release matches that release", ecosystem: "Debian:13", want: []string{debian13}},
+		{name: "suffix differing in case", ecosystem: "Ubuntu:pro", want: []string{ubuntuPro}},
+		{name: "partial release is not a match", ecosystem: "Debian:1", want: []string{}},
+		{name: "package name differing in case", ecosystem: "npm", packageName: ptrString("Express"), want: []string{npmExpress}},
+		{name: "PyPI package name differing in separator", ecosystem: "PyPI", packageName: ptrString("foo-bar"), want: []string{pypiFooBar}},
+		{name: "separators are significant outside PyPI", ecosystem: "npm", packageName: ptrString("foo_bar"), want: []string{}},
+		{name: "package name across releases", ecosystem: "Debian", packageName: ptrString("OpenSSL"), want: []string{debian13, debian12}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, err := db.SearchCVEs(ctx, store.SearchParams{ //nolint:exhaustruct // test
+				Ecosystem:   &tt.ecosystem,
+				PackageName: tt.packageName,
+				Limit:       10,
+			})
+			if err != nil {
+				t.Fatalf("SearchCVEs: %v", err)
+			}
+			got := make([]string, 0, len(results))
+			for _, r := range results {
+				got = append(got, r.CveID)
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("CVE IDs = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
 // Compile converts a validated Rule into a CompiledRule ready for the evaluator.
@@ -118,6 +120,9 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 // Each item type has its own EXISTS so the planner can use that type's partial index. A
 // watchlist can hold thousands of CVE items, and one EXISTS with an OR across the types
 // would scan all of them for every candidate CVE.
+//
+// A package item's ecosystem matches a stored ecosystem that equals it or starts with it
+// followed by a colon, so "Debian" covers every Debian release.
 func watchlistExpr(watchlistIDs []uuid.UUID, orgID uuid.UUID) sq.Sqlizer {
 	ids := pq.Array(watchlistIDs)
 	return sq.Expr(`(
@@ -132,8 +137,9 @@ func watchlistExpr(watchlistIDs []uuid.UUID, orgID uuid.UUID) sq.Sqlizer {
     OR EXISTS (
         SELECT 1 FROM watchlist_items wi
         JOIN cve_affected_packages cap
-          ON lower(cap.ecosystem)    = lower(wi.ecosystem)
-         AND lower(cap.package_name) = lower(wi.package_name)
+          ON (lower(cap.ecosystem) = lower(wi.ecosystem)
+              OR starts_with(lower(cap.ecosystem), lower(wi.ecosystem) || ':'))
+         AND `+ecosystem.FoldedNameSQL("cap.ecosystem", "cap.package_name")+` = `+ecosystem.FoldedNameSQL("cap.ecosystem", "wi.package_name")+`
         WHERE wi.watchlist_id = ANY(?)
           AND wi.org_id       = ?
           AND wi.item_type    = 'package'
@@ -290,45 +296,37 @@ func affectedSQL(c Condition) (sq.Sqlizer, error) {
 	}
 }
 
+// affectedEcosystemSQL matches a stored ecosystem that equals a rule value or
+// starts with it followed by a colon, so "Debian" covers every Debian release.
 func affectedEcosystemSQL(c Condition) (sq.Sqlizer, error) {
+	var vals []string
 	if c.Op == "in" || c.Op == "not_in" {
-		var vals []string
 		if err := json.Unmarshal(c.Value, &vals); err != nil {
 			return nil, fmt.Errorf("ecosystem array value: %w", err)
 		}
-		lowerVals := make([]string, len(vals))
-		for i, v := range vals {
-			lowerVals[i] = strings.ToLower(v)
+	} else {
+		var v string
+		if err := json.Unmarshal(c.Value, &v); err != nil {
+			return nil, fmt.Errorf("ecosystem value: %w", err)
 		}
-		if c.Op == "in" {
-			return sq.Expr(`EXISTS (
-    SELECT 1 FROM cve_affected_packages cap
-    WHERE cap.cve_id = cves.cve_id
-      AND lower(cap.ecosystem) = ANY(?)
-)`, pq.Array(lowerVals)), nil
-		}
-		return sq.Expr(`NOT EXISTS (
-    SELECT 1 FROM cve_affected_packages cap
-    WHERE cap.cve_id = cves.cve_id
-      AND lower(cap.ecosystem) = ANY(?)
-)`, pq.Array(lowerVals)), nil
+		vals = []string{v}
 	}
-	var v string
-	if err := json.Unmarshal(c.Value, &v); err != nil {
-		return nil, fmt.Errorf("ecosystem value: %w", err)
+
+	patterns := make([]string, 0, len(vals)*2)
+	for _, v := range vals {
+		escaped := escapeLike(strings.ToLower(v))
+		patterns = append(patterns, escaped, escaped+":%")
 	}
-	if c.Op == "eq" {
-		return sq.Expr(`EXISTS (
+
+	exists := `EXISTS (
     SELECT 1 FROM cve_affected_packages cap
     WHERE cap.cve_id = cves.cve_id
-      AND lower(cap.ecosystem) = lower(?)
-)`, v), nil
+      AND lower(cap.ecosystem) LIKE ANY(?)
+)`
+	if c.Op == "neq" || c.Op == "not_in" {
+		exists = "NOT " + exists
 	}
-	return sq.Expr(`NOT EXISTS (
-    SELECT 1 FROM cve_affected_packages cap
-    WHERE cap.cve_id = cves.cve_id
-      AND lower(cap.ecosystem) = lower(?)
-)`, v), nil
+	return sq.Expr(exists, pq.Array(patterns)), nil
 }
 
 func affectedPackageSQL(c Condition) (sq.Sqlizer, error) {

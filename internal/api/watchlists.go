@@ -18,16 +18,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/tier"
 )
-
-// validEcosystems is the whitelist of supported package ecosystems.
-var validEcosystems = map[string]bool{
-	"npm": true, "pypi": true, "maven": true, "go": true,
-	"cargo": true, "rubygems": true, "nuget": true, "hex": true,
-	"pub": true, "swift": true, "cocoapods": true, "packagist": true,
-}
 
 // maxReplaceWatchlistItems is the most items one replace request may name. A CVE item is
 // about 50 bytes of JSON, so a list at this cap is about 500 KB and fits the 1 MiB request
@@ -68,7 +62,6 @@ type watchlistEntry struct {
 	UpdatedAt   string  `json:"updated_at"`
 }
 
-
 // createWatchlistItemBody fields beyond item_type apply to one item type each:
 // ecosystem, package_name and namespace to package, cpe_normalized to cpe, cve_id to cve.
 type createWatchlistItemBody struct {
@@ -100,7 +93,6 @@ type watchlistItemsReplaced struct {
 	Removed   int `json:"removed" doc:"Items that were on the watchlist, not in the request, and were removed"`
 	Unchanged int `json:"unchanged" doc:"Items that were already on the watchlist and were left as they are"`
 }
-
 
 // ── Cursor helpers ────────────────────────────────────────────────────────────
 
@@ -177,9 +169,8 @@ func parseWatchlistItem(req createWatchlistItemBody, loc string) (store.CreateWa
 		if req.Ecosystem == nil || req.PackageName == nil {
 			return invalid("ecosystem and package_name are required for package items", "")
 		}
-		eco := strings.ToLower(*req.Ecosystem)
-		if !validEcosystems[eco] {
-			return invalid("unknown ecosystem", ".ecosystem")
+		if !ecosystem.Valid(*req.Ecosystem) {
+			return invalid("unknown ecosystem; valid names: "+strings.Join(ecosystem.Names(), ", "), ".ecosystem")
 		}
 		if !validWatchlistItemText(*req.PackageName, maxWatchlistPackageNameLen) {
 			return invalid(fmt.Sprintf("package_name must be 1 to %d characters", maxWatchlistPackageNameLen), ".package_name")
@@ -193,7 +184,7 @@ func parseWatchlistItem(req createWatchlistItemBody, loc string) (store.CreateWa
 		}
 		return store.CreateWatchlistItemParams{
 			ItemType:    store.WatchlistItemType("package"),
-			Ecosystem:   &eco,
+			Ecosystem:   req.Ecosystem,
 			PackageName: req.PackageName,
 			Namespace:   namespace,
 		}, nil

@@ -105,6 +105,33 @@ async function selectEcosystem(value: string) {
   await flushPromises()
 }
 
+// JSDOM lacks the pointer capture API that reka-ui calls when its Select opens.
+// The pointerup ends the opening press: reka-ui cancels the first pointerup after
+// opening, so without it the click on an option would select nothing.
+async function openEcosystemSelect() {
+  const trigger = findTestId('ecosystem-select-trigger')
+  if (!trigger) throw new Error('ecosystem-select-trigger not found')
+  trigger.hasPointerCapture = () => false
+  trigger.releasePointerCapture = () => {}
+  trigger.dispatchEvent(
+    new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }),
+  )
+  await flushPromises()
+  trigger.dispatchEvent(
+    new PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }),
+  )
+  await flushPromises()
+}
+
+async function clickOption(testId: string) {
+  const option = findTestId(testId)
+  if (!option) throw new Error(`${testId} not found`)
+  option.dispatchEvent(
+    new PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }),
+  )
+  await flushPromises()
+}
+
 async function clickTestId(testId: string) {
   const el = findTestId(testId)
   el?.click()
@@ -201,6 +228,43 @@ describe('AddItemDialog', () => {
           item_type: 'package',
           ecosystem: 'npm',
           package_name: 'lodash',
+        }),
+      }),
+    )
+  })
+
+  it('offers ecosystems under their canonical names', async () => {
+    await mountDialog()
+    await flushPromises()
+
+    await openEcosystemSelect()
+
+    expect(findTestId('ecosystem-option-PyPI')).not.toBeNull()
+    expect(findTestId('ecosystem-option-pypi')).toBeNull()
+  })
+
+  it('posts the canonical name of the selected ecosystem', async () => {
+    mockAddSuccess(makePackageItem({ ecosystem: 'PyPI', package_name: 'requests' }))
+
+    await mountDialog()
+    await flushPromises()
+
+    await openEcosystemSelect()
+    await clickOption('ecosystem-option-PyPI')
+
+    await setInputValue('package-name-input', 'requests')
+    await flushPromises()
+
+    await clickTestId('add-item-btn')
+    await flushPromises()
+
+    expect(mockPOST).toHaveBeenCalledWith(
+      '/orgs/{org_id}/watchlists/{id}/items',
+      expect.objectContaining({
+        body: expect.objectContaining({
+          item_type: 'package',
+          ecosystem: 'PyPI',
+          package_name: 'requests',
         }),
       }),
     )

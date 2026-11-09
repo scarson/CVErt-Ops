@@ -1739,6 +1739,8 @@ The worker runs the scan asynchronously using `workerTx`, writes to `alert_event
 
 **The Fix:** All alert evaluation passes (realtime, batch, EPSS-specific, activation scan) and digests must add `AND COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')` to their queries. Feeds send the status in mixed case (`Rejected` from NVD, `REJECTED` from MITRE), so compare it in lower case. A CVE known only from a feed with no status, such as CISA KEV, has a NULL status and must still match; `NULL NOT IN (...)` is NULL, so without `COALESCE` the row is dropped with no error. Measured on 2026-11-06: an in-KEV rule matched none of 1,769 KEV CVEs, and digests sent `Rejected` CVEs.
 
+Put this filter on the matching query, not on the batch and EPSS candidate scans. Resolution considers only CVEs in the candidate list, so a filtered scan leaves every event already open on a rejected CVE open for good. Found on 2026-11-08: batch and EPSS-only rules never resolved such events. EPSS-only rules also need the EPSS scan to select retracted CVEs by `date_modified_canonical`, because a tombstone does not change `date_epss_updated`.
+
 **The Lesson:** Alert evaluation must be status-aware. Not all CVE record updates represent genuine new threat intelligence; a status change to `rejected` is the opposite. Any alert system that fires on every `material_hash` change without checking status will spam analysts with rejections. Test an exclusion filter with NULL and with each spelling the source sends, not only with the excluded value in its canonical form.
 
 ---

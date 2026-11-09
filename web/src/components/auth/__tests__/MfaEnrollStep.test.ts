@@ -6,6 +6,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, h } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import MfaEnrollStep from '../MfaEnrollStep.vue'
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -30,7 +31,6 @@ async function mountStep() {
   const finishSpy = vi.spyOn(auth, 'finishSignIn').mockResolvedValue({ ok: true, complete: true })
   const expireSpy = vi.spyOn(auth, 'expireSignIn')
   const cancelSpy = vi.spyOn(auth, 'cancelSignIn').mockResolvedValue()
-  const { default: MfaEnrollStep } = await import('../MfaEnrollStep.vue')
   const wrapper = mount(MfaEnrollStep, {
     attachTo: document.body,
     global: { stubs: { MfaEnrollment: MfaEnrollmentStub } },

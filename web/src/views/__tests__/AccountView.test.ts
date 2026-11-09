@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import AccountView from '../AccountView.vue'
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -30,8 +31,7 @@ function signIn(forcePasswordReset: boolean) {
   }
 }
 
-async function mountView() {
-  const { default: AccountView } = await import('../AccountView.vue')
+function mountView() {
   return mount(AccountView, { global: { stubs } })
 }
 
@@ -40,18 +40,18 @@ describe('AccountView', () => {
     setActivePinia(createPinia())
   })
 
-  it('shows the password and two-factor sections', async () => {
+  it('shows the password and two-factor sections', () => {
     signIn(false)
-    const wrapper = await mountView()
+    const wrapper = mountView()
 
     expect(wrapper.find('h1').text()).toBe('Account')
     expect(wrapper.find('[data-testid="password-card"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="mfa-card"]').exists()).toBe(true)
   })
 
-  it('shows only the password change when a new password is required', async () => {
+  it('shows only the password change when a new password is required', () => {
     signIn(true)
-    const wrapper = await mountView()
+    const wrapper = mountView()
 
     expect(wrapper.find('[role="alert"]').text()).toContain('must change your password')
     expect(wrapper.find('[data-testid="password-card"]').exists()).toBe(true)

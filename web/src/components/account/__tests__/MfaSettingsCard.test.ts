@@ -7,6 +7,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, h } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { PROBLEM_INVALID_PASSWORD } from '@/lib/api/problems'
+import MfaSettingsCard from '../MfaSettingsCard.vue'
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -58,7 +59,6 @@ function signIn(hasPassword = true) {
 }
 
 async function mountCard() {
-  const { default: MfaSettingsCard } = await import('../MfaSettingsCard.vue')
   const wrapper = mount(MfaSettingsCard, {
     attachTo: document.body,
     global: { stubs: { MfaEnrollment: MfaEnrollmentStub } },

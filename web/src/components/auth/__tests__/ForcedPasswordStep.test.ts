@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
+import ForcedPasswordStep from '../ForcedPasswordStep.vue'
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -21,7 +22,6 @@ async function mountStep() {
     .spyOn(auth, 'completeForcedPasswordChange')
     .mockResolvedValue({ ok: true, complete: true })
   const cancelSpy = vi.spyOn(auth, 'cancelSignIn').mockResolvedValue()
-  const { default: ForcedPasswordStep } = await import('../ForcedPasswordStep.vue')
   const wrapper = mount(ForcedPasswordStep, { attachTo: document.body })
   await flushPromises()
   return { wrapper, changeSpy, cancelSpy }

@@ -6,6 +6,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { PROBLEM_INVALID_CODE } from '@/lib/api/problems'
+import MfaChallengeStep from '../MfaChallengeStep.vue'
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -22,7 +23,6 @@ async function mountStep(pending: string[], methods: string[]) {
   const startSpy = vi.spyOn(auth, 'startMfaChallenge').mockResolvedValue({ ok: true })
   const verifySpy = vi.spyOn(auth, 'verifyMfa').mockResolvedValue({ ok: true, complete: true })
   const cancelSpy = vi.spyOn(auth, 'cancelSignIn').mockResolvedValue()
-  const { default: MfaChallengeStep } = await import('../MfaChallengeStep.vue')
   const wrapper = mount(MfaChallengeStep, { attachTo: document.body })
   await flushPromises()
   return { wrapper, auth, startSpy, verifySpy, cancelSpy }

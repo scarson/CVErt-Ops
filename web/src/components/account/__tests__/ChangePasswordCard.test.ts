@@ -6,6 +6,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
 import { PROBLEM_INVALID_PASSWORD } from '@/lib/api/problems'
+import ChangePasswordCard from '../ChangePasswordCard.vue'
 
 const mockPush = vi.fn<(...args: unknown[]) => unknown>()
 vi.mock('vue-router', () => ({
@@ -37,12 +38,11 @@ function signIn(hasPassword = true) {
   return auth
 }
 
-async function mountCard() {
-  const { default: ChangePasswordCard } = await import('../ChangePasswordCard.vue')
+function mountCard() {
   return mount(ChangePasswordCard)
 }
 
-async function submit(wrapper: Awaited<ReturnType<typeof mountCard>>, current: string, next: string, confirm = next) {
+async function submit(wrapper: ReturnType<typeof mountCard>, current: string, next: string, confirm = next) {
   await wrapper.find('input#current-password').setValue(current)
   await wrapper.find('input#account-new-password').setValue(next)
   await wrapper.find('input#account-confirm-password').setValue(confirm)
@@ -58,7 +58,7 @@ describe('ChangePasswordCard', () => {
 
   it('validates the new password before sending', async () => {
     signIn()
-    const wrapper = await mountCard()
+    const wrapper = mountCard()
 
     await submit(wrapper, 'old-password-123456', 'short')
 
@@ -73,7 +73,7 @@ describe('ChangePasswordCard', () => {
       error: { type: PROBLEM_INVALID_PASSWORD, status: 401, detail: 'current password incorrect' },
       response: { status: 401 } as Response,
     } as any)
-    const wrapper = await mountCard()
+    const wrapper = mountCard()
 
     await submit(wrapper, 'wrong-password-12345', 'a-long-new-password-1')
 
@@ -83,7 +83,7 @@ describe('ChangePasswordCard', () => {
   it('changes the password, signs out, and asks the user to sign in again', async () => {
     const auth = signIn()
     mockPOST.mockResolvedValue({ data: {}, error: undefined, response: { status: 200 } as Response } as any)
-    const wrapper = await mountCard()
+    const wrapper = mountCard()
 
     await submit(wrapper, 'old-password-123456', 'a-long-new-password-1')
 
@@ -96,9 +96,9 @@ describe('ChangePasswordCard', () => {
     expect(mockPush).toHaveBeenCalledWith({ name: 'login' })
   })
 
-  it('explains that an external-provider account has no password here', async () => {
+  it('explains that an external-provider account has no password here', () => {
     signIn(false)
-    const wrapper = await mountCard()
+    const wrapper = mountCard()
 
     expect(wrapper.find('form').exists()).toBe(false)
     expect(wrapper.text()).toContain('external identity provider')

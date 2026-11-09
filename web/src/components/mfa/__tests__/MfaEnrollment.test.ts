@@ -9,6 +9,7 @@ import {
   PROBLEM_INVALID_CODE,
   PROBLEM_PENDING_SESSION_INVALID,
 } from '@/lib/api/problems'
+import MfaEnrollment from '../MfaEnrollment.vue'
 
 vi.mock('@/lib/api/client', () => ({
   default: {
@@ -38,18 +39,17 @@ function problem(status: number, type: string | undefined, detail: string) {
   } as any
 }
 
-async function mountEnrollment(enrolledMethods: string[] = []) {
-  const { default: MfaEnrollment } = await import('../MfaEnrollment.vue')
+function mountEnrollment(enrolledMethods: string[] = []) {
   return mount(MfaEnrollment, { props: { enrolledMethods } })
 }
 
-async function startTotp(wrapper: Awaited<ReturnType<typeof mountEnrollment>>) {
+async function startTotp(wrapper: ReturnType<typeof mountEnrollment>) {
   mockPOST.mockResolvedValueOnce(ok(TOTP_SETUP))
   await wrapper.find('[data-testid="enroll-totp"]').trigger('click')
   await flushPromises()
 }
 
-async function submitCode(wrapper: Awaited<ReturnType<typeof mountEnrollment>>, code: string) {
+async function submitCode(wrapper: ReturnType<typeof mountEnrollment>, code: string) {
   await wrapper.find('input#enroll-code').setValue(code)
   await wrapper.find('form').trigger('submit')
   await flushPromises()
@@ -61,8 +61,8 @@ describe('MfaEnrollment', () => {
     vi.resetAllMocks()
   })
 
-  it('offers only methods that are not enrolled yet', async () => {
-    const wrapper = await mountEnrollment(['totp'])
+  it('offers only methods that are not enrolled yet', () => {
+    const wrapper = mountEnrollment(['totp'])
 
     expect(wrapper.find('[data-testid="enroll-totp"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="enroll-email_otp"]').exists()).toBe(true)
@@ -70,7 +70,7 @@ describe('MfaEnrollment', () => {
 
   describe('authenticator app', () => {
     it('shows a QR code image built from the setup URI and hides the secret until asked', async () => {
-      const wrapper = await mountEnrollment()
+      const wrapper = mountEnrollment()
       await startTotp(wrapper)
 
       expect(mockPOST).toHaveBeenCalledWith('/auth/mfa/totp/setup')
@@ -84,7 +84,7 @@ describe('MfaEnrollment', () => {
     })
 
     it('confirms the code and emits the recovery codes', async () => {
-      const wrapper = await mountEnrollment()
+      const wrapper = mountEnrollment()
       await startTotp(wrapper)
       mockPOST.mockResolvedValueOnce(ok({ recovery_codes: ['abcde-12345'] }))
 
@@ -95,7 +95,7 @@ describe('MfaEnrollment', () => {
     })
 
     it('keeps the step on a wrong code', async () => {
-      const wrapper = await mountEnrollment()
+      const wrapper = mountEnrollment()
       await startTotp(wrapper)
       mockPOST.mockResolvedValueOnce(problem(401, PROBLEM_INVALID_CODE, 'invalid TOTP code'))
 
@@ -106,7 +106,7 @@ describe('MfaEnrollment', () => {
     })
 
     it('restarts setup with a new QR code when the enrollment expired', async () => {
-      const wrapper = await mountEnrollment()
+      const wrapper = mountEnrollment()
       await startTotp(wrapper)
       mockPOST.mockResolvedValueOnce(problem(401, PROBLEM_ENROLLMENT_EXPIRED, 'invalid or expired enrollment token'))
       mockPOST.mockResolvedValueOnce(ok({ ...TOTP_SETUP, secret: 'NEWSECRETNEWSECRET' }))
@@ -120,7 +120,7 @@ describe('MfaEnrollment', () => {
 
   describe('email code', () => {
     it('sends a code and confirms it', async () => {
-      const wrapper = await mountEnrollment()
+      const wrapper = mountEnrollment()
       mockPOST.mockResolvedValueOnce(ok(undefined))
       await wrapper.find('[data-testid="enroll-email_otp"]').trigger('click')
       await flushPromises()
@@ -135,7 +135,7 @@ describe('MfaEnrollment', () => {
   })
 
   it('emits session-expired when the sign-in session is no longer valid', async () => {
-    const wrapper = await mountEnrollment()
+    const wrapper = mountEnrollment()
     mockPOST.mockResolvedValueOnce(problem(401, PROBLEM_PENDING_SESSION_INVALID, 'invalid or expired pending token'))
 
     await wrapper.find('[data-testid="enroll-totp"]').trigger('click')
@@ -145,7 +145,7 @@ describe('MfaEnrollment', () => {
   })
 
   it('shows the server detail for other failures', async () => {
-    const wrapper = await mountEnrollment()
+    const wrapper = mountEnrollment()
     mockPOST.mockResolvedValueOnce(problem(409, undefined, 'totp already enrolled'))
 
     await wrapper.find('[data-testid="enroll-totp"]').trigger('click')

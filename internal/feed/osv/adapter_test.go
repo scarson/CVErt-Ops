@@ -7,15 +7,97 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/feed"
 )
+
+func TestPackagesFromVersions(t *testing.T) {
+	t.Parallel()
+	noBounds := func(eco, name string) []feed.AffectedPackage {
+		return []feed.AffectedPackage{{Ecosystem: eco, PackageName: name, RangeType: "VERSIONS"}}
+	}
+	t.Run("one row per listed version when there are no ranges", func(t *testing.T) {
+		t.Parallel()
+		got := packagesFromVersions("RubyGems", "sprout", []string{"0.7.246", "0.7.247"}, nil)
+		want := []feed.AffectedPackage{
+			{Ecosystem: "RubyGems", PackageName: "sprout", RangeType: "VERSIONS", Introduced: "0.7.246", LastAffected: "0.7.246"},
+			{Ecosystem: "RubyGems", PackageName: "sprout", RangeType: "VERSIONS", Introduced: "0.7.247", LastAffected: "0.7.247"},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+	t.Run("no versions and no ranges keeps the package with no bounds", func(t *testing.T) {
+		t.Parallel()
+		if got := packagesFromVersions("npm", "x", nil, nil); !reflect.DeepEqual(got, noBounds("npm", "x")) {
+			t.Errorf("got %+v", got)
+		}
+	})
+	t.Run("blank and null-byte versions are skipped", func(t *testing.T) {
+		t.Parallel()
+		got := packagesFromVersions("npm", "x", []string{"", "1.0.0\x00"}, nil)
+		if len(got) != 1 || got[0].Introduced != "1.0.0" {
+			t.Errorf("got %+v", got)
+		}
+	})
+	t.Run("a listed version outside the ranges is kept", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "npm", PackageName: "x", RangeType: "SEMVER", Introduced: "1.0.0", Fixed: "2.0.0"}}
+		got := packagesFromVersions("npm", "x", []string{"1.5.0", "3.0.0"}, ranges)
+		if len(got) != 1 || got[0].Introduced != "3.0.0" || got[0].LastAffected != "3.0.0" {
+			t.Errorf("got %+v, want only 3.0.0", got)
+		}
+	})
+	t.Run("versions are kept when the only range is GIT", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", RangeType: "GIT", Introduced: "0"}}
+		if got := packagesFromVersions("PyPI", "x", []string{"1.0"}, ranges); len(got) != 1 {
+			t.Errorf("got %+v, want one row", got)
+		}
+	})
+	t.Run("a SEMVER range cannot cover a version where the native order differs", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", RangeType: "SEMVER", Introduced: "1.0.0", Fixed: "2.0.0"}}
+		if got := packagesFromVersions("PyPI", "x", []string{"1.0.0-1"}, ranges); len(got) != 1 || got[0].Introduced != "1.0.0-1" {
+			t.Errorf("got %+v, want the listed version kept", got)
+		}
+	})
+	t.Run("an ecosystem with no comparator adds nothing beside its ranges", func(t *testing.T) {
+		t.Parallel()
+		ranges := []feed.AffectedPackage{{Ecosystem: "Bitnami", PackageName: "x", RangeType: "SEMVER", Introduced: "0", Fixed: "2.0.0"}}
+		if got := packagesFromVersions("Bitnami", "x", []string{"3.0.0"}, ranges); got != nil {
+			t.Errorf("got %+v, want nil", got)
+		}
+	})
+	t.Run("exactly the limit is kept", func(t *testing.T) {
+		t.Parallel()
+		versions := make([]string, maxListedVersionRows)
+		for i := range versions {
+			versions[i] = fmt.Sprintf("1.0.%d", i)
+		}
+		if got := packagesFromVersions("npm", "x", versions, nil); len(got) != maxListedVersionRows {
+			t.Errorf("got %d rows, want %d", len(got), maxListedVersionRows)
+		}
+	})
+	t.Run("too many rows becomes one row with no bounds", func(t *testing.T) {
+		t.Parallel()
+		versions := make([]string, maxListedVersionRows+1)
+		for i := range versions {
+			versions[i] = fmt.Sprintf("1.0.%d", i)
+		}
+		if got := packagesFromVersions("npm", "x", versions, nil); !reflect.DeepEqual(got, noBounds("npm", "x")) {
+			t.Errorf("got %d rows", len(got))
+		}
+	})
+}
 
 func TestIsAdvisoryEntry(t *testing.T) {
 	t.Parallel()

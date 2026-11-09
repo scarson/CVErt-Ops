@@ -33,7 +33,9 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/feed"
+	"github.com/scarson/cvert-ops/internal/version"
 )
 
 const (
@@ -49,6 +51,13 @@ const (
 	// modifiedIDsURL lists every advisory as "<modified time>,<ecosystem>/<id>",
 	// newest first.
 	modifiedIDsURL = bucketURL + "modified_id.csv"
+
+	// rangeTypeVersions marks a row built from an advisory's versions list.
+	rangeTypeVersions = "VERSIONS"
+
+	// maxListedVersionRows bounds the rows one affected entry's versions list can
+	// add, because every row is rewritten on each merge of its CVE under the merge lock.
+	maxListedVersionRows = 1000
 )
 
 // Adapter implements feed.Adapter for the OSV bucket. One Adapter serves one
@@ -385,4 +394,51 @@ func extractPackageRanges(ecosystem, pkgName string, rng osvRange) []feed.Affect
 		})
 	}
 	return result
+}
+
+// packagesFromVersions returns rows for the versions an affected entry lists,
+// beyond those its version ranges already cover. A row with no bounds keeps the
+// package named on the advisory and makes a version check answer "cannot evaluate";
+// it stands in for an entry with nothing to evaluate and for one too large to store.
+func packagesFromVersions(eco, pkgName string, versions []string, ranges []feed.AffectedPackage) []feed.AffectedPackage {
+	noBounds := []feed.AffectedPackage{{Ecosystem: eco, PackageName: pkgName, RangeType: rangeTypeVersions}}
+	if len(ranges) > 0 && !version.Supported(eco) {
+		return nil
+	}
+
+	var rows []feed.AffectedPackage
+	for _, raw := range versions {
+		listed := strings.Clone(feed.StripNullBytes(raw))
+		if listed == "" || coveredByRange(eco, listed, ranges) {
+			continue
+		}
+		rows = append(rows, feed.AffectedPackage{
+			Ecosystem: eco, PackageName: pkgName, RangeType: rangeTypeVersions,
+			Introduced: listed, LastAffected: listed,
+		})
+	}
+	switch {
+	case len(rows) > maxListedVersionRows:
+		return noBounds
+	case len(rows) == 0 && len(ranges) == 0:
+		return noBounds
+	}
+	return rows
+}
+
+// coveredByRange reports whether a version range of the entry contains listed. A
+// GIT range holds commit hashes, and a SEMVER range in an ecosystem with another
+// native order cannot be judged by that ecosystem's comparator, so neither can
+// show a listed version is redundant.
+func coveredByRange(eco, listed string, ranges []feed.AffectedPackage) bool {
+	for _, r := range ranges {
+		if r.RangeType == "GIT" || (r.RangeType == "SEMVER" && !ecosystem.OrdersBySemver(eco)) {
+			continue
+		}
+		status, _ := version.Check(eco, listed, version.Range{Introduced: r.Introduced, Fixed: r.Fixed, LastAffected: r.LastAffected})
+		if status == version.Affected {
+			return true
+		}
+	}
+	return false
 }

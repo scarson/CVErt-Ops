@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/store"
+	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -185,6 +186,83 @@ func TestInsertAlertEvent_DeduplicatesOnConflict(t *testing.T) {
 	}
 	if id2 != uuid.Nil {
 		t.Errorf("duplicate insert should return uuid.Nil, got %v", id2)
+	}
+}
+
+func TestReopenAlertEvent(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ARReopen")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "ReopenRule")
+	const cveID, hash = "CVE-2024-0200", "reopen-hash"
+
+	eventID, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, hash, true)
+	if err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+
+	getEvent := func() generated.AlertEvent {
+		t.Helper()
+		events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{Limit: 10})
+		if err != nil {
+			t.Fatalf("ListAlertEvents: %v", err)
+		}
+		if len(events) != 1 {
+			t.Fatalf("events = %d, want 1", len(events))
+		}
+		return events[0]
+	}
+	reopen := func(materialHash string, suppressDelivery bool) uuid.UUID {
+		t.Helper()
+		id, err := s.ReopenAlertEvent(ctx, org.ID, r.ID, cveID, materialHash, suppressDelivery)
+		if err != nil {
+			t.Fatalf("ReopenAlertEvent: %v", err)
+		}
+		return id
+	}
+
+	if id := reopen(hash, false); id != uuid.Nil {
+		t.Errorf("reopen of an open event returned %v, want uuid.Nil", id)
+	}
+	if e := getEvent(); e.TimesFired != 1 || !e.SuppressDelivery {
+		t.Errorf("open event changed: times_fired=%d suppress_delivery=%v", e.TimesFired, e.SuppressDelivery)
+	}
+
+	if err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID); err != nil {
+		t.Fatalf("ResolveAlertEvent: %v", err)
+	}
+
+	if id := reopen("other-hash", false); id != uuid.Nil {
+		t.Errorf("reopen at another material_hash returned %v, want uuid.Nil", id)
+	}
+	if e := getEvent(); e.LastMatchState {
+		t.Error("reopen at another material_hash changed the event")
+	}
+
+	if id := reopen(hash, false); id != eventID {
+		t.Errorf("reopen returned %v, want %v", id, eventID)
+	}
+	e := getEvent()
+	if !e.LastMatchState {
+		t.Error("last_match_state = false after reopen, want true")
+	}
+	if e.SuppressDelivery {
+		t.Error("suppress_delivery = true after a delivered reopen, want false")
+	}
+	if e.TimesFired != 2 {
+		t.Errorf("times_fired = %d, want 2", e.TimesFired)
+	}
+	if !e.LastFiredAt.After(e.FirstFiredAt) {
+		t.Errorf("last_fired_at = %v, want after first_fired_at %v", e.LastFiredAt, e.FirstFiredAt)
+	}
+
+	if id := reopen(hash, false); id != uuid.Nil {
+		t.Errorf("second reopen returned %v, want uuid.Nil", id)
+	}
+	if e := getEvent(); e.TimesFired != 2 {
+		t.Errorf("times_fired after second reopen = %d, want 2", e.TimesFired)
 	}
 }
 

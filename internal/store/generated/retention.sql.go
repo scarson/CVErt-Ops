@@ -84,7 +84,9 @@ func (q *Queries) CleanupAIUsageCounters(ctx context.Context, arg CleanupAIUsage
 const cleanupAlertEvents = `-- name: CleanupAlertEvents :execrows
 WITH doomed AS (
     SELECT id FROM alert_events
-    WHERE org_id = ANY($1::uuid[]) AND first_fired_at < $2::timestamptz
+    WHERE org_id = ANY($1::uuid[])
+      AND first_fired_at < $2::timestamptz
+      AND last_fired_at < $2::timestamptz
     ORDER BY first_fired_at LIMIT $3::int
 )
 DELETE FROM alert_events ae USING doomed WHERE ae.id = doomed.id
@@ -96,6 +98,8 @@ type CleanupAlertEventsParams struct {
 	BatchSize int32
 }
 
+// An event's age counts from its most recent fire. last_fired_at is never earlier than
+// first_fired_at, so the bound on first_fired_at lets this scan use that column's index.
 func (q *Queries) CleanupAlertEvents(ctx context.Context, arg CleanupAlertEventsParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, cleanupAlertEvents, pq.Array(arg.OrgIds), arg.Cutoff, arg.BatchSize)
 	if err != nil {

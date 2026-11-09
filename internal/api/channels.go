@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,7 +47,7 @@ type ChannelEntry struct {
 	OrgID     string          `json:"org_id"`
 	Name      string          `json:"name"`
 	Type      string          `json:"type"`
-	Config    json.RawMessage `json:"config" doc:"Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***."`
+	Config    json.RawMessage `json:"config" doc:"Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]."`
 	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`
 }
@@ -620,16 +621,13 @@ func channelResponseConfig(stored json.RawMessage) json.RawMessage {
 // secret sent again, or a caller could direct it to a host they control. Config
 // that is not a JSON object is returned as submitted for validation to reject.
 func resolveMaskedChannelConfig(submitted, stored json.RawMessage) (json.RawMessage, error) {
-	var sub map[string]any
-	if err := json.Unmarshal(submitted, &sub); err != nil || sub == nil {
+	sub := decodeConfigObject(submitted)
+	if sub == nil {
 		return submitted, nil
 	}
 	// A missing or unreadable stored config leaves no secrets to restore, and
 	// the caller can still replace it with a complete config.
-	var cur map[string]any
-	if err := json.Unmarshal(stored, &cur); err != nil {
-		cur = nil
-	}
+	cur := decodeConfigObject(stored)
 
 	subURL, _ := sub["url"].(string)
 	curURL, _ := cur["url"].(string)
@@ -647,8 +645,21 @@ func resolveMaskedChannelConfig(submitted, stored json.RawMessage) (json.RawMess
 	return json.Marshal(sub)
 }
 
+// decodeConfigObject decodes a JSON object with its numbers kept exact, so a
+// restored value is stored unchanged. It returns nil if raw is not an object.
+func decodeConfigObject(raw json.RawMessage) map[string]any {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil {
+		return nil
+	}
+	return object
+}
+
 // restoreMaskedValues replaces each masked value in submitted with the value at
-// the same key in stored. It follows nested objects, as the masking does.
+// the same key in stored, following nested objects such as header maps. A masked
+// value inside a list has no key to restore from, so it is rejected.
 func restoreMaskedValues(submitted, stored map[string]any, sameDestination bool) error {
 	for key, value := range submitted {
 		switch v := value.(type) {
@@ -669,24 +680,49 @@ func restoreMaskedValues(submitted, stored map[string]any, sameDestination bool)
 			if err := restoreMaskedValues(v, nested, sameDestination); err != nil {
 				return err
 			}
+		case []any:
+			if containsMaskedValue(v) {
+				return fmt.Errorf("%q has a masked value inside a list; send the real value", key)
+			}
 		}
 	}
 	return nil
 }
 
-// channelAuditState builds a flat map for audit log state, merging config fields
-// at the top level so redactSecrets can process the URL for channel entities.
-func channelAuditState(name, chType string, config json.RawMessage) map[string]any {
-	state := map[string]any{
-		"name": name,
-		"type": chType,
+// containsMaskedValue reports whether value holds the masked placeholder at any depth.
+func containsMaskedValue(value any) bool {
+	switch v := value.(type) {
+	case string:
+		return v == audit.RedactedValue
+	case []any:
+		for _, element := range v {
+			if containsMaskedValue(element) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, element := range v {
+			if containsMaskedValue(element) {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+// channelAuditState builds a flat map for audit log state, merging the masked
+// config fields at the top level. The channel's own name and type take
+// precedence over config keys of the same name.
+func channelAuditState(name, chType string, config json.RawMessage) map[string]any {
+	state := map[string]any{}
 	var cfgMap map[string]any
 	if err := json.Unmarshal(config, &cfgMap); err == nil {
-		for k, v := range cfgMap {
+		for k, v := range audit.RedactChannelConfig(cfgMap) {
 			state[k] = v
 		}
 	}
+	state["name"] = name
+	state["type"] = chType
 	return state
 }
 

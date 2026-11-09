@@ -732,7 +732,7 @@ func (srv *Server) listRuleChannelsHandler(w http.ResponseWriter, r *http.Reques
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,
 			Type:      row.Type,
-			Config:    row.Config,
+			Config:    channelResponseConfig(row.Config),
 			CreatedAt: row.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}

@@ -1165,7 +1165,9 @@
             "readOnly": true,
             "type": "string"
           },
-          "config": {},
+          "config": {
+            "description": "Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***."
+          },
           "created_at": {
             "type": "string"
           },
@@ -1212,7 +1214,9 @@
             "readOnly": true,
             "type": "string"
           },
-          "config": {},
+          "config": {
+            "description": "Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***."
+          },
           "created_at": {
             "type": "string"
           },
@@ -3477,7 +3481,9 @@
             "readOnly": true,
             "type": "string"
           },
-          "config": {},
+          "config": {
+            "description": "Replaces the whole config. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again."
+          },
           "name": {
             "type": "string"
           }

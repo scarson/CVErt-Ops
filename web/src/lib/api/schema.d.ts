@@ -2208,6 +2208,7 @@ export interface components {
              * @example /api/v1/schemas/ChannelCreateEntry.json
              */
             readonly $schema?: string;
+            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. */
             config: unknown;
             created_at: string;
             id: string;
@@ -2225,6 +2226,7 @@ export interface components {
              * @example /api/v1/schemas/ChannelEntry.json
              */
             readonly $schema?: string;
+            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. */
             config: unknown;
             created_at: string;
             id: string;
@@ -3040,6 +3042,7 @@ export interface components {
              * @example /api/v1/schemas/PatchChannelBody.json
              */
             readonly $schema?: string;
+            /** @description Replaces the whole config. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again. */
             config?: unknown;
             name?: string;
         };

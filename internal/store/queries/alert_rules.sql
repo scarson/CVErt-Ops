@@ -78,6 +78,22 @@ VALUES ($1, $2, $3, $4, true, $5)
 ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING
 RETURNING id;
 
+-- name: ReopenAlertEvent :one
+-- Reopens a resolved event when its CVE matches the rule again at the same material_hash.
+-- Returns the id only when this statement changed the state, so fan-out stays exactly-once.
+-- An empty result means the event is already open or does not exist.
+UPDATE alert_events
+SET last_match_state  = true,
+    suppress_delivery = $5,
+    last_fired_at     = now(),
+    times_fired       = times_fired + 1
+WHERE org_id = $1
+  AND rule_id = $2
+  AND cve_id = $3
+  AND material_hash = $4
+  AND last_match_state = false
+RETURNING id;
+
 -- name: GetUnresolvedAlertEventCVEs :many
 -- Returns CVE IDs of events that last matched for this rule, used for resolution detection.
 SELECT cve_id FROM alert_events

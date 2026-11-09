@@ -347,7 +347,7 @@ Mailpit UI: http://localhost:8025
 - Batch and EPSS scans start 2 minutes behind `last_cursor` (`cursorRescanWindow`): the cursor and the compared timestamps come from different clocks and writers commit after stamping (implementation-pitfalls.md NOTIFY-20)
 - All paths: filter `COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')`: feeds send mixed case, and CVEs with no status must still match (implementation-pitfalls.md NOTIFY-10); regex rules fail-closed if candidate cap (5,000) exceeded
 - New rule activation: handler inserts rule with `status='activating'`, enqueues scan job, returns 202 immediately — never runs the scan inline
-- `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)`; inserts use `ON CONFLICT DO NOTHING RETURNING id` — fan-out only if the row was actually inserted
+- `alert_events` UNIQUE on `(org_id, rule_id, cve_id, material_hash)`; inserts use `ON CONFLICT DO NOTHING RETURNING id` — fan-out only if the row was actually inserted, or a no-op insert was followed by `ReopenAlertEvent` changing a resolved event back to open
 
 **Notification delivery**
 - Never hold an open DB transaction during an outbound webhook HTTP call — claim job → commit → call webhook → update status in a new transaction

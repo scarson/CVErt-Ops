@@ -544,7 +544,7 @@ Both statements run for every row in the EPSS CSV. The database handles all case
 
 Go code never inspects `RowsAffected`. Staging logic is entirely DB-side and unambiguous.
 - Alert rules containing `epss_score` conditions are evaluated by a **dedicated daily EPSS rule evaluator** that uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data (see section 10.3). This cursor is separate from `date_modified_canonical` so that the general-purpose batch evaluator remains efficient.
-- `alert_events` dedup (keyed by `material_hash`) still applies: after an EPSS rule fires for a (rule, CVE) pair, it suppresses re-fires while non-EPSS fields stay unchanged. First match always fires (no prior `alert_events` row). Re-crossing alerts (score drops below then crosses threshold again) are a **P1 improvement** requiring per-(rule, CVE) EPSS state tracking in `alert_events`.
+- `alert_events` dedup (keyed by `material_hash`) still applies: after an EPSS rule fires for a (rule, CVE) pair, it suppresses re-fires while the event stays open and non-EPSS fields stay unchanged. First match always fires (no prior `alert_events` row). A score that drops below the threshold resolves the event, and crossing the threshold again reopens it and fires (section 10.4).
 - The `epss_score_baseline` column is **not present** in `cves`. It was added to support a flawed hash-based EPSS dedup mechanism that has been replaced by this design.
 
 ---
@@ -1040,7 +1040,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
 - Alerts run:
   - **Realtime**: on CVE upsert that results in changed `material_hash`
   - **Batched**: periodic job evaluates "changed CVEs since last run" (uses `date_modified_canonical` as cursor). Evaluates all rules EXCEPT those whose only conditions reference `epss_score`.
-  - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while non-EPSS fields stay unchanged.
+  - **EPSS-specific**: dedicated daily job uses `date_epss_updated > last_cursor` to find CVEs with new EPSS data. Evaluates only rules that contain an `epss_score` condition. Fires on first match; `alert_events` material_hash dedup suppresses repeat fires while the event stays open and non-EPSS fields stay unchanged.
   - **Cursor advancement (batched and EPSS-specific):** a run advances its cursor only if every rule evaluated. If any rule's evaluation fails (a database error, or a partial candidate set), the run keeps the previous cursor and the next run re-evaluates the same CVEs for every rule; re-evaluation is idempotent through `alert_events` dedup. The cursor is held for at most a fixed number of consecutive runs (batch: 30, about an hour; EPSS: 3 days), after which it advances and an error is logged naming the rules whose CVEs were not evaluated. A held run still updates `last_success_at`, which the scheduler uses to space runs. A rule whose conditions no longer compile is not retried: it is set to `status=error` (§10.5).
   - **Digest-only**: no immediate alerts; included in scheduled reports
   - **Batched and EPSS cursor re-scan window (required):** both jobs select candidates from `last_cursor - 2 minutes`, not `last_cursor`. The cursor is the evaluator's clock at the start of the previous run, while the compared timestamps come from Postgres `now()` or the merge worker's clock and are taken before their writer commits; without the overlap, clock skew or a transaction that commits after the scan loses the alert. Re-evaluation inside the window is idempotent through the `alert_events` unique key. See `dev/implementation-pitfalls.md` NOTIFY-20 (evaluator cursor skips rows stamped before it).
@@ -1087,9 +1087,10 @@ The filter belongs on the query that decides what matches. The batched and EPSS 
 
 ### 10.4 Dedup Model
 Table `alert_events(org_id, rule_id, cve_id, material_hash, last_match_state, first_fired_at, last_fired_at, times_fired)`
-- A rule fires again only if `material_hash` changes OR if `rule.fire_on_non_material_changes=true` (default false).
+- A rule fires again only if `material_hash` changes, OR if `rule.fire_on_non_material_changes=true` (default false), OR if a resolved event's CVE matches the rule again at the same `material_hash`.
+- A resolved event (`last_match_state=false`) reopens when its CVE returns to a `material_hash` the rule already fired on. Examples are a reversed rejection and an EPSS score that drops below a rule's threshold and comes back, which leaves `material_hash` unchanged. A reopen notifies like a new match, except during an activation scan, which reopens silently because it records a baseline. `last_fired_at` and `times_fired` record each reopen.
 
-**alert_events unique constraint + atomic insert (required):** Without a database-level unique constraint, two concurrent alert evaluation workers (e.g., a realtime trigger and a batch job) that race to evaluate the same rule+CVE within milliseconds of each other will both observe that no `alert_events` row exists, both insert a row, and both fan out notifications — producing duplicate alerts for the user. The table MUST have: `UNIQUE(org_id, rule_id, cve_id, material_hash)`. All alert event inserts MUST use `INSERT INTO alert_events ... ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING RETURNING id`. The notification fan-out MUST only proceed if the `RETURNING id` clause yields a row (i.e., the insert was not a no-op). This guarantees exactly-once alerting regardless of worker concurrency.
+**alert_events unique constraint + atomic insert (required):** Without a database-level unique constraint, two concurrent alert evaluation workers (e.g., a realtime trigger and a batch job) that race to evaluate the same rule+CVE within milliseconds of each other will both observe that no `alert_events` row exists, both insert a row, and both fan out notifications — producing duplicate alerts for the user. The table MUST have: `UNIQUE(org_id, rule_id, cve_id, material_hash)`. All alert event inserts MUST use `INSERT INTO alert_events ... ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING RETURNING id`. The notification fan-out MUST only proceed if the `RETURNING id` clause yields a row (i.e., the insert was not a no-op). This guarantees exactly-once alerting regardless of worker concurrency. When the insert is a no-op, the evaluator runs `UPDATE alert_events ... WHERE ... AND last_match_state = false RETURNING id` and fans out only if that returns a row, so an open event never fires again and only one concurrent evaluator can reopen a resolved one.
 
 ### 10.5 DSL Versioning
 
@@ -2090,7 +2091,7 @@ Retention defaults should be generous enough to be useful out-of-the-box but bou
 | `cve_sources` | Indefinite | — | Needed for provenance and "show source differences." |
 | `cve_raw_payloads` | 90 days | Enterprise: configurable (30–365 days) | Largest growth table. Cleanup job deletes rows older than threshold. |
 | `feed_fetch_log` | 90 days | Enterprise: configurable | Operational/debug data; safe to prune. |
-| `alert_events` | 1 year | Enterprise: configurable (90 days–indefinite) | Historical alert record. Older events are archived or deleted. |
+| `alert_events` | 1 year | Enterprise: configurable (90 days–indefinite) | Historical alert record. An event's age counts from its most recent fire (`last_fired_at`). Older events are archived or deleted. |
 | `notification_deliveries` | 90 days | Enterprise: configurable | Delivery log; useful for debugging. |
 | `report_runs` | 1 year | Enterprise: configurable | Includes rendered report content. |
 | `ai_usage_counters` | Indefinite (rolled up monthly) | — | Daily granularity retained for 90 days; monthly aggregates kept indefinitely for billing/audit. |
@@ -2337,7 +2338,7 @@ See section 18.1 for full schema.
 - `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — unbind channel (member+)
 
 **Alert events (chi-registered, flat — not nested under rules):**
-- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=`)
+- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=` compared against the event's most recent fire)
 
 **Deliveries (chi-registered, flat — not nested under channels):**
 - `GET /api/v1/orgs/{org_id}/deliveries` — list (viewer+, filters: `?channel_id=`, `?rule_id=`, `?status=`)

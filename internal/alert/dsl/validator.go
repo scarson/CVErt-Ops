@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
 // selectiveFields are non-regex fields that provide meaningful filtering,
@@ -202,7 +204,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 			if spec.enumValues != nil {
 				for _, v := range vals {
-					if !containsStr(spec.enumValues, v) {
+					if !affectedValueValid(c.Field, spec, v) {
 						add(fmt.Sprintf("value %q is not valid for %q; valid: %v", v, c.Field, spec.enumValues))
 					}
 				}
@@ -213,12 +215,21 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
-			if spec.enumValues != nil && !containsStr(spec.enumValues, v) {
+			if spec.enumValues != nil && !affectedValueValid(c.Field, spec, v) {
 				add(fmt.Sprintf("value %q is not valid for %q; valid: %v", v, c.Field, spec.enumValues))
 			}
 		}
 	}
 	return errs
+}
+
+// affectedValueValid reports whether v is allowed for a kindAffected field with an
+// enum. affected.ecosystem also allows a suffix, so it cannot use the enum alone.
+func affectedValueValid(field string, spec fieldSpec, v string) bool {
+	if field == "affected.ecosystem" {
+		return ecosystem.Valid(v)
+	}
+	return containsStr(spec.enumValues, v)
 }
 
 func containsStr(slice []string, s string) bool {

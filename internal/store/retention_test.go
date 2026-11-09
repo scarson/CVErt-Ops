@@ -121,8 +121,8 @@ func TestCleanupAlertEvents_OrgFilter(t *testing.T) {
 		{org2.ID, ruleID2, "CVE-2024-0002"},
 	} {
 		if _, err := db.Pool().Exec(ctx,
-			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at)
-			 VALUES ($1, $2, $3, $4, $5)`,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
+			 VALUES ($1, $2, $3, $4, $5, $5)`,
 			p.orgID, p.ruleID, p.cveID, "hash1", oldTime,
 		); err != nil {
 			t.Fatalf("seed alert_events: %v", err)
@@ -148,6 +148,62 @@ func TestCleanupAlertEvents_OrgFilter(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Errorf("org2 remaining = %d, want 1", remaining)
+	}
+}
+
+// TestCleanupAlertEvents_AgesFromLastFire keeps an event that first fired before the cutoff
+// but reopened after it, and deletes one whose most recent fire is before the cutoff.
+func TestCleanupAlertEvents_AgesFromLastFire(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	oldTime := now.Add(-400 * 24 * time.Hour)
+	org := db.MustCreateOrg(t, ctx, "RetentionReopenOrg")
+
+	var ruleID uuid.UUID
+	if err := db.Pool().QueryRow(ctx,
+		`INSERT INTO alert_rules (org_id, name, logic, conditions, status)
+		 VALUES ($1, 'rule', 'and', '[]'::jsonb, 'active') RETURNING id`,
+		org.ID,
+	).Scan(&ruleID); err != nil {
+		t.Fatalf("create rule: %v", err)
+	}
+
+	for _, e := range []struct {
+		cveID     string
+		lastFired time.Time
+	}{
+		{"CVE-2024-0003", now.Add(-time.Hour)},
+		{"CVE-2024-0004", oldTime},
+	} {
+		if _, err := db.Pool().Exec(ctx,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
+			 VALUES ($1, $2, $3, 'hash1', $4, $5)`,
+			org.ID, ruleID, e.cveID, oldTime, e.lastFired,
+		); err != nil {
+			t.Fatalf("seed alert_events: %v", err)
+		}
+	}
+
+	cutoff := now.Add(-365 * 24 * time.Hour)
+	n, err := db.CleanupAlertEvents(ctx, []uuid.UUID{org.ID}, cutoff, 100)
+	if err != nil {
+		t.Fatalf("CleanupAlertEvents: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleted = %d, want 1 (only the event whose last fire is before the cutoff)", n)
+	}
+
+	var remaining string
+	if err := db.DB().QueryRowContext(ctx,
+		"SELECT cve_id FROM alert_events WHERE org_id = $1", org.ID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("read remaining event: %v", err)
+	}
+	if remaining != "CVE-2024-0003" {
+		t.Errorf("remaining event = %s, want CVE-2024-0003 (reopened after the cutoff)", remaining)
 	}
 }
 

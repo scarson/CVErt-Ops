@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -344,6 +345,81 @@ func TestWatchlistItem_UnknownEcosystem(t *testing.T) {
 	}
 }
 
+// TestWatchlistItem_UnknownEcosystemListsCanonicalNames verifies the 422 for a name
+// outside the vocabulary tells the caller which names are accepted.
+func TestWatchlistItem_UnknownEcosystemListsCanonicalNames(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	token, orgID, wlID := watchlistFixture(t, ctx, ts, "alice@example.com")
+
+	resp := doCreateWatchlistItem(t, ctx, ts, token, orgID, wlID,
+		`{"item_type":"package","ecosystem":"cargo","package_name":"serde"}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("cargo: got %d, want 422", resp.StatusCode)
+	}
+	var problem struct {
+		Errors []struct {
+			Message  string `json:"message"`
+			Location string `json:"location"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) == 0 {
+		t.Fatal("expected at least one error detail")
+	}
+	if !strings.Contains(problem.Errors[0].Message, "crates.io") {
+		t.Errorf("errors[0].message = %q, want it to name crates.io", problem.Errors[0].Message)
+	}
+	if problem.Errors[0].Location != "body.ecosystem" {
+		t.Errorf("errors[0].location = %q, want body.ecosystem", problem.Errors[0].Location)
+	}
+}
+
+// TestWatchlistItem_StoresEcosystemAndPackageAsSent verifies an accepted package item
+// is returned with the spelling the caller sent.
+func TestWatchlistItem_StoresEcosystemAndPackageAsSent(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+	token, orgID, wlID := watchlistFixture(t, ctx, ts, "alice@example.com")
+
+	tests := []struct {
+		name, ecosystem, packageName string
+	}{
+		{"ecosystem with a release", "Debian:13", "openssl"},
+		{"package name with separators and capitals", "PyPI", "Foo_Bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"item_type":"package","ecosystem":%q,"package_name":%q}`, tt.ecosystem, tt.packageName)
+			resp := doCreateWatchlistItem(t, ctx, ts, token, orgID, wlID, body)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("got %d, want 201", resp.StatusCode)
+			}
+			var item struct {
+				Ecosystem   string `json:"ecosystem"`
+				PackageName string `json:"package_name"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+				t.Fatalf("decode item: %v", err)
+			}
+			if item.Ecosystem != tt.ecosystem {
+				t.Errorf("ecosystem = %q, want %q", item.Ecosystem, tt.ecosystem)
+			}
+			if item.PackageName != tt.packageName {
+				t.Errorf("package_name = %q, want %q", item.PackageName, tt.packageName)
+			}
+		})
+	}
+}
+
 // TestWatchlistItem_MalformedCPE verifies 422 for a CPE that doesn't start with cpe:2.3:.
 func TestWatchlistItem_MalformedCPE(t *testing.T) {
 	t.Parallel()
@@ -533,7 +609,7 @@ func TestWatchlist_CrossOrgReadWriteIsolation(t *testing.T) {
 
 	// Bob cannot add items to Alice's watchlist.
 	addItemResp := doCreateWatchlistItem(t, ctx, ts, bobToken, aliceReg.OrgID, aliceWL.ID,
-		`{"item_type":"package","ecosystem":"pypi","package_name":"requests"}`)
+		`{"item_type":"package","ecosystem":"PyPI","package_name":"requests"}`)
 	defer addItemResp.Body.Close() //nolint:errcheck,gosec // G104
 	if addItemResp.StatusCode != http.StatusForbidden {
 		t.Errorf("cross-org add item: got %d, want 403", addItemResp.StatusCode)
@@ -1325,8 +1401,10 @@ func TestWatchlistItemCursorOpaque(t *testing.T) {
 		t.Fatalf("list page 1: got %d, want 200", page1Resp.StatusCode)
 	}
 	var page1 struct {
-		Items      []struct{ ID string `json:"id"` } `json:"items"`
-		NextCursor string                             `json:"next_cursor"`
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
 	}
 	if err := json.NewDecoder(page1Resp.Body).Decode(&page1); err != nil {
 		t.Fatalf("decode page 1: %v", err)
@@ -1350,8 +1428,10 @@ func TestWatchlistItemCursorOpaque(t *testing.T) {
 		t.Fatalf("list page 2: got %d, want 200", page2Resp.StatusCode)
 	}
 	var page2 struct {
-		Items      []struct{ ID string `json:"id"` } `json:"items"`
-		NextCursor string                             `json:"next_cursor"`
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
 	}
 	if err := json.NewDecoder(page2Resp.Body).Decode(&page2); err != nil {
 		t.Fatalf("decode page 2: %v", err)
@@ -1376,4 +1456,3 @@ func TestWatchlistItemCursorOpaque(t *testing.T) {
 		t.Errorf("page 2 next_cursor = %q, want empty (no more pages)", page2.NextCursor)
 	}
 }
-

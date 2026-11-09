@@ -668,8 +668,8 @@ func TestWorker_Recovery_OrphanedEvents(t *testing.T) {
 
 	// Create an orphaned alert event: fired > 1 minute ago, no delivery exists.
 	if _, err := s.DB().ExecContext(ctx, `
-		INSERT INTO alert_events (id, org_id, rule_id, cve_id, material_hash, first_fired_at, last_match_state, suppress_delivery)
-		VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '5 minutes', true, false)`,
+		INSERT INTO alert_events (id, org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, last_match_state, suppress_delivery)
+		VALUES ($1, $2, $3, $4, $5, NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '5 minutes', true, false)`,
 		uuid.New(), org.ID, rule.ID, "CVE-2025-ORPHAN", uuid.New()); err != nil {
 		t.Fatalf("insert orphaned alert event: %v", err)
 	}

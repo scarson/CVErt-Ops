@@ -154,8 +154,8 @@ const candidatePageSize = 1000
 // date_modified_canonical is the merge worker's Go clock, read before its upsert. A row
 // stamped before the cursor but committed after the previous run's scan would otherwise
 // never be evaluated. Re-evaluating a CVE is idempotent: alert_events inserts are
-// ON CONFLICT DO NOTHING, and fan-out runs only for newly inserted events and for
-// resolves that change last_match_state.
+// ON CONFLICT DO NOTHING, reopens apply only to resolved events, resolves apply only to
+// open events, and fan-out runs only for events that a run inserted, reopened or resolved.
 //
 // The window must exceed clock skew between the app and database hosts plus the longest
 // gap between a writer taking its timestamp and committing. Both are normally well under
@@ -500,7 +500,7 @@ func (e *Evaluator) evaluateRule(
 		}
 	}
 
-	// Insert alert_events for new matches.
+	// Record alert_events for matches that are new or have returned after resolving.
 	matchedIDs := make(map[string]bool, len(matched))
 	for _, m := range matched {
 		matchedIDs[m.CVEID] = true
@@ -514,6 +514,13 @@ func (e *Evaluator) evaluateRule(
 		eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
 		if err != nil {
 			return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
+		}
+		if eventID == uuid.Nil {
+			// The rule already fired at this hash. It fires again only if the event was resolved.
+			eventID, err = e.rules.ReopenAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
+			if err != nil {
+				return len(matched), false, len(candidateIDs), fmt.Errorf("reopen alert event %s: %w", m.CVEID, err)
+			}
 		}
 		if e.dispatcher != nil && !suppressDelivery && eventID != uuid.Nil {
 			if fErr := e.dispatcher.Fanout(ctx, orgID, compiled.RuleID, m.CVEID); fErr != nil {

@@ -70,6 +70,7 @@ type AlertRuleStore interface {
 	InsertAlertRuleRun(ctx context.Context, ruleID, orgID uuid.UUID, path string) (*generated.AlertRuleRun, error)
 	UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status string, candidatesEvaluated, matchesFound int32, errorMsg *string) error
 	InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error)
+	ReopenAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error)
 	GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID uuid.UUID) ([]string, error)
 	ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) (bool, error)
 	ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAlertEventsParams) ([]generated.AlertEvent, error)
@@ -303,6 +304,36 @@ func (s *Store) InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, c
 	return id, nil
 }
 
+// ReopenAlertEvent marks a resolved alert event open again when its CVE matches the rule
+// at a material_hash the rule already fired on. It returns the event's ID only to the
+// caller whose update changed the state, and uuid.Nil if the event is already open or does
+// not exist. Postgres re-checks the state after waiting on the row lock, so concurrent
+// evaluators cannot both receive an ID. suppressDelivery replaces the stored value: delivery
+// recovery reads it, and the reopen, not the original fire, decides whether to notify.
+// Worker path: uses bypass_rls since this is called from the alert evaluator.
+func (s *Store) ReopenAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		id, err = q.ReopenAlertEvent(ctx, generated.ReopenAlertEventParams{
+			OrgID:            orgID,
+			RuleID:           ruleID,
+			CveID:            cveID,
+			MaterialHash:     materialHash,
+			SuppressDelivery: suppressDelivery,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			id = uuid.Nil
+			return nil
+		}
+		return err
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("reopen alert event: %w", err)
+	}
+	return id, nil
+}
+
 // GetUnresolvedAlertEventCVEs returns the CVE IDs of alert events for ruleID that are
 // currently in a matched state (last_match_state = true).
 // Worker path: uses bypass_rls since this is called from the alert evaluator.
@@ -367,7 +398,7 @@ func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAler
 		sb = sb.Where(sq.Eq{"last_match_state": *p.LastMatchState})
 	}
 	if p.Since != nil {
-		sb = sb.Where(sq.GtOrEq{"first_fired_at": *p.Since})
+		sb = sb.Where(sq.GtOrEq{"last_fired_at": *p.Since})
 	}
 	if p.AfterTime != nil && p.AfterID != nil {
 		sb = sb.Where("(first_fired_at, id) < (?, ?)", *p.AfterTime, *p.AfterID)

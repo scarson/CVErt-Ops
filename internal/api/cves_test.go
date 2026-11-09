@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -664,6 +665,54 @@ func TestListCVEs_SeverityFilter(t *testing.T) {
 
 // TestListCVEs_SeverityFilterMatchesStoredCase verifies the filter accepts either
 // case and matches values as feeds store them: NVD and MITRE uppercase, GHSA lowercase.
+// TestListCVEs_EcosystemFilterValidatesName checks a name outside the canonical vocabulary
+// is rejected with the accepted names, and a canonical name is accepted.
+func TestListCVEs_EcosystemFilterValidatesName(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ts, token := newCVETestServer(t, db)
+	ctx := context.Background()
+
+	get := func(t *testing.T, value string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/cves?ecosystem="+value, nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Cookie", "access_token="+token)
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
+		if err != nil {
+			t.Fatalf("GET /cves?ecosystem=%s: %v", value, err)
+		}
+		return resp
+	}
+
+	t.Run("name in the wrong case is rejected", func(t *testing.T) {
+		resp := get(t, "pypi")
+		defer resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("got status %d, want 422", resp.StatusCode)
+		}
+		var problem struct {
+			Detail string `json:"detail"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+			t.Fatalf("decode problem: %v", err)
+		}
+		if !strings.Contains(problem.Detail, "PyPI") {
+			t.Errorf("detail = %q, want it to name PyPI", problem.Detail)
+		}
+	})
+
+	t.Run("canonical name is accepted", func(t *testing.T) {
+		resp := get(t, "PyPI")
+		defer resp.Body.Close() //nolint:errcheck
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("got status %d, want 200", resp.StatusCode)
+		}
+	})
+}
+
 func TestListCVEs_SeverityFilterMatchesStoredCase(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/store"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -251,7 +252,7 @@ type ListCVEsInput struct {
 	DateFrom    string   `query:"date_from" doc:"Filter CVEs modified on or after this date (ISO 8601); empty = no filter"`
 	DateTo      string   `query:"date_to" doc:"Filter CVEs modified on or before this date (ISO 8601); empty = no filter"`
 	CWEID       string   `query:"cwe_id" doc:"Filter by CWE ID (e.g. CWE-79); empty = no filter"`
-	Ecosystem   string   `query:"ecosystem" doc:"Filter by affected package ecosystem; empty = no filter"`
+	Ecosystem   string   `query:"ecosystem" doc:"Filter by affected package ecosystem, using OSV's names; a name without a release matches every release; empty = no filter"`
 	PackageName string   `query:"package_name" doc:"Filter by affected package name (requires ecosystem); empty = no filter"`
 	// Boolean filters: "true", "false", or "" (no filter).
 	InCISAKEV    string `query:"in_cisa_kev" doc:"Filter by CISA KEV status: 'true', 'false', or empty for no filter"`
@@ -361,6 +362,10 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 		cur, err := decodeCursor(input.Cursor)
 		if err != nil {
 			return nil, huma.Error400BadRequest("invalid cursor", err)
+		}
+
+		if input.Ecosystem != "" && !ecosystem.Valid(input.Ecosystem) {
+			return nil, huma.Error422UnprocessableEntity("unknown ecosystem; valid names: " + strings.Join(ecosystem.Names(), ", "))
 		}
 
 		// Build store search params.

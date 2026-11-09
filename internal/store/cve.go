@@ -12,6 +12,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
 
@@ -181,16 +182,19 @@ func (s *Store) SearchCVEs(ctx context.Context, p SearchParams) ([]generated.CVE
 
 	// Ecosystem / package filter via EXISTS subquery to avoid duplicate rows
 	// when a CVE affects multiple packages in the same ecosystem.
+	// A name without a release matches every release of that ecosystem, as alert rules do.
 	if p.Ecosystem != nil {
+		const ecosystemMatches = "(lower(p.ecosystem) = lower(?) OR starts_with(lower(p.ecosystem), lower(?) || ':'))"
 		if p.PackageName != nil {
 			sb = sb.Where(
-				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND p.ecosystem = ? AND p.package_name = ?)",
-				*p.Ecosystem, *p.PackageName,
+				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND "+ecosystemMatches+
+					" AND "+ecosystem.FoldedNameSQL("p.ecosystem", "p.package_name")+" = ?)",
+				*p.Ecosystem, *p.Ecosystem, ecosystem.FoldPackageName(*p.Ecosystem, *p.PackageName),
 			)
 		} else {
 			sb = sb.Where(
-				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND p.ecosystem = ?)",
-				*p.Ecosystem,
+				"EXISTS (SELECT 1 FROM cve_affected_packages p WHERE p.cve_id = cves.cve_id AND "+ecosystemMatches+")",
+				*p.Ecosystem, *p.Ecosystem,
 			)
 		}
 	}

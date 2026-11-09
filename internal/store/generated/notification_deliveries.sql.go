@@ -284,7 +284,7 @@ SELECT ae.org_id, ae.rule_id, ae.cve_id
 FROM alert_events ae
 WHERE ae.suppress_delivery = false
   AND ae.last_match_state  = true
-  AND ae.first_fired_at < now() - interval '5 minutes'
+  AND ae.last_fired_at < now() - interval '5 minutes'
   AND NOT EXISTS (
       SELECT 1
       FROM notification_deliveries nd
@@ -292,7 +292,7 @@ WHERE ae.suppress_delivery = false
         AND nd.org_id   = ae.org_id
         AND nd.kind     = 'alert'
         AND nd.status   IN ('pending', 'processing', 'succeeded')
-        AND nd.created_at >= ae.first_fired_at - interval '1 minute'
+        AND nd.created_at >= ae.last_fired_at - interval '1 minute'
   )
 LIMIT $1
 `

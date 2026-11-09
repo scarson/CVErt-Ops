@@ -39,6 +39,30 @@ func (s *Store) CreateMFACredential(ctx context.Context, userID uuid.UUID, metho
 	return &row, nil
 }
 
+// CreateTOTPCredential inserts a TOTP credential and records the time step of
+// the code that confirmed it, in one transaction, so the confirming code cannot
+// also pass a later login.
+func (s *Store) CreateTOTPCredential(ctx context.Context, userID uuid.UUID, secretEnc []byte, confirmedStep int64) error {
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		cred, err := q.CreateMFACredential(ctx, generated.CreateMFACredentialParams{
+			UserID:    userID,
+			Method:    "totp",
+			SecretEnc: secretEnc,
+		})
+		if err != nil {
+			return err
+		}
+		return q.UpdateMFACredentialLastUsed(ctx, generated.UpdateMFACredentialLastUsedParams{
+			ID:           cred.ID,
+			LastUsedStep: sql.NullInt64{Int64: confirmedStep, Valid: true},
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("create totp credential: %w", err)
+	}
+	return nil
+}
+
 // GetMFACredentialsByUserID returns all MFA credentials for a user, ordered by created_at.
 func (s *Store) GetMFACredentialsByUserID(ctx context.Context, userID uuid.UUID) ([]generated.MfaCredential, error) {
 	var rows []generated.MfaCredential
@@ -86,9 +110,9 @@ func (s *Store) UpdateMFACredentialLastUsed(ctx context.Context, id uuid.UUID, l
 
 // VerifyAndUpdateTOTPStep atomically checks and updates the TOTP last_used_step.
 // Uses FOR UPDATE to prevent concurrent replay. Returns true if the step
-// is fresh (not replayed). The maxStep parameter should be currentStep + skew
-// to account for the TOTP validation window.
-func (s *Store) VerifyAndUpdateTOTPStep(ctx context.Context, userID uuid.UUID, maxStep int64) (bool, error) {
+// is fresh (not replayed). The step parameter must be the time step the
+// submitted code belongs to, not one derived from the time of verification.
+func (s *Store) VerifyAndUpdateTOTPStep(ctx context.Context, userID uuid.UUID, step int64) (bool, error) {
 	var ok bool
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
 		cred, err := q.GetMFACredentialByUserAndMethodForUpdate(ctx, generated.GetMFACredentialByUserAndMethodForUpdateParams{
@@ -98,13 +122,13 @@ func (s *Store) VerifyAndUpdateTOTPStep(ctx context.Context, userID uuid.UUID, m
 		if err != nil {
 			return err
 		}
-		if cred.LastUsedStep.Valid && cred.LastUsedStep.Int64 >= maxStep {
+		if cred.LastUsedStep.Valid && cred.LastUsedStep.Int64 >= step {
 			ok = false
 			return nil
 		}
 		if err := q.UpdateMFACredentialLastUsed(ctx, generated.UpdateMFACredentialLastUsedParams{
 			ID:           cred.ID,
-			LastUsedStep: sql.NullInt64{Int64: maxStep, Valid: true},
+			LastUsedStep: sql.NullInt64{Int64: step, Valid: true},
 		}); err != nil {
 			return err
 		}

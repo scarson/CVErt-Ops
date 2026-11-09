@@ -5230,7 +5230,7 @@ export interface operations {
                 date_to?: string;
                 /** @description Filter by CWE ID (e.g. CWE-79); empty = no filter */
                 cwe_id?: string;
-                /** @description Filter by affected package ecosystem; empty = no filter */
+                /** @description Filter by affected package ecosystem, using OSV's names; a name without a release matches every release; empty = no filter */
                 ecosystem?: string;
                 /** @description Filter by affected package name (requires ecosystem); empty = no filter */
                 package_name?: string;

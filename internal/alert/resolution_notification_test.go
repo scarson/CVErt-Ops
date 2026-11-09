@@ -267,6 +267,32 @@ func TestResolutionNotification_OncePerCVE(t *testing.T) {
 	})
 }
 
+// TestResolutionNotification_ReopenedEventResolvesAgain covers a score that drops, returns
+// and drops again: each drop is its own transition, so each one notifies.
+func TestResolutionNotification_ReopenedEventResolvesAgain(t *testing.T) {
+	f := newResolutionFixture(t)
+	ctx := context.Background()
+
+	const cveID = "CVE-2098-5101"
+	f.ingestScore(t, ctx, cveID, 9.8)
+	rule := f.activeBoundRule(t, ctx, highScoreCondition)
+	f.runRealtime(t, ctx, cveID)
+
+	f.ingestScore(t, ctx, cveID, 4.3)
+	f.runRealtime(t, ctx, cveID)
+	f.ingestScore(t, ctx, cveID, 9.8)
+	f.runRealtime(t, ctx, cveID)
+	if !getMatchState(t, f.tdb.DB(), rule.ID, cveID) {
+		t.Fatal("last_match_state after the score returned = false, want true")
+	}
+
+	f.ingestScore(t, ctx, cveID, 4.3)
+	f.runRealtime(t, ctx, cveID)
+	if got := f.resolutionsForRule(t, ctx, rule.ID); len(got) != 2 {
+		t.Errorf("resolutions = %+v, want one per drop (2)", got)
+	}
+}
+
 // TestResolutionNotification_ActivationBaselineStaysQuiet covers a CVE recorded by the
 // activation scan: channels never heard about it, so they hear nothing when it resolves.
 func TestResolutionNotification_ActivationBaselineStaysQuiet(t *testing.T) {

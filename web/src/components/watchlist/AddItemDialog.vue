@@ -38,17 +38,20 @@ export interface WatchlistItemEntry {
 
 const ECOSYSTEMS = [
   'npm',
-  'pypi',
-  'maven',
-  'go',
-  'cargo',
-  'rubygems',
-  'nuget',
-  'hex',
-  'pub',
-  'swift',
-  'cocoapods',
-  'packagist',
+  'PyPI',
+  'Maven',
+  'Go',
+  'crates.io',
+  'RubyGems',
+  'NuGet',
+  'Hex',
+  'Pub',
+  'SwiftURL',
+  'Packagist',
+  'Debian',
+  'Ubuntu',
+  'Alpine',
+  'Red Hat',
 ] as const
 
 const props = defineProps<{

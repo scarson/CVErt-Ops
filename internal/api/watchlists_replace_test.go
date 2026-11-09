@@ -157,6 +157,8 @@ func TestParseWatchlistItem_RejectsMalformedFields(t *testing.T) {
 		"overlong id":        {ItemType: "cve", CveID: str("CVE-2024-" + strings.Repeat("1", 40))},
 		"package no name":    {ItemType: "package", Ecosystem: str("npm")},
 		"unknown ecosystem":  {ItemType: "package", Ecosystem: str("apt"), PackageName: str("a")},
+		"upper case npm":     {ItemType: "package", Ecosystem: str("NPM"), PackageName: str("a")},
+		"lower case PyPI":    {ItemType: "package", Ecosystem: str("pypi"), PackageName: str("a")},
 		"blank package":      {ItemType: "package", Ecosystem: str("npm"), PackageName: str(" ")},
 		"overlong package":   {ItemType: "package", Ecosystem: str("npm"), PackageName: str(long)},
 		"overlong namespace": {ItemType: "package", Ecosystem: str("npm"), PackageName: str("a"), Namespace: str(long)},
@@ -190,13 +192,13 @@ func TestParseWatchlistItem_NormalizesFields(t *testing.T) {
 	}
 
 	pkg, detail := parseWatchlistItem(createWatchlistItemBody{
-		ItemType: "package", Ecosystem: str("NPM"), PackageName: str("a"), Namespace: str(""),
+		ItemType: "package", Ecosystem: str("npm"), PackageName: str("a"), Namespace: str(""),
 	}, "body")
 	if detail != nil {
 		t.Fatalf("package: %v", detail)
 	}
 	if *pkg.Ecosystem != "npm" {
-		t.Errorf("Ecosystem = %q, want lower case", *pkg.Ecosystem)
+		t.Errorf("Ecosystem = %q, want npm as sent", *pkg.Ecosystem)
 	}
 	if pkg.Namespace != nil {
 		t.Errorf("Namespace = %q, want nil for an empty namespace", *pkg.Namespace)

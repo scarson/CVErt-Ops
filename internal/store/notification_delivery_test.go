@@ -479,6 +479,120 @@ func TestOrphanedAlertEvents(t *testing.T) {
 	}
 }
 
+// TestOrphanedAlertEvents_ResolutionDeliveryIsNotProofOfAlert covers an alert that never
+// got a delivery row while another CVE on the same rule got a resolution notification.
+func TestOrphanedAlertEvents_ResolutionDeliveryIsNotProofOfAlert(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "OrphanResolution")
+	const orphanCVE = "CVE-2024-0071"
+	insertAlertEventBackdated(t, s, ctx, orgID, ruleID, orphanCVE, 10*time.Minute)
+
+	if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0072"}`), 0); err != nil {
+		t.Fatalf("UpsertResolutionDelivery: %v", err)
+	}
+
+	orphaned, err := s.OrphanedAlertEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("OrphanedAlertEvents: %v", err)
+	}
+	found := false
+	for _, row := range orphaned {
+		if row.RuleID == ruleID && row.CveID == orphanCVE {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("%s missing from orphaned results %v: a resolution delivery does not show the alert was sent", orphanCVE, orphaned)
+	}
+}
+
+// pendingPayloadLengths returns each pending delivery's payload length for the rule, by kind.
+func pendingPayloadLengths(t *testing.T, s *testutil.TestDB, ctx context.Context, ruleID uuid.UUID) map[string][]int {
+	t.Helper()
+	rows, err := s.DB().QueryContext(ctx,
+		`SELECT kind, jsonb_array_length(payload) FROM notification_deliveries
+		 WHERE rule_id = $1 AND status = 'pending' ORDER BY created_at`, ruleID)
+	if err != nil {
+		t.Fatalf("query pending deliveries: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	lengths := make(map[string][]int)
+	for rows.Next() {
+		var kind string
+		var length int
+		if err := rows.Scan(&kind, &length); err != nil {
+			t.Fatalf("scan pending delivery: %v", err)
+		}
+		lengths[kind] = append(lengths[kind], length)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate pending deliveries: %v", err)
+	}
+	return lengths
+}
+
+func TestUpsertResolutionDelivery_BatchesApartFromAlerts(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ResolutionBatch")
+	mustUpsertDelivery(t, s, ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0080"}`), 300)
+	for _, payload := range []string{`{"cve_id":"CVE-2024-0081"}`, `{"cve_id":"CVE-2024-0082"}`} {
+		if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(payload), 300); err != nil {
+			t.Fatalf("UpsertResolutionDelivery: %v", err)
+		}
+	}
+
+	lengths := pendingPayloadLengths(t, s, ctx, ruleID)
+	if got := lengths["alert"]; !slices.Equal(got, []int{1}) {
+		t.Errorf("alert batches = %v, want one batch of 1", got)
+	}
+	if got := lengths["resolution"]; !slices.Equal(got, []int{2}) {
+		t.Errorf("resolution batches = %v, want one batch of 2", got)
+	}
+}
+
+func TestUpsertResolutionDelivery_ClaimClosesBatch(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, ruleID, chanID := setupDeliveryFixture(t, s, ctx, "ResolutionClaim")
+	if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0083"}`), 0); err != nil {
+		t.Fatalf("UpsertResolutionDelivery: %v", err)
+	}
+
+	claimed := claimDeliveries(t, s, ctx)
+	if len(claimed) != 1 || claimed[0].Kind != "resolution" {
+		t.Fatalf("claimed = %+v, want one delivery of kind resolution", claimed)
+	}
+
+	if err := s.UpsertResolutionDelivery(ctx, orgID, ruleID, chanID, []byte(`{"cve_id":"CVE-2024-0084"}`), 300); err != nil {
+		t.Fatalf("UpsertResolutionDelivery after claim: %v", err)
+	}
+	if got := pendingPayloadLengths(t, s, ctx, ruleID)["resolution"]; !slices.Equal(got, []int{1}) {
+		t.Errorf("resolution batches after claim = %v, want a new batch of 1", got)
+	}
+}
+
+func TestResolutionDelivery_RequiresRule(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	orgID, _, chanID := setupDeliveryFixture(t, s, ctx, "ResolutionRule")
+	_, err := s.DB().ExecContext(ctx,
+		`INSERT INTO notification_deliveries (org_id, channel_id, kind, payload) VALUES ($1, $2, 'resolution', '[]')`,
+		orgID, chanID)
+	if err == nil {
+		t.Fatal("insert of a resolution delivery with no rule succeeded, want a check constraint error")
+	}
+}
+
 func TestListDeliveries_FilterByStatus(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

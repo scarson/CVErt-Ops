@@ -419,7 +419,7 @@ func (q *Queries) GetCVEReferences(ctx context.Context, cveID string) ([]CveRefe
 
 const getCVESnapshot = `-- name: GetCVESnapshot :one
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, status
 FROM cves WHERE cve_id = $1
 `
 
@@ -432,6 +432,7 @@ type GetCVESnapshotRow struct {
 	DescriptionPrimary sql.NullString
 	ExploitAvailable   bool
 	InCisaKev          bool
+	Status             sql.NullString
 }
 
 // Returns the fields needed for alert delivery payloads.
@@ -447,6 +448,7 @@ func (q *Queries) GetCVESnapshot(ctx context.Context, cveID string) (GetCVESnaps
 		&i.DescriptionPrimary,
 		&i.ExploitAvailable,
 		&i.InCisaKev,
+		&i.Status,
 	)
 	return i, err
 }

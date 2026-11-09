@@ -75,18 +75,20 @@ type InvitationData struct {
 
 // Parsed templates — one per file to avoid {{define}} namespace collisions.
 var (
-	alertHTML  *htmltpl.Template
-	alertText  *texttpl.Template
-	digestHTML *htmltpl.Template
-	digestText *texttpl.Template
-	resetHTML   *htmltpl.Template
-	resetText   *texttpl.Template
-	verifyHTML  *htmltpl.Template
-	verifyText  *texttpl.Template
-	inviteHTML  *htmltpl.Template
-	inviteText  *texttpl.Template
-	mfaOTPHTML  *htmltpl.Template
-	mfaOTPText  *texttpl.Template
+	alertHTML      *htmltpl.Template
+	alertText      *texttpl.Template
+	digestHTML     *htmltpl.Template
+	digestText     *texttpl.Template
+	resolutionHTML *htmltpl.Template
+	resolutionText *texttpl.Template
+	resetHTML      *htmltpl.Template
+	resetText      *texttpl.Template
+	verifyHTML     *htmltpl.Template
+	verifyText     *texttpl.Template
+	inviteHTML     *htmltpl.Template
+	inviteText     *texttpl.Template
+	mfaOTPHTML     *htmltpl.Template
+	mfaOTPText     *texttpl.Template
 )
 
 func init() {
@@ -94,6 +96,8 @@ func init() {
 	alertText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_alert.txt.tmpl"))
 	digestHTML = htmltpl.Must(htmltpl.New("").Funcs(htmltpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_digest.html.tmpl"))
 	digestText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_digest.txt.tmpl"))
+	resolutionHTML = htmltpl.Must(htmltpl.New("").Funcs(htmltpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_resolution.html.tmpl"))
+	resolutionText = texttpl.Must(texttpl.New("").Funcs(texttpl.FuncMap(funcMap)).ParseFS(templateFS, "templates/email_resolution.txt.tmpl"))
 	resetHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_password_reset.html.tmpl"))
 	resetText = texttpl.Must(texttpl.New("").ParseFS(templateFS, "templates/email_password_reset.txt.tmpl"))
 	verifyHTML = htmltpl.Must(htmltpl.New("").ParseFS(templateFS, "templates/email_verification.html.tmpl"))
@@ -107,6 +111,11 @@ func init() {
 // RenderAlert renders an alert notification email. Returns subject, HTML body, and plaintext body.
 func RenderAlert(data AlertTemplateData) (string, string, string, error) {
 	return renderPair(alertHTML, alertText, data)
+}
+
+// RenderResolution renders a resolution email. Returns subject, HTML body, and plaintext body.
+func RenderResolution(data ResolutionTemplateData) (string, string, string, error) {
+	return renderPair(resolutionHTML, resolutionText, data)
 }
 
 // RenderDigest renders a digest email. Returns subject, HTML body, and plaintext body.

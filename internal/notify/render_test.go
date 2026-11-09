@@ -62,6 +62,72 @@ func TestRenderAlert_BasicOutput(t *testing.T) {
 	}
 }
 
+func TestRenderResolution_BasicOutput(t *testing.T) {
+	data := ResolutionTemplateData{
+		RuleName: "Critical Vulns",
+		RuleID:   "rule-123",
+		CVEs: []ResolutionSummary{
+			{
+				CVESummary: CVESummary{
+					CVEID:       "CVE-2024-1234",
+					Severity:    "medium",
+					CVSSV3Score: ptr(4.3),
+					Description: "Downgraded vulnerability.",
+					DetailURL:   "https://app.example.com/cves/CVE-2024-1234",
+				},
+				Reason: "CVE no longer matches this rule's conditions",
+			},
+			{
+				CVESummary: CVESummary{CVEID: "CVE-2024-5678"},
+				Reason:     "CVE was rejected by its source",
+			},
+		},
+		CVErtOpsURL: "https://app.example.com",
+	}
+
+	subject, html, text, err := RenderResolution(data)
+	if err != nil {
+		t.Fatalf("RenderResolution: %v", err)
+	}
+
+	for _, want := range []string{"Resolved", "Critical Vulns", "2 CVE(s)"} {
+		if !strings.Contains(subject, want) {
+			t.Errorf("subject %q missing %q", subject, want)
+		}
+	}
+	for _, want := range []string{"CVE-2024-1234", "CVE-2024-5678", "CVE was rejected by its source", "4.3"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text missing %q", want)
+		}
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML missing %q", want)
+		}
+	}
+	if !strings.Contains(text, "CVE no longer matches this rule's conditions") {
+		t.Error("text missing the no-longer-matches reason")
+	}
+}
+
+func TestRenderResolution_XSSEscaping(t *testing.T) {
+	data := ResolutionTemplateData{
+		RuleName: "<script>alert('rule')</script>",
+		CVEs: []ResolutionSummary{{
+			CVESummary: CVESummary{CVEID: "CVE-2024-1", Description: "<img src=x onerror=alert(1)>"},
+			Reason:     "<b>reason</b>",
+		}},
+	}
+
+	_, html, _, err := RenderResolution(data)
+	if err != nil {
+		t.Fatalf("RenderResolution: %v", err)
+	}
+	for _, raw := range []string{"<script>alert", "<img src=x", "<b>reason</b>"} {
+		if strings.Contains(html, raw) {
+			t.Errorf("HTML contains unescaped %q", raw)
+		}
+	}
+}
+
 func TestRenderAlert_EmptyCVEs(t *testing.T) {
 	data := AlertTemplateData{
 		RuleName: "Empty Rule",

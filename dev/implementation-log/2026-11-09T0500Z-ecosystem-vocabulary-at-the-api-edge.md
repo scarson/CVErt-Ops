@@ -3,7 +3,7 @@
 ## What was built
 
 - DSL conditions, watchlist items and `GET /cves?ecosystem=` accept OSV's ecosystem names only, and reject old names such as `pypi` or `cargo` with a 422 listing the canonical names.
-- A value matches a stored ecosystem that equals it or starts with it followed by a colon, so a bare `Debian` covers every release and `Ubuntu:Pro` covers every Ubuntu Pro release.
+- A value matches a stored ecosystem that equals it or starts with it followed by a colon, so a bare `Debian` covers every release and `Debian:13` matches only that release.
 - Watchlist and search comparisons fold package names (lower case, and PEP 503 separators for PyPI) through `ecosystem.FoldedNameSQL`. Stored names keep their upstream spelling.
 - The web watchlist dialog offers canonical names.
 

@@ -232,7 +232,7 @@ func TestReopenAlertEvent(t *testing.T) {
 		t.Errorf("open event changed: times_fired=%d suppress_delivery=%v", e.TimesFired, e.SuppressDelivery)
 	}
 
-	if err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID); err != nil {
+	if _, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID); err != nil {
 		t.Fatalf("ResolveAlertEvent: %v", err)
 	}
 

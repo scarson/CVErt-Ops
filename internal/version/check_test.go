@@ -6,7 +6,20 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
+
+// TestEcosystemsUseCanonicalNames fails if this package's table drifts from the
+// vocabulary the API accepts and the adapters store.
+func TestEcosystemsUseCanonicalNames(t *testing.T) {
+	t.Parallel()
+	for name := range ecosystems {
+		if !ecosystem.Valid(name) {
+			t.Errorf("%q is not a canonical ecosystem name", name)
+		}
+	}
+}
 
 // allEcosystems holds one stored spelling of every supported ecosystem.
 var allEcosystems = []string{

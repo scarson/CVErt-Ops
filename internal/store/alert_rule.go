@@ -386,7 +386,7 @@ func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAler
 		sb = sb.Where(sq.Eq{"last_match_state": *p.LastMatchState})
 	}
 	if p.Since != nil {
-		sb = sb.Where(sq.GtOrEq{"first_fired_at": *p.Since})
+		sb = sb.Where(sq.GtOrEq{"last_fired_at": *p.Since})
 	}
 	if p.AfterTime != nil && p.AfterID != nil {
 		sb = sb.Where("(first_fired_at, id) < (?, ?)", *p.AfterTime, *p.AfterID)

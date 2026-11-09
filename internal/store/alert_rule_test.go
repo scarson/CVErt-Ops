@@ -716,6 +716,50 @@ func TestListAlertEvents_SinceFilter(t *testing.T) {
 	}
 }
 
+// TestListAlertEvents_SinceCountsMostRecentFire returns an event that first fired before
+// since but reopened after it, and leaves out one whose most recent fire is before since.
+func TestListAlertEvents_SinceCountsMostRecentFire(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	org := s.MustCreateOrg(t, ctx, "ARSinceReopenOrg")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "SinceReopenRule")
+
+	now := time.Now().UTC()
+	firstFired := now.Add(-48 * time.Hour)
+	for _, e := range []struct {
+		cveID     string
+		lastFired time.Time
+	}{
+		{"CVE-2024-0041", now},
+		{"CVE-2024-0042", firstFired},
+	} {
+		if _, err := s.Pool().Exec(ctx,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
+			 VALUES ($1, $2, $3, 'h', $4, $5)`,
+			org.ID, r.ID, e.cveID, firstFired, e.lastFired,
+		); err != nil {
+			t.Fatalf("seed alert_events: %v", err)
+		}
+	}
+
+	since := now.Add(-time.Hour)
+	events, err := s.ListAlertEvents(ctx, org.ID, store.ListAlertEventsParams{
+		Since: &since,
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("ListAlertEvents(since): %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("since filter: got %d events, want 1 (the event reopened after since)", len(events))
+	}
+	if events[0].CveID != "CVE-2024-0041" {
+		t.Errorf("since filter: cve = %s, want CVE-2024-0041", events[0].CveID)
+	}
+}
+
 func TestListAlertEvents_Pagination(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)

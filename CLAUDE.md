@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.26, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
 
+**Development status:** the application is under development and has no known users other than dev testers. Existing users, integrations and data are therefore not a backward compatibility consideration.
+
 **PLAN.md** — full PRD. Key sections: §3 feed adapters · §4–5 data model + merge · §6 RLS/multi-tenancy · §7 auth · §9 watchlists · §10 alert DSL · §11 notifications · §12 reports · §16 API contract · §18 phases · §21 retention · Appendix A schema · Appendix B endpoints.
 
 **dev/research.md** — decision rationale (read when you need the *why* behind an architectural choice).

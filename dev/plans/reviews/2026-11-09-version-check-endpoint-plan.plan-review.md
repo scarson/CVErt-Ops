@@ -33,7 +33,7 @@
 
 ## Terminal summary
 
-`TERMINATED-FOR-EXECUTION after 8 rounds — 5 verify-first flags annotated in place`. All 41 findings raised were fixed or, for one, rejected with the reviewer's concurrence. Independent rounds raised 13, 7, 3, 3, 5.
+`TERMINATED-FOR-EXECUTION after 8 rounds — 5 verify-first flags annotated in place`. All 44 findings raised (31 of them by independent rounds) were fixed or, for one, rejected with the reviewer's concurrence. Independent rounds raised 13, 7, 3, 3, 5.
 
 **Firing diagnostic.** Plan size grew from 1,171 lines to about 1,300, while the 15 tasks and their verification contracts stayed the same. The last two rounds' findings are spread across six places, so this is not specification drift and no relocation applies. The findings have moved from verdict logic to small mechanics. Execution is the cheaper reviewer from here.
 

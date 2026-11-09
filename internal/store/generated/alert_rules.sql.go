@@ -291,6 +291,44 @@ func (q *Queries) ListActiveRulesForEvaluation(ctx context.Context) ([]AlertRule
 	return items, nil
 }
 
+const reopenAlertEvent = `-- name: ReopenAlertEvent :one
+UPDATE alert_events
+SET last_match_state  = true,
+    suppress_delivery = $5,
+    last_fired_at     = now(),
+    times_fired       = times_fired + 1
+WHERE org_id = $1
+  AND rule_id = $2
+  AND cve_id = $3
+  AND material_hash = $4
+  AND last_match_state = false
+RETURNING id
+`
+
+type ReopenAlertEventParams struct {
+	OrgID            uuid.UUID
+	RuleID           uuid.UUID
+	CveID            string
+	MaterialHash     string
+	SuppressDelivery bool
+}
+
+// Reopens a resolved event when its CVE matches the rule again at the same material_hash.
+// Returns the id only when this statement changed the state, so fan-out stays exactly-once.
+// An empty result means the event is already open or does not exist.
+func (q *Queries) ReopenAlertEvent(ctx context.Context, arg ReopenAlertEventParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, reopenAlertEvent,
+		arg.OrgID,
+		arg.RuleID,
+		arg.CveID,
+		arg.MaterialHash,
+		arg.SuppressDelivery,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const resolveAlertEvent = `-- name: ResolveAlertEvent :exec
 UPDATE alert_events
 SET last_match_state = false

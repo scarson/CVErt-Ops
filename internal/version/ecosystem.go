@@ -87,6 +87,27 @@ func Check(ecosystem, version string, r Range) (Status, error) {
 	}.check(version, r)
 }
 
+// Supported reports whether versions in the named ecosystem can be compared.
+func Supported(ecosystem string) bool {
+	_, _, err := lookupEcosystem(ecosystem)
+	return err == nil
+}
+
+// Compare orders two versions of the named ecosystem: negative when a sorts below
+// b, positive when above. It returns an error when either cannot be compared reliably.
+func Compare(ecosystem, a, b string) (int, error) {
+	name, rule, err := lookupEcosystem(ecosystem)
+	if err != nil {
+		return 0, err
+	}
+	for _, v := range []string{a, b} {
+		if len(v) > maxVersionLen || gitCommit.MatchString(v) || !rule.syntax.MatchString(v) {
+			return 0, fmt.Errorf("%w: %q", ErrInvalidVersion, v)
+		}
+	}
+	return compareInEcosystem(name, a, b)
+}
+
 func lookupEcosystem(ecosystem string) (string, ecosystemRule, error) {
 	name, suffix, hasSuffix := strings.Cut(ecosystem, ":")
 

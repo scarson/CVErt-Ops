@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -47,7 +48,9 @@ var totpValidateOpts = totp.ValidateOpts{
 // matchingTOTPStep returns the time step whose code equals the submitted code,
 // searching every step totpValidateOpts accepts at now. When one code value
 // occurs in several of those steps it returns the latest, so that recording the
-// result also blocks the value at the earlier steps.
+// result also blocks the value at the earlier steps. A code of the wrong length
+// is a mismatch: its length comes from the submitter, so callers must handle it
+// as a wrong code and not as a server fault.
 func matchingTOTPStep(code, secret string, now time.Time) (int64, bool, error) {
 	singleStepOpts := totpValidateOpts
 	singleStepOpts.Skew = 0
@@ -55,6 +58,9 @@ func matchingTOTPStep(code, secret string, now time.Time) (int64, bool, error) {
 	currentStep := now.Unix() / totpPeriodSeconds
 	for step := currentStep + totpSkewSteps; step >= currentStep-totpSkewSteps; step-- {
 		matched, err := totp.ValidateCustom(code, secret, time.Unix(step*totpPeriodSeconds, 0), singleStepOpts)
+		if errors.Is(err, otp.ErrValidateInputInvalidLength) {
+			return 0, false, nil
+		}
 		if err != nil {
 			return 0, false, err
 		}

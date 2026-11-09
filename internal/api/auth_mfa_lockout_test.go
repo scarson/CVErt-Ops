@@ -108,6 +108,39 @@ func TestMFAVerify_RefusesWhileAccountLocked(t *testing.T) {
 	assertAccountLocked(t, status, body)
 }
 
+func TestMFAVerify_WrongLengthCodesCountTowardLockout(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFALockoutServer(t, db)
+
+	const email, password = "mfa-length@example.com", "test-password-1234"
+	reg := doRegister(t, ctx, ts, email, password)
+	userID, _ := uuid.Parse(reg.UserID)
+	secret := enrollTOTP(t, ctx, srv, userID)
+
+	pendingToken := loginForPendingToken(t, ctx, ts, email, password)
+
+	wrongLengthCodes := []string{"12345", "1234567", "12345 "}
+	if len(wrongLengthCodes) != mfaLockoutThreshold {
+		t.Fatalf("got %d codes, want one per failure up to the threshold %d", len(wrongLengthCodes), mfaLockoutThreshold)
+	}
+	for _, wrongCode := range wrongLengthCodes {
+		status, body := postMFAVerify(t, ctx, ts, pendingToken, "totp", wrongCode)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("code %q: got %d, want 401; body: %s", wrongCode, status, body)
+		}
+	}
+
+	// Each wrong-length code counted, so even a valid code is refused.
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("generate TOTP code: %v", err)
+	}
+	status, body := postMFAVerify(t, ctx, ts, pendingToken, "totp", code)
+	assertAccountLocked(t, status, body)
+}
+
 func TestMFAVerify_PasswordReloginDoesNotResetFailures(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)

@@ -2031,8 +2031,8 @@ func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
 		t.Fatalf("first verify: got %d, want 200", resp1.StatusCode)
 	}
 
-	// Verify that lastUsedStep was stored as currentStep + skew (maxStep).
-	// This ensures even codes valid for adjacent time steps are blocked.
+	// Verify that lastUsedStep is the step the code belongs to, which stays fixed
+	// for as long as the code is valid.
 	cred, err := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
 	if err != nil {
 		t.Fatalf("get credential: %v", err)
@@ -2040,14 +2040,12 @@ func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
 	if !cred.LastUsedStep.Valid {
 		t.Fatal("expected last_used_step to be set after verify")
 	}
-	currentStep := now.Unix() / 30
-	expectedMaxStep := currentStep + int64(totpValidateOpts.Skew) //nolint:gosec // G115: Skew is a small constant (1), no overflow risk
-	if cred.LastUsedStep.Int64 != expectedMaxStep {
-		t.Errorf("last_used_step = %d, want %d (currentStep %d + skew %d)",
-			cred.LastUsedStep.Int64, expectedMaxStep, currentStep, totpValidateOpts.Skew)
+	codeStep := now.Unix() / totpPeriodSeconds
+	if cred.LastUsedStep.Int64 != codeStep {
+		t.Errorf("last_used_step = %d, want %d (the code's step)", cred.LastUsedStep.Int64, codeStep)
 	}
 
-	// Second verify with same code — should fail (replay blocked by skew-aware step).
+	// Second verify with same code — should fail (replay of a recorded step).
 	loginResp2 := doLogin(t, ctx, ts, "skew-replay@example.com", "test-password-1234")
 	pt2 := cookieValue(loginResp2, "mfa_pending_token")
 	loginResp2.Body.Close() //nolint:errcheck,gosec
@@ -2063,6 +2061,221 @@ func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
 	resp2.Body.Close() //nolint:errcheck,gosec
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("replay with skew window: got %d, want 401", resp2.StatusCode)
+	}
+}
+
+func TestMatchingTOTPStep(t *testing.T) {
+	t.Parallel()
+	const secret = "JBSWY3DPEHPK3PXP" //nolint:gosec // G101: test TOTP secret
+	const step = int64(60_000_000)
+	// Steps 60202684 and 60202685 of this secret both produce the code 010312.
+	const collidingStep = int64(60_202_684)
+
+	codeFor := func(t *testing.T, s int64) string {
+		t.Helper()
+		code, err := totp.GenerateCode(secret, time.Unix(s*30, 0))
+		if err != nil {
+			t.Fatalf("generate TOTP: %v", err)
+		}
+		return code
+	}
+	clockAt := func(s int64) time.Time { return time.Unix(s*30+10, 0) }
+
+	tests := []struct {
+		name      string
+		codeStep  int64
+		clockStep int64
+		wantStep  int64
+		wantMatch bool
+	}{
+		{name: "code one step ahead of the clock", codeStep: step, clockStep: step - 1, wantStep: step, wantMatch: true},
+		{name: "code at the clock's step", codeStep: step, clockStep: step, wantStep: step, wantMatch: true},
+		{name: "code one step behind the clock", codeStep: step, clockStep: step + 1, wantStep: step, wantMatch: true},
+		{name: "code two steps ahead of the clock", codeStep: step, clockStep: step - 2, wantMatch: false},
+		{name: "code two steps behind the clock", codeStep: step, clockStep: step + 2, wantMatch: false},
+		{name: "value valid for two steps resolves to the later", codeStep: collidingStep, clockStep: collidingStep, wantStep: collidingStep + 1, wantMatch: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, matched, err := matchingTOTPStep(codeFor(t, tt.codeStep), secret, clockAt(tt.clockStep))
+			if err != nil {
+				t.Fatalf("matchingTOTPStep: %v", err)
+			}
+			if matched != tt.wantMatch || got != tt.wantStep {
+				t.Errorf("matchingTOTPStep = (%d, %v), want (%d, %v)", got, matched, tt.wantStep, tt.wantMatch)
+			}
+		})
+	}
+
+	t.Run("colliding steps share one code", func(t *testing.T) {
+		t.Parallel()
+		if first, second := codeFor(t, collidingStep), codeFor(t, collidingStep+1); first != second {
+			t.Fatalf("codes differ (%s, %s); the collision case above no longer tests a collision", first, second)
+		}
+	})
+
+	t.Run("wrong code does not match", func(t *testing.T) {
+		t.Parallel()
+		_, matched, err := matchingTOTPStep("000000", secret, clockAt(step))
+		if err != nil {
+			t.Fatalf("matchingTOTPStep: %v", err)
+		}
+		if matched {
+			t.Error("matched a code from no step in the window")
+		}
+	})
+}
+
+// TestTOTPConfirm_CodeCannotBeReplayedAtLogin shows that the code that confirms
+// enrollment is spent: it cannot also pass the first login's MFA check.
+func TestTOTPConfirm_CodeCannotBeReplayedAtLogin(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	const email = "confirm-replay@example.com"
+	const password = "test-password-1234" //nolint:gosec // G101: test password
+	doRegister(t, ctx, ts, email, password)
+	loginResp := doLogin(t, ctx, ts, email, password)
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	var setupBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(setupResp.Body).Decode(&setupBody); err != nil {
+		t.Fatalf("decode setup: %v", err)
+	}
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	setupResp.Body.Close() //nolint:errcheck,gosec
+
+	now := time.Now()
+	code, err := totp.GenerateCode(setupBody.Secret, now)
+	if err != nil {
+		t.Fatalf("generate TOTP: %v", err)
+	}
+	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm",
+		fmt.Sprintf(`{"code":%q}`, code), confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	confirmResp.Body.Close() //nolint:errcheck,gosec
+	if confirmResp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm: got %d, want 200", confirmResp.StatusCode)
+	}
+
+	verify := func(code string) int {
+		t.Helper()
+		mfaLogin := doLogin(t, ctx, ts, email, password)
+		pendingToken := cookieValue(mfaLogin, "mfa_pending_token")
+		mfaLogin.Body.Close() //nolint:errcheck,gosec
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/verify",
+			bytes.NewBufferString(fmt.Sprintf(`{"method":"totp","code":%q}`, code)))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+		resp, err := ts.Client().Do(req) //nolint:gosec
+		if err != nil {
+			t.Fatalf("verify: %v", err)
+		}
+		resp.Body.Close() //nolint:errcheck,gosec
+		return resp.StatusCode
+	}
+
+	if status := verify(code); status != http.StatusUnauthorized {
+		t.Errorf("login with the enrollment code: got %d, want 401", status)
+	}
+
+	nextCode, err := totp.GenerateCode(setupBody.Secret, now.Add(30*time.Second))
+	if err != nil {
+		t.Fatalf("generate next TOTP: %v", err)
+	}
+	if status := verify(nextCode); status != http.StatusOK {
+		t.Errorf("login with the next code: got %d, want 200", status)
+	}
+}
+
+// TestTOTP_ReplayAcrossStepBoundaries drives verifyTOTP with fixed times, so the
+// step boundaries it exercises do not depend on when the test happens to run.
+func TestTOTP_ReplayAcrossStepBoundaries(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	srv, ts := newMFAServer(t, db)
+
+	const baseStep = int64(60_000_000)
+
+	// Offsets are in 30-second steps from baseStep. codeStep is the step the
+	// submitted code belongs to; clockStep is the server's step at verification.
+	type attempt struct {
+		name      string
+		codeStep  int64
+		clockStep int64
+		want      bool
+	}
+	scenarios := []struct {
+		name     string
+		attempts []attempt
+	}{
+		{
+			name: "code from a synchronized client",
+			attempts: []attempt{
+				{name: "first use", codeStep: 0, clockStep: 0, want: true},
+				{name: "replay in the same step", codeStep: 0, clockStep: 0, want: false},
+				{name: "replay after the next boundary", codeStep: 0, clockStep: 1, want: false},
+				{name: "next code", codeStep: 1, clockStep: 1, want: true},
+				{name: "replay of next code after its boundary", codeStep: 1, clockStep: 2, want: false},
+				{name: "earlier unused-step code after a later step was used", codeStep: 0, clockStep: 1, want: false},
+			},
+		},
+		{
+			name: "code from a client clock running ahead",
+			attempts: []attempt{
+				{name: "first use", codeStep: 1, clockStep: 0, want: true},
+				{name: "replay one boundary later", codeStep: 1, clockStep: 1, want: false},
+				{name: "replay two boundaries later", codeStep: 1, clockStep: 2, want: false},
+				{name: "next code", codeStep: 2, clockStep: 2, want: true},
+			},
+		},
+		{
+			name: "code from a client clock running behind",
+			attempts: []attempt{
+				{name: "first use", codeStep: -1, clockStep: 0, want: true},
+				{name: "replay in the same step", codeStep: -1, clockStep: 0, want: false},
+				{name: "next code in the same server step", codeStep: 0, clockStep: 0, want: true},
+				{name: "code after that", codeStep: 1, clockStep: 1, want: true},
+			},
+		},
+	}
+
+	for i, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			reg := doRegister(t, ctx, ts, fmt.Sprintf("step-boundary-%d@example.com", i), "test-password-1234")
+			userID, _ := uuid.Parse(reg.UserID)
+			secret := enrollTOTP(t, ctx, srv, userID)
+
+			for _, a := range scenario.attempts {
+				code, err := totp.GenerateCode(secret, time.Unix((baseStep+a.codeStep)*30, 0))
+				if err != nil {
+					t.Fatalf("%s: generate TOTP: %v", a.name, err)
+				}
+				got, err := srv.verifyTOTP(ctx, userID, code, time.Unix((baseStep+a.clockStep)*30+10, 0))
+				if err != nil {
+					t.Fatalf("%s: verifyTOTP: %v", a.name, err)
+				}
+				if got != a.want {
+					t.Errorf("%s: verifyTOTP = %v, want %v", a.name, got, a.want)
+				}
+			}
+		})
 	}
 }
 

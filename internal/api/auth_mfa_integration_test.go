@@ -102,8 +102,9 @@ func TestFullTOTPLoginFlow(t *testing.T) {
 		t.Error("access_token should NOT be set when MFA is pending")
 	}
 
-	// 5. Verify TOTP → get full tokens.
-	code2, err := totp.GenerateCode(setupBody.Secret, time.Now())
+	// 5. Verify TOTP → get full tokens. Confirming enrollment spent the current
+	// step's code, so this uses the next step's, which the skew window accepts.
+	code2, err := totp.GenerateCode(setupBody.Secret, time.Now().Add(30*time.Second))
 	if err != nil {
 		t.Fatalf("generate TOTP code 2: %v", err)
 	}

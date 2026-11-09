@@ -28,13 +28,41 @@ import (
 // enrollmentTokenTTL is the duration a TOTP enrollment token is valid.
 const enrollmentTokenTTL = 5 * time.Minute
 
+// TOTP time step length and the number of steps accepted either side of the
+// server's current step.
+const (
+	totpPeriodSeconds = 30
+	totpSkewSteps     = 1
+)
+
 // totpValidateOpts are the TOTP validation parameters used for both
 // login verification and enrollment confirmation.
 var totpValidateOpts = totp.ValidateOpts{
-	Period:    30,
-	Skew:      1,
+	Period:    totpPeriodSeconds,
+	Skew:      totpSkewSteps,
 	Digits:    6,
 	Algorithm: otp.AlgorithmSHA1,
+}
+
+// matchingTOTPStep returns the time step whose code equals the submitted code,
+// searching every step totpValidateOpts accepts at now. When one code value
+// occurs in several of those steps it returns the latest, so that recording the
+// result also blocks the value at the earlier steps.
+func matchingTOTPStep(code, secret string, now time.Time) (int64, bool, error) {
+	singleStepOpts := totpValidateOpts
+	singleStepOpts.Skew = 0
+
+	currentStep := now.Unix() / totpPeriodSeconds
+	for step := currentStep + totpSkewSteps; step >= currentStep-totpSkewSteps; step-- {
+		matched, err := totp.ValidateCustom(code, secret, time.Unix(step*totpPeriodSeconds, 0), singleStepOpts)
+		if err != nil {
+			return 0, false, err
+		}
+		if matched {
+			return step, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // ── MFA Challenge ────────────────────────────────────────────────────────────
@@ -203,7 +231,7 @@ func (srv *Server) mfaVerifyHandler(ctx context.Context, input *mfaVerifyInput) 
 	var verified bool
 	switch input.Body.Method {
 	case "totp":
-		verified, err = srv.verifyTOTP(ctx, claims.UserID, input.Body.Code)
+		verified, err = srv.verifyTOTP(ctx, claims.UserID, input.Body.Code, time.Now())
 	case "email_otp":
 		verified, err = srv.verifyEmailOTP(ctx, claims.UserID, input.Body.Code)
 	case "recovery":
@@ -388,7 +416,7 @@ func (srv *Server) issueFullAuthTokens(ctx context.Context, user *generated.User
 }
 
 // verifyTOTP validates a TOTP code against the user's enrolled credential.
-func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string) (bool, error) {
+func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string, now time.Time) (bool, error) {
 	cred, err := srv.store.GetMFACredentialByUserAndMethod(ctx, userID, "totp")
 	if err != nil {
 		return false, fmt.Errorf("get TOTP credential: %w", err)
@@ -408,10 +436,8 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 		return false, fmt.Errorf("decrypt TOTP secret: %w", err)
 	}
 
-	// Validate the TOTP code. Capture time once to prevent clock-boundary
-	// race between validation and replay-prevention step calculation.
-	now := time.Now()
-	valid, err := totp.ValidateCustom(code, string(secretBytes), now, totpValidateOpts)
+	// Validate the TOTP code and identify the step it belongs to.
+	step, valid, err := matchingTOTPStep(code, string(secretBytes), now)
 	if err != nil {
 		return false, fmt.Errorf("validate TOTP: %w", err)
 	}
@@ -419,10 +445,10 @@ func (srv *Server) verifyTOTP(ctx context.Context, userID uuid.UUID, code string
 		return false, nil
 	}
 
-	// Atomic replay prevention with FOR UPDATE lock.
-	// Store maxStep = currentStep + skew to block replays across the entire acceptance window.
-	maxStep := (now.Unix() / 30) + int64(totpValidateOpts.Skew) //nolint:gosec // G115: Skew is a small constant (1), no overflow risk
-	fresh, stepErr := srv.store.VerifyAndUpdateTOTPStep(ctx, userID, maxStep)
+	// Atomic replay prevention with FOR UPDATE lock. The check uses the code's
+	// own step because that stays fixed for as long as the code is valid, while
+	// a step derived from the clock advances past the value recorded earlier.
+	fresh, stepErr := srv.store.VerifyAndUpdateTOTPStep(ctx, userID, step)
 	if stepErr != nil {
 		return false, fmt.Errorf("totp step check: %w", stepErr)
 	}
@@ -692,7 +718,7 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 	}
 
 	// Validate the TOTP code against the provisional secret.
-	valid, err := totp.ValidateCustom(input.Body.Code, string(secretBytes), time.Now(), totpValidateOpts)
+	confirmedStep, valid, err := matchingTOTPStep(input.Body.Code, string(secretBytes), time.Now())
 	if err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: validate code", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
@@ -723,8 +749,8 @@ func (srv *Server) mfaTOTPConfirmHandler(ctx context.Context, input *mfaTOTPConf
 		return nil, huma.Error500InternalServerError("internal error")
 	}
 
-	// Persist the credential.
-	if _, err := srv.store.CreateMFACredential(ctx, userID, "totp", secretEncDB); err != nil {
+	// Persist the credential, marking the confirming code as used.
+	if err := srv.store.CreateTOTPCredential(ctx, userID, secretEncDB, confirmedStep); err != nil {
 		slog.ErrorContext(ctx, "totp-confirm: create credential", "error", err)
 		return nil, huma.Error500InternalServerError("internal error")
 	}

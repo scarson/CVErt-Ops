@@ -7770,12 +7770,12 @@
             }
           },
           {
-            "description": "Filter by affected package ecosystem; empty = no filter",
+            "description": "Filter by affected package ecosystem, using OSV's names; a name without a release matches every release; empty = no filter",
             "explode": false,
             "in": "query",
             "name": "ecosystem",
             "schema": {
-              "description": "Filter by affected package ecosystem; empty = no filter",
+              "description": "Filter by affected package ecosystem, using OSV's names; a name without a release matches every release; empty = no filter",
               "type": "string"
             }
           },

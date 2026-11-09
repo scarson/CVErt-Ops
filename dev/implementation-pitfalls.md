@@ -1349,6 +1349,27 @@ func forgotPasswordHandler(w http.ResponseWriter, r *http.Request) {
 
 ---
 
+### AUTH-26: TOTP Replay Checks Must Compare the Code's Own Time Step
+
+**The Flaw:** `totp.ValidateCustom` reports only whether a code is valid somewhere in the skew window, so the replay check recorded a step derived from the clock: first `currentStep`, then `currentStep + skew`. A code used at step S stored S+1. At step S+1 the same code was still inside the window, the compared value was S+2, and the check passed.
+
+**Why It Matters:** A captured code can be used a second time, which RFC 6238 §5.2 forbids. Widening the stored value only moves the boundary, because the compared value advances with the clock too. The overshoot also rejects legitimate codes from clients whose clocks run behind. The failing test passed unless its two requests crossed a 30-second boundary, so it looked like a flake.
+
+**The Fix:** Find the step the code belongs to, and use that step for both the comparison and the stored value:
+
+```go
+for step := currentStep + skew; step >= currentStep-skew; step-- {
+    matched, err := totp.ValidateCustom(code, secret, time.Unix(step*period, 0), singleStepOpts)
+    // return the first match: the latest step that produces this code
+}
+```
+
+Every path that accepts a code must record its step, including enrollment confirmation.
+
+**The Lesson:** A one-time check needs an identifier that stays fixed for the whole life of the credential. A value derived from the time of the check does not. If a library hides the value you need, compute it; do not approximate it.
+
+---
+
 ### Review Checklist
 
 Use this checklist when implementing or reviewing authentication and security code:

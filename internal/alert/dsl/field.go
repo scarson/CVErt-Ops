@@ -2,6 +2,8 @@
 // ABOUTME: Used by the validator (semantic checks) and compiler (SQL/PostFilter generation).
 package dsl
 
+import "github.com/scarson/cvert-ops/internal/ecosystem"
+
 type fieldKind int
 
 const (
@@ -25,10 +27,7 @@ type fieldSpec struct {
 }
 
 var severityEnum = []string{"critical", "high", "medium", "low", "none"}
-var ecosystemEnum = []string{
-	"npm", "pypi", "maven", "go", "cargo", "rubygems", "nuget",
-	"hex", "pub", "swift", "cocoapods", "packagist",
-}
+var ecosystemEnum = ecosystem.Names()
 
 var numericOps = []string{"gt", "gte", "lt", "lte", "eq", "neq"}
 var setOps = []string{"eq", "neq", "in", "not_in"}

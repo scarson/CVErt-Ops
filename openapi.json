@@ -1166,7 +1166,7 @@
             "type": "string"
           },
           "config": {
-            "description": "Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***."
+            "description": "Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]."
           },
           "created_at": {
             "type": "string"
@@ -1215,7 +1215,7 @@
             "type": "string"
           },
           "config": {
-            "description": "Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***."
+            "description": "Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]."
           },
           "created_at": {
             "type": "string"

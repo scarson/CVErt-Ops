@@ -2208,7 +2208,7 @@ export interface components {
              * @example /api/v1/schemas/ChannelCreateEntry.json
              */
             readonly $schema?: string;
-            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. */
+            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]. */
             config: unknown;
             created_at: string;
             id: string;
@@ -2226,7 +2226,7 @@ export interface components {
              * @example /api/v1/schemas/ChannelEntry.json
              */
             readonly $schema?: string;
-            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. */
+            /** @description Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***. The value of any field delivery does not read is replaced by [REDACTED]. */
             config: unknown;
             created_at: string;
             id: string;

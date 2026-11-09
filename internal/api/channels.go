@@ -36,7 +36,7 @@ type createChannelBody struct {
 // patchChannelBody uses pointer fields so only supplied keys are updated.
 type patchChannelBody struct {
 	Name   *string          `json:"name,omitempty"`
-	Config *json.RawMessage `json:"config,omitempty"`
+	Config *json.RawMessage `json:"config,omitempty" doc:"Replaces the whole config. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again."`
 }
 
 // ChannelEntry is the API shape of a notification channel. It is exported so
@@ -46,7 +46,7 @@ type ChannelEntry struct {
 	OrgID     string          `json:"org_id"`
 	Name      string          `json:"name"`
 	Type      string          `json:"type"`
-	Config    json.RawMessage `json:"config"`
+	Config    json.RawMessage `json:"config" doc:"Secrets are masked for every role. custom_headers keeps header names with each value replaced by [REDACTED]; url is reduced to scheme://host/***."`
 	CreatedAt string          `json:"created_at"`
 	UpdatedAt string          `json:"updated_at"`
 }
@@ -109,6 +109,13 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	resolved, resolveErr := resolveMaskedChannelConfig(req.Config, nil)
+	if resolveErr != nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: resolveErr.Error(), Location: "body.config"})
+		return
+	}
+	req.Config = resolved
+
 	// For webhook channels, validate that config contains a non-empty, SSRF-safe url.
 	if req.Type == "webhook" {
 		var cfg map[string]any
@@ -150,7 +157,7 @@ func (srv *Server) createChannelHandler(w http.ResponseWriter, r *http.Request) 
 		OrgID:     row.OrgID.String(),
 		Name:      row.Name,
 		Type:      row.Type,
-		Config:    row.Config,
+		Config:    channelResponseConfig(row.Config),
 		CreatedAt: row.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 	}
@@ -207,7 +214,7 @@ func (srv *Server) getChannelHandler(w http.ResponseWriter, r *http.Request) {
 		OrgID:     row.OrgID.String(),
 		Name:      row.Name,
 		Type:      row.Type,
-		Config:    row.Config,
+		Config:    channelResponseConfig(row.Config),
 		CreatedAt: row.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 	})
@@ -233,7 +240,7 @@ func (srv *Server) listChannelsHandler(w http.ResponseWriter, r *http.Request) {
 			OrgID:     row.OrgID.String(),
 			Name:      row.Name,
 			Type:      row.Type,
-			Config:    row.Config,
+			Config:    channelResponseConfig(row.Config),
 			CreatedAt: row.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: row.UpdatedAt.Format(time.RFC3339),
 		}
@@ -286,6 +293,12 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		params.Name = *req.Name
 	}
 	if req.Config != nil {
+		resolved, resolveErr := resolveMaskedChannelConfig(*req.Config, current.Config)
+		if resolveErr != nil {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{Message: resolveErr.Error(), Location: "body.config"})
+			return
+		}
+		req.Config = &resolved
 		// Re-validate config when updated.
 		if current.Type == "webhook" {
 			var cfg map[string]any
@@ -327,7 +340,7 @@ func (srv *Server) patchChannelHandler(w http.ResponseWriter, r *http.Request) {
 		OrgID:     updated.OrgID.String(),
 		Name:      updated.Name,
 		Type:      updated.Type,
-		Config:    updated.Config,
+		Config:    channelResponseConfig(updated.Config),
 		CreatedAt: updated.CreatedAt.Format(time.RFC3339),
 		UpdatedAt: updated.UpdatedAt.Format(time.RFC3339),
 	})
@@ -583,6 +596,82 @@ func (srv *Server) testEmailChannel(ctx context.Context, config json.RawMessage)
 	textBody := "This is a test notification from CVErt Ops. If you received this, your email channel is configured correctly."
 
 	return notify.EmailSend(ctx, smtpCfg, recipients, subject, htmlBody, textBody)
+}
+
+// channelResponseConfig returns the config every API caller reads: secrets are
+// masked for all roles, as the signing secret is. A stored value that is not a
+// JSON object cannot be masked by key, so it is withheld.
+func channelResponseConfig(stored json.RawMessage) json.RawMessage {
+	var cfg map[string]any
+	if err := json.Unmarshal(stored, &cfg); err != nil || cfg == nil {
+		return json.RawMessage(`{}`)
+	}
+	masked, err := json.Marshal(audit.RedactChannelConfig(cfg))
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return masked
+}
+
+// resolveMaskedChannelConfig returns a submitted config with masked values
+// replaced by the stored secrets they stand for, so a client can send back what
+// it read. Pass a nil stored config when there is no existing channel. A stored
+// secret stays with its scheme and host: moving a channel elsewhere needs the
+// secret sent again, or a caller could direct it to a host they control. Config
+// that is not a JSON object is returned as submitted for validation to reject.
+func resolveMaskedChannelConfig(submitted, stored json.RawMessage) (json.RawMessage, error) {
+	var sub map[string]any
+	if err := json.Unmarshal(submitted, &sub); err != nil || sub == nil {
+		return submitted, nil
+	}
+	// A missing or unreadable stored config leaves no secrets to restore, and
+	// the caller can still replace it with a complete config.
+	var cur map[string]any
+	if err := json.Unmarshal(stored, &cur); err != nil {
+		cur = nil
+	}
+
+	subURL, _ := sub["url"].(string)
+	curURL, _ := cur["url"].(string)
+	sameDestination := audit.RedactURL(subURL) == audit.RedactURL(curURL)
+	switch {
+	case curURL != "" && subURL == audit.RedactURL(curURL):
+		sub["url"] = curURL
+	case subURL != "" && subURL == audit.RedactURL(subURL):
+		return nil, errors.New("webhook url is masked; send the full url")
+	}
+
+	if err := restoreMaskedValues(sub, cur, sameDestination); err != nil {
+		return nil, err
+	}
+	return json.Marshal(sub)
+}
+
+// restoreMaskedValues replaces each masked value in submitted with the value at
+// the same key in stored. It follows nested objects, as the masking does.
+func restoreMaskedValues(submitted, stored map[string]any, sameDestination bool) error {
+	for key, value := range submitted {
+		switch v := value.(type) {
+		case string:
+			if v != audit.RedactedValue {
+				continue
+			}
+			storedValue, ok := stored[key]
+			if !ok {
+				return fmt.Errorf("%q has a masked value and no stored value; send the real value", key)
+			}
+			if !sameDestination {
+				return fmt.Errorf("%q must be sent again when the webhook scheme or host changes", key)
+			}
+			submitted[key] = storedValue
+		case map[string]any:
+			nested, _ := stored[key].(map[string]any)
+			if err := restoreMaskedValues(v, nested, sameDestination); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // channelAuditState builds a flat map for audit log state, merging config fields

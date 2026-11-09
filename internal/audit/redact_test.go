@@ -49,6 +49,37 @@ func TestRedactSecrets_SubstringMatch(t *testing.T) {
 	}
 }
 
+func TestRedactSecrets_ChannelCustomHeaders(t *testing.T) {
+	t.Parallel()
+	state := map[string]any{
+		"custom_headers": map[string]any{
+			"Authorization": "Bearer abc123",
+			"X-Team":        "secops",
+		},
+	}
+	got := redactSecrets("channel", state)
+	headers, ok := got["custom_headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("custom_headers: expected map[string]any, got %T", got["custom_headers"])
+	}
+	for name, value := range headers {
+		if value != "[REDACTED]" {
+			t.Errorf("%s: got %v, want [REDACTED]", name, value)
+		}
+	}
+	if len(headers) != 2 {
+		t.Errorf("header names must be kept: got %v", headers)
+	}
+}
+
+func TestRedactSecrets_ChannelCustomHeadersNotAMap(t *testing.T) {
+	t.Parallel()
+	got := redactSecrets("channel", map[string]any{"custom_headers": "Authorization: Bearer abc123"})
+	if got["custom_headers"] != "[REDACTED]" {
+		t.Errorf("custom_headers: got %v, want [REDACTED]", got["custom_headers"])
+	}
+}
+
 func TestRedactSecrets_NestedJSON(t *testing.T) {
 	t.Parallel()
 	state := map[string]any{
@@ -127,7 +158,7 @@ func TestRedactSecrets_NilState(t *testing.T) {
 func TestRedactURL_InvalidURL(t *testing.T) {
 	t.Parallel()
 	// Invalid URL should return "[REDACTED]" rather than panicking.
-	got := redactURL("://not-a-url")
+	got := RedactURL("://not-a-url")
 	if got != "[REDACTED]" {
 		t.Errorf("invalid URL: got %q, want [REDACTED]", got)
 	}

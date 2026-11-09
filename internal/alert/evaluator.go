@@ -698,9 +698,11 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 	return tx.Commit()
 }
 
-// getCVEsModifiedSince returns a page of non-rejected CVE IDs modified after since,
-// ordered by cve_id ASC for keyset pagination. afterID is the last CVE ID from
-// the previous page (empty string for the first page).
+// getCVEsModifiedSince returns a page of CVE IDs modified after since, ordered by cve_id
+// ASC for keyset pagination. afterID is the last CVE ID from the previous page (empty
+// string for the first page). Rejected and withdrawn CVEs are included: evaluateRule
+// resolves open events only for CVEs in its candidate list, and queryCandidates keeps
+// them from matching.
 func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	var (
 		rows *sql.Rows
@@ -710,33 +712,35 @@ func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, a
 	case since.IsZero() && afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $1`, limit)
 	case since.IsZero():
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE cve_id > $1
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_modified_canonical > $1
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
 	default:
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE date_modified_canonical > $1
 			   AND cve_id > $2
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)
 }
 
-// getCVEsEPSSUpdatedSince returns a page of non-rejected CVE IDs whose EPSS score was
-// updated after since, ordered by cve_id ASC for keyset pagination.
+// retractedCVE is the SQL predicate for a CVE that a feed has rejected or withdrawn.
+const retractedCVE = `COALESCE(lower(status), '') IN ('rejected', 'withdrawn')`
+
+// getCVEsEPSSUpdatedSince returns a page of CVE IDs whose EPSS score was updated after
+// since, ordered by cve_id ASC for keyset pagination. It also returns CVEs retracted after
+// since: EPSS-only rules are evaluated on this path alone, and a tombstone clears
+// epss_score without touching date_epss_updated, so their open events would otherwise
+// never resolve.
 func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	var (
 		rows *sql.Rows
@@ -746,28 +750,24 @@ func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time
 	case since.IsZero() && afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE epss_score IS NOT NULL
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
+			 WHERE (epss_score IS NOT NULL OR `+retractedCVE+`)
 			 ORDER BY cve_id ASC LIMIT $1`, limit)
 	case since.IsZero():
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
 			 WHERE cve_id > $1
-			   AND epss_score IS NOT NULL
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
+			   AND (epss_score IS NOT NULL OR `+retractedCVE+`)
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE date_epss_updated > $1
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
+			 WHERE (date_epss_updated > $1 OR (`+retractedCVE+` AND date_modified_canonical > $1))
 			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
 	default:
 		rows, err = e.db.QueryContext(ctx,
 			`SELECT cve_id FROM cves
-			 WHERE date_epss_updated > $1
+			 WHERE (date_epss_updated > $1 OR (`+retractedCVE+` AND date_modified_canonical > $1))
 			   AND cve_id > $2
-			   AND COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)

@@ -23,6 +23,20 @@ type AlertTemplateData struct {
 	CVErtOpsURL string
 }
 
+// ResolutionSummary is a CVE in a resolution email, with why it stopped matching.
+type ResolutionSummary struct {
+	CVESummary
+	Reason string
+}
+
+// ResolutionTemplateData is the context passed to resolution email templates.
+type ResolutionTemplateData struct {
+	RuleName    string
+	RuleID      string
+	CVEs        []ResolutionSummary
+	CVErtOpsURL string
+}
+
 // DigestTemplateData is the context passed to digest email templates.
 type DigestTemplateData struct {
 	OrgName     string
@@ -34,6 +48,19 @@ type DigestTemplateData struct {
 	ViewAllURL  string
 	AISummary   string
 	CVErtOpsURL string
+}
+
+// resolutionsToSummaries converts resolution payload items to template-ready summaries.
+func resolutionsToSummaries(items []resolutionSnapshot, baseURL string) []ResolutionSummary {
+	snaps := make([]cveSnapshot, len(items))
+	for i, item := range items {
+		snaps[i] = item.cveSnapshot
+	}
+	out := make([]ResolutionSummary, len(items))
+	for i, summary := range snapshotsToCVESummaries(snaps, baseURL) {
+		out[i] = ResolutionSummary{CVESummary: summary, Reason: items[i].Reason}
+	}
+	return out
 }
 
 // snapshotsToCVESummaries converts delivery payload snapshots to template-ready summaries.

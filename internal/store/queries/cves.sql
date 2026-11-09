@@ -261,7 +261,7 @@ ORDER BY vendor, product, package_name, collection_url, default_status, versions
 -- name: GetCVESnapshot :one
 -- Returns the fields needed for alert delivery payloads.
 SELECT cve_id, severity, cvss_v3_score, cvss_v4_score, epss_score,
-       description_primary, exploit_available, in_cisa_kev
+       description_primary, exploit_available, in_cisa_kev, status
 FROM cves WHERE cve_id = $1;
 
 -- name: DigestCVEs :many

@@ -99,8 +99,11 @@ RETURNING id;
 SELECT cve_id FROM alert_events
 WHERE rule_id = $1 AND org_id = $2 AND last_match_state = true;
 
--- name: ResolveAlertEvent :exec
--- Marks a previously-matched event as no longer matching.
+-- name: ResolveAlertEvent :many
+-- Marks the CVE's still-matching events as no longer matching and returns the
+-- suppress_delivery flag of each one it changed. A row already resolved is left out,
+-- and a concurrent resolver waits on the row lock and then finds nothing to change.
 UPDATE alert_events
 SET last_match_state = false
-WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3;
+WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3 AND last_match_state = true
+RETURNING suppress_delivery;

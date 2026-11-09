@@ -787,6 +787,10 @@ func (m *mockDispatcher) Fanout(_ context.Context, orgID, ruleID uuid.UUID, cveI
 	return nil
 }
 
+func (m *mockDispatcher) FanoutResolution(_ context.Context, _, _ uuid.UUID, _ string) error {
+	return nil
+}
+
 func TestEvaluateRealtime_FanoutCalledForNewEvent(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ev := newTestEvaluator(t, tdb)
@@ -1516,6 +1520,10 @@ func (f *failingDispatcher) Fanout(_ context.Context, _, _ uuid.UUID, _ string) 
 	defer f.mu.Unlock()
 	f.calls++
 	return fmt.Errorf("simulated fanout failure")
+}
+
+func (f *failingDispatcher) FanoutResolution(_ context.Context, _, _ uuid.UUID, _ string) error {
+	return fmt.Errorf("simulated resolution fanout failure")
 }
 
 func TestEvaluateRealtime_FanoutErrorContinuesProcessing(t *testing.T) {

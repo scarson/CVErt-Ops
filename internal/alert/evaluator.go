@@ -44,10 +44,11 @@ func (c cveSummary) PostFilterField(field string) string {
 	return c.Description
 }
 
-// Dispatcher triggers notification delivery for a newly created alert event.
-// A nil dispatcher disables delivery (tests, startup).
+// Dispatcher triggers notification delivery for a newly created alert event and for a
+// CVE that stopped matching a rule. A nil dispatcher disables delivery (tests, startup).
 type Dispatcher interface {
 	Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error
+	FanoutResolution(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error
 }
 
 // Evaluator runs alert DSL rules against the CVE corpus across three evaluation paths.
@@ -153,8 +154,8 @@ const candidatePageSize = 1000
 // date_modified_canonical is the merge worker's Go clock, read before its upsert. A row
 // stamped before the cursor but committed after the previous run's scan would otherwise
 // never be evaluated. Re-evaluating a CVE is idempotent: alert_events inserts are
-// ON CONFLICT DO NOTHING, reopens apply only to resolved events, and fan-out runs only
-// for events that a run inserted or reopened.
+// ON CONFLICT DO NOTHING, reopens apply only to resolved events, resolves apply only to
+// open events, and fan-out runs only for events that a run inserted, reopened or resolved.
 //
 // The window must exceed clock skew between the app and database hosts plus the longest
 // gap between a writer taking its timestamp and committing. Both are normally well under
@@ -537,8 +538,16 @@ func (e *Evaluator) evaluateRule(
 		}
 		for _, prevID := range prevMatched {
 			if candidateSet[prevID] && !matchedIDs[prevID] {
-				if err := e.rules.ResolveAlertEvent(ctx, compiled.RuleID, orgID, prevID); err != nil {
+				shouldNotify, err := e.rules.ResolveAlertEvent(ctx, compiled.RuleID, orgID, prevID)
+				if err != nil {
 					e.log.Error("resolve alert event", "rule_id", compiled.RuleID, "cve_id", prevID, "err", err)
+					continue
+				}
+				if e.dispatcher != nil && shouldNotify {
+					if fErr := e.dispatcher.FanoutResolution(ctx, orgID, compiled.RuleID, prevID); fErr != nil {
+						e.log.Error("fanout resolution notification", "rule_id", compiled.RuleID, "cve_id", prevID, "err", fErr)
+						// Do not return: the resolve is committed; log and continue.
+					}
 				}
 			}
 		}

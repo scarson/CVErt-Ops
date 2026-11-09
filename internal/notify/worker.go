@@ -23,6 +23,10 @@ import (
 	"github.com/scarson/cvert-ops/internal/store"
 )
 
+// kindResolution is the notification_deliveries.kind of a resolution notification, and
+// the event_type its webhook body names.
+const kindResolution = "resolution"
+
 // WorkerConfig holds delivery worker tuning parameters (sourced from config.Config).
 type WorkerConfig struct {
 	ClaimBatchSize      int
@@ -246,8 +250,37 @@ func (w *Worker) deliver(ctx context.Context, row store.ClaimedDelivery) {
 }
 
 func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
+	body, err := webhookBody(row)
+	if err != nil {
+		return &permanentDeliveryError{err: fmt.Errorf("build webhook body: %w", err)}
+	}
 	// Bad config JSON yields an empty URL; Send fails and retry/exhaust handles it.
-	return Send(ctx, w.client, ChannelWebhookConfig(ch), row.Payload)
+	return Send(ctx, w.client, ChannelWebhookConfig(ch), body)
+}
+
+// webhookBody returns the request body for a delivery. A resolution's stored payload is an
+// array like an alert's, so it is sent inside an object that names the event: a receiver
+// written for alert arrays must not read a resolved CVE as a new match.
+func webhookBody(row store.ClaimedDelivery) ([]byte, error) {
+	if row.Kind != kindResolution {
+		return row.Payload, nil
+	}
+	return json.Marshal(struct {
+		EventType string          `json:"event_type"`
+		CVEs      json.RawMessage `json:"cves"`
+	}{EventType: kindResolution, CVEs: row.Payload})
+}
+
+// ruleIdentity returns the name and ID that an email about a rule's delivery shows.
+func (w *Worker) ruleIdentity(ctx context.Context, row store.ClaimedDelivery) (name, id string) {
+	name = "Alert Rule"
+	if !row.RuleID.Valid {
+		return name, ""
+	}
+	if ruleName, err := w.store.GetAlertRuleName(ctx, row.RuleID.UUID); err == nil && ruleName != "" {
+		name = ruleName
+	}
+	return name, row.RuleID.UUID.String()
 }
 
 func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
@@ -274,20 +307,23 @@ func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch
 			return fmt.Errorf("unmarshal delivery payload: %w", err)
 		}
 		summaries := snapshotsToCVESummaries(snaps, w.externalURL)
-		ruleName := "Alert Rule"
-		if row.RuleID.Valid {
-			if name, err := w.store.GetAlertRuleName(ctx, row.RuleID.UUID); err == nil && name != "" {
-				ruleName = name
-			}
-		}
-		ruleID := ""
-		if row.RuleID.Valid {
-			ruleID = row.RuleID.UUID.String()
-		}
+		ruleName, ruleID := w.ruleIdentity(ctx, row)
 		subject, htmlBody, textBody, renderErr = RenderAlert(AlertTemplateData{
 			RuleName:    ruleName,
 			RuleID:      ruleID,
 			CVEs:        summaries,
+			CVErtOpsURL: w.externalURL,
+		})
+	case kindResolution:
+		var items []resolutionSnapshot
+		if err := json.Unmarshal(row.Payload, &items); err != nil {
+			return fmt.Errorf("unmarshal delivery payload: %w", err)
+		}
+		ruleName, ruleID := w.ruleIdentity(ctx, row)
+		subject, htmlBody, textBody, renderErr = RenderResolution(ResolutionTemplateData{
+			RuleName:    ruleName,
+			RuleID:      ruleID,
+			CVEs:        resolutionsToSummaries(items, w.externalURL),
 			CVErtOpsURL: w.externalURL,
 		})
 	case "digest":

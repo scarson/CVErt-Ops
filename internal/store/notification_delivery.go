@@ -26,7 +26,17 @@ type ClaimedDelivery = generated.ClaimPendingDeliveriesRow
 const upsertDeliverySQL = `
 INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after, batch_open)
 VALUES ($1, $2, $3, 'alert', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'), true)
-ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert' AND batch_open
+ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'alert' AND batch_open` + appendToOpenBatchSQL
+
+// upsertResolutionDeliverySQL is the debounce INSERT for resolution notifications.
+// The ON CONFLICT targets the partial unique index uq_deliveries_open_resolution_batch.
+const upsertResolutionDeliverySQL = `
+INSERT INTO notification_deliveries (org_id, rule_id, channel_id, kind, payload, send_after, batch_open)
+VALUES ($1, $2, $3, 'resolution', jsonb_build_array($4::jsonb), now() + ($5 * interval '1 second'), true)
+ON CONFLICT (rule_id, channel_id) WHERE status = 'pending' AND kind = 'resolution' AND batch_open` + appendToOpenBatchSQL
+
+// appendToOpenBatchSQL adds a CVE to the conflicting open batch and restarts its debounce window.
+const appendToOpenBatchSQL = `
 DO UPDATE SET
     payload    = notification_deliveries.payload || jsonb_build_array($4::jsonb),
     send_after = now() + ($5 * interval '1 second'),
@@ -35,11 +45,22 @@ DO UPDATE SET
 // UpsertDelivery creates a pending delivery row or, if an open batch already exists for
 // the same (rule_id, channel_id), appends the CVE snapshot to its payload array.
 // debounceSeconds controls when send_after is set (debounce window or retry backoff).
-// Uses an explicit transaction so the raw SQL executes on the same connection as the
-// RLS bypass SET LOCAL — s.db.ExecContext would acquire a different pool connection.
 func (s *Store) UpsertDelivery(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
+	return s.upsertOpenBatch(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+}
+
+// UpsertResolutionDelivery is UpsertDelivery for resolution notifications, which batch
+// separately from alerts.
+func (s *Store) UpsertResolutionDelivery(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
+	return s.upsertOpenBatch(ctx, upsertResolutionDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+}
+
+// upsertOpenBatch runs one of the debounce INSERTs. Uses an explicit transaction so the
+// raw SQL executes on the same connection as the RLS bypass SET LOCAL — s.db.ExecContext
+// would acquire a different pool connection.
+func (s *Store) upsertOpenBatch(ctx context.Context, query string, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error {
 	return s.withBypassRawTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, upsertDeliverySQL, orgID, ruleID, channelID, payload, debounceSeconds)
+		_, err := tx.ExecContext(ctx, query, orgID, ruleID, channelID, payload, debounceSeconds)
 		if err != nil {
 			return fmt.Errorf("upsert delivery: %w", err)
 		}

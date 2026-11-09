@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -71,7 +72,7 @@ type AlertRuleStore interface {
 	InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error)
 	ReopenAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error)
 	GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID uuid.UUID) ([]string, error)
-	ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) error
+	ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) (bool, error)
 	ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAlertEventsParams) ([]generated.AlertEvent, error)
 	ListActiveRulesForEvaluation(ctx context.Context) ([]AlertRuleRow, error)
 	ListActiveRulesForEPSS(ctx context.Context) ([]AlertRuleRow, error)
@@ -349,16 +350,27 @@ func (s *Store) GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID u
 	return cveIDs, err
 }
 
-// ResolveAlertEvent marks a previously-matched alert event as no longer matching.
+// ResolveAlertEvent marks every still-matching alert event for the CVE as no longer
+// matching. It reports whether the rule's channels should be told: true only when this
+// call changed a row and at least one changed row was delivered. Of any number of
+// concurrent callers, only the first changes rows, so a CVE resolves with one notification.
+// Activation-scan events are not delivered, so resolving only those reports false.
 // Worker path: uses bypass_rls since this is called from the alert evaluator.
-func (s *Store) ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) error {
-	return s.withBypassTx(ctx, func(q *generated.Queries) error {
-		return q.ResolveAlertEvent(ctx, generated.ResolveAlertEventParams{
+func (s *Store) ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) (bool, error) {
+	var suppressed []bool
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		var err error
+		suppressed, err = q.ResolveAlertEvent(ctx, generated.ResolveAlertEventParams{
 			RuleID: ruleID,
 			OrgID:  orgID,
 			CveID:  cveID,
 		})
+		return err
 	})
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(suppressed, false), nil
 }
 
 // ListAlertEvents returns a page of alert events for an org, with optional filters.

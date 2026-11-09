@@ -1,5 +1,5 @@
 // ABOUTME: Dispatcher fans out alert events to notification delivery rows via debounced upsert.
-// ABOUTME: Fanout builds a CVE snapshot and calls UpsertDelivery for each channel bound to a rule.
+// ABOUTME: Fanout and FanoutResolution build a CVE snapshot and upsert a delivery for each bound channel.
 package notify
 
 import (
@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -24,6 +25,26 @@ type cveSnapshot struct {
 
 	ExploitAvail bool `json:"exploit_available"`
 	InCISAKEV    bool `json:"in_cisa_kev"`
+}
+
+// resolutionSnapshot is the delivery payload for a CVE that stopped matching a rule.
+// Its scores are the CVE's current values.
+type resolutionSnapshot struct {
+	cveSnapshot
+	Reason string `json:"reason"`
+}
+
+// resolutionReason says why a CVE stopped matching a rule, given its current status.
+// Feeds send the retraction statuses in mixed case.
+func resolutionReason(status string) string {
+	switch strings.ToLower(status) {
+	case "rejected":
+		return "CVE was rejected by its source"
+	case "withdrawn":
+		return "CVE was withdrawn by its source"
+	default:
+		return "CVE no longer matches this rule's conditions"
+	}
 }
 
 // Dispatcher fans out alert events to notification delivery rows.
@@ -44,6 +65,31 @@ func NewDispatcher(st *store.Store, debounceSeconds int) *Dispatcher {
 // returns nil even when all upserts fail; the caller's job is to fire and forget.
 // Returns an error only if ListActiveChannelsForFanout fails or JSON marshaling fails.
 func (d *Dispatcher) Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error {
+	return d.fanout(ctx, orgID, ruleID, cveID, d.st.UpsertDelivery, func(snap cveSnapshot, _ string) any {
+		return snap
+	})
+}
+
+// FanoutResolution creates or appends to pending resolution deliveries for all channels
+// bound to ruleID, each saying why the CVE stopped matching. Error behavior matches Fanout.
+func (d *Dispatcher) FanoutResolution(ctx context.Context, orgID, ruleID uuid.UUID, cveID string) error {
+	return d.fanout(ctx, orgID, ruleID, cveID, d.st.UpsertResolutionDelivery, func(snap cveSnapshot, status string) any {
+		return resolutionSnapshot{cveSnapshot: snap, Reason: resolutionReason(status)}
+	})
+}
+
+// upsertDeliveryFunc writes one channel's delivery row for a CVE.
+type upsertDeliveryFunc func(ctx context.Context, orgID, ruleID, channelID uuid.UUID, payload []byte, debounceSeconds int) error
+
+// fanout upserts the payload built from the CVE's snapshot and status for each channel
+// bound to ruleID.
+func (d *Dispatcher) fanout(
+	ctx context.Context,
+	orgID, ruleID uuid.UUID,
+	cveID string,
+	upsert upsertDeliveryFunc,
+	buildPayload func(snap cveSnapshot, status string) any,
+) error {
 	channels, err := d.st.ListActiveChannelsForFanout(ctx, ruleID, orgID)
 	if err != nil {
 		return fmt.Errorf("fanout: list channels: %w", err)
@@ -52,15 +98,13 @@ func (d *Dispatcher) Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID 
 		return nil
 	}
 
-	snap := d.buildSnapshot(ctx, cveID)
-
-	payload, err := json.Marshal(snap)
+	payload, err := json.Marshal(buildPayload(d.buildSnapshot(ctx, cveID)))
 	if err != nil {
 		return fmt.Errorf("fanout: marshal snapshot: %w", err)
 	}
 
 	for _, ch := range channels {
-		if err := d.st.UpsertDelivery(ctx, orgID, ruleID, ch.ID, payload, d.debounceSeconds); err != nil {
+		if err := upsert(ctx, orgID, ruleID, ch.ID, payload, d.debounceSeconds); err != nil {
 			slog.ErrorContext(ctx, "fanout: upsert delivery failed",
 				"org_id", orgID,
 				"rule_id", ruleID,
@@ -74,22 +118,22 @@ func (d *Dispatcher) Fanout(ctx context.Context, orgID, ruleID uuid.UUID, cveID 
 	return nil
 }
 
-// buildSnapshot fetches a CVE snapshot from the database. If the CVE does not exist,
-// it logs a warning and returns a minimal snapshot containing only the cve_id.
-func (d *Dispatcher) buildSnapshot(ctx context.Context, cveID string) cveSnapshot {
+// buildSnapshot fetches a CVE snapshot and status from the database. If the CVE does not
+// exist, it logs a warning and returns a minimal snapshot containing only the cve_id.
+func (d *Dispatcher) buildSnapshot(ctx context.Context, cveID string) (cveSnapshot, string) {
 	row, err := d.st.GetCVESnapshot(ctx, cveID)
 	if err != nil {
 		slog.WarnContext(ctx, "fanout: get cve snapshot failed, using minimal snapshot",
 			"cve_id", cveID,
 			"error", err,
 		)
-		return cveSnapshot{CVEID: cveID}
+		return cveSnapshot{CVEID: cveID}, ""
 	}
 	if row == nil {
 		slog.WarnContext(ctx, "fanout: cve not found, using minimal snapshot",
 			"cve_id", cveID,
 		)
-		return cveSnapshot{CVEID: cveID}
+		return cveSnapshot{CVEID: cveID}, ""
 	}
 
 	snap := cveSnapshot{
@@ -113,5 +157,5 @@ func (d *Dispatcher) buildSnapshot(ctx context.Context, cveID string) cveSnapsho
 		snap.Description = row.DescriptionPrimary.String
 	}
 
-	return snap
+	return snap, row.Status.String
 }

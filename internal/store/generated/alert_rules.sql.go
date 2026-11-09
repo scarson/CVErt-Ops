@@ -329,10 +329,11 @@ func (q *Queries) ReopenAlertEvent(ctx context.Context, arg ReopenAlertEventPara
 	return id, err
 }
 
-const resolveAlertEvent = `-- name: ResolveAlertEvent :exec
+const resolveAlertEvent = `-- name: ResolveAlertEvent :many
 UPDATE alert_events
 SET last_match_state = false
-WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3
+WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3 AND last_match_state = true
+RETURNING suppress_delivery
 `
 
 type ResolveAlertEventParams struct {
@@ -341,10 +342,30 @@ type ResolveAlertEventParams struct {
 	CveID  string
 }
 
-// Marks a previously-matched event as no longer matching.
-func (q *Queries) ResolveAlertEvent(ctx context.Context, arg ResolveAlertEventParams) error {
-	_, err := q.db.ExecContext(ctx, resolveAlertEvent, arg.RuleID, arg.OrgID, arg.CveID)
-	return err
+// Marks the CVE's still-matching events as no longer matching and returns the
+// suppress_delivery flag of each one it changed. A row already resolved is left out,
+// and a concurrent resolver waits on the row lock and then finds nothing to change.
+func (q *Queries) ResolveAlertEvent(ctx context.Context, arg ResolveAlertEventParams) ([]bool, error) {
+	rows, err := q.db.QueryContext(ctx, resolveAlertEvent, arg.RuleID, arg.OrgID, arg.CveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []bool
+	for rows.Next() {
+		var suppress_delivery bool
+		if err := rows.Scan(&suppress_delivery); err != nil {
+			return nil, err
+		}
+		items = append(items, suppress_delivery)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setAlertRuleStatus = `-- name: SetAlertRuleStatus :exec

@@ -5,6 +5,8 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -230,7 +232,7 @@ func TestReopenAlertEvent(t *testing.T) {
 		t.Errorf("open event changed: times_fired=%d suppress_delivery=%v", e.TimesFired, e.SuppressDelivery)
 	}
 
-	if err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID); err != nil {
+	if _, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID); err != nil {
 		t.Fatalf("ResolveAlertEvent: %v", err)
 	}
 
@@ -287,7 +289,7 @@ func TestResolveAlertEvent(t *testing.T) {
 		t.Errorf("unresolved before = %v, want [CVE-2024-0002]", unresolvedBefore)
 	}
 
-	if err := s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0002"); err != nil {
+	if _, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0002"); err != nil {
 		t.Fatalf("ResolveAlertEvent: %v", err)
 	}
 
@@ -297,6 +299,100 @@ func TestResolveAlertEvent(t *testing.T) {
 	}
 	if len(unresolvedAfter) != 0 {
 		t.Errorf("unresolved after = %v, want []", unresolvedAfter)
+	}
+}
+
+func TestResolveAlertEvent_ReportsNotifiableTransition(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	org := s.MustCreateOrg(t, ctx, "ResolveNotifyOrg")
+
+	tests := []struct {
+		name       string
+		suppressed []bool // one alert_events row per entry, each with its own material_hash
+		wantNotify bool
+	}{
+		{name: "delivered event", suppressed: []bool{false}, wantNotify: true},
+		{name: "several delivered events for one CVE", suppressed: []bool{false, false}, wantNotify: true},
+		{name: "activation baseline only", suppressed: []bool{true}, wantNotify: false},
+		{name: "activation baseline then a delivered event", suppressed: []bool{true, false}, wantNotify: true},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := mustCreateAlertRule(t, s, ctx, org.ID, "ResolveNotifyRule "+tc.name)
+			cveID := fmt.Sprintf("CVE-2024-%04d", 7000+i)
+			for j, suppressed := range tc.suppressed {
+				if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, fmt.Sprintf("hash%d", j), suppressed); err != nil {
+					t.Fatalf("setup: InsertAlertEvent: %v", err)
+				}
+			}
+
+			notify, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID)
+			if err != nil {
+				t.Fatalf("ResolveAlertEvent: %v", err)
+			}
+			if notify != tc.wantNotify {
+				t.Errorf("first resolve notify = %v, want %v", notify, tc.wantNotify)
+			}
+			unresolved, err := s.GetUnresolvedAlertEventCVEs(ctx, r.ID, org.ID)
+			if err != nil {
+				t.Fatalf("GetUnresolvedAlertEventCVEs: %v", err)
+			}
+			if len(unresolved) != 0 {
+				t.Errorf("unresolved after resolve = %v, want []", unresolved)
+			}
+
+			notify, err = s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID)
+			if err != nil {
+				t.Fatalf("second ResolveAlertEvent: %v", err)
+			}
+			if notify {
+				t.Error("second resolve notify = true, want false: the transition already happened")
+			}
+		})
+	}
+}
+
+// TestResolveAlertEvent_ConcurrentResolversNotifyOnce covers the realtime and batch paths
+// resolving the same event at the same moment.
+func TestResolveAlertEvent_ConcurrentResolversNotifyOnce(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	org := s.MustCreateOrg(t, ctx, "ResolveRaceOrg")
+	r := mustCreateAlertRule(t, s, ctx, org.ID, "ResolveRaceRule")
+
+	const cveID = "CVE-2024-7100"
+	if _, err := s.InsertAlertEvent(ctx, org.ID, r.ID, cveID, "hash", false); err != nil {
+		t.Fatalf("setup: InsertAlertEvent: %v", err)
+	}
+
+	const resolvers = 8
+	results := make(chan bool, resolvers)
+	var wg sync.WaitGroup
+	for range resolvers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			notify, err := s.ResolveAlertEvent(ctx, r.ID, org.ID, cveID)
+			if err != nil {
+				t.Errorf("ResolveAlertEvent: %v", err)
+			}
+			results <- notify
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var notified int
+	for notify := range results {
+		if notify {
+			notified++
+		}
+	}
+	if notified != 1 {
+		t.Errorf("resolvers told to notify = %d, want 1", notified)
 	}
 }
 
@@ -655,7 +751,7 @@ func TestListAlertEvents_LastMatchStateFilter(t *testing.T) {
 	}
 
 	// Resolve one event.
-	_ = s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0030")
+	_, _ = s.ResolveAlertEvent(ctx, r.ID, org.ID, "CVE-2024-0030")
 
 	// Filter for unresolved (last_match_state = true).
 	matchTrue := true

@@ -61,6 +61,7 @@ WHERE ae.suppress_delivery = false
       FROM notification_deliveries nd
       WHERE nd.rule_id  = ae.rule_id
         AND nd.org_id   = ae.org_id
+        AND nd.kind     = 'alert'
         AND nd.status   IN ('pending', 'processing', 'succeeded')
         AND nd.created_at >= ae.last_fired_at - interval '1 minute'
   )

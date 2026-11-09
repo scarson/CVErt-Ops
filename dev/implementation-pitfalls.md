@@ -368,6 +368,35 @@ _, _ = io.Copy(io.Discard, resp.Body)
 
 **The Lesson:** `json.Decoder` does not consume the entire response body — it reads only what it needs. Always drain the remainder with `io.Copy(io.Discard, resp.Body)` before `Close()`. This applies to ALL outbound HTTP responses, not just feed adapter calls.
 
+
+---
+
+### FEED-21: A Dedupe Key That Drops Range Bounds Loses Release Branches
+
+**The Flaw:** Deduplicating affected packages on `(ecosystem, package, introduced)` looks harmless, but GHSA sets `introduced` to the same value for every branch of a package.
+
+**Why It Matters:** Only the first branch survives, so a version on another branch reports "not affected". 23% of reviewed GHSA advisories repeat a package across branches.
+
+**The Fix:** Key on the whole range: `introduced`, `fixed`, `last_affected`, and whether the bounds are compared the same way.
+
+---
+
+### FEED-22: An Advisory's Withdrawal Is Not a CVE's Withdrawal
+
+**The Flaw:** Treating any withdrawn source as a withdrawn CVE. With one row per advisory, one withdrawn duplicate is enough to clear CVSS scores on a valid CVE.
+
+**Why It Matters:** Severity rules stop matching it, which is a silent false negative.
+
+**The Fix:** A withdrawn advisory contributes nothing. Tombstone the CVE only when the highest-precedence status source says so, or when every source row is withdrawn.
+
+---
+
+### FEED-23: A Declared Vulnerable Range Must Never Be Shortened
+
+**The Flaw:** Replacing an inclusive upper bound with `first_patched_version` unconditionally. For `>= 1.0.0, <= 3.0.0` patched in `2.0.0`, the range becomes `[1.0.0, 2.0.0)` and `2.5.0` reports "not affected".
+
+**The Fix:** Use the patched version only when it provably sorts above the declared bound in the package's ecosystem. Otherwise keep the declared bound as `last_affected`.
+
 ---
 
 ### Review Checklist
@@ -2676,6 +2705,15 @@ Every consumer hit is a call site that needs updating. Infrastructure without co
 **The Fix:** Compare with `lower(cves.severity)` and lowercase input. Do not normalize the stored value without a plan for `material_hash`, which includes severity: a changed hash fires alerts for every matching rule.
 
 **The Lesson:** When values cross a boundary between components, test with what the real source sends. Seeding the value a query expects proves only that the query matches itself.
+
+
+---
+
+### ARCH-47: An Array Sort Before Hashing Must Compare Every Hashed Field
+
+**The Flaw:** Sorting hash inputs by a subset of their fields. Elements that tie keep their input order, so the hash depends on it. A dedupe key on the same subset hides this until the dedupe key changes.
+
+**The Fix:** Compare every field that reaches the hash.
 
 ---
 

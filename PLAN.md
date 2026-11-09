@@ -351,7 +351,7 @@ Within the same DB transaction:
 1) `SELECT pg_advisory_xact_lock($1)` where `$1 = cveAdvisoryKey(cve_id)` (int64)
 2) Upsert/replace the per-source normalized row in `cve_sources` (and store raw payload separately).
 3) Recompute the canonical CVE row **from the current set of `cve_sources`** for that CVE (read-your-writes).
-4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`. **Child table rows MUST be sorted by their natural key before upsert** (e.g., `cve_references` by `url_canonical` ASC, `cve_affected_packages` by `(ecosystem, package_name, introduced)` ASC, `cve_affected_cpes` by `cpe_normalized` ASC). The advisory lock in step 1 guarantees that no two workers are inside the same CVE's merge transaction simultaneously, preventing deadlocks at the CVE level. Consistent child row ordering prevents deadlocks within the child table upserts themselves (e.g., if the merge pipeline is extended or if Postgres's internal row ordering differs across code paths). Sorting is cheap; debugging a deadlock in production is not.
+4) Upsert the canonical `cves` row and dependent rows (`cve_references`, `cve_affected_*`) and compute `material_hash`. **Child table rows MUST be sorted by their natural key before upsert** (e.g., `cve_references` by `url_canonical` ASC, `cve_affected_packages` by the whole range ASC, `cve_affected_cpes` by `cpe_normalized` ASC). The advisory lock in step 1 guarantees that no two workers are inside the same CVE's merge transaction simultaneously, preventing deadlocks at the CVE level. Consistent child row ordering prevents deadlocks within the child table upserts themselves (e.g., if the merge pipeline is extended or if Postgres's internal row ordering differs across code paths). Sorting is cheap; debugging a deadlock in production is not.
 4a) Apply staged EPSS score (required): `SELECT epss_score, as_of_date FROM epss_staging WHERE cve_id = $1`. If a row is found, apply via `UPDATE cves SET epss_score = staged, date_epss_updated = now() WHERE cve_id = $1 AND epss_score IS DISTINCT FROM staged`.
 4b) Delete the staging row (required): `DELETE FROM epss_staging WHERE cve_id = $1`. This must execute regardless of whether 4a found a row — prevents stale rows from accumulating. Both 4a and 4b are inside the same transaction; if the merge rolls back, the staging row is preserved for retry.
 5) Commit.
@@ -423,7 +423,7 @@ Note: `fts_document` is **not** on `cves`. It lives in `cve_search_index` (see s
 
 ### 4.4 Per-Source Storage (`cve_sources`)
 Store normalized per-feed JSON (not raw) to preserve provenance and enable "show source differences."
-- PK: `(cve_id, source_name)`
+- PK: `(cve_id, source_name, source_id)`. `source_id` is the feed's native advisory ID, or the CVE ID for a feed with none, so several advisories from one feed can describe one CVE.
 - fields: `normalized_json`, `source_date_modified`, `source_url`, `ingested_at`
 
 ### 4.5 Raw Payload Storage
@@ -456,6 +456,10 @@ Define precedence **per field**, not globally:
 ### 5.2 Merge Strategy
 - Build a canonical record by selecting highest-precedence non-null value per field.
 - For list-like fields (CWEs, references, affected products): **union + normalize + dedupe**.
+- A source can hold several rows for one CVE, one per advisory. They are collapsed in `source_id` order before per-field precedence applies.
+- Affected package ranges union on the whole range: ecosystem, folded package name, `introduced`, `fixed`, `last_affected` and range class. Source precedence (§5.1) chooses only which duplicate's `range_type` and `events` are stored. The stored name stays as the kept row spelled it.
+- A withdrawn advisory contributes nothing. A CVE is tombstoned only when the highest-precedence status source says so or every source row is withdrawn.
+- Ecosystem names are OSV's (`internal/ecosystem`); GHSA's spellings are mapped at parse time.
 - Preserve all per-source normalized documents in `cve_sources`.
 - On each adapter write, the merge function re-reads all `cve_sources` rows for the given `cve_id` and recomputes the canonical record from scratch. This ensures consistency regardless of ingestion order and makes the merge purely a function of current source state. The write amplification (~5 source rows read per CVE upsert) is acceptable at MVP scale; an incremental merge approach would be more complex and prone to drift.
 - **FTS lives in a separate `cve_search_index` table.** Postgres MVCC means that any UPDATE to an indexed column on `cves` (including the frequently-updated `date_modified_canonical`, `epss_score`) writes a new physical row tuple and forces all index entries — including GIN — to be updated, even if `fts_document` is unchanged. Application-level conditional regeneration of the column value does not avoid this. The correct solution is to put `fts_document tsvector` and its GIN index in a dedicated 1:1 table `cve_search_index(cve_id text PRIMARY KEY REFERENCES cves, fts_document tsvector NOT NULL)`. The merge function only writes to `cve_search_index` when text-contributing fields (description, CWE titles) actually change. Routine timestamp/score updates to `cves` never touch `cve_search_index` and therefore never trigger a GIN index write. Search queries use a JOIN: `SELECT c.* FROM cves c JOIN cve_search_index si ON c.cve_id = si.cve_id WHERE si.fts_document @@ query`.
@@ -467,7 +471,7 @@ A "material change" is any change to one of these, after normalization:
 - `cvss_v4_score`, `cvss_v4_vector`
 - `exploit_available`
 - `in_cisa_kev`
-- affected packages (ecosystem/package/version range set)
+- affected packages (ecosystem/package/version range set, including `last_affected` and whether a range is a commit-hash or SemVer range)
 - affected CPE set
 - `status` transition to `rejected` or from `rejected` to active
 - description changes are **non-material by default** (stored but do not re-fire alerts)
@@ -2162,7 +2166,7 @@ Indexes: BTREE on severity/kev/exploit, BTREE dates (including `date_modified_ca
 PK `cve_id text REFERENCES cves(cve_id) ON DELETE CASCADE`. Columns: `fts_document tsvector NOT NULL`. Indexes: `GIN(fts_document)`. This 1:1 table isolates the GIN index from `cves` write churn (see section 5.2). Updated only when description or CWE-contributing fields change during merge.
 
 ### `cve_sources`
-PK `(cve_id, source_name)`. Columns: `normalized_json jsonb`, `source_date_modified`, `source_url`, `ingested_at`. Indexes: `source_name`, `source_date_modified`.
+PK `(cve_id, source_name, source_id)`. Columns: `normalized_json jsonb`, `source_date_modified`, `source_url`, `ingested_at`. Indexes: `source_name`, `source_date_modified`.
 
 ### `cve_raw_payloads`
 PK `id uuid`. Columns: `cve_id`, `source_name`, `ingested_at`, `payload jsonb`. Index: `(cve_id, source_name, ingested_at desc)`.

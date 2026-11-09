@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
 	"github.com/scarson/cvert-ops/internal/auth"
@@ -763,6 +765,40 @@ func TestTOTPConfirmWrongCode(t *testing.T) {
 
 	if confirmResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong code: got %d, want 401", confirmResp.StatusCode)
+	}
+}
+
+// TestTOTPConfirmWrongLengthCode submits a code that satisfies the request
+// schema's six-character limit and is shorter once surrounding space is trimmed.
+func TestTOTPConfirmWrongLengthCode(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newMFAServer(t, db)
+
+	doRegister(t, ctx, ts, "totp-short@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "totp-short@example.com", "test-password-1234")
+	cookies := authedCookies(t, loginResp)
+	loginResp.Body.Close() //nolint:errcheck,gosec
+
+	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
+	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
+	setupResp.Body.Close() //nolint:errcheck,gosec
+
+	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", `{"code":"12345 "}`, confirmCookies)
+	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	defer confirmResp.Body.Close() //nolint:errcheck,gosec
+
+	if confirmResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong-length code: got %d, want 401", confirmResp.StatusCode)
 	}
 }
 
@@ -2123,6 +2159,27 @@ func TestMatchingTOTPStep(t *testing.T) {
 		}
 		if matched {
 			t.Error("matched a code from no step in the window")
+		}
+	})
+
+	for _, code := range []string{"12345", "1234567", "12345 ", "é23456"} {
+		t.Run("wrong-length code "+code+" does not match", func(t *testing.T) {
+			t.Parallel()
+			_, matched, err := matchingTOTPStep(code, secret, clockAt(step))
+			if err != nil {
+				t.Fatalf("matchingTOTPStep: %v", err)
+			}
+			if matched {
+				t.Error("matched a code of the wrong length")
+			}
+		})
+	}
+
+	t.Run("undecodable secret is an error", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := matchingTOTPStep("123456", "not base32!", clockAt(step))
+		if !errors.Is(err, otp.ErrValidateSecretInvalidBase32) {
+			t.Errorf("matchingTOTPStep error = %v, want %v", err, otp.ErrValidateSecretInvalidBase32)
 		}
 	})
 }

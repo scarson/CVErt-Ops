@@ -69,9 +69,17 @@ ON CONFLICT (cve_id, source_name, source_id) DO UPDATE
 SELECT * FROM cve_sources WHERE cve_id = $1 ORDER BY source_name, source_id;
 
 -- name: FindCVEBySourceID :one
--- Used for late-binding PK migration: find a CVE row stored under its native
--- GHSA/OSV ID when a CVE alias has since been added (§3.2).
-SELECT cve_id FROM cve_sources WHERE source_name = $1 AND source_id = $2 LIMIT 1;
+-- Finds where an advisory is stored other than under the CVE it now names, for
+-- late-binding migration (§3.2).
+SELECT cve_id FROM cve_sources
+WHERE source_name = $1 AND source_id = $2 AND cve_id <> $3
+ORDER BY cve_id LIMIT 1;
+
+-- name: DeleteCVESource :exec
+DELETE FROM cve_sources WHERE cve_id = $1 AND source_name = $2 AND source_id = $3;
+
+-- name: CountCVESources :one
+SELECT count(*) FROM cve_sources WHERE cve_id = $1;
 
 -- name: DeleteCVEReferences :exec
 -- Delete all reference rows before re-inserting in merge pipeline (§5.1).

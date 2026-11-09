@@ -92,7 +92,7 @@ type ResolvedCVE struct {
 // priority lists contribute to union fields (CWEs, references, packages, CPEs)
 // but never win scalar precedence over the named sources.
 func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
-	patches := make(map[string]feed.CanonicalPatch, len(sources))
+	rows := make([]sourceRow, 0, len(sources))
 	var latestModified *time.Time
 
 	for _, src := range sources {
@@ -102,7 +102,7 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 			// with remaining well-formed sources rather than failing the whole CVE.
 			continue
 		}
-		patches[src.SourceName] = p
+		rows = append(rows, sourceRow{name: src.SourceName, id: src.SourceID, patch: p})
 		if src.SourceDateModified.Valid {
 			t := src.SourceDateModified.Time
 			if latestModified == nil || t.After(*latestModified) {
@@ -112,24 +112,22 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 		}
 	}
 
+	patches, allWithdrawn := collapseSources(rows)
+
 	var r ResolvedCVE
 	r.DateModifiedSourceMax = latestModified
 
 	// --- Status (MITRE > NVD > OSV > GHSA, then unknown sources) ---
 	r.Status = firstStr(patches, func(p feed.CanonicalPatch) string { return p.Status }, statusPriority)
 
-	// --- IsWithdrawn: follows the same source as Status when possible,
-	//     but also set if ANY source explicitly marks withdrawal. ---
-	for _, src := range statusPriority {
-		if p, ok := patches[src]; ok && p.Status != "" {
-			r.IsWithdrawn = p.IsWithdrawn
-			break
-		}
-	}
+	// --- IsWithdrawn: the CVE is withdrawn when every row is, or when the
+	//     highest-precedence source with a status says so. A withdrawn advisory
+	//     is absent from patches, so it cannot reach this check. ---
+	r.IsWithdrawn = allWithdrawn
 	if !r.IsWithdrawn {
-		for _, p := range patches {
-			if p.IsWithdrawn {
-				r.IsWithdrawn = true
+		for _, src := range statusPriority {
+			if p, ok := patches[src]; ok && p.Status != "" {
+				r.IsWithdrawn = p.IsWithdrawn
 				break
 			}
 		}
@@ -228,8 +226,8 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 
 	// --- References: union, deduped by url_canonical ---
 	refSeen := make(map[string]struct{})
-	for _, p := range patches {
-		for _, ref := range p.References {
+	for _, src := range slices.Sorted(maps.Keys(patches)) {
+		for _, ref := range patches[src].References {
 			canon := canonicalizeURL(ref.URL)
 			if _, seen := refSeen[canon]; seen {
 				continue
@@ -243,29 +241,13 @@ func resolve(sources []generated.CveSource) (ResolvedCVE, error) {
 		}
 	}
 
-	// --- Affected packages: union, deduped by (ecosystem, package_name, introduced),
-	//     iterated in pkgPriority order so higher-precedence source wins collisions ---
-	pkgSeen := make(map[string]struct{})
-	for _, src := range slices.Concat(pkgPriority, otherSources(patches, pkgPriority)) {
-		p, ok := patches[src]
-		if !ok {
-			continue
-		}
-		for _, pkg := range p.AffectedPackages {
-			// NUL byte separator: safe because ecosystem/package names never contain NUL.
-			key := pkg.Ecosystem + "\x00" + pkg.PackageName + "\x00" + pkg.Introduced
-			if _, seen := pkgSeen[key]; seen {
-				continue
-			}
-			pkgSeen[key] = struct{}{}
-			r.AffectedPackages = append(r.AffectedPackages, pkg)
-		}
-	}
+	// --- Affected packages: union of whole ranges ---
+	r.AffectedPackages = unionPackages(patches)
 
 	// --- Affected CPEs: union, deduped by cpe_normalized ---
 	cpeSeen := make(map[string]struct{})
-	for _, p := range patches {
-		for _, cpe := range p.AffectedCPEs {
+	for _, src := range slices.Sorted(maps.Keys(patches)) {
+		for _, cpe := range patches[src].AffectedCPEs {
 			norm := cpe.CPENormalized
 			if norm == "" {
 				norm = strings.ToLower(cpe.CPE)

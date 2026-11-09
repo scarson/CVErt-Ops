@@ -502,6 +502,13 @@ func (e *Evaluator) evaluateRule(
 	matchedIDs := make(map[string]bool, len(matched))
 	for _, m := range matched {
 		matchedIDs[m.CVEID] = true
+		exists, err := e.cveExists(ctx, m.CVEID)
+		if err != nil {
+			return len(matched), false, len(candidateIDs), fmt.Errorf("check CVE %s: %w", m.CVEID, err)
+		}
+		if !exists {
+			continue
+		}
 		eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
 		if err != nil {
 			return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
@@ -530,6 +537,17 @@ func (e *Evaluator) evaluateRule(
 	}
 
 	return len(matched), false, len(candidateIDs), nil
+}
+
+// cveExists reports whether a CVE row still exists. A late-binding merge can rename a
+// CVE after the candidate query that returned it, and an event recorded under the old
+// ID could never resolve. A rename that commits between this check and the insert that
+// follows it still leaves one such event; that gap is accepted, because closing it would
+// mean holding the merge pipeline's CVE lock on every event insert.
+func (e *Evaluator) cveExists(ctx context.Context, cveID string) (bool, error) {
+	var exists bool
+	err := e.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM cves WHERE cve_id = $1)", cveID).Scan(&exists)
+	return exists, err
 }
 
 // evaluateRuleInChunks runs evaluateRule over candidateIDs in chunks of at most candidateCap

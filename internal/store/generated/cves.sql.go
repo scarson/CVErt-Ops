@@ -15,6 +15,17 @@ import (
 	"github.com/sqlc-dev/pqtype"
 )
 
+const countCVESources = `-- name: CountCVESources :one
+SELECT count(*) FROM cve_sources WHERE cve_id = $1
+`
+
+func (q *Queries) CountCVESources(ctx context.Context, cveID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCVESources, cveID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteCVEAffectedCPEs = `-- name: DeleteCVEAffectedCPEs :exec
 DELETE FROM cve_affected_cpes WHERE cve_id = $1
 `
@@ -62,6 +73,21 @@ DELETE FROM cve_references WHERE cve_id = $1
 // Delete all reference rows before re-inserting in merge pipeline (§5.1).
 func (q *Queries) DeleteCVEReferences(ctx context.Context, cveID string) error {
 	_, err := q.db.ExecContext(ctx, deleteCVEReferences, cveID)
+	return err
+}
+
+const deleteCVESource = `-- name: DeleteCVESource :exec
+DELETE FROM cve_sources WHERE cve_id = $1 AND source_name = $2 AND source_id = $3
+`
+
+type DeleteCVESourceParams struct {
+	CveID      string
+	SourceName string
+	SourceID   string
+}
+
+func (q *Queries) DeleteCVESource(ctx context.Context, arg DeleteCVESourceParams) error {
+	_, err := q.db.ExecContext(ctx, deleteCVESource, arg.CveID, arg.SourceName, arg.SourceID)
 	return err
 }
 
@@ -162,25 +188,28 @@ func (q *Queries) DigestCVEs(ctx context.Context, arg DigestCVEsParams) ([]Diges
 }
 
 const findCVEBySourceID = `-- name: FindCVEBySourceID :one
-SELECT cve_id FROM cve_sources WHERE source_name = $1 AND source_id = $2 LIMIT 1
+SELECT cve_id FROM cve_sources
+WHERE source_name = $1 AND source_id = $2 AND cve_id <> $3
+ORDER BY cve_id LIMIT 1
 `
 
 type FindCVEBySourceIDParams struct {
 	SourceName string
-	SourceID   sql.NullString
+	SourceID   string
+	CveID      string
 }
 
-// Used for late-binding PK migration: find a CVE row stored under its native
-// GHSA/OSV ID when a CVE alias has since been added (§3.2).
+// Finds where an advisory is stored other than under the CVE it now names, for
+// late-binding migration (§3.2).
 func (q *Queries) FindCVEBySourceID(ctx context.Context, arg FindCVEBySourceIDParams) (string, error) {
-	row := q.db.QueryRowContext(ctx, findCVEBySourceID, arg.SourceName, arg.SourceID)
+	row := q.db.QueryRowContext(ctx, findCVEBySourceID, arg.SourceName, arg.SourceID, arg.CveID)
 	var cve_id string
 	err := row.Scan(&cve_id)
 	return cve_id, err
 }
 
 const getAllCVESources = `-- name: GetAllCVESources :many
-SELECT cve_id, source_name, source_id, normalized_json, source_date_modified, source_url, ingested_at FROM cve_sources WHERE cve_id = $1 ORDER BY source_name
+SELECT cve_id, source_name, source_id, normalized_json, source_date_modified, source_url, ingested_at FROM cve_sources WHERE cve_id = $1 ORDER BY source_name, source_id
 `
 
 func (q *Queries) GetAllCVESources(ctx context.Context, cveID string) ([]CveSource, error) {
@@ -976,9 +1005,8 @@ func (q *Queries) UpsertCVESearchIndex(ctx context.Context, arg UpsertCVESearchI
 const upsertCVESource = `-- name: UpsertCVESource :exec
 INSERT INTO cve_sources (cve_id, source_name, source_id, normalized_json, source_date_modified, source_url)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (cve_id, source_name) DO UPDATE
-    SET source_id            = EXCLUDED.source_id,
-        normalized_json      = EXCLUDED.normalized_json,
+ON CONFLICT (cve_id, source_name, source_id) DO UPDATE
+    SET normalized_json      = EXCLUDED.normalized_json,
         source_date_modified = EXCLUDED.source_date_modified,
         source_url           = EXCLUDED.source_url,
         ingested_at          = now()
@@ -988,7 +1016,7 @@ ON CONFLICT (cve_id, source_name) DO UPDATE
 type UpsertCVESourceParams struct {
 	CveID              string
 	SourceName         string
-	SourceID           sql.NullString
+	SourceID           string
 	NormalizedJson     json.RawMessage
 	SourceDateModified sql.NullTime
 	SourceUrl          sql.NullString

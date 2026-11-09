@@ -298,9 +298,12 @@ Mailpit UI: http://localhost:8025
 - `cve_search_index(cve_id, fts_document tsvector)` is a separate 1:1 table — never put FTS on `cves`; GIN rewrites on every timestamp/score update cause severe write amplification
 - `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: normalize CVSS vectors to canonical spec metric order; sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
 - Merge re-reads all `cve_sources` rows and recomputes the canonical `cves` row from scratch on every source write — not incremental; field precedence is per-field (§5.1)
+- `cve_sources` is keyed `(cve_id, source_name, source_id)`: one row per advisory, so a feed can hold several rows for one CVE. A withdrawn advisory contributes nothing; a CVE is tombstoned only when its status authority says so or every row is withdrawn
+- `cve_affected_packages` holds every distinct range; `material_hash` covers ecosystem, folded package name, `introduced`, `fixed`, `last_affected` and range class, under a sort that compares all of them
 - `cves.severity` is stored in the case the feed sent; compare with `lower(cves.severity)` (implementation-pitfalls.md ARCH-46)
 
 **Feed adapters**
+- Ecosystem names are OSV's, defined in `internal/ecosystem`; the GHSA adapter maps its names and parses `vulnerable_version_range` at parse time
 - Implement `FeedAdapter` interface; pure functions with injected HTTP client; each manages its own upstream rate limiter
 - GHSA/OSV alias resolution: if `aliases[]` contains a CVE ID, use it as the primary key — not the native ID. Late-binding PK migration required for aliases added after initial ingest
 - Streaming parse required for all large responses: `json.Decoder` with `Token()`/`More()` loop; `Decode(&slice)` is forbidden for large feeds
@@ -400,6 +403,7 @@ internal/auth/       # JWT, OAuth, API keys, argon2id
 internal/config/     # caarlos0/env config structs
 internal/crypto/     # cryptographic helpers
 internal/dbutil/     # nullable type conversion helpers (database/sql)
+internal/ecosystem/  # canonical package ecosystem names and package name folding
 internal/doctor/     # system health check framework (CLI + API)
 internal/feed/       # feed adapters (nvd, mitre, kev, osv, ghsa, epss, vendor)
 internal/ingest/     # feed ingestion orchestrator

@@ -29,6 +29,27 @@ func makeSourceWithDate(sourceName string, patch feed.CanonicalPatch, t time.Tim
 	return s
 }
 
+// makeSourceWithID is makeSource for a source row with a native advisory ID.
+func makeSourceWithID(sourceName, sourceID string, patch feed.CanonicalPatch) generated.CveSource {
+	s := makeSource(sourceName, patch)
+	s.SourceID = sourceID
+	return s
+}
+
+func TestResolveSeveralRowsOfOneSourceUnionTheirRanges(t *testing.T) {
+	t.Parallel()
+	r, err := resolve([]generated.CveSource{
+		makeSourceWithID(SourceOSV, "PYSEC-2", feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", Introduced: "2.0", Fixed: "2.5"}}}),
+		makeSourceWithID(SourceOSV, "GHSA-1", feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{{Ecosystem: "PyPI", PackageName: "x", Introduced: "0", Fixed: "1.0"}}}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(r.AffectedPackages) != 2 {
+		t.Fatalf("AffectedPackages = %+v, want both ranges", r.AffectedPackages)
+	}
+}
+
 // strPtr is a convenience helper for *string literals in test data.
 func strPtr(s string) *string { return &s }
 
@@ -151,11 +172,10 @@ func TestResolveIsWithdrawnFromPrimarySource(t *testing.T) {
 	}
 }
 
-func TestResolveIsWithdrawnORLogic(t *testing.T) {
+func TestResolveWithdrawnAdvisoryDoesNotTombstone(t *testing.T) {
 	t.Parallel()
 
-	// MITRE (primary) says NOT withdrawn; GHSA says withdrawn.
-	// OR logic should still set IsWithdrawn.
+	// MITRE (primary) says NOT withdrawn; GHSA withdrew its own advisory.
 	sources := []generated.CveSource{
 		makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", Status: "Published", IsWithdrawn: false}),
 		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true}),
@@ -164,8 +184,36 @@ func TestResolveIsWithdrawnORLogic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if !r.IsWithdrawn {
-		t.Error("IsWithdrawn should be true when any source marks withdrawal (OR logic)")
+	if r.IsWithdrawn {
+		t.Error("IsWithdrawn should be false when only an advisory is withdrawn")
+	}
+}
+
+func TestResolveEveryRowWithdrawnTombstones(t *testing.T) {
+	t.Parallel()
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true, Status: "withdrawn"}),
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true, Status: "withdrawn"}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !r.IsWithdrawn || r.Status != "withdrawn" {
+		t.Errorf("IsWithdrawn = %v, Status = %q, want true and withdrawn", r.IsWithdrawn, r.Status)
+	}
+}
+
+func TestResolveWithdrawnGHSADoesNotTombstoneLiveOSV(t *testing.T) {
+	t.Parallel()
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", IsWithdrawn: true, Status: "withdrawn"}),
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1"}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.IsWithdrawn || r.Status != "" {
+		t.Errorf("IsWithdrawn = %v, Status = %q, want false and empty", r.IsWithdrawn, r.Status)
 	}
 }
 
@@ -436,10 +484,10 @@ func TestResolveRefDistinctURLsKept(t *testing.T) {
 
 // ── Affected packages ─────────────────────────────────────────────────────────
 
-func TestResolvePkgOSVWinsOverGHSA(t *testing.T) {
+func TestResolveKeepsBothFixesForOneIntroduced(t *testing.T) {
 	t.Parallel()
 
-	// Same ecosystem+package+introduced from two sources: OSV entry should win.
+	// Same ecosystem+package+introduced from two sources, with different fixes.
 	osvPkg := feed.AffectedPackage{
 		Ecosystem: "PyPI", PackageName: "requests", Introduced: "2.0.0", Fixed: "2.28.0",
 	}
@@ -454,11 +502,25 @@ func TestResolvePkgOSVWinsOverGHSA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if len(r.AffectedPackages) != 1 {
-		t.Fatalf("AffectedPackages count = %d, want 1 (deduped)", len(r.AffectedPackages))
+	if len(r.AffectedPackages) != 2 || r.AffectedPackages[0].Fixed != "2.27.0" || r.AffectedPackages[1].Fixed != "2.28.0" {
+		t.Fatalf("AffectedPackages = %+v, want fixes 2.27.0 and 2.28.0", r.AffectedPackages)
 	}
-	if r.AffectedPackages[0].Fixed != "2.28.0" {
-		t.Errorf("AffectedPackages[0].Fixed = %q, want %q (OSV wins over GHSA)", r.AffectedPackages[0].Fixed, "2.28.0")
+}
+
+func TestResolveIdenticalRangeKeepsOSVRow(t *testing.T) {
+	t.Parallel()
+	events := json.RawMessage(`[{"introduced":"2.0.0"},{"fixed":"2.28.0"}]`)
+	osvPkg := feed.AffectedPackage{Ecosystem: "PyPI", PackageName: "requests", Introduced: "2.0.0", Fixed: "2.28.0", Events: events}
+	ghsaPkg := feed.AffectedPackage{Ecosystem: "PyPI", PackageName: "requests", Introduced: "2.0.0", Fixed: "2.28.0"}
+	r, err := resolve([]generated.CveSource{
+		makeSource(SourceGHSA, feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{ghsaPkg}}),
+		makeSource(SourceOSV, feed.CanonicalPatch{CVEID: "CVE-1", AffectedPackages: []feed.AffectedPackage{osvPkg}}),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(r.AffectedPackages) != 1 || r.AffectedPackages[0].Events == nil {
+		t.Fatalf("AffectedPackages = %+v, want the OSV row", r.AffectedPackages)
 	}
 }
 
@@ -901,10 +963,9 @@ func TestResolveStatusMITREWinsOverRedHat(t *testing.T) {
 	}
 }
 
-func TestResolvePkgRedHatWinsOverMSRC(t *testing.T) {
+func TestResolveKeepsDifferentFixesFromRedHatAndMSRC(t *testing.T) {
 	t.Parallel()
 
-	// For packages, Red Hat is ahead of MSRC in pkgPriority.
 	rhPkg := feed.AffectedPackage{
 		Ecosystem: "RPM", PackageName: "openssl", Introduced: "1.0.0", Fixed: "1.1.1k",
 	}
@@ -919,11 +980,8 @@ func TestResolvePkgRedHatWinsOverMSRC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if len(r.AffectedPackages) != 1 {
-		t.Fatalf("AffectedPackages count = %d, want 1 (deduped)", len(r.AffectedPackages))
-	}
-	if r.AffectedPackages[0].Fixed != "1.1.1k" {
-		t.Errorf("AffectedPackages[0].Fixed = %q, want %q (Red Hat wins over MSRC for packages)", r.AffectedPackages[0].Fixed, "1.1.1k")
+	if len(r.AffectedPackages) != 2 || r.AffectedPackages[0].Fixed != "1.1.1j" || r.AffectedPackages[1].Fixed != "1.1.1k" {
+		t.Fatalf("AffectedPackages = %+v, want fixes 1.1.1j and 1.1.1k", r.AffectedPackages)
 	}
 }
 

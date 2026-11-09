@@ -58,6 +58,18 @@ func TestMaterialHash_GoldenCorpusMatchesPins(t *testing.T) {
 
 	got := goldenCorpusHashes(t)
 
+	// UPDATE_GOLDEN_HASHES=1 rewrites the pins, for a change that means to move them.
+	if os.Getenv("UPDATE_GOLDEN_HASHES") == "1" {
+		updated, err := json.MarshalIndent(got, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal pins: %v", err)
+		}
+		if err := os.WriteFile(goldenHashPinsPath, append(updated, '\n'), 0o600); err != nil {
+			t.Fatalf("write pins: %v", err)
+		}
+		return
+	}
+
 	if len(pins) == 0 {
 		t.Fatal("no pinned hashes")
 	}

@@ -41,6 +41,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/feed"
 )
 
@@ -411,38 +412,35 @@ func parseAdvisory(rec ghsaAdvisory) *feed.CanonicalPatch {
 
 	// Affected packages. GHSA provides version ranges as a free-form string
 	// (e.g., ">= 1.0, < 1.2.3") and first_patched_version as the fix boundary.
-	// We synthesize OSV-style events from first_patched_version when available.
+	// We parse both into OSV-style bounds and events.
 	for _, v := range rec.Vulnerabilities {
-		eco := strings.Clone(feed.StripNullBytes(v.Package.Ecosystem))
+		eco := ecosystem.FromGHSA(strings.Clone(feed.StripNullBytes(v.Package.Ecosystem)))
 		pkg := strings.Clone(feed.StripNullBytes(v.Package.Name))
 		if eco == "" || pkg == "" {
 			continue
 		}
 
-		var fixed string
+		var patched, rawRange string
 		if v.FirstPatchedVersion != nil {
-			fixed = strings.Clone(feed.StripNullBytes(*v.FirstPatchedVersion))
+			patched = strings.Clone(feed.StripNullBytes(*v.FirstPatchedVersion))
+		}
+		if v.VulnerableVersionRange != nil {
+			rawRange = strings.Clone(feed.StripNullBytes(*v.VulnerableVersionRange))
 		}
 
-		// Build synthetic OSV-format events for schema compatibility.
-		var eventsJSON json.RawMessage
-		if fixed != "" {
-			type event struct {
-				Introduced string `json:"introduced,omitempty"`
-				Fixed      string `json:"fixed,omitempty"`
-			}
-			if b, err := json.Marshal([]event{{Introduced: "0"}, {Fixed: fixed}}); err == nil {
-				eventsJSON = b
-			}
+		bounds, ok := parseVulnerableRange(eco, rawRange, patched)
+		if !ok && rawRange != "" {
+			slog.Warn("unreadable GHSA version range", "ghsa_id", nativeID, "package", pkg, "range", rawRange)
 		}
 
 		patch.AffectedPackages = append(patch.AffectedPackages, feed.AffectedPackage{
-			Ecosystem:   eco,
-			PackageName: pkg,
-			RangeType:   "ECOSYSTEM",
-			Introduced:  "0",
-			Fixed:       fixed,
-			Events:      eventsJSON,
+			Ecosystem:    eco,
+			PackageName:  pkg,
+			RangeType:    "ECOSYSTEM",
+			Introduced:   bounds.Introduced,
+			Fixed:        bounds.Fixed,
+			LastAffected: bounds.LastAffected,
+			Events:       boundsEvents(bounds),
 		})
 	}
 

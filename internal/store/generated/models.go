@@ -272,7 +272,7 @@ type CveSearchIndex struct {
 type CveSource struct {
 	CveID              string
 	SourceName         string
-	SourceID           sql.NullString
+	SourceID           string
 	NormalizedJson     json.RawMessage
 	SourceDateModified sql.NullTime
 	SourceUrl          sql.NullString

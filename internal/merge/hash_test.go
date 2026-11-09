@@ -278,3 +278,34 @@ func TestComputeMaterialHashAffectedPkgsSortTiebreak(t *testing.T) {
 		t.Error("AffectedPkgs with same content in different order should produce the same hash (sort by ecosystem, package_name, introduced)")
 	}
 }
+
+func TestComputeMaterialHash_TiedIntroducedIsOrderIndependent(t *testing.T) {
+	t.Parallel()
+	a := affectedPkgKey{Ecosystem: "npm", PackageName: "x", Introduced: "0", Fixed: "1.2.3"}
+	b := affectedPkgKey{Ecosystem: "npm", PackageName: "x", Introduced: "0", Fixed: "2.0.1"}
+	h1 := ComputeMaterialHash(MaterialFields{AffectedPkgs: []affectedPkgKey{a, b}})
+	h2 := ComputeMaterialHash(MaterialFields{AffectedPkgs: []affectedPkgKey{b, a}})
+	if h1 != h2 {
+		t.Errorf("hash depends on input order: %s vs %s", h1, h2)
+	}
+}
+
+func TestComputeMaterialHash_LastAffectedIsAnInput(t *testing.T) {
+	t.Parallel()
+	a := affectedPkgKey{Ecosystem: "npm", PackageName: "x", Introduced: "1.0", LastAffected: "1.5"}
+	b := affectedPkgKey{Ecosystem: "npm", PackageName: "x", Introduced: "1.0", LastAffected: "2.0"}
+	if ComputeMaterialHash(MaterialFields{AffectedPkgs: []affectedPkgKey{a}}) ==
+		ComputeMaterialHash(MaterialFields{AffectedPkgs: []affectedPkgKey{b}}) {
+		t.Error("a last_affected change did not change the hash")
+	}
+}
+
+func TestComputeMaterialHash_RangeClassIsAnInput(t *testing.T) {
+	t.Parallel()
+	git := affectedPkgKey{Ecosystem: "npm", PackageName: "x", Introduced: "0", RangeClass: "GIT"}
+	plain := affectedPkgKey{Ecosystem: "npm", PackageName: "x", Introduced: "0"}
+	if ComputeMaterialHash(MaterialFields{AffectedPkgs: []affectedPkgKey{git}}) ==
+		ComputeMaterialHash(MaterialFields{AffectedPkgs: []affectedPkgKey{plain}}) {
+		t.Error("a range class change did not change the hash")
+	}
+}

@@ -17,6 +17,7 @@ import (
 //
 // Callers must use a consistent domain prefix:
 //   - "cve" — merge pipeline and EPSS adapter (§5.3)
+//   - "source" — merge pipeline, one lock per advisory
 //
 // Any future advisory lock user MUST use a different domain prefix to avoid
 // colliding with the merge pipeline lock space.
@@ -29,6 +30,12 @@ func advisoryKey(domain, id string) int64 {
 	// Intentional uint64→int64 reinterpretation: advisory lock keys use the full
 	// int64 range. Zeroing the sign bit would halve hash distribution unnecessarily.
 	return int64(h.Sum64()) //nolint:gosec // G115: intentional full-range reinterpretation for advisory lock key
+}
+
+// SourceAdvisoryKey returns the advisory lock key for one source's advisory. It
+// keeps two merges of the same advisory from moving it to different CVEs at once.
+func SourceAdvisoryKey(sourceName, sourceID string) int64 {
+	return advisoryKey("source", sourceName+"\x00"+sourceID)
 }
 
 // CVEAdvisoryKey returns the advisory lock key for the given CVE ID. Used by

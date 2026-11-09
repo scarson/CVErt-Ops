@@ -16,6 +16,7 @@ import (
 	"github.com/sqlc-dev/pqtype"
 
 	"github.com/scarson/cvert-ops/internal/dbutil"
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/feed"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -50,12 +51,24 @@ func Ingest(
 	// Strip null bytes — Postgres TEXT/JSONB rejects \x00 (pitfall §2.10).
 	normalizedJSON = bytes.ReplaceAll(normalizedJSON, []byte{0}, []byte{})
 
+	// A feed with no native advisory ID identifies its row by the CVE.
+	sourceID := patch.SourceID
+	if sourceID == "" {
+		sourceID = patch.CVEID
+	}
+
 	tx, err := s.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("merge: begin tx: %w", err)
 	}
 	// Rollback is a no-op after Commit; always safe to defer.
 	defer func() { _ = tx.Rollback() }()
+
+	// Per-advisory lock, taken before any CVE lock: two merges of one advisory
+	// cannot place it under two CVEs.
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", SourceAdvisoryKey(sourceName, sourceID)); err != nil {
+		return fmt.Errorf("merge: advisory lock (source): %w", err)
+	}
 
 	// Step 1: per-CVE advisory lock — serializes all writers for this CVE.
 	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", CVEAdvisoryKey(patch.CVEID)); err != nil {
@@ -65,37 +78,9 @@ func Ingest(
 	// Bind sqlc queries to this transaction.
 	q := generated.New(tx)
 
-	// Step 1.5: late-binding PK migration (OSV/GHSA only).
-	// When alias resolution promotes a native advisory ID (e.g., GHSA-xxxx) to a
-	// CVE ID canonical primary key, the existing cves row may still be stored under
-	// the native ID. Migrate all child-table rows to the CVE ID before upserting.
-	if patch.SourceID != "" && patch.CVEID != patch.SourceID {
-		oldCVEID, err := q.FindCVEBySourceID(ctx, generated.FindCVEBySourceIDParams{
-			SourceName: sourceName,
-			SourceID:   dbutil.NullString(patch.SourceID),
-		})
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("merge: find CVE by source ID: %w", err)
-		}
-		if err == nil && oldCVEID != patch.CVEID {
-			// Lock the old CVE ID too — prevents concurrent writers for the old
-			// ID from racing with the migration. Lock order: new ID (held from
-			// step 1), then old ID. Deadlock is theoretically possible if two
-			// concurrent PK migrations cross-reference each other's CVE IDs,
-			// but Postgres's deadlock detector handles this rare case.
-			oldKey := CVEAdvisoryKey(oldCVEID)
-			newKey := CVEAdvisoryKey(patch.CVEID)
-			if oldKey != newKey {
-				// newKey is already held (step 1). Only acquire oldKey if different.
-				if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", oldKey); err != nil {
-					return fmt.Errorf("merge: advisory lock (old ID): %w", err)
-				}
-			}
-
-			if err := migrateCVEPK(ctx, tx, oldCVEID, patch.CVEID); err != nil {
-				return fmt.Errorf("merge: migrate CVE PK: %w", err)
-			}
-		}
+	// Step 1.5: an advisory stored under a different CVE moves to the one it now names.
+	if err := bindAdvisoryToCVE(ctx, tx, q, patch, sourceName, sourceID); err != nil {
+		return err
 	}
 
 	// Step 2: upsert cve_sources. IS DISTINCT FROM guard in SQL prevents TOAST
@@ -103,7 +88,7 @@ func Ingest(
 	if err := q.UpsertCVESource(ctx, generated.UpsertCVESourceParams{
 		CveID:              patch.CVEID,
 		SourceName:         sourceName,
-		SourceID:           dbutil.NullString(patch.SourceID),
+		SourceID:           sourceID,
 		NormalizedJson:     normalizedJSON,
 		SourceDateModified: toNullTimePtr(patch.DateModified),
 		SourceUrl:          sql.NullString{}, // not available in CanonicalPatch
@@ -123,8 +108,36 @@ func Ingest(
 		}
 	}
 
+	// Steps 4 to 10, except 8.5, which reads this patch's vendor data.
+	if err := canonicalize(ctx, q, patch.CVEID); err != nil {
+		return err
+	}
+
+	// Step 8.5: upsert vendor enrichment (optional — only vendor-specific adapters populate this).
+	if patch.VendorEnrichment != nil {
+		enrichmentJSON := patch.VendorEnrichment.Data
+		if enrichmentJSON == nil {
+			enrichmentJSON = json.RawMessage(`{}`)
+		}
+		if err := q.UpsertVendorEnrichment(ctx, generated.UpsertVendorEnrichmentParams{
+			CveID:          patch.CVEID,
+			SourceName:     sourceName,
+			VendorSeverity: dbutil.NullString(derefString(patch.VendorEnrichment.VendorSeverity)),
+			VendorFixState: dbutil.NullString(derefString(patch.VendorEnrichment.VendorFixState)),
+			Enrichment:     enrichmentJSON,
+		}); err != nil {
+			return fmt.Errorf("merge: upsert vendor enrichment: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// canonicalize recomputes one CVE's canonical row and child tables from its
+// current cve_sources rows. The caller holds the CVE's advisory lock.
+func canonicalize(ctx context.Context, q *generated.Queries, cveID string) error {
 	// Step 4: read all sources and resolve canonical field values.
-	sources, err := q.GetAllCVESources(ctx, patch.CVEID)
+	sources, err := q.GetAllCVESources(ctx, cveID)
 	if err != nil {
 		return fmt.Errorf("merge: get cve sources: %w", err)
 	}
@@ -157,7 +170,7 @@ func Ingest(
 	// Step 6: upsert cves. All resolved fields are always written; date_modified_canonical
 	// is only bumped when material_hash changes (CASE expression in SQL).
 	if err := q.UpsertCVE(ctx, generated.UpsertCVEParams{
-		CveID:                 patch.CVEID,
+		CveID:                 cveID,
 		Status:                dbutil.NullString(resolved.Status),
 		DatePublished:         toNullTimePtr(resolved.DatePublished),
 		DateModifiedSourceMax: toNullTimePtr(resolved.DateModifiedSourceMax),
@@ -181,14 +194,14 @@ func Ingest(
 
 	// Step 7: tombstone — NULL out sensitive fields for rejected/withdrawn CVEs.
 	if resolved.IsWithdrawn {
-		if err := q.TombstoneCVE(ctx, patch.CVEID); err != nil {
+		if err := q.TombstoneCVE(ctx, cveID); err != nil {
 			return fmt.Errorf("merge: tombstone: %w", err)
 		}
 	}
 
 	// Step 8: delete + re-insert child tables.
 	// References — deduplicated by url_canonical via ON CONFLICT DO NOTHING.
-	if err := q.DeleteCVEReferences(ctx, patch.CVEID); err != nil {
+	if err := q.DeleteCVEReferences(ctx, cveID); err != nil {
 		return fmt.Errorf("merge: delete references: %w", err)
 	}
 	for _, ref := range resolved.References {
@@ -197,7 +210,7 @@ func Ingest(
 			tags = []string{}
 		}
 		if err := q.InsertCVEReference(ctx, generated.InsertCVEReferenceParams{
-			CveID:        patch.CVEID,
+			CveID:        cveID,
 			Url:          ref.URL,
 			UrlCanonical: ref.URLCanonical,
 			Tags:         tags,
@@ -207,12 +220,12 @@ func Ingest(
 	}
 
 	// Affected packages.
-	if err := q.DeleteCVEAffectedPackages(ctx, patch.CVEID); err != nil {
+	if err := q.DeleteCVEAffectedPackages(ctx, cveID); err != nil {
 		return fmt.Errorf("merge: delete affected packages: %w", err)
 	}
 	for _, pkg := range resolved.AffectedPackages {
 		if err := q.InsertAffectedPackage(ctx, generated.InsertAffectedPackageParams{
-			CveID:        patch.CVEID,
+			CveID:        cveID,
 			Ecosystem:    pkg.Ecosystem,
 			PackageName:  pkg.PackageName,
 			Namespace:    dbutil.NullString(pkg.Namespace),
@@ -227,12 +240,12 @@ func Ingest(
 	}
 
 	// Affected CPEs — deduplicated by cpe_normalized via ON CONFLICT DO NOTHING.
-	if err := q.DeleteCVEAffectedCPEs(ctx, patch.CVEID); err != nil {
+	if err := q.DeleteCVEAffectedCPEs(ctx, cveID); err != nil {
 		return fmt.Errorf("merge: delete affected CPEs: %w", err)
 	}
 	for _, cpe := range resolved.AffectedCPEs {
 		if err := q.InsertAffectedCPE(ctx, generated.InsertAffectedCPEParams{
-			CveID:         patch.CVEID,
+			CveID:         cveID,
 			Cpe:           cpe.CPE,
 			CpeNormalized: cpe.CPENormalized,
 		}); err != nil {
@@ -242,31 +255,14 @@ func Ingest(
 
 	// CPE match ranges and CNA affected entries. Neither is a material_hash input,
 	// so a change here alone does not fire alerts or bump date_modified_canonical.
-	if err := replaceVersionRanges(ctx, q, patch.CVEID, resolved); err != nil {
+	if err := replaceVersionRanges(ctx, q, cveID, resolved); err != nil {
 		return err
-	}
-
-	// Step 8.5: upsert vendor enrichment (optional — only vendor-specific adapters populate this).
-	if patch.VendorEnrichment != nil {
-		enrichmentJSON := patch.VendorEnrichment.Data
-		if enrichmentJSON == nil {
-			enrichmentJSON = json.RawMessage(`{}`)
-		}
-		if err := q.UpsertVendorEnrichment(ctx, generated.UpsertVendorEnrichmentParams{
-			CveID:          patch.CVEID,
-			SourceName:     sourceName,
-			VendorSeverity: dbutil.NullString(derefString(patch.VendorEnrichment.VendorSeverity)),
-			VendorFixState: dbutil.NullString(derefString(patch.VendorEnrichment.VendorFixState)),
-			Enrichment:     enrichmentJSON,
-		}); err != nil {
-			return fmt.Errorf("merge: upsert vendor enrichment: %w", err)
-		}
 	}
 
 	// Step 9: apply staged EPSS. The staging row is always deleted regardless
 	// of whether a score was found — prevents stale accumulation (pitfall §2.7).
 	// Skip applying the score if the CVE is withdrawn/rejected (tombstoned in Step 7).
-	staging, err := q.GetEPSSStaging(ctx, patch.CVEID)
+	staging, err := q.GetEPSSStaging(ctx, cveID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("merge: get EPSS staging: %w", err)
 	}
@@ -274,14 +270,14 @@ func Ingest(
 		// Score in staging: apply to cves. IS DISTINCT FROM guard prevents
 		// dead tuples if score happens to match the current value.
 		if err := q.UpdateCVEEPSS(ctx, generated.UpdateCVEEPSSParams{
-			CveID:     patch.CVEID,
+			CveID:     cveID,
 			EpssScore: sql.NullFloat64{Float64: staging.EpssScore, Valid: true},
 		}); err != nil {
 			return fmt.Errorf("merge: apply staged EPSS: %w", err)
 		}
 	}
 	// Always drain staging entry — even on sql.ErrNoRows (no-op DELETE is fine).
-	if err := q.DeleteEPSSStaging(ctx, patch.CVEID); err != nil {
+	if err := q.DeleteEPSSStaging(ctx, cveID); err != nil {
 		return fmt.Errorf("merge: delete EPSS staging: %w", err)
 	}
 
@@ -289,7 +285,7 @@ func Ingest(
 	// when tsvector content hasn't changed (e.g., only timestamps/scores changed).
 	pkgNames := collectPackageNames(resolved.AffectedPackages)
 	if err := q.UpsertCVESearchIndex(ctx, generated.UpsertCVESearchIndexParams{
-		CveID:        patch.CVEID,
+		CveID:        cveID,
 		Description:  derefString(resolved.DescriptionPrimary),
 		CweNames:     strings.Join(resolved.CWEIDs, " "),
 		PackageNames: strings.Join(pkgNames, " "),
@@ -297,7 +293,7 @@ func Ingest(
 		return fmt.Errorf("merge: upsert search index: %w", err)
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // replaceVersionRanges rewrites a CVE's cve_cpe_matches and cve_cna_affected rows
@@ -386,10 +382,12 @@ func buildAffectedPkgKeys(pkgs []feed.AffectedPackage) []affectedPkgKey {
 	keys := make([]affectedPkgKey, 0, len(pkgs))
 	for _, p := range pkgs {
 		keys = append(keys, affectedPkgKey{
-			Ecosystem:   p.Ecosystem,
-			PackageName: p.PackageName,
-			Introduced:  p.Introduced,
-			Fixed:       p.Fixed,
+			Ecosystem:    p.Ecosystem,
+			PackageName:  ecosystem.FoldPackageName(p.Ecosystem, p.PackageName),
+			Introduced:   p.Introduced,
+			Fixed:        p.Fixed,
+			LastAffected: p.LastAffected,
+			RangeClass:   rangeClass(p),
 		})
 	}
 	return keys
@@ -423,6 +421,80 @@ func ftsPackageNames(names []string) []string {
 	return slices.Compact(sorted)
 }
 
+// bindAdvisoryToCVE handles an advisory stored under a different CVE from the one
+// it now names. If it is that CVE's only source the whole record follows it.
+// Otherwise only its row leaves, and Ingest's upsert writes it under the new CVE.
+func bindAdvisoryToCVE(ctx context.Context, tx *sql.Tx, q *generated.Queries, patch feed.CanonicalPatch, sourceName, sourceID string) error {
+	oldCVEID, err := q.FindCVEBySourceID(ctx, generated.FindCVEBySourceIDParams{
+		SourceName: sourceName,
+		SourceID:   sourceID,
+		CveID:      patch.CVEID,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("merge: find CVE by source ID: %w", err)
+	}
+
+	// Lock the old CVE too. Lock order is new ID (held), then old ID; Postgres's
+	// deadlock detector handles the rare crossed pair.
+	if oldKey := CVEAdvisoryKey(oldCVEID); oldKey != CVEAdvisoryKey(patch.CVEID) {
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", oldKey); err != nil {
+			return fmt.Errorf("merge: advisory lock (old ID): %w", err)
+		}
+	}
+
+	remaining, err := q.CountCVESources(ctx, oldCVEID)
+	if err != nil {
+		return fmt.Errorf("merge: count sources: %w", err)
+	}
+	if remaining == 1 {
+		if err := migrateCVEPK(ctx, tx, oldCVEID, patch.CVEID); err != nil {
+			return fmt.Errorf("merge: migrate CVE PK: %w", err)
+		}
+		return nil
+	}
+
+	if err := q.DeleteCVESource(ctx, generated.DeleteCVESourceParams{
+		CveID: oldCVEID, SourceName: sourceName, SourceID: sourceID,
+	}); err != nil {
+		return fmt.Errorf("merge: remove advisory from old CVE: %w", err)
+	}
+	return canonicalize(ctx, q, oldCVEID)
+}
+
+// moveAlertEvents carries a CVE's alert events to its new ID and reports whether any
+// moved. alert_events is
+// org-scoped, and this worker path acts across orgs. An event that would collide
+// with one already under the new ID is closed instead, so it cannot stay open
+// against a CVE that no longer exists.
+func moveAlertEvents(ctx context.Context, tx *sql.Tx, oldID, newID string) (bool, error) {
+	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+		return false, fmt.Errorf("enable rls bypass (%s→%s): %w", oldID, newID, err)
+	}
+	moved, err := tx.ExecContext(ctx, `
+		UPDATE alert_events a SET cve_id = $2
+		WHERE a.cve_id = $1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM alert_events t
+		      WHERE t.org_id = a.org_id AND t.rule_id = a.rule_id
+		        AND t.cve_id = $2 AND t.material_hash = a.material_hash
+		  )`, oldID, newID)
+	if err != nil {
+		return false, fmt.Errorf("move alert events (%s→%s): %w", oldID, newID, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE alert_events SET last_match_state = false WHERE cve_id = $1", oldID); err != nil {
+		return false, fmt.Errorf("close alert events (%s→%s): %w", oldID, newID, err)
+	}
+	count, err := moved.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count moved alert events (%s→%s): %w", oldID, newID, err)
+	}
+	return count > 0, nil
+}
+
 // migrateCVEPK renames a CVE's primary key from oldID to newID across all
 // tables. Called within an advisory-locked transaction when alias resolution
 // promotes a native OSV/GHSA advisory ID (e.g., GHSA-xxxx) to a canonical
@@ -434,18 +506,35 @@ func ftsPackageNames(names []string) []string {
 //     CVE-2024-1234 independently). Move cve_sources from old to new, delete
 //     orphaned old rows, and let Ingest re-resolve from all sources.
 func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
+	alertsMoved, err := moveAlertEvents(ctx, tx, oldID, newID)
+	if err != nil {
+		return err
+	}
+
 	// Check whether the target CVE already exists.
 	var targetExists bool
-	err := tx.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		"SELECT EXISTS(SELECT 1 FROM cves WHERE cve_id = $1)", newID).Scan(&targetExists)
 	if err != nil {
 		return fmt.Errorf("check target exists (%s→%s): %w", oldID, newID, err)
 	}
 
 	if targetExists {
-		return migrateCVEPKMerge(ctx, tx, oldID, newID)
+		err = migrateCVEPKMerge(ctx, tx, oldID, newID)
+	} else {
+		err = migrateCVEPKRename(ctx, tx, oldID, newID)
 	}
-	return migrateCVEPKRename(ctx, tx, oldID, newID)
+	if err != nil || !alertsMoved {
+		return err
+	}
+
+	// A moved alert may not match its new CVE. With an unchanged hash the batch
+	// evaluator would not revisit that CVE, so the alert could never resolve.
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE cves SET date_modified_canonical = now() WHERE cve_id = $1", newID); err != nil {
+		return fmt.Errorf("mark moved alert target (%s→%s): %w", oldID, newID, err)
+	}
+	return nil
 }
 
 // migrateCVEPKRename handles the simple case: newID doesn't exist yet, so all
@@ -486,12 +575,15 @@ func migrateCVEPKRename(ctx context.Context, tx *sql.Tx, oldID, newID string) er
 // the canonical record from the combined sources.
 func migrateCVEPKMerge(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 	// Move non-conflicting cve_sources from old to new. Conflicting rows
-	// (same source_name under both IDs) stay under old and get deleted below —
-	// Ingest step 2 will upsert the current source under newID anyway.
+	// (same source_name and source_id under both IDs) stay under old and get
+	// deleted below — Ingest step 2 will upsert the current source under newID anyway.
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE cve_sources SET cve_id = $2
-		WHERE cve_id = $1
-		  AND source_name NOT IN (SELECT source_name FROM cve_sources WHERE cve_id = $2)`,
+		UPDATE cve_sources s SET cve_id = $2
+		WHERE s.cve_id = $1
+		  AND NOT EXISTS (
+		      SELECT 1 FROM cve_sources t
+		      WHERE t.cve_id = $2 AND t.source_name = s.source_name AND t.source_id = s.source_id
+		  )`,
 		oldID, newID); err != nil {
 		return fmt.Errorf("merge sources (%s→%s): %w", oldID, newID, err)
 	}

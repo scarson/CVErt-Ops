@@ -39,6 +39,32 @@ async function mountComponent(props: Record<string, unknown> = {}) {
 }
 
 describe('CveSourceComparison', () => {
+  describe('several advisories from one source', () => {
+    it('shows a selectable tab with the advisory ID for each', async () => {
+      const sources = [
+        makeSource({ source_name: 'osv', source_id: 'GHSA-a', normalized_json: { marker: 'first-record' } }),
+        makeSource({ source_name: 'osv', source_id: 'PYSEC-b', normalized_json: { marker: 'second-record' } }),
+      ]
+      const wrapper = await mountComponent({ sources, loading: false })
+
+      const tabs = wrapper.findAll('[role="tab"]')
+      expect(tabs.map((t) => t.text())).toEqual(['OSV GHSA-a', 'OSV PYSEC-b'])
+      expect(wrapper.text()).toContain('first-record')
+
+      await tabs[1]!.trigger('mousedown', { button: 0 })
+      expect(wrapper.text()).toContain('second-record')
+      expect(wrapper.text()).not.toContain('first-record')
+    })
+
+    it('shows only the source name when a source has one row', async () => {
+      const wrapper = await mountComponent({
+        sources: [makeSource({ source_name: 'nvd' }), makeSource({ source_name: 'osv', source_id: 'GHSA-a' })],
+        loading: false,
+      })
+      expect(wrapper.findAll('[role="tab"]').map((t) => t.text())).toEqual(['NVD', 'OSV'])
+    })
+  })
+
   describe('rendering', () => {
     it('renders a tab for each source', async () => {
       const sources = [

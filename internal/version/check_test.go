@@ -6,7 +6,52 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
+
+// TestEcosystemsUseCanonicalNames fails if this package's table drifts from the
+// vocabulary the API accepts and the adapters store.
+func TestEcosystemsUseCanonicalNames(t *testing.T) {
+	t.Parallel()
+	for name := range ecosystems {
+		if !ecosystem.Valid(name) {
+			t.Errorf("%q is not a canonical ecosystem name", name)
+		}
+	}
+}
+
+func TestCompare(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		ecosystem, a, b string
+		want            int
+	}{
+		{"npm", "2.0.0", "1.0.0", 1},
+		{"PyPI", "1.0", "1.0.post1", -1},
+		{"Debian:13", "1:1.0-1", "2.0-1", 1},
+		{"RubyGems", "5.0.0.1", "5.0.0.1", 0},
+	}
+	for _, tt := range tests {
+		got, err := Compare(tt.ecosystem, tt.a, tt.b)
+		if err != nil || (got > 0) != (tt.want > 0) || (got < 0) != (tt.want < 0) {
+			t.Errorf("Compare(%q, %q, %q) = (%d, %v), want sign %d", tt.ecosystem, tt.a, tt.b, got, err, tt.want)
+		}
+	}
+	if _, err := Compare("GitHub Actions", "1.0", "2.0"); !errors.Is(err, ErrUnknownEcosystem) {
+		t.Errorf("unknown ecosystem err = %v", err)
+	}
+	if _, err := Compare("npm", "banana", "2.0.0"); !errors.Is(err, ErrInvalidVersion) {
+		t.Errorf("malformed version err = %v", err)
+	}
+}
+
+func TestSupported(t *testing.T) {
+	t.Parallel()
+	if !Supported("Ubuntu:26.04:LTS") || !Supported("PyPI") || Supported("Bitnami") || Supported("pip") {
+		t.Error("Supported gave the wrong answer")
+	}
+}
 
 // allEcosystems holds one stored spelling of every supported ecosystem.
 var allEcosystems = []string{

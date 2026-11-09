@@ -673,14 +673,14 @@ func TestGetCVESources_HappyPath(t *testing.T) {
 
 	// Insert two sources.
 	_, err := db.DB().ExecContext(ctx,
-		`INSERT INTO cve_sources (cve_id, source_name, normalized_json) VALUES ($1, $2, $3)`,
+		`INSERT INTO cve_sources (cve_id, source_name, source_id, normalized_json) VALUES ($1, $2, $1, $3)`,
 		"CVE-2024-9031", "nvd", `{"id":"CVE-2024-9031"}`,
 	)
 	if err != nil {
 		t.Fatalf("insert source nvd: %v", err)
 	}
 	_, err = db.DB().ExecContext(ctx,
-		`INSERT INTO cve_sources (cve_id, source_name, normalized_json) VALUES ($1, $2, $3)`,
+		`INSERT INTO cve_sources (cve_id, source_name, source_id, normalized_json) VALUES ($1, $2, $1, $3)`,
 		"CVE-2024-9031", "mitre", `{"id":"CVE-2024-9031"}`,
 	)
 	if err != nil {

@@ -191,8 +191,9 @@ type osvAdvisory struct {
 type osvAffected struct {
 	Package osvPackage `json:"package"`
 	Ranges  []osvRange `json:"ranges"`
-	// Versions is a flat list of affected versions (string slice or similar).
-	// Not mapped to CanonicalPatch; range-based data is preferred.
+	// Versions lists affected versions individually; a version is affected if it
+	// is inside a range or listed here.
+	Versions []string `json:"versions"`
 }
 
 type osvPackage struct {
@@ -277,10 +278,12 @@ func parseAdvisory(r io.Reader) (*feed.CanonicalPatch, error) {
 		if eco == "" || pkg == "" {
 			continue
 		}
+		var rows []feed.AffectedPackage
 		for _, rng := range aff.Ranges {
-			pkgs := extractPackageRanges(eco, pkg, rng)
-			patch.AffectedPackages = append(patch.AffectedPackages, pkgs...)
+			rows = append(rows, extractPackageRanges(eco, pkg, rng)...)
 		}
+		patch.AffectedPackages = append(patch.AffectedPackages, rows...)
+		patch.AffectedPackages = append(patch.AffectedPackages, packagesFromVersions(eco, pkg, aff.Versions, rows)...)
 	}
 
 	// CVSS vectors from severity[]. OSV provides the vector string only; no

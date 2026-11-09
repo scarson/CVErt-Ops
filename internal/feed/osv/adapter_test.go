@@ -99,6 +99,31 @@ func TestPackagesFromVersions(t *testing.T) {
 	})
 }
 
+func TestParseAdvisory_ListedVersions(t *testing.T) {
+	t.Parallel()
+	t.Run("versions with no ranges become exact rows", func(t *testing.T) {
+		t.Parallel()
+		patch, err := parseAdvisory(strings.NewReader(`{"id":"GHSA-v1","affected":[{"package":{"ecosystem":"RubyGems","name":"sprout"},"versions":["0.7.246"]}]}`))
+		if err != nil {
+			t.Fatalf("parseAdvisory: %v", err)
+		}
+		if len(patch.AffectedPackages) != 1 || patch.AffectedPackages[0].LastAffected != "0.7.246" {
+			t.Errorf("packages = %+v", patch.AffectedPackages)
+		}
+	})
+	t.Run("a range and an extra listed version produce both", func(t *testing.T) {
+		t.Parallel()
+		patch, err := parseAdvisory(strings.NewReader(`{"id":"GHSA-v2","affected":[{"package":{"ecosystem":"npm","name":"x"},
+			"ranges":[{"type":"SEMVER","events":[{"introduced":"1.0.0"},{"fixed":"2.0.0"}]}],"versions":["1.5.0","3.0.0"]}]}`))
+		if err != nil {
+			t.Fatalf("parseAdvisory: %v", err)
+		}
+		if len(patch.AffectedPackages) != 2 || patch.AffectedPackages[1].Introduced != "3.0.0" {
+			t.Errorf("packages = %+v", patch.AffectedPackages)
+		}
+	})
+}
+
 func TestIsAdvisoryEntry(t *testing.T) {
 	t.Parallel()
 

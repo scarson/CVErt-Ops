@@ -482,6 +482,33 @@ func TestParseAdvisory(t *testing.T) {
 		}
 	})
 
+	t.Run("vulnerable range and ecosystem are mapped and the name is kept", func(t *testing.T) {
+		t.Parallel()
+		rec := ghsaAdvisory{
+			GHSAID: "GHSA-pkg-range-0001",
+			Vulnerabilities: []ghsaVulnerability{
+				{
+					Package: struct {
+						Ecosystem string `json:"ecosystem"`
+						Name      string `json:"name"`
+					}{Ecosystem: "pip", Name: "Foo_Bar"},
+					VulnerableVersionRange: strPtr(">= 1.3, <= 1.3.1"),
+				},
+			},
+		}
+		patch := parseAdvisory(rec)
+		if patch == nil || len(patch.AffectedPackages) != 1 {
+			t.Fatalf("patch = %+v", patch)
+		}
+		pkg := patch.AffectedPackages[0]
+		if pkg.Ecosystem != "PyPI" || pkg.PackageName != "Foo_Bar" || pkg.Introduced != "1.3" || pkg.LastAffected != "1.3.1" || pkg.Fixed != "" {
+			t.Errorf("pkg = %+v", pkg)
+		}
+		if string(pkg.Events) != `[{"introduced":"1.3"},{"last_affected":"1.3.1"}]` {
+			t.Errorf("Events = %s", pkg.Events)
+		}
+	})
+
 	t.Run("affected package without first_patched_version has no events", func(t *testing.T) {
 		t.Parallel()
 		rec := ghsaAdvisory{

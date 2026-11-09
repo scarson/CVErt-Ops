@@ -58,16 +58,15 @@ WHERE cve_id = $1;
 -- name: UpsertCVESource :exec
 INSERT INTO cve_sources (cve_id, source_name, source_id, normalized_json, source_date_modified, source_url)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (cve_id, source_name) DO UPDATE
-    SET source_id            = EXCLUDED.source_id,
-        normalized_json      = EXCLUDED.normalized_json,
+ON CONFLICT (cve_id, source_name, source_id) DO UPDATE
+    SET normalized_json      = EXCLUDED.normalized_json,
         source_date_modified = EXCLUDED.source_date_modified,
         source_url           = EXCLUDED.source_url,
         ingested_at          = now()
     WHERE cve_sources.normalized_json IS DISTINCT FROM EXCLUDED.normalized_json;
 
 -- name: GetAllCVESources :many
-SELECT * FROM cve_sources WHERE cve_id = $1 ORDER BY source_name;
+SELECT * FROM cve_sources WHERE cve_id = $1 ORDER BY source_name, source_id;
 
 -- name: FindCVEBySourceID :one
 -- Used for late-binding PK migration: find a CVE row stored under its native

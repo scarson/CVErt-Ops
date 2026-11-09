@@ -613,11 +613,9 @@ func getCVESourcesHandler(s *store.Store) func(context.Context, *GetCVESourcesIn
 		for _, src := range srcs {
 			r := CVESourceResponse{
 				SourceName:     src.SourceName,
+				SourceID:       &src.SourceID,
 				NormalizedJSON: src.NormalizedJson,
 				IngestedAt:     src.IngestedAt.UTC().Format(time.RFC3339),
-			}
-			if src.SourceID.Valid {
-				r.SourceID = &src.SourceID.String
 			}
 			if src.SourceDateModified.Valid {
 				s := src.SourceDateModified.Time.UTC().Format(time.RFC3339)

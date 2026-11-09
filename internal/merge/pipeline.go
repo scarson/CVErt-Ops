@@ -16,6 +16,7 @@ import (
 	"github.com/sqlc-dev/pqtype"
 
 	"github.com/scarson/cvert-ops/internal/dbutil"
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/feed"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
@@ -50,6 +51,12 @@ func Ingest(
 	// Strip null bytes — Postgres TEXT/JSONB rejects \x00 (pitfall §2.10).
 	normalizedJSON = bytes.ReplaceAll(normalizedJSON, []byte{0}, []byte{})
 
+	// A feed with no native advisory ID identifies its row by the CVE.
+	sourceID := patch.SourceID
+	if sourceID == "" {
+		sourceID = patch.CVEID
+	}
+
 	tx, err := s.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("merge: begin tx: %w", err)
@@ -72,7 +79,7 @@ func Ingest(
 	if patch.SourceID != "" && patch.CVEID != patch.SourceID {
 		oldCVEID, err := q.FindCVEBySourceID(ctx, generated.FindCVEBySourceIDParams{
 			SourceName: sourceName,
-			SourceID:   dbutil.NullString(patch.SourceID),
+			SourceID:   patch.SourceID,
 		})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("merge: find CVE by source ID: %w", err)
@@ -103,7 +110,7 @@ func Ingest(
 	if err := q.UpsertCVESource(ctx, generated.UpsertCVESourceParams{
 		CveID:              patch.CVEID,
 		SourceName:         sourceName,
-		SourceID:           dbutil.NullString(patch.SourceID),
+		SourceID:           sourceID,
 		NormalizedJson:     normalizedJSON,
 		SourceDateModified: toNullTimePtr(patch.DateModified),
 		SourceUrl:          sql.NullString{}, // not available in CanonicalPatch
@@ -386,10 +393,12 @@ func buildAffectedPkgKeys(pkgs []feed.AffectedPackage) []affectedPkgKey {
 	keys := make([]affectedPkgKey, 0, len(pkgs))
 	for _, p := range pkgs {
 		keys = append(keys, affectedPkgKey{
-			Ecosystem:   p.Ecosystem,
-			PackageName: p.PackageName,
-			Introduced:  p.Introduced,
-			Fixed:       p.Fixed,
+			Ecosystem:    p.Ecosystem,
+			PackageName:  ecosystem.FoldPackageName(p.Ecosystem, p.PackageName),
+			Introduced:   p.Introduced,
+			Fixed:        p.Fixed,
+			LastAffected: p.LastAffected,
+			RangeClass:   rangeClass(p),
 		})
 	}
 	return keys

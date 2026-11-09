@@ -304,7 +304,6 @@ func TestPatchChannel_NewDestinationWithFreshCredential(t *testing.T) {
 func TestChannelWrites_RejectUnresolvablePlaceholders(t *testing.T) {
 	t.Parallel()
 	f := newChannelRedactionFixture(t)
-	ctx := context.Background()
 
 	patches := []struct {
 		name string
@@ -312,6 +311,7 @@ func TestChannelWrites_RejectUnresolvablePlaceholders(t *testing.T) {
 	}{
 		{"masked value for an unknown header", `{"config":{"url":"` + maskedWebhookURL + `","custom_headers":{"X-Unknown":"[REDACTED]"}}}`},
 		{"masked path on another host", `{"config":{"url":"https://other.example.net/***"}}`},
+		{"masked value inside a list", `{"config":{"url":"` + maskedWebhookURL + `","custom_headers":{"Authorization":["[REDACTED]"]}}}`},
 	}
 	for _, tc := range patches {
 		status, body := f.patch(t, tc.body)
@@ -320,6 +320,14 @@ func TestChannelWrites_RejectUnresolvablePlaceholders(t *testing.T) {
 		}
 	}
 	assertStoredCredentialIntact(t, f.deliveredConfig(t))
+}
+
+// TestCreateChannel_RejectsPlaceholders is separate from the patch cases because
+// each org has a burst allowance of 10 requests on the free tier.
+func TestCreateChannel_RejectsPlaceholders(t *testing.T) {
+	t.Parallel()
+	f := newChannelRedactionFixture(t)
+	ctx := context.Background()
 
 	creates := []struct {
 		name string
@@ -362,6 +370,80 @@ func TestChannelAudit_HeaderValuesRedacted(t *testing.T) {
 		t.Fatal("no audit entry for channel create")
 	}
 	assertNoCredential(t, "audit new_state", string(entry.NewState))
+}
+
+const inertFieldChannelBody = `{"name":"Extra Fields Hook","type":"webhook","config":{` +
+	`"url":"https://hooks.example.com/send",` +
+	`"auth":"inert-plain-secret",` +
+	`"account":9007199254740993,` +
+	`"extra":[{"custom_headers":{"Authorization":"inert-array-secret"}}],` +
+	`"nested":{"url":"https://receiver.example.com/inert-nested-secret"}}}`
+
+// TestChannelConfig_UnrecognisedFieldsMaskedAndKeptOnRoundTrip covers config
+// keys delivery never reads, which the API accepts and stores.
+func TestChannelConfig_UnrecognisedFieldsMaskedAndKeptOnRoundTrip(t *testing.T) {
+	t.Parallel()
+	f := newChannelRedactionFixture(t)
+	ctx := context.Background()
+
+	createResp := doCreateChannel(t, ctx, f.ts, f.ownerToken, f.orgID, inertFieldChannelBody)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeCreated(t, createResp, &created)
+
+	getResp := doGetChannel(t, ctx, f.ts, f.ownerToken, f.orgID, created.ID)
+	defer getResp.Body.Close() //nolint:errcheck,gosec // G104
+	raw, _ := io.ReadAll(getResp.Body)
+	if strings.Contains(string(raw), "inert-") {
+		t.Fatalf("response exposes an unrecognised field: %s", raw)
+	}
+	var read ChannelEntry
+	if err := json.Unmarshal(raw, &read); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+
+	patchResp := doPatchChannel(t, ctx, f.ts, f.ownerToken, f.orgID, created.ID, `{"config":`+string(read.Config)+`}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	patched, _ := io.ReadAll(patchResp.Body)
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("round trip patch: got %d: %s", patchResp.StatusCode, patched)
+	}
+
+	row, err := f.db.GetNotificationChannelForDelivery(ctx, uuid.MustParse(created.ID))
+	if err != nil || row == nil {
+		t.Fatalf("load channel: row=%v err=%v", row, err)
+	}
+	for _, want := range []string{"inert-plain-secret", "inert-array-secret", "inert-nested-secret", "9007199254740993"} {
+		if !strings.Contains(string(row.Config), want) {
+			t.Errorf("stored config lost %q: %s", want, row.Config)
+		}
+	}
+	if strings.Contains(string(row.Config), "[REDACTED]") || strings.Contains(string(row.Config), "/***") {
+		t.Errorf("stored config holds placeholder text: %s", row.Config)
+	}
+}
+
+// TestChannelAuditState_MasksUnrecognisedFields keeps every config key out of
+// audit records in the form the API would refuse to return.
+func TestChannelAuditState_MasksUnrecognisedFields(t *testing.T) {
+	t.Parallel()
+	state := channelAuditState("Hook", "webhook", json.RawMessage(
+		`{"url":"https://h.example.com/x","name":"overwrites-name","auth":"inert-secret","extra":[{"token":"inert-secret"}]}`))
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("encode state: %v", err)
+	}
+	if strings.Contains(string(encoded), "inert-secret") {
+		t.Errorf("audit state exposes an unrecognised field: %s", encoded)
+	}
+	if state["name"] != "Hook" {
+		t.Errorf("config must not replace the channel name: got %v", state["name"])
+	}
+	if state["url"] != "https://h.example.com/***" {
+		t.Errorf("url = %v", state["url"])
+	}
 }
 
 // TestChannelResponseConfig_MalformedStoredConfigFailsClosed covers stored rows

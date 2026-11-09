@@ -39,6 +39,16 @@ func init() {
 	if runtime.GOOS == "windows" && os.Getenv("DOCKER_HOST") == "" {
 		os.Setenv("DOCKER_HOST", client.DefaultDockerHost) //nolint:errcheck,gosec // best-effort; no recovery path
 	}
+
+	// Ryuk runs in a Linux container and needs the daemon's Unix socket bound in.
+	// testcontainers-go chooses that path only when the daemon's OperatingSystem
+	// is exactly "Docker Desktop". A daemon reporting "Docker Desktop
+	// (containerized)" gets the client's named pipe path instead, which mounts as
+	// an empty directory, and Ryuk exits as soon as it starts.
+	// See dev/research-findings/ryuk-named-pipe-socket-bind.md
+	if runtime.GOOS == "windows" && os.Getenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE") == "" {
+		os.Setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "//var/run/docker.sock") //nolint:errcheck,gosec // best-effort; no recovery path
+	}
 }
 
 // templateDBName is the migrated database every test database is cloned from.

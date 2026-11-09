@@ -4,7 +4,7 @@ Analysis of 2026-11-03. It covers why `postgres:18-alpine` test containers pile 
 
 ## Background
 
-At the time of this analysis, `testutil.NewTestDB` (`internal/testutil/postgres.go`) started one Postgres container per test and terminated it in `t.Cleanup`. It now starts one container per test binary, clones a migrated template database per test, and terminates the container from `testutil.Run`, which each package's `TestMain` calls; the findings below are stated for the per-test model, with the shared-container consequences noted. Ryuk, the testcontainers reaper, normally removes containers whose test process has died, but on this Windows development host it exits with status 1 about once a second after a Docker Desktop restart. The tests therefore run with Ryuk disabled, and nothing removes a container that its own test did not terminate.
+At the time of this analysis, `testutil.NewTestDB` (`internal/testutil/postgres.go`) started one Postgres container per test and terminated it in `t.Cleanup`. It now starts one container per test binary, clones a migrated template database per test, and terminates the container from `testutil.Run`, which each package's `TestMain` calls; the findings below are stated for the per-test model, with the shared-container consequences noted. Ryuk, the testcontainers reaper, normally removes containers whose test process has died. When this analysis was done, Ryuk could not start on this Windows development host, because testcontainers-go bound a named pipe path as its Docker socket (`dev/research-findings/ryuk-named-pipe-socket-bind.md` — the cause and the `internal/testutil` setting that fixes it). The tests ran with `TESTCONTAINERS_RYUK_DISABLED=true`, and nothing removed a container that its own test did not terminate. Runs that still set that variable, including CI, are in the same position.
 
 ## Findings
 
@@ -67,3 +67,4 @@ Process lookup uses `github.com/shirou/gopsutil/v4`, and the container list and 
 ## Related
 
 - `dev/research-findings/testcontainers-go-windows-panic.md` explains why the helpers set `DOCKER_HOST` on Windows: named-pipe discovery panics under load.
+- `dev/research-findings/ryuk-named-pipe-socket-bind.md` explains why the helpers set `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` on Windows: without it, Ryuk exits at startup.

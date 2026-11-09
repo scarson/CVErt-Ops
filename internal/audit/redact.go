@@ -17,8 +17,18 @@ var sensitiveKeywords = []string{
 	"key_hash",
 }
 
+// RedactedValue replaces a secret value in audit state and API responses.
+const RedactedValue = "[REDACTED]"
+
+// RedactChannelConfig returns a copy of a notification channel's config with
+// secrets masked. Audit records and API responses both show this view.
+func RedactChannelConfig(config map[string]any) map[string]any {
+	return redactSecrets("channel", config)
+}
+
 // redactSecrets returns a copy of state with sensitive fields replaced by "[REDACTED]".
-// For entityType "channel", the "url" field is reduced to scheme+host only.
+// For entityType "channel", the "url" field is reduced to scheme+host only and every
+// "custom_headers" value is masked, because any header can carry a credential.
 // Recurses into nested map[string]any values.
 func redactSecrets(entityType string, state map[string]any) map[string]any {
 	if state == nil {
@@ -27,14 +37,18 @@ func redactSecrets(entityType string, state map[string]any) map[string]any {
 	out := make(map[string]any, len(state))
 	for k, v := range state {
 		if isSensitiveKey(k) {
-			out[k] = "[REDACTED]"
+			out[k] = RedactedValue
 			continue
 		}
 		if entityType == "channel" && strings.EqualFold(k, "url") {
 			if s, ok := v.(string); ok {
-				out[k] = redactURL(s)
+				out[k] = RedactURL(s)
 				continue
 			}
+		}
+		if entityType == "channel" && strings.EqualFold(k, "custom_headers") {
+			out[k] = redactHeaderValues(v)
+			continue
 		}
 		if nested, ok := v.(map[string]any); ok {
 			out[k] = redactSecrets(entityType, nested)
@@ -56,11 +70,25 @@ func isSensitiveKey(key string) bool {
 	return false
 }
 
-// redactURL extracts scheme+host from a URL, replacing the path with "***".
-func redactURL(raw string) string {
+// redactHeaderValues keeps header names and masks every value. A value that is
+// not a header map is masked whole.
+func redactHeaderValues(headers any) any {
+	m, ok := headers.(map[string]any)
+	if !ok {
+		return RedactedValue
+	}
+	out := make(map[string]any, len(m))
+	for name := range m {
+		out[name] = RedactedValue
+	}
+	return out
+}
+
+// RedactURL extracts scheme+host from a URL, replacing the path with "***".
+func RedactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "[REDACTED]"
+		return RedactedValue
 	}
 	return u.Scheme + "://" + u.Host + "/***"
 }

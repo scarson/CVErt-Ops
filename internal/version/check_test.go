@@ -243,8 +243,6 @@ func TestCheck_UnusableRangeCannotEvaluate(t *testing.T) {
 		r    Range
 	}{
 		{"no bounds", Range{}},
-		{"introduced only", Range{Introduced: "1.0.0"}},
-		{"introduced zero only", Range{Introduced: "0"}},
 		{"fixed only", Range{Fixed: "2.0.0"}},
 		{"last affected only", Range{LastAffected: "2.0.0"}},
 		{"both upper bounds", Range{Introduced: "0", Fixed: "2.0.0", LastAffected: "1.9.0"}},
@@ -267,6 +265,47 @@ func TestCheck_UnusableRangeCannotEvaluate(t *testing.T) {
 				t.Errorf("CheckNumeric(%+v) = (%s, %v), want (%s, ErrInvalidRange)", tt.r, got, err, CannotEvaluate)
 			}
 		})
+	}
+}
+
+func TestCheck_NoUpperBound(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, ecosystem, version string
+		r                        Range
+		want                     Status
+	}{
+		{"at introduced", "npm", "1.0.0", Range{Introduced: "1.0.0"}, Affected},
+		{"above introduced", "npm", "9.9.9", Range{Introduced: "1.0.0"}, Affected},
+		{"below introduced", "npm", "0.9.0", Range{Introduced: "1.0.0"}, NotAffected},
+		{"from the start", "npm", "0.0.1", Range{Introduced: "0"}, Affected},
+		{"dpkg sorts below zero", "Debian:13", "0~rc1", Range{Introduced: "0"}, Affected},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assertVerdict(t, tt.ecosystem, tt.version, tt.r, tt.want)
+		})
+	}
+}
+
+func TestCheck_NoUpperBoundStillValidatesVersion(t *testing.T) {
+	t.Parallel()
+	if got, err := Check("npm", "banana", Range{Introduced: "1.0.0"}); got != CannotEvaluate || !errors.Is(err, ErrInvalidVersion) {
+		t.Errorf("got (%s, %v), want (%s, ErrInvalidVersion)", got, err, CannotEvaluate)
+	}
+	if got, err := Check("npm", "1.0.0", Range{Introduced: "banana"}); got != CannotEvaluate || !errors.Is(err, ErrInvalidRange) {
+		t.Errorf("got (%s, %v), want (%s, ErrInvalidRange)", got, err, CannotEvaluate)
+	}
+}
+
+func TestCheckNumeric_NoUpperBound(t *testing.T) {
+	t.Parallel()
+	if got, err := CheckNumeric("24.1.0", Range{Introduced: "24.0.0"}); got != Affected || err != nil {
+		t.Errorf("got (%s, %v), want affected", got, err)
+	}
+	if got, err := CheckNumeric("23.9.0", Range{Introduced: "24.0.0"}); got != NotAffected || err != nil {
+		t.Errorf("got (%s, %v), want not affected", got, err)
 	}
 }
 

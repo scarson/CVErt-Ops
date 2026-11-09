@@ -64,10 +64,8 @@ var (
 // Range is one affected range in OSV terms: from Introduced (inclusive) up to
 // Fixed (exclusive) or LastAffected (inclusive).
 //
-// Exactly one upper bound is required. OSV defines a range with no upper bound
-// as "affected from Introduced onwards", but a stored row with none is
-// ambiguous: GHSA stores one whenever an advisory has no patched version,
-// whatever its real upper limit is. Such a range reports CannotEvaluate.
+// A range with no upper bound is affected from Introduced onwards, as the OSV
+// schema defines it. Fixed and LastAffected must not both be set.
 type Range struct {
 	Introduced   string
 	Fixed        string
@@ -98,7 +96,10 @@ func (s scheme) check(version string, r Range) (Status, error) {
 		}
 	}
 
-	upper, inclusive := r.upperBound()
+	upper, inclusive, bounded := r.upperBound()
+	if !bounded {
+		return Affected, nil
+	}
 	c, err := s.compare(version, upper)
 	if err != nil {
 		return CannotEvaluate, fmt.Errorf("%w: %w", ErrInvalidVersion, err)
@@ -109,12 +110,13 @@ func (s scheme) check(version string, r Range) (Status, error) {
 	return NotAffected, nil
 }
 
-// upperBound returns the range's single upper bound and whether it is inclusive.
-func (r Range) upperBound() (string, bool) {
+// upperBound returns the range's single upper bound, whether it is inclusive, and
+// whether the range has one.
+func (r Range) upperBound() (bound string, inclusive, bounded bool) {
 	if r.LastAffected != "" {
-		return r.LastAffected, true
+		return r.LastAffected, true, true
 	}
-	return r.Fixed, false
+	return r.Fixed, false, r.Fixed != ""
 }
 
 // validateRange rejects a range whose bounds are missing, malformed or out of
@@ -124,15 +126,16 @@ func (s scheme) validateRange(r Range) error {
 	switch {
 	case r.Introduced == "":
 		return fmt.Errorf("%w: no introduced bound", ErrInvalidRange)
-	case r.Fixed == "" && r.LastAffected == "":
-		return fmt.Errorf("%w: no upper bound", ErrInvalidRange)
 	case r.Fixed != "" && r.LastAffected != "":
 		return fmt.Errorf("%w: both fixed and last_affected", ErrInvalidRange)
 	}
 
-	upper, inclusive := r.upperBound()
-	if !s.valid(r.Introduced) || !s.valid(upper) {
+	upper, inclusive, bounded := r.upperBound()
+	if !s.valid(r.Introduced) || (bounded && !s.valid(upper)) {
 		return fmt.Errorf("%w: malformed bound", ErrInvalidRange)
+	}
+	if !bounded {
+		return nil
 	}
 
 	c, err := s.compare(upper, r.Introduced)

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	packageurl "github.com/package-url/packageurl-go"
 )
@@ -46,9 +47,11 @@ var distroCodenames = map[string]struct{ family, ecosystem string }{
 	"resolute": {"ubuntu", "Ubuntu:26.04:LTS"},
 }
 
+// Release numbers are matched without leading zeros, so a value such as debian-013
+// is refused rather than mapped to an ecosystem no advisory uses.
 var (
-	debDistro    = regexp.MustCompile(`^(ubuntu|debian)-([0-9]+)(?:\.([0-9]+))?$`)
-	alpineDistro = regexp.MustCompile(`^(?:alpine-)?([0-9]+)\.([0-9]+)(?:\.[0-9]+)?$`)
+	debDistro    = regexp.MustCompile(`^(ubuntu|debian)-(0|[1-9][0-9]*)(?:\.([0-9]+))?$`)
+	alpineDistro = regexp.MustCompile(`^(?:alpine-)?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?$`)
 	allDigits    = regexp.MustCompile(`^[0-9]+$`)
 	leadingEpoch = regexp.MustCompile(`^([0-9]+):`)
 )
@@ -95,10 +98,14 @@ func FromPurl(raw string) (PurlComponent, error) {
 	return validated(PurlComponent{Ecosystem: eco, Name: name, Version: p.Version})
 }
 
-// validated refuses control characters, which percent-decoding can produce. PostgreSQL
-// rejects NUL in text and in jsonb, so a stored one would fail the whole CVE's merge.
+// validated refuses control characters and invalid UTF-8, which percent-decoding can
+// produce. PostgreSQL rejects NUL and invalid UTF-8 in text and in jsonb, so a stored
+// one would fail the whole CVE's merge and a requested one the whole request. It also
+// refuses U+FFFD, because packageurl-go's lower-casing of some types' names turns
+// invalid bytes into it, and no registry name contains it.
 func validated(c PurlComponent) (PurlComponent, error) {
-	if strings.ContainsFunc(c.Name+c.Version, unicode.IsControl) {
+	s := c.Name + c.Version
+	if strings.ContainsFunc(s, unicode.IsControl) || !utf8.ValidString(s) || strings.ContainsRune(s, utf8.RuneError) {
 		return PurlComponent{}, purlError("invalid_purl")
 	}
 	return c, nil
@@ -155,7 +162,8 @@ func debEcosystem(namespace, distro string) (string, error) {
 	if family == "debian" {
 		return "Debian:" + major, nil
 	}
-	if minor == "" {
+	// Ubuntu releases are named by year and two-digit month.
+	if len(minor) != 2 {
 		return "", purlError("distro_not_recognised")
 	}
 	eco := "Ubuntu:" + major + "." + minor
@@ -203,8 +211,8 @@ func applyEpoch(version, epoch string) (string, error) {
 
 // maxPackageKeyBytes keeps a stored key under the btree row limit. Upstream URLs
 // have no length bound, and a key over the limit would fail the merge of the whole
-// CVE. Any key a request can form is shorter: 64 characters of ecosystem and 512
-// of name.
+// CVE. Only stored keys are indexed: a key a request forms is only compared, so its
+// length does not matter here.
 const maxPackageKeyBytes = 2600
 
 // PackageKey returns the stored identity of a CNA package URL, or "" when the URL

@@ -37,6 +37,19 @@ func TestFromPurl(t *testing.T) {
 		{"pkg:deb/debian/curl@8.0?distro=trixie", "Debian:13", "curl", "8.0"},
 		{"pkg:deb/ubuntu/curl@8.0?distro=resolute", "Ubuntu:26.04:LTS", "curl", "8.0"},
 		{"pkg:deb/ubuntu/curl@8.0?distro=noble", "Ubuntu:24.04:LTS", "curl", "8.0"},
+		{"pkg:deb/debian/curl@8.0?distro=bullseye", "Debian:11", "curl", "8.0"},
+		{"pkg:deb/debian/curl@8.0?distro=bookworm", "Debian:12", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=jammy", "Ubuntu:22.04:LTS", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=plucky", "Ubuntu:25.04", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=questing", "Ubuntu:25.10", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-24.04", "Ubuntu:24.04:LTS", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-14.04", "Ubuntu:14.04:LTS", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-15.04", "Ubuntu:15.04", "curl", "8.0"},
+		{"pkg:deb/debian/curl@8.0?distro=debian-10", "Debian:10", "curl", "8.0"},
+		{"pkg:apk/alpine/musl@1.2.4-r0?distro=alpine-3.20.3", "Alpine:v3.20", "musl", "1.2.4-r0"},
+		{"pkg:apk/alpine/musl@1.2.4-r0?distro=3.9", "Alpine:v3.9", "musl", "1.2.4-r0"},
+		// packageurl-go lower-cases qualifier keys, so the distro is still read.
+		{"pkg:deb/debian/curl@8.0?DISTRO=debian-13", "Debian:13", "curl", "8.0"},
 		// Epoch qualifier.
 		{"pkg:deb/debian/foo@1.0?distro=debian-13&epoch=2", "Debian:13", "foo", "2:1.0"},
 		{"pkg:deb/debian/foo@2:1.0?distro=debian-13&epoch=2", "Debian:13", "foo", "2:1.0"},
@@ -88,6 +101,28 @@ func TestFromPurlRefusals(t *testing.T) {
 		{"pkg:npm/foo%00bar@1", "invalid_purl"},
 		{"pkg:deb/debian/foo%00@1?distro=debian-13", "invalid_purl"},
 		{"pkg:npm/foo@1%0A", "invalid_purl"},
+		// Invalid UTF-8 would make PostgreSQL reject a whole request.
+		{"pkg:npm/foo%FF@1", "invalid_purl"},
+		{"pkg:npm/foo@1%C0%80", "invalid_purl"},
+		{"pkg:deb/debian/foo%FF@1?distro=debian-13", "invalid_purl"},
+		{"pkg:npm/foo%EF%BF%BD@1", "invalid_purl"},
+		// packageurl-go lower-cases qualifier keys and refuses a repeated key.
+		{"pkg:npm/foo@1?Repository_URL=https://r.example", "unsupported_repository"},
+		{"pkg:deb/debian/x@1?distro=debian-13&DISTRO=noble", "invalid_purl"},
+		// A namespace on a type whose packages have none could name a private package.
+		{"pkg:pypi/acme/foo@1", "unsupported_purl_namespace"},
+		{"pkg:gem/acme/foo@1", "unsupported_purl_namespace"},
+		{"pkg:nuget/acme/foo@1", "unsupported_purl_namespace"},
+		{"pkg:pub/acme/foo@1", "unsupported_purl_namespace"},
+		// Release numbers are written without leading zeros, and Ubuntu's month has two digits.
+		{"pkg:deb/ubuntu/x@1?distro=ubuntu-24.4", "distro_not_recognised"},
+		{"pkg:deb/ubuntu/x@1?distro=ubuntu-024.04", "distro_not_recognised"},
+		{"pkg:deb/ubuntu/x@1?distro=ubuntu-24.004", "distro_not_recognised"},
+		{"pkg:deb/ubuntu/x@1?distro=ubuntu-24.04.1", "distro_not_recognised"},
+		{"pkg:deb/debian/x@1?distro=debian-013", "distro_not_recognised"},
+		{"pkg:apk/alpine/x@1?distro=03.20", "distro_not_recognised"},
+		{"pkg:apk/alpine/x@1?distro=3.020", "distro_not_recognised"},
+		{"pkg:apk/alpine/x@1?distro=v3.20", "distro_not_recognised"},
 	}
 	for _, tt := range tests {
 		got, err := FromPurl(tt.in)
@@ -124,6 +159,7 @@ func TestPackageKey(t *testing.T) {
 		{"pkg:hex/acme/foo", ""},
 		{"pkg:deb/debian/curl?distro=debian-13", ""},
 		{"pkg:apk/alpine/musl?distro=3.20", ""},
+		{"pkg:npm/foo%FF", ""},
 		{"not a purl", ""},
 		{"", ""},
 		{"pkg:npm/" + strings.Repeat("a", 8000), ""},

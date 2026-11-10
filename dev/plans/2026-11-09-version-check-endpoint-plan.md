@@ -107,13 +107,13 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is run by another session. Phase 3 (endpoint) in progress.
+**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is run by another session. Phase 3 (endpoint) is complete in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218), open and unmerged until Phase 4 reports.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end reviews in progress | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 PR open 2026-11-10, awaiting Phase 4 | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end review fixes: round 1 `3781bec` to `3d8243a`, round 2 `b4a1e86` to `a4fa730`, round 3 `378ccbc` to `a72bd84`, round 4 `238ba4b`, `86d5578`. Head `5c4e025` | Branch `claude/check-endpoint-734a7a`. [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) to `dev`, unmerged until Phase 4 reports. Lint clean and full suite passed at `5c4e025` |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -713,7 +713,7 @@ Starts when Phase 1 is on `dev`. It runs for hours in the background, so Phase 3
 
 ## Phase 3 — The endpoint
 
-**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T05:31Z on branch `claude/check-endpoint-734a7a`, cut from `dev` at `d7d8309`.
+**Execution Status:** 🚧 PR OPEN 2026-11-10, waiting for Phase 4. All eleven tasks are done on branch `claude/check-endpoint-734a7a` (cut from `dev` at `d7d8309`, claimed 2026-11-10T05:31Z), in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) to `dev`, which stays unmerged until Phase 4 reports and Sam decides. Task 3.5 had its own focused review, and Task 3.8 an independent review. The phase end ran `security-review`, `pitfall-check` and `plan-check` (`PLAN.md` §9.2), then four review rounds, each round reviewing the previous round's fixes; Deviations lists every fix. `golangci-lint run` was clean, and `go test ./... -count=1 -timeout=600s` passed at `5c4e025` (39 packages, 0 failures). The branch merges cleanly with `dev` at `4356557`. Decisions for Sam are the Deviations and Discoveries entries marked **For Sam**.
 
 Branch `feat/check-endpoint` from `dev` after Phase 1 merges. (Deviation: the executing session's worktree branch is `claude/check-endpoint-734a7a`; it was not renamed.) Tasks run in order, because each builds on the types of the one before. Tasks 3.2 to 3.8 are pure code with table tests and no database.
 

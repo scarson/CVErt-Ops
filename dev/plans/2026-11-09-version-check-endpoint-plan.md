@@ -107,16 +107,18 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Not started.
+**Overall:** Phase 1 in progress.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
-| 1 — Data changes | ⬜ Not started | | |
+| 1 — Data changes | 🚧 In progress | | Branch `claude/check-data-72f424` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
 | 3 — Endpoint | ⬜ Not started | | Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
+
+- Phase 1 runs on branch `claude/check-data-72f424`, the worktree branch the executing session was given, not `feat/check-data`. See Phase 1's banner.
 
 ### Discoveries
 
@@ -156,9 +158,9 @@ Follow TDD: write a failing test, implement, verify green.
 
 ## Phase 1 — Data changes
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-10T01:57Z on branch `claude/check-data-72f424`
 
-Branch `feat/check-data` from `dev`. These four tasks change what ingest writes, so a walk under earlier code would have to be repeated. Tasks run in order.
+Branch `feat/check-data` from `dev`. (Deviation: the executing session's worktree branch is `claude/check-data-72f424`, cut from `dev` at eb69a13; it was not renamed.) These four tasks change what ingest writes, so a walk under earlier code would have to be repeated. Tasks run in order.
 
 ### Task 1.1: Map purls to ecosystems
 

@@ -47,8 +47,9 @@ var distroCodenames = map[string]struct{ family, ecosystem string }{
 	"resolute": {"ubuntu", "Ubuntu:26.04:LTS"},
 }
 
-// Release numbers are matched without leading zeros, so a value such as debian-013
-// is refused rather than mapped to an ecosystem no advisory uses.
+// A major release number, and each of Alpine's numbers, is matched without leading
+// zeros, so a value such as debian-013 is refused rather than mapped to an ecosystem
+// no advisory uses. A Debian point release is dropped, so its form does not matter.
 var (
 	debDistro    = regexp.MustCompile(`^(ubuntu|debian)-(0|[1-9][0-9]*)(?:\.([0-9]+))?$`)
 	alpineDistro = regexp.MustCompile(`^(?:alpine-)?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?$`)

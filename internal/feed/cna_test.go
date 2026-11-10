@@ -44,6 +44,17 @@ func TestParseCNAAffectedDoesNotCleanPackageURLBeforeMapping(t *testing.T) {
 	}
 }
 
+// An entry whose only identity is its packageURL is still a package lookup's
+// evidence that the CVE names that package, so it must not be dropped as empty.
+func TestParseCNAAffectedKeepsEntryWithOnlyAPackageKey(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`[{"packageURL":"pkg:npm/fastify","collectionURL":"https://registry.npmjs.org"}]`)
+	got := ParseCNAAffected(raw, "CVE-2024-0002")
+	if len(got) != 1 || got[0].PackageKey != "npm/fastify" {
+		t.Fatalf("got %+v, want one entry with package key npm/fastify", got)
+	}
+}
+
 func TestCNAAffectedPackageKeyJSONField(t *testing.T) {
 	t.Parallel()
 	b, err := json.Marshal(CNAAffected{Vendor: "fastify", PackageKey: "npm/fastify"})

@@ -2129,7 +2129,7 @@ export interface components {
             /** @description Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches. */
             affected_cpes: components["schemas"]["AffectedCPEResponse"][] | null;
             affected_packages: components["schemas"]["AffectedPackageResponse"][] | null;
-            /** @description Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none. */
+            /** @description Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none. */
             cna_affected: components["schemas"]["CNAAffectedResponse"][] | null;
             cve_id: string;
             cvss_score_diverges: boolean;

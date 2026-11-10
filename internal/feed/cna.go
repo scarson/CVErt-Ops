@@ -72,7 +72,7 @@ func ParseCNAAffected(raw json.RawMessage, cveID string) []CNAAffected {
 			DefaultStatus: defaultStatus,
 			Versions:      versions,
 		}
-		if entry.Vendor == "" && entry.Product == "" && entry.PackageName == "" && len(entry.Versions) == 0 {
+		if entry.Vendor == "" && entry.Product == "" && entry.PackageName == "" && entry.PackageKey == "" && len(entry.Versions) == 0 {
 			continue
 		}
 		out = append(out, entry)

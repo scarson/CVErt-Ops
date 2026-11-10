@@ -914,7 +914,7 @@
             ]
           },
           "cna_affected": {
-            "description": "Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none.",
+            "description": "Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none.",
             "items": {
               "$ref": "#/components/schemas/CNAAffectedResponse"
             },

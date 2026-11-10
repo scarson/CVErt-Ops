@@ -284,8 +284,11 @@ func TestIngest_LongCNAValuesFitTheCheckIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	entries := feed.ParseCNAAffected(raw, "CVE-2024-99953")
-	if len(entries) != 1 || len(entries[0].PackageKey) != 2600 {
-		t.Fatalf("parsed entries = %d, key length = %d, want one entry with a 2600-byte key", len(entries), len(entries[0].PackageKey))
+	if len(entries) != 1 {
+		t.Fatalf("parsed %d entries, want 1", len(entries))
+	}
+	if len(entries[0].PackageKey) != 2600 {
+		t.Fatalf("key length = %d, want 2600", len(entries[0].PackageKey))
 	}
 
 	patch := feed.CanonicalPatch{CVEID: "CVE-2024-99953", Status: "published", CNAAffected: entries}

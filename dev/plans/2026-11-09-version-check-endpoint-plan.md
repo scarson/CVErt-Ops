@@ -113,7 +113,7 @@ notes and commit messages.
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -122,6 +122,8 @@ notes and commit messages.
 - Task 1.1: `FromPurl` refuses more than the plan's code. It refuses invalid UTF-8 and U+FFFD with `invalid_purl`. It refuses major release numbers (and any of Alpine's numbers) with leading zeros, and Ubuntu releases without a two-digit month, with `distro_not_recognised`. Both refuse in the safe direction, found in the Phase 1 review. See the note under Task 1.1.
 - Task 1.2: `ParseCNAAffected` keeps an entry whose only identity is its `packageURL`, and the two golden CNA tests expect the key. See the note under Task 1.2.
 - Phase 3 runs on branch `claude/check-endpoint-734a7a`, the worktree branch the executing session was given, not `feat/check-endpoint`. See Phase 3's banner.
+- Task 3.1: `internal/version/check.go` also changed. A `scheme.order` method validates both sides before comparing, and `Check` and `Compare` share an `ecosystemScheme` helper, so each syntax gate is written once. `Compare`'s errors are unchanged. Commit `74b5011`.
+- Task 3.2: `ParseItem` also refuses invalid UTF-8 as `invalid_characters`, and compares a CPE's own version with the `version` field without regard to case (the CPE is lower-cased, the field is not). Commit `a9f86cf`.
 
 ### Discoveries
 
@@ -133,6 +135,14 @@ notes and commit messages.
 - Pitfall DB-19 (`dev/implementation-pitfalls.md`, "CREATE INDEX CONCURRENTLY requires migration framework coordination") says `IF NOT EXISTS` makes a retry succeed. A failed concurrent build leaves an INVALID index of that name, and `IF NOT EXISTS` then skips it without an error. The check lookups would fall back to the slow plans design section 9 measured. A `doctor` check for `pg_index.indisvalid = false` would surface it. This affects every migration, not only 000059.
 - **Decided by Sam on 2026-11-09 (affects Phase 3):** design section 3.2 refuses only the `repository_url` qualifier as naming a possibly non-public package. The purl specification also defines `download_url` and `vcs_url`, so `pkg:npm/foo@1?download_url=https://evil/x.tgz` maps to public npm `foo`. A request purl with either qualifier is refused with `unsupported_repository` (Task 3.2), because a private fork answered as the public package could get a wrong "not affected". A stored CNA `packageURL` with either qualifier keeps its key, and `FromPurl` stays as it is: CNA data can only condemn a version, so the worst case is a false Affected, while dropping the key would lose evidence.
 - `FromPurl` accepts namespace shapes no registry holds: `pkg:npm/scope/name` (no `@`), a Maven namespace containing `/`, and Composer names with three segments. They name no real package, so a lookup answers `no_advisory_found`, never a wrong "not affected". Phase 3's `ParseItem` could refuse them as `invalid_purl`.
+- Task 3.2 (`internal/check/input.go`) choices that the plan and design leave open, each failing safe:
+  - A CPE version component of `-` counts as no version stated, like `*`.
+  - A `*` or `?` inside a CPE vendor or product (`foo*`) is not refused. It matches no stored row, so the answer is `no_advisory_found`.
+  - A purl within 1,024 characters can decode to a version over 256. `internal/version` then answers `invalid_version`.
+  - Whitespace is not trimmed in any field.
+  - The optional namespace-shape refusal in the entry above was not added.
+- **For Sam (Task 3.3, `internal/check/packages.go` `rowCheck`):** a `SEMVER` row in an ecosystem with no comparator (`Root:*`, `GitHub Actions`) is compared as SemVer, because design section 4.1 lists the SEMVER row before the no-comparator row. So such a row can answer Not affected, where an `ECOSYSTEM` row in the same ecosystem answers `unknown_version_scheme`. This follows the OSV schema's definition of `SEMVER`. Phase 4 can count how many such rows exist.
+- Task 3.3: OSV also stores `range_type = 'VERSIONS'` (rows built from a `versions` list, with `introduced` = `last_affected`, or no bounds). These rows are compared in the ecosystem's order; a row with no bounds answers `invalid_range`. Range-type matching is exact and upper-case, as merge writes it. A CannotEvaluate advisory takes the reason of its first CannotEvaluate row.
 - `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
 
 ---

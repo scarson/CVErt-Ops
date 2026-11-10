@@ -144,6 +144,7 @@ func isRetracted(status string) bool {
 type advisoryRows struct {
 	packages  []PackageRow
 	cpes      []CPERow
+	cpesBelow int // rows the store left out as lying wholly below the floor of the item's version
 	cna       []CNARow
 	nearby    bool // a nearby-name row that is not one of the item's CNA name rows
 	retracted bool // a row's CVE is rejected or withdrawn
@@ -198,6 +199,10 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			a := r.advisory(row.CVEID, row.Status)
+			if row.Below > 0 {
+				a.cpesBelow += row.Below
+				continue
+			}
 			a.cpes = append(a.cpes, row)
 		}
 	}
@@ -333,14 +338,14 @@ func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enric
 	limits Limits) (Advisory, Verdict) {
 	var out Outcome
 	switch {
-	case len(a.packages)+len(a.cpes)+CNARangeCount(a.cna) > limits.AdvisoryRanges:
+	case len(a.packages)+len(a.cpes)+a.cpesBelow+CNARangeCount(a.cna) > limits.AdvisoryRanges:
 		out = Outcome{Verdict: CannotEvaluate, Reason: ReasonTooManyRanges}
 	case item.Package != nil:
 		primary := EvaluatePackageRows(m, item.Package.Ecosystem, item.Version, a.packages)
 		out = Combine(primary, len(a.packages) > 0, ReadCNAEntries(m, item.Version, a.cna))
 	default:
-		primary := EvaluateCPERows(m, item.Version, a.cpes)
-		out = Combine(primary, len(a.cpes) > 0, ReadCNAEntries(m, item.Version, a.cna))
+		primary := EvaluateCPERows(m, item.Version, a.cpes, a.cpesBelow)
+		out = Combine(primary, len(a.cpes)+a.cpesBelow > 0, ReadCNAEntries(m, item.Version, a.cna))
 	}
 	if a.nearby && out.Verdict != Affected {
 		out = Outcome{Verdict: CannotEvaluate, Reason: ReasonCNANameUncertain}

@@ -45,9 +45,9 @@ func TestKeysFor(t *testing.T) {
 			{Ecosystem: "PyPI", Name: "foo-bar"},
 		},
 		CPEPrefixes: []CPEKey{
-			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;"},
-			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;"},
-			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;"},
+			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;", Floor: "24.22"},
+			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;", Floor: "9.0"},
+			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;", Floor: "9.0"},
 		},
 		CNANames: []CNANameKey{
 			exactName("nodejs", "node.js"),
@@ -104,9 +104,9 @@ func TestKeysForInvalidItemsOnly(t *testing.T) {
 // that a CPE with no table row reads only its own prefix.
 func TestKeysForCPESpellings(t *testing.T) {
 	t.Parallel()
-	prefix := func(part, vendor, product string) CPEKey {
+	prefix := func(part, vendor, product, floor string) CPEKey {
 		lo := "cpe:2.3:" + part + ":" + vendor + ":" + product + ":"
-		return CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}
+		return CPEKey{Lo: lo, Hi: upperOfPrefix(lo), Floor: floor}
 	}
 	keys, uses := keysWithUses(parseItems(
 		RawItem{CPE: "cpe:2.3:a:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
@@ -115,9 +115,9 @@ func TestKeysForCPESpellings(t *testing.T) {
 		RawItem{CPE: "cpe:2.3:o:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
 	))
 	wantPrefixes := []CPEKey{
-		prefix("a", "f5", "nginx"), prefix("a", "nginx", "nginx"),
-		prefix("a", "acme", "widget"),
-		prefix("o", "f5", "nginx"), prefix("o", "nginx", "nginx"),
+		prefix("a", "f5", "nginx", "1.13"), prefix("a", "nginx", "nginx", "1.13"),
+		prefix("a", "acme", "widget", "1.0"),
+		prefix("o", "f5", "nginx", "1.13"), prefix("o", "nginx", "nginx", "1.13"),
 	}
 	if !reflect.DeepEqual(keys.CPEPrefixes, wantPrefixes) {
 		t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, wantPrefixes)
@@ -179,7 +179,7 @@ func TestKeysForRedundantEscapes(t *testing.T) {
 func TestKeysForCPEEscapes(t *testing.T) {
 	t.Parallel()
 	got := KeysFor(parseItems(RawItem{CPE: `cpe:2.3:a:foo\:bar:baz_qux:1.0:*:*:*:*:*:*:*`}))
-	wantCPE := []CPEKey{{Lo: `cpe:2.3:a:foo\:bar:baz_qux:`, Hi: `cpe:2.3:a:foo\:bar:baz_qux;`}}
+	wantCPE := []CPEKey{{Lo: `cpe:2.3:a:foo\:bar:baz_qux:`, Hi: `cpe:2.3:a:foo\:bar:baz_qux;`, Floor: "1.0"}}
 	if !reflect.DeepEqual(got.CPEPrefixes, wantCPE) {
 		t.Errorf("CPE keys = %+v, want %+v", got.CPEPrefixes, wantCPE)
 	}

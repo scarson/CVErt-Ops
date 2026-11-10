@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/scarson/cvert-ops/internal/ecosystem"
+	"github.com/scarson/cvert-ops/internal/version"
 )
 
 // cnaNameRunes is how many characters of a CNA vendor or product the index
@@ -18,7 +19,7 @@ const cnaNameRunes = 256
 // position is the key index that rows in Candidates refer to.
 type Keys struct {
 	Packages       []PackageKey // ecosystem and folded name
-	CPEPrefixes    []CPEKey     // Lo "cpe:2.3:a:nodejs:node.js:", Hi "cpe:2.3:a:nodejs:node.js;"
+	CPEPrefixes    []CPEKey     // Lo "cpe:2.3:a:nodejs:node.js:", Hi "cpe:2.3:a:nodejs:node.js;", Floor "24.22"
 	CNANames       []CNANameKey // see CNANameKey
 	CNAPackageKeys []string     // ecosystem.PackageKeyFor; non-distro package items only
 	CNANear        []CNANearKey // see CNANearKey
@@ -32,7 +33,15 @@ type PackageKey struct{ Ecosystem, Name string }
 // escapes as ProductRef holds them: as written, except that parseCPE drops the
 // backslash before ".", "-" and "_", which NVD writes bare. Lo ends in ":" and
 // Hi is Lo with that ":" replaced by ";", the next byte.
-type CPEKey struct{ Lo, Hi string }
+//
+// Floor is set on a product key whose item version is dotted numbers: that
+// version cut to its first two components (6.12 for 6.12.7), which is at or
+// below it. The store then leaves out the rows whose ranges lie wholly below
+// Floor (CPERowBelow) and returns one CPERow per CVE counting them. Such a row
+// answers NotAffected for every dotted-number version at or above Floor, so for
+// the item's. Items of one product whose versions share a floor share the key
+// and its read; cutting the version trades a few more rows read for that.
+type CPEKey struct{ Lo, Hi, Floor string }
 
 // CNANameKey finds CNA rows for one CNAName. Names are lower-cased and cut to
 // 256 runes, as the index holds them. V is the cut vendor, and [Lo, Hi) is a
@@ -114,9 +123,10 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			names, cpes, _ := NamesFor(p)
 			// Every spelling NamesFor lists is this product, with the item's part.
 			var vendorRanges []CPEKey
+			floor := versionFloor(item.Version)
 			for _, cpe := range cpes {
 				lo := "cpe:2.3:" + p.Part + ":" + cpe + ":"
-				use.cpes = append(use.cpes, add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}))
+				use.cpes = append(use.cpes, add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo), Floor: floor}))
 				vendorLo := "cpe:2.3:" + p.Part + ":" + splitCPE(cpe)[0] + ":"
 				if r := (CPEKey{Lo: vendorLo, Hi: upperOfPrefix(vendorLo)}); !slices.Contains(vendorRanges, r) {
 					vendorRanges = append(vendorRanges, r)
@@ -184,6 +194,16 @@ func nearKeyID(k CNANearKey) string {
 		fields = append(fields, r.Lo, r.Hi)
 	}
 	return strings.Join(fields, "\x00")
+}
+
+// versionFloor returns a CPEKey's Floor for an item version: its first two
+// components when it is dotted numbers, otherwise "".
+func versionFloor(ver string) string {
+	if _, err := version.NumericOrder(ver, ver); err != nil {
+		return ""
+	}
+	components := strings.SplitN(ver, ".", 3)
+	return strings.Join(components[:min(len(components), 2)], ".")
 }
 
 // upperOfPrefix turns a CPE prefix ending in ":" into the bound just above every

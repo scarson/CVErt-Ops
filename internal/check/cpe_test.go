@@ -41,7 +41,7 @@ func matchedCPE(cpe, introduced, fixed, lastAffected string) Matched {
 func evaluateCPE(t *testing.T, ver string, rows []CPERow) Outcome {
 	t.Helper()
 	m := newWorkMeter(context.Background())
-	got := EvaluateCPERows(m, ver, rows)
+	got := EvaluateCPERows(m, ver, rows, 0)
 	if err := m.Err(); err != nil {
 		t.Fatalf("meter error after evaluation: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestEvaluateCPERowsMeter(t *testing.T) {
 		ticks := 0
 		m.onTick = func() { ticks++ }
 		rows := append(cpeAffectedRows(2), cpeRow(cpeNodeNA, cpeBounds{}), cpeRow("cpe:2.3:a", cpeBounds{}))
-		got := EvaluateCPERows(m, "1.0", rows)
+		got := EvaluateCPERows(m, "1.0", rows, 0)
 		if ticks != 4 {
 			t.Errorf("ticks = %d, want 4", ticks)
 		}
@@ -416,7 +416,7 @@ func TestEvaluateCPERowsMeter(t *testing.T) {
 		m := newWorkMeter(cancelledContext())
 		ticks := 0
 		m.onTick = func() { ticks++ }
-		got := EvaluateCPERows(m, "1.0", cpeAffectedRows(2500))
+		got := EvaluateCPERows(m, "1.0", cpeAffectedRows(2500), 0)
 		if ticks != 1000 {
 			t.Errorf("ticks = %d, want 1000", ticks)
 		}

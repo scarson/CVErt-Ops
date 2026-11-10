@@ -113,7 +113,7 @@ notes and commit messages.
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2` and `6e54c4d` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -126,8 +126,12 @@ notes and commit messages.
 - Task 3.2: `ParseItem` also refuses invalid UTF-8 as `invalid_characters`, and compares a CPE's own version with the `version` field without regard to case (the CPE is lower-cased, the field is not). Commit `a9f86cf`.
 - Task 3.4: the combining rule of design section 4.1 is one helper, `rowVerdicts` in `internal/check/verdict.go`, which package and CPE rows share; `reasonFor` moved there. CPE shapes the design does not describe answer `invalid_range`: a CPE that is not 13 components, both `versionStart*` bounds set, and a literal version component with bounds. Commit `ae67ed3`.
 - Task 3.5: `Matched` for a CNA entry holds the segment that contains the version (start as `introduced`; end as `fixed` when exclusive, `last_affected` when inclusive), so `reading` carries the segment. Commit `d251fe2`.
-- **For Sam (Task 3.5, `internal/check/cna.go`):** a single-version entry with a wildcard, such as `{8.1.*, affected}` with no upper bound or changes, keeps `8.1.*` as its (unreadable) upper edge, so every version at or above `8.1` reads Indeterminate. The plan's text, normalising the lower bound "before segments are built", would make the segment `[8.1, 8.1]` and read `8.1.5` as No statement although the entry names the whole 8.1 line. Reading it as the line `[8.1, 8.2)` would be more precise; neither the design nor the plan says so.
-- Task 3.5: two changes at one version with different statuses make the entry unsortable (Indeterminate at or above its lower bound). Read in input order, `{1.0, lt 3.0, affected}` with changes `[{2.0, affected}, {2.0, unaffected}]` read `2.0` as No statement. Commit `6e54c4d`.
+- Task 3.5, shapes design section 4.3 does not cover, each read towards Indeterminate under "Rules for every task" (focused review of `internal/check/cna.go`, commits `6e54c4d`, `7b5b880`, `8cf9c18`):
+  - A single-version line wildcard such as `{8.1.*, affected}` is the segment `[8.1, 8.2)` with a wildcard end: `8.1.5` Indeterminate, `8.2.0` No statement. Normalising the lower bound first, as the plan's text reads, made it `[8.1, 8.1]` and read `8.1.5` as No statement.
+  - `.x` and `.X` line wildcards (`2.x`, `2.4.X`) are read like `.*`. Maven and RPM can parse `2.x` as a version, so `{1.0, lt 2.x, affected, maven}` read `2.5` as No statement. Any other value ending in `.*`, `.x` or `.X` is unreadable.
+  - A segment that is not `unaffected` and whose end is below its start (or equal with an exclusive end) makes the entry Indeterminate for every version, as `version.validateRange` refuses the same shape. Before, `{2.0, lt 1.0, affected}` and a change to `affected` above `lessThan` read No statement everywhere.
+  - Changes at one version collapse to one change, with status `unknown` when their statuses differ. In input order, `[{2.0, affected}, {2.0, unaffected}]` read `2.0` as No statement or Affected, depending on order.
+- **For Sam (Task 3.5):** a lower bound of `*` with an upper bound, such as `{*, lte 1.4.4, affected, semver}`, reads Indeterminate at or below `1.4.4`, because the design normalises only `8.1.*`-style bounds. Reading a bare `*` lower bound as `0` would give Affected. It cannot clear a version either way. The review believes Wordfence writes this shape; Phase 4 can count it.
 
 ### Discoveries
 

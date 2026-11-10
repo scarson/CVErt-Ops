@@ -1423,6 +1423,8 @@ Test every nullable sort column with fixtures containing both null and non-null 
 
 **API keys must not be accepted in query strings (required):** Tokens in query strings (`?api_key=cvo_abc123`) are logged by every layer — web server access logs, reverse proxy logs, load balancer logs, CDN edge logs, browser history, and `Referer` headers on subsequent navigations. An API key appearing in a URL is treated as compromised the moment the request is made. The API MUST: (1) accept API keys **only** via the `Authorization: Bearer <key>` HTTP header; (2) return `400 Bad Request` if a request includes an API key in any query parameter (`?api_key=`, `?token=`, `?key=`, `?access_token=`); (3) scan for common parameter names at the middleware layer before reaching any handler. The OpenAPI spec declares API keys only as `http bearer` and the browser session as an `apiKey` scheme in a cookie; it must never declare a credential in `query` location.
 
+**Version check endpoint (MATCH-1):** `POST /api/v1/orgs/{org_id}/check` (viewer+) answers, for up to 500 exact component versions (a purl, an OSV `ecosystem` and `name`, or a CPE 2.3 string, each with a version), which held advisories affect each one, which range matched, and the lowest version the advisory data no longer reports as affected. It reads only global CVE data, never stores or logs the items, and runs at most 4 checks per process (503 with `Retry-After` beyond that). One invalid item answers 200 with that item `status: "invalid"`; a request over its row or byte limit answers 422 with problem type `urn:cvert:error:candidate_limit_exceeded`. Item `status` is one of `affected`, `not_affected`, `cannot_evaluate`, `no_advisory_found` and `invalid`. `no_advisory_found` means nothing is known about the component, not that it is safe, and `not_affected` means not in any analysed or CNA-named advisory held. The verdict rules, limits and full contract are in `dev/plans/2026-11-08-version-check-endpoint-design.md` (sections 3, 4, 9 and 11); version comparison follows §9.2.
+
 ### Decision D5 — How org context is carried in the API (MVP)
 
 **Decision (MVP):** Carry org context in the **URL path**: `/api/v1/orgs/{org_id}/...`
@@ -2314,6 +2316,9 @@ See section 18.1 for full schema.
 - `POST /api/v1/orgs/{org_id}/watchlists/{id}/items` — add item (member+)
 - `PUT /api/v1/orgs/{org_id}/watchlists/{id}/items` — replace all items (member+, at most 10,000, see §9.2)
 - `DELETE /api/v1/orgs/{org_id}/watchlists/{id}/items/{item_id}` — remove item (member+)
+
+**Version check (chi-registered):**
+- `POST /api/v1/orgs/{org_id}/check` — which held advisories affect each of up to 500 exact component versions, with the matched range and fix (viewer+, see §16 "Version check endpoint")
 
 **Notification channels (chi-registered, admin+ for mutations):**
 - `GET /api/v1/orgs/{org_id}/channels` — list (viewer+)

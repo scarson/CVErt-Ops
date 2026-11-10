@@ -21,3 +21,7 @@
 - `go test ./internal/check/ -run CNA -count=1`: pass. 73 `TestReadCNAEntry` cases (every version of every row of the plan's table, then design section 4.3 rows and rules the plan rows do not reach), 8 `TestReadCNAEntries`, 4 `TestCNARangeCount`, 3 `TestReadCNAEntriesMeter`, 2 `TestCNAVersionDecodesStoredJSON`; 0 failures.
 - `go test ./internal/check/ -count=1`: pass.
 - `golangci-lint run ./internal/check/...`: 0 issues.
+
+## Conflicting changes at one version
+
+Two changes whose `at` values compare equal and whose statuses differ (an empty status read as `unknown`) made the reading depend on input order: `{1.0, lt 3.0, affected}` with changes to `affected` and to `unaffected` at 2.0 read `2.0` as no statement in one order and Affected in the other. `buildSegments` now reports such an entry as unsortable, so it reads Indeterminate at or above a readable lower bound and no statement below it, in both orders. Repeated changes with the same status still read as segments. Eight cases cover both input orders at 2.0, 1.5 and 0.5, and the same-status repeat at 1.5 and 2.0. The four cases at 2.0 and 1.5 failed first. Commit `fix(check): read conflicting changes at one version as unsortable`. `go test ./internal/check/ -count=1` passes and `golangci-lint run ./internal/check/...` reports 0 issues.

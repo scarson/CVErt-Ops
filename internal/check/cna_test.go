@@ -67,6 +67,12 @@ var (
 	// {>= 1.0.0, affected, custom}
 	cnaFreeTextOpen = CNAVersion{Version: ">= 1.0.0", Status: "affected", VersionType: "custom"}
 
+	// {1.0, lt 3.0, affected}, changes to affected and to unaffected, both at 2.0.
+	cnaConflictAt2 = CNAVersion{
+		Version: "1.0", LessThan: "3.0", Status: "affected",
+		Changes: []CNAChange{{At: "2.0", Status: "affected"}, {At: "2.0", Status: "unaffected"}},
+	}
+
 	// {1.0, lte 2.*, affected, semver}
 	cnaInclusiveWildcardLine2 = CNAVersion{Version: "1.0", LessThanOrEqual: "2.*", Status: "affected", VersionType: "semver"}
 )
@@ -372,6 +378,26 @@ func TestReadCNAEntry(t *testing.T) {
 			name:  "design: affected segment followed by an affected segment has no candidate / 1.5",
 			entry: CNAVersion{Version: "1.0", LessThan: "3.0", Status: "affected", Changes: []CNAChange{{At: "2.0", Status: "affected"}}}, version: "1.5",
 			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("1.0", "2.0", "")},
+		},
+		// Two changes at one version with different statuses have no order, so the
+		// entry reads as unsortable, in either input order: Indeterminate at or above
+		// its lower bound, no statement below it.
+		{name: "design: conflicting changes at one version, affected first / 2.0", entry: cnaConflictAt2, version: "2.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version, affected first / 1.5", entry: cnaConflictAt2, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version, affected first / 0.5", entry: cnaConflictAt2, version: "0.5", want: CNAResult{Reading: NoStatement}},
+		{name: "design: conflicting changes at one version, unaffected first / 2.0", entry: reversed(cnaConflictAt2), version: "2.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version, unaffected first / 1.5", entry: reversed(cnaConflictAt2), version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version, unaffected first / 0.5", entry: reversed(cnaConflictAt2), version: "0.5", want: CNAResult{Reading: NoStatement}},
+		// Two changes at one version with the same status still read as segments.
+		{
+			name:  "design: repeated change with the same status at one version / 1.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "3.0", Status: "affected", Changes: []CNAChange{{At: "2.0", Status: "unaffected"}, {At: "2.0", Status: "unaffected"}}}, version: "1.5",
+			want: CNAResult{Reading: AffectedReading, Candidates: []string{"2.0"}, Matched: cnaMatched("1.0", "2.0", "")},
+		},
+		{
+			name:  "design: repeated change with the same status at one version / 2.0",
+			entry: CNAVersion{Version: "1.0", LessThan: "3.0", Status: "affected", Changes: []CNAChange{{At: "2.0", Status: "unaffected"}, {At: "2.0", Status: "unaffected"}}}, version: "2.0",
+			want: CNAResult{Reading: NoStatement},
 		},
 		// The version the comparator cannot read: Indeterminate unless the entry is
 		// wholly unaffected.

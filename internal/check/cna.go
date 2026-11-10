@@ -276,7 +276,8 @@ func lowerBound(v string) string {
 // version with its status, then one from each change, sorted by At under the
 // entry's order. Each segment includes its start and stops before the next start;
 // the last stops at the entry's upper bound. It returns false when the order
-// cannot read some At, because the changes then have no reliable order.
+// cannot read some At, or when two changes at one version have different
+// statuses, because the changes then have no reliable order.
 func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment, bool) {
 	changes := slices.Clone(e.Changes)
 	// Each At is checked on its own, because a sort compares nothing when there
@@ -297,14 +298,18 @@ func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment
 	if sortErr != nil {
 		return nil, false
 	}
+	// Two changes at one version with different statuses state no order between
+	// them, and either order would decide that version differently.
+	for i := 1; i < len(changes); i++ {
+		c, err := order(changes[i-1].At, changes[i].At)
+		if err != nil || (c == 0 && changeStatus(changes[i-1]) != changeStatus(changes[i])) {
+			return nil, false
+		}
+	}
 
 	segments := []segment{{start: newBound(lowerBound(e.Version), order), status: e.Status}}
 	for _, c := range changes {
-		status := c.Status
-		if status == "" {
-			status = "unknown"
-		}
-		segments = append(segments, segment{start: newBound(c.At, order), status: status})
+		segments = append(segments, segment{start: newBound(c.At, order), status: changeStatus(c)})
 	}
 	for i := range len(segments) - 1 {
 		segments[i].end = segments[i+1].start
@@ -325,6 +330,14 @@ func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment
 		last.end = bound{unlimited: true}
 	}
 	return segments, true
+}
+
+// changeStatus returns a change's status, with an empty status read as unknown.
+func changeStatus(c CNAChange) string {
+	if c.Status == "" {
+		return "unknown"
+	}
+	return c.Status
 }
 
 // upperBound returns the entry's upper edge and whether it is inclusive. A bare

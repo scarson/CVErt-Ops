@@ -381,6 +381,11 @@ func TestWriteCheckFailure(t *testing.T) {
 			if problem.Detail == "" {
 				t.Error("problem has no detail")
 			}
+			// The check's own limit and DB_STATEMENT_TIMEOUT_MS differ, so the
+			// detail names neither.
+			if tc.want == http.StatusServiceUnavailable && strings.ContainsAny(problem.Detail, "0123456789") {
+				t.Errorf("detail %q states a time limit", problem.Detail)
+			}
 			if logged := strings.Contains(logs.String(), tc.err.Error()); logged != tc.wantLog {
 				t.Errorf("error logged = %v, want %v: %s", logged, tc.wantLog, logs.String())
 			}

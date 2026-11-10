@@ -243,7 +243,7 @@ func writeCheckFailure(w http.ResponseWriter, r *http.Request, ctx context.Conte
 			"the request reads more candidate rows than one request may; split the items over several requests")
 	case ctx.Err() != nil, pgErrCode(err) == pgQueryCanceled:
 		writeProblem(w, http.StatusServiceUnavailable,
-			fmt.Sprintf("the version check stopped before it finished (the %s limit, or the request was cancelled); nothing was answered. Retry, or split the items over several requests", checkTimeout))
+			"the version check took too long or the request was cancelled, so nothing was answered; retry, or split the items over several requests")
 	default:
 		slog.ErrorContext(r.Context(), "version check", "error", err)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

@@ -16,12 +16,19 @@ var numericSyntax = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)*$`)
 // product's own rules, so they report CannotEvaluate. Missing components count
 // as zero. The returned error is non-nil exactly when the status is CannotEvaluate.
 func CheckNumeric(version string, r Range) (Status, error) {
-	return scheme{
-		valid: func(v string) bool {
-			return len(v) <= maxVersionLen && numericSyntax.MatchString(v)
-		},
-		compare: compareNumeric,
-	}.check(version, r)
+	return numericScheme.check(version, r)
+}
+
+// NumericOrder is the Order of CheckNumeric.
+func NumericOrder(a, b string) (int, error) {
+	return numericScheme.order(a, b)
+}
+
+var numericScheme = scheme{
+	valid: func(v string) bool {
+		return len(v) <= maxVersionLen && numericSyntax.MatchString(v)
+	},
+	compare: compareNumeric,
 }
 
 func compareNumeric(a, b string) (int, error) {

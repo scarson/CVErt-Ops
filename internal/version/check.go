@@ -110,6 +110,18 @@ func (s scheme) check(version string, r Range) (Status, error) {
 	return NotAffected, nil
 }
 
+// order compares two versions: negative when a sorts below b, positive when
+// above. It returns ErrInvalidVersion when either is not a valid version of the
+// scheme, because the comparison would then be a guess.
+func (s scheme) order(a, b string) (int, error) {
+	for _, v := range []string{a, b} {
+		if !s.valid(v) {
+			return 0, fmt.Errorf("%w: %q", ErrInvalidVersion, v)
+		}
+	}
+	return s.compare(a, b)
+}
+
 // upperBound returns the range's single upper bound, whether it is inclusive, and
 // whether the range has one.
 func (r Range) upperBound() (bound string, inclusive, bounded bool) {

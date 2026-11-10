@@ -18,9 +18,9 @@ type CPERow struct {
 // from that advisory's rows for the product's part:vendor:product. Every row is
 // compared with version.CheckProduct, because a product has no ecosystem to
 // define its order: dotted numbers, and bounds such as 1.0.2zf by their leading
-// dotted numbers where those decide. Rows are combined as EvaluatePackageRows combines package
-// rows; a versionEndExcluding bound of a row containing the version is a fix
-// candidate, a versionEndIncluding bound is not.
+// dotted numbers where those decide. Rows are combined as EvaluatePackageRows
+// combines package rows; a versionEndExcluding bound of a row containing the
+// version is a fix candidate, a versionEndIncluding bound is not.
 //
 // It calls m.Tick once per row and returns as soon as Tick refuses; the caller
 // then discards the outcome and reports m.Err.

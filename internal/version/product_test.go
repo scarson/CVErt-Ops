@@ -49,6 +49,28 @@ func TestCheckProduct(t *testing.T) {
 		{"undecided bounds, version below both", "1.0.1", Range{Introduced: "1.0.2", Fixed: "1.0.2zf"}, NotAffected, nil},
 		{"undecided bounds, version on the start", "1.0.2", Range{Introduced: "1.0.2", Fixed: "1.0.2zf"}, CannotEvaluate, ErrInvalidRange},
 		{"undecided bounds, version decided against one only", "2.4.0", Range{Introduced: "2.4.1", Fixed: "2.4a"}, CannotEvaluate, ErrInvalidRange},
+		// 1.0 <= 1.0.1 numerically and 1.0.1 < 1.0.2zf by leading numbers, while
+		// 1.0 against 1.0.2zf is not decided: between both is still not outside both.
+		{"undecided bounds, version decided between them", "1.0.1", Range{Introduced: "1.0", Fixed: "1.0.2zf"}, CannotEvaluate, ErrInvalidRange},
+
+		// Identical bounds are equal: an exclusive range on one value contains no
+		// version and is refused, as CheckNumeric refuses [2.0, 2.0).
+		{"empty range on one suffixed value", "1.5", Range{Introduced: "1.0b1", Fixed: "1.0b1"}, CannotEvaluate, ErrInvalidRange},
+
+		// Leading-number components compare by value: length first, leading zeros ignored.
+		{"shorter component is smaller", "9.0", Range{Introduced: "1.0", Fixed: "10.0a"}, Affected, nil},
+		{"longer component is larger", "10.0", exact("9.0b1"), NotAffected, nil},
+		{"leading zero component equals", "1.01", Range{Introduced: "1.0", Fixed: "1.1a"}, CannotEvaluate, ErrInvalidRange},
+		{"leading zero component differs", "1.02", exact("1.1a"), NotAffected, nil},
+
+		// CPE 2.3 wildcards and URI-encoded characters are never compared:
+		// 1* matches 10.0, and %3a is an encoded epoch colon.
+		{"trailing star wildcard", "10.0", exact("1*"), CannotEvaluate, ErrInvalidRange},
+		{"trailing star wildcard after dot", "1.05", exact("1.0*"), CannotEvaluate, ErrInvalidRange},
+		{"question mark wildcard", "1.05", exact("1.0?"), CannotEvaluate, ErrInvalidRange},
+		{"question mark wildcard on major", "12", exact("1?"), CannotEvaluate, ErrInvalidRange},
+		{"escaped star is a literal", "15.2", exact(`12.2\*`), NotAffected, nil},
+		{"URI-encoded epoch", "2.3", Range{Introduced: "0", Fixed: "1%3a2.4"}, CannotEvaluate, ErrInvalidRange},
 
 		// Bounds that are never compared.
 		{"epoch bound", "2.3", Range{Introduced: "0", Fixed: "1:2.4"}, CannotEvaluate, ErrInvalidRange},

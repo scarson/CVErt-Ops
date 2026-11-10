@@ -97,10 +97,11 @@ func numericBounds(r Range) bool {
 }
 
 // comparableBound reports whether a bound that is not dotted numbers may be
-// compared by its leading dotted numbers: it has some, and what follows them is
-// not an epoch separator, plain or CPE-escaped.
+// compared by its leading dotted numbers: it has some, what follows them is not
+// an epoch separator, plain or CPE-escaped, and it holds no CPE 2.3 wildcard
+// (1* matches 10.0) and no URI-encoded character (1%3a2.4 is an epoch).
 func comparableBound(b string) bool {
-	if len(b) > maxVersionLen {
+	if len(b) > maxVersionLen || strings.Contains(b, "%") || hasWildcard(b) {
 		return false
 	}
 	lead := leadingNumbers.FindString(b)
@@ -111,9 +112,23 @@ func comparableBound(b string) bool {
 	return !strings.HasPrefix(rest, ":") && !strings.HasPrefix(rest, "!")
 }
 
+// hasWildcard reports whether b holds an unescaped * or ?, which CPE 2.3 reads
+// as a wildcard. A backslash escapes the character after it.
+func hasWildcard(b string) bool {
+	for i := 0; i < len(b); i++ {
+		switch b[i] {
+		case '\\':
+			i++
+		case '*', '?':
+			return true
+		}
+	}
+	return false
+}
+
 // outsideBoth answers a range whose bounds have no decided order: NotAffected
 // when version is decided below both bounds or above both, otherwise
-// CannotEvaluate. upper is "" for a range with no upper bound.
+// CannotEvaluate.
 func outsideBoth(version, introduced, upper string) (Status, error) {
 	ci, okI := leadingOrder(version, introduced)
 	cu, okU := leadingOrder(version, upper)
@@ -123,10 +138,14 @@ func outsideBoth(version, introduced, upper string) (Status, error) {
 	return CannotEvaluate, fmt.Errorf("%w: %q is not decided against %q and %q", ErrInvalidRange, version, introduced, upper)
 }
 
-// leadingOrder compares a and b, and reports whether the order is decided. Two
-// dotted-number strings compare numerically. Otherwise the order is decided only
-// by the first component, among those both leading parts have, where they differ.
+// leadingOrder compares a and b, and reports whether the order is decided.
+// Identical strings are equal, and two dotted-number strings compare
+// numerically. Otherwise the order is decided only by the first component,
+// among those both leading parts have, where they differ.
 func leadingOrder(a, b string) (int, bool) {
+	if a == b {
+		return 0, true
+	}
 	if numericScheme.valid(a) && numericScheme.valid(b) {
 		c, err := compareNumeric(a, b)
 		return c, err == nil

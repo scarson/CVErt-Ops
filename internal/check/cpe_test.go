@@ -353,8 +353,9 @@ func TestEvaluateCPERows(t *testing.T) {
 }
 
 // TestEvaluateCPERowsBoundOrder checks that every Bound reads candidates with
-// CheckProduct, which requires a dotted-number version, and that a row with no version bounds answers cannot evaluate
-// for any candidate, so fix reporting never clears a candidate against it.
+// CheckProduct, which requires a dotted-number version, and that a row with no
+// version bounds answers cannot evaluate for any candidate, so fix reporting
+// never clears a candidate against it.
 func TestEvaluateCPERowsBoundOrder(t *testing.T) {
 	t.Parallel()
 	got := evaluateCPE(t, "1.5", []CPERow{

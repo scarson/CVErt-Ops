@@ -38,6 +38,7 @@ func TestFetch_GoldenCNAAffected_NotYetAnalysedByNVD(t *testing.T) {
 	want := []feed.CNAAffected{{
 		Vendor:        "fastify",
 		Product:       "fastify",
+		PackageKey:    "npm/fastify",
 		DefaultStatus: "unaffected",
 		Versions: []feed.CNAVersion{
 			{Version: "5.12.2", LessThan: "5.12.6", Status: "affected", VersionType: "semver"},

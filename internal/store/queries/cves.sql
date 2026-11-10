@@ -133,9 +133,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: InsertCNAAffected :exec
 INSERT INTO cve_cna_affected (
-    cve_id, vendor, product, package_name, collection_url, default_status, versions
+    cve_id, vendor, product, package_name, collection_url, default_status, versions, package_key
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: UpsertCVESearchIndex :exec
 -- Weights: A=description (highest), B=CWE names, C=package names, D=CVE ID.

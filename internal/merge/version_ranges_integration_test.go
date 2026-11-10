@@ -4,8 +4,11 @@ package merge_test
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/feed"
@@ -183,6 +186,118 @@ func TestIngest_StoresCNAAffectedForCVEWithoutNVDAnalysis(t *testing.T) {
 				t.Errorf("versions = %+v", versions)
 			}
 		})
+	}
+}
+
+// The golden NVD record relays the CNA's packageURL pkg:npm/fastify, and no other
+// golden feed names that package. Merge stores its package key, which is not a
+// material_hash input, so adding it does not move the hash or the modified date.
+func TestIngest_StoresCNAPackageKey(t *testing.T) {
+	const cveID = "CVE-2026-107832"
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	patch := testutil.GoldenPatch(t, "nvd", cveID)
+	if len(patch.CNAAffected) != 1 || patch.CNAAffected[0].PackageKey != "npm/fastify" {
+		t.Fatalf("golden patch CNA entries = %+v, want one with package key npm/fastify", patch.CNAAffected)
+	}
+
+	without := patch
+	without.CNAAffected = []feed.CNAAffected{patch.CNAAffected[0]}
+	without.CNAAffected[0].PackageKey = ""
+	if err := merge.Ingest(ctx, s.Store, without, "nvd"); err != nil {
+		t.Fatalf("Ingest without package key: %v", err)
+	}
+	cveBefore := s.MustGetCVE(t, ctx, cveID)
+	if keys := cnaPackageKeys(t, s, cveID); len(keys) != 1 || keys[0].Valid {
+		t.Errorf("package keys = %+v for an entry without one, want one NULL", keys)
+	}
+
+	if err := merge.Ingest(ctx, s.Store, patch, "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	cveAfter := s.MustGetCVE(t, ctx, cveID)
+	if keys := cnaPackageKeys(t, s, cveID); len(keys) != 1 || keys[0].String != "npm/fastify" {
+		t.Errorf("package keys = %+v, want one: npm/fastify", keys)
+	}
+	if cveAfter.MaterialHash != cveBefore.MaterialHash {
+		t.Errorf("material_hash moved: %s -> %s", cveBefore.MaterialHash.String, cveAfter.MaterialHash.String)
+	}
+	if !cveAfter.DateModifiedCanonical.Equal(cveBefore.DateModifiedCanonical) {
+		t.Errorf("date_modified_canonical moved: %s -> %s", cveBefore.DateModifiedCanonical, cveAfter.DateModifiedCanonical)
+	}
+}
+
+// cnaPackageKeys returns the package_key of every cve_cna_affected row of a CVE.
+func cnaPackageKeys(t *testing.T, s *testutil.TestDB, cveID string) []sql.NullString {
+	t.Helper()
+	rows, err := s.DB().QueryContext(context.Background(),
+		"SELECT package_key FROM cve_cna_affected WHERE cve_id = $1 ORDER BY package_key", cveID)
+	if err != nil {
+		t.Fatalf("read package_key: %v", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var keys []sql.NullString
+	for rows.Next() {
+		var k sql.NullString
+		if err := rows.Scan(&k); err != nil {
+			t.Fatalf("scan package_key: %v", err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read package_key rows: %v", err)
+	}
+	return keys
+}
+
+// randomText returns n random characters, each first + (a random byte % span).
+// PostgreSQL compresses long index keys, so a repeated character would fit under
+// the btree row limit and prove nothing.
+func randomText(t *testing.T, n int, first rune, span byte) string {
+	t.Helper()
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("random bytes: %v", err)
+	}
+	var b strings.Builder
+	for _, c := range buf {
+		b.WriteRune(first + rune(c%span))
+	}
+	return b.String()
+}
+
+// CNA vendor and product can reach 2,048 characters, and a package URL has no length
+// bound. The check lookup indexes must accept the longest values the merge stores,
+// or a CVE with such an entry fails to merge.
+func TestIngest_LongCNAValuesFitTheCheckIndexes(t *testing.T) {
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// npm/ plus this name is exactly the longest key ecosystem.PackageKey keeps.
+	name := randomText(t, 2600-len("npm/"), 'a', 26)
+	// Cyrillic а to я: lower case, two bytes each.
+	raw, err := json.Marshal([]map[string]string{{
+		"vendor":     randomText(t, 2048, 'а', 32),
+		"product":    randomText(t, 2048, 'а', 32),
+		"packageURL": "pkg:npm/" + name,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := feed.ParseCNAAffected(raw, "CVE-2024-99953")
+	if len(entries) != 1 {
+		t.Fatalf("parsed %d entries, want 1", len(entries))
+	}
+	if len(entries[0].PackageKey) != 2600 {
+		t.Fatalf("key length = %d, want 2600", len(entries[0].PackageKey))
+	}
+
+	patch := feed.CanonicalPatch{CVEID: "CVE-2024-99953", Status: "published", CNAAffected: entries}
+	if err := merge.Ingest(ctx, s.Store, patch, "mitre"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if keys := cnaPackageKeys(t, s, patch.CVEID); len(keys) != 1 || keys[0].String != "npm/"+name {
+		t.Errorf("stored %d keys, want the 2600-byte key", len(keys))
 	}
 }
 

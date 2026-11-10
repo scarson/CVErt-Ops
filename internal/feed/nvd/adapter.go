@@ -61,6 +61,9 @@ type Cursor struct {
 	WindowStart time.Time `json:"window_start"`
 	WindowEnd   time.Time `json:"window_end"`
 	StartIndex  int       `json:"start_index"`
+	// CaughtUp is true once a walk has reached the present. A cleared cursor
+	// starts false, so a refill reports NVD data as incomplete until it finishes.
+	CaughtUp bool `json:"caught_up,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the NVD API 2.0.
@@ -264,6 +267,7 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*C
 			WindowStart: cur.WindowStart,
 			WindowEnd:   cur.WindowEnd,
 			StartIndex:  nextStartIndex,
+			CaughtUp:    cur.CaughtUp,
 		}, false
 	}
 
@@ -280,6 +284,7 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*C
 			WindowStart: cur.WindowEnd.Add(-overlapDuration),
 			WindowEnd:   effectiveNow,
 			StartIndex:  0,
+			CaughtUp:    true,
 		}, true
 	}
 
@@ -292,6 +297,7 @@ func computeNextCursor(cur Cursor, totalResults int, effectiveNow time.Time) (*C
 		WindowStart: nextWindowStart,
 		WindowEnd:   nextWindowEnd,
 		StartIndex:  0,
+		CaughtUp:    cur.CaughtUp,
 	}, false
 }
 

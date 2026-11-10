@@ -88,7 +88,7 @@ type CVEDetail struct {
 	AffectedPackages   []AffectedPackageResponse `json:"affected_packages"`
 	AffectedCPEs       []AffectedCPEResponse     `json:"affected_cpes" doc:"Every CPE the sources name for this CVE, once each. Includes platforms NVD marks not vulnerable, such as the operating system an affected application runs on. For what is affected, read affected_cpe_matches."`
 	AffectedCPEMatches []CPEMatchResponse        `json:"affected_cpe_matches" doc:"NVD's affected CPEs with their version ranges, one entry per range: NVD repeats a CPE with a different range per release branch. Empty until CVErt Ops ingests an NVD record with configurations for the CVE. A CPE that carries its version in the string has no range fields."`
-	CNAAffected        []CNAAffectedResponse     `json:"cna_affected" doc:"Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none."`
+	CNAAffected        []CNAAffectedResponse     `json:"cna_affected" doc:"Products and versions as the CVE Numbering Authority published them, which can be present before NVD analyses the CVE. Holds the distinct entries of both the CVE record and NVD's copy of it, so a product can appear twice when one copy lags the other. Empty until CVErt Ops ingests a record carrying this data, so an empty list does not mean the CNA published none."`
 	References         []ReferenceResponse       `json:"references"`
 }
 

@@ -24,6 +24,8 @@ const (
 	maxCheckItems       = 500
 	maxConcurrentChecks = 4
 	checkTimeout        = 30 * time.Second
+	// checkWriteTimeout bounds writing a version check response to the client.
+	checkWriteTimeout = 30 * time.Second
 )
 
 // problemTypeCandidateLimit marks a request that read more candidate rows or bytes
@@ -130,21 +132,19 @@ type CheckItemError struct {
 
 // checkComponentsHandler handles POST /api/v1/orgs/{org_id}/check. Requires viewer+.
 // It reads only the global CVE corpus. Items describe what an org runs, so they
-// are neither stored nor logged, and no audit entry is written. At most
-// maxConcurrentChecks run at once; a request that finds no free slot is refused
-// before anything is read.
+// are neither stored nor logged, and no audit entry is written.
+//
+// At most maxConcurrentChecks read and evaluate at once. The body is read and its
+// items parsed before a slot is taken, and the slot is given back before the
+// response is written, so a slow upload or a slow reader of the response cannot
+// hold one. A request that finds no free slot is refused before the database is
+// read. The response must be written within checkWriteTimeout.
 func (srv *Server) checkComponentsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
 		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if !srv.acquireCheck() {
-		w.Header().Set("Retry-After", "1")
-		writeProblem(w, http.StatusServiceUnavailable, "all version check slots are in use; retry shortly")
-		return
-	}
-	defer srv.releaseCheck()
 
 	// middleware.RequestSize only wraps the body, so the limit shows up here as a
 	// read error, which decodeJSON would report as malformed JSON.
@@ -184,20 +184,46 @@ func (srv *Server) checkComponentsHandler(w http.ResponseWriter, r *http.Request
 
 	ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
 	defer cancel()
+	results, err := srv.runCheck(ctx, orgID, items, keys)
+	if errors.Is(err, errCheckSlotsBusy) {
+		w.Header().Set("Retry-After", "1")
+		writeProblem(w, http.StatusServiceUnavailable, "all version check slots are in use; retry shortly")
+		return
+	}
+	if err != nil {
+		writeCheckFailure(w, r, ctx, err)
+		return
+	}
+
+	// The server sets no write timeout, so without this a client that stops
+	// reading would keep the handler, and the results it holds, indefinitely.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(checkWriteTimeout)); err != nil &&
+		!errors.Is(err, http.ErrNotSupported) {
+		slog.WarnContext(r.Context(), "version check: set write deadline", "error", err)
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+// errCheckSlotsBusy reports that every version check slot was in use.
+var errCheckSlotsBusy = errors.New("all version check slots are in use")
+
+// runCheck reads the candidate rows for keys and evaluates items against them,
+// holding a version check slot for just that work. It returns errCheckSlotsBusy
+// when no slot is free.
+func (srv *Server) runCheck(ctx context.Context, orgID uuid.UUID, items []check.Item, keys check.Keys) (check.Results, error) {
+	if !srv.acquireCheck() {
+		return check.Results{}, errCheckSlotsBusy
+	}
+	defer srv.releaseCheck()
+
 	// The read ends its transaction before returning, so no connection is held
 	// while versions are compared.
 	candidates, enrichment, feedRows, err := srv.store.ReadCheckCandidates(ctx, orgID, keys)
 	if err != nil {
-		writeCheckFailure(w, r, ctx, err)
-		return
+		return check.Results{}, err
 	}
-	results, err := check.EvaluateWithLimits(ctx, items, candidates, check.FeedStatuses(feedRows, time.Now()),
+	return check.EvaluateWithLimits(ctx, items, candidates, check.FeedStatuses(feedRows, time.Now()),
 		enrichment, srv.checkLimits)
-	if err != nil {
-		writeCheckFailure(w, r, ctx, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, results)
 }
 
 // writeCheckFailure answers a version check whose read or evaluation failed. ctx

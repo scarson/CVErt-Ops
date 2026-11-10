@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,6 +175,10 @@ func TestCheckAPI_AllSlotsInUse(t *testing.T) {
 	if got := header.Get("Retry-After"); got != "1" {
 		t.Errorf("Retry-After = %q, want 1", got)
 	}
+	// The body is read and checked before a slot is taken.
+	if status, _, respBody := doCheck(t, f, f.keys["viewer"], f.orgID, `{"items":[`); status != http.StatusBadRequest {
+		t.Errorf("malformed body with all slots held: got %d, want 400: %s", status, respBody)
+	}
 
 	for range cap(f.api.checkSem) {
 		<-f.api.checkSem
@@ -183,6 +188,89 @@ func TestCheckAPI_AllSlotsInUse(t *testing.T) {
 	}
 	if n := len(f.api.checkSem); n != 0 {
 		t.Errorf("%d slots still held after the request", n)
+	}
+}
+
+// blockingBody signals reading on its first Read and waits for release before
+// returning any data, so a test can look at the server while the body uploads.
+type blockingBody struct {
+	r       io.Reader
+	once    sync.Once
+	reading chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		close(b.reading)
+		<-b.release
+	})
+	return b.r.Read(p)
+}
+
+// blockingWriter signals writing on its first Write and waits for release before
+// accepting it, so a test can look at the server while the response is sent.
+type blockingWriter struct {
+	header  http.Header
+	code    int
+	body    bytes.Buffer
+	once    sync.Once
+	writing chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingWriter) Header() http.Header  { return w.header }
+func (w *blockingWriter) WriteHeader(code int) { w.code = code }
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.writing)
+		<-w.release
+	})
+	return w.body.Write(p)
+}
+
+// TestCheckAPI_SlotHeldOnlyWhileChecking calls the handler directly with a body
+// that blocks while it is read and a writer that blocks while the response is
+// written. Neither a slow upload nor a slow reader of the response may hold one
+// of the few version check slots.
+func TestCheckAPI_SlotHeldOnlyWhileChecking(t *testing.T) {
+	t.Parallel()
+	f := newSecurityFixture(t)
+	ctx := context.WithValue(t.Context(), ctxOrgID, f.orgID)
+
+	body := &blockingBody{r: strings.NewReader(packageItems(1)), reading: make(chan struct{}), release: make(chan struct{})}
+	w := &blockingWriter{header: http.Header{}, writing: make(chan struct{}), release: make(chan struct{})}
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/orgs/"+f.orgID.String()+"/check", body)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.api.checkComponentsHandler(w, req)
+	}()
+
+	select {
+	case <-body.reading:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the handler did not read the body")
+	}
+	if n := len(f.api.checkSem); n != 0 {
+		t.Errorf("%d slots held while the body was read, want 0", n)
+	}
+	close(body.release)
+
+	select {
+	case <-w.writing:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the handler did not write a response")
+	}
+	if n := len(f.api.checkSem); n != 0 {
+		t.Errorf("%d slots held while the response was written, want 0", n)
+	}
+	close(w.release)
+	<-done
+
+	if w.code != http.StatusOK {
+		t.Errorf("got %d, want 200: %s", w.code, w.body.String())
 	}
 }
 

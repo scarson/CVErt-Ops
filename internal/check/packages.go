@@ -3,8 +3,6 @@
 package check
 
 import (
-	"errors"
-
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/version"
 )
@@ -40,51 +38,17 @@ func EvaluatePackageRows(m *workMeter, ecosystem, ver string, rows []PackageRow)
 		return Outcome{Verdict: CannotEvaluate, Reason: ReasonCommitRangesOnly}
 	}
 
-	var out Outcome
-	var anyAffected, anyNotAffected, anyCannotEvaluate bool
+	var verdicts rowVerdicts
 	for _, row := range compared {
 		if !m.Tick() {
 			return Outcome{}
 		}
-		bound := Bound{
+		verdicts.compare(ver, Bound{
 			Range: version.Range{Introduced: row.Introduced, Fixed: row.Fixed, LastAffected: row.LastAffected},
 			Check: rowCheck(ecosystem, row.RangeType),
-		}
-		out.Ranges = append(out.Ranges, bound)
-
-		status, err := bound.Check(ver, bound.Range)
-		switch status {
-		case version.Affected:
-			anyAffected = true
-			out.Matched = append(out.Matched, Matched{
-				Evidence: evidencePackageRange, Introduced: row.Introduced, Fixed: row.Fixed, LastAffected: row.LastAffected,
-			})
-			// A last_affected bound does not say what fixes the problem, so only
-			// a fixed bound is a candidate (design section 7).
-			if row.Fixed != "" {
-				out.Candidates = append(out.Candidates, row.Fixed)
-			}
-		case version.NotAffected:
-			anyNotAffected = true
-		default:
-			if !anyCannotEvaluate {
-				out.Reason = reasonFor(err)
-			}
-			anyCannotEvaluate = true
-		}
+		}, Matched{Evidence: evidencePackageRange})
 	}
-
-	out.Comparable = anyAffected || anyNotAffected
-	switch {
-	case anyAffected:
-		out.Verdict = Affected
-		out.Reason = ""
-	case anyNotAffected && !anyCannotEvaluate:
-		out.Verdict = NotAffected
-	default:
-		out.Verdict = CannotEvaluate
-	}
-	return out
+	return verdicts.outcome()
 }
 
 // comparedRows returns the rows to compare: every row except GIT rows, which
@@ -108,20 +72,5 @@ func rowCheck(eco, rangeType string) func(string, version.Range) (version.Status
 	}
 	return func(v string, r version.Range) (version.Status, error) {
 		return version.Check(eco, v, r)
-	}
-}
-
-// reasonFor maps the error of a version check that could not be evaluated to
-// the API's reason.
-func reasonFor(err error) Reason {
-	switch {
-	case errors.Is(err, version.ErrUnknownEcosystem):
-		return ReasonUnknownVersionScheme
-	case errors.Is(err, version.ErrInvalidVersion):
-		return ReasonInvalidVersion
-	case errors.Is(err, version.ErrInvalidRange):
-		return ReasonInvalidRange
-	default:
-		return ""
 	}
 }

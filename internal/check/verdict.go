@@ -1,9 +1,10 @@
 // ABOUTME: Types shared by every verdict source: verdicts, reasons, matched ranges and outcomes.
-// ABOUTME: Also the work meter that stops comparison work when the request's context ends.
+// ABOUTME: Also the rule combining one advisory's rows, and the work meter that stops work when the context ends.
 package check
 
 import (
 	"context"
+	"errors"
 
 	"github.com/scarson/cvert-ops/internal/version"
 )
@@ -59,6 +60,85 @@ type Outcome struct {
 type Bound struct {
 	Range version.Range
 	Check func(version string, r version.Range) (version.Status, error)
+}
+
+// rowVerdicts combines the verdicts of one advisory's rows for one version, by
+// the rule design section 4.1 sets: Affected if any row contains the version,
+// NotAffected only if some row excludes it and no row could not be compared,
+// and CannotEvaluate otherwise, with the reason of its first row that could not
+// be compared. Every verdict source records its rows here in stored order.
+type rowVerdicts struct {
+	out                                            Outcome
+	anyAffected, anyNotAffected, anyCannotEvaluate bool
+}
+
+// compare checks ver against one row's bound and records the result. matched
+// names the row's evidence (and CPE, for an NVD row); a row that contains the
+// version is reported with it and the bound's range. Only a fixed bound becomes
+// a fix candidate, because a last_affected bound does not say what fixes the
+// problem (design section 7).
+func (v *rowVerdicts) compare(ver string, b Bound, matched Matched) {
+	v.out.Ranges = append(v.out.Ranges, b)
+	status, err := b.Check(ver, b.Range)
+	switch status {
+	case version.Affected:
+		v.anyAffected = true
+		matched.Introduced, matched.Fixed, matched.LastAffected = b.Range.Introduced, b.Range.Fixed, b.Range.LastAffected
+		v.out.Matched = append(v.out.Matched, matched)
+		if b.Range.Fixed != "" {
+			v.out.Candidates = append(v.out.Candidates, b.Range.Fixed)
+		}
+	case version.NotAffected:
+		v.anyNotAffected = true
+	default:
+		v.cannotEvaluate(reasonFor(err))
+	}
+}
+
+// refuse records a row that is not compared because its stored shape gives no
+// range to compare against. b must answer CannotEvaluate for every version, so
+// fix reporting never clears a candidate against it.
+func (v *rowVerdicts) refuse(b Bound, reason Reason) {
+	v.out.Ranges = append(v.out.Ranges, b)
+	v.cannotEvaluate(reason)
+}
+
+func (v *rowVerdicts) cannotEvaluate(reason Reason) {
+	if !v.anyCannotEvaluate {
+		v.out.Reason = reason
+	}
+	v.anyCannotEvaluate = true
+}
+
+// outcome returns the combined verdict. With no rows recorded it is CannotEvaluate.
+func (v *rowVerdicts) outcome() Outcome {
+	out := v.out
+	out.Comparable = v.anyAffected || v.anyNotAffected
+	switch {
+	case v.anyAffected:
+		out.Verdict = Affected
+		out.Reason = ""
+	case v.anyNotAffected && !v.anyCannotEvaluate:
+		out.Verdict = NotAffected
+	default:
+		out.Verdict = CannotEvaluate
+	}
+	return out
+}
+
+// reasonFor maps the error of a version check that could not be evaluated to
+// the API's reason.
+func reasonFor(err error) Reason {
+	switch {
+	case errors.Is(err, version.ErrUnknownEcosystem):
+		return ReasonUnknownVersionScheme
+	case errors.Is(err, version.ErrInvalidVersion):
+		return ReasonInvalidVersion
+	case errors.Is(err, version.ErrInvalidRange):
+		return ReasonInvalidRange
+	default:
+		return ""
+	}
 }
 
 // workMeter stops comparison work when the request's context ends, because a

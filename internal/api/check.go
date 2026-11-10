@@ -1,0 +1,232 @@
+// ABOUTME: Handler for POST /orgs/{org_id}/check: which advisories affect each listed component version.
+// ABOUTME: Declares the request and response types the spec documents; check.Results produces the same JSON.
+package api
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/google/uuid"
+
+	"github.com/scarson/cvert-ops/internal/check"
+	"github.com/scarson/cvert-ops/internal/store"
+)
+
+// Version check limits (design sections 3.4 and 9).
+const (
+	maxCheckItems       = 500
+	maxConcurrentChecks = 4
+	checkTimeout        = 30 * time.Second
+)
+
+// problemTypeCandidateLimit marks a request that read more candidate rows or bytes
+// than one request may. The caller splits the request.
+const problemTypeCandidateLimit = "urn:cvert:error:candidate_limit_exceeded"
+
+// CheckRequest is the version check request body.
+type CheckRequest struct {
+	Items []CheckItem `json:"items" minItems:"1" maxItems:"500" doc:"The components to check, answered in this order. An item that cannot be read is answered with status invalid; the others are still answered."`
+}
+
+// CheckItem is one component: a purl alone, an ecosystem with a name and version,
+// or a CPE with a version. Its fields match check.RawItem, which it converts to.
+type CheckItem struct {
+	ID        string `json:"id,omitempty" doc:"Caller's identifier for the item, echoed back. At most 128 characters."`
+	Purl      string `json:"purl,omitempty" doc:"Package URL with a version. At most 1024 characters. Types npm, pypi, golang, maven, cargo, gem, nuget, pub, hex, composer, deb (with a distro qualifier) and apk (with a distro qualifier)."`
+	Ecosystem string `json:"ecosystem,omitempty" doc:"OSV ecosystem name; a distribution ecosystem must name a release, such as Debian:13."`
+	Name      string `json:"name,omitempty" doc:"Package name in the ecosystem. At most 512 characters."`
+	CPE       string `json:"cpe,omitempty" doc:"CPE 2.3 formatted string with literal part, vendor and product. At most 512 characters."`
+	Version   string `json:"version,omitempty" doc:"Version to check. At most 256 characters. With a CPE it may be omitted when the CPE's own version component holds it."`
+}
+
+// CheckResults is the version check response. The handler writes check.Results.
+type CheckResults struct {
+	DataComplete bool              `json:"data_complete" doc:"Every feed a valid item depends on has finished a full walk and succeeded within 7 days."`
+	Feeds        []CheckFeedStatus `json:"feeds" doc:"The feeds the valid items depend on, sorted by name."`
+	Results      []CheckItemResult `json:"results" doc:"One result per request item, in request order."`
+}
+
+// CheckFeedStatus is one feed's completeness.
+type CheckFeedStatus struct {
+	Name          string     `json:"name" doc:"Feed name, as feed_sync_state names it."`
+	Complete      bool       `json:"complete" doc:"The feed has finished a full walk and succeeded within 7 days."`
+	LastSuccessAt *time.Time `json:"last_success_at" doc:"When the feed last succeeded; null if never."`
+}
+
+// CheckItemResult is the answer for one item.
+type CheckItemResult struct {
+	Index               int             `json:"index" doc:"Position of the item in the request."`
+	ID                  *string         `json:"id" doc:"The item's id, or null when it had none or it was too long."`
+	Status              string          `json:"status" enum:"affected,not_affected,cannot_evaluate,no_advisory_found,invalid" doc:"affected: at least one advisory reports this version affected. not_affected: the version is not in any analysed or CNA-named advisory held. cannot_evaluate: an advisory or an item-level rule could not decide. no_advisory_found: nothing known about this component, which is not a statement that it is safe. invalid: the item could not be read; see error."`
+	Reason              *string         `json:"reason" enum:"unknown_version_scheme,invalid_version,invalid_range,commit_ranges_only,no_version_bounds,cna_cannot_clear,cna_indeterminate,cna_name_uncertain,cna_product_not_mapped,data_incomplete,distro_package_not_found,too_many_candidates,too_many_ranges" doc:"Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason."`
+	Component           *CheckComponent `json:"component" doc:"What the item was checked as; null for an invalid item."`
+	DataComplete        bool            `json:"data_complete" doc:"Every feed this item depends on is complete."`
+	Counts              CheckCounts     `json:"counts" doc:"Counts of advisory records found for the item, by verdict."`
+	Advisories          []CheckAdvisory `json:"advisories" doc:"Advisories that report the version affected or cannot be evaluated: affected first, then those in CISA KEV, then by score. At most 100."`
+	AdvisoriesTruncated bool            `json:"advisories_truncated" doc:"More advisories applied than are listed. Status and counts use all of them."`
+	Warnings            []string        `json:"warnings" enum:"cna_product_not_mapped" doc:"Warnings about the answer."`
+	Error               *CheckItemError `json:"error" doc:"Why the item could not be read; null unless status is invalid."`
+}
+
+// CheckComponent is a package (ecosystem and name) or a product (CPE part,
+// vendor and product), with the version as compared.
+type CheckComponent struct {
+	_         struct{} `nullable:"true"`
+	Kind      string   `json:"kind" enum:"package,product" doc:"package for the purl and ecosystem forms, product for the CPE form."`
+	Ecosystem string   `json:"ecosystem,omitempty" doc:"OSV ecosystem, for a package."`
+	Name      string   `json:"name,omitempty" doc:"Package name as given, for a package."`
+	Part      string   `json:"part,omitempty" doc:"CPE part, lower-cased, for a product."`
+	Vendor    string   `json:"vendor,omitempty" doc:"CPE vendor, lower-cased, for a product."`
+	Product   string   `json:"product,omitempty" doc:"CPE product, lower-cased, for a product."`
+	Version   string   `json:"version" doc:"The version as compared."`
+}
+
+// CheckCounts are of advisory records, over every advisory found for the item.
+type CheckCounts struct {
+	Affected       int `json:"affected" doc:"Advisory records that report the version affected."`
+	CannotEvaluate int `json:"cannot_evaluate" doc:"Advisory records that could not be evaluated for the version."`
+	NotAffected    int `json:"not_affected" doc:"Advisory records that do not report the version affected."`
+	Retracted      int `json:"retracted" doc:"Advisory records whose CVE is rejected or withdrawn; they take no part in the status."`
+}
+
+// CheckAdvisory is one listed advisory.
+type CheckAdvisory struct {
+	AdvisoryID         string              `json:"advisory_id" doc:"Advisory or CVE ID; works with GET /cves/{cve_id}."`
+	CVEIDs             []string            `json:"cve_ids" doc:"CVE IDs the advisory names."`
+	Verdict            string              `json:"verdict" enum:"affected,cannot_evaluate" doc:"This advisory's verdict for the version."`
+	Reason             *string             `json:"reason" enum:"unknown_version_scheme,invalid_version,invalid_range,commit_ranges_only,no_version_bounds,cna_cannot_clear,cna_indeterminate,cna_name_uncertain,cna_product_not_mapped,data_incomplete,distro_package_not_found,too_many_candidates,too_many_ranges" doc:"Why the advisory could not be evaluated; null when it is affected."`
+	FixedVersion       *string             `json:"fixed_version" doc:"The lowest version the advisory data no longer reports as affected; null when none is known."`
+	FixMajor           *string             `json:"fix_major" enum:"same,different,unknown" doc:"Whether fixed_version is in the same major release as the version; null when fixed_version is null."`
+	MatchedRanges      []CheckMatchedRange `json:"matched_ranges" doc:"Ranges that contain the version. At most 20."`
+	MatchedRangesTotal int                 `json:"matched_ranges_total" doc:"How many ranges contain the version. Verdicts and fixes use all of them."`
+	Severity           *string             `json:"severity" doc:"The advisory's severity, as the feed sent it."`
+	CVSSv3Score        *float64            `json:"cvss_v3_score" doc:"The advisory's CVSS v3 base score."`
+	EPSSScore          *float64            `json:"epss_score" doc:"Highest EPSS score of the CVEs in cve_ids; null when none of them has a score, which means not known."`
+	InCISAKEV          *bool               `json:"in_cisa_kev" doc:"Whether any CVE in cve_ids is in CISA KEV; null when the record names no CVE that is held, which means not known, not false."`
+}
+
+// CheckMatchedRange is one range that contains the version. An absent bound is omitted.
+type CheckMatchedRange struct {
+	Evidence     string `json:"evidence" enum:"package_range,nvd_cpe,cna" doc:"Where the range comes from: a package range, an NVD CPE match, or the CNA's affected data."`
+	CPE          string `json:"cpe,omitempty" doc:"The CPE of an NVD CPE match."`
+	Introduced   string `json:"introduced" doc:"Lower bound, inclusive; empty when the range has none."`
+	Fixed        string `json:"fixed,omitempty" doc:"Upper bound, exclusive."`
+	LastAffected string `json:"last_affected,omitempty" doc:"Upper bound, inclusive."`
+}
+
+// CheckItemError is why an item could not be read.
+type CheckItemError struct {
+	_       struct{} `nullable:"true"`
+	Code    string   `json:"code" enum:"invalid_form,invalid_ecosystem,ecosystem_release_required,invalid_purl,unsupported_purl_type,unsupported_purl_namespace,unsupported_repository,distro_required,distro_not_recognised,conflicting_distro,invalid_cpe,version_required,conflicting_version,value_too_long,invalid_characters" doc:"Stable error code."`
+	Message string   `json:"message" doc:"A fixed sentence explaining the code. It never repeats the item's values."`
+}
+
+// checkComponentsHandler handles POST /api/v1/orgs/{org_id}/check. Requires viewer+.
+// It reads only the global CVE corpus. Items describe what an org runs, so they
+// are neither stored nor logged, and no audit entry is written. At most
+// maxConcurrentChecks run at once; a request that finds no free slot is refused
+// before anything is read.
+func (srv *Server) checkComponentsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if !srv.acquireCheck() {
+		w.Header().Set("Retry-After", "1")
+		writeProblem(w, http.StatusServiceUnavailable, "all version check slots are in use; retry shortly")
+		return
+	}
+	defer srv.releaseCheck()
+
+	// middleware.RequestSize only wraps the body, so the limit shows up here as a
+	// read error, which decodeJSON would report as malformed JSON.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeProblem(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("request body is larger than %d bytes", tooLarge.Limit))
+			return
+		}
+		writeProblem(w, http.StatusBadRequest, "could not read the request body")
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	var req CheckRequest
+	if decErr := decodeJSON(r, &req); decErr != nil {
+		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+		return
+	}
+	if len(req.Items) == 0 {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "items is required and must hold at least one item", Location: "body.items"})
+		return
+	}
+	if len(req.Items) > maxCheckItems {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: fmt.Sprintf("items must hold at most %d items", maxCheckItems), Location: "body.items"})
+		return
+	}
+
+	items := make([]check.Item, len(req.Items))
+	for i, raw := range req.Items {
+		items[i] = check.ParseItem(i, check.RawItem(raw))
+	}
+	keys := check.KeysFor(items)
+
+	ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
+	defer cancel()
+	// The read ends its transaction before returning, so no connection is held
+	// while versions are compared.
+	candidates, enrichment, feedRows, err := srv.store.ReadCheckCandidates(ctx, orgID, keys)
+	if err != nil {
+		writeCheckFailure(w, r, ctx, err)
+		return
+	}
+	results, err := check.EvaluateWithLimits(ctx, items, candidates, check.FeedStatuses(feedRows, time.Now()),
+		enrichment, srv.checkLimits)
+	if err != nil {
+		writeCheckFailure(w, r, ctx, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+// writeCheckFailure answers a version check whose read or evaluation failed. ctx
+// is the check's own context: once it has ended, the failure is the time limit
+// or the caller leaving, whatever error the driver reported. Nothing partial is
+// answered, because a partial read cannot say which items lost rows.
+func writeCheckFailure(w http.ResponseWriter, r *http.Request, ctx context.Context, err error) {
+	switch {
+	case errors.Is(err, store.ErrCandidateLimit):
+		writeProblemTyped(w, http.StatusUnprocessableEntity, problemTypeCandidateLimit,
+			"the request reads more candidate rows than one request may; split the items over several requests")
+	case ctx.Err() != nil:
+		writeProblem(w, http.StatusServiceUnavailable,
+			fmt.Sprintf("the version check stopped before it finished (the %s limit, or the request was cancelled); nothing was answered. Retry, or split the items over several requests", checkTimeout))
+	default:
+		slog.ErrorContext(r.Context(), "version check", "error", err)
+		writeProblem(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// acquireCheck takes a version check slot without waiting, and reports whether
+// one was free.
+func (srv *Server) acquireCheck() bool {
+	select {
+	case srv.checkSem <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (srv *Server) releaseCheck() { <-srv.checkSem }

@@ -1178,6 +1178,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/orgs/{org_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check component versions against known advisories
+         * @description For each listed component version, says which advisories affect it, which range matched, and the lowest version the advisory data no longer reports as affected. Takes 1 to 500 items within the 1 MiB request limit, and reads only the global CVE corpus. An item that cannot be read is answered with status invalid, and the others are still answered. no_advisory_found means nothing is known about the component, not that it is safe; not_affected means the version is not in any analysed or CNA-named advisory held. Answers 422 with problem type urn:cvert:error:candidate_limit_exceeded when the request reads more candidate rows than one request may (split the request), and 503 when no check slot is free (with Retry-After) or the check did not finish within 30 seconds. Item values are not stored or logged.
+         */
+        post: operations["check-components"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/orgs/{org_id}/deliveries": {
         parameters: {
             query?: never;
@@ -2234,6 +2254,197 @@ export interface components {
             org_id: string;
             type: string;
             updated_at: string;
+        };
+        CheckAdvisory: {
+            /** @description Advisory or CVE ID; works with GET /cves/{cve_id}. */
+            advisory_id: string;
+            /** @description CVE IDs the advisory names. */
+            cve_ids: string[] | null;
+            /**
+             * Format: double
+             * @description The advisory's CVSS v3 base score.
+             */
+            cvss_v3_score: number | null;
+            /**
+             * Format: double
+             * @description Highest EPSS score of the CVEs in cve_ids; null when none of them has a score, which means not known.
+             */
+            epss_score: number | null;
+            /**
+             * @description Whether fixed_version is in the same major release as the version; null when fixed_version is null.
+             * @enum {string|null}
+             */
+            fix_major: "same" | "different" | "unknown" | null;
+            /** @description The lowest version the advisory data no longer reports as affected; null when none is known. */
+            fixed_version: string | null;
+            /** @description Whether any CVE in cve_ids is in CISA KEV; null when the record names no CVE that is held, which means not known, not false. */
+            in_cisa_kev: boolean | null;
+            /** @description Ranges that contain the version. At most 20. */
+            matched_ranges: components["schemas"]["CheckMatchedRange"][] | null;
+            /**
+             * Format: int64
+             * @description How many ranges contain the version. Verdicts and fixes use all of them.
+             */
+            matched_ranges_total: number;
+            /**
+             * @description Why the advisory could not be evaluated; null when it is affected.
+             * @enum {string|null}
+             */
+            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | null;
+            /** @description The advisory's severity, as the feed sent it. */
+            severity: string | null;
+            /**
+             * @description This advisory's verdict for the version.
+             * @enum {string}
+             */
+            verdict: "affected" | "cannot_evaluate";
+        };
+        CheckComponent: {
+            /** @description OSV ecosystem, for a package. */
+            ecosystem?: string;
+            /**
+             * @description package for the purl and ecosystem forms, product for the CPE form.
+             * @enum {string}
+             */
+            kind: "package" | "product";
+            /** @description Package name as given, for a package. */
+            name?: string;
+            /** @description CPE part, lower-cased, for a product. */
+            part?: string;
+            /** @description CPE product, lower-cased, for a product. */
+            product?: string;
+            /** @description CPE vendor, lower-cased, for a product. */
+            vendor?: string;
+            /** @description The version as compared. */
+            version: string;
+        } | null;
+        CheckCounts: {
+            /**
+             * Format: int64
+             * @description Advisory records that report the version affected.
+             */
+            affected: number;
+            /**
+             * Format: int64
+             * @description Advisory records that could not be evaluated for the version.
+             */
+            cannot_evaluate: number;
+            /**
+             * Format: int64
+             * @description Advisory records that do not report the version affected.
+             */
+            not_affected: number;
+            /**
+             * Format: int64
+             * @description Advisory records whose CVE is rejected or withdrawn; they take no part in the status.
+             */
+            retracted: number;
+        };
+        CheckFeedStatus: {
+            /** @description The feed has finished a full walk and succeeded within 7 days. */
+            complete: boolean;
+            /**
+             * Format: date-time
+             * @description When the feed last succeeded; null if never.
+             */
+            last_success_at: string | null;
+            /** @description Feed name, as feed_sync_state names it. */
+            name: string;
+        };
+        CheckItem: {
+            /** @description CPE 2.3 formatted string with literal part, vendor and product. At most 512 characters. */
+            cpe?: string;
+            /** @description OSV ecosystem name; a distribution ecosystem must name a release, such as Debian:13. */
+            ecosystem?: string;
+            /** @description Caller's identifier for the item, echoed back. At most 128 characters. */
+            id?: string;
+            /** @description Package name in the ecosystem. At most 512 characters. */
+            name?: string;
+            /** @description Package URL with a version. At most 1024 characters. Types npm, pypi, golang, maven, cargo, gem, nuget, pub, hex, composer, deb (with a distro qualifier) and apk (with a distro qualifier). */
+            purl?: string;
+            /** @description Version to check. At most 256 characters. With a CPE it may be omitted when the CPE's own version component holds it. */
+            version?: string;
+        };
+        CheckItemError: {
+            /**
+             * @description Stable error code.
+             * @enum {string}
+             */
+            code: "invalid_form" | "invalid_ecosystem" | "ecosystem_release_required" | "invalid_purl" | "unsupported_purl_type" | "unsupported_purl_namespace" | "unsupported_repository" | "distro_required" | "distro_not_recognised" | "conflicting_distro" | "invalid_cpe" | "version_required" | "conflicting_version" | "value_too_long" | "invalid_characters";
+            /** @description A fixed sentence explaining the code. It never repeats the item's values. */
+            message: string;
+        } | null;
+        CheckItemResult: {
+            /** @description Advisories that report the version affected or cannot be evaluated: affected first, then those in CISA KEV, then by score. At most 100. */
+            advisories: components["schemas"]["CheckAdvisory"][] | null;
+            /** @description More advisories applied than are listed. Status and counts use all of them. */
+            advisories_truncated: boolean;
+            /** @description What the item was checked as; null for an invalid item. */
+            component: components["schemas"]["CheckComponent"];
+            /** @description Counts of advisory records found for the item, by verdict. */
+            counts: components["schemas"]["CheckCounts"];
+            /** @description Every feed this item depends on is complete. */
+            data_complete: boolean;
+            /** @description Why the item could not be read; null unless status is invalid. */
+            error: components["schemas"]["CheckItemError"];
+            /** @description The item's id, or null when it had none or it was too long. */
+            id: string | null;
+            /**
+             * Format: int64
+             * @description Position of the item in the request.
+             */
+            index: number;
+            /**
+             * @description Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason.
+             * @enum {string|null}
+             */
+            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | null;
+            /**
+             * @description affected: at least one advisory reports this version affected. not_affected: the version is not in any analysed or CNA-named advisory held. cannot_evaluate: an advisory or an item-level rule could not decide. no_advisory_found: nothing known about this component, which is not a statement that it is safe. invalid: the item could not be read; see error.
+             * @enum {string}
+             */
+            status: "affected" | "not_affected" | "cannot_evaluate" | "no_advisory_found" | "invalid";
+            /** @description Warnings about the answer. */
+            warnings: "cna_product_not_mapped"[] | null;
+        };
+        CheckMatchedRange: {
+            /** @description The CPE of an NVD CPE match. */
+            cpe?: string;
+            /**
+             * @description Where the range comes from: a package range, an NVD CPE match, or the CNA's affected data.
+             * @enum {string}
+             */
+            evidence: "package_range" | "nvd_cpe" | "cna";
+            /** @description Upper bound, exclusive. */
+            fixed?: string;
+            /** @description Lower bound, inclusive; empty when the range has none. */
+            introduced: string;
+            /** @description Upper bound, inclusive. */
+            last_affected?: string;
+        };
+        CheckRequest: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/CheckRequest.json
+             */
+            readonly $schema?: string;
+            /** @description The components to check, answered in this order. An item that cannot be read is answered with status invalid; the others are still answered. */
+            items: components["schemas"]["CheckItem"][] | null;
+        };
+        CheckResults: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/CheckResults.json
+             */
+            readonly $schema?: string;
+            /** @description Every feed a valid item depends on has finished a full walk and succeeded within 7 days. */
+            data_complete: boolean;
+            /** @description The feeds the valid items depend on, sorted by name. */
+            feeds: components["schemas"]["CheckFeedStatus"][] | null;
+            /** @description One result per request item, in request order. */
+            results: components["schemas"]["CheckItemResult"][] | null;
         };
         CreateAPIKeyBody: {
             /**
@@ -6318,6 +6529,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TestChannelResult"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "check-components": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                org_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckResults"];
                 };
             };
             /** @description Error */

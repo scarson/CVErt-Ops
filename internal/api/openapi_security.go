@@ -188,6 +188,9 @@ var operationAccess = map[string]accessRule{
 	"DELETE /orgs/{org_id}/saved-searches/{id}":       roleOp("member"),
 	"POST /orgs/{org_id}/saved-searches/{id}/execute": roleOp("viewer"),
 
+	// Version check.
+	"POST /orgs/{org_id}/check": roleOp("viewer"),
+
 	// Groups.
 	"GET /orgs/{org_id}/groups":                                 roleOp("viewer"),
 	"POST /orgs/{org_id}/groups":                                roleOp("admin"),

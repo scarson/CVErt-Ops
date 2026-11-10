@@ -32,6 +32,12 @@ func (s *Store) ReadCheckCandidatesWith(ctx context.Context, orgID uuid.UUID, ke
 	return s.readCheckCandidates(ctx, orgID, keys, limits, afterStatement)
 }
 
+// WithOrgSnapshotTx is withOrgSnapshotTx, for the test that pins its
+// transaction's isolation level and read-only mode.
+func (s *Store) WithOrgSnapshotTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
+	return s.withOrgSnapshotTx(ctx, orgID, fn)
+}
+
 // ErrScanFailed is the error ReadKeyRowsFailingScan's scan returns.
 var ErrScanFailed = errors.New("scan failed")
 

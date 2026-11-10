@@ -4,6 +4,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -556,6 +557,29 @@ func TestReadCheckCandidates_RequestByteLimit(t *testing.T) {
 // TestReadCheckCandidates_OneSnapshot commits a merge and a feed cursor change
 // from another connection after the first statement, and expects every later
 // statement to see the state from before them.
+// TestWithOrgSnapshotTx_Mode checks that the version check's transaction is
+// read-only and REPEATABLE READ, which make its statements one snapshot.
+func TestWithOrgSnapshotTx_Mode(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := checkOrg(t, tdb)
+
+	var readOnly, isolation string
+	err := tdb.AppStore.WithOrgSnapshotTx(ctx, orgID, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
+			return err
+		}
+		return tx.QueryRowContext(ctx, "SHOW transaction_isolation").Scan(&isolation)
+	})
+	if err != nil {
+		t.Fatalf("WithOrgSnapshotTx: %v", err)
+	}
+	if readOnly != "on" || isolation != "repeatable read" {
+		t.Errorf("transaction_read_only = %q, transaction_isolation = %q; want on, repeatable read", readOnly, isolation)
+	}
+}
+
 func TestReadCheckCandidates_OneSnapshot(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)

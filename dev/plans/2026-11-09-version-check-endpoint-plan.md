@@ -113,7 +113,7 @@ notes and commit messages.
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -129,9 +129,11 @@ notes and commit messages.
 - Task 3.5, shapes design section 4.3 does not cover, each read towards Indeterminate under "Rules for every task" (focused review of `internal/check/cna.go`, commits `6e54c4d`, `7b5b880`, `8cf9c18`):
   - A single-version line wildcard such as `{8.1.*, affected}` is the segment `[8.1, 8.2)` with a wildcard end: `8.1.5` Indeterminate, `8.2.0` No statement. Normalising the lower bound first, as the plan's text reads, made it `[8.1, 8.1]` and read `8.1.5` as No statement.
   - `.x` and `.X` line wildcards (`2.x`, `2.4.X`) are read like `.*`. Maven and RPM can parse `2.x` as a version, so `{1.0, lt 2.x, affected, maven}` read `2.5` as No statement. Any other value ending in `.*`, `.x` or `.X` is unreadable.
-  - A segment that is not `unaffected` and whose end is below its start (or equal with an exclusive end) makes the entry Indeterminate for every version, as `version.validateRange` refuses the same shape. Before, `{2.0, lt 1.0, affected}` and a change to `affected` above `lessThan` read No statement everywhere.
+  - A segment that is not `unaffected` and whose end is below its start (or equal with an exclusive end) makes the entry Indeterminate for every version, as `version.validateRange` refuses the same shape. A zero-length segment counts only when it is the last one, so a change at the entry's own lower bound does not block it (`6618ae4`). Before, `{2.0, lt 1.0, affected}` and a change to `affected` above `lessThan` read No statement everywhere.
   - Changes at one version collapse to one change, with status `unknown` when their statuses differ. In input order, `[{2.0, affected}, {2.0, unaffected}]` read `2.0` as No statement or Affected, depending on order.
 - **For Sam (Task 3.5):** a lower bound of `*` with an upper bound, such as `{*, lte 1.4.4, affected, semver}`, reads Indeterminate at or below `1.4.4`, because the design normalises only `8.1.*`-style bounds. Reading a bare `*` lower bound as `0` would give Affected. It cannot clear a version either way. The review believes Wordfence writes this shape; Phase 4 can count it.
+- Task 3.6: `Combine` step 4 also requires `primary.Comparable` (no effect on outcomes `rowVerdicts` builds). `NamesFor` removes CPE backslash escapes when it turns a CPE vendor or product into a CNA name (`foo\:bar` looks up `foo:bar`); the table stays keyed by the CPE's spelling. `CNAName.Matches` lower-cases both sides, as SQL `lower()` does. Commit `ac983d0`.
+- **For Sam (Task 3.6, `internal/check/names.go`):** design section 4.5's prefix `.net ` also matches a CNA product `.NET Framework 4.8`, so .NET Framework entries are read when checking `microsoft:.net`. Their versions are 4.x, so they can affect only a 4.x check. A test documents it.
 
 ### Discoveries
 

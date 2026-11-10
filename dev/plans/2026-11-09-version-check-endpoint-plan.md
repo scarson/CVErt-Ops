@@ -174,6 +174,10 @@ notes and commit messages.
   - `da47312`: a PostgreSQL statement timeout (`57014`, 14 s by default) answers 503 like the 30-second check limit, not 500.
   - `7b670e6`: every lookup error cancels its statement before the rows are closed, and the five lookups `LEFT JOIN cves`, so a stored row with no `cves` row still counts towards a key's limit. The `LEFT JOIN` has no test, because merge cannot write such a row.
   - `48b48c4`, `393ef61`, `a4fa730`: tests pin the write deadline and the snapshot's isolation and read-only mode. The store reads the feed names from `check.FeedNames()`.
+- Phase 3 review round 3 fixes (a review of the round 2 fixes; log `dev/implementation-log/2026-11-10T0856Z-check-endpoint-phase-end-review-fixes-round-3.md`):
+  - `378ccbc`: a CPE's own CNA name is looked up in every mix of underscore spellings (vendor spaced or kept × product spaced or kept), and so are its nearby-name keys. Before, `acme_corp:foo_bar` never read a CNA row `Acme Corp` / `foo_bar`, and could answer `not_affected`.
+  - **`c008d85`, for Sam, extends design section 4.5:** a nearby-name block is lifted by an NVD row under any vendor whose CPE spelling the item reads (its table row's vendors), not only the item's own vendor. Otherwise an `nginx:nginx` item stayed `cna_name_uncertain` for good on F5 CVEs with an NGINX Plus CNA row, while `f5:nginx` answered.
+  - `1644687`: a CPE vendor or product that is only an escaped `-` is `invalid_cpe`. `NamesFor` returns `(names, cpes, mapped)`, and `nearbyNames` is the one source of nearby-name inputs. `a72bd84`: the 503 detail names no time limit.
 
 ### Discoveries
 

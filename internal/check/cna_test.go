@@ -82,6 +82,15 @@ var (
 		Changes: []CNAChange{{At: "2.x", Status: "unaffected"}},
 	}
 
+	// {1.0, lt 3.0, affected, maven}, change to unaffected at 2.0-beta.x.
+	cnaMavenChangeAtBetaX = CNAVersion{
+		Version: "1.0", LessThan: "3.0", Status: "affected", VersionType: "maven",
+		Changes: []CNAChange{{At: "2.0-beta.x", Status: "unaffected"}},
+	}
+
+	// {3.0, lt 2.*, affected}: the line 2 ends at 3, the start.
+	cnaInvertedWildcard = CNAVersion{Version: "3.0", LessThan: "2.*", Status: "affected"}
+
 	// {2.0, lt 1.0, affected}: the upper bound is below the lower.
 	cnaInverted = CNAVersion{Version: "2.0", LessThan: "1.0", Status: "affected"}
 
@@ -479,6 +488,45 @@ func TestReadCNAEntry(t *testing.T) {
 		},
 		{name: "design: affected change above the upper bound {1.0, lt 2.0, unaffected} affected at 3.0 / 3.0", entry: cnaAffectedChangeAboveUpper, version: "3.0", want: CNAResult{Reading: Indeterminate}},
 		{name: "design: affected change above the upper bound {1.0, lt 2.0, unaffected} affected at 3.0 / 3.5", entry: cnaAffectedChangeAboveUpper, version: "3.5", want: CNAResult{Reading: Indeterminate}},
+		// A wildcard end is checked too, as exclusive: [3.0, 3) is empty.
+		{name: "design: inverted wildcard entry {3.0, lt 2.*, affected} / 2.5", entry: cnaInvertedWildcard, version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: inverted wildcard entry {3.0, lt 2.*, affected} / 3.0", entry: cnaInvertedWildcard, version: "3.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: inverted wildcard entry {3.0, lt 2.*, affected} / 3.5", entry: cnaInvertedWildcard, version: "3.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: wildcard end above the start {2.0, lt 2.*, affected} / 1.5", entry: CNAVersion{Version: "2.0", LessThan: "2.*", Status: "affected"}, version: "1.5", want: CNAResult{Reading: NoStatement}},
+		{name: "design: wildcard end above the start {2.0, lt 2.*, affected} / 2.5", entry: CNAVersion{Version: "2.0", LessThan: "2.*", Status: "affected"}, version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: wildcard end above the start {2.0, lt 2.*, affected} / 3.5", entry: CNAVersion{Version: "2.0", LessThan: "2.*", Status: "affected"}, version: "3.5", want: CNAResult{Reading: NoStatement}},
+		{name: "design: wildcard end above the start {2.5, lt 2.*, affected} / 2.0", entry: CNAVersion{Version: "2.5", LessThan: "2.*", Status: "affected"}, version: "2.0", want: CNAResult{Reading: NoStatement}},
+		{name: "design: wildcard end above the start {2.5, lt 2.*, affected} / 2.7", entry: CNAVersion{Version: "2.5", LessThan: "2.*", Status: "affected"}, version: "2.7", want: CNAResult{Reading: Indeterminate}},
+		// A value shaped like a wildcard that is not a numeric line, such as
+		// 1.0-beta.x, which Maven would read as a version, is unreadable.
+		{
+			name:  "design: wildcard-shaped upper bound {1.0, lt 2.0-beta.x, affected, maven} is unreadable / 1.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.0-beta.x", Status: "affected", VersionType: "maven"}, version: "1.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: wildcard-shaped upper bound {1.0, lt 2.0-beta.x, affected, maven} is unreadable / 0.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.0-beta.x", Status: "affected", VersionType: "maven"}, version: "0.5",
+			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: wildcard-shaped upper bound {1.0, lt 2.0.rc.X, affected, rpm} is unreadable / 1.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.0.rc.X", Status: "affected", VersionType: "rpm"}, version: "1.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: wildcard-shaped lower bound {1.0-beta.x, lt 2.0, affected, maven} is unreadable / 1.5",
+			entry: CNAVersion{Version: "1.0-beta.x", LessThan: "2.0", Status: "affected", VersionType: "maven"}, version: "1.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: wildcard-shaped single version {1.0-beta.x, affected, maven} is unreadable / 1.0-beta.5",
+			entry: CNAVersion{Version: "1.0-beta.x", Status: "affected", VersionType: "maven"}, version: "1.0-beta.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{name: "design: wildcard-shaped at {1.0, lt 3.0, affected, maven} unaffected at 2.0-beta.x is unsortable / 0.5", entry: cnaMavenChangeAtBetaX, version: "0.5", want: CNAResult{Reading: NoStatement}},
+		{name: "design: wildcard-shaped at {1.0, lt 3.0, affected, maven} unaffected at 2.0-beta.x is unsortable / 1.5", entry: cnaMavenChangeAtBetaX, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: wildcard-shaped at {1.0, lt 3.0, affected, maven} unaffected at 2.0-beta.x is unsortable / 2.5", entry: cnaMavenChangeAtBetaX, version: "2.5", want: CNAResult{Reading: Indeterminate}},
 		// An inverted unaffected segment is left alone: it condemns nothing.
 		{
 			name:  "design: unaffected change above the upper bound {1.0, lt 2.0, affected} unaffected at 3.0 / 1.5",

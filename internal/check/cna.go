@@ -76,7 +76,11 @@ var (
 	// lineWildcard is a version line such as 12.*, 2.x or 2.4.X. Maven and RPM
 	// read 2.x as a version, so x and X must be caught before the comparator is.
 	lineWildcard = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)*)\.[*xX]$`)
-	freeTextForm = regexp.MustCompile(`[<>=]`)
+	// wildcardShaped is any value ending like a line wildcard. One that is not a
+	// numeric line, such as 1.0-beta.x, names no known set of versions, so it is
+	// unreadable even where a comparator would read it as a version.
+	wildcardShaped = regexp.MustCompile(`\.[*xX]$`)
+	freeTextForm   = regexp.MustCompile(`[<>=]`)
 )
 
 // orderFor returns the comparator design section 4.3 assigns to a versionType,
@@ -284,14 +288,14 @@ func lowerBound(v string) string {
 // version with its status, then one from each change, sorted by At under the
 // entry's order. Each segment includes its start and stops before the next start;
 // the last stops at the entry's upper bound. It returns false when the order
-// cannot read some At, or an At is a line wildcard, which names no single
+// cannot read some At, or an At is shaped like a wildcard, which names no single
 // position, because the changes then have no reliable order.
 func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment, bool) {
 	changes := slices.Clone(e.Changes)
 	// Each At is checked on its own, because a sort compares nothing when there
 	// is only one change.
 	for _, c := range changes {
-		if lineWildcard.MatchString(c.At) {
+		if wildcardShaped.MatchString(c.At) {
 			return nil, false
 		}
 		if _, err := order(c.At, c.At); err != nil {
@@ -374,12 +378,13 @@ func collapseChanges(changes []CNAChange, order version.Order) ([]CNAChange, boo
 // is below its readable start, or equal to it and exclusive. Such a shape has no
 // known meaning, as version.Check refuses an upper bound that does not follow
 // introduced. An unaffected segment can condemn nothing, so it is not checked. A
-// start of "0" is below every end; an open or wildcard end is not checked. A
+// start of "0" is below every end, and an open end is not checked. A wildcard end
+// is the first version past its line, so it is compared as exclusive. A
 // comparison that fails counts as inverted.
 func hasInvertedSegment(segments []segment, order version.Order) bool {
 	for _, s := range segments {
 		if s.status == "unaffected" || !s.start.readable || s.start.value == belowEverything ||
-			!s.end.readable || s.end.open || s.end.wildcard {
+			!s.end.readable || s.end.open {
 			continue
 		}
 		c, err := order(s.end.value, s.start.value)
@@ -438,8 +443,13 @@ func newBound(value string, order version.Order) bound {
 	return readableBound(value, order)
 }
 
-// readableBound returns an edge that is readable when the order can read value.
+// readableBound returns an edge that is readable when the order can read value
+// and value is not shaped like a wildcard. Line wildcards are handled before a
+// value reaches here.
 func readableBound(value string, order version.Order) bound {
+	if wildcardShaped.MatchString(value) {
+		return bound{value: value}
+	}
 	_, err := order(value, value)
 	return bound{value: value, readable: err == nil}
 }

@@ -88,7 +88,8 @@ func TestReadCheckCandidates_Packages(t *testing.T) {
 	}})
 
 	keys := check.Keys{Packages: []check.PackageKey{{Ecosystem: "npm", Name: "lodash"}, {Ecosystem: "npm", Name: "underscore"}}}
-	cands, _, _ := readCheck(t, tdb, checkOrg(t, tdb), keys, store.DefaultCheckLimits, nil)
+	orgID := checkOrg(t, tdb)
+	cands, _, _ := readCheck(t, tdb, orgID, keys, store.DefaultCheckLimits, nil)
 
 	if len(cands.Packages) != 2 || len(cands.CPEs) != 0 || len(cands.CNANames) != 0 ||
 		len(cands.CNAPackageKeys) != 0 || len(cands.CNANear) != 0 {
@@ -101,6 +102,15 @@ func TestReadCheckCandidates_Packages(t *testing.T) {
 	}
 	if got := cands.Packages[1]; len(got.Rows) != 0 || got.Overflow {
 		t.Errorf("npm/underscore = %+v, want no rows", got)
+	}
+
+	// The exported method, which the handler calls, reads the same rows.
+	direct, _, _, err := tdb.AppStore.ReadCheckCandidates(context.Background(), orgID, keys)
+	if err != nil {
+		t.Fatalf("ReadCheckCandidates: %v", err)
+	}
+	if !reflect.DeepEqual(direct, cands) {
+		t.Errorf("ReadCheckCandidates = %+v, want %+v", direct, cands)
 	}
 }
 

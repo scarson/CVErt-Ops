@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+
+	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
 type cve5AffectedEntry struct {
@@ -13,6 +15,7 @@ type cve5AffectedEntry struct {
 	Product       string          `json:"product"`
 	PackageName   string          `json:"packageName"`
 	CollectionURL string          `json:"collectionURL"`
+	PackageURL    string          `json:"packageURL"`
 	DefaultStatus string          `json:"defaultStatus"`
 	Versions      json.RawMessage `json:"versions"`
 }
@@ -63,6 +66,9 @@ func ParseCNAAffected(raw json.RawMessage, cveID string) []CNAAffected {
 			Product:       cleanCNAString(e.Product),
 			PackageName:   cleanCNAString(e.PackageName),
 			CollectionURL: cleanCNAString(e.CollectionURL),
+			// Mapped as sent: removing a NUL first could turn a refused URL into
+			// another package's identity, and FromPurl refuses control characters.
+			PackageKey:    ecosystem.PackageKey(e.PackageURL),
 			DefaultStatus: defaultStatus,
 			Versions:      versions,
 		}

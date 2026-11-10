@@ -4,6 +4,7 @@ package merge_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -183,6 +184,54 @@ func TestIngest_StoresCNAAffectedForCVEWithoutNVDAnalysis(t *testing.T) {
 				t.Errorf("versions = %+v", versions)
 			}
 		})
+	}
+}
+
+// The golden NVD record relays the CNA's packageURL pkg:npm/fastify, and no other
+// golden feed names that package. Merge stores its package key, which is not a
+// material_hash input, so adding it does not move the hash or the modified date.
+func TestIngest_StoresCNAPackageKey(t *testing.T) {
+	const cveID = "CVE-2026-107832"
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	patch := testutil.GoldenPatch(t, "nvd", cveID)
+	if len(patch.CNAAffected) != 1 || patch.CNAAffected[0].PackageKey != "npm/fastify" {
+		t.Fatalf("golden patch CNA entries = %+v, want one with package key npm/fastify", patch.CNAAffected)
+	}
+
+	without := patch
+	without.CNAAffected = []feed.CNAAffected{patch.CNAAffected[0]}
+	without.CNAAffected[0].PackageKey = ""
+	if err := merge.Ingest(ctx, s.Store, without, "nvd"); err != nil {
+		t.Fatalf("Ingest without package key: %v", err)
+	}
+	cveBefore := s.MustGetCVE(t, ctx, cveID)
+	var keyBefore sql.NullString
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT package_key FROM cve_cna_affected WHERE cve_id = $1", cveID).Scan(&keyBefore); err != nil {
+		t.Fatalf("read package_key: %v", err)
+	}
+	if keyBefore.Valid {
+		t.Errorf("package_key = %q for an entry without one, want NULL", keyBefore.String)
+	}
+
+	if err := merge.Ingest(ctx, s.Store, patch, "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	cveAfter := s.MustGetCVE(t, ctx, cveID)
+	var key sql.NullString
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT package_key FROM cve_cna_affected WHERE cve_id = $1", cveID).Scan(&key); err != nil {
+		t.Fatalf("read package_key: %v", err)
+	}
+	if key.String != "npm/fastify" {
+		t.Errorf("package_key = %+v, want npm/fastify", key)
+	}
+	if cveAfter.MaterialHash != cveBefore.MaterialHash {
+		t.Errorf("material_hash moved: %s -> %s", cveBefore.MaterialHash.String, cveAfter.MaterialHash.String)
+	}
+	if !cveAfter.DateModifiedCanonical.Equal(cveBefore.DateModifiedCanonical) {
+		t.Errorf("date_modified_canonical moved: %s -> %s", cveBefore.DateModifiedCanonical, cveAfter.DateModifiedCanonical)
 	}
 }
 

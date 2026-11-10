@@ -347,7 +347,7 @@ func (q *Queries) GetCVEAffectedPackages(ctx context.Context, cveID string) ([]C
 }
 
 const getCVECNAAffected = `-- name: GetCVECNAAffected :many
-SELECT id, cve_id, vendor, product, package_name, collection_url, default_status, versions FROM cve_cna_affected
+SELECT id, cve_id, vendor, product, package_name, collection_url, default_status, versions, package_key FROM cve_cna_affected
 WHERE cve_id = $1
 ORDER BY vendor, product, package_name, collection_url, default_status, versions::text
 `
@@ -370,6 +370,7 @@ func (q *Queries) GetCVECNAAffected(ctx context.Context, cveID string) ([]CveCna
 			&i.CollectionUrl,
 			&i.DefaultStatus,
 			&i.Versions,
+			&i.PackageKey,
 		); err != nil {
 			return nil, err
 		}
@@ -564,9 +565,9 @@ func (q *Queries) InsertAffectedPackage(ctx context.Context, arg InsertAffectedP
 
 const insertCNAAffected = `-- name: InsertCNAAffected :exec
 INSERT INTO cve_cna_affected (
-    cve_id, vendor, product, package_name, collection_url, default_status, versions
+    cve_id, vendor, product, package_name, collection_url, default_status, versions, package_key
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertCNAAffectedParams struct {
@@ -577,6 +578,7 @@ type InsertCNAAffectedParams struct {
 	CollectionUrl sql.NullString
 	DefaultStatus sql.NullString
 	Versions      json.RawMessage
+	PackageKey    sql.NullString
 }
 
 func (q *Queries) InsertCNAAffected(ctx context.Context, arg InsertCNAAffectedParams) error {
@@ -588,6 +590,7 @@ func (q *Queries) InsertCNAAffected(ctx context.Context, arg InsertCNAAffectedPa
 		arg.CollectionUrl,
 		arg.DefaultStatus,
 		arg.Versions,
+		arg.PackageKey,
 	)
 	return err
 }

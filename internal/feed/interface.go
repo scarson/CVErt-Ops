@@ -144,13 +144,16 @@ type CPEMatch struct {
 // CNAAffected is one CVE 5 containers.cna.affected[] entry, with fields as the
 // CNA sent them. CVE 5 requires either vendor and product, or collectionURL and
 // packageName, so any of the identifying fields can be empty. DefaultStatus
-// applies to versions the Versions list does not mention. CNAAffected is not a
-// material_hash input.
+// applies to versions the Versions list does not mention. PackageKey is
+// ecosystem.PackageKey of the CNA's packageURL: the identity a package lookup
+// uses, empty when the entry has no packageURL or the mapping refuses it.
+// CNAAffected is not a material_hash input.
 type CNAAffected struct {
 	Vendor        string       `json:"vendor,omitempty"`
 	Product       string       `json:"product,omitempty"`
 	PackageName   string       `json:"package_name,omitempty"`
 	CollectionURL string       `json:"collection_url,omitempty"`
+	PackageKey    string       `json:"package_key,omitempty"`
 	DefaultStatus string       `json:"default_status,omitempty"`
 	Versions      []CNAVersion `json:"versions,omitempty"`
 }

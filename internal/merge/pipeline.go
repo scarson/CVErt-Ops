@@ -337,6 +337,7 @@ func replaceVersionRanges(ctx context.Context, q *generated.Queries, cveID strin
 			CollectionUrl: dbutil.NullString(a.CollectionURL),
 			DefaultStatus: dbutil.NullString(a.DefaultStatus),
 			Versions:      versionsJSON,
+			PackageKey:    dbutil.NullString(a.PackageKey),
 		}); err != nil {
 			return fmt.Errorf("merge: insert CNA affected: %w", err)
 		}

@@ -234,6 +234,7 @@ type CveCnaAffected struct {
 	CollectionUrl sql.NullString
 	DefaultStatus sql.NullString
 	Versions      json.RawMessage
+	PackageKey    sql.NullString
 }
 
 type CveCpeMatch struct {

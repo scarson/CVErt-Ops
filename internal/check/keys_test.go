@@ -128,6 +128,17 @@ func TestKeysForCPESpellings(t *testing.T) {
 	}
 }
 
+// TestKeysForRedundantEscapes checks that a CPE escaping "." reads the keys of
+// the same CPE written as NVD writes it, including its name table row.
+func TestKeysForRedundantEscapes(t *testing.T) {
+	t.Parallel()
+	got := KeysFor(parseItems(RawItem{CPE: `cpe:2.3:a:nodejs:node\.js:24.22.0:*:*:*:*:*:*:*`}))
+	want := KeysFor(parseItems(RawItem{CPE: "cpe:2.3:a:nodejs:node.js:24.22.0:*:*:*:*:*:*:*"}))
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("KeysFor(node\\.js) =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
 // TestKeysForCPEEscapes checks that a CPE prefix keeps its escapes as written,
 // and that the CNA names read them as plain text, with an unescaped "_" read as
 // a space and also kept.

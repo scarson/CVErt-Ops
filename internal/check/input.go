@@ -28,7 +28,8 @@ type Item struct {
 // name is folded when lookup keys are built, not here.
 type PackageRef struct{ Ecosystem, Name string }
 
-// ProductRef holds lower-cased CPE attributes, as written, with escapes kept.
+// ProductRef holds lower-cased CPE attributes, as written, with escapes kept
+// except the redundant ones dropRedundantEscapes removes.
 type ProductRef struct{ Part, Vendor, Product string }
 
 // ItemError is an item's refusal: a stable code from the API's error.code
@@ -226,13 +227,31 @@ func parseCPE(item Item, raw, version string) Item {
 	case stated == "":
 		stated = own
 	}
-	item.Product = &ProductRef{Part: part, Vendor: vendor, Product: product}
+	item.Product = &ProductRef{Part: part, Vendor: dropRedundantEscapes(vendor), Product: dropRedundantEscapes(product)}
 	item.Version = stated
 	return item
 }
 
 func literalCPEValue(v string) bool {
 	return v != "" && v != "*" && v != "-"
+}
+
+// dropRedundantEscapes removes the backslash before ".", "-" or "_" in a CPE
+// value. These never need escaping in a CPE 2.3 formatted string and NVD writes
+// them bare, so "node\.js" must read NVD's "node.js" rows and the name table's
+// key. Every other escape is kept as written.
+func dropRedundantEscapes(v string) string {
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		if v[i] == '\\' && i+1 < len(v) {
+			i++
+			if c := v[i]; c != '.' && c != '-' && c != '_' {
+				b.WriteByte('\\')
+			}
+		}
+		b.WriteByte(v[i])
+	}
+	return b.String()
 }
 
 // stripVersionPrefix removes one leading "v" or "V" when a digit follows it.

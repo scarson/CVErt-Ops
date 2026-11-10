@@ -13,7 +13,7 @@ The first full live ingest, run for the version check plan's Phase 2 on 2026-11-
 
 - The cap stays, because it bounds a runaway response. 8 GiB is about twice the OSV archive. `DownloadToTemp` still applies `MaxDownloadSize` (5 GiB) and reports its own overflow, so for archives the smaller bound decides.
 - `limitedBody` reads up to the cap, then reads one more byte. If that byte exists, the read fails with `ErrBodyTooLarge`. A body of exactly the cap still reads as complete.
-- Not fixed here: the OSV backfill downloads 2.9 GB in every 10-minute job, and the feed client's 5-minute timeout covers the whole body. At the roughly 10 MB/s measured for the MITRE archive, a download takes about 5 minutes, which leaves little of the job for merging. That is a design question for Sam, recorded in the version check plan's Discoveries.
+- Not fixed here: the OSV backfill downloads the 2.9 GB archive again in every 10-minute job, and the feed client's 5-minute timeout covers the whole body. Measured on the Phase 2 ingest, the download takes about 28 seconds, and a job then merges 18,000 to 36,000 advisories (about 28,000 on average) before its 10 minutes run out. So the download does not starve the job, but the 2.37 million advisories need about 85 jobs. Whether to keep the archive between jobs is a design question for Sam, recorded in the version check plan's Discoveries.
 
 ## Quality checks
 

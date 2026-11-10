@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
@@ -39,6 +40,12 @@ var defaultCheckLimits = checkLimits{KeyRows: 50_000, RequestRows: 200_000, Requ
 func cpeIndexExpr(column string) string {
 	return column + ` COLLATE "C"`
 }
+
+// rangeSeparator joins the bounds of one nearby-name key's vendor ranges into
+// one statement parameter, which checkCNANearSQL splits on chr(31). No bound
+// holds it: parseCPE takes only printable ASCII, and the name table's CPEs are
+// lower-case text.
+const rangeSeparator = "\x1f"
 
 // cnaNameIndexExpr is one of the expressions cve_cna_affected_check_idx indexes,
 // on column (vendor or product): its first 256 characters, lower-cased, which
@@ -106,26 +113,26 @@ CROSS JOIN LATERAL (
 LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
 	// CNA rows under the vendor whose product contains the fragment, on CVEs
-	// with no cve_cpe_matches row in any of the key's CPE vendor ranges. The
-	// ranges of every key are passed flat in $4-$6, each with the 1-based
-	// position of its key.
+	// with no cve_cpe_matches row in any of the key's CPE vendor ranges. Each
+	// key carries its own ranges in los and his: the lows, and the highs, joined
+	// by rangeSeparator, so a row is probed against its own key's ranges only.
 	checkCNANearSQL = `
 SELECT k.ord, a.cve_id, COALESCE(a.vendor, ''), COALESCE(a.product, ''), COALESCE(c.status, '')
-FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS k(v, full_vendor, frag, ord)
+FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) WITH ORDINALITY
+     AS k(v, full_vendor, frag, los, his, ord)
 CROSS JOIN LATERAL (
   SELECT q.cve_id, q.vendor, q.product FROM cve_cna_affected q
   WHERE ` + cnaNameIndexExpr("q.vendor") + ` = k.v COLLATE "C"
     AND lower(q.vendor) = k.full_vendor
     AND strpos(lower(q.product), k.frag) > 0
     AND NOT EXISTS (
-      SELECT 1 FROM unnest($4::bigint[], $5::text[], $6::text[]) AS r(key_ord, lo, hi)
+      SELECT 1 FROM unnest(string_to_array(k.los, chr(31)), string_to_array(k.his, chr(31))) AS r(lo, hi)
       JOIN cve_cpe_matches m
         ON m.cve_id = q.cve_id
        AND ` + cpeIndexExpr("m.cpe_normalized") + ` >= r.lo COLLATE "C"
        AND ` + cpeIndexExpr("m.cpe_normalized") + ` <  r.hi COLLATE "C"
-      WHERE r.key_ord = k.ord
     )
-  LIMIT $7
+  LIMIT $6
 ) a
 LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
@@ -270,16 +277,17 @@ func (r *checkRead) lookups(ctx context.Context, keys check.Keys, cands check.Ca
 
 	n = len(keys.CNANear)
 	nearVs, nearVendors, frags := make([]string, n), make([]string, n), make([]string, n)
-	rangeKeys, rangeLos, rangeHis := []int64{}, []string{}, []string{}
+	rangeLos, rangeHis := make([]string, n), make([]string, n)
 	for i, k := range keys.CNANear {
 		nearVs[i], nearVendors[i], frags[i] = k.V, k.FullVendor, k.Fragment
-		for _, vr := range k.VendorRanges {
-			rangeKeys, rangeLos, rangeHis = append(rangeKeys, int64(i+1)), append(rangeLos, vr.Lo), append(rangeHis, vr.Hi)
+		los, his := make([]string, len(k.VendorRanges)), make([]string, len(k.VendorRanges))
+		for j, vr := range k.VendorRanges {
+			los[j], his[j] = vr.Lo, vr.Hi
 		}
+		rangeLos[i], rangeHis[i] = strings.Join(los, rangeSeparator), strings.Join(his, rangeSeparator)
 	}
 	return readKeyRows(ctx, r, "cna_near", checkCNANearSQL,
-		[]any{pq.Array(nearVs), pq.Array(nearVendors), pq.Array(frags),
-			pq.Array(rangeKeys), pq.Array(rangeLos), pq.Array(rangeHis), limit},
+		[]any{pq.Array(nearVs), pq.Array(nearVendors), pq.Array(frags), pq.Array(rangeLos), pq.Array(rangeHis), limit},
 		cands.CNANear,
 		func(rows *sql.Rows) (s scanned[check.CNANearRow], err error) {
 			a := &s.row

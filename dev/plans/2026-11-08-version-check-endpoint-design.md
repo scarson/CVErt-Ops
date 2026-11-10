@@ -71,7 +71,7 @@ A distro ecosystem must name a release. `Debian` alone is refused with `ecosyste
 
 Red Hat's OSV strings carry a repository stream (`Red Hat:enterprise_linux:8::appstream`) that a purl does not hold, so `rpm` must use the `ecosystem` form.
 
-A purl can name a package the public registry does not hold, and mapping it to the public name would answer for a different package. A `hex` namespace is a private organisation, so it is refused with `unsupported_purl_namespace`, as is a namespace on any type whose row above has none. A `repository_url` qualifier is refused with `unsupported_repository`.
+A purl can name a package the public registry does not hold, and mapping it to the public name would answer for a different package. A `hex` namespace is a private organisation, so it is refused with `unsupported_purl_namespace`, as is a namespace on any type whose row above has none. A `repository_url` qualifier is refused with `unsupported_repository`. In a request, `download_url` and `vcs_url` are refused the same way. A stored CNA `packageURL` with either of them keeps its key (section 4.6), because CNA data can only condemn a version.
 
 **A purl identifies a distro release through its `distro` qualifier:**
 
@@ -85,7 +85,7 @@ A purl can name a package the public registry does not hold, and mapping it to t
 | missing or not recognised | refused: `distro_required`, `distro_not_recognised` | |
 | names a different distribution from the purl namespace | refused: `conflicting_distro` | `pkg:deb/ubuntu/...?distro=debian-13` has no single answer |
 
-Ubuntu Pro streams (`Ubuntu:Pro:24.04:LTS`) are not supported in purl form, as a deliberate restriction. OSV writes them as `distro=esm-infra/focal` and similar, which is refused with `distro_not_recognised`, and the `ecosystem` form names them directly. For `deb`, an `epoch` qualifier must be digits, and is prepended to the version when the version has none. Leaving it off sorts the version too low, and a range without an epoch can then wrongly clear or condemn it. A version that carries a different epoch from the qualifier is refused with `conflicting_version`. A purl with no version is refused with `version_required`. Qualifiers other than `distro`, `epoch` and `repository_url` are ignored, and a purl with a subpath is refused with `invalid_purl`.
+Ubuntu Pro streams (`Ubuntu:Pro:24.04:LTS`) are not supported in purl form, as a deliberate restriction. OSV writes them as `distro=esm-infra/focal` and similar, which is refused with `distro_not_recognised`, and the `ecosystem` form names them directly. For `deb`, an `epoch` qualifier must be digits, and is prepended to the version when the version has none. Leaving it off sorts the version too low, and a range without an epoch can then wrongly clear or condemn it. A version that carries a different epoch from the qualifier is refused with `conflicting_version`. A purl with no version is refused with `version_required`. Qualifiers other than `distro`, `epoch`, `repository_url`, `download_url` and `vcs_url` are ignored, and a purl with a subpath is refused with `invalid_purl`.
 
 ### 3.3 CPE form
 

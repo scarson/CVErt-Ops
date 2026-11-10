@@ -13,13 +13,15 @@ import (
 	"github.com/scarson/cvert-ops/internal/feed"
 )
 
-// Entries from the plan's Task 3.5 table. Real CNA values where the table names a CVE.
+// Entries from the plan's Task 3.5 table. Real CNA values where the table names a
+// CVE, except the CVE-2024-7347 entry, which is the plan's simplified shape.
 var (
 	// {1.0, lt 2.0, affected, semver}
 	cnaSemver10To20 = CNAVersion{Version: "1.0", LessThan: "2.0", Status: "affected", VersionType: "semver"}
 
-	// CVE-2024-7347 (F5, nginx): {1.25.0, lt 1.27.1, affected}, changes to
-	// unaffected at 1.26.2 and 1.27.1.
+	// The plan's simplified shape of CVE-2024-7347 (F5, nginx): {1.25.0, lt
+	// 1.27.1, affected}, changes to unaffected at 1.26.2 and 1.27.1. The real
+	// record is {1.5.13, lt *, affected, semver} with the same two changes.
 	cnaNginx7347 = CNAVersion{
 		Version: "1.25.0", LessThan: "1.27.1", Status: "affected", VersionType: "semver",
 		Changes: []CNAChange{{At: "1.26.2", Status: "unaffected"}, {At: "1.27.1", Status: "unaffected"}},

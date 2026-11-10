@@ -105,9 +105,10 @@ func TestCombineWorkedExamples(t *testing.T) {
 			want:           combined{Verdict: NotAffected, Ranges: []version.Range{node24}, Comparable: true},
 		},
 		{
-			// CNA: {1.25.0, lt 1.27.1, affected}, unaffected at 1.26.2 and
-			// 1.27.1, so 1.27.0 is above the first change: Indeterminate. The
-			// NVD row is a literal-version row, one shape that marks it vulnerable.
+			// CNA, in the plan's simplified shape of the record: {1.25.0, lt
+			// 1.27.1, affected}, unaffected at 1.26.2 and 1.27.1, so 1.27.0 is
+			// above the first change: Indeterminate. The NVD row is a
+			// literal-version row, one shape that marks it vulnerable.
 			name: "nginx 1.27.0, CVE-2024-7347: NVD marks it vulnerable, CNA Indeterminate",
 			primary: Outcome{
 				Verdict: Affected, Matched: []Matched{matchedCPE(cpeNginx1270, "1.27.0", "", "1.27.0")},

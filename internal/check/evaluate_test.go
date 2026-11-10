@@ -1312,3 +1312,43 @@ func TestEvaluateJSON(t *testing.T) {
 		}
 	})
 }
+
+// TestEvaluateItemOverLimitGroupsNoRows checks that an item over its row limit,
+// by its keys' total or by a key's overflow flag, is answered
+// too_many_candidates before any row is grouped by advisory. A request of many
+// such items (300 kernel versions over the per-key limit) otherwise allocated
+// gigabytes for rows that are never evaluated. It does not run in parallel,
+// because testing.AllocsPerRun counts every allocation in the process.
+func TestEvaluateItemOverLimitGroupsNoRows(t *testing.T) { //nolint:paralleltest // AllocsPerRun counts the whole process
+	items := parseItems(widgetItem)
+	rows := make([]CPERow, 20000)
+	for i := range rows {
+		rows[i] = cpeAt(fmt.Sprintf("CVE-2026-%06d", i), widgetCPE, "2.0", "3.0")
+	}
+	_, uses := keysWithUses(items)
+	feeds := feedsWith(true)
+
+	overTotal := rowsFor(t, items).cpes("acme", "widget", rows...)
+	overflowed := rowsFor(t, items).cpes("acme", "widget", rows[:50]...)
+	overflowed.data.CPEs[overflowed.cpeKeys("acme", "widget")[0]].Overflow = true
+
+	for name, c := range map[string]struct {
+		data   Candidates
+		limits Limits
+	}{
+		"rows over the item limit": {overTotal.data, Limits{ItemRows: 100, AdvisoryRanges: 1000}},
+		"a key over its limit":     {overflowed.data, Limits{ItemRows: 1 << 30, AdvisoryRanges: 1000}},
+	} {
+		m := newWorkMeter(context.Background())
+		res := evaluateItem(m, items[0], uses[0], c.data, feeds, nil, c.limits)
+		if res.Reason == nil || *res.Reason != ReasonTooManyCandidates {
+			t.Fatalf("%s: status %s, reason %v; want too_many_candidates", name, res.Status, res.Reason)
+		}
+		allocs := testing.AllocsPerRun(5, func() {
+			evaluateItem(m, items[0], uses[0], c.data, feeds, nil, c.limits)
+		})
+		if allocs > 50 {
+			t.Errorf("%s: %.0f allocations per answer, want a few, however many rows its keys hold", name, allocs)
+		}
+	}
+}

@@ -154,8 +154,6 @@ type advisoryRows struct {
 // itemRows is every row an item's keys returned, grouped by advisory.
 type itemRows struct {
 	advisories   map[string]*advisoryRows
-	total        int  // rows over every key the item uses, before de-duplication
-	overflow     bool // a key reached its per-key limit
 	cnaNameFound bool // a CNA name key returned a row
 }
 
@@ -169,19 +167,41 @@ func (r *itemRows) advisory(cveID, status string) *advisoryRows {
 	return a
 }
 
+// overItemLimit reports whether an item's keys hold more rows than limit, before
+// de-duplication, or one of them reached its per-key limit. It reads only the
+// keys' sizes, so an item over its limit is refused before any row is grouped.
+func overItemLimit(use itemKeys, data Candidates, limit int) bool {
+	total, overflow := 0, false
+	count := func(rows int, over bool) {
+		total += rows
+		overflow = overflow || over
+	}
+	if use.pkg >= 0 {
+		count(len(data.Packages[use.pkg].Rows), data.Packages[use.pkg].Overflow)
+	}
+	if use.cnaPackage >= 0 {
+		count(len(data.CNAPackageKeys[use.cnaPackage].Rows), data.CNAPackageKeys[use.cnaPackage].Overflow)
+	}
+	for _, k := range use.cpes {
+		count(len(data.CPEs[k].Rows), data.CPEs[k].Overflow)
+	}
+	for _, k := range use.cnaNames {
+		count(len(data.CNANames[k].Rows), data.CNANames[k].Overflow)
+	}
+	for _, k := range use.near {
+		count(len(data.CNANear[k].Rows), data.CNANear[k].Overflow)
+	}
+	return overflow || total > limit
+}
+
 // rowsOf collects an item's rows from the keys it uses. CNA name rows are
 // de-duplicated, because one stored row can come back through an exact name and
 // a prefix. A nearby-name row that is one of those CNA name rows (same CVE,
 // vendor and product, as stored) is dropped; any other marks its advisory.
 func rowsOf(use itemKeys, data Candidates) itemRows {
 	r := itemRows{advisories: map[string]*advisoryRows{}}
-	count := func(rows int, overflow bool) {
-		r.total += rows
-		r.overflow = r.overflow || overflow
-	}
 	if use.pkg >= 0 {
 		kr := data.Packages[use.pkg]
-		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			a := r.advisory(row.CVEID, row.Status)
 			a.packages = append(a.packages, row)
@@ -189,7 +209,6 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	}
 	if use.cnaPackage >= 0 {
 		kr := data.CNAPackageKeys[use.cnaPackage]
-		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			a := r.advisory(row.CVEID, row.Status)
 			a.cna = append(a.cna, row)
@@ -197,7 +216,6 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	}
 	for _, k := range use.cpes {
 		kr := data.CPEs[k]
-		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			a := r.advisory(row.CVEID, row.Status)
 			if row.Below > 0 {
@@ -212,7 +230,6 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	seen := map[string]bool{}
 	for _, k := range use.cnaNames {
 		kr := data.CNANames[k]
-		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			r.cnaNameFound = true
 			nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] = true
@@ -227,7 +244,6 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	}
 	for _, k := range use.near {
 		kr := data.CNANear[k]
-		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			if nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] {
 				continue
@@ -259,11 +275,11 @@ func evaluateItem(m *workMeter, item Item, use itemKeys, data Candidates, feeds 
 		res.DataComplete = res.DataComplete && feedStatus(feeds, name).Complete
 	}
 
-	rows := rowsOf(use, data)
-	if rows.overflow || rows.total > limits.ItemRows {
+	if overItemLimit(use, data, limits.ItemRows) {
 		res.Status, res.Reason = StatusCannotEvaluate, reasonPtr(ReasonTooManyCandidates)
 		return res
 	}
+	rows := rowsOf(use, data)
 
 	cveIDs := make([]string, 0, len(rows.advisories))
 	for id := range rows.advisories {

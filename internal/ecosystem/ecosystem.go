@@ -38,6 +38,16 @@ var takesSuffix = map[string]bool{
 	"openEuler": true, "openSUSE": true,
 }
 
+// distros holds the base names whose packages are built by a distribution, where
+// one version string has meaning only within one release.
+var distros = map[string]bool{
+	"AlmaLinux": true, "Alpaquita": true, "Alpine": true, "Azure Linux": true,
+	"BellSoft Hardened Containers": true, "Chainguard": true, "Debian": true, "Echo": true,
+	"Mageia": true, "MinimOS": true, "Red Hat": true, "Red Hat Lightwell": true,
+	"Rocky Linux": true, "SUSE": true, "TuxCare": true, "Ubuntu": true, "Wolfi": true,
+	"openEuler": true, "openSUSE": true,
+}
+
 // fromGHSA maps the REST API's package.ecosystem values to canonical names.
 var fromGHSA = map[string]string{
 	"actions": "GitHub Actions", "composer": "Packagist", "erlang": "Hex", "go": "Go",
@@ -94,6 +104,18 @@ func FoldPackageName(ecosystem, name string) string {
 func FoldedNameSQL(ecosystemColumn, nameColumn string) string {
 	return fmt.Sprintf(`CASE WHEN %s = 'PyPI' THEN regexp_replace(lower(%s), '[-_.]+', '-', 'g') ELSE lower(%s) END`,
 		ecosystemColumn, nameColumn, nameColumn)
+}
+
+// IsDistro reports whether value names a distribution's packages.
+func IsDistro(value string) bool {
+	base, _, _ := strings.Cut(value, ":")
+	return distros[base]
+}
+
+// NeedsRelease reports whether value is a distribution that takes a release and
+// names none, so one exact version has no single meaning.
+func NeedsRelease(value string) bool {
+	return distros[value] && takesSuffix[value]
 }
 
 // OrdersBySemver reports whether an ecosystem's native version order is SemVer, so

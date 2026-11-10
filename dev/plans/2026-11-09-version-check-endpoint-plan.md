@@ -112,9 +112,9 @@ notes and commit messages.
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
-| 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
+| 2 — Full ingest | 🚧 In progress (another session) | | Worker running since 2026-11-10T05:34Z (its log, `C:\tmp\cvert-check-ingest\worker.err.log`). At 2026-11-10T10:16Z `ghsa` had finished; `nvd`, `osv` and `mitre` had not |
 | 3 — Endpoint | 🚧 PR open 2026-11-10, awaiting Phase 4 | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end review fixes: round 1 `3781bec` to `3d8243a`, round 2 `b4a1e86` to `a4fa730`, round 3 `378ccbc` to `a72bd84`, round 4 `238ba4b`, `86d5578`. Head `5c4e025` | Branch `claude/check-endpoint-734a7a`. [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) to `dev`, unmerged until Phase 4 reports. Lint clean and full suite passed at `5c4e025` |
-| 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
+| 4 — Measurement and merge | 🚧 In progress, claimed 2026-11-10T10:30Z | | Branch `claude/check-endpoint-734a7a`. Provisional run on the partial ingest done; the go/no-go run waits for Phase 2's completion signals. Sam decides the go/no-go |
 
 ### Deviations
 
@@ -179,6 +179,7 @@ notes and commit messages.
   - **`c008d85`, for Sam, extends design section 4.5:** a nearby-name block is lifted by an NVD row under any vendor whose CPE spelling the item reads (its table row's vendors), not only the item's own vendor. Otherwise an `nginx:nginx` item stayed `cna_name_uncertain` for good on F5 CVEs with an NGINX Plus CNA row, while `f5:nginx` answered. The other side: an `f5:nginx` item's block is now also lifted by NVD rows under `nginx:*` (for example only `nginx:njs`), which falls under design section 4.5's accepted gap "NVD has analysed another product of the same vendor and missed this one".
   - Round 4 (a review of the round 3 fixes) found no wrong verdict. `238ba4b` adds a test that one key's vendor ranges cannot lift another key's nearby rows (a removed filter passed every test before). `86d5578` passes each key's own ranges in its own row, because the flat form scanned every key's ranges for each candidate row (46 ms to 2.2 s at 2,000 keys, measured with `EXPLAIN ANALYZE`). The controller read the round 4 diff and closed the review there.
   - `1644687`: a CPE vendor or product that is only an escaped `-` is `invalid_cpe`. `NamesFor` returns `(names, cpes, mapped)`, and `nearbyNames` is the one source of nearby-name inputs. `a72bd84`: the 503 detail names no time limit.
+- Phase 4 Step 1: `serve` reads a `pg_dump` copy of the ingest database (`cvert_phase4`), not the database itself, because its embedded worker pool would claim the Phase 2 worker's feed jobs and run them with older feed code. Detail at Phase 4 Step 1.
 
 ### Discoveries
 
@@ -210,6 +211,9 @@ notes and commit messages.
 - **For Sam (Task 3.11, display only, no effect on verdicts):** an advisory known only from OSV, which includes every distro record, answers `severity` and `cvss_v3_score` as null. `internal/merge/resolve.go` takes a CVSS vector only from a source that also gives a score, OSV gives vectors only, and the OSV adapter sets no severity. Design section 6 says those fields "stay those of the distro's own record". The fix belongs in merge or the OSV adapter, not in the endpoint.
 - Task 3.11: the real CVE-2024-7347 CNA entry is `{1.5.13, lessThan *, affected, semver}` with changes at 1.26.2 and 1.27.1, not the `{1.25.0, lessThan 1.27.1}` in the plan's Task 3.5 table and `cnaNginx7347` in `internal/check/cna_test.go`. The verdict for 1.27.0 is the same. With the whole record and no NVD rows, the F5 / NGINX Plus entry makes the advisory `cna_name_uncertain` rather than the design's `cna_indeterminate`; both are cannot evaluate.
 - `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
+- **For Sam (Phase 4 provisional run):** old NVD rows whose exact version or bound is not dotted numbers (`php:2.0b10`, OpenSSL `1.0.2zf`) answer `invalid_range`, which holds Node, PHP, OpenSSL and PostgreSQL items at `cannot_evaluate` at every version, patched or not. A leading-number comparison rule would settle all but one of them as Not affected. Numbers in Phase 4 notes.
+- **For Sam (Phase 4 provisional run):** `o:linux:linux_kernel` has 82,061 vulnerable rows before NVD finishes, over the 50,000 per-key limit, so every Linux kernel item answers `too_many_candidates`.
+- **Phase 4 provisional run, performance:** evaluation re-parses every bound per comparison (`internal/version` `CheckNumeric`, `validateRange`, `math/big`) and re-splits each CPE per item (`internal/check` `splitCPE`). 500 CPE items over the largest products took 14 to 18 s and allocated 11.4 GiB on the partial corpus. Re-measured on the complete corpus before a fix is proposed. Numbers in Phase 4 notes.
 
 ---
 
@@ -1387,11 +1391,13 @@ Retraction: pass `c.status` through as each row's `Status`. Do not filter reject
 
 ## Phase 4 — Measurement and merge
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T10:30Z on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest (Phase 4 notes below). The go/no-go run repeats them when Phase 2's completion signals are met.
 
 Needs Phase 2's database and Phase 3's branch.
 
 **Step 1: Point the Phase 3 build at the ingested database.** Load the same `.env` copy as Phase 2 Step 3, and confirm the URL host and port the same way, before running `go run ./cmd/cvert-ops serve` from the Phase 3 branch, with `METRICS_PORT` and `LISTEN_ADDR` set to free ports, because the Phase 2 worker still holds the default metrics port. Mint an API key through the application's own flow on that scratch database, for this measurement only.
+
+(Deviation: `serve` reads a copy, not the ingest database itself. `serve` always starts a worker pool, whatever `FEED_SCHEDULER_ENABLED` says, so on the ingest database it would claim the Phase 2 worker's queued feed jobs. It would run them with this branch's feed code, which lacks the GHSA token rename (#216) and the feed body cap (#217). Each run copies `cvert_ops` with `pg_dump` into a database `cvert_phase4` in the same cluster, deletes its pending and running jobs, and runs `ANALYZE`; `serve` runs with `FEED_SCHEDULER_ENABLED=false`, `LISTEN_ADDR=:18080` and `METRICS_PORT=19090`. The copy takes under 4 minutes. The scripts live outside the repository.)
 
 **Step 2: Check the acceptance examples:** Node `24.22.0` returns CVE-2026-111497 with fixed `24.22.1`; `24.22.1` returns nothing for it; `php8.5` `8.5.4-0ubuntu1.4` in `Ubuntu:26.04:LTS` returns the PHP CVEs with fixed `8.5.4-0ubuntu1.5`, and shows `in_cisa_kev: true` on the `UBUNTU-CVE-*` records.
 
@@ -1402,6 +1408,49 @@ Needs Phase 2's database and Phase 3's branch.
 **Step 5: Merge** the Phase 3 pull request after Sam's decision.
 
 **Step 6: Measure index write cost, then clean up.** On the scratch database only, set the NVD cursor back 7 days, run the worker until it catches up, and record CVEs merged per minute from its log. Drop the four indexes from Task 1.2 and repeat. Record both rates here. Then remove the Phase 2 containers and worktree, confirming first that they are this plan's.
+
+### Phase 4 notes
+
+#### Provisional run, 2026-11-10T10:22Z, partial ingest
+
+**This is not the go/no-go result.** The copy held 302,045 CVEs, 455,644 package rows, 1,215,035 CPE rows and 107,041 CNA rows. Only `ghsa` had finished. NVD had 110,934 records, and its rows for these six products stop around 2021 (the highest Node fix bound was `10.4.1`). MITRE had reached `CVE-2017-0908`, and OSV had not reached Ubuntu. The acceptance examples cannot pass yet: CVE-2026-111497 has no NVD or MITRE row, and there are no `Ubuntu:*` rows. Build `6fdc2bb`.
+
+The finding below does not depend on the ingest finishing. The rows that hold patched versions at `cannot_evaluate` belong to old CVEs whose NVD analysis is already stored, and finishing the ingest adds CVEs; it removes none.
+
+**Items (CPE form unless noted).** Every one answered `cannot_evaluate`.
+
+| Item | Affected / Cannot evaluate / Not affected | What holds it at `cannot_evaluate` |
+|---|---|---|
+| Node `24.22.0`, `24.22.1`, `18.20.0` | 0 / 5 / 46 | 5 `invalid_range`: CVE-2016-2086, -2216, -3956, -5325, -7099. Each lists exact NVD versions that are not dotted numbers |
+| PHP `8.4.14`, `7.4.33` | 0 / 57 / 539 | 53 `invalid_range` (exact versions such as `php:2.0b10`, CVE-1999-0058 onwards), 3 `no_version_bounds`, 1 `cna_indeterminate` |
+| .NET `9.0.11`, `6.0.0` | 0 / 0 / 3 | Item reason `data_incomplete` (MITRE had not reached Microsoft's .NET CVEs) |
+| nginx `1.29.3`, `1.20.0` | 0 / 2 / 25 | 2 `cna_indeterminate`: CVE-2017-7529 (`0.5.6 - 1.13.2`), CVE-2011-4968 |
+| OpenSSL `3.5.4` | 0 / 167 / 20 | 166 `invalid_range`: 90 from exact letter versions (`1.0.1a`), 76 from letter bounds (`< 1.0.2zf`) |
+| OpenSSL `1.1.1w` | 0 / 187 / 0 | `invalid_version` on all 187: a letter release is not dotted numbers (design section 3.3) |
+| PostgreSQL `18.1`, `13.0` | 0 / 5 / 97 | 2 `cna_indeterminate` (CVE-2017-7546, CVE-2017-7548: `9.2.x before 9.2.22`), 2 `invalid_range`, 1 `no_version_bounds` |
+| Linux kernel `6.12.0` (`o:linux:linux_kernel`) | 0 / 0 / 0 | Item reason `too_many_candidates`: 82,061 vulnerable rows, over the 50,000 per-key limit, with NVD unfinished |
+| `php8.5` `8.5.4-0ubuntu1.4`, `Ubuntu:26.04:LTS` | 0 / 0 / 0 | `distro_package_not_found` (no Ubuntu rows yet) |
+
+**A candidate rule, measured but not implemented.** When a CPE row's version or bound is not dotted numbers, compare the item version with the bound's leading dotted-number part, and treat the comparison as decided only when the two differ at a component both have. `8.4.14` is not `2.0b10`, and `3.5.4` is past `1.0.2zf`, while `1.0.2` against `1.0.2zf` stays undecided. Run over the advisories above (`phase4_prefix_sim.py`, outside the repository), this decides as Not affected all 5 Node, 52 of 53 PHP (CVE-2006-3017 stays), all 166 OpenSSL `3.5.4` and both PostgreSQL `invalid_range` advisories, and decides none as Affected. Node and OpenSSL `3.5.4` would then answer `not_affected`. PHP, nginx and PostgreSQL would stay at `cannot_evaluate` on `cna_indeterminate` and `no_version_bounds`, which are design section 15's decisions. This is a design change to section 4.2 and needs Sam.
+
+**Cost.**
+- One Firefox item (about 35,000 rows): 0.26 s, 85 MiB allocated.
+- 50 Firefox items at different versions: 4.3 to 8.4 s, 2.7 GiB allocated. The database read is shared, so the time is evaluation, about 54 MiB and 100 to 150 ms per item.
+- 500 items over the 10 largest CPE products: 14.2 to 17.7 s, 11.4 GiB allocated, resident memory 180 to 200 MiB afterwards.
+- A CPU profile of the 50-item request: `version.CheckNumeric` took 10.0 of 13.4 s of handler time. It runs `validateRange` and parses each bound with a regular expression and `math/big` on every comparison. `splitCPE` re-splits each row's CPE string for each item, about 1.7 s. Most of the rest of the process time was garbage collection of those allocations.
+- Projection: with NVD complete, a valid 500-item request may pass the 30-second limit and answer 503. The go/no-go run re-measures this before any change is proposed.
+
+**Data-side measurements on the copy** (`01-data.sql`, prepared in the Phase 2 session, and `03-phase4-extra.sql`). Provisional; repeated on the complete corpus:
+- Keys over the 50,000-row limit: CPE `o:linux:linux_kernel` (82,061) and CNA `n/a`/`n/a` (92,131). No package key exceeds it; the largest is `Alpaquita:stream`/`linux-lts`, 14,761.
+- Several fixes under one `introduced`, outside `Root:*` and `GIT`: 788 rows in 84 advisories and 30 packages, all `Alpine:v3.*`. None inside `Root:*` and `GIT`.
+- Vulnerable CPE rows with no bounds: 3.81% of rows, on 26.71% of products.
+- One CNA product and one NVD product, NVD analysed: of 173 CVEs where both sides are numeric, NVD reports a version at or past the CNA's highest clean bound in 32 (18.50%). The query returns rows, which settles that part of the Phase 2 verify-first note.
+- CPE products with vulnerable rows under both `a:` and `o:`: 126 of 41,245, covering 7,837 CVEs. The largest are Cisco ASA, VMware ESXi and Xen.
+- `SEMVER` package rows: 26,152, all `Bitnami`, in 7,917 records.
+- CNA entries with a `*` lower bound and an upper bound: none yet (MITRE unfinished).
+- CNA `package_key` values with whitespace: none (3 CVEs carry a `package_key` so far).
+- Ubuntu Pro rows: none yet.
+- Index use (M4) has to be read on the ingest database itself, because the copy's statistics start at zero.
 
 ---
 

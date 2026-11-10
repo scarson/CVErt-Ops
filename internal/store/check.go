@@ -106,23 +106,26 @@ CROSS JOIN LATERAL (
 LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
 	// CNA rows under the vendor whose product contains the fragment, on CVEs
-	// with no cve_cpe_matches row for the item's own CPE vendor.
+	// with no cve_cpe_matches row in any of the key's CPE vendor ranges. The
+	// ranges of every key are passed flat in $4-$6, each with the 1-based
+	// position of its key.
 	checkCNANearSQL = `
 SELECT k.ord, a.cve_id, COALESCE(a.vendor, ''), COALESCE(a.product, ''), COALESCE(c.status, '')
-FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) WITH ORDINALITY
-     AS k(v, full_vendor, frag, vendor_lo, vendor_hi, ord)
+FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS k(v, full_vendor, frag, ord)
 CROSS JOIN LATERAL (
   SELECT q.cve_id, q.vendor, q.product FROM cve_cna_affected q
   WHERE ` + cnaNameIndexExpr("q.vendor") + ` = k.v COLLATE "C"
     AND lower(q.vendor) = k.full_vendor
     AND strpos(lower(q.product), k.frag) > 0
     AND NOT EXISTS (
-      SELECT 1 FROM cve_cpe_matches m
-      WHERE m.cve_id = q.cve_id
-        AND ` + cpeIndexExpr("m.cpe_normalized") + ` >= k.vendor_lo COLLATE "C"
-        AND ` + cpeIndexExpr("m.cpe_normalized") + ` <  k.vendor_hi COLLATE "C"
+      SELECT 1 FROM unnest($4::bigint[], $5::text[], $6::text[]) AS r(key_ord, lo, hi)
+      JOIN cve_cpe_matches m
+        ON m.cve_id = q.cve_id
+       AND ` + cpeIndexExpr("m.cpe_normalized") + ` >= r.lo COLLATE "C"
+       AND ` + cpeIndexExpr("m.cpe_normalized") + ` <  r.hi COLLATE "C"
+      WHERE r.key_ord = k.ord
     )
-  LIMIT $6
+  LIMIT $7
 ) a
 LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
@@ -267,12 +270,16 @@ func (r *checkRead) lookups(ctx context.Context, keys check.Keys, cands check.Ca
 
 	n = len(keys.CNANear)
 	nearVs, nearVendors, frags := make([]string, n), make([]string, n), make([]string, n)
-	vendorLos, vendorHis := make([]string, n), make([]string, n)
+	rangeKeys, rangeLos, rangeHis := []int64{}, []string{}, []string{}
 	for i, k := range keys.CNANear {
-		nearVs[i], nearVendors[i], frags[i], vendorLos[i], vendorHis[i] = k.V, k.FullVendor, k.Fragment, k.VendorLo, k.VendorHi
+		nearVs[i], nearVendors[i], frags[i] = k.V, k.FullVendor, k.Fragment
+		for _, vr := range k.VendorRanges {
+			rangeKeys, rangeLos, rangeHis = append(rangeKeys, int64(i+1)), append(rangeLos, vr.Lo), append(rangeHis, vr.Hi)
+		}
 	}
 	return readKeyRows(ctx, r, "cna_near", checkCNANearSQL,
-		[]any{pq.Array(nearVs), pq.Array(nearVendors), pq.Array(frags), pq.Array(vendorLos), pq.Array(vendorHis), limit},
+		[]any{pq.Array(nearVs), pq.Array(nearVendors), pq.Array(frags),
+			pq.Array(rangeKeys), pq.Array(rangeLos), pq.Array(rangeHis), limit},
 		cands.CNANear,
 		func(rows *sql.Rows) (s scanned[check.CNANearRow], err error) {
 			a := &s.row

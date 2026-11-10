@@ -248,6 +248,39 @@ func TestReadCheckCandidates_CNANear(t *testing.T) {
 	}
 }
 
+// TestReadCheckCandidates_CNANearEverySpelling checks that a nearby-name key is
+// lifted by an NVD row under the vendor of any CPE spelling its item reads: an
+// nginx:nginx item reads f5:nginx too, so a CVE analysed under f5 is not near.
+func TestReadCheckCandidates_CNANearEverySpelling(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	// Analysed by NVD under the other spelling's vendor only: not near.
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90044",
+		CNAAffected: []feed.CNAAffected{{Vendor: "F5", Product: "NGINX Plus"}},
+		CPEMatches:  []feed.CPEMatch{cpeMatch("a:f5:nginx_plus", "")},
+	})
+	// Analysed by NVD under the item's own vendor only: not near.
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90045",
+		CNAAffected: []feed.CNAAffected{{Vendor: "F5", Product: "NGINX Agent"}},
+		CPEMatches:  []feed.CPEMatch{cpeMatch("a:nginx:agent", "")},
+	})
+	// Analysed by NVD under neither vendor: near.
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90046",
+		CNAAffected: []feed.CNAAffected{{Vendor: "F5", Product: "NGINX Controller"}},
+		CPEMatches:  []feed.CPEMatch{cpeMatch("a:other:thing", "")},
+	})
+
+	orgID := checkOrg(t, tdb)
+	for _, vendor := range []string{"nginx", "f5"} {
+		keys := check.Keys{CNANear: productKeys("a", vendor, "nginx").CNANear}
+		cands, _, _ := readCheck(t, tdb, orgID, keys, store.DefaultCheckLimits, nil)
+		want := []check.CNANearRow{{CVEID: "CVE-2026-90046", Vendor: "F5", Product: "NGINX Controller"}}
+		if len(cands.CNANear) != 1 || !reflect.DeepEqual(cands.CNANear[0].Rows, want) {
+			t.Errorf("%s:nginx nearby rows = %+v, want only %+v", vendor, cands.CNANear, want)
+		}
+	}
+}
+
 func TestReadCheckCandidates_StatusEnrichmentAndFeeds(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)

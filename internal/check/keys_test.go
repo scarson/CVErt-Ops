@@ -30,6 +30,12 @@ func exactName(vendor, product string) CNANameKey {
 	return CNANameKey{V: vendor, Lo: product, Hi: product + "\x01", FullVendor: vendor, FullProduct: product}
 }
 
+// vendorRange is the range on cpe_normalized of every CPE of part:vendor.
+func vendorRange(part, vendor string) CPEKey {
+	lo := "cpe:2.3:" + part + ":" + vendor + ":"
+	return CPEKey{Lo: lo, Hi: "cpe:2.3:" + part + ":" + vendor + ";"}
+}
+
 func TestKeysFor(t *testing.T) {
 	t.Parallel()
 	want := Keys{
@@ -54,8 +60,8 @@ func TestKeysFor(t *testing.T) {
 		},
 		CNAPackageKeys: []string{"npm/fastify", "PyPI/foo-bar"},
 		CNANear: []CNANearKey{
-			{V: "nodejs", FullVendor: "nodejs", Fragment: "node", VendorLo: "cpe:2.3:a:nodejs:", VendorHi: "cpe:2.3:a:nodejs;"},
-			{V: "microsoft", FullVendor: "microsoft", Fragment: ".net", VendorLo: "cpe:2.3:a:microsoft:", VendorHi: "cpe:2.3:a:microsoft;"},
+			{V: "nodejs", FullVendor: "nodejs", Fragment: "node", VendorRanges: []CPEKey{vendorRange("a", "nodejs")}},
+			{V: "microsoft", FullVendor: "microsoft", Fragment: ".net", VendorRanges: []CPEKey{vendorRange("a", "microsoft")}},
 		},
 	}
 	got := KeysFor(keysItems())
@@ -128,6 +134,34 @@ func TestKeysForCPESpellings(t *testing.T) {
 	}
 }
 
+// TestKeysForNearbyVendorRanges checks the CPE vendors whose NVD rows lift a
+// nearby-name key: for a CPE with a table row, the vendor of every CPE spelling
+// the row lists, with the item's part, so both nginx spellings share one key;
+// for a CPE with no table row, its own vendor.
+func TestKeysForNearbyVendorRanges(t *testing.T) {
+	t.Parallel()
+	keys, uses := keysWithUses(parseItems(
+		RawItem{CPE: "cpe:2.3:a:nginx:nginx:1.20.0:*:*:*:*:*:*:*"},
+		RawItem{CPE: "cpe:2.3:a:f5:nginx:1.20.0:*:*:*:*:*:*:*"},
+		RawItem{CPE: "cpe:2.3:o:f5:nginx:1.20.0:*:*:*:*:*:*:*"},
+		RawItem{CPE: "cpe:2.3:a:acme:widget:1.0:*:*:*:*:*:*:*"},
+	))
+	want := []CNANearKey{
+		{V: "f5", FullVendor: "f5", Fragment: "nginx", VendorRanges: []CPEKey{vendorRange("a", "f5"), vendorRange("a", "nginx")}},
+		{V: "f5", FullVendor: "f5", Fragment: "nginx", VendorRanges: []CPEKey{vendorRange("o", "f5"), vendorRange("o", "nginx")}},
+		{V: "acme", FullVendor: "acme", Fragment: "widget", VendorRanges: []CPEKey{vendorRange("a", "acme")}},
+	}
+	if !reflect.DeepEqual(keys.CNANear, want) {
+		t.Errorf("nearby-name keys =\n%+v\nwant\n%+v", keys.CNANear, want)
+	}
+	wantUses := [][]int{{0}, {0}, {1}, {2}}
+	for i, w := range wantUses {
+		if !reflect.DeepEqual(uses[i].near, w) {
+			t.Errorf("item %d nearby-name keys = %v, want %v", i, uses[i].near, w)
+		}
+	}
+}
+
 // TestKeysForRedundantEscapes checks that a CPE escaping "." reads the keys of
 // the same CPE written as NVD writes it, including its name table row.
 func TestKeysForRedundantEscapes(t *testing.T) {
@@ -153,9 +187,10 @@ func TestKeysForCPEEscapes(t *testing.T) {
 	if !reflect.DeepEqual(got.CNANames, wantNames) {
 		t.Errorf("CNA name keys = %+v, want %+v", got.CNANames, wantNames)
 	}
+	own := []CPEKey{vendorRange("a", `foo\:bar`)}
 	wantNear := []CNANearKey{
-		{V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz qux", VendorLo: `cpe:2.3:a:foo\:bar:`, VendorHi: `cpe:2.3:a:foo\:bar;`},
-		{V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz_qux", VendorLo: `cpe:2.3:a:foo\:bar:`, VendorHi: `cpe:2.3:a:foo\:bar;`},
+		{V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz qux", VendorRanges: own},
+		{V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz_qux", VendorRanges: own},
 	}
 	if !reflect.DeepEqual(got.CNANear, wantNear) {
 		t.Errorf("nearby-name keys = %+v, want %+v", got.CNANear, wantNear)

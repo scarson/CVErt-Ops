@@ -165,6 +165,23 @@ func (r *testRows) cnaStored(row CNARow) *testRows {
 	return r
 }
 
+// nearStored adds row at every nearby-name key the store would return it from,
+// for a CVE whose cve_cpe_matches rows are nvdCPEs: a key whose vendor equals
+// the row's in lower case, whose fragment the row's product contains, and none
+// of whose vendor ranges holds one of nvdCPEs.
+func (r *testRows) nearStored(row CNANearRow, nvdCPEs ...string) *testRows {
+	vendor, product := strings.ToLower(row.Vendor), strings.ToLower(row.Product)
+	for i, k := range r.keys.CNANear {
+		analysed := slices.ContainsFunc(k.VendorRanges, func(vr CPEKey) bool {
+			return slices.ContainsFunc(nvdCPEs, func(cpe string) bool { return cpe >= vr.Lo && cpe < vr.Hi })
+		})
+		if k.FullVendor == vendor && strings.Contains(product, k.Fragment) && !analysed {
+			r.data.CNANear[i].Rows = append(r.data.CNANear[i].Rows, row)
+		}
+	}
+	return r
+}
+
 func pkgAt(cve, introduced, fixed string) PackageRow {
 	return PackageRow{CVEID: cve, RangeType: "ECOSYSTEM", Introduced: introduced, Fixed: fixed}
 }
@@ -777,6 +794,44 @@ func TestEvaluateOtherCPESpellings(t *testing.T) {
 			if got.Status != StatusAffected || got.Counts != (Counts{Affected: 1}) {
 				t.Errorf("status = %s, counts %+v; want affected by %s; advisories %s",
 					got.Status, got.Counts, cveA, jsonOf(t, got.Advisories))
+			}
+		})
+	}
+}
+
+// TestEvaluateNearbyLiftEverySpelling checks that both nginx spellings, which
+// read each other's NVD rows, also share the nearby-name lift: a CVE that NVD
+// analysed under either spelling's vendor holds back neither item, so the two
+// items in one request answer alike.
+func TestEvaluateNearbyLiftEverySpelling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		vendor, product string // where the advisory's NVD row is stored
+	}{
+		{name: "NVD row under f5:nginx", vendor: "f5", product: "nginx"},
+		{name: "NVD row under nginx:nginx", vendor: "nginx", product: "nginx"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(
+				RawItem{CPE: "cpe:2.3:a:f5:nginx:1.20.0:*:*:*:*:*:*:*"},
+				RawItem{CPE: "cpe:2.3:a:nginx:nginx:1.20.0:*:*:*:*:*:*:*"},
+			)
+			stored := "cpe:2.3:a:" + tt.vendor + ":" + tt.product + ":*:*:*:*:*:*:*:*"
+			r := rowsFor(t, items).
+				cpes(tt.vendor, tt.product, cpeAt(cveA, stored, "1.25.0", "1.25.4")).
+				cnaName("f5", "nginx open source", false, cnaAt(cveA, "F5", "NGINX Open Source",
+					CNAVersion{Version: "1.25.0", LessThan: "1.25.4", Status: "affected", VersionType: "semver"})).
+				nearStored(nearAt(cveA, "F5", "NGINX Open Source"), stored).
+				nearStored(nearAt(cveA, "F5", "NGINX Plus"), stored)
+			got := run(t, items, r).Results
+			for i, res := range got {
+				if res.Status != StatusNotAffected || res.Counts != (Counts{NotAffected: 1}) {
+					t.Errorf("item %d: status = %s, counts %+v, advisories %v; want not_affected by %s",
+						i, res.Status, res.Counts, advisoryReasons(res), cveA)
+				}
 			}
 		})
 	}

@@ -44,9 +44,15 @@ type CNANameKey struct{ V, Lo, Hi, FullVendor, FullProduct string }
 
 // CNANearKey finds CNA rows near a product's CNA name (design section 4.5): rows
 // under vendor FullVendor (V is it cut to 256 runes) whose lower-cased product
-// contains Fragment, on CVEs with no cve_cpe_matches row in [VendorLo, VendorHi),
-// the range of the item's own CPE vendor.
-type CNANearKey struct{ V, FullVendor, Fragment, VendorLo, VendorHi string }
+// contains Fragment, on CVEs with no cve_cpe_matches row in any of VendorRanges.
+// VendorRanges holds, with the item's part, the vendor of every CPE spelling
+// whose NVD rows the item reads: for a CPE with a name table row, each vendor
+// of the row's CPEs, so both nginx spellings are lifted by an NVD row under f5
+// or nginx; otherwise the CPE's own vendor.
+type CNANearKey struct {
+	V, FullVendor, Fragment string
+	VendorRanges            []CPEKey
+}
 
 // Candidates holds the rows read for each key, in Keys order, and whether a key
 // reached its per-key limit.
@@ -105,9 +111,14 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			p := *item.Product
 			names, mapping, _ := NamesFor(p)
 			// Every spelling the mapping lists is this product, with the item's part.
+			var vendorRanges []CPEKey
 			for _, cpe := range mapping.CPEs {
 				lo := "cpe:2.3:" + p.Part + ":" + cpe + ":"
 				use.cpes = append(use.cpes, add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}))
+				vendorLo := "cpe:2.3:" + p.Part + ":" + splitCPE(cpe)[0] + ":"
+				if r := (CPEKey{Lo: vendorLo, Hi: upperOfPrefix(vendorLo)}); !slices.Contains(vendorRanges, r) {
+					vendorRanges = append(vendorRanges, r)
+				}
 			}
 			for _, n := range names {
 				k := add(&b.cnaNames, &b.keys.CNANames, cnaNameKey(n))
@@ -115,12 +126,10 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 					use.cnaNames = append(use.cnaNames, k)
 				}
 			}
-			vendorLo := "cpe:2.3:" + p.Part + ":" + p.Vendor + ":"
 			for _, n := range nearbyNames(p) {
 				vendor := strings.ToLower(n.Vendor)
-				use.near = append(use.near, add(&b.near, &b.keys.CNANear, CNANearKey{
-					V: cutRunes(vendor), FullVendor: vendor, Fragment: strings.ToLower(n.Product),
-					VendorLo: vendorLo, VendorHi: upperOfPrefix(vendorLo),
+				use.near = append(use.near, b.addNear(CNANearKey{
+					V: cutRunes(vendor), FullVendor: vendor, Fragment: strings.ToLower(n.Product), VendorRanges: vendorRanges,
 				}))
 			}
 		}
@@ -136,20 +145,43 @@ type keyBuilder struct {
 	cpes        map[CPEKey]int
 	cnaNames    map[CNANameKey]int
 	cnaPackages map[string]int
-	near        map[CNANearKey]int
+	near        map[string]int // by nearKeyID
 }
 
 // add returns key's position in keys, appending it the first time it is seen.
 func add[K comparable](index *map[K]int, keys *[]K, key K) int {
+	return addByID(index, keys, key, key)
+}
+
+// addByID is add for a key identified by id, for a key type that cannot be a
+// map key itself.
+func addByID[I comparable, K any](index *map[I]int, keys *[]K, id I, key K) int {
 	if *index == nil {
-		*index = map[K]int{}
+		*index = map[I]int{}
 	}
-	if i, ok := (*index)[key]; ok {
+	if i, ok := (*index)[id]; ok {
 		return i
 	}
-	(*index)[key] = len(*keys)
+	(*index)[id] = len(*keys)
 	*keys = append(*keys, key)
 	return len(*keys) - 1
+}
+
+// addNear returns a nearby-name key's position in Keys.CNANear, appending it the
+// first time it is seen.
+func (b *keyBuilder) addNear(k CNANearKey) int {
+	return addByID(&b.near, &b.keys.CNANear, nearKeyID(k), k)
+}
+
+// nearKeyID identifies a nearby-name key by all of its fields, joined by "\x00".
+// No field holds "\x00": parseCPE takes only printable ASCII, and the name
+// table's names are lower-case text.
+func nearKeyID(k CNANearKey) string {
+	fields := []string{k.V, k.FullVendor, k.Fragment}
+	for _, r := range k.VendorRanges {
+		fields = append(fields, r.Lo, r.Hi)
+	}
+	return strings.Join(fields, "\x00")
 }
 
 // upperOfPrefix turns a CPE prefix ending in ":" into the bound just above every

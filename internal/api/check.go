@@ -32,6 +32,10 @@ const (
 // than one request may. The caller splits the request.
 const problemTypeCandidateLimit = "urn:cvert:error:candidate_limit_exceeded"
 
+// pgQueryCanceled is PostgreSQL's query_canceled code, which a statement timeout
+// reports.
+const pgQueryCanceled = "57014"
+
 // CheckRequest is the version check request body.
 type CheckRequest struct {
 	Items []CheckItem `json:"items" minItems:"1" maxItems:"500" doc:"The components to check, answered in this order. An item that cannot be read is answered with status invalid; the others are still answered."`
@@ -228,14 +232,16 @@ func (srv *Server) runCheck(ctx context.Context, orgID uuid.UUID, items []check.
 
 // writeCheckFailure answers a version check whose read or evaluation failed. ctx
 // is the check's own context: once it has ended, the failure is the time limit
-// or the caller leaving, whatever error the driver reported. Nothing partial is
+// or the caller leaving, whatever error the driver reported. A PostgreSQL
+// statement timeout (DB_STATEMENT_TIMEOUT_MS, shorter than checkTimeout) is a
+// time limit too, though the context is still live. Nothing partial is
 // answered, because a partial read cannot say which items lost rows.
 func writeCheckFailure(w http.ResponseWriter, r *http.Request, ctx context.Context, err error) {
 	switch {
 	case errors.Is(err, store.ErrCandidateLimit):
 		writeProblemTyped(w, http.StatusUnprocessableEntity, problemTypeCandidateLimit,
 			"the request reads more candidate rows than one request may; split the items over several requests")
-	case ctx.Err() != nil:
+	case ctx.Err() != nil, pgErrCode(err) == pgQueryCanceled:
 		writeProblem(w, http.StatusServiceUnavailable,
 			fmt.Sprintf("the version check stopped before it finished (the %s limit, or the request was cancelled); nothing was answered. Retry, or split the items over several requests", checkTimeout))
 	default:

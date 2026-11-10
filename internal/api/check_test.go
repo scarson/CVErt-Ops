@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/feed"
@@ -329,6 +330,11 @@ func TestWriteCheckFailure(t *testing.T) {
 		{"driver error after cancellation", cancelled, errors.New("pq: canceling statement due to user request"),
 			http.StatusServiceUnavailable, "", false},
 		{"30-second limit", expired, fmt.Errorf("read: %w", context.DeadlineExceeded), http.StatusServiceUnavailable, "", false},
+		// DB_STATEMENT_TIMEOUT_MS (14 s by default) is shorter than the check's own
+		// limit, so PostgreSQL can cancel a lookup while the context is still live.
+		{"statement timeout", live, fmt.Errorf("read check candidates: cpe: %w",
+			&pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"}),
+			http.StatusServiceUnavailable, "", false},
 		{"other error", live, errors.New("connection refused"), http.StatusInternalServerError, "", true},
 	}
 	for _, tc := range tests {

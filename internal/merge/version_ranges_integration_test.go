@@ -4,9 +4,9 @@ package merge_test
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
-	"math/rand/v2"
 	"reflect"
 	"strings"
 	"testing"
@@ -250,14 +250,18 @@ func cnaPackageKeys(t *testing.T, s *testutil.TestDB, cveID string) []sql.NullSt
 	return keys
 }
 
-// incompressibleText returns n pseudo-random two-byte characters. PostgreSQL
-// compresses long index keys, so a repeated character would fit under the btree
-// row limit and prove nothing.
-func incompressibleText(n int, seed uint64) string {
-	r := rand.New(rand.NewPCG(seed, seed))
+// randomText returns n random characters, each first + (a random byte % span).
+// PostgreSQL compresses long index keys, so a repeated character would fit under
+// the btree row limit and prove nothing.
+func randomText(t *testing.T, n int, first rune, span byte) string {
+	t.Helper()
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("random bytes: %v", err)
+	}
 	var b strings.Builder
-	for range n {
-		b.WriteRune(rune(0x0430 + r.IntN(32))) // Cyrillic а to я: lower case, two bytes each
+	for _, c := range buf {
+		b.WriteRune(first + rune(c%span))
 	}
 	return b.String()
 }
@@ -270,15 +274,12 @@ func TestIngest_LongCNAValuesFitTheCheckIndexes(t *testing.T) {
 	ctx := context.Background()
 
 	// npm/ plus this name is exactly the longest key ecosystem.PackageKey keeps.
-	var name strings.Builder
-	r := rand.New(rand.NewPCG(3, 3))
-	for range 2600 - len("npm/") {
-		name.WriteByte(byte('a' + r.IntN(26)))
-	}
+	name := randomText(t, 2600-len("npm/"), 'a', 26)
+	// Cyrillic а to я: lower case, two bytes each.
 	raw, err := json.Marshal([]map[string]string{{
-		"vendor":     incompressibleText(2048, 1),
-		"product":    incompressibleText(2048, 2),
-		"packageURL": "pkg:npm/" + name.String(),
+		"vendor":     randomText(t, 2048, 'а', 32),
+		"product":    randomText(t, 2048, 'а', 32),
+		"packageURL": "pkg:npm/" + name,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +296,7 @@ func TestIngest_LongCNAValuesFitTheCheckIndexes(t *testing.T) {
 	if err := merge.Ingest(ctx, s.Store, patch, "mitre"); err != nil {
 		t.Fatalf("Ingest: %v", err)
 	}
-	if keys := cnaPackageKeys(t, s, patch.CVEID); len(keys) != 1 || keys[0].String != "npm/"+name.String() {
+	if keys := cnaPackageKeys(t, s, patch.CVEID); len(keys) != 1 || keys[0].String != "npm/"+name {
 		t.Errorf("stored %d keys, want the 2600-byte key", len(keys))
 	}
 }

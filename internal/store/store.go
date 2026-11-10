@@ -118,7 +118,19 @@ func (s *Store) withBypassRawTx(ctx context.Context, fn func(*sql.Tx) error) err
 // values; formatting is safe because orgID is a typed uuid.UUID, not
 // user-supplied text.
 func (s *Store) withOrgRawTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	return s.withOrgRawTxOptions(ctx, orgID, nil, fn)
+}
+
+// withOrgSnapshotTx is withOrgRawTx in one read-only REPEATABLE READ snapshot, for
+// reads that must not mix states from before and after a concurrent merge.
+func (s *Store) withOrgSnapshotTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
+	return s.withOrgRawTxOptions(ctx, orgID, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, fn)
+}
+
+// withOrgRawTxOptions is withOrgRawTx with the transaction begun with opts; nil
+// gives the default isolation level, read-write.
+func (s *Store) withOrgRawTxOptions(ctx context.Context, orgID uuid.UUID, opts *sql.TxOptions, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("begin org tx: %w", err)
 	}

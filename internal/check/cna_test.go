@@ -95,6 +95,12 @@ var (
 		Changes: []CNAChange{{At: "1.0", Status: "unaffected"}, {At: "2.0", Status: "affected"}},
 	}
 
+	// {1.0, lt 2.0, affected}, change to affected at 2.0, the upper bound.
+	cnaAffectedChangeAtUpper = CNAVersion{
+		Version: "1.0", LessThan: "2.0", Status: "affected",
+		Changes: []CNAChange{{At: "2.0", Status: "affected"}},
+	}
+
 	// {3.0, lt 2.*, affected}: the line 2 ends at 3, the start.
 	cnaInvertedWildcard = CNAVersion{Version: "3.0", LessThan: "2.*", Status: "affected"}
 
@@ -504,6 +510,11 @@ func TestReadCNAEntry(t *testing.T) {
 		{name: "design: empty first segment is not inverted {1.0, lt 3.0, affected} unaffected at 1.0, affected at 2.0 / 1.5", entry: cnaEmptyFirstSegment, version: "1.5", want: CNAResult{Reading: Indeterminate}},
 		{name: "design: empty first segment is not inverted {1.0, lt 3.0, affected} unaffected at 1.0, affected at 2.0 / 1.0", entry: cnaEmptyFirstSegment, version: "1.0", want: CNAResult{Reading: NoStatement}},
 		{name: "design: empty first segment is not inverted {1.0, lt 3.0, affected} unaffected at 1.0, affected at 2.0 / 0.5", entry: cnaEmptyFirstSegment, version: "0.5", want: CNAResult{Reading: NoStatement}},
+		// An affected change exactly at lessThan leaves an empty last segment, the
+		// same shape as an affected change above lessThan, so the entry is
+		// Indeterminate for every version.
+		{name: "design: affected change at the upper bound is an empty last segment {1.0, lt 2.0, affected} affected at 2.0 / 1.5", entry: cnaAffectedChangeAtUpper, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: affected change at the upper bound is an empty last segment {1.0, lt 2.0, affected} affected at 2.0 / 2.0", entry: cnaAffectedChangeAtUpper, version: "2.0", want: CNAResult{Reading: Indeterminate}},
 		// A wildcard end is checked too, as exclusive: [3.0, 3) is empty.
 		{name: "design: inverted wildcard entry {3.0, lt 2.*, affected} / 2.5", entry: cnaInvertedWildcard, version: "2.5", want: CNAResult{Reading: Indeterminate}},
 		{name: "design: inverted wildcard entry {3.0, lt 2.*, affected} / 3.0", entry: cnaInvertedWildcard, version: "3.0", want: CNAResult{Reading: Indeterminate}},

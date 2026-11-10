@@ -107,11 +107,11 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Phase 1 in progress.
+**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) and Phase 3 (endpoint) not started.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
-| 1 — Data changes | 🚧 PR open | Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
+| 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
 | 3 — Endpoint | ⬜ Not started | | Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
@@ -170,7 +170,7 @@ Follow TDD: write a failing test, implement, verify green.
 
 ## Phase 1 — Data changes
 
-**Execution Status:** 🚧 PR OPEN 2026-11-10 — claimed 2026-11-10T01:57Z on branch `claude/check-data-72f424`. The four tasks are `2018ce4`, `c79cd32`, `80c273b` and `356bf6e`, with review fixes up to `b741212`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213) targets `dev`. The merge SHA is recorded after the merge.
+**Execution Status:** ✅ SHIPPED 2026-11-10. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213) merged to `dev` as `45357f5`, from branch `claude/check-data-72f424`. The four tasks are `2018ce4`, `c79cd32`, `80c273b` and `356bf6e`, with review fixes up to `b741212`. `golangci-lint` was clean and `go test ./...` passed at `b741212`. Commits after it change only docs. CI runs only for `main`, so the PR to `dev` had no checks.
 
 Branch `feat/check-data` from `dev`. (Deviation: the executing session's worktree branch is `claude/check-data-72f424`, cut from `dev` at eb69a13; it was not renamed.) These four tasks change what ingest writes, so a walk under earlier code would have to be repeated. Tasks run in order.
 

@@ -91,18 +91,16 @@ func indexCNATable(table []cnaMapping) map[string]cnaMapping {
 // NamesFor returns every CNA name to look up: always the CPE's own, plus the
 // table's. mapped is true when a table row exists.
 //
-// The CPE's own name is its vendor and product as plain text: each CPE escape
-// becomes the character it quotes, and an unescaped "_" is read as a space. The
+// The CPE's own name is its vendor and product as plain text (ownNames). The
 // mapping gives the CPE spellings whose NVD rows are the product's, and the
 // vendor and name fragment for the nearby-name check: the table's, or with no
 // table row the CPE's own. Every name is listed once.
 func NamesFor(p ProductRef) (names []CNAName, mapping cnaMapping, mapped bool) {
 	ownCPE := p.Vendor + ":" + p.Product
-	own := CNAName{Vendor: cnaText(p.Vendor), Product: cnaText(p.Product)}
-	names = []CNAName{own}
+	names = ownNames(p)
 	row, mapped := cnaNames[ownCPE]
 	if !mapped {
-		return names, cnaMapping{CPEs: []string{ownCPE}, Fragment: own.Product, Vendor: own.Vendor}, false
+		return names, cnaMapping{CPEs: []string{ownCPE}, Fragment: names[0].Product, Vendor: names[0].Vendor}, false
 	}
 	for _, n := range row.Names {
 		if !slices.Contains(names, n) {
@@ -113,10 +111,34 @@ func NamesFor(p ProductRef) (names []CNAName, mapping cnaMapping, mapped bool) {
 	return names, row, true
 }
 
+// nearbyNames returns the vendors and name fragments of the nearby-name check
+// (design section 4.5), each as a CNAName whose Product is the fragment: the
+// table's for a CPE with a table row, otherwise the CPE's own names.
+func nearbyNames(p ProductRef) []CNAName {
+	if row, ok := cnaNames[p.Vendor+":"+p.Product]; ok {
+		return []CNAName{{Vendor: row.Vendor, Product: row.Fragment}}
+	}
+	return ownNames(p)
+}
+
+// ownNames returns the CPE's own vendor and product as plain text: each CPE
+// escape becomes the character it quotes, and an unescaped "_" is read as a
+// space. When the CPE holds an unescaped "_", the same name with "_" kept
+// follows, because some CNAs write the product as the CPE does.
+func ownNames(p ProductRef) []CNAName {
+	spaced := CNAName{Vendor: cnaText(p.Vendor, ' '), Product: cnaText(p.Product, ' ')}
+	kept := CNAName{Vendor: cnaText(p.Vendor, '_'), Product: cnaText(p.Product, '_')}
+	if kept == spaced {
+		return []CNAName{spaced}
+	}
+	return []CNAName{spaced, kept}
+}
+
 // cnaText turns a CPE vendor or product into the plain text a CNA record uses:
 // a backslash and the character after it become that character, and an
-// unescaped "_" becomes a space. A trailing lone backslash is kept.
-func cnaText(cpeValue string) string {
+// unescaped "_" becomes the byte underscore (a space, or "_" to keep it). A
+// trailing lone backslash is kept.
+func cnaText(cpeValue string, underscore byte) string {
 	var b strings.Builder
 	for i := 0; i < len(cpeValue); i++ {
 		switch c := cpeValue[i]; {
@@ -124,7 +146,7 @@ func cnaText(cpeValue string) string {
 			i++
 			b.WriteByte(cpeValue[i])
 		case c == '_':
-			b.WriteByte(' ')
+			b.WriteByte(underscore)
 		default:
 			b.WriteByte(c)
 		}

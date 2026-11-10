@@ -53,9 +53,10 @@ func TestNamesFor(t *testing.T) {
 			wantMapping: cnaMapping{CPEs: []string{"openssl:openssl"}, Fragment: "openssl", Vendor: "openssl"},
 		},
 		{
-			name:        "apache:http_server: underscore read as a space",
+			// A CNA may also write the CPE's "_" as it is.
+			name:        "apache:http_server: underscore read as a space and kept",
 			product:     ProductRef{Part: "a", Vendor: "apache", Product: "http_server"},
-			wantNames:   []CNAName{{Vendor: "apache", Product: "http server"}},
+			wantNames:   []CNAName{{Vendor: "apache", Product: "http server"}, {Vendor: "apache", Product: "http_server"}},
 			wantMapping: cnaMapping{CPEs: []string{"apache:http_server"}, Fragment: "http server", Vendor: "apache"},
 		},
 		{
@@ -95,6 +96,7 @@ func TestNamesFor(t *testing.T) {
 			product: ProductRef{Part: "a", Vendor: "microsoft", Product: ".net_core"},
 			wantNames: []CNAName{
 				{Vendor: "microsoft", Product: ".net core"},
+				{Vendor: "microsoft", Product: ".net_core"},
 				{Vendor: "microsoft", Product: ".net ", Prefix: true},
 			},
 			wantMapping: dotnet,
@@ -151,7 +153,7 @@ func TestNamesFor(t *testing.T) {
 			// An escaped underscore is a literal underscore, not a space.
 			name:        `vendor:a\_b_c\.d\\e: escapes and underscores`,
 			product:     ProductRef{Part: "a", Vendor: "vendor", Product: `a\_b_c\.d\\e`},
-			wantNames:   []CNAName{{Vendor: "vendor", Product: `a_b c.d\e`}},
+			wantNames:   []CNAName{{Vendor: "vendor", Product: `a_b c.d\e`}, {Vendor: "vendor", Product: `a_b_c.d\e`}},
 			wantMapping: cnaMapping{CPEs: []string{`vendor:a\_b_c\.d\\e`}, Fragment: `a_b c.d\e`, Vendor: "vendor"},
 		},
 		{
@@ -175,6 +177,37 @@ func TestNamesFor(t *testing.T) {
 			}
 			if mapped != tt.wantMapped {
 				t.Errorf("mapped = %v, want %v", mapped, tt.wantMapped)
+			}
+		})
+	}
+}
+
+// TestNearbyNames checks the vendors and name fragments of the nearby-name
+// check: the table's for a mapped CPE, and for any other CPE its own name, with
+// "_" read as a space and, when the name holds one, with "_" kept.
+func TestNearbyNames(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		product ProductRef
+		want    []CNAName
+	}{
+		{name: "mapped: the table's vendor and fragment", product: ProductRef{Part: "a", Vendor: "microsoft", Product: ".net_core"},
+			want: []CNAName{{Vendor: "microsoft", Product: ".net"}}},
+		{name: "no underscore: one", product: ProductRef{Part: "a", Vendor: "acme", Product: "widget"},
+			want: []CNAName{{Vendor: "acme", Product: "widget"}}},
+		{name: "underscore in the product", product: ProductRef{Part: "a", Vendor: "acme", Product: "foo_bar"},
+			want: []CNAName{{Vendor: "acme", Product: "foo bar"}, {Vendor: "acme", Product: "foo_bar"}}},
+		{name: "underscore in the vendor", product: ProductRef{Part: "a", Vendor: "acme_corp", Product: "widget"},
+			want: []CNAName{{Vendor: "acme corp", Product: "widget"}, {Vendor: "acme_corp", Product: "widget"}}},
+		{name: "an escaped underscore is already kept", product: ProductRef{Part: "a", Vendor: "acme", Product: `foo\_bar`},
+			want: []CNAName{{Vendor: "acme", Product: "foo_bar"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nearbyNames(tt.product); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("nearbyNames = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
@@ -261,6 +294,8 @@ func TestCNANameMatches(t *testing.T) {
 		{name: "exact: same name in another case", n: node, vendor: "NodeJS", product: "Node", want: true},
 		{name: "exact: longer product does not match", n: node, vendor: "nodejs", product: "node-fetch", want: false},
 		{name: "exact: other vendor", n: node, vendor: "nodejs foundation", product: "node", want: false},
+		{name: "exact: underscore kept", n: CNAName{Vendor: "acme", Product: "foo_bar"}, vendor: "Acme", product: "Foo_Bar", want: true},
+		{name: "exact: underscore kept is not a space", n: CNAName{Vendor: "acme", Product: "foo_bar"}, vendor: "acme", product: "foo bar", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

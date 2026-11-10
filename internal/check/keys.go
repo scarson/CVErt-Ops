@@ -69,13 +69,14 @@ type KeyRows[T any] struct {
 // product as stored. Status is its CVE's cves.status.
 type CNANearRow struct{ CVEID, Vendor, Product, Status string }
 
-// itemKeys holds the indices into Keys of the keys one item uses; -1 for none.
+// itemKeys holds the indices into Keys of the keys one item uses; -1 or empty
+// for none.
 type itemKeys struct {
 	pkg        int
 	cpes       []int
 	cnaNames   []int
 	cnaPackage int
-	near       int
+	near       []int
 }
 
 // KeysFor returns the distinct keys of the valid items.
@@ -90,7 +91,7 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 	var b keyBuilder
 	uses := make([]itemKeys, len(items))
 	for i, item := range items {
-		use := itemKeys{pkg: -1, cnaPackage: -1, near: -1}
+		use := itemKeys{pkg: -1, cnaPackage: -1}
 		switch {
 		case item.Error != nil:
 		case item.Package != nil:
@@ -114,12 +115,14 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 					use.cnaNames = append(use.cnaNames, k)
 				}
 			}
-			vendor := strings.ToLower(mapping.Vendor)
 			vendorLo := "cpe:2.3:" + p.Part + ":" + p.Vendor + ":"
-			use.near = add(&b.near, &b.keys.CNANear, CNANearKey{
-				V: cutRunes(vendor), FullVendor: vendor, Fragment: strings.ToLower(mapping.Fragment),
-				VendorLo: vendorLo, VendorHi: upperOfPrefix(vendorLo),
-			})
+			for _, n := range nearbyNames(p) {
+				vendor := strings.ToLower(n.Vendor)
+				use.near = append(use.near, add(&b.near, &b.keys.CNANear, CNANearKey{
+					V: cutRunes(vendor), FullVendor: vendor, Fragment: strings.ToLower(n.Product),
+					VendorLo: vendorLo, VendorHi: upperOfPrefix(vendorLo),
+				}))
+			}
 		}
 		uses[i] = use
 	}

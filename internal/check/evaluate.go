@@ -219,8 +219,8 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 			a.cna = append(a.cna, row)
 		}
 	}
-	if use.near >= 0 {
-		kr := data.CNANear[use.near]
+	for _, k := range use.near {
+		kr := data.CNANear[k]
 		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			if nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] {

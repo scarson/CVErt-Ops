@@ -132,6 +132,16 @@ func (r *testRows) near(vendor string, rows ...CNANearRow) *testRows {
 	return r
 }
 
+// nearFragment adds rows at the nearby-name key for vendor and fragment.
+func (r *testRows) nearFragment(vendor, fragment string, rows ...CNANearRow) *testRows {
+	r.t.Helper()
+	i := r.found("nearby-name", slices.IndexFunc(r.keys.CNANear, func(k CNANearKey) bool {
+		return k.FullVendor == vendor && k.Fragment == fragment
+	}))
+	r.data.CNANear[i].Rows = append(r.data.CNANear[i].Rows, rows...)
+	return r
+}
+
 func pkgAt(cve, introduced, fixed string) PackageRow {
 	return PackageRow{CVEID: cve, RangeType: "ECOSYSTEM", Introduced: introduced, Fixed: fixed}
 }
@@ -744,6 +754,54 @@ func TestEvaluateOtherCPESpellings(t *testing.T) {
 			if got.Status != StatusAffected || got.Counts != (Counts{Affected: 1}) {
 				t.Errorf("status = %s, counts %+v; want affected by %s; advisories %s",
 					got.Status, got.Counts, cveA, jsonOf(t, got.Advisories))
+			}
+		})
+	}
+}
+
+// TestEvaluateCNAUnderscoreKept checks that a CPE product holding "_" finds CNA
+// rows that keep the "_" as well as rows that write a space: a CVE known only
+// through a CNA row acme / foo_bar, or only through a nearby row whose product
+// holds foo_bar, keeps the item from not_affected.
+func TestEvaluateCNAUnderscoreKept(t *testing.T) {
+	t.Parallel()
+	item := RawItem{CPE: "cpe:2.3:a:acme:foo_bar:*:*:*:*:*:*:*:*", Version: "1.5.0"}
+	stored := "cpe:2.3:a:acme:foo_bar:*:*:*:*:*:*:*:*"
+	// cveA is analysed by NVD and clear; cveC's CNA row under the spaced name
+	// shows the product is mapped.
+	base := func(r *testRows) *testRows {
+		retracted := cnaAt(cveC, "Acme", "Foo Bar")
+		retracted.Status = "REJECTED"
+		return r.cpes("acme", "foo_bar", cpeAt(cveA, stored, "2.0.0", "3.0.0")).cnaName("acme", "foo bar", false, retracted)
+	}
+	tests := []struct {
+		name string
+		rows func(r *testRows)
+		want map[string]string
+	}{
+		{
+			name: "a CNA row that keeps the underscore",
+			rows: func(r *testRows) {
+				base(r).cnaName("acme", "foo_bar", false, cnaAt(cveB, "acme", "foo_bar",
+					CNAVersion{Version: "2.0.0", LessThan: "3.0.0", Status: "affected", VersionType: "semver"}))
+			},
+			want: map[string]string{cveB: "cannot_evaluate/cna_cannot_clear"},
+		},
+		{
+			name: "a nearby row that keeps the underscore",
+			rows: func(r *testRows) { base(r).nearFragment("acme", "foo_bar", nearAt(cveB, "acme", "foo_bar plugin")) },
+			want: map[string]string{cveB: "cannot_evaluate/cna_name_uncertain"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(item)
+			r := rowsFor(t, items)
+			tt.rows(r)
+			got := run(t, items, r).Results[0]
+			if got.Status != StatusCannotEvaluate || !reflect.DeepEqual(advisoryReasons(got), tt.want) {
+				t.Errorf("status = %s, advisories %v; want cannot_evaluate with %v", got.Status, advisoryReasons(got), tt.want)
 			}
 		})
 	}

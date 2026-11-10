@@ -50,6 +50,7 @@ func TestKeysFor(t *testing.T) {
 			exactName("microsoft", ".net"),
 			{V: "microsoft", Lo: ".net ", Hi: ".net!", FullVendor: "microsoft", FullProduct: ""},
 			exactName("microsoft", ".net core"),
+			exactName("microsoft", ".net_core"),
 		},
 		CNAPackageKeys: []string{"npm/fastify", "PyPI/foo-bar"},
 		CNANear: []CNANearKey{
@@ -67,17 +68,17 @@ func TestKeysFor(t *testing.T) {
 func TestKeysForItemUses(t *testing.T) {
 	t.Parallel()
 	_, uses := keysWithUses(keysItems())
-	none := itemKeys{pkg: -1, cnaPackage: -1, near: -1}
+	none := itemKeys{pkg: -1, cnaPackage: -1}
 	want := []itemKeys{
-		{pkg: 0, cnaPackage: 0, near: -1},
-		{pkg: 0, cnaPackage: 0, near: -1},
-		{pkg: 1, cnaPackage: -1, near: -1}, // distro items use no CNA rows
-		{pkg: -1, cpes: []int{0}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: 0},
+		{pkg: 0, cnaPackage: 0},
+		{pkg: 0, cnaPackage: 0},
+		{pkg: 1, cnaPackage: -1}, // distro items use no CNA rows
+		{pkg: -1, cpes: []int{0}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: []int{0}},
 		// Both .NET spellings read the NVD rows under each.
-		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{3, 4}, cnaPackage: -1, near: 1},
-		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{5, 4}, cnaPackage: -1, near: 1},
+		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{3, 4}, cnaPackage: -1, near: []int{1}},
+		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{5, 6, 4}, cnaPackage: -1, near: []int{1}},
 		none, // an invalid item uses no keys
-		{pkg: 2, cnaPackage: 1, near: -1},
+		{pkg: 2, cnaPackage: 1},
 	}
 	if !reflect.DeepEqual(uses, want) {
 		t.Errorf("item keys =\n%+v\nwant\n%+v", uses, want)
@@ -128,7 +129,8 @@ func TestKeysForCPESpellings(t *testing.T) {
 }
 
 // TestKeysForCPEEscapes checks that a CPE prefix keeps its escapes as written,
-// and that the CNA name reads them as plain text.
+// and that the CNA names read them as plain text, with an unescaped "_" read as
+// a space and also kept.
 func TestKeysForCPEEscapes(t *testing.T) {
 	t.Parallel()
 	got := KeysFor(parseItems(RawItem{CPE: `cpe:2.3:a:foo\:bar:baz_qux:1.0:*:*:*:*:*:*:*`}))
@@ -136,14 +138,14 @@ func TestKeysForCPEEscapes(t *testing.T) {
 	if !reflect.DeepEqual(got.CPEPrefixes, wantCPE) {
 		t.Errorf("CPE keys = %+v, want %+v", got.CPEPrefixes, wantCPE)
 	}
-	wantNames := []CNANameKey{exactName("foo:bar", "baz qux")}
+	wantNames := []CNANameKey{exactName("foo:bar", "baz qux"), exactName("foo:bar", "baz_qux")}
 	if !reflect.DeepEqual(got.CNANames, wantNames) {
 		t.Errorf("CNA name keys = %+v, want %+v", got.CNANames, wantNames)
 	}
-	wantNear := []CNANearKey{{
-		V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz qux",
-		VendorLo: `cpe:2.3:a:foo\:bar:`, VendorHi: `cpe:2.3:a:foo\:bar;`,
-	}}
+	wantNear := []CNANearKey{
+		{V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz qux", VendorLo: `cpe:2.3:a:foo\:bar:`, VendorHi: `cpe:2.3:a:foo\:bar;`},
+		{V: "foo:bar", FullVendor: "foo:bar", Fragment: "baz_qux", VendorLo: `cpe:2.3:a:foo\:bar:`, VendorHi: `cpe:2.3:a:foo\:bar;`},
+	}
 	if !reflect.DeepEqual(got.CNANear, wantNear) {
 		t.Errorf("nearby-name keys = %+v, want %+v", got.CNANear, wantNear)
 	}

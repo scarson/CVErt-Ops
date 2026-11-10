@@ -1,4 +1,4 @@
-// ABOUTME: Tests the rows a CPE lookup leaves out as lying wholly below the floor of an item's version, and the rows standing for them.
+// ABOUTME: Tests the rows a CPE lookup leaves out as lying wholly below the lowest version asked of a product, and the rows standing for them.
 // ABOUTME: Pins that leaving them out changes no answer: verdicts, reasons, counts and fixes equal the unfiltered read's.
 package check
 
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/scarson/cvert-ops/internal/version"
@@ -68,61 +69,64 @@ func TestCPERowBelow(t *testing.T) {
 	}
 }
 
-// TestKeysForCPEFloor checks that a product key carries the first two
-// components of its item's version when that is dotted numbers, that items
-// whose versions share those share one key, and that a vendor range carries no
-// floor.
+// TestKeysForCPEFloor checks that a product has one key whatever the number of
+// versions asked of it, that the key's floor is the lowest of those versions
+// when all are dotted numbers, that one version that is not dotted numbers
+// leaves the key with no floor wherever it comes in the request, and that a
+// vendor range carries no floor.
 func TestKeysForCPEFloor(t *testing.T) {
 	t.Parallel()
-	keys, uses := keysWithUses(parseItems(
-		RawItem{CPE: widgetCPE, Version: "6.12.0"},
-		RawItem{CPE: widgetCPE, Version: "6.12.0"},
-		RawItem{CPE: widgetCPE, Version: "6.12.7.1"},
-		RawItem{CPE: widgetCPE, Version: "6.13"},
-		RawItem{CPE: widgetCPE, Version: "7"},
-		RawItem{CPE: widgetCPE, Version: "6.12.0-rc1"},
-	))
-	want := []CPEKey{
-		{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;", Floor: "6.12"},
-		{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;", Floor: "6.13"},
-		{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;", Floor: "7"},
-		{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;"},
+	const gadgetCPE = "cpe:2.3:a:acme:gadget:*:*:*:*:*:*:*:*"
+	tests := []struct {
+		name     string
+		versions []string
+		want     string
+	}{
+		{"one version", []string{"6.12.0"}, "6.12.0"},
+		{"the lowest of several", []string{"6.12.0", "6.13", "5.15.100", "7", "5.15.100.1"}, "5.15.100"},
+		{"lowest by value, not as text", []string{"10.0", "9.5"}, "9.5"},
+		{"equal versions keep the first spelling", []string{"6.12", "6.12.0", "6.12.0.0"}, "6.12"},
+		{"a version that is not dotted numbers, last", []string{"6.12.0", "5.15", "6.8.0-45-generic"}, ""},
+		{"a version that is not dotted numbers, first", []string{"6.8.0-45-generic", "6.12.0", "5.15"}, ""},
+		{"a version that is not dotted numbers, between", []string{"6.12.0", "6.8.0-45-generic", "5.15"}, ""},
+		{"only versions that are not dotted numbers", []string{"6.8.0-45-generic", "1.24rc1"}, ""},
 	}
-	if !reflect.DeepEqual(keys.CPEPrefixes, want) {
-		t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, want)
-	}
-	for i, wantUse := range [][]int{{0}, {0}, {0}, {1}, {2}, {3}} {
-		if !reflect.DeepEqual(uses[i].cpes, wantUse) {
-			t.Errorf("item %d CPE keys = %v, want %v", i, uses[i].cpes, wantUse)
-		}
-	}
-	for _, near := range keys.CNANear {
-		for _, r := range near.VendorRanges {
-			if r.Floor != "" {
-				t.Errorf("vendor range %+v carries a floor", r)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			raws := []RawItem{{CPE: gadgetCPE, Version: "3.0"}}
+			for _, v := range tc.versions {
+				raws = append(raws, RawItem{CPE: widgetCPE, Version: v})
 			}
-		}
-	}
-}
-
-// TestVersionFloorIsAtOrBelowTheVersion checks what makes a floor usable: it is
-// dotted numbers at or below the version it was cut from.
-func TestVersionFloorIsAtOrBelowTheVersion(t *testing.T) {
-	t.Parallel()
-	for ver, want := range map[string]string{
-		"6": "6", "6.12": "6.12", "6.12.0": "6.12", "6.12.7.1": "6.12", "06.012.5": "06.012", "0.0.1": "0.0",
-		"6.12.0-rc1": "", "": "", "v6.12": "", "6..12": "",
-	} {
-		floor := versionFloor(ver)
-		if floor != want {
-			t.Errorf("versionFloor(%q) = %q, want %q", ver, floor, want)
-		}
-		if floor == "" {
-			continue
-		}
-		if c, err := version.NumericOrder(floor, ver); err != nil || c > 0 {
-			t.Errorf("versionFloor(%q) = %q, which NumericOrder places at %d (%v); want at or below", ver, floor, c, err)
-		}
+			keys, uses := keysWithUses(parseItems(raws...))
+			want := []CPEKey{
+				{Lo: "cpe:2.3:a:acme:gadget:", Hi: "cpe:2.3:a:acme:gadget;", Floor: "3.0"},
+				{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;", Floor: tc.want},
+			}
+			if !reflect.DeepEqual(keys.CPEPrefixes, want) {
+				t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, want)
+			}
+			for i := range tc.versions {
+				if got := uses[i+1].cpes; !reflect.DeepEqual(got, []int{1}) {
+					t.Errorf("item %d CPE keys = %v, want [1]", i+1, got)
+				}
+			}
+			for _, v := range tc.versions {
+				if tc.want == "" {
+					continue
+				}
+				if c, err := version.NumericOrder(tc.want, v); err != nil || c > 0 {
+					t.Errorf("floor %q against version %q: order %d (%v), want at or below", tc.want, v, c, err)
+				}
+			}
+			for _, near := range keys.CNANear {
+				for _, r := range near.VendorRanges {
+					if r.Floor != "" {
+						t.Errorf("vendor range %+v carries a floor", r)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -216,6 +220,41 @@ func TestEvaluateRowsBelow(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestEvaluateCPERowsInOneOrder checks that an advisory's answer does not
+// depend on the order its rows were read in: its reason, which is the first
+// row's that cannot be compared, and the order of its matched ranges.
+func TestEvaluateCPERowsInOneOrder(t *testing.T) {
+	t.Parallel()
+	items := parseItems(widgetItem)
+	rows := []CPERow{
+		widgetRange(cveA, cpeBounds{startIncluding: "1.0", endExcluding: "2.0"}),
+		widgetRange(cveA, cpeBounds{startIncluding: "1.2", endExcluding: "1.9"}),
+		widgetRange(cveA, cpeBounds{startIncluding: "1.0", endIncluding: "1.7"}),
+		widgetExact(cveA, "1.5.0"),
+		widgetRange(cveB, cpeBounds{}),
+		widgetRange(cveB, cpeBounds{startIncluding: "3.0", endExcluding: "2.0"}),
+		widgetExact(cveB, "-"),
+	}
+	var want string
+	for rotation := range rows {
+		order := append(slices.Clone(rows[rotation:]), rows[:rotation]...)
+		if rotation%2 == 1 {
+			slices.Reverse(order)
+		}
+		got := jsonOf(t, run(t, items, rowsFor(t, items).cpes("acme", "widget", order...)).Results[0])
+		if rotation == 0 {
+			want = got
+			continue
+		}
+		if got != want {
+			t.Errorf("rows in another order (rotation %d) answer differently\n got %s\nwant %s", rotation, got, want)
+		}
+	}
+	if !strings.Contains(want, string(ReasonNoVersionBounds)) || !strings.Contains(want, `"matched_ranges_total":4`) {
+		t.Errorf("answer does not hold what the order could change: %s", want)
+	}
 }
 
 // leaveOutBelow returns data as the store returns it for keys: at each CPE key
@@ -362,67 +401,90 @@ func equivalenceCVEs() []equivalenceCVE {
 	return cves
 }
 
-// TestEvaluateLeavingOutRowsBelowChangesNoAnswer evaluates the same items twice:
+// equivalenceRequests are the versions asked of the product in one request:
+// each dotted-number version alone, so its own version is the floor; requests
+// of several, where the floor is the lowest and lies below the others; and one
+// with a version that is not dotted numbers, which leaves the key no floor.
+func equivalenceRequests() [][]string {
+	dotted := equivalenceVersions[:len(equivalenceVersions)-1]
+	var requests [][]string
+	for _, v := range dotted {
+		requests = append(requests, []string{v})
+	}
+	return append(requests,
+		dotted,
+		[]string{"10.0", "2.6.22.1", "2.6.22", "6.12.0"},
+		[]string{"3", "1.4", "2.0.1"},
+		[]string{"6.12.0", "1.0.2", "1.0"},
+		equivalenceVersions,
+	)
+}
+
+// TestEvaluateLeavingOutRowsBelowChangesNoAnswer evaluates each request twice:
 // from every row of the product, and from the rows the store returns once it
-// leaves out the rows lying wholly below the floor of each item's version. The
-// versions include several that share a floor. The two results
-// must be equal. CVEs are evaluated 90 at a time, so that every advisory is
-// listed and compared, not only the first 100.
+// leaves out the rows lying wholly below the key's floor, the lowest version
+// in the request. The two results must be equal. CVEs are evaluated 90 at a
+// time, so that every advisory is listed and compared, not only the first 100.
 func TestEvaluateLeavingOutRowsBelowChangesNoAnswer(t *testing.T) {
 	t.Parallel()
-	var raws []RawItem
-	for _, v := range equivalenceVersions {
-		raws = append(raws, RawItem{CPE: widgetCPE, Version: v})
-	}
-	items := parseItems(raws...)
 	limits := Limits{ItemRows: 1 << 30, AdvisoryRanges: 6}
+	cves := equivalenceCVEs()
 
 	var totals Counts
-	rows, leftOut, fixes, tooMany := 0, 0, 0, 0
-	for chunk := range slices.Chunk(equivalenceCVEs(), 90) {
-		r := rowsFor(t, items)
-		for _, c := range chunk {
-			r.cpes("acme", "widget", c.rows...).cnaName("acme", "widget", false, c.cna...)
-			if len(r.keys.CNANear) > 0 {
-				r.near("acme", c.near...)
-			}
-			rows += len(c.rows)
+	leftOut, fixes, tooMany, floors := 0, 0, 0, 0
+	for _, versions := range equivalenceRequests() {
+		var raws []RawItem
+		for _, v := range versions {
+			raws = append(raws, RawItem{CPE: widgetCPE, Version: v})
 		}
-		want := runWith(t, newWorkMeter(context.Background()), items, r, feedsWith(true), nil, limits)
-
-		filtered, n := leaveOutBelow(r.keys, r.data)
-		leftOut += n
-		got, err := evaluateItems(newWorkMeter(context.Background()), items, filtered, feedsWith(true), nil, limits)
-		if err != nil {
-			t.Fatalf("evaluateItems on the filtered rows: %v", err)
-		}
-
-		for i, res := range want.Results {
-			if res.AdvisoriesTruncated {
-				t.Fatalf("version %s: advisories truncated, so not all are compared", items[i].Version)
-			}
-			if !reflect.DeepEqual(got.Results[i], res) {
-				t.Errorf("version %s: result differs once rows below it are left out\n got %s\nwant %s",
-					items[i].Version, jsonOf(t, got.Results[i]), jsonOf(t, res))
-			}
-			totals.Affected += res.Counts.Affected
-			totals.CannotEvaluate += res.Counts.CannotEvaluate
-			totals.NotAffected += res.Counts.NotAffected
-			totals.Retracted += res.Counts.Retracted
-			for _, adv := range res.Advisories {
-				if adv.FixedVersion != nil {
-					fixes++
-				}
-				if adv.Reason != nil && *adv.Reason == ReasonTooManyRanges {
-					tooMany++
+		items := parseItems(raws...)
+		for chunk := range slices.Chunk(cves, 90) {
+			r := rowsFor(t, items)
+			for _, c := range chunk {
+				r.cpes("acme", "widget", c.rows...).cnaName("acme", "widget", false, c.cna...)
+				if len(r.keys.CNANear) > 0 {
+					r.near("acme", c.near...)
 				}
 			}
+			want := runWith(t, newWorkMeter(context.Background()), items, r, feedsWith(true), nil, limits)
+
+			filtered, n := leaveOutBelow(r.keys, r.data)
+			leftOut += n
+			got, err := evaluateItems(newWorkMeter(context.Background()), items, filtered, feedsWith(true), nil, limits)
+			if err != nil {
+				t.Fatalf("evaluateItems on the filtered rows: %v", err)
+			}
+
+			for i, res := range want.Results {
+				if res.AdvisoriesTruncated {
+					t.Fatalf("version %s: advisories truncated, so not all are compared", items[i].Version)
+				}
+				if !reflect.DeepEqual(got.Results[i], res) {
+					t.Errorf("request %v, version %s: result differs once rows below the floor are left out\n got %s\nwant %s",
+						versions, items[i].Version, jsonOf(t, got.Results[i]), jsonOf(t, res))
+				}
+				totals.Affected += res.Counts.Affected
+				totals.CannotEvaluate += res.Counts.CannotEvaluate
+				totals.NotAffected += res.Counts.NotAffected
+				totals.Retracted += res.Counts.Retracted
+				for _, adv := range res.Advisories {
+					if adv.FixedVersion != nil {
+						fixes++
+					}
+					if adv.Reason != nil && *adv.Reason == ReasonTooManyRanges {
+						tooMany++
+					}
+				}
+			}
+		}
+		if KeysFor(items).CPEPrefixes[0].Floor != "" {
+			floors++
 		}
 	}
 
 	// The comparison means nothing unless rows were left out and the answers vary.
-	if leftOut < rows {
-		t.Errorf("rows left out = %d over every key, want at least the %d rows of one key", leftOut, rows)
+	if floors < len(equivalenceVersions) || leftOut < 10000 {
+		t.Errorf("%d requests had a floor and %d rows were left out, want most requests and many rows", floors, leftOut)
 	}
 	if totals.Affected == 0 || totals.CannotEvaluate == 0 || totals.NotAffected == 0 || totals.Retracted == 0 || fixes == 0 || tooMany == 0 {
 		t.Errorf("answers do not vary enough to compare: counts %+v, %d fixes, %d over the range limit", totals, fixes, tooMany)

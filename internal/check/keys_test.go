@@ -45,9 +45,9 @@ func TestKeysFor(t *testing.T) {
 			{Ecosystem: "PyPI", Name: "foo-bar"},
 		},
 		CPEPrefixes: []CPEKey{
-			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;", Floor: "24.22"},
-			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;", Floor: "9.0"},
-			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;", Floor: "9.0"},
+			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;", Floor: "24.22.0"},
+			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;", Floor: "9.0.1"},
+			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;", Floor: "9.0.1"},
 		},
 		CNANames: []CNANameKey{
 			exactName("nodejs", "node.js"),
@@ -115,9 +115,9 @@ func TestKeysForCPESpellings(t *testing.T) {
 		RawItem{CPE: "cpe:2.3:o:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
 	))
 	wantPrefixes := []CPEKey{
-		prefix("a", "f5", "nginx", "1.13"), prefix("a", "nginx", "nginx", "1.13"),
+		prefix("a", "f5", "nginx", "1.13.0"), prefix("a", "nginx", "nginx", "1.13.0"),
 		prefix("a", "acme", "widget", "1.0"),
-		prefix("o", "f5", "nginx", "1.13"), prefix("o", "nginx", "nginx", "1.13"),
+		prefix("o", "f5", "nginx", "1.13.0"), prefix("o", "nginx", "nginx", "1.13.0"),
 	}
 	if !reflect.DeepEqual(keys.CPEPrefixes, wantPrefixes) {
 		t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, wantPrefixes)

@@ -34,13 +34,18 @@ type PackageKey struct{ Ecosystem, Name string }
 // backslash before ".", "-" and "_", which NVD writes bare. Lo ends in ":" and
 // Hi is Lo with that ":" replaced by ";", the next byte.
 //
-// Floor is set on a product key whose item version is dotted numbers: that
-// version cut to its first two components (6.12 for 6.12.7), which is at or
-// below it. The store then leaves out the rows whose ranges lie wholly below
+// A request has one key for each product, so every item of the product shares
+// one read, as Keys promises. Floor is set on a product key when the version of
+// every item that uses it is dotted numbers, and is the lowest of those
+// versions. The store then leaves out the rows whose ranges lie wholly below
 // Floor (CPERowBelow) and returns one CPERow per CVE counting them. Such a row
 // answers NotAffected for every dotted-number version at or above Floor, so for
-// the item's. Items of one product whose versions share a floor share the key
-// and its read; cutting the version trades a few more rows read for that.
+// each of those items. When one item's version is not dotted numbers, Floor is
+// "" and the key reads every row, because that item needs them all.
+//
+// The rows a key returns therefore depend on the request's other items of the
+// same product, and so does whether the key passes its row limit. A key with a
+// floor never returns more rows than the same key with none.
 type CPEKey struct{ Lo, Hi, Floor string }
 
 // CNANameKey finds CNA rows for one CNAName. Names are lower-cased and cut to
@@ -123,10 +128,9 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			names, cpes, _ := NamesFor(p)
 			// Every spelling NamesFor lists is this product, with the item's part.
 			var vendorRanges []CPEKey
-			floor := versionFloor(item.Version)
 			for _, cpe := range cpes {
 				lo := "cpe:2.3:" + p.Part + ":" + cpe + ":"
-				use.cpes = append(use.cpes, add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo), Floor: floor}))
+				use.cpes = append(use.cpes, b.addCPE(CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}, item.Version))
 				vendorLo := "cpe:2.3:" + p.Part + ":" + splitCPE(cpe)[0] + ":"
 				if r := (CPEKey{Lo: vendorLo, Hi: upperOfPrefix(vendorLo)}); !slices.Contains(vendorRanges, r) {
 					vendorRanges = append(vendorRanges, r)
@@ -147,14 +151,25 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 		}
 		uses[i] = use
 	}
+	for i, floor := range b.cpeFloors {
+		b.keys.CPEPrefixes[i].Floor = floor.lowest
+	}
 	return b.keys, uses
+}
+
+// cpeFloor follows the versions of the items that use one CPE key: lowest is
+// the lowest so far, and "" from the first that is not dotted numbers onwards.
+type cpeFloor struct {
+	lowest string
+	closed bool // a version was not dotted numbers
 }
 
 // keyBuilder holds Keys with an index of each slice, so each key is added once.
 type keyBuilder struct {
 	keys        Keys
 	packages    map[PackageKey]int
-	cpes        map[CPEKey]int
+	cpes        map[CPEKey]int // by Lo and Hi; Floor is set once every item is seen
+	cpeFloors   []cpeFloor     // one per CPE key
 	cnaNames    map[CNANameKey]int
 	cnaPackages map[string]int
 	near        map[string]int // by nearKeyID
@@ -196,14 +211,24 @@ func nearKeyID(k CNANearKey) string {
 	return strings.Join(fields, "\x00")
 }
 
-// versionFloor returns a CPEKey's Floor for an item version: its first two
-// components when it is dotted numbers, otherwise "".
-func versionFloor(ver string) string {
-	if _, err := version.NumericOrder(ver, ver); err != nil {
-		return ""
+// addCPE returns the position in Keys.CPEPrefixes of key, which has no floor
+// yet, appending it the first time it is seen, and takes ver, the version of
+// an item that uses it, into the key's floor.
+func (b *keyBuilder) addCPE(key CPEKey, ver string) int {
+	i := add(&b.cpes, &b.keys.CPEPrefixes, key)
+	if i == len(b.cpeFloors) {
+		b.cpeFloors = append(b.cpeFloors, cpeFloor{lowest: ver})
 	}
-	components := strings.SplitN(ver, ".", 3)
-	return strings.Join(components[:min(len(components), 2)], ".")
+	f := &b.cpeFloors[i]
+	// NumericOrder refuses a version that is not dotted numbers, on either side.
+	switch c, err := version.NumericOrder(ver, f.lowest); {
+	case f.closed:
+	case err != nil:
+		f.lowest, f.closed = "", true
+	case c < 0:
+		f.lowest = ver
+	}
+	return i
 }
 
 // upperOfPrefix turns a CPE prefix ending in ":" into the bound just above every

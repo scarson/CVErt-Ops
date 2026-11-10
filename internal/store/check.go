@@ -43,7 +43,7 @@ func cpeIndexExpr(column string) string {
 }
 
 // The CPE lookup leaves out the rows check.CPERowBelow reports for a key's
-// floor, by the same rule in SQL. cpeRangeSQL is the FROM items that read row q
+// floor (the lowest version asked of the product), by the same rule in SQL. cpeRangeSQL is the FROM items that read row q
 // of cve_cpe_matches as check's cpeRange reads it, each computed once per row
 // (OFFSET 0 keeps the planner from copying an expression into every use):
 //
@@ -121,8 +121,9 @@ func cnaNameIndexExpr(column string) string {
 // reports and keeping only the CVE of each. It then returns the unmarked rows,
 // which could matter to a version at or above the floor, and one row per CVE of
 // the marked rows with their count in below, so the CVE is still known to be
-// NVD-analysed and its ranges still count towards its range limit. Each of the
-// two has the key's LIMIT; the read into scanned is bounded by the product's
+// NVD-analysed and its ranges still count towards its range limit. The two
+// together have the key's LIMIT, so a key with a floor never returns more rows
+// than it would with none; the read into scanned is bounded by the product's
 // size, not by the LIMIT. The CVE status is looked up per returned row, after
 // the LIMIT, so the planner cannot choose to read all of cves for it.
 var (
@@ -169,6 +170,7 @@ CROSS JOIN LATERAL (
   (SELECT cve_id, cpe_normalized, si, se, ei, ee, 0::bigint FROM scanned WHERE NOT below LIMIT $4)
   UNION ALL
   (SELECT cve_id, '', '', '', '', '', count(*) FROM scanned WHERE below GROUP BY cve_id LIMIT $4)
+  LIMIT $4
 ) m`
 
 	// The index holds 256 characters of each name, so the whole vendor and

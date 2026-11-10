@@ -3,6 +3,7 @@
 package check
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -144,7 +145,7 @@ func isRetracted(status string) bool {
 type advisoryRows struct {
 	packages  []PackageRow
 	cpes      []CPERow
-	cpesBelow int // rows the store left out as lying wholly below the floor of the item's version
+	cpesBelow int // rows the store left out as lying wholly below the floor of the item's key
 	cna       []CNARow
 	nearby    bool // a nearby-name row that is not one of the item's CNA name rows
 	retracted bool // a row's CVE is rejected or withdrawn
@@ -344,6 +345,9 @@ func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enric
 		primary := EvaluatePackageRows(m, item.Package.Ecosystem, item.Version, a.packages)
 		out = Combine(primary, len(a.packages) > 0, ReadCNAEntries(m, item.Version, a.cna))
 	default:
+		// The store's statement states no row order, and the advisory's reason
+		// and its matched ranges follow the order rows are read in.
+		slices.SortFunc(a.cpes, compareCPERows)
 		primary := EvaluateCPERows(m, item.Version, a.cpes, a.cpesBelow)
 		out = Combine(primary, len(a.cpes)+a.cpesBelow > 0, ReadCNAEntries(m, item.Version, a.cna))
 	}
@@ -371,6 +375,18 @@ func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enric
 	adv.Severity, adv.CVSSv3Score = own.Severity, own.CVSSv3Score
 	adv.InCISAKEV, adv.EPSSScore = exploitData(adv.CVEIDs, enrichment)
 	return adv, out.Verdict
+}
+
+// compareCPERows orders an advisory's rows by CPE, then by their four bounds, so
+// that they are evaluated in one order however they were read.
+func compareCPERows(a, b CPERow) int {
+	return cmp.Or(
+		strings.Compare(a.CPE, b.CPE),
+		strings.Compare(a.VersionStartIncluding, b.VersionStartIncluding),
+		strings.Compare(a.VersionStartExcluding, b.VersionStartExcluding),
+		strings.Compare(a.VersionEndIncluding, b.VersionEndIncluding),
+		strings.Compare(a.VersionEndExcluding, b.VersionEndExcluding),
+	)
 }
 
 // fixOrder is the order fix candidates are compared in (design section 7): the

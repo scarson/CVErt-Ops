@@ -180,6 +180,7 @@ notes and commit messages.
   - Round 4 (a review of the round 3 fixes) found no wrong verdict. `238ba4b` adds a test that one key's vendor ranges cannot lift another key's nearby rows (a removed filter passed every test before). `86d5578` passes each key's own ranges in its own row, because the flat form scanned every key's ranges for each candidate row (46 ms to 2.2 s at 2,000 keys, measured with `EXPLAIN ANALYZE`). The controller read the round 4 diff and closed the review there.
   - `1644687`: a CPE vendor or product that is only an escaped `-` is `invalid_cpe`. `NamesFor` returns `(names, cpes, mapped)`, and `nearbyNames` is the one source of nearby-name inputs. `a72bd84`: the 503 detail names no time limit.
 - Phase 4 Step 1: `serve` reads a `pg_dump` copy of the ingest database (`cvert_phase4`), not the database itself, because its embedded worker pool would claim the Phase 2 worker's feed jobs and run them with older feed code. Detail at Phase 4 Step 1.
+- **Decided by Sam on 2026-11-10, design change to section 4.2:** NVD bounds that are not dotted numbers (`2.0b10`, `1.0.2zf`) are compared by their leading dotted numbers where those differ (`version.CheckProduct`, `6ef031b`; review fixes `4300c7c`: CPE wildcards, `%` and empty ranges are never compared). Added to PR #218. Effect in Phase 4 notes; log `dev/implementation-log/2026-11-10T1041Z-check-nvd-bounds-by-leading-numbers.md`.
 
 ### Discoveries
 
@@ -211,8 +212,8 @@ notes and commit messages.
 - **For Sam (Task 3.11, display only, no effect on verdicts):** an advisory known only from OSV, which includes every distro record, answers `severity` and `cvss_v3_score` as null. `internal/merge/resolve.go` takes a CVSS vector only from a source that also gives a score, OSV gives vectors only, and the OSV adapter sets no severity. Design section 6 says those fields "stay those of the distro's own record". The fix belongs in merge or the OSV adapter, not in the endpoint.
 - Task 3.11: the real CVE-2024-7347 CNA entry is `{1.5.13, lessThan *, affected, semver}` with changes at 1.26.2 and 1.27.1, not the `{1.25.0, lessThan 1.27.1}` in the plan's Task 3.5 table and `cnaNginx7347` in `internal/check/cna_test.go`. The verdict for 1.27.0 is the same. With the whole record and no NVD rows, the F5 / NGINX Plus entry makes the advisory `cna_name_uncertain` rather than the design's `cna_indeterminate`; both are cannot evaluate.
 - `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
-- **For Sam (Phase 4 provisional run):** old NVD rows whose exact version or bound is not dotted numbers (`php:2.0b10`, OpenSSL `1.0.2zf`) answer `invalid_range`, which holds Node, PHP, OpenSSL and PostgreSQL items at `cannot_evaluate` at every version, patched or not. A leading-number comparison rule would settle all but one of them as Not affected. Numbers in Phase 4 notes.
-- **For Sam (Phase 4 provisional run):** `o:linux:linux_kernel` has 82,061 vulnerable rows before NVD finishes, over the 50,000 per-key limit, so every Linux kernel item answers `too_many_candidates`.
+- **For Sam (Phase 4 provisional run):** old NVD rows whose exact version or bound is not dotted numbers (`php:2.0b10`, OpenSSL `1.0.2zf`) answer `invalid_range`, which holds Node, PHP, OpenSSL and PostgreSQL items at `cannot_evaluate` at every version, patched or not. A leading-number comparison rule would settle all but one of them as Not affected. Numbers in Phase 4 notes. Sam chose the rule on 2026-11-10; see Deviations.
+- **For Sam (Phase 4 provisional run):** `o:linux:linux_kernel` has 82,061 vulnerable rows before NVD finishes, over the 50,000 per-key limit, so every Linux kernel item answers `too_many_candidates`. A publication-date cutoff would drop old unbounded rows and can give a wrong "not affected"; a version-aware lookup filter would not (Phase 4 notes).
 - **Phase 4 provisional run, performance:** evaluation re-parses every bound per comparison (`internal/version` `CheckNumeric`, `validateRange`, `math/big`) and re-splits each CPE per item (`internal/check` `splitCPE`). 500 CPE items over the largest products took 14 to 18 s and allocated 11.4 GiB on the partial corpus. Re-measured on the complete corpus before a fix is proposed. Numbers in Phase 4 notes.
 
 ---
@@ -1432,6 +1433,20 @@ The finding below does not depend on the ingest finishing. The rows that hold pa
 | `php8.5` `8.5.4-0ubuntu1.4`, `Ubuntu:26.04:LTS` | 0 / 0 / 0 | `distro_package_not_found` (no Ubuntu rows yet) |
 
 **A candidate rule, measured but not implemented.** When a CPE row's version or bound is not dotted numbers, compare the item version with the bound's leading dotted-number part, and treat the comparison as decided only when the two differ at a component both have. `8.4.14` is not `2.0b10`, and `3.5.4` is past `1.0.2zf`, while `1.0.2` against `1.0.2zf` stays undecided. Run over the advisories above (`phase4_prefix_sim.py`, outside the repository), this decides as Not affected all 5 Node, 52 of 53 PHP (CVE-2006-3017 stays), all 166 OpenSSL `3.5.4` and both PostgreSQL `invalid_range` advisories, and decides none as Affected. Node and OpenSSL `3.5.4` would then answer `not_affected`. PHP, nginx and PostgreSQL would stay at `cannot_evaluate` on `cna_indeterminate` and `no_version_bounds`, which are design section 15's decisions. This is a design change to section 4.2 and needs Sam.
+
+Sam chose it on 2026-11-10 (Deviations). Re-run on the same copy at `6ef031b`:
+
+| Item | Cannot evaluate / Not affected, before | After | What still holds it |
+|---|---|---|---|
+| Node `24.22.0`, `24.22.1`, `18.20.0` | 5 / 46 | 0 / 51 | Item reason `data_incomplete` only (NVD and OSV unfinished) |
+| PHP `8.4.14`, `7.4.33` | 57 / 539 | 5 / 591 | 3 `no_version_bounds`, 1 `invalid_range` (CVE-2006-3017), 1 `cna_indeterminate` (CVE-2014-3622, `5.6.x before 5.6.1`) |
+| nginx `1.29.3`, `1.20.0` | 2 / 25 | 2 / 25 | 2 `cna_indeterminate` (`0.5.6 - 1.13.2`, `through 1.6.2`) |
+| OpenSSL `3.5.4` | 167 / 20 | 10 / 177 | 9 `cna_indeterminate` (CVE-2016-7053 to CVE-2018-0739: `All 0.9.8`, `Fixed in OpenSSL 1.1.0h (Affected 1.1.0-1.1.0g)`), 1 `cna_name_uncertain` |
+| PostgreSQL `18.1`, `13.0` | 5 / 97 | 4 / 98 | 3 `cna_indeterminate` (`9.2.x before 9.2.22`), 1 `no_version_bounds` |
+
+After the rule, what holds patched versions is mostly CNA free text from 2011 to 2018 that NVD has analysed as not affecting them. Design section 15 keeps those at cannot evaluate when NVD says Not affected ("An indeterminate CNA entry when NVD says Not affected"); that is the next go/no-go question for Sam.
+
+**Linux kernel and a date cutoff.** Sam asked whether a publication-date cutoff could bring `linux_kernel` under the 50,000-row key limit. On the copy, 7 CVEs published before 2015 have unbounded kernel rows (`*` or `-` with no bounds, such as CVE-1999-0524 and CVE-2008-4609). A 2015 cutoff would drop them, and an item they now hold at cannot evaluate could answer `not_affected`, so a date cutoff can give a wrong "not affected". A version-aware filter in the lookup does not: keeping only rows whose leading numbers allow the item's version keeps 14 of 82,061 rows for `6.12.0`. It needs the CPE key to carry the version's leading number, and a way to keep "NVD has analysed this CVE" for CVEs whose rows are all filtered out, or design section 4.4 reads them as unanalysed (`cna_cannot_clear`). Not built; for Sam.
 
 **Cost.**
 - One Firefox item (about 35,000 rows): 0.26 s, 85 MiB allocated.

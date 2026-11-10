@@ -113,7 +113,7 @@ notes and commit messages.
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end reviews in progress | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -156,6 +156,11 @@ notes and commit messages.
   - `CheckComponent` and `CheckItemError` carry a blank `nullable` field, because huma refuses `nullable` on a `$ref`.
   - `securityFixture` (`openapi_security_test.go`) gained `api` and `db` fields for reuse.
   - The 422 request-limit path is tested by mapping errors directly (`TestWriteCheckFailure`), because the store limits cannot be lowered from package `api`.
+- Task 3.11 (commit `efd1df4`):
+  - The five "Table test" rows of design section 12 also run end to end.
+  - "Mixed snapshot" is a skipped subtest that names `internal/store` `TestReadCheckCandidates_OneSnapshot`.
+  - "`changes[]` must not clear" uses only the NGINX Open Source entry of CVE-2024-7347. The record's F5 / NGINX Plus entry is a nearby name for `f5:nginx` and would answer `cna_name_uncertain` whatever the Open Source entry says, hiding the rule from the break test.
+  - The SeedCorpus count in `AGENTS.md`, `CLAUDE.md`, `README.md` and `dev/testing-pitfalls.md` is now 71. Existing golden pins did not move.
 
 ### Discoveries
 
@@ -176,6 +181,8 @@ notes and commit messages.
 - **For Sam (Task 3.3, `internal/check/packages.go` `rowCheck`):** a `SEMVER` row in an ecosystem with no comparator (`Root:*`, `GitHub Actions`) is compared as SemVer, because design section 4.1 lists the SEMVER row before the no-comparator row. So such a row can answer Not affected, where an `ECOSYSTEM` row in the same ecosystem answers `unknown_version_scheme`. This follows the OSV schema's definition of `SEMVER`. Phase 4 can count how many such rows exist.
 - Task 3.3: OSV also stores `range_type = 'VERSIONS'` (rows built from a `versions` list, with `introduced` = `last_affected`, or no bounds). These rows are compared in the ecosystem's order; a row with no bounds answers `invalid_range`. Range-type matching is exact and upper-case, as merge writes it. A CannotEvaluate advisory takes the reason of its first CannotEvaluate row.
 - **For the Phase 3 security review (Task 3.10, `internal/api/check.go`):** the handler takes a check slot before it reads the body, as the plan orders, so a slow upload holds one of the 4 slots for up to the server's 15-second read timeout.
+- **For Sam (Task 3.11, display only, no effect on verdicts):** an advisory known only from OSV, which includes every distro record, answers `severity` and `cvss_v3_score` as null. `internal/merge/resolve.go` takes a CVSS vector only from a source that also gives a score, OSV gives vectors only, and the OSV adapter sets no severity. Design section 6 says those fields "stay those of the distro's own record". The fix belongs in merge or the OSV adapter, not in the endpoint.
+- Task 3.11: the real CVE-2024-7347 CNA entry is `{1.5.13, lessThan *, affected, semver}` with changes at 1.26.2 and 1.27.1, not the `{1.25.0, lessThan 1.27.1}` in the plan's Task 3.5 table and `cnaNginx7347` in `internal/check/cna_test.go`. The verdict for 1.27.0 is the same. With the whole record and no NVD rows, the F5 / NGINX Plus entry makes the advisory `cna_name_uncertain` rather than the design's `cna_indeterminate`; both are cannot evaluate.
 - `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
 
 ---

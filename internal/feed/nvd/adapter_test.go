@@ -260,6 +260,95 @@ func TestComputeNextCursor(t *testing.T) {
 	})
 }
 
+// CaughtUp says the first full walk has reached the present, which the version
+// check endpoint reads as NVD data being complete. Once set it stays set.
+func TestComputeNextCursor_CaughtUp(t *testing.T) {
+	t.Parallel()
+
+	baseTime := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	window := func(caughtUp bool) Cursor {
+		return Cursor{WindowStart: baseTime.Add(-48 * time.Hour), WindowEnd: baseTime, CaughtUp: caughtUp}
+	}
+
+	t.Run("partway through a window", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(false), 5000, baseTime.Add(time.Hour))
+		if lastPage || next.CaughtUp {
+			t.Errorf("lastPage = %v, CaughtUp = %v, want both false", lastPage, next.CaughtUp)
+		}
+	})
+
+	t.Run("next window of a first walk", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(false), 100, baseTime.Add(72*time.Hour))
+		if lastPage || next.CaughtUp {
+			t.Errorf("lastPage = %v, CaughtUp = %v, want both false", lastPage, next.CaughtUp)
+		}
+	})
+
+	t.Run("all windows processed", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(false), 100, baseTime)
+		if !lastPage || !next.CaughtUp {
+			t.Errorf("lastPage = %v, CaughtUp = %v, want both true", lastPage, next.CaughtUp)
+		}
+	})
+
+	t.Run("more pages keep CaughtUp", func(t *testing.T) {
+		t.Parallel()
+		next, _ := computeNextCursor(window(true), 5000, baseTime.Add(time.Hour))
+		if !next.CaughtUp {
+			t.Error("CaughtUp = false after the more-pages path, want true")
+		}
+	})
+
+	t.Run("next window keeps CaughtUp", func(t *testing.T) {
+		t.Parallel()
+		next, lastPage := computeNextCursor(window(true), 100, baseTime.Add(72*time.Hour))
+		if lastPage {
+			t.Fatal("lastPage = true, want the next-window path")
+		}
+		if !next.CaughtUp {
+			t.Error("CaughtUp = false after the next-window path, want true")
+		}
+	})
+}
+
+func TestCursorCaughtUpJSON(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	b, err := json.Marshal(Cursor{WindowStart: start, WindowEnd: start.Add(time.Hour), CaughtUp: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["caught_up"] != true {
+		t.Errorf("JSON = %s, want caught_up true", b)
+	}
+	cur, err := parseCursor(b)
+	if err != nil {
+		t.Fatalf("parseCursor: %v", err)
+	}
+	if !cur.CaughtUp {
+		t.Error("parseCursor lost caught_up")
+	}
+
+	b, err = json.Marshal(Cursor{WindowStart: start, WindowEnd: start.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "caught_up") {
+		t.Errorf("JSON = %s, want caught_up omitted while false", b)
+	}
+	if zeroValueCursor().CaughtUp {
+		t.Error("a cleared cursor starts caught up, want false")
+	}
+}
+
 func TestParseNVDResponse(t *testing.T) {
 	t.Parallel()
 
@@ -1426,6 +1515,61 @@ func TestFetch_WalksPastEmptyWindows(t *testing.T) {
 	}
 	if got[0] >= got[1] || got[1] >= got[2] {
 		t.Errorf("window starts do not advance: %v", got)
+	}
+}
+
+// Walking past empty windows must carry CaughtUp, or a later run would report
+// NVD data as incomplete again.
+func TestFetch_WalkPastEmptyWindowsKeepsCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	adapter, _ := newScriptedAdapter(t, func(n int) string {
+		if n <= 2 {
+			return emptyNVDResponse
+		}
+		return validNVDResponse
+	})
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+		CaughtUp:    true,
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	var next Cursor
+	if err := json.Unmarshal(result.NextCursor, &next); err != nil {
+		t.Fatalf("NextCursor: %v", err)
+	}
+	if !next.CaughtUp {
+		t.Errorf("NextCursor = %s, want caught_up true", result.NextCursor)
+	}
+}
+
+func TestFetch_FirstWalkEndsCaughtUp(t *testing.T) {
+	t.Parallel()
+
+	adapter, _ := newScriptedAdapter(t, func(int) string { return emptyNVDResponse })
+	cursorJSON, _ := json.Marshal(Cursor{
+		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	result, err := adapter.Fetch(context.Background(), cursorJSON)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !result.LastPage {
+		t.Fatal("LastPage = false, want true")
+	}
+	var next Cursor
+	if err := json.Unmarshal(result.NextCursor, &next); err != nil {
+		t.Fatalf("NextCursor: %v", err)
+	}
+	if !next.CaughtUp {
+		t.Errorf("NextCursor = %s, want caught_up true at the end of the walk", result.NextCursor)
 	}
 }
 

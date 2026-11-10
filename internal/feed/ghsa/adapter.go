@@ -12,7 +12,7 @@
 //   - The vulnerabilities array is inline per-advisory (no nested pagination).
 //
 // Cursor format: {"since": "2024-01-15T10:00:00Z"}
-// Auth: GITHUB_TOKEN environment variable (Bearer token).
+// Auth: GITHUB_GHSA_TOKEN environment variable (Bearer token).
 //
 //	Unauthenticated: 60 req/hr — unusable for backfill.
 //	Authenticated:   5,000 req/hr; adapter uses ≤1 req/sec (safe margin).
@@ -77,7 +77,7 @@ type Adapter struct {
 	token       string
 }
 
-// New creates a GHSA adapter. Reads GITHUB_TOKEN from the environment.
+// New creates a GHSA adapter. Reads GITHUB_GHSA_TOKEN from the environment.
 // Pass nil client to use http.DefaultClient.
 func New(client *http.Client) *Adapter {
 	if client == nil {
@@ -87,7 +87,7 @@ func New(client *http.Client) *Adapter {
 	return &Adapter{
 		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(1*time.Second), 1),
-		token:       os.Getenv("GITHUB_TOKEN"),
+		token:       os.Getenv("GITHUB_GHSA_TOKEN"),
 	}
 }
 

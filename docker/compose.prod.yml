@@ -156,7 +156,7 @@ services:
 
       # Feeds
       NVD_API_KEY:
-      GITHUB_TOKEN:
+      GITHUB_GHSA_TOKEN:
       CVERTOPS_FEEDS_DIR:
       FEED_SCHEDULER_ENABLED:
 

@@ -60,6 +60,16 @@ func TestNamesFor(t *testing.T) {
 			wantMapping: cnaMapping{CPEs: []string{"apache:http_server"}, Fragment: "http server", Vendor: "apache"},
 		},
 		{
+			// A CNA may read one "_" as a space and keep the other.
+			name:    "acme_corp:foo_bar: every mix of underscore spellings",
+			product: ProductRef{Part: "a", Vendor: "acme_corp", Product: "foo_bar"},
+			wantNames: []CNAName{
+				{Vendor: "acme corp", Product: "foo bar"}, {Vendor: "acme corp", Product: "foo_bar"},
+				{Vendor: "acme_corp", Product: "foo bar"}, {Vendor: "acme_corp", Product: "foo_bar"},
+			},
+			wantMapping: cnaMapping{CPEs: []string{"acme_corp:foo_bar"}, Fragment: "foo bar", Vendor: "acme corp"},
+		},
+		{
 			name:    "nginx:nginx: its own name equals a table name and is listed once",
 			product: ProductRef{Part: "a", Vendor: "nginx", Product: "nginx"},
 			wantNames: []CNAName{
@@ -184,7 +194,8 @@ func TestNamesFor(t *testing.T) {
 
 // TestNearbyNames checks the vendors and name fragments of the nearby-name
 // check: the table's for a mapped CPE, and for any other CPE its own name, with
-// "_" read as a space and, when the name holds one, with "_" kept.
+// "_" read as a space and, when the name holds one, with "_" kept, in the vendor
+// and the fragment independently.
 func TestNearbyNames(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -200,6 +211,11 @@ func TestNearbyNames(t *testing.T) {
 			want: []CNAName{{Vendor: "acme", Product: "foo bar"}, {Vendor: "acme", Product: "foo_bar"}}},
 		{name: "underscore in the vendor", product: ProductRef{Part: "a", Vendor: "acme_corp", Product: "widget"},
 			want: []CNAName{{Vendor: "acme corp", Product: "widget"}, {Vendor: "acme_corp", Product: "widget"}}},
+		{name: "underscores in both: every mix", product: ProductRef{Part: "a", Vendor: "acme_corp", Product: "foo_bar"},
+			want: []CNAName{
+				{Vendor: "acme corp", Product: "foo bar"}, {Vendor: "acme corp", Product: "foo_bar"},
+				{Vendor: "acme_corp", Product: "foo bar"}, {Vendor: "acme_corp", Product: "foo_bar"},
+			}},
 		{name: "an escaped underscore is already kept", product: ProductRef{Part: "a", Vendor: "acme", Product: `foo\_bar`},
 			want: []CNAName{{Vendor: "acme", Product: "foo_bar"}}},
 	}

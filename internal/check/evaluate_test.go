@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,6 +140,28 @@ func (r *testRows) nearFragment(vendor, fragment string, rows ...CNANearRow) *te
 		return k.FullVendor == vendor && k.Fragment == fragment
 	}))
 	r.data.CNANear[i].Rows = append(r.data.CNANear[i].Rows, rows...)
+	return r
+}
+
+// cnaStored adds row at every CNA name key and nearby-name key the store would
+// return it from, for a CVE with no cve_cpe_matches row: an exact name key whose
+// vendor and product equal the row's in lower case, a prefix key whose product
+// starts the row's, and a nearby-name key whose vendor equals the row's and whose
+// fragment the row's product contains.
+func (r *testRows) cnaStored(row CNARow) *testRows {
+	vendor, product := strings.ToLower(row.Vendor), strings.ToLower(row.Product)
+	for i, k := range r.keys.CNANames {
+		if k.FullVendor == vendor && (k.FullProduct == product || k.FullProduct == "" && strings.HasPrefix(product, k.Lo)) {
+			r.data.CNANames[i].Rows = append(r.data.CNANames[i].Rows, row)
+		}
+	}
+	for i, k := range r.keys.CNANear {
+		if k.FullVendor == vendor && strings.Contains(product, k.Fragment) {
+			near := nearAt(row.CVEID, row.Vendor, row.Product)
+			near.Status = row.Status
+			r.data.CNANear[i].Rows = append(r.data.CNANear[i].Rows, near)
+		}
+	}
 	return r
 }
 
@@ -802,6 +825,36 @@ func TestEvaluateCNAUnderscoreKept(t *testing.T) {
 			got := run(t, items, r).Results[0]
 			if got.Status != StatusCannotEvaluate || !reflect.DeepEqual(advisoryReasons(got), tt.want) {
 				t.Errorf("status = %s, advisories %v; want cannot_evaluate with %v", got.Status, advisoryReasons(got), tt.want)
+			}
+		})
+	}
+}
+
+// TestEvaluateCNAMixedUnderscores checks that a CPE whose vendor and product
+// both hold "_" finds a CNA row that reads one "_" as a space and keeps the
+// other: a CVE known only through such a row, and Affected by it, keeps the item
+// from not_affected.
+func TestEvaluateCNAMixedUnderscores(t *testing.T) {
+	t.Parallel()
+	stored := "cpe:2.3:a:acme_corp:foo_bar:*:*:*:*:*:*:*:*"
+	for _, name := range []struct{ vendor, product string }{{"Acme Corp", "foo_bar"}, {"acme_corp", "Foo Bar"}} {
+		t.Run(name.vendor+" / "+name.product, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(RawItem{CPE: "cpe:2.3:a:acme_corp:foo_bar:1.5.0:*:*:*:*:*:*:*"})
+			// cveA is analysed by NVD and clear; cveC's CNA row under the spaced
+			// name shows the product is mapped.
+			retracted := cnaAt(cveC, "Acme Corp", "Foo Bar")
+			retracted.Status = "REJECTED"
+			r := rowsFor(t, items).
+				cpes("acme_corp", "foo_bar", cpeAt(cveA, stored, "2.0.0", "3.0.0")).
+				cnaName("acme corp", "foo bar", false, retracted).
+				cnaStored(cnaAt(cveB, name.vendor, name.product,
+					CNAVersion{Version: "1.0.0", LessThan: "2.0.0", Status: "affected", VersionType: "semver"}))
+			got := run(t, items, r).Results[0]
+			want := map[string]string{cveB: "affected/null"}
+			if got.Status != StatusAffected || !reflect.DeepEqual(advisoryReasons(got), want) {
+				t.Errorf("status = %s, counts %+v, advisories %v; want affected with %v",
+					got.Status, got.Counts, advisoryReasons(got), want)
 			}
 		})
 	}

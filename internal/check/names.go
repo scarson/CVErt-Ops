@@ -123,15 +123,21 @@ func nearbyNames(p ProductRef) []CNAName {
 
 // ownNames returns the CPE's own vendor and product as plain text: each CPE
 // escape becomes the character it quotes, and an unescaped "_" is read as a
-// space. When the CPE holds an unescaped "_", the same name with "_" kept
-// follows, because some CNAs write the product as the CPE does.
+// space. When the CPE holds an unescaped "_", the names with "_" kept follow,
+// because some CNAs write the vendor or product as the CPE does. Each spelling
+// of the vendor ("_" as a space, then kept) is paired with each spelling of the
+// product in the same order, so a CNA that reads one "_" as a space and keeps
+// the other is found too. Each name is listed once.
 func ownNames(p ProductRef) []CNAName {
-	spaced := CNAName{Vendor: cnaText(p.Vendor, ' '), Product: cnaText(p.Product, ' ')}
-	kept := CNAName{Vendor: cnaText(p.Vendor, '_'), Product: cnaText(p.Product, '_')}
-	if kept == spaced {
-		return []CNAName{spaced}
+	var names []CNAName
+	for _, vendor := range []string{cnaText(p.Vendor, ' '), cnaText(p.Vendor, '_')} {
+		for _, product := range []string{cnaText(p.Product, ' '), cnaText(p.Product, '_')} {
+			if n := (CNAName{Vendor: vendor, Product: product}); !slices.Contains(names, n) {
+				names = append(names, n)
+			}
+		}
 	}
-	return []CNAName{spaced, kept}
+	return names
 }
 
 // cnaText turns a CPE vendor or product into the plain text a CNA record uses:

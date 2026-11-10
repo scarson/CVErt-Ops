@@ -120,11 +120,14 @@ notes and commit messages.
 
 - Phase 1 runs on branch `claude/check-data-72f424`, the worktree branch the executing session was given, not `feat/check-data`. See Phase 1's banner.
 - Task 1.1: `FromPurl` refuses more than the plan's code. It refuses invalid UTF-8 and U+FFFD with `invalid_purl`. It refuses major release numbers (and any of Alpine's numbers) with leading zeros, and Ubuntu releases without a two-digit month, with `distro_not_recognised`. Both refuse in the safe direction, found in the Phase 1 review. See the note under Task 1.1.
+- Task 1.2: `ParseCNAAffected` keeps an entry whose only identity is its `packageURL`, and the two golden CNA tests expect the key. See the note under Task 1.2.
 
 ### Discoveries
 
 - `packageurl-go` was already in the module graph at v0.1.5 through `osv-scalibr`. Task 1.1 made v0.1.7 a direct dependency, which raises `osv-scalibr`'s copy to v0.1.7 as well. `internal/version` tests pass.
 - `package_key` appears in `GET /cves/{id}/sources`, because that endpoint returns each source's `normalized_json`, which is the marshalled `CanonicalPatch` (`internal/api/cves.go` `getCVESourcesHandler`). `GET /cves/{id}` does not return it, as the plan requires.
+- **For Sam (display only, no effect on verdicts):** `GET /cves/{id}` (`CNAAffectedResponse` in `internal/api/cves.go`) does not show `package_key`. So a CNA entry kept only for its `packageURL` appears as `{"collection_url": ..., "versions": []}`, with nothing naming the package. Two copies that differ only in `packageURL` appear as two identical entries. CVE 5 does not allow the first shape, so it should be rare. The choice is to add `package_key` to the response, or to accept the empty-looking entry.
+- Phase 2 measurement to add: count stored keys that contain whitespace (`package_key ~ '\s'`). `ecosystem.PackageKey("pkg:npm/fastify ")` keeps the trailing space, so such a key never matches a request. A missed match can only produce `no_advisory_found`, never "not affected". The count shows whether trimming on both sides is worth adding.
 - `package_key` is computed when a record is parsed, and stored inside `cve_sources.normalized_json`, so a re-merge reuses it. A later change to `ecosystem.FromPurl` or `FoldPackageName` needs a backfill: refetch NVD and MITRE, or re-parse `cve_raw_payloads`. Otherwise old keys hide CNA-only package advisories. `cve_affected_packages` folds at query time and does not have this problem.
 - Pitfall DB-19 (`dev/implementation-pitfalls.md`, "CREATE INDEX CONCURRENTLY requires migration framework coordination") says `IF NOT EXISTS` makes a retry succeed. A failed concurrent build leaves an INVALID index of that name, and `IF NOT EXISTS` then skips it without an error. The check lookups would fall back to the slow plans design section 9 measured. A `doctor` check for `pg_index.indisvalid = false` would surface it. This affects every migration, not only 000059.
 - **Open question for Sam (affects Phase 3):** design section 3.2 refuses only the `repository_url` qualifier as naming a possibly non-public package. The purl specification also defines `download_url` and `vcs_url`. `pkg:npm/foo@1?download_url=https://evil/x.tgz` maps to public npm `foo` today. Refusing them on the stored side would drop CNA keys. On the request side it would answer `unsupported_repository`. The code follows the design for now.
@@ -483,8 +486,6 @@ func NeedsRelease(value string) bool {
 > - `debDistro` refuses a major release number with leading zeros, and `alpineDistro` refuses leading zeros in any of its numbers. A Debian point release is dropped, so its form is not checked. `debEcosystem` requires a two-digit Ubuntu month.
 >
 > Commit ac5ad2b.
->
-> The review also made `ParseCNAAffected` keep an entry whose only identity is its `packageURL`. CVE 5 does not allow that shape, but dropping it would hide the CVE from a package lookup.
 
 ### Task 1.2: Store each CNA entry's package identity, and add the lookup indexes
 
@@ -539,6 +540,8 @@ Down file, with `-- migrate:no-transaction` as its first line: `DROP INDEX CONCU
 **Step 5: Run.** The Step 2 command. Expected: PASS.
 
 **Step 6: Commit.** `git add` the listed files, then `git commit -m "feat(merge): store each CNA entry's package identity and add check lookup indexes"`.
+
+> **Deviation (executed 2026-11-10):** the Phase 1 review made `ParseCNAAffected` keep an entry whose only identity is its `packageURL` (no vendor, product, package name or versions). CVE 5 does not allow that shape, but dropping it would hide the CVE from a package lookup. The two golden tests for CVE-2026-107832 (`internal/feed/nvd/golden_test.go`, `internal/feed/mitre/golden_test.go`) also changed, beyond the listed files: they pin the parsed entry exactly, and now expect `PackageKey: "npm/fastify"`. Commits c79cd32 and 2899441.
 
 ### Task 1.3: Keep every source's CNA copy
 

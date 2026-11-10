@@ -33,7 +33,10 @@ type ProductRef struct{ Part, Vendor, Product string }
 
 // ItemError is an item's refusal: a stable code from the API's error.code
 // enumeration and a fixed sentence that never repeats the caller's input.
-type ItemError struct{ Code, Message string }
+type ItemError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
 
 // RawItem is the request body's item.
 type RawItem struct {

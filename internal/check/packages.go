@@ -17,9 +17,10 @@ const (
 // evidencePackageRange is the API's evidence value for a cve_affected_packages range.
 const evidencePackageRange = "package_range"
 
-// PackageRow is one cve_affected_packages row.
+// PackageRow is one cve_affected_packages row. Status is its CVE's cves.status.
 type PackageRow struct {
 	CVEID, Ecosystem, PackageName, RangeType, Introduced, Fixed, LastAffected string
+	Status                                                                    string
 }
 
 // EvaluatePackageRows decides one advisory's verdict for version ver of a package

@@ -49,10 +49,10 @@ const (
 )
 
 // CNARow is one cve_cna_affected row: an advisory's CNA entry for one product,
-// with its versions array decoded.
+// with its versions array decoded. Status is its CVE's cves.status.
 type CNARow struct {
-	CVEID, Vendor, Product string
-	Versions               []CNAVersion
+	CVEID, Vendor, Product, Status string
+	Versions                       []CNAVersion
 }
 
 // CNAResult is what an advisory's CNA rows say about one version: the strongest

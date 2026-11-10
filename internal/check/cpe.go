@@ -8,9 +8,10 @@ import "github.com/scarson/cvert-ops/internal/version"
 const evidenceNVDCPE = "nvd_cpe"
 
 // CPERow is one cve_cpe_matches row with vulnerable = true. CPE is the stored
-// cpe_normalized string; an absent bound is "".
+// cpe_normalized string; an absent bound is "". Status is its CVE's cves.status.
 type CPERow struct {
 	CVEID, CPE, VersionStartIncluding, VersionStartExcluding, VersionEndIncluding, VersionEndExcluding string
+	Status                                                                                             string
 }
 
 // EvaluateCPERows decides one advisory's verdict for version ver of a product,

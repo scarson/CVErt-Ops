@@ -73,7 +73,9 @@ type reading struct {
 }
 
 var (
-	lineWildcard = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)*)\.\*$`)
+	// lineWildcard is a version line such as 12.*, 2.x or 2.4.X. Maven and RPM
+	// read 2.x as a version, so x and X must be caught before the comparator is.
+	lineWildcard = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)*)\.[*xX]$`)
 	freeTextForm = regexp.MustCompile(`[<>=]`)
 )
 
@@ -213,6 +215,9 @@ func readEntry(m *workMeter, ver string, e CNAVersion) reading {
 	if !ok {
 		return unsortableReading(ver, e, order)
 	}
+	if hasInvertedSegment(segments, order) {
+		return reading{result: Indeterminate}
+	}
 
 	// A segment whose two edges can be read decides the answer outright.
 	for i, s := range segments {
@@ -267,22 +272,28 @@ func expandFreeText(e CNAVersion) (CNAVersion, bool) {
 	return e, r.Fixed == "" && r.LastAffected == ""
 }
 
-// lowerBound normalises a wildcard lower bound: 8.1.* becomes 8.1.
+// lowerBound normalises a wildcard lower bound: 8.1.* and 8.1.x become 8.1.
 func lowerBound(v string) string {
-	return strings.TrimSuffix(v, ".*")
+	if m := lineWildcard.FindStringSubmatch(v); m != nil {
+		return m[1]
+	}
+	return v
 }
 
 // buildSegments splits an entry into segments: the first from the entry's
 // version with its status, then one from each change, sorted by At under the
 // entry's order. Each segment includes its start and stops before the next start;
 // the last stops at the entry's upper bound. It returns false when the order
-// cannot read some At, or when two changes at one version have different
-// statuses, because the changes then have no reliable order.
+// cannot read some At, or an At is a line wildcard, which names no single
+// position, because the changes then have no reliable order.
 func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment, bool) {
 	changes := slices.Clone(e.Changes)
 	// Each At is checked on its own, because a sort compares nothing when there
 	// is only one change.
 	for _, c := range changes {
+		if lineWildcard.MatchString(c.At) {
+			return nil, false
+		}
 		if _, err := order(c.At, c.At); err != nil {
 			return nil, false
 		}
@@ -298,18 +309,14 @@ func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment
 	if sortErr != nil {
 		return nil, false
 	}
-	// Two changes at one version with different statuses state no order between
-	// them, and either order would decide that version differently.
-	for i := 1; i < len(changes); i++ {
-		c, err := order(changes[i-1].At, changes[i].At)
-		if err != nil || (c == 0 && changeStatus(changes[i-1]) != changeStatus(changes[i])) {
-			return nil, false
-		}
+	changes, ok := collapseChanges(changes, order)
+	if !ok {
+		return nil, false
 	}
 
 	segments := []segment{{start: newBound(lowerBound(e.Version), order), status: e.Status}}
 	for _, c := range changes {
-		segments = append(segments, segment{start: newBound(c.At, order), status: changeStatus(c)})
+		segments = append(segments, segment{start: newBound(c.At, order), status: c.Status})
 	}
 	for i := range len(segments) - 1 {
 		segments[i].end = segments[i+1].start
@@ -322,14 +329,65 @@ func buildSegments(e CNAVersion, openEnded bool, order version.Order) ([]segment
 	case e.LessThan != "" || e.LessThanOrEqual != "":
 		last.end, last.endInclusive = upperBound(e, order)
 	case len(e.Changes) == 0:
-		// A single version. The edge is the stored version, before the lower
-		// bound's wildcard is dropped: a single 8.1.* names the whole 8.1 line,
-		// so its edge is unreadable rather than 8.1.
+		// A single version. A line wildcard such as 8.1.* names the whole line, so
+		// the segment runs from 8.1 to the wildcard end 8.2.
+		if m := lineWildcard.FindStringSubmatch(e.Version); m != nil {
+			last.end = bound{value: nextLine(m[1]), readable: true, wildcard: true}
+			break
+		}
 		last.end, last.endInclusive = readableBound(e.Version, order), true
 	default:
 		last.end = bound{unlimited: true}
 	}
 	return segments, true
+}
+
+// collapseChanges merges adjacent sorted changes whose At values compare equal
+// into one change: with the shared status when they agree, and with status
+// unknown when they differ, because the record then states both. Every status
+// it returns has an empty status read as unknown.
+func collapseChanges(changes []CNAChange, order version.Order) ([]CNAChange, bool) {
+	var out []CNAChange
+	for _, c := range changes {
+		c.Status = changeStatus(c)
+		if len(out) == 0 {
+			out = append(out, c)
+			continue
+		}
+		prev := &out[len(out)-1]
+		cmp, err := order(prev.At, c.At)
+		if err != nil {
+			return nil, false
+		}
+		if cmp != 0 {
+			out = append(out, c)
+			continue
+		}
+		if prev.Status != c.Status {
+			prev.Status = "unknown"
+		}
+	}
+	return out, true
+}
+
+// hasInvertedSegment reports a segment that is not unaffected whose readable end
+// is below its readable start, or equal to it and exclusive. Such a shape has no
+// known meaning, as version.Check refuses an upper bound that does not follow
+// introduced. An unaffected segment can condemn nothing, so it is not checked. A
+// start of "0" is below every end; an open or wildcard end is not checked. A
+// comparison that fails counts as inverted.
+func hasInvertedSegment(segments []segment, order version.Order) bool {
+	for _, s := range segments {
+		if s.status == "unaffected" || !s.start.readable || s.start.value == belowEverything ||
+			!s.end.readable || s.end.open || s.end.wildcard {
+			continue
+		}
+		c, err := order(s.end.value, s.start.value)
+		if err != nil || c < 0 || (c == 0 && !s.endInclusive) {
+			return true
+		}
+	}
+	return false
 }
 
 // changeStatus returns a change's status, with an empty status read as unknown.

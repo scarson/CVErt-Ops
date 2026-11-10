@@ -73,6 +73,27 @@ var (
 		Changes: []CNAChange{{At: "2.0", Status: "affected"}, {At: "2.0", Status: "unaffected"}},
 	}
 
+	// {1.0, lt 2.x, affected, maven}: Maven reads 2.x as a version.
+	cnaMavenLt2x = CNAVersion{Version: "1.0", LessThan: "2.x", Status: "affected", VersionType: "maven"}
+
+	// {1.0, lt 3.0, affected, maven}, change to unaffected at 2.x.
+	cnaMavenChangeAt2x = CNAVersion{
+		Version: "1.0", LessThan: "3.0", Status: "affected", VersionType: "maven",
+		Changes: []CNAChange{{At: "2.x", Status: "unaffected"}},
+	}
+
+	// {2.0, lt 1.0, affected}: the upper bound is below the lower.
+	cnaInverted = CNAVersion{Version: "2.0", LessThan: "1.0", Status: "affected"}
+
+	// {1.0, lt 2.0, unaffected}, change to affected at 3.0, above the upper bound.
+	cnaAffectedChangeAboveUpper = CNAVersion{
+		Version: "1.0", LessThan: "2.0", Status: "unaffected",
+		Changes: []CNAChange{{At: "3.0", Status: "affected"}},
+	}
+
+	// {*, lte 1.4.4, affected, semver}
+	cnaStarLower = CNAVersion{Version: "*", LessThanOrEqual: "1.4.4", Status: "affected", VersionType: "semver"}
+
 	// {1.0, lte 2.*, affected, semver}
 	cnaInclusiveWildcardLine2 = CNAVersion{Version: "1.0", LessThanOrEqual: "2.*", Status: "affected", VersionType: "semver"}
 )
@@ -348,18 +369,121 @@ func TestReadCNAEntry(t *testing.T) {
 			entry: CNAVersion{Version: "8.1.*", LessThan: "8.3", Status: "affected"}, version: "8.0.9",
 			want: CNAResult{Reading: NoStatement},
 		},
-		// A single-version entry 8.1.* names the whole 8.1 line. Its upper edge is
-		// the stored value, which the comparator cannot read, so no version at or
-		// above 8.1 is cleared.
+		// A single-version entry 8.1.* names the whole 8.1 line: the segment from 8.1
+		// to the wildcard end 8.2, which design 4.3's wildcard row reads as
+		// Indeterminate inside the line and no statement past it.
 		{
-			name:  "design: single wildcard version {8.1.*, affected} / 8.1.5",
+			name:  "design: single wildcard version {8.1.*, affected} is the 8.1 line, wildcard row / 8.1.5",
 			entry: CNAVersion{Version: "8.1.*", Status: "affected"}, version: "8.1.5",
 			want: CNAResult{Reading: Indeterminate},
 		},
 		{
-			name:  "design: single wildcard version {8.1.*, affected} / 8.0.9",
+			name:  "design: single wildcard version {8.1.*, affected} is the 8.1 line, below it / 8.0.9",
 			entry: CNAVersion{Version: "8.1.*", Status: "affected"}, version: "8.0.9",
 			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: single wildcard version {8.1.*, affected} is the 8.1 line, past its end / 8.2.0",
+			entry: CNAVersion{Version: "8.1.*", Status: "affected"}, version: "8.2.0",
+			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: single wildcard version {8.1.*, affected} is the 8.1 line, past its end / 9.0",
+			entry: CNAVersion{Version: "8.1.*", Status: "affected"}, version: "9.0",
+			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: single x wildcard version {8.1.x, affected, maven} is the 8.1 line / 8.1.5",
+			entry: CNAVersion{Version: "8.1.x", Status: "affected", VersionType: "maven"}, version: "8.1.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: single x wildcard version {8.1.x, affected, maven} is the 8.1 line / 8.2.0",
+			entry: CNAVersion{Version: "8.1.x", Status: "affected", VersionType: "maven"}, version: "8.2.0",
+			want: CNAResult{Reading: NoStatement},
+		},
+		// Line wildcards ending in .x or .X, which Maven and RPM would otherwise read
+		// as versions, end the line as .* does.
+		{name: "design: x wildcard upper bound {1.0, lt 2.x, affected, maven} / 1.5", entry: cnaMavenLt2x, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: x wildcard upper bound {1.0, lt 2.x, affected, maven} / 2.1", entry: cnaMavenLt2x, version: "2.1", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: x wildcard upper bound {1.0, lt 2.x, affected, maven} / 2.5", entry: cnaMavenLt2x, version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: x wildcard upper bound {1.0, lt 2.x, affected, maven} / 3.0", entry: cnaMavenLt2x, version: "3.0", want: CNAResult{Reading: NoStatement}},
+		{
+			name:  "design: x wildcard upper bound {2.4.0, lte 2.4.x, affected, maven} / 2.4.5",
+			entry: CNAVersion{Version: "2.4.0", LessThanOrEqual: "2.4.x", Status: "affected", VersionType: "maven"}, version: "2.4.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: x wildcard upper bound {2.4.0, lte 2.4.x, affected, maven} / 2.5.0",
+			entry: CNAVersion{Version: "2.4.0", LessThanOrEqual: "2.4.x", Status: "affected", VersionType: "maven"}, version: "2.5.0",
+			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: X wildcard upper bound {1.0, lt 2.X, affected, rpm} / 2.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.X", Status: "affected", VersionType: "rpm"}, version: "2.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: X wildcard upper bound {1.0, lt 2.X, affected, rpm} / 3.0",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.X", Status: "affected", VersionType: "rpm"}, version: "3.0",
+			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: x wildcard upper bound {1.0.0, lt 2.x, affected, semver} / 2.5.0",
+			entry: CNAVersion{Version: "1.0.0", LessThan: "2.x", Status: "affected", VersionType: "semver"}, version: "2.5.0",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: x wildcard upper bound {1.0.0, lt 2.x, affected, semver} / 3.0.0",
+			entry: CNAVersion{Version: "1.0.0", LessThan: "2.x", Status: "affected", VersionType: "semver"}, version: "3.0.0",
+			want: CNAResult{Reading: NoStatement},
+		},
+		{
+			name:  "design: x wildcard lower bound {2.x, lt 4.0, affected, maven} becomes 2 / 2.5",
+			entry: CNAVersion{Version: "2.x", LessThan: "4.0", Status: "affected", VersionType: "maven"}, version: "2.5",
+			want: CNAResult{Reading: AffectedReading, Candidates: []string{"4.0"}, Matched: cnaMatched("2", "4.0", "")},
+		},
+		{
+			name:  "design: x wildcard lower bound {2.x, lt 4.0, affected, maven} becomes 2 / 1.5",
+			entry: CNAVersion{Version: "2.x", LessThan: "4.0", Status: "affected", VersionType: "maven"}, version: "1.5",
+			want: CNAResult{Reading: NoStatement},
+		},
+		// A change at a line wildcard has no single position, so the entry is unsortable.
+		{name: "design: change at an x wildcard is unsortable {1.0, lt 3.0, affected, maven} unaffected at 2.x / 1.5", entry: cnaMavenChangeAt2x, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: change at an x wildcard is unsortable {1.0, lt 3.0, affected, maven} unaffected at 2.x / 2.5", entry: cnaMavenChangeAt2x, version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: change at an x wildcard is unsortable {1.0, lt 3.0, affected, maven} unaffected at 2.x / 0.5", entry: cnaMavenChangeAt2x, version: "0.5", want: CNAResult{Reading: NoStatement}},
+		{
+			name:  "design: change at a * wildcard is unsortable {1.0, lt 3.0, affected, semver} unaffected at 2.* / 2.5.0",
+			entry: CNAVersion{Version: "1.0", LessThan: "3.0", Status: "affected", VersionType: "semver", Changes: []CNAChange{{At: "2.*", Status: "unaffected"}}}, version: "2.5.0",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		// An inverted segment that is not unaffected has no known meaning, so the
+		// entry is Indeterminate for every version.
+		{name: "design: inverted entry {2.0, lt 1.0, affected} / 0.5", entry: cnaInverted, version: "0.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: inverted entry {2.0, lt 1.0, affected} / 1.5", entry: cnaInverted, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: inverted entry {2.0, lt 1.0, affected} / 2.5", entry: cnaInverted, version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{
+			name:  "design: inverted entry {2.10, lte 2.9, affected, semver} / 2.9.5",
+			entry: CNAVersion{Version: "2.10", LessThanOrEqual: "2.9", Status: "affected", VersionType: "semver"}, version: "2.9.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: inverted entry {2.10, lte 2.9, affected, semver} / 2.10.0",
+			entry: CNAVersion{Version: "2.10", LessThanOrEqual: "2.9", Status: "affected", VersionType: "semver"}, version: "2.10.0",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: empty entry {1.2.3, lt 1.2.3, affected, semver} / 1.2.3",
+			entry: CNAVersion{Version: "1.2.3", LessThan: "1.2.3", Status: "affected", VersionType: "semver"}, version: "1.2.3",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{name: "design: affected change above the upper bound {1.0, lt 2.0, unaffected} affected at 3.0 / 3.0", entry: cnaAffectedChangeAboveUpper, version: "3.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: affected change above the upper bound {1.0, lt 2.0, unaffected} affected at 3.0 / 3.5", entry: cnaAffectedChangeAboveUpper, version: "3.5", want: CNAResult{Reading: Indeterminate}},
+		// An inverted unaffected segment is left alone: it condemns nothing.
+		{
+			name:  "design: unaffected change above the upper bound {1.0, lt 2.0, affected} unaffected at 3.0 / 1.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.0", Status: "affected", Changes: []CNAChange{{At: "3.0", Status: "unaffected"}}}, version: "1.5",
+			want: CNAResult{Reading: AffectedReading, Candidates: []string{"3.0"}, Matched: cnaMatched("1.0", "3.0", "")},
 		},
 		// "0" sorts below every version, as version.Check reads introduced "0".
 		{
@@ -379,15 +503,30 @@ func TestReadCNAEntry(t *testing.T) {
 			entry: CNAVersion{Version: "1.0", LessThan: "3.0", Status: "affected", Changes: []CNAChange{{At: "2.0", Status: "affected"}}}, version: "1.5",
 			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("1.0", "2.0", "")},
 		},
-		// Two changes at one version with different statuses have no order, so the
-		// entry reads as unsortable, in either input order: Indeterminate at or above
-		// its lower bound, no statement below it.
-		{name: "design: conflicting changes at one version, affected first / 2.0", entry: cnaConflictAt2, version: "2.0", want: CNAResult{Reading: Indeterminate}},
-		{name: "design: conflicting changes at one version, affected first / 1.5", entry: cnaConflictAt2, version: "1.5", want: CNAResult{Reading: Indeterminate}},
-		{name: "design: conflicting changes at one version, affected first / 0.5", entry: cnaConflictAt2, version: "0.5", want: CNAResult{Reading: NoStatement}},
-		{name: "design: conflicting changes at one version, unaffected first / 2.0", entry: reversed(cnaConflictAt2), version: "2.0", want: CNAResult{Reading: Indeterminate}},
-		{name: "design: conflicting changes at one version, unaffected first / 1.5", entry: reversed(cnaConflictAt2), version: "1.5", want: CNAResult{Reading: Indeterminate}},
-		{name: "design: conflicting changes at one version, unaffected first / 0.5", entry: reversed(cnaConflictAt2), version: "0.5", want: CNAResult{Reading: NoStatement}},
+		// Two changes at one version with different statuses collapse to one change
+		// with status unknown, in either input order. The segment before it is still
+		// read; it names no fix, because the next segment is not unaffected.
+		{
+			name: "design: conflicting changes at one version collapse to unknown, affected first / 1.5", entry: cnaConflictAt2, version: "1.5",
+			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("1.0", "2.0", "")},
+		},
+		{name: "design: conflicting changes at one version collapse to unknown, affected first / 2.0", entry: cnaConflictAt2, version: "2.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version collapse to unknown, affected first / 2.5", entry: cnaConflictAt2, version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version collapse to unknown, affected first / 0.5", entry: cnaConflictAt2, version: "0.5", want: CNAResult{Reading: NoStatement}},
+		{
+			name: "design: conflicting changes at one version collapse to unknown, unaffected first / 1.5", entry: reversed(cnaConflictAt2), version: "1.5",
+			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("1.0", "2.0", "")},
+		},
+		{name: "design: conflicting changes at one version collapse to unknown, unaffected first / 2.0", entry: reversed(cnaConflictAt2), version: "2.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version collapse to unknown, unaffected first / 2.5", entry: reversed(cnaConflictAt2), version: "2.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: conflicting changes at one version collapse to unknown, unaffected first / 0.5", entry: reversed(cnaConflictAt2), version: "0.5", want: CNAResult{Reading: NoStatement}},
+		// Repeated affected changes collapse before inverted segments are looked
+		// for, so they leave no empty affected segment.
+		{
+			name:  "design: repeated affected change at one version collapses, no empty segment / 2.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "3.0", Status: "affected", Changes: []CNAChange{{At: "2.0", Status: "affected"}, {At: "2.0", Status: "affected"}}}, version: "2.5",
+			want: CNAResult{Reading: AffectedReading, Candidates: []string{"3.0"}, Matched: cnaMatched("2.0", "3.0", "")},
+		},
 		// Two changes at one version with the same status still read as segments.
 		{
 			name:  "design: repeated change with the same status at one version / 1.5",
@@ -427,6 +566,57 @@ func TestReadCNAEntry(t *testing.T) {
 			entry: CNAVersion{Version: ">= 1.0 || < 0.5", Status: "affected"}, version: "1.5",
 			want: CNAResult{Reading: Indeterminate},
 		},
+		// isBelow treats "0" as below every version, so a wildcard-ended segment from
+		// "0" still holds a version SemVer sorts below 0.
+		{
+			name:  "design: isBelow reads 0 as below every version {0, lt 2.*, affected, semver} / 0.0.0-alpha",
+			entry: CNAVersion{Version: "0", LessThan: "2.*", Status: "affected", VersionType: "semver"}, version: "0.0.0-alpha",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		// Free-text forms the range grammar reads.
+		{
+			name:  "design: free text < 2.0 / 1.5",
+			entry: CNAVersion{Version: "< 2.0", Status: "affected"}, version: "1.5",
+			want: CNAResult{Reading: AffectedReading, Candidates: []string{"2.0"}, Matched: cnaMatched("0", "2.0", "")},
+		},
+		{name: "design: free text < 2.0 / 2.0", entry: CNAVersion{Version: "< 2.0", Status: "affected"}, version: "2.0", want: CNAResult{Reading: NoStatement}},
+		{
+			name:  "design: free text > 1.0 is read inclusively / 1.0",
+			entry: CNAVersion{Version: "> 1.0", Status: "affected"}, version: "1.0",
+			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("1.0", "", "")},
+		},
+		{
+			name:  "design: free text <= 2 / 2",
+			entry: CNAVersion{Version: "<= 2", Status: "affected"}, version: "2",
+			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("0", "", "2")},
+		},
+		{name: "design: free text <= 2 / 2.1", entry: CNAVersion{Version: "<= 2", Status: "affected"}, version: "2.1", want: CNAResult{Reading: NoStatement}},
+		{
+			name:  "design: free text = 1.0 is 1.0 only / 1.0",
+			entry: CNAVersion{Version: "= 1.0", Status: "affected"}, version: "1.0",
+			want: CNAResult{Reading: AffectedReading, Matched: cnaMatched("1.0", "", "1.0")},
+		},
+		{name: "design: free text = 1.0 is 1.0 only / 1.1", entry: CNAVersion{Version: "= 1.0", Status: "affected"}, version: "1.1", want: CNAResult{Reading: NoStatement}},
+		{name: "design: free text = 1.0 is 1.0 only / 0.9", entry: CNAVersion{Version: "= 1.0", Status: "affected"}, version: "0.9", want: CNAResult{Reading: NoStatement}},
+		// An upper bound of * with no changes is unlimited and never read outright.
+		{name: "design: {1.0, lt *, affected} with no changes / 1.5", entry: CNAVersion{Version: "1.0", LessThan: "*", Status: "affected"}, version: "1.5", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: {1.0, lt *, affected} with no changes / 0.5", entry: CNAVersion{Version: "1.0", LessThan: "*", Status: "affected"}, version: "0.5", want: CNAResult{Reading: NoStatement}},
+		// Status and versionType values are matched as the CVE schema spells them.
+		{
+			name:  "design: mis-cased status Affected is not affected or unaffected / 1.5",
+			entry: CNAVersion{Version: "1.0", LessThan: "2.0", Status: "Affected"}, version: "1.5",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		{
+			name:  "design: mis-cased versionType SemVer has no comparator / 1.5.0",
+			entry: CNAVersion{Version: "1.0.0", LessThan: "2.0.0", Status: "affected", VersionType: "SemVer"}, version: "1.5.0",
+			want: CNAResult{Reading: Indeterminate},
+		},
+		// A * lower bound with an upper bound is today an unreadable start, not 0;
+		// whether it should read as 0 is open with Sam.
+		{name: "design: * lower bound is unreadable, not 0 (open with Sam) {*, lte 1.4.4, affected, semver} / 1.0.0", entry: cnaStarLower, version: "1.0.0", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: * lower bound is unreadable, not 0 (open with Sam) {*, lte 1.4.4, affected, semver} / 1.4.4", entry: cnaStarLower, version: "1.4.4", want: CNAResult{Reading: Indeterminate}},
+		{name: "design: * lower bound is unreadable, not 0 (open with Sam) {*, lte 1.4.4, affected, semver} / 1.4.5", entry: cnaStarLower, version: "1.4.5", want: CNAResult{Reading: NoStatement}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

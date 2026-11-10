@@ -1,3 +1,5 @@
+// ABOUTME: Unit tests for the merge resolver's per-field precedence across source rows.
+// ABOUTME: Covers status, CVSS, packages, CPE match ranges, CNA affected entries and unknown sources.
 package merge
 
 import (

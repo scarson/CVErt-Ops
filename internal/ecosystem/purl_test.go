@@ -45,6 +45,7 @@ func TestFromPurl(t *testing.T) {
 		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-24.04", "Ubuntu:24.04:LTS", "curl", "8.0"},
 		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-14.04", "Ubuntu:14.04:LTS", "curl", "8.0"},
 		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-15.04", "Ubuntu:15.04", "curl", "8.0"},
+		{"pkg:deb/ubuntu/curl@8.0?distro=ubuntu-24.10", "Ubuntu:24.10", "curl", "8.0"},
 		{"pkg:deb/debian/curl@8.0?distro=debian-10", "Debian:10", "curl", "8.0"},
 		{"pkg:apk/alpine/musl@1.2.4-r0?distro=alpine-3.20.3", "Alpine:v3.20", "musl", "1.2.4-r0"},
 		{"pkg:apk/alpine/musl@1.2.4-r0?distro=3.9", "Alpine:v3.9", "musl", "1.2.4-r0"},
@@ -53,6 +54,9 @@ func TestFromPurl(t *testing.T) {
 		// Epoch qualifier.
 		{"pkg:deb/debian/foo@1.0?distro=debian-13&epoch=2", "Debian:13", "foo", "2:1.0"},
 		{"pkg:deb/debian/foo@2:1.0?distro=debian-13&epoch=2", "Debian:13", "foo", "2:1.0"},
+		{"pkg:deb/debian/foo@02:1.0?distro=debian-13&epoch=2", "Debian:13", "foo", "02:1.0"},
+		// No version stays no version, so a request item can still say version_required.
+		{"pkg:deb/debian/foo?distro=debian-13&epoch=2", "Debian:13", "foo", ""},
 		// Qualifiers other than distro, epoch and repository_url are ignored.
 		{"pkg:deb/debian/foo@1.0?distro=debian-13&arch=amd64", "Debian:13", "foo", "1.0"},
 		// No version: stored CNA package URLs have none.
@@ -82,6 +86,8 @@ func TestFromPurlRefusals(t *testing.T) {
 		{"pkg:deb/kali/foo@1?distro=kali-2024", "unsupported_purl_namespace"},
 		{"pkg:apk/wolfi/foo@1?distro=3.20", "unsupported_purl_namespace"},
 		{"pkg:npm/foo@1?repository_url=https://r.example", "unsupported_repository"},
+		{"pkg:deb/debian/curl@8.0?distro=debian-13&repository_url=https://apt.example", "unsupported_repository"},
+		{"pkg:apk/alpine/musl@1?distro=3.20&repository_url=https://apk.example", "unsupported_repository"},
 		{"pkg:npm/foo@1#sub", "invalid_purl"},
 		{"pkg:rpm/redhat/foo@1", "unsupported_purl_type"},
 		{"pkg:generic/foo@1", "unsupported_purl_type"},
@@ -106,6 +112,8 @@ func TestFromPurlRefusals(t *testing.T) {
 		{"pkg:npm/foo@1%C0%80", "invalid_purl"},
 		{"pkg:deb/debian/foo%FF@1?distro=debian-13", "invalid_purl"},
 		{"pkg:npm/foo%EF%BF%BD@1", "invalid_purl"},
+		{"pkg:apk/alpine/mu%00sl@1.2.4-r0?distro=3.20", "invalid_purl"},
+		{"pkg:apk/alpine/musl@1.2.4-r0%FF?distro=3.20", "invalid_purl"},
 		// packageurl-go lower-cases qualifier keys and refuses a repeated key.
 		{"pkg:npm/foo@1?Repository_URL=https://r.example", "unsupported_repository"},
 		{"pkg:deb/debian/x@1?distro=debian-13&DISTRO=noble", "invalid_purl"},

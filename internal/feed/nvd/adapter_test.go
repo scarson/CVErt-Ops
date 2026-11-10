@@ -1529,15 +1529,23 @@ func TestFetch_WalkPastEmptyWindowsKeepsCaughtUp(t *testing.T) {
 		}
 		return validNVDResponse
 	})
-	cursorJSON, _ := json.Marshal(Cursor{
+	cursorJSON, err := json.Marshal(Cursor{
 		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
 		CaughtUp:    true,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := adapter.Fetch(context.Background(), cursorJSON)
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
+	}
+	// The final page sets CaughtUp whatever the input says, so the carry is only
+	// tested while the result comes from a page before it.
+	if result.LastPage {
+		t.Fatal("LastPage = true, want a page before the end of the walk")
 	}
 	var next Cursor
 	if err := json.Unmarshal(result.NextCursor, &next); err != nil {
@@ -1552,10 +1560,13 @@ func TestFetch_FirstWalkEndsCaughtUp(t *testing.T) {
 	t.Parallel()
 
 	adapter, _ := newScriptedAdapter(t, func(int) string { return emptyNVDResponse })
-	cursorJSON, _ := json.Marshal(Cursor{
+	cursorJSON, err := json.Marshal(Cursor{
 		WindowStart: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		WindowEnd:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := adapter.Fetch(context.Background(), cursorJSON)
 	if err != nil {

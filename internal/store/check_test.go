@@ -281,6 +281,39 @@ func TestReadCheckCandidates_CNANearEverySpelling(t *testing.T) {
 	}
 }
 
+// TestReadCheckCandidates_CNANearOwnRanges checks that a nearby-name key is
+// lifted only by an NVD row in its own vendor ranges: another key's vendor
+// range in the same request lifts nothing.
+func TestReadCheckCandidates_CNANearOwnRanges(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	// Analysed by NVD only under the other key's vendor: near the nodejs key.
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90047",
+		CNAAffected: []feed.CNAAffected{{Vendor: "NodeJS", Product: "Node.js runtime"}},
+		CPEMatches:  []feed.CPEMatch{cpeMatch("a:acme:gizmo", "")},
+	})
+	// Analysed by NVD only under the other key's vendor: near the acme key.
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90048",
+		CNAAffected: []feed.CNAAffected{{Vendor: "Acme", Product: "Gizmo Pro"}},
+		CPEMatches:  []feed.CPEMatch{cpeMatch("a:nodejs:npm", "")},
+	})
+
+	keys := check.Keys{CNANear: []check.CNANearKey{
+		productKeys("a", "nodejs", "node.js").CNANear[0],
+		productKeys("a", "acme", "gizmo").CNANear[0],
+	}}
+	cands, _, _ := readCheck(t, tdb, checkOrg(t, tdb), keys, store.DefaultCheckLimits, nil)
+
+	wantNode := []check.CNANearRow{{CVEID: "CVE-2026-90047", Vendor: "NodeJS", Product: "Node.js runtime"}}
+	if got := cands.CNANear[0].Rows; !reflect.DeepEqual(got, wantNode) {
+		t.Errorf("near nodejs/node rows = %+v, want %+v (an acme range lifts nothing)", got, wantNode)
+	}
+	wantAcme := []check.CNANearRow{{CVEID: "CVE-2026-90048", Vendor: "Acme", Product: "Gizmo Pro"}}
+	if got := cands.CNANear[1].Rows; !reflect.DeepEqual(got, wantAcme) {
+		t.Errorf("near acme/gizmo rows = %+v, want %+v (a nodejs range lifts nothing)", got, wantAcme)
+	}
+}
+
 func TestReadCheckCandidates_StatusEnrichmentAndFeeds(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)

@@ -208,7 +208,8 @@ func parseCPE(item Item, raw, version string) Item {
 	if len(parts) != cpeComponents {
 		return refuse(item, "invalid_cpe")
 	}
-	part, vendor, product := parts[2], parts[3], parts[4]
+	// Values are checked after dropping escapes, so "\-" cannot become the NA value "-".
+	part, vendor, product := parts[2], dropRedundantEscapes(parts[3]), dropRedundantEscapes(parts[4])
 	if part != "a" && part != "o" && part != "h" || !literalCPEValue(vendor) || !literalCPEValue(product) {
 		return refuse(item, "invalid_cpe")
 	}
@@ -227,7 +228,7 @@ func parseCPE(item Item, raw, version string) Item {
 	case stated == "":
 		stated = own
 	}
-	item.Product = &ProductRef{Part: part, Vendor: dropRedundantEscapes(vendor), Product: dropRedundantEscapes(product)}
+	item.Product = &ProductRef{Part: part, Vendor: vendor, Product: product}
 	item.Version = stated
 	return item
 }

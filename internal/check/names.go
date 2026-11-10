@@ -39,7 +39,8 @@ type cnaMapping struct {
 
 // cnaTable is design section 4.5's table: further CNA names for CPE products
 // whose CNA records spell the vendor or product differently. CPEs are lower
-// case with escapes as written, and every name is lower case. A row with two
+// case and spelled as ProductRef holds them, with no backslash before ".", "-"
+// or "_", and every name is lower case. A row with two
 // CPE spellings treats them as one product, so an item under either reads NVD
 // rows under both: older nginx CVEs are under nginx:nginx only.
 var cnaTable = []cnaMapping{
@@ -89,26 +90,26 @@ func indexCNATable(table []cnaMapping) map[string]cnaMapping {
 }
 
 // NamesFor returns every CNA name to look up: always the CPE's own, plus the
-// table's. mapped is true when a table row exists.
+// table's. cpes are the CPE "vendor:product" spellings whose NVD rows are the
+// product's: the table row's, or with no table row the CPE's own. mapped is
+// true when a table row exists.
 //
-// The CPE's own name is its vendor and product as plain text (ownNames). The
-// mapping gives the CPE spellings whose NVD rows are the product's, and the
-// vendor and name fragment for the nearby-name check: the table's, or with no
-// table row the CPE's own. Every name is listed once.
-func NamesFor(p ProductRef) (names []CNAName, mapping cnaMapping, mapped bool) {
+// The CPE's own name is its vendor and product as plain text (ownNames). Every
+// name is listed once. The nearby-name check's vendors and fragments come from
+// nearbyNames.
+func NamesFor(p ProductRef) (names []CNAName, cpes []string, mapped bool) {
 	ownCPE := p.Vendor + ":" + p.Product
 	names = ownNames(p)
 	row, mapped := cnaNames[ownCPE]
 	if !mapped {
-		return names, cnaMapping{CPEs: []string{ownCPE}, Fragment: names[0].Product, Vendor: names[0].Vendor}, false
+		return names, []string{ownCPE}, false
 	}
 	for _, n := range row.Names {
 		if !slices.Contains(names, n) {
 			names = append(names, n)
 		}
 	}
-	row.CPEs, row.Names = slices.Clone(row.CPEs), slices.Clone(row.Names)
-	return names, row, true
+	return names, slices.Clone(row.CPEs), true
 }
 
 // nearbyNames returns the vendors and name fragments of the nearby-name check

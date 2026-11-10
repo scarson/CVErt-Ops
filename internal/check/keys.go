@@ -28,8 +28,10 @@ type Keys struct {
 type PackageKey struct{ Ecosystem, Name string }
 
 // CPEKey is the range [Lo, Hi) on cpe_normalized holding every CPE of one
-// part:vendor:product, as written with its escapes: Lo ends in ":" and Hi is Lo
-// with that ":" replaced by ";", the next byte.
+// part:vendor:product, or of one part:vendor in CNANearKey.VendorRanges, with
+// escapes as ProductRef holds them: as written, except that parseCPE drops the
+// backslash before ".", "-" and "_", which NVD writes bare. Lo ends in ":" and
+// Hi is Lo with that ":" replaced by ";", the next byte.
 type CPEKey struct{ Lo, Hi string }
 
 // CNANameKey finds CNA rows for one CNAName. Names are lower-cased and cut to
@@ -109,10 +111,10 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			}
 		case item.Product != nil:
 			p := *item.Product
-			names, mapping, _ := NamesFor(p)
-			// Every spelling the mapping lists is this product, with the item's part.
+			names, cpes, _ := NamesFor(p)
+			// Every spelling NamesFor lists is this product, with the item's part.
 			var vendorRanges []CPEKey
-			for _, cpe := range mapping.CPEs {
+			for _, cpe := range cpes {
 				lo := "cpe:2.3:" + p.Part + ":" + cpe + ":"
 				use.cpes = append(use.cpes, add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}))
 				vendorLo := "cpe:2.3:" + p.Part + ":" + splitCPE(cpe)[0] + ":"

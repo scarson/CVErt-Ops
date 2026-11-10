@@ -167,6 +167,9 @@ func TestParseItemRefuses(t *testing.T) {
 		{"cpe product asterisk", RawItem{CPE: "cpe:2.3:a:nodejs:*:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
 		{"cpe product dash", RawItem{CPE: "cpe:2.3:a:nodejs:-:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
 		{"cpe product empty", RawItem{CPE: "cpe:2.3:a:nodejs::*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
+		// The escape before "-" is dropped, which would leave the NA value.
+		{"cpe vendor escaped dash", RawItem{CPE: `cpe:2.3:a:\-:node.js:*:*:*:*:*:*:*:*`, Version: "1.0"}, "invalid_cpe"},
+		{"cpe product escaped dash", RawItem{CPE: `cpe:2.3:a:acme:\-:1.0:*:*:*:*:*:*:*`}, "invalid_cpe"},
 		{"cpe non-ASCII vendor", RawItem{CPE: "cpe:2.3:a:ärzte:app:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
 		{"cpe space in vendor", RawItem{CPE: "cpe:2.3:a:node js:app:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
 		{"cpe version asterisk and no version field", RawItem{CPE: cpe}, "version_required"},

@@ -127,7 +127,7 @@ func (s *Store) withOrgRawTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.
 // JIT compilation is off inside it. Its statements are the version check
 // lookups, whose estimated cost passes PostgreSQL's JIT thresholds once a
 // request has a few keys, and compiling them costs more than it saves: 30 to
-// 50 ms for a statement of one key, and over a second with five (design
+// 70 ms for a statement of one key, and over a second with five (design
 // section 9 of dev/plans/2026-11-08-version-check-endpoint-design.md).
 func (s *Store) withOrgSnapshotTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
 	opts := &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}

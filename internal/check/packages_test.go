@@ -160,14 +160,38 @@ func TestEvaluatePackageRows(t *testing.T) {
 			wantRanges: []version.Range{{}},
 		},
 
-		// Design 4.1, row "SEMVER type in an ecosystem whose native order is not SemVer".
+		// Design 4.1, row "SEMVER type in an ecosystem whose native order is not SemVer",
+		// with PLAN.md 9.2's rule that versions compare by the ecosystem's native order:
+		// where the ecosystem has a comparator the row is read in both orders, Affected
+		// if either contains the version and NotAffected only if both exclude it.
 		// 2.0.0-1 is a SemVer prerelease below 2.0.0, and a Debian revision above it.
 		{
-			name: "SEMVER range in Debian is read as SemVer", ecosystem: "Debian:13", version: "2.0.0-1",
+			name: "SEMVER range in Debian is affected when SemVer order contains the version", ecosystem: "Debian:13", version: "2.0.0-1",
 			rows: []PackageRow{pkgRow("SEMVER", "0", "2.0.0", "")},
 			want: Outcome{Verdict: Affected, Comparable: true,
 				Matched: []Matched{matchedRow("0", "2.0.0", "")}, Candidates: []string{"2.0.0"}},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "2.0.0"}},
+		},
+		{
+			name: "SEMVER range in Debian is affected when dpkg order contains the version", ecosystem: "Debian:13", version: "2.0.0-1",
+			rows: []PackageRow{pkgRow("SEMVER", "2.0.0", "3.0.0", "")},
+			want: Outcome{Verdict: Affected, Comparable: true,
+				Matched: []Matched{matchedRow("2.0.0", "3.0.0", "")}, Candidates: []string{"3.0.0"}},
+			wantRanges: []version.Range{{Introduced: "2.0.0", Fixed: "3.0.0"}},
+		},
+		// 1.0-sp is a Maven service pack after 1.0, and a SemVer prerelease before it.
+		{
+			name: "SEMVER range in Maven is affected when Maven order contains the version", ecosystem: "Maven", version: "1.0-sp",
+			rows: []PackageRow{pkgRow("SEMVER", "1.0", "2.0", "")},
+			want: Outcome{Verdict: Affected, Comparable: true,
+				Matched: []Matched{matchedRow("1.0", "2.0", "")}, Candidates: []string{"2.0"}},
+			wantRanges: []version.Range{{Introduced: "1.0", Fixed: "2.0"}},
+		},
+		{
+			name: "SEMVER range in Debian is not affected when both orders exclude the version", ecosystem: "Debian:13", version: "1.0.0",
+			rows:       []PackageRow{pkgRow("SEMVER", "2.0.0", "3.0.0", "")},
+			want:       Outcome{Verdict: NotAffected, Comparable: true},
+			wantRanges: []version.Range{{Introduced: "2.0.0", Fixed: "3.0.0"}},
 		},
 		{
 			name: "ECOSYSTEM range in Debian with the same bounds is read in dpkg order", ecosystem: "Debian:13", version: "2.0.0-1",
@@ -175,11 +199,40 @@ func TestEvaluatePackageRows(t *testing.T) {
 			want:       Outcome{Verdict: NotAffected, Comparable: true},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "2.0.0"}},
 		},
+		// 1:2.0.0 has a Debian epoch, which SemVer cannot read; dpkg sorts it above 3.0.0.
 		{
-			name: "SEMVER range in Debian with a version SemVer cannot read is invalid_version", ecosystem: "Debian:13", version: "1:2.0.0",
+			name: "SEMVER range in Debian that dpkg excludes and SemVer cannot read is invalid_version", ecosystem: "Debian:13", version: "1:2.0.0",
 			rows:       []PackageRow{pkgRow("SEMVER", "0", "3.0.0", "")},
 			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "3.0.0"}},
+		},
+		// 2.5.0_rc1 is an Alpine version SemVer cannot read, and 2.0.0-1 a SemVer
+		// version Alpine cannot read.
+		{
+			name: "SEMVER range in Alpine that SemVer excludes and Alpine cannot read is invalid_version", ecosystem: "Alpine:v3.20", version: "2.0.0-1",
+			rows:       []PackageRow{pkgRow("SEMVER", "2.0.0", "3.0.0", "")},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion},
+			wantRanges: []version.Range{{Introduced: "2.0.0", Fixed: "3.0.0"}},
+		},
+		{
+			name: "SEMVER range in Alpine that SemVer contains and Alpine cannot read is affected", ecosystem: "Alpine:v3.20", version: "2.5.0-beta",
+			rows: []PackageRow{pkgRow("SEMVER", "2.0.0", "3.0.0", "")},
+			want: Outcome{Verdict: Affected, Comparable: true,
+				Matched: []Matched{matchedRow("2.0.0", "3.0.0", "")}, Candidates: []string{"3.0.0"}},
+			wantRanges: []version.Range{{Introduced: "2.0.0", Fixed: "3.0.0"}},
+		},
+		{
+			name: "SEMVER range in Alpine that Alpine contains and SemVer cannot read is affected", ecosystem: "Alpine:v3.20", version: "2.5.0_rc1",
+			rows: []PackageRow{pkgRow("SEMVER", "2.0.0", "3.0.0", "")},
+			want: Outcome{Verdict: Affected, Comparable: true,
+				Matched: []Matched{matchedRow("2.0.0", "3.0.0", "")}, Candidates: []string{"3.0.0"}},
+			wantRanges: []version.Range{{Introduced: "2.0.0", Fixed: "3.0.0"}},
+		},
+		{
+			name: "SEMVER range neither order can evaluate takes the native order's reason", ecosystem: "Alpine:v3.20", version: "2.5.0_rc1",
+			rows:       []PackageRow{pkgRow("SEMVER", "2.0.0-1", "3.0.0", "")},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidRange},
+			wantRanges: []version.Range{{Introduced: "2.0.0-1", Fixed: "3.0.0"}},
 		},
 		{
 			name: "SEMVER range in a SemVer ecosystem", ecosystem: "npm", version: "1.0.0",
@@ -326,18 +379,24 @@ func TestEvaluatePackageRows(t *testing.T) {
 
 // TestEvaluatePackageRowsBoundOrder checks that each Bound carries the order its
 // row was compared with, because fix reporting re-checks candidates through it.
+// A SEMVER row in Debian reads both orders, so it contains 2.0.0-1 under SemVer
+// and 2.0.0-1 against [2.0.0, 3.0.0) under dpkg.
 func TestEvaluatePackageRowsBoundOrder(t *testing.T) {
 	t.Parallel()
 	got := evaluate(t, "Debian:13", "1.0.0", []PackageRow{
 		pkgRow("SEMVER", "0", "2.0.0", ""),
 		pkgRow("ECOSYSTEM", "0", "2.0.0", ""),
+		pkgRow("SEMVER", "2.0.0", "3.0.0", ""),
 	})
-	if len(got.Ranges) != 2 {
-		t.Fatalf("len(Ranges) = %d, want 2", len(got.Ranges))
+	if len(got.Ranges) != 3 {
+		t.Fatalf("len(Ranges) = %d, want 3", len(got.Ranges))
 	}
-	semverBound, dpkgBound := got.Ranges[0], got.Ranges[1]
+	semverBound, dpkgBound, upperSemverBound := got.Ranges[0], got.Ranges[1], got.Ranges[2]
 	if s, err := semverBound.Check("2.0.0-1", semverBound.Range); s != version.Affected || err != nil {
 		t.Errorf("SEMVER bound Check(2.0.0-1) = %v, %v; want affected under SemVer order", s, err)
+	}
+	if s, err := upperSemverBound.Check("2.0.0-1", upperSemverBound.Range); s != version.Affected || err != nil {
+		t.Errorf("SEMVER [2.0.0, 3.0.0) bound Check(2.0.0-1) = %v, %v; want affected under dpkg order", s, err)
 	}
 	if s, err := dpkgBound.Check("2.0.0-1", dpkgBound.Range); s != version.NotAffected || err != nil {
 		t.Errorf("ECOSYSTEM bound Check(2.0.0-1) = %v, %v; want not affected under dpkg order", s, err)

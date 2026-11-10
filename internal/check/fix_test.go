@@ -116,6 +116,24 @@ func TestPickFixFromPackageRows(t *testing.T) {
 	}
 }
 
+// TestPickFixSemverRowsInDebian checks that a SEMVER row in Debian rejects a
+// candidate either order still reports. 2.0.0 is outside [1.9.9, 2.0.0-1) under
+// SemVer, where 2.0.0-1 is a prerelease below 2.0.0, and inside it under dpkg.
+func TestPickFixSemverRowsInDebian(t *testing.T) {
+	t.Parallel()
+	out := evaluate(t, "Debian:13", "1.0.0", []PackageRow{
+		pkgRow("SEMVER", "0", "2.0.0", ""),
+		pkgRow("SEMVER", "1.9.9", "2.0.0-1", ""),
+	})
+	if out.Verdict != Affected || !reflect.DeepEqual(out.Candidates, []string{"2.0.0"}) {
+		t.Fatalf("verdict %v, candidates %v; want Affected with candidate 2.0.0", out.Verdict, out.Candidates)
+	}
+	got := pickFix(t, "1.0.0", out.Candidates, version.EcosystemOrder("Debian:13"), out.Ranges, nil)
+	if got != (fixResult{}) {
+		t.Errorf("PickFix = %+v, want no fix", got)
+	}
+}
+
 // TestPickFixFromCPERows reads candidates and ranges from EvaluateCPERows, as
 // the endpoint does for a CPE item, with the order CheckNumeric uses.
 func TestPickFixFromCPERows(t *testing.T) {

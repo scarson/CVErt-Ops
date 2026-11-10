@@ -65,13 +65,42 @@ func comparedRows(rows []PackageRow) []PackageRow {
 }
 
 // rowCheck returns the check for a row. A SEMVER range in an ecosystem whose
-// native order is not SemVer is read as SemVer, as the OSV schema defines it.
-// Every other range is read in the ecosystem's native order.
+// native order is not SemVer is read as SemVer, as the OSV schema defines it,
+// and also in the ecosystem's native order when it has one, because PLAN.md
+// section 9.2 compares versions by the ecosystem's own rules and the two orders
+// can disagree (2.0.0-1 is a SemVer prerelease below 2.0.0 and a Debian
+// revision above it). Every other range is read in the ecosystem's native order.
 func rowCheck(eco, rangeType string) func(string, version.Range) (version.Status, error) {
-	if rangeType == rangeTypeSemver && !ecosystem.OrdersBySemver(eco) {
+	native := func(v string, r version.Range) (version.Status, error) {
+		return version.Check(eco, v, r)
+	}
+	if rangeType != rangeTypeSemver || ecosystem.OrdersBySemver(eco) {
+		return native
+	}
+	if !version.Supported(eco) {
 		return version.CheckSemver
 	}
 	return func(v string, r version.Range) (version.Status, error) {
-		return version.Check(eco, v, r)
+		return checkBothOrders(v, r, native)
+	}
+}
+
+// checkBothOrders reads v against r as SemVer and in the native order. It is
+// Affected if either order contains v, NotAffected only if both exclude it, and
+// CannotEvaluate otherwise, with the error of an order that could not evaluate:
+// the native order's when both could not.
+func checkBothOrders(v string, r version.Range,
+	native func(string, version.Range) (version.Status, error)) (version.Status, error) {
+	semverStatus, semverErr := version.CheckSemver(v, r)
+	nativeStatus, nativeErr := native(v, r)
+	switch {
+	case semverStatus == version.Affected || nativeStatus == version.Affected:
+		return version.Affected, nil
+	case semverStatus == version.NotAffected && nativeStatus == version.NotAffected:
+		return version.NotAffected, nil
+	case nativeErr != nil:
+		return version.CannotEvaluate, nativeErr
+	default:
+		return version.CannotEvaluate, semverErr
 	}
 }

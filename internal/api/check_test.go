@@ -210,19 +210,30 @@ func (b *blockingBody) Read(p []byte) (int, error) {
 }
 
 // blockingWriter signals writing on its first Write and waits for release before
-// accepting it, so a test can look at the server while the response is sent.
+// accepting it, so a test can look at the server while the response is sent. It
+// records each write deadline set through http.ResponseController, and whether
+// a Write came before any deadline was set.
 type blockingWriter struct {
-	header  http.Header
-	code    int
-	body    bytes.Buffer
-	once    sync.Once
-	writing chan struct{}
-	release chan struct{}
+	header          http.Header
+	code            int
+	body            bytes.Buffer
+	once            sync.Once
+	writing         chan struct{}
+	release         chan struct{}
+	deadlines       []time.Time
+	wroteNoDeadline bool // a Write came before any deadline was set
 }
 
 func (w *blockingWriter) Header() http.Header  { return w.header }
 func (w *blockingWriter) WriteHeader(code int) { w.code = code }
+func (w *blockingWriter) SetWriteDeadline(deadline time.Time) error {
+	w.deadlines = append(w.deadlines, deadline)
+	return nil
+}
 func (w *blockingWriter) Write(p []byte) (int, error) {
+	if len(w.deadlines) == 0 {
+		w.wroteNoDeadline = true
+	}
 	w.once.Do(func() {
 		close(w.writing)
 		<-w.release
@@ -243,6 +254,7 @@ func TestCheckAPI_SlotHeldOnlyWhileChecking(t *testing.T) {
 	w := &blockingWriter{header: http.Header{}, writing: make(chan struct{}), release: make(chan struct{})}
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/orgs/"+f.orgID.String()+"/check", body)
 
+	start := time.Now()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -269,9 +281,18 @@ func TestCheckAPI_SlotHeldOnlyWhileChecking(t *testing.T) {
 	}
 	close(w.release)
 	<-done
+	end := time.Now()
 
 	if w.code != http.StatusOK {
 		t.Errorf("got %d, want 200: %s", w.code, w.body.String())
+	}
+	// The server sets no write timeout, so the handler bounds the write itself.
+	if len(w.deadlines) != 1 || w.wroteNoDeadline {
+		t.Fatalf("write deadlines = %v, written before one was set = %v; want one deadline, set before the first Write",
+			w.deadlines, w.wroteNoDeadline)
+	}
+	if d := w.deadlines[0]; d.Before(start.Add(checkWriteTimeout)) || d.After(end.Add(checkWriteTimeout)) {
+		t.Errorf("write deadline %v is not %v after the handler ran (%v to %v)", d, checkWriteTimeout, start, end)
 	}
 }
 

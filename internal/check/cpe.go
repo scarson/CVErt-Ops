@@ -42,11 +42,19 @@ func CPERowBelow(ver string, row CPERow) bool {
 // add no range for fix validation: a fix candidate is at or above ver, and such
 // a row answers NotAffected there too.
 //
+// A version that is not dotted numbers cannot be compared with any row (design
+// section 4.2), so an advisory with rows, stored or left out, answers
+// CannotEvaluate with reason invalid_version, whichever row comes first. The
+// store leaves rows out for such a version too, when another item of the
+// product sets the key's floor.
+//
 // It calls m.Tick once per row and returns as soon as Tick refuses; the caller
 // then discards the outcome and reports m.Err.
 func EvaluateCPERows(m *workMeter, ver string, rows []CPERow, below int) Outcome {
+	_, err := version.NumericOrder(ver, ver)
+	dotted := err == nil
 	var verdicts rowVerdicts
-	verdicts.anyNotAffected = below > 0
+	verdicts.anyNotAffected = dotted && below > 0
 	for _, row := range rows {
 		if !m.Tick() {
 			return Outcome{}
@@ -59,7 +67,11 @@ func EvaluateCPERows(m *workMeter, ver string, rows []CPERow, below int) Outcome
 		}
 		verdicts.compare(ver, Bound{Range: r, Check: version.CheckProduct}, Matched{Evidence: evidenceNVDCPE, CPE: row.CPE})
 	}
-	return verdicts.outcome()
+	out := verdicts.outcome()
+	if !dotted && (len(rows) > 0 || below > 0) {
+		out.Verdict, out.Reason = CannotEvaluate, ReasonInvalidVersion
+	}
+	return out
 }
 
 // cpeRange returns the range a row describes (design section 4.2), or the

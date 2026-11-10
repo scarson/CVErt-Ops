@@ -35,13 +35,14 @@ type PackageKey struct{ Ecosystem, Name string }
 // Hi is Lo with that ":" replaced by ";", the next byte.
 //
 // A request has one key for each product, so every item of the product shares
-// one read, as Keys promises. Floor is set on a product key when the version of
-// every item that uses it is dotted numbers, and is the lowest of those
-// versions. The store then leaves out the rows whose ranges lie wholly below
-// Floor (CPERowBelow) and returns one CPERow per CVE counting them. Such a row
-// answers NotAffected for every dotted-number version at or above Floor, so for
-// each of those items. When one item's version is not dotted numbers, Floor is
-// "" and the key reads every row, because that item needs them all.
+// one read, as Keys promises. Floor is the lowest dotted-number version among
+// the items that use the key, or "" when none is dotted numbers. The store then
+// leaves out the rows whose ranges lie wholly below Floor (CPERowBelow) and
+// returns one CPERow per CVE counting them. Such a row answers NotAffected for
+// every dotted-number version at or above Floor, so for each of those items. An
+// item whose version is not dotted numbers can be compared with no row, and
+// answers invalid_version from left-out rows as from stored ones
+// (EvaluateCPERows).
 //
 // The rows a key returns therefore depend on the request's other items of the
 // same product, and so does whether the key passes its row limit. A key with a
@@ -158,11 +159,10 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 }
 
 // cpeFloor follows the versions of the items that use one CPE key: lowest is
-// the lowest so far, and "" from the first that is not dotted numbers onwards.
-type cpeFloor struct {
-	lowest string
-	closed bool // a version was not dotted numbers
-}
+// the lowest dotted-number version so far, "" while there is none. A version
+// that is not dotted numbers is passed over: every row answers invalid_version
+// for it, so it needs no row the floor leaves out (EvaluateCPERows).
+type cpeFloor struct{ lowest string }
 
 // keyBuilder holds Keys with an index of each slice, so each key is added once.
 type keyBuilder struct {
@@ -217,15 +217,14 @@ func nearKeyID(k CNANearKey) string {
 func (b *keyBuilder) addCPE(key CPEKey, ver string) int {
 	i := add(&b.cpes, &b.keys.CPEPrefixes, key)
 	if i == len(b.cpeFloors) {
-		b.cpeFloors = append(b.cpeFloors, cpeFloor{lowest: ver})
+		b.cpeFloors = append(b.cpeFloors, cpeFloor{})
 	}
 	f := &b.cpeFloors[i]
-	// NumericOrder refuses a version that is not dotted numbers, on either side.
-	switch c, err := version.NumericOrder(ver, f.lowest); {
-	case f.closed:
-	case err != nil:
-		f.lowest, f.closed = "", true
-	case c < 0:
+	// NumericOrder refuses a version that is not dotted numbers.
+	if _, err := version.NumericOrder(ver, ver); err != nil {
+		return i
+	}
+	if c, _ := version.NumericOrder(ver, f.lowest); f.lowest == "" || c < 0 {
 		f.lowest = ver
 	}
 	return i

@@ -246,6 +246,15 @@ func TestEvaluateCPERows(t *testing.T) {
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "2.0"}},
 		},
 		{
+			name: "release candidate version is invalid_version whichever row comes first", version: "1.24rc1",
+			rows: []CPERow{
+				cpeRow(cpeNodeAny, cpeBounds{}),
+				cpeRow(cpeNodeAny, cpeBounds{endExcluding: "2.0"}),
+			},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion},
+			wantRanges: []version.Range{{}, {Introduced: "0", Fixed: "2.0"}},
+		},
+		{
 			name: "distro version is invalid_version", version: "8.5.4-0ubuntu1.4",
 			rows:       []CPERow{cpeRow(cpeNodeAny, cpeBounds{endExcluding: "9.0"})},
 			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion},

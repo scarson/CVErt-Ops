@@ -267,8 +267,10 @@ func TestReadCheckCandidates_CPERowsBelowChangeNoAnswer(t *testing.T) {
 			}
 		}
 	}
-	if floors != len(requests)-1 {
-		t.Errorf("%d of %d requests had a floor, want all but the one with a version that is not dotted numbers", floors, len(requests))
+	// A version that is not dotted numbers does not lower the floor, so every
+	// request, including the one that asks such a version, has one.
+	if floors != len(requests) {
+		t.Errorf("%d of %d requests had a floor, want all", floors, len(requests))
 	}
 	if totals.Affected == 0 || totals.CannotEvaluate == 0 || totals.NotAffected == 0 || totals.Retracted == 0 {
 		t.Errorf("answers do not vary enough to compare: counts %+v", totals)
@@ -295,9 +297,9 @@ func ingestOldGizmo(t *testing.T, tdb *testutil.TestDB, severity *string) {
 // TestReadCheckCandidates_CPERowsBelowKeyLimit checks that the per-key limit
 // counts what the lookup returns: a product with more rows than the limit is
 // read in full when most lie below the lowest version asked of it, each CVE's
-// left-out rows counting as one, and its items are then answered. A request
-// that also asks a version that is not dotted numbers reads every row, and is
-// over the limit as the product was before rows were left out.
+// left-out rows counting as one, and its items are then answered. A version
+// that is not dotted numbers, asked beside them, shares that read and answers
+// invalid_version on every advisory, as it would from every row.
 func TestReadCheckCandidates_CPERowsBelowKeyLimit(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)
@@ -357,21 +359,29 @@ func TestReadCheckCandidates_CPERowsBelowKeyLimit(t *testing.T) {
 		t.Errorf("a limit of 7: %d rows and no overflow, want overflow", len(got.Rows))
 	}
 
-	// A version that is not dotted numbers needs every row, so the product's
-	// one key has no floor and every item of the product is over the limit.
+	// A version that is not dotted numbers does not lower the floor: the key
+	// keeps 6.12.0's floor and its 8 rows, and 6.12.0-rc1, which no row can be
+	// compared with, answers invalid_version on every advisory.
 	limits.KeyRows = 8
 	items = gizmoItems("6.12.0", "6.12.0-rc1")
 	cands, enrichment, feeds = readCheck(t, tdb, orgID, check.KeysFor(items), limits, nil)
-	if got := cands.CPEs[0]; len(cands.CPEs) != 1 || !got.Overflow || len(got.Rows) != 8 {
-		t.Fatalf("6.12.0 and 6.12.0-rc1: %d keys, %d rows, overflow %v; want one key of 8 rows and overflow", len(cands.CPEs), len(got.Rows), got.Overflow)
+	if got := cands.CPEs[0]; len(cands.CPEs) != 1 || got.Overflow || len(got.Rows) != 8 {
+		t.Fatalf("6.12.0 and 6.12.0-rc1: %d keys, %d rows, overflow %v; want one key of 8 rows and no overflow", len(cands.CPEs), len(got.Rows), got.Overflow)
 	}
 	res, err = check.Evaluate(context.Background(), items, cands, check.FeedStatuses(feeds, time.Now()), enrichment)
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
 	}
-	for _, r := range res.Results {
-		if r.Reason == nil || *r.Reason != check.ReasonTooManyCandidates {
-			t.Errorf("%s beside 6.12.0-rc1: status %s, reason %v; want too_many_candidates", r.Component.Version, r.Status, r.Reason)
+	if r := res.Results[0]; r.Status != check.StatusAffected {
+		t.Errorf("6.12.0 beside 6.12.0-rc1: status %s, want affected", r.Status)
+	}
+	rc := res.Results[1]
+	if want := (check.Counts{CannotEvaluate: 6, Retracted: 1}); rc.Status != check.StatusCannotEvaluate || rc.Counts != want {
+		t.Errorf("6.12.0-rc1: status %s, counts %+v; want cannot_evaluate, %+v", rc.Status, rc.Counts, want)
+	}
+	for _, a := range rc.Advisories {
+		if a.Reason == nil || *a.Reason != check.ReasonInvalidVersion {
+			t.Errorf("6.12.0-rc1: advisory %s reason %v, want invalid_version", a.AdvisoryID, a.Reason)
 		}
 	}
 }

@@ -86,9 +86,11 @@ func TestKeysForCPEFloor(t *testing.T) {
 		{"the lowest of several", []string{"6.12.0", "6.13", "5.15.100", "7", "5.15.100.1"}, "5.15.100"},
 		{"lowest by value, not as text", []string{"10.0", "9.5"}, "9.5"},
 		{"equal versions keep the first spelling", []string{"6.12", "6.12.0", "6.12.0.0"}, "6.12"},
-		{"a version that is not dotted numbers, last", []string{"6.12.0", "5.15", "6.8.0-45-generic"}, ""},
-		{"a version that is not dotted numbers, first", []string{"6.8.0-45-generic", "6.12.0", "5.15"}, ""},
-		{"a version that is not dotted numbers, between", []string{"6.12.0", "6.8.0-45-generic", "5.15"}, ""},
+		// A version that is not dotted numbers answers invalid_version on every
+		// row, so it needs none of them, and does not lower the floor.
+		{"a version that is not dotted numbers, last", []string{"6.12.0", "5.15", "6.8.0-45-generic"}, "5.15"},
+		{"a version that is not dotted numbers, first", []string{"6.8.0-45-generic", "6.12.0", "5.15"}, "5.15"},
+		{"a version that is not dotted numbers, between", []string{"6.12.0", "6.8.0-45-generic", "5.15"}, "5.15"},
 		{"only versions that are not dotted numbers", []string{"6.8.0-45-generic", "1.24rc1"}, ""},
 	}
 	for _, tc := range tests {
@@ -112,7 +114,7 @@ func TestKeysForCPEFloor(t *testing.T) {
 				}
 			}
 			for _, v := range tc.versions {
-				if tc.want == "" {
+				if _, err := version.NumericOrder(v, v); tc.want == "" || err != nil {
 					continue
 				}
 				if c, err := version.NumericOrder(tc.want, v); err != nil || c > 0 {
@@ -186,6 +188,24 @@ func TestEvaluateRowsBelow(t *testing.T) {
 		got := run(t, items, r).Results[0]
 		if want := map[string]string{cveA: "affected/null"}; !reflect.DeepEqual(advisoryReasons(got), want) {
 			t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
+		}
+	})
+
+	// Every row answers invalid_version for a version that is not dotted
+	// numbers, so rows left out do too: they never exclude such a version.
+	t.Run("is invalid_version for a version that is not dotted numbers", func(t *testing.T) {
+		t.Parallel()
+		generic := parseItems(RawItem{CPE: widgetCPE, Version: "6.8.0-45-generic"})
+		r := rowsFor(t, generic).cpes("acme", "widget",
+			below(cveA, 3),
+			below(cveB, 1), cpeAt(cveB, widgetCPE, "7.0", "8.0"))
+		got := run(t, generic, r).Results[0]
+		want := map[string]string{cveA: "cannot_evaluate/invalid_version", cveB: "cannot_evaluate/invalid_version"}
+		if !reflect.DeepEqual(advisoryReasons(got), want) {
+			t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
+		}
+		if wantCounts := (Counts{CannotEvaluate: 2}); got.Counts != wantCounts {
+			t.Errorf("counts = %+v, want %+v", got.Counts, wantCounts)
 		}
 	})
 
@@ -404,7 +424,8 @@ func equivalenceCVEs() []equivalenceCVE {
 // equivalenceRequests are the versions asked of the product in one request:
 // each dotted-number version alone, so its own version is the floor; requests
 // of several, where the floor is the lowest and lies below the others; and one
-// with a version that is not dotted numbers, which leaves the key no floor.
+// with a version that is not dotted numbers, which shares the floor of the
+// others.
 func equivalenceRequests() [][]string {
 	dotted := equivalenceVersions[:len(equivalenceVersions)-1]
 	var requests [][]string

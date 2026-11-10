@@ -113,7 +113,7 @@ notes and commit messages.
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T03:00Z | | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -637,7 +637,7 @@ Starts when Phase 1 is on `dev`. It runs for hours in the background, so Phase 3
 
 ## Phase 3 — The endpoint
 
-**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T03:00Z on branch `claude/check-endpoint-734a7a`, cut from `dev` at `d7d8309`.
+**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T05:31Z on branch `claude/check-endpoint-734a7a`, cut from `dev` at `d7d8309`.
 
 Branch `feat/check-endpoint` from `dev` after Phase 1 merges. (Deviation: the executing session's worktree branch is `claude/check-endpoint-734a7a`; it was not renamed.) Tasks run in order, because each builds on the types of the one before. Tasks 3.2 to 3.8 are pure code with table tests and no database.
 

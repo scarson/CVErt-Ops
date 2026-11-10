@@ -294,12 +294,18 @@ type scanned[T any] struct {
 // readKeyRows runs one lookup and adds each row to its key's slot in out. A slot
 // keeps at most limits.KeyRows rows; a further row sets its Overflow. Every row
 // read counts towards the request's limits. A lookup with no keys is not run.
+//
+// The statement runs under its own context, cancelled once the request's limits
+// are passed, so the driver stops the statement rather than reading its remaining
+// rows when they are closed.
 func readKeyRows[T any](ctx context.Context, r *checkRead, name, query string, args []any, out []check.KeyRows[T],
 	scan func(*sql.Rows) (scanned[T], error)) error {
 	if len(out) == 0 {
 		return nil
 	}
-	rows, err := r.tx.QueryContext(ctx, query, args...)
+	stmtCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	rows, err := r.tx.QueryContext(stmtCtx, query, args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
@@ -310,6 +316,7 @@ func readKeyRows[T any](ctx context.Context, r *checkRead, name, query string, a
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		if err := r.count(s.size); err != nil {
+			cancel()
 			return err
 		}
 		if s.ord < 1 || s.ord > int64(len(out)) {

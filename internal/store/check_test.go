@@ -6,14 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
@@ -389,6 +393,88 @@ func TestReadCheckCandidates_RequestRowLimit(t *testing.T) {
 	_, _, _, err := tdb.AppStore.ReadCheckCandidatesWith(context.Background(), orgID, keys, limits, nil)
 	if !errors.Is(err, store.ErrCandidateLimit) {
 		t.Errorf("3 rows over a limit of 2: err = %v, want ErrCandidateLimit", err)
+	}
+}
+
+// statementTracer records how each statement whose SQL contains match ended.
+type statementTracer struct {
+	match string
+	mu    sync.Mutex
+	ends  []pgx.TraceQueryEndData
+}
+
+type tracedSQLKey struct{}
+
+func (tr *statementTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, tracedSQLKey{}, data.SQL)
+}
+
+func (tr *statementTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if sql, _ := ctx.Value(tracedSQLKey{}).(string); strings.Contains(sql, tr.match) {
+		tr.mu.Lock()
+		defer tr.mu.Unlock()
+		tr.ends = append(tr.ends, data)
+	}
+}
+
+func (tr *statementTracer) ended() []pgx.TraceQueryEndData {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return slices.Clone(tr.ends)
+}
+
+// TestReadCheckCandidates_RequestLimitStopsStatement reads a key with more rows
+// than pgx buffers, over a request limit of one row. The packages statement must
+// be stopped, not read to its end when its rows are closed, and the store must
+// answer the next read on its one pool connection.
+func TestReadCheckCandidates_RequestLimitStopsStatement(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	const ranges = 3000
+	pkgs := make([]feed.AffectedPackage, ranges)
+	for i := range pkgs {
+		pkgs[i] = feed.AffectedPackage{Ecosystem: "npm", PackageName: "many", RangeType: "ECOSYSTEM",
+			Introduced: "0", Fixed: fmt.Sprintf("1.0.%d", i)}
+	}
+	ingestPatch(t, tdb, "osv", feed.CanonicalPatch{CVEID: "CVE-2026-90075", AffectedPackages: pkgs})
+	orgID := checkOrg(t, tdb)
+
+	tracer := &statementTracer{match: "cve_affected_packages"}
+	cfg, err := pgxpool.ParseConfig(tdb.AppURL)
+	if err != nil {
+		t.Fatalf("parse app pool config: %v", err)
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode
+	cfg.ConnConfig.Tracer = tracer
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	traced := store.New(pool)
+
+	keys := check.Keys{Packages: []check.PackageKey{{Ecosystem: "npm", Name: "many"}}}
+	limits := store.DefaultCheckLimits
+	limits.RequestRows = 1
+	if _, _, _, err := traced.ReadCheckCandidatesWith(ctx, orgID, keys, limits, nil); !errors.Is(err, store.ErrCandidateLimit) {
+		t.Fatalf("%d rows over a limit of 1: err = %v, want ErrCandidateLimit", ranges, err)
+	}
+	ends := tracer.ended()
+	if len(ends) != 1 {
+		t.Fatalf("packages statement ended %d times, want once: %+v", len(ends), ends)
+	}
+	if ends[0].Err == nil {
+		t.Errorf("packages statement completed (%s), want it stopped once the limit was passed", ends[0].CommandTag)
+	}
+
+	cands, _, _, err := traced.ReadCheckCandidatesWith(ctx, orgID, keys, store.DefaultCheckLimits, nil)
+	if err != nil {
+		t.Fatalf("read after the stopped statement: %v", err)
+	}
+	if n := len(cands.Packages[0].Rows); n != ranges {
+		t.Errorf("read after the stopped statement: %d rows, want %d", n, ranges)
 	}
 }
 

@@ -86,7 +86,7 @@ func TestResolveCPEMatchesKeepEveryDistinctEntry(t *testing.T) {
 	}
 }
 
-func TestResolveCNAAffectedUsesOneSourceWithoutRepeats(t *testing.T) {
+func TestResolveCNAAffectedKeepsEverySourcesEntries(t *testing.T) {
 	t.Parallel()
 
 	widget := feed.CNAAffected{Vendor: "Acme", Product: "Widget", Versions: []feed.CNAVersion{{Version: "1.0", Status: "affected"}}}
@@ -94,6 +94,8 @@ func TestResolveCNAAffectedUsesOneSourceWithoutRepeats(t *testing.T) {
 	gadget := feed.CNAAffected{Vendor: "Acme", Product: "Gadget", DefaultStatus: "unaffected"}
 	mitre := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget, gadget, widget}})
 	nvd := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widgetEarlierCopy}})
+	mitreWidget := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget}})
+	nvdWidget := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1", CNAAffected: []feed.CNAAffected{widget}})
 	nvdEmpty := makeSource(SourceNVD, feed.CanonicalPatch{CVEID: "CVE-1"})
 	mitreEmpty := makeSource(SourceMITRE, feed.CanonicalPatch{CVEID: "CVE-1"})
 
@@ -102,8 +104,10 @@ func TestResolveCNAAffectedUsesOneSourceWithoutRepeats(t *testing.T) {
 		sources []generated.CveSource
 		want    []feed.CNAAffected
 	}{
-		{"MITRE wins over NVD's copy", []generated.CveSource{nvd, mitre}, []feed.CNAAffected{gadget, widget}},
+		// Ordered by JSON form: Gadget sorts before Widget, and version "0.9" before "1.0".
+		{"MITRE's entries and NVD's differing copy are both kept", []generated.CveSource{nvd, mitre}, []feed.CNAAffected{gadget, widgetEarlierCopy, widget}},
 		{"NVD's copy used when MITRE has none", []generated.CveSource{mitreEmpty, nvd}, []feed.CNAAffected{widgetEarlierCopy}},
+		{"an entry both sources hold is kept once", []generated.CveSource{nvdWidget, mitreWidget}, []feed.CNAAffected{widget}},
 		{"no source has entries", []generated.CveSource{mitreEmpty, nvdEmpty}, nil},
 	}
 	for _, tc := range tests {

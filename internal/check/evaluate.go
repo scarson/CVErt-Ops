@@ -66,6 +66,11 @@ func evaluateItems(m *workMeter, items []Item, data Candidates, feeds map[string
 	evaluated := map[itemIdentity]ItemResult{}
 	var dependencies []string
 	for i, item := range items {
+		// ParseItem never returns an item with no form; one built elsewhere is
+		// refused as ParseItem would refuse it, and keysWithUses gives it no keys.
+		if item.Error == nil && item.Package == nil && item.Product == nil {
+			item = refuse(item, "invalid_form")
+		}
 		identity := identityOf(item)
 		res, seen := evaluated[identity]
 		if item.Error != nil || !seen {

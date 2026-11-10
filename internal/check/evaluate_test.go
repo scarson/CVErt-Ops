@@ -72,25 +72,49 @@ func (r *testRows) overflowPackages(eco, name string) *testRows {
 	return r
 }
 
-func (r *testRows) cpes(vendor, product string, rows ...CPERow) *testRows {
+func (r *testRows) cpeKey(vendor, product string) int {
 	r.t.Helper()
 	lo := "cpe:2.3:a:" + vendor + ":" + product + ":"
-	i := r.found("CPE", slices.IndexFunc(r.keys.CPEPrefixes, func(k CPEKey) bool { return k.Lo == lo }))
+	return r.found("CPE", slices.IndexFunc(r.keys.CPEPrefixes, func(k CPEKey) bool { return k.Lo == lo }))
+}
+
+func (r *testRows) cpes(vendor, product string, rows ...CPERow) *testRows {
+	r.t.Helper()
+	i := r.cpeKey(vendor, product)
 	r.data.CPEs[i].Rows = append(r.data.CPEs[i].Rows, rows...)
 	return r
+}
+
+func (r *testRows) overflowCPEs(vendor, product string) *testRows {
+	r.t.Helper()
+	r.data.CPEs[r.cpeKey(vendor, product)].Overflow = true
+	return r
+}
+
+// cnaNameKey returns the index of the exact CNA name key for vendor and
+// product, or of the prefix key when prefix is set.
+func (r *testRows) cnaNameKey(vendor, product string, prefix bool) int {
+	r.t.Helper()
+	return r.found("CNA name", slices.IndexFunc(r.keys.CNANames, func(k CNANameKey) bool {
+		if prefix {
+			return k.FullVendor == vendor && k.FullProduct == "" && k.Lo == product
+		}
+		return k.FullVendor == vendor && k.FullProduct == product
+	}))
 }
 
 // cnaName adds rows at the exact CNA name key for vendor and product, or at the
 // prefix key when prefix is set.
 func (r *testRows) cnaName(vendor, product string, prefix bool, rows ...CNARow) *testRows {
 	r.t.Helper()
-	i := r.found("CNA name", slices.IndexFunc(r.keys.CNANames, func(k CNANameKey) bool {
-		if prefix {
-			return k.FullVendor == vendor && k.FullProduct == "" && k.Lo == product
-		}
-		return k.FullVendor == vendor && k.FullProduct == product
-	}))
+	i := r.cnaNameKey(vendor, product, prefix)
 	r.data.CNANames[i].Rows = append(r.data.CNANames[i].Rows, rows...)
+	return r
+}
+
+func (r *testRows) overflowCNAName(vendor, product string, prefix bool) *testRows {
+	r.t.Helper()
+	r.data.CNANames[r.cnaNameKey(vendor, product, prefix)].Overflow = true
 	return r
 }
 
@@ -245,8 +269,30 @@ func TestEvaluateItemStatus(t *testing.T) {
 			want:   summary{status: "cannot_evaluate", reason: "too_many_candidates", warnings: none},
 		},
 		{
+			name: "the item row limit counts CNA package-key rows", raw: npmItem,
+			rows: func(r *testRows) {
+				r.packages("npm", "pkg", affectedPkg(cveA)).cnaPackage("npm/pkg", cnaAt(cveB, "", ""), cnaAt(cveC, "", ""))
+			},
+			limits: Limits{ItemRows: 2, AdvisoryRanges: 1000},
+			want:   summary{status: "cannot_evaluate", reason: "too_many_candidates", warnings: none},
+		},
+		{
 			name: "a key at its own limit beats an affected advisory", raw: npmItem,
 			rows: func(r *testRows) { r.packages("npm", "pkg", affectedPkg(cveA)).overflowPackages("npm", "pkg") },
+			want: summary{status: "cannot_evaluate", reason: "too_many_candidates", warnings: none},
+		},
+		{
+			name: "a CPE key at its own limit", raw: nodeItem,
+			rows: func(r *testRows) {
+				r.cpes("nodejs", "node.js", cpeAt(cveA, nodeCPE, "24.0.0", "")).overflowCPEs("nodejs", "node.js")
+			},
+			want: summary{status: "cannot_evaluate", reason: "too_many_candidates", warnings: none},
+		},
+		{
+			name: "a CNA name key at its own limit", raw: nodeItem,
+			rows: func(r *testRows) {
+				r.cpes("nodejs", "node.js", cpeAt(cveA, nodeCPE, "24.0.0", "")).overflowCNAName("nodejs", "node", false)
+			},
 			want: summary{status: "cannot_evaluate", reason: "too_many_candidates", warnings: none},
 		},
 		{
@@ -266,6 +312,20 @@ func TestEvaluateItemStatus(t *testing.T) {
 		{
 			name: "data_incomplete beats cna_product_not_mapped", raw: widgetItem,
 			rows:  func(r *testRows) { r.cpes("acme", "widget", cpeAt(cveA, widgetCPE, "2.0.0", "3.0.0")) },
+			feeds: feedsWith(false),
+			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "data_incomplete for a package item", raw: npmItem,
+			rows:  func(r *testRows) { r.packages("npm", "pkg", clearPkg(cveA)) },
+			feeds: feedsWith(false),
+			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "data_incomplete for a distro package item", raw: ubuntuItem,
+			rows:  func(r *testRows) { r.packages("Ubuntu:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.3")) },
 			feeds: feedsWith(false),
 			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none,
 				counts: Counts{NotAffected: 1}},
@@ -431,6 +491,18 @@ func TestEvaluateTooManyRanges(t *testing.T) {
 		}
 		if wantCounts := (Counts{Affected: 1, CannotEvaluate: 2, NotAffected: 1}); got.Counts != wantCounts {
 			t.Errorf("counts = %+v, want %+v", got.Counts, wantCounts)
+		}
+	})
+
+	t.Run("CPE ranges are counted", func(t *testing.T) {
+		t.Parallel()
+		items := parseItems(nodeItem)
+		row := cpeAt(cveA, nodeCPE, "24.0.0", "")
+		r := rowsFor(t, items).cpes("nodejs", "node.js", row, row, row, row).cpes("nodejs", "node.js", cpeAt(cveB, nodeCPE, "24.0.0", ""))
+		res := runWith(t, newWorkMeter(context.Background()), items, r, feedsWith(true), nil, Limits{ItemRows: 50000, AdvisoryRanges: 3})
+		want := map[string]string{cveA: "cannot_evaluate/too_many_ranges", cveB: "affected/null"}
+		if got := advisoryReasons(res.Results[0]); !reflect.DeepEqual(got, want) {
+			t.Errorf("advisories = %v, want %v", got, want)
 		}
 	})
 
@@ -642,6 +714,72 @@ func TestEvaluateCNANamesDeduplicated(t *testing.T) {
 	}
 }
 
+// TestEvaluateCNACopiesDifferingInVersions checks that two stored CNA rows on
+// one CVE that differ only in their versions are both read: the second copy
+// reports 24.22.1 Affected where NVD's range does not.
+func TestEvaluateCNACopiesDifferingInVersions(t *testing.T) {
+	t.Parallel()
+	items := parseItems(nodeItem)
+	affected := func(from, below string) CNAVersion {
+		return CNAVersion{Version: from, LessThan: below, Status: "affected"}
+	}
+	r := rowsFor(t, items).
+		cpes("nodejs", "node.js", cpeAt(cveA, nodeCPE, "23.0.0", "24.22.1")).
+		cnaName("nodejs", "node", false,
+			cnaAt(cveA, "nodejs", "node", affected("20.0.0", "20.5.0")),
+			cnaAt(cveA, "nodejs", "node", affected("24.0.0", "24.23.0")),
+		)
+	got := run(t, items, r).Results[0]
+	if got.Status != StatusAffected {
+		t.Errorf("status = %s, want affected; advisories %s", got.Status, jsonOf(t, got.Advisories))
+	}
+}
+
+// TestEvaluateItemsDifferingInOneField checks that items differing only in CPE
+// part, only in product, or only in ecosystem are each evaluated, not answered
+// from another's evaluation.
+func TestEvaluateItemsDifferingInOneField(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raws []RawItem
+		rows func(r *testRows)
+	}{
+		{
+			name: "CPE part",
+			raws: []RawItem{widgetItem, {CPE: "cpe:2.3:o:acme:widget:*:*:*:*:*:*:*:*", Version: "1.5.0"}},
+			rows: func(r *testRows) { r.cpes("acme", "widget", cpeAt(cveA, widgetCPE, "1.0.0", "2.0.0")) },
+		},
+		{
+			name: "product",
+			raws: []RawItem{widgetItem, {CPE: "cpe:2.3:a:acme:gadget:*:*:*:*:*:*:*:*", Version: "1.5.0"}},
+			rows: func(r *testRows) { r.cpes("acme", "widget", cpeAt(cveA, widgetCPE, "1.0.0", "2.0.0")) },
+		},
+		{
+			name: "ecosystem",
+			raws: []RawItem{npmItem, {Ecosystem: "PyPI", Name: "pkg", Version: "1.5.0"}},
+			rows: func(r *testRows) { r.packages("npm", "pkg", affectedPkg(cveA)) },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(tt.raws...)
+			r := rowsFor(t, items)
+			tt.rows(r)
+			got := run(t, items, r).Results
+			for i, item := range items {
+				if !reflect.DeepEqual(got[i].Component, componentOf(item)) {
+					t.Errorf("item %d component = %+v, want %+v", i, got[i].Component, componentOf(item))
+				}
+			}
+			if got[0].Status != StatusAffected || got[1].Status != StatusNoAdvisoryFound {
+				t.Errorf("statuses = %s, %s; want affected, then no_advisory_found", got[0].Status, got[1].Status)
+			}
+		})
+	}
+}
+
 // TestEvaluateCNANameUncertain checks design section 4.5's nearby names, at row
 // level: a nearby row that is not one of the item's CNA name rows makes its
 // advisory cna_name_uncertain unless the advisory reports Affected.
@@ -849,6 +987,26 @@ func TestEvaluateCancelledBeforeOneRow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, Results{}) {
 		t.Errorf("results = %+v, want none", got)
+	}
+}
+
+// TestEvaluateItemWithNoForm checks that an Item with no package, product or
+// error, which ParseItem never returns, is answered as invalid_form rather
+// than evaluated.
+func TestEvaluateItemWithNoForm(t *testing.T) {
+	t.Parallel()
+	items := []Item{{Index: 0, ID: "empty", Version: "1.0"}}
+	got, err := Evaluate(context.Background(), items, Candidates{}, feedsWith(true), nil)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	r := got.Results[0]
+	want := &ItemError{Code: "invalid_form", Message: itemErrorMessages["invalid_form"]}
+	if r.Status != StatusInvalid || !reflect.DeepEqual(r.Error, want) || r.Component != nil || deref(r.ID) != "empty" {
+		t.Errorf("result = %s, want status invalid with error invalid_form and no component", jsonOf(t, r))
+	}
+	if len(got.Feeds) != 0 || !got.DataComplete {
+		t.Errorf("feeds = %+v, data_complete %v; want none and true, as for any invalid item", got.Feeds, got.DataComplete)
 	}
 }
 

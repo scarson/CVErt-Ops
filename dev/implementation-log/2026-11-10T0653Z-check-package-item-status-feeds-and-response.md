@@ -28,3 +28,14 @@
 - Break test (from the plan's Verify-first note): dropping nearby rows by CVE alone fails `TestEvaluateCNANameUncertain` (`.NET 9.0` with `Microsoft .NET Runtime` answers `cna_cannot_clear`). Restored, then the test passes.
 - `go test ./internal/check/ -count=1`: pass, 69 top-level tests (559 with subtests).
 - `golangci-lint run ./internal/check/...`: 0 issues, after a tagged switch in `nextPrefix` and a De Morgan rewrite in a test.
+
+## Review follow-up: item identity, CNA copies and limits across sources
+
+An independent review of `a6a97ce` found no defect, but showed that several mutations survived the tests. The tests below were added, and each mutation was applied alone, run against its test, and restored.
+
+- Items that differ only in CPE part, only in product, or only in ecosystem are each evaluated (`TestEvaluateItemsDifferingInOneField`). Caught: `identityOf` without the product, and without the package.
+- Two stored CNA copies on one CVE that differ only in `versions` are both read (`TestEvaluateCNACopiesDifferingInVersions`, `nodejs:node.js` 24.22.1). Caught: `cnaRowIdentity` without versions. The first attempt at this mutation removed the variable and failed to build, so it proved nothing; it was rerun as `json.Marshal(nil)`.
+- `data_incomplete` for a non-distro package item and for a distro item (two `TestEvaluateItemStatus` cases). Caught: limiting that row to CPE items.
+- The item row limit counts CNA package-key rows. The range count includes CPE rows (`TestEvaluateTooManyRanges`). `Overflow` on a CPE key and on a CNA name key gives `too_many_candidates`. Each of the four was caught when its count or `Overflow` check was dropped.
+- Behaviour change, test first: an `Item` with no package, product or error (which `ParseItem` never returns) made `componentOf` panic. `evaluateItems` now refuses it as `invalid_form`, as `ParseItem` would (`TestEvaluateItemWithNoForm`). No exported type or signature changed.
+- `go test ./internal/check/ -count=1`: pass, 72 top-level tests (571 with subtests). `golangci-lint run ./internal/check/...`: 0 issues.

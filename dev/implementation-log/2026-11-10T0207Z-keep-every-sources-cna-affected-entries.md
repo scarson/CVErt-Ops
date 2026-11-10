@@ -10,7 +10,7 @@
 
 - A stale copy costs only conservative answers. CNA data can report a version as affected or unresolved, never as not affected, so it can hold back a fix but cannot clear a version.
 - Identical copies from MITRE and NVD still store one row: the JSON form is the deduplication key, and it includes `package_key`.
-- `TestResolveCNAAffectedUsesOneSourceWithoutRepeats` pinned the rule being replaced. It was renamed `TestResolveCNAAffectedKeepsEverySourcesEntries`. Its first case now expects the union, and two cases were added: an entry both sources hold is kept once, and an entry only NVD holds is kept.
+- `TestResolveCNAAffectedUsesOneSourceWithoutRepeats` pinned the rule being replaced. It was renamed `TestResolveCNAAffectedKeepsEverySourcesEntries`. Its first case now expects the union. One case was added: an entry both sources hold is kept once. The existing cases for NVD's copy alone and for no CNA data were kept.
 
 ## Quality checks
 

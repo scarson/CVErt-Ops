@@ -119,7 +119,7 @@ notes and commit messages.
 ### Deviations
 
 - Phase 1 runs on branch `claude/check-data-72f424`, the worktree branch the executing session was given, not `feat/check-data`. See Phase 1's banner.
-- Task 1.1: `FromPurl` refuses more than the plan's code. It refuses invalid UTF-8 and U+FFFD with `invalid_purl`. It refuses distro release numbers with leading zeros, and Ubuntu releases without a two-digit month, with `distro_not_recognised`. Both refuse in the safe direction, found in the Phase 1 review. See the note under Task 1.1.
+- Task 1.1: `FromPurl` refuses more than the plan's code. It refuses invalid UTF-8 and U+FFFD with `invalid_purl`. It refuses major release numbers (and any of Alpine's numbers) with leading zeros, and Ubuntu releases without a two-digit month, with `distro_not_recognised`. Both refuse in the safe direction, found in the Phase 1 review. See the note under Task 1.1.
 
 ### Discoveries
 
@@ -480,9 +480,11 @@ func NeedsRelease(value string) bool {
 
 > **Deviation (executed 2026-11-10):** the Phase 1 review made `FromPurl` refuse more than the code above, in each case in the safe direction:
 > - `validated` also refuses invalid UTF-8 and U+FFFD. PostgreSQL rejects invalid UTF-8, so one such request item would fail a whole request. `packageurl-go` lower-cases `deb`, `apk`, `golang` and `composer` names, which turns invalid bytes into U+FFFD.
-> - `debDistro` and `alpineDistro` refuse release numbers with leading zeros. `debEcosystem` requires a two-digit Ubuntu month.
+> - `debDistro` refuses a major release number with leading zeros, and `alpineDistro` refuses leading zeros in any of its numbers. A Debian point release is dropped, so its form is not checked. `debEcosystem` requires a two-digit Ubuntu month.
 >
 > Commit ac5ad2b.
+>
+> The review also made `ParseCNAAffected` keep an entry whose only identity is its `packageURL`. CVE 5 does not allow that shape, but dropping it would hide the CVE from a package lookup.
 
 ### Task 1.2: Store each CNA entry's package identity, and add the lookup indexes
 

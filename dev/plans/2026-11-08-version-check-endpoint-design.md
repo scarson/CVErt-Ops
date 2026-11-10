@@ -142,7 +142,7 @@ Rows come from `cve_affected_packages`, matched on the exact ecosystem and folde
 
 ### 4.2 NVD CPE ranges
 
-Rows come from `cve_cpe_matches` with `vulnerable = true`. Comparison is `version.CheckNumeric`: dotted numbers only, because a product has no ecosystem to define its order.
+Rows come from `cve_cpe_matches` with `vulnerable = true`. Comparison is `version.CheckProduct`: the item version must be dotted numbers, because a product has no ecosystem to define its order; bounds that are dotted numbers compare as `version.CheckNumeric` does, and other bounds by their leading dotted numbers where that decides (below).
 
 | Row | `version.Range` |
 |---|---|
@@ -157,6 +157,16 @@ Rows come from `cve_cpe_matches` with `vulnerable = true`. Comparison is `versio
 - `cve_cpe_matches` does not keep NVD's AND/OR configuration tree, so "A only when running on B" reports as affected on any platform.
 
 A version that is not dotted numbers, such as `1.24rc1` or `8.5.4-0ubuntu1.4` given in CPE form, is cannot evaluate.
+
+**Bounds that are not dotted numbers** (amended 2026-11-10 after the Phase 4 measurement; Sam's decision). Old NVD analysis names exact releases such as `php:2.0b10` and bounds such as OpenSSL's `1.0.2zf`. Read strictly, each such row is `invalid_range`, and one old CVE then holds every version of the product at cannot evaluate: on the partial ingest this held all Node, PHP, OpenSSL and PostgreSQL items there. When the item version is dotted numbers and a bound is not, the bound is compared by its leading dotted number part, and only where that settles the order:
+
+- The bound splits into its leading dotted numbers (`1.0.2` in `1.0.2zf`, `2.0` in `2.0b10`) and the rest. A bound with no leading digit, or whose rest starts with `:` or `!` (escaped or not, an epoch as in `1:2.0` or `1!2.0`), is not compared.
+- The item version and the bound are compared component by component over the components both leading parts have. The first difference decides the order: `8.4.14` is above `2.0b10`, and `3.5.4` is above `1.0.2zf`. With no difference there, the order is not decided: `1.0.2` against `1.0.2zf`, `1.0.2.5` against `1.0.2zf`.
+- When the range's two bounds have a decided order, the row is read as an ordinary range, and any comparison of the version with a bound that is not decided makes the row cannot evaluate, reason `invalid_range`. A decided inverted range is `invalid_range`, as for numeric bounds.
+- When the two bounds' order is not decided (`[1.0.2, 1.0.2zf)`, or an exact release such as `2.0b10`, whose two bounds are the same string), the row answers Not affected only when the version is decided below both bounds or above both, which holds whichever way the range runs. Otherwise it is cannot evaluate, reason `invalid_range`. Such a row cannot answer Affected: a version decided between two bounds would decide their order.
+- Rows whose bounds are all dotted numbers are read as before. An item version that is not dotted numbers is still cannot evaluate, reason `invalid_version`.
+
+A suffix never moves a version past a different leading number in any version scheme this applies to (pre-releases, letter releases, `-rc1`, `(55)se`), except an epoch, which is excluded. A fixed bound that is not dotted numbers gives no `fixed_version`, because `NumericOrder` cannot order it (section 7). CNA versions keep their own rules (section 4.3); this applies to NVD rows only.
 
 ### 4.3 CNA `affected[]`
 

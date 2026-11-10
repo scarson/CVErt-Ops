@@ -209,6 +209,34 @@ func TestEvaluateCPERows(t *testing.T) {
 			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidRange},
 			wantRanges: []version.Range{{Introduced: "1.2.3rc1", LastAffected: "1.2.3rc1"}},
 		},
+		// Design 4.2, bounds that are not dotted numbers: compared by their
+		// leading dotted numbers where those differ.
+		{
+			name: "literal version that is not dotted numbers, other leading numbers, is not affected", version: "8.4.14",
+			rows:       []CPERow{cpeRow("cpe:2.3:a:php:php:2.0b10:*:*:*:*:*:*:*", cpeBounds{})},
+			want:       Outcome{Verdict: NotAffected, Comparable: true},
+			wantRanges: []version.Range{{Introduced: "2.0b10", LastAffected: "2.0b10"}},
+		},
+		{
+			name: "fix bound that is not dotted numbers, version past it, is not affected", version: "3.5.4",
+			rows:       []CPERow{cpeRow(cpeNodeAny, cpeBounds{startIncluding: "1.0.0", endExcluding: "1.0.2zf"})},
+			want:       Outcome{Verdict: NotAffected, Comparable: true},
+			wantRanges: []version.Range{{Introduced: "1.0.0", Fixed: "1.0.2zf"}},
+		},
+		{
+			name: "fix bound that is not dotted numbers, version inside, is affected", version: "1.0.1",
+			rows: []CPERow{cpeRow(cpeNodeAny, cpeBounds{startIncluding: "1.0.0", endExcluding: "1.0.2zf"})},
+			want: Outcome{Verdict: Affected, Comparable: true,
+				Matched:    []Matched{matchedCPE(cpeNodeAny, "1.0.0", "1.0.2zf", "")},
+				Candidates: []string{"1.0.2zf"}},
+			wantRanges: []version.Range{{Introduced: "1.0.0", Fixed: "1.0.2zf"}},
+		},
+		{
+			name: "fix bound that is not dotted numbers, version on its leading numbers, is invalid_range", version: "1.0.2",
+			rows:       []CPERow{cpeRow(cpeNodeAny, cpeBounds{startIncluding: "1.0.0", endExcluding: "1.0.2zf"})},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidRange},
+			wantRanges: []version.Range{{Introduced: "1.0.0", Fixed: "1.0.2zf"}},
+		},
 
 		// Design 4.2: a version that is not dotted numbers cannot be evaluated.
 		{
@@ -325,7 +353,7 @@ func TestEvaluateCPERows(t *testing.T) {
 }
 
 // TestEvaluateCPERowsBoundOrder checks that every Bound reads candidates with
-// CheckNumeric, and that a row with no version bounds answers cannot evaluate
+// CheckProduct, which requires a dotted-number version, and that a row with no version bounds answers cannot evaluate
 // for any candidate, so fix reporting never clears a candidate against it.
 func TestEvaluateCPERowsBoundOrder(t *testing.T) {
 	t.Parallel()

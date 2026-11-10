@@ -16,8 +16,9 @@ type CPERow struct {
 
 // EvaluateCPERows decides one advisory's verdict for version ver of a product,
 // from that advisory's rows for the product's part:vendor:product. Every row is
-// compared with version.CheckNumeric, because a product has no ecosystem to
-// define its order. Rows are combined as EvaluatePackageRows combines package
+// compared with version.CheckProduct, because a product has no ecosystem to
+// define its order: dotted numbers, and bounds such as 1.0.2zf by their leading
+// dotted numbers where those decide. Rows are combined as EvaluatePackageRows combines package
 // rows; a versionEndExcluding bound of a row containing the version is a fix
 // candidate, a versionEndIncluding bound is not.
 //
@@ -32,10 +33,10 @@ func EvaluateCPERows(m *workMeter, ver string, rows []CPERow) Outcome {
 		r, reason := cpeRange(row)
 		if reason != "" {
 			// An empty range answers CannotEvaluate for every version.
-			verdicts.refuse(Bound{Check: version.CheckNumeric}, reason)
+			verdicts.refuse(Bound{Check: version.CheckProduct}, reason)
 			continue
 		}
-		verdicts.compare(ver, Bound{Range: r, Check: version.CheckNumeric}, Matched{Evidence: evidenceNVDCPE, CPE: row.CPE})
+		verdicts.compare(ver, Bound{Range: r, Check: version.CheckProduct}, Matched{Evidence: evidenceNVDCPE, CPE: row.CPE})
 	}
 	return verdicts.outcome()
 }
@@ -52,7 +53,7 @@ func EvaluateCPERows(m *workMeter, ver string, rows []CPERow) Outcome {
 //
 // Shapes the design does not describe answer invalid_range rather than a guess:
 // a CPE that is not 13 components, both start bounds set, and a literal version
-// component with bounds. Both end bounds set is left to CheckNumeric, which
+// component with bounds. Both end bounds set is left to CheckProduct, which
 // reports it as an invalid range.
 func cpeRange(row CPERow) (version.Range, Reason) {
 	components := splitCPE(row.CPE)

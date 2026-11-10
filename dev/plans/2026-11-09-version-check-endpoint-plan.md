@@ -119,8 +119,17 @@ notes and commit messages.
 ### Deviations
 
 - Phase 1 runs on branch `claude/check-data-72f424`, the worktree branch the executing session was given, not `feat/check-data`. See Phase 1's banner.
+- Task 1.1: `FromPurl` refuses more than the plan's code. It refuses invalid UTF-8 and U+FFFD with `invalid_purl`. It refuses distro release numbers with leading zeros, and Ubuntu releases without a two-digit month, with `distro_not_recognised`. Both refuse in the safe direction, found in the Phase 1 review. See the note under Task 1.1.
 
 ### Discoveries
+
+- `packageurl-go` was already in the module graph at v0.1.5 through `osv-scalibr`. Task 1.1 made v0.1.7 a direct dependency, which raises `osv-scalibr`'s copy to v0.1.7 as well. `internal/version` tests pass.
+- `package_key` appears in `GET /cves/{id}/sources`, because that endpoint returns each source's `normalized_json`, which is the marshalled `CanonicalPatch` (`internal/api/cves.go` `getCVESourcesHandler`). `GET /cves/{id}` does not return it, as the plan requires.
+- `package_key` is computed when a record is parsed, and stored inside `cve_sources.normalized_json`, so a re-merge reuses it. A later change to `ecosystem.FromPurl` or `FoldPackageName` needs a backfill: refetch NVD and MITRE, or re-parse `cve_raw_payloads`. Otherwise old keys hide CNA-only package advisories. `cve_affected_packages` folds at query time and does not have this problem.
+- Pitfall DB-19 (`dev/implementation-pitfalls.md`, "CREATE INDEX CONCURRENTLY requires migration framework coordination") says `IF NOT EXISTS` makes a retry succeed. A failed concurrent build leaves an INVALID index of that name, and `IF NOT EXISTS` then skips it without an error. The check lookups would fall back to the slow plans design section 9 measured. A `doctor` check for `pg_index.indisvalid = false` would surface it. This affects every migration, not only 000059.
+- **Open question for Sam (affects Phase 3):** design section 3.2 refuses only the `repository_url` qualifier as naming a possibly non-public package. The purl specification also defines `download_url` and `vcs_url`. `pkg:npm/foo@1?download_url=https://evil/x.tgz` maps to public npm `foo` today. Refusing them on the stored side would drop CNA keys. On the request side it would answer `unsupported_repository`. The code follows the design for now.
+- `FromPurl` accepts namespace shapes no registry holds: `pkg:npm/scope/name` (no `@`), a Maven namespace containing `/`, and Composer names with three segments. They name no real package, so a lookup answers `no_advisory_found`, never a wrong "not affected". Phase 3's `ParseItem` could refuse them as `invalid_purl`.
+- `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
 
 ---
 
@@ -468,6 +477,12 @@ func NeedsRelease(value string) bool {
 **Step 5: Run.** `go test ./internal/ecosystem/ -count=1`. Expected: PASS. If `packageurl-go` keeps `%40scope` encoded or rejects a table row, fix the mapping, not the test, and record what the library did under Discoveries.
 
 **Step 6: Commit.** `git add internal/ecosystem go.mod go.sum` then `git commit -m "feat(ecosystem): map package URLs to canonical ecosystems"`.
+
+> **Deviation (executed 2026-11-10):** the Phase 1 review made `FromPurl` refuse more than the code above, in each case in the safe direction:
+> - `validated` also refuses invalid UTF-8 and U+FFFD. PostgreSQL rejects invalid UTF-8, so one such request item would fail a whole request. `packageurl-go` lower-cases `deb`, `apk`, `golang` and `composer` names, which turns invalid bytes into U+FFFD.
+> - `debDistro` and `alpineDistro` refuse release numbers with leading zeros. `debEcosystem` requires a two-digit Ubuntu month.
+>
+> Commit ac5ad2b.
 
 ### Task 1.2: Store each CNA entry's package identity, and add the lookup indexes
 

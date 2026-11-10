@@ -375,20 +375,23 @@ func collapseChanges(changes []CNAChange, order version.Order) ([]CNAChange, boo
 }
 
 // hasInvertedSegment reports a segment that is not unaffected whose readable end
-// is below its readable start, or equal to it and exclusive. Such a shape has no
-// known meaning, as version.Check refuses an upper bound that does not follow
-// introduced. An unaffected segment can condemn nothing, so it is not checked. A
-// start of "0" is below every end, and an open end is not checked. A wildcard end
-// is the first version past its line, so it is compared as exclusive. A
-// comparison that fails counts as inverted.
+// is below its readable start, or, for the last segment, equal to it and
+// exclusive. Such a shape has no known meaning, as version.Check refuses an upper
+// bound that does not follow introduced. An empty segment before the last is a
+// change at the start of its own segment, such as a change at the entry's
+// version, and the segments after it still read. An unaffected segment can
+// condemn nothing, so it is not checked. A start of "0" is below every end, and
+// an open end is not checked. A wildcard end is the first version past its line,
+// so it is compared as exclusive. A comparison that fails counts as inverted.
 func hasInvertedSegment(segments []segment, order version.Order) bool {
-	for _, s := range segments {
+	for i, s := range segments {
 		if s.status == "unaffected" || !s.start.readable || s.start.value == belowEverything ||
 			!s.end.readable || s.end.open {
 			continue
 		}
 		c, err := order(s.end.value, s.start.value)
-		if err != nil || c < 0 || (c == 0 && !s.endInclusive) {
+		last := i == len(segments)-1
+		if err != nil || c < 0 || (c == 0 && !s.endInclusive && last) {
 			return true
 		}
 	}

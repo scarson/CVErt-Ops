@@ -107,13 +107,13 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) and Phase 3 (endpoint) not started.
+**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is run by another session. Phase 3 (endpoint) in progress.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | ⬜ Not started | | Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T03:00Z | | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -121,6 +121,7 @@ notes and commit messages.
 - Phase 1 runs on branch `claude/check-data-72f424`, the worktree branch the executing session was given, not `feat/check-data`. See Phase 1's banner.
 - Task 1.1: `FromPurl` refuses more than the plan's code. It refuses invalid UTF-8 and U+FFFD with `invalid_purl`. It refuses major release numbers (and any of Alpine's numbers) with leading zeros, and Ubuntu releases without a two-digit month, with `distro_not_recognised`. Both refuse in the safe direction, found in the Phase 1 review. See the note under Task 1.1.
 - Task 1.2: `ParseCNAAffected` keeps an entry whose only identity is its `packageURL`, and the two golden CNA tests expect the key. See the note under Task 1.2.
+- Phase 3 runs on branch `claude/check-endpoint-734a7a`, the worktree branch the executing session was given, not `feat/check-endpoint`. See Phase 3's banner.
 
 ### Discoveries
 
@@ -636,9 +637,9 @@ Starts when Phase 1 is on `dev`. It runs for hours in the background, so Phase 3
 
 ## Phase 3 — The endpoint
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T03:00Z on branch `claude/check-endpoint-734a7a`, cut from `dev` at `d7d8309`.
 
-Branch `feat/check-endpoint` from `dev` after Phase 1 merges. Tasks run in order, because each builds on the types of the one before. Tasks 3.2 to 3.8 are pure code with table tests and no database.
+Branch `feat/check-endpoint` from `dev` after Phase 1 merges. (Deviation: the executing session's worktree branch is `claude/check-endpoint-734a7a`; it was not renamed.) Tasks run in order, because each builds on the types of the one before. Tasks 3.2 to 3.8 are pure code with table tests and no database.
 
 ### Task 3.1: Version package additions
 

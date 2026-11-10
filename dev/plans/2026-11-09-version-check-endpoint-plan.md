@@ -113,7 +113,7 @@ notes and commit messages.
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ⬜ Not started | | Long-running; Phase 3 proceeds alongside it |
-| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
+| 3 — Endpoint | 🚧 In progress, claimed 2026-11-10T05:31Z | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce` | Branch `claude/check-endpoint-734a7a`. Pull request stays open until Phase 4 reports |
 | 4 — Measurement and merge | ⬜ Not started | | Sam decides the go/no-go |
 
 ### Deviations
@@ -134,6 +134,7 @@ notes and commit messages.
 - **For Sam (Task 3.5):** a lower bound of `*` with an upper bound, such as `{*, lte 1.4.4, affected, semver}`, reads Indeterminate at or below `1.4.4`, because the design normalises only `8.1.*`-style bounds. Reading a bare `*` lower bound as `0` would give Affected. It cannot clear a version either way. The review believes Wordfence writes this shape; Phase 4 can count it.
 - Task 3.6: `Combine` step 4 also requires `primary.Comparable` (no effect on outcomes `rowVerdicts` builds). `NamesFor` removes CPE backslash escapes when it turns a CPE vendor or product into a CNA name (`foo\:bar` looks up `foo:bar`); the table stays keyed by the CPE's spelling. `CNAName.Matches` lower-cases both sides, as SQL `lower()` does. Commit `ac983d0`.
 - **For Sam (Task 3.6, `internal/check/names.go`):** design section 4.5's prefix `.net ` also matches a CNA product `.NET Framework 4.8`, so .NET Framework entries are read when checking `microsoft:.net`. Their versions are 4.x, so they can affect only a 4.x check. A test documents it.
+- Task 3.7: `fix_major` also skips one leading `v` (Go module versions) and a PEP 440 epoch (`1!`), as well as a dpkg or RPM epoch. Commit `cc2c772`.
 
 ### Discoveries
 

@@ -180,6 +180,7 @@ notes and commit messages.
   - Round 4 (a review of the round 3 fixes) found no wrong verdict. `238ba4b` adds a test that one key's vendor ranges cannot lift another key's nearby rows (a removed filter passed every test before). `86d5578` passes each key's own ranges in its own row, because the flat form scanned every key's ranges for each candidate row (46 ms to 2.2 s at 2,000 keys, measured with `EXPLAIN ANALYZE`). The controller read the round 4 diff and closed the review there.
   - `1644687`: a CPE vendor or product that is only an escaped `-` is `invalid_cpe`. `NamesFor` returns `(names, cpes, mapped)`, and `nearbyNames` is the one source of nearby-name inputs. `a72bd84`: the 503 detail names no time limit.
 - Phase 4 Step 1: `serve` reads a `pg_dump` copy of the ingest database (`cvert_phase4`), not the database itself, because its embedded worker pool would claim the Phase 2 worker's feed jobs and run them with older feed code. Detail at Phase 4 Step 1.
+- Phase 4 Step 6: the index write cost is measured on a copy, and the Phase 2 ingest (database, volume, container and the locked `check-ingest` worktree) is kept as lasting data at Sam's request, not removed. Detail at Phase 4 Step 6.
 - **Decided by Sam on 2026-11-10, design change to section 4.2:** NVD bounds that are not dotted numbers (`2.0b10`, `1.0.2zf`) are compared by their leading dotted numbers where those differ (`version.CheckProduct`, `6ef031b`; review fixes `4300c7c`: CPE wildcards, `%` and empty ranges are never compared). Added to PR #218. Effect in Phase 4 notes; log `dev/implementation-log/2026-11-10T1041Z-check-nvd-bounds-by-leading-numbers.md`.
 
 ### Discoveries
@@ -1408,7 +1409,7 @@ Needs Phase 2's database and Phase 3's branch.
 
 **Step 5: Merge** the Phase 3 pull request after Sam's decision.
 
-**Step 6: Measure index write cost, then clean up.** On the scratch database only, set the NVD cursor back 7 days, run the worker until it catches up, and record CVEs merged per minute from its log. Drop the four indexes from Task 1.2 and repeat. Record both rates here. Then remove the Phase 2 containers and worktree, confirming first that they are this plan's.
+**Step 6: Measure index write cost on a copy, and keep the ingest.** Sam keeps the full ingest as lasting data: the database `cvert_ops`, the Docker volume `cvert-check-ingest-pgdata`, its container, and the locked `check-ingest` worktree, whose files the container mounts. None of them is changed or removed. (Deviation, 2026-11-10: this step first measured on the ingest database and then removed the Phase 2 containers and worktree.) Measure on a copy: `cvert_phase4`, re-made from `cvert_ops` with `pg_dump`, or a restore of a backup from the kept-data backups folder. On the copy, set the NVD cursor back 7 days, run a worker pointed at the copy until it catches up, and record CVEs merged per minute from its log. Drop the four indexes from Task 1.2 on the copy and repeat. Record both rates here, then drop the copy database.
 
 ### Phase 4 notes
 

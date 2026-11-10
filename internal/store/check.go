@@ -54,7 +54,10 @@ func cnaNameIndexExpr(column string) string {
 // CROSS JOIN LATERAL, so each key is read by one index scan under a LIMIT, and
 // returns the key's 1-based position first. Its last parameter is that LIMIT.
 // Rows of rejected and withdrawn CVEs are read, with their status, so the
-// response can count them.
+// response can count them. The join to cves is a LEFT JOIN because the LIMIT
+// runs before it: a row with no cves row (cve_affected_packages has no foreign
+// key to cves) must still be returned and counted, or a key over its limit
+// could look complete.
 var (
 	checkPackagesSQL = `
 SELECT k.ord, p.cve_id, p.ecosystem, p.package_name, COALESCE(p.range_type, ''), COALESCE(p.introduced, ''),
@@ -65,7 +68,7 @@ CROSS JOIN LATERAL (
   WHERE q.ecosystem = k.eco AND ` + ecosystem.FoldedNameSQL("q.ecosystem", "q.package_name") + ` = k.name
   LIMIT $3
 ) p
-JOIN cves c ON c.cve_id = p.cve_id`
+LEFT JOIN cves c ON c.cve_id = p.cve_id`
 
 	checkCPESQL = `
 SELECT k.ord, m.cve_id, m.cpe_normalized, COALESCE(m.version_start_including, ''), COALESCE(m.version_start_excluding, ''),
@@ -78,7 +81,7 @@ CROSS JOIN LATERAL (
     AND q.vulnerable
   LIMIT $3
 ) m
-JOIN cves c ON c.cve_id = m.cve_id`
+LEFT JOIN cves c ON c.cve_id = m.cve_id`
 
 	// The index holds 256 characters of each name, so the whole vendor and
 	// product are rechecked; full_product is empty for a prefix key.
@@ -95,7 +98,7 @@ CROSS JOIN LATERAL (
     AND (k.full_product = '' OR lower(q.product) = k.full_product)
   LIMIT $6
 ) a
-JOIN cves c ON c.cve_id = a.cve_id`
+LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
 	checkCNAPackageKeysSQL = `
 SELECT k.ord, a.cve_id, a.versions, COALESCE(c.status, '')
@@ -103,7 +106,7 @@ FROM unnest($1::text[]) WITH ORDINALITY AS k(key, ord)
 CROSS JOIN LATERAL (
   SELECT q.* FROM cve_cna_affected q WHERE q.package_key = k.key LIMIT $2
 ) a
-JOIN cves c ON c.cve_id = a.cve_id`
+LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
 	// CNA rows under the vendor whose product contains the fragment, on CVEs
 	// with no cve_cpe_matches row for the item's own CPE vendor.
@@ -124,7 +127,7 @@ CROSS JOIN LATERAL (
     )
   LIMIT $6
 ) a
-JOIN cves c ON c.cve_id = a.cve_id`
+LEFT JOIN cves c ON c.cve_id = a.cve_id`
 
 	checkEnrichmentSQL = `
 SELECT cve_id, severity, cvss_v3_score, in_cisa_kev, epss_score FROM cves WHERE cve_id = ANY($1::text[])`
@@ -295,9 +298,10 @@ type scanned[T any] struct {
 // keeps at most limits.KeyRows rows; a further row sets its Overflow. Every row
 // read counts towards the request's limits. A lookup with no keys is not run.
 //
-// The statement runs under its own context, cancelled once the request's limits
-// are passed, so the driver stops the statement rather than reading its remaining
-// rows when they are closed.
+// The statement runs under its own context, cancelled before its rows are closed
+// on any early return (the request's limits passed, or a row that cannot be
+// read), so the driver stops the statement rather than reading its remaining
+// rows.
 func readKeyRows[T any](ctx context.Context, r *checkRead, name, query string, args []any, out []check.KeyRows[T],
 	scan func(*sql.Rows) (scanned[T], error)) error {
 	if len(out) == 0 {
@@ -310,13 +314,13 @@ func readKeyRows[T any](ctx context.Context, r *checkRead, name, query string, a
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	defer rows.Close() //nolint:errcheck // closed explicitly below; this covers early returns
+	defer cancel()     // runs before the deferred Close
 	for rows.Next() {
 		s, err := scan(rows)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		if err := r.count(s.size); err != nil {
-			cancel()
 			return err
 		}
 		if s.ord < 1 || s.ord > int64(len(out)) {

@@ -433,6 +433,54 @@ func (tr *statementTracer) ended() []pgx.TraceQueryEndData {
 	return slices.Clone(tr.ends)
 }
 
+// tracedStore returns a store on a pool of one application-role connection that
+// records how each statement whose SQL contains match ended.
+func tracedStore(t *testing.T, tdb *testutil.TestDB, match string) (*store.Store, *statementTracer) {
+	t.Helper()
+	tracer := &statementTracer{match: match}
+	cfg, err := pgxpool.ParseConfig(tdb.AppURL)
+	if err != nil {
+		t.Fatalf("parse app pool config: %v", err)
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode
+	cfg.ConnConfig.Tracer = tracer
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return store.New(pool), tracer
+}
+
+// TestReadCheckCandidates_ScanErrorStopsStatement runs a statement of more rows
+// than pgx buffers through a lookup whose scan fails on the first row. The
+// statement must be stopped, not read to its end when its rows are closed, and
+// the store must answer the next read on its one pool connection.
+func TestReadCheckCandidates_ScanErrorStopsStatement(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := checkOrg(t, tdb)
+	traced, tracer := tracedStore(t, tdb, "generate_series")
+
+	err := traced.ReadKeyRowsFailingScan(ctx, orgID, "SELECT g FROM generate_series(1, 100000) AS g")
+	if !errors.Is(err, store.ErrScanFailed) {
+		t.Fatalf("err = %v, want ErrScanFailed", err)
+	}
+	ends := tracer.ended()
+	if len(ends) != 1 {
+		t.Fatalf("statement ended %d times, want once: %+v", len(ends), ends)
+	}
+	if ends[0].Err == nil {
+		t.Errorf("statement completed (%s), want it stopped once the scan failed", ends[0].CommandTag)
+	}
+
+	if _, _, _, err := traced.ReadCheckCandidatesWith(ctx, orgID, check.Keys{}, store.DefaultCheckLimits, nil); err != nil {
+		t.Fatalf("read after the stopped statement: %v", err)
+	}
+}
+
 // TestReadCheckCandidates_RequestLimitStopsStatement reads a key with more rows
 // than pgx buffers, over a request limit of one row. The packages statement must
 // be stopped, not read to its end when its rows are closed, and the store must
@@ -449,21 +497,7 @@ func TestReadCheckCandidates_RequestLimitStopsStatement(t *testing.T) {
 	}
 	ingestPatch(t, tdb, "osv", feed.CanonicalPatch{CVEID: "CVE-2026-90075", AffectedPackages: pkgs})
 	orgID := checkOrg(t, tdb)
-
-	tracer := &statementTracer{match: "cve_affected_packages"}
-	cfg, err := pgxpool.ParseConfig(tdb.AppURL)
-	if err != nil {
-		t.Fatalf("parse app pool config: %v", err)
-	}
-	cfg.ConnConfig.DefaultQueryExecMode = store.DefaultQueryExecMode
-	cfg.ConnConfig.Tracer = tracer
-	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	traced := store.New(pool)
+	traced, tracer := tracedStore(t, tdb, "cve_affected_packages")
 
 	keys := check.Keys{Packages: []check.PackageKey{{Ecosystem: "npm", Name: "many"}}}
 	limits := store.DefaultCheckLimits

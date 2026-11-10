@@ -4,6 +4,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	"github.com/google/uuid"
 
@@ -28,4 +30,19 @@ var (
 func (s *Store) ReadCheckCandidatesWith(ctx context.Context, orgID uuid.UUID, keys check.Keys, limits CheckLimits,
 	afterStatement func(name string)) (check.Candidates, map[string]check.CVEEnrichment, []check.FeedRow, error) {
 	return s.readCheckCandidates(ctx, orgID, keys, limits, afterStatement)
+}
+
+// ErrScanFailed is the error ReadKeyRowsFailingScan's scan returns.
+var ErrScanFailed = errors.New("scan failed")
+
+// ReadKeyRowsFailingScan runs query through readKeyRows in a version check
+// snapshot, as the lookup of one key whose scan returns ErrScanFailed on the
+// first row. No version check statement can fail to scan its own rows, so the
+// test of what readKeyRows does on a scan error uses this.
+func (s *Store) ReadKeyRowsFailingScan(ctx context.Context, orgID uuid.UUID, query string) error {
+	return s.withOrgSnapshotTx(ctx, orgID, func(tx *sql.Tx) error {
+		r := &checkRead{tx: tx, limits: defaultCheckLimits, advisories: map[string]bool{}}
+		return readKeyRows(ctx, r, "failing_scan", query, nil, make([]check.KeyRows[struct{}], 1),
+			func(*sql.Rows) (scanned[struct{}], error) { return scanned[struct{}]{}, ErrScanFailed })
+	})
 }

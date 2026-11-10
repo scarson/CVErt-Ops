@@ -714,6 +714,41 @@ func TestEvaluateCNANamesDeduplicated(t *testing.T) {
 	}
 }
 
+// TestEvaluateOtherCPESpellings checks that a CPE item reads the NVD rows of the
+// other CPE spellings its name table row lists: older nginx CVEs are under
+// nginx:nginx only, and a f5:nginx item must not answer not_affected for them.
+func TestEvaluateOtherCPESpellings(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		item            string
+		vendor, product string // where the advisory's NVD rows are stored
+		start, end      string
+	}{
+		{name: "f5:nginx reads nginx:nginx", item: "cpe:2.3:a:f5:nginx:1.13.0:*:*:*:*:*:*:*",
+			vendor: "nginx", product: "nginx", start: "0.5.6", end: "1.13.3"},
+		{name: "nginx:nginx reads f5:nginx", item: "cpe:2.3:a:nginx:nginx:1.25.0:*:*:*:*:*:*:*",
+			vendor: "f5", product: "nginx", start: "1.25.0", end: "1.25.4"},
+		{name: "microsoft:.net reads microsoft:.net_core", item: "cpe:2.3:a:microsoft:.net:3.1.0:*:*:*:*:*:*:*",
+			vendor: "microsoft", product: ".net_core", start: "3.1.0", end: "3.1.32"},
+		{name: "microsoft:.net_core reads microsoft:.net", item: "cpe:2.3:a:microsoft:.net_core:8.0.1:*:*:*:*:*:*:*",
+			vendor: "microsoft", product: ".net", start: "8.0.0", end: "8.0.11"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(RawItem{CPE: tt.item})
+			stored := "cpe:2.3:a:" + tt.vendor + ":" + tt.product + ":*:*:*:*:*:*:*:*"
+			r := rowsFor(t, items).cpes(tt.vendor, tt.product, cpeAt(cveA, stored, tt.start, tt.end))
+			got := run(t, items, r).Results[0]
+			if got.Status != StatusAffected || got.Counts != (Counts{Affected: 1}) {
+				t.Errorf("status = %s, counts %+v; want affected by %s; advisories %s",
+					got.Status, got.Counts, cveA, jsonOf(t, got.Advisories))
+			}
+		})
+	}
+}
+
 // TestEvaluateCNACopiesDifferingInVersions checks that two stored CNA rows on
 // one CVE that differ only in their versions are both read: the second copy
 // reports 24.22.1 Affected where NVD's range does not.

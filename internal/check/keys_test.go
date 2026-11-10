@@ -4,6 +4,7 @@ package check
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -66,16 +67,17 @@ func TestKeysFor(t *testing.T) {
 func TestKeysForItemUses(t *testing.T) {
 	t.Parallel()
 	_, uses := keysWithUses(keysItems())
-	none := itemKeys{pkg: -1, cpe: -1, cnaPackage: -1, near: -1}
+	none := itemKeys{pkg: -1, cnaPackage: -1, near: -1}
 	want := []itemKeys{
-		{pkg: 0, cpe: -1, cnaPackage: 0, near: -1},
-		{pkg: 0, cpe: -1, cnaPackage: 0, near: -1},
-		{pkg: 1, cpe: -1, cnaPackage: -1, near: -1}, // distro items use no CNA rows
-		{pkg: -1, cpe: 0, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: 0},
-		{pkg: -1, cpe: 1, cnaNames: []int{3, 4}, cnaPackage: -1, near: 1},
-		{pkg: -1, cpe: 2, cnaNames: []int{5, 4}, cnaPackage: -1, near: 1},
+		{pkg: 0, cnaPackage: 0, near: -1},
+		{pkg: 0, cnaPackage: 0, near: -1},
+		{pkg: 1, cnaPackage: -1, near: -1}, // distro items use no CNA rows
+		{pkg: -1, cpes: []int{0}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: 0},
+		// Both .NET spellings read the NVD rows under each.
+		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{3, 4}, cnaPackage: -1, near: 1},
+		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{5, 4}, cnaPackage: -1, near: 1},
 		none, // an invalid item uses no keys
-		{pkg: 2, cpe: -1, cnaPackage: 1, near: -1},
+		{pkg: 2, cnaPackage: 1, near: -1},
 	}
 	if !reflect.DeepEqual(uses, want) {
 		t.Errorf("item keys =\n%+v\nwant\n%+v", uses, want)
@@ -86,6 +88,42 @@ func TestKeysForInvalidItemsOnly(t *testing.T) {
 	t.Parallel()
 	if got := KeysFor(parseItems(RawItem{CPE: "nope"}, RawItem{})); !reflect.DeepEqual(got, Keys{}) {
 		t.Errorf("KeysFor of invalid items = %+v, want no keys", got)
+	}
+}
+
+// TestKeysForCPESpellings checks that a CPE with a name table row reads the NVD
+// rows of every CPE spelling the row lists, with the item's own part, that the
+// shared prefixes are read once when both spellings are in one request, and
+// that a CPE with no table row reads only its own prefix.
+func TestKeysForCPESpellings(t *testing.T) {
+	t.Parallel()
+	prefix := func(part, vendor, product string) CPEKey {
+		lo := "cpe:2.3:" + part + ":" + vendor + ":" + product + ":"
+		return CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}
+	}
+	keys, uses := keysWithUses(parseItems(
+		RawItem{CPE: "cpe:2.3:a:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
+		RawItem{CPE: "cpe:2.3:a:nginx:nginx:1.13.0:*:*:*:*:*:*:*"},
+		RawItem{CPE: "cpe:2.3:a:acme:widget:1.0:*:*:*:*:*:*:*"},
+		RawItem{CPE: "cpe:2.3:o:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
+	))
+	wantPrefixes := []CPEKey{
+		prefix("a", "f5", "nginx"), prefix("a", "nginx", "nginx"),
+		prefix("a", "acme", "widget"),
+		prefix("o", "f5", "nginx"), prefix("o", "nginx", "nginx"),
+	}
+	if !reflect.DeepEqual(keys.CPEPrefixes, wantPrefixes) {
+		t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, wantPrefixes)
+	}
+	wantUses := [][]int{{0, 1}, {0, 1}, {2}, {3, 4}}
+	for i, want := range wantUses {
+		if !reflect.DeepEqual(uses[i].cpes, want) {
+			t.Errorf("item %d CPE keys = %v, want %v", i, uses[i].cpes, want)
+		}
+	}
+	// Both nginx spellings also read the CNA name nginx / nginx.
+	if !slices.Contains(keys.CNANames, exactName("nginx", "nginx")) {
+		t.Errorf("CNA name keys = %+v, want nginx / nginx among them", keys.CNANames)
 	}
 }
 

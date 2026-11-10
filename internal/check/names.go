@@ -29,43 +29,63 @@ func (n CNAName) Matches(vendor, product string) bool {
 }
 
 type cnaMapping struct {
+	// CPEs are the CPE "vendor:product" keys, as ProductRef holds them, that
+	// name one product. A CPE item reads the NVD rows under each of them.
+	CPEs     []string
 	Names    []CNAName
 	Fragment string // product-name fragment for the nearby-name check
 	Vendor   string // CNA vendor for the nearby-name check
 }
 
-var (
-	nodeMapping = cnaMapping{
+// cnaTable is design section 4.5's table: further CNA names for CPE products
+// whose CNA records spell the vendor or product differently. CPEs are lower
+// case with escapes as written, and every name is lower case. A row with two
+// CPE spellings treats them as one product, so an item under either reads NVD
+// rows under both: older nginx CVEs are under nginx:nginx only.
+var cnaTable = []cnaMapping{
+	{
+		CPEs:     []string{"nodejs:node.js"},
 		Names:    []CNAName{{Vendor: "nodejs", Product: "node"}, {Vendor: "nodejs", Product: "nodejs"}},
 		Fragment: "node", Vendor: "nodejs",
-	}
-	nginxMapping = cnaMapping{
-		Names:    []CNAName{{Vendor: "f5", Product: "nginx open source"}, {Vendor: "f5", Product: "nginx"}},
+	},
+	{CPEs: []string{"php:php"}, Names: []CNAName{{Vendor: "php group", Product: "php"}}, Fragment: "php", Vendor: "php group"},
+	{
+		CPEs: []string{"f5:nginx", "nginx:nginx"},
+		// nginx / nginx is the spelling of CVE-2017-7529 (design section 2).
+		Names: []CNAName{
+			{Vendor: "f5", Product: "nginx open source"}, {Vendor: "f5", Product: "nginx"}, {Vendor: "nginx", Product: "nginx"},
+		},
 		Fragment: "nginx", Vendor: "f5",
-	}
-	// The prefix holds every major's spelling: ".NET 6.0", ".NET 9.0 runtime".
-	dotnetMapping = cnaMapping{
+	},
+	{
+		CPEs: []string{"microsoft:.net", "microsoft:.net_core"},
+		// The prefix holds every major's spelling: ".NET 6.0", ".NET 9.0 runtime".
 		Names:    []CNAName{{Vendor: "microsoft", Product: ".net ", Prefix: true}},
 		Fragment: ".net", Vendor: "microsoft",
-	}
-)
-
-// cnaNames is design section 4.5's table: further CNA names for CPE products
-// whose CNA records spell the vendor or product differently. It is keyed by
-// "vendor:product" as ProductRef holds a CPE (lower case, escapes as written),
-// and every name is lower case.
-var cnaNames = map[string]cnaMapping{
-	"nodejs:node.js":        nodeMapping,
-	"php:php":               {Names: []CNAName{{Vendor: "php group", Product: "php"}}, Fragment: "php", Vendor: "php group"},
-	"f5:nginx":              nginxMapping,
-	"nginx:nginx":           nginxMapping,
-	"microsoft:.net":        dotnetMapping,
-	"microsoft:.net_core":   dotnetMapping,
-	"postgresql:postgresql": {Names: []CNAName{{Vendor: "n/a", Product: "postgresql"}}, Fragment: "postgresql", Vendor: "n/a"},
-	"python:python": {
+	},
+	{
+		CPEs:     []string{"postgresql:postgresql"},
+		Names:    []CNAName{{Vendor: "n/a", Product: "postgresql"}},
+		Fragment: "postgresql", Vendor: "n/a",
+	},
+	{
+		CPEs:     []string{"python:python"},
 		Names:    []CNAName{{Vendor: "python software foundation", Product: "cpython"}},
 		Fragment: "python", Vendor: "python software foundation",
 	},
+}
+
+// cnaNames finds cnaTable's row for a CPE "vendor:product".
+var cnaNames = indexCNATable(cnaTable)
+
+func indexCNATable(table []cnaMapping) map[string]cnaMapping {
+	index := map[string]cnaMapping{}
+	for _, row := range table {
+		for _, cpe := range row.CPEs {
+			index[cpe] = row
+		}
+	}
+	return index
 }
 
 // NamesFor returns every CNA name to look up: always the CPE's own, plus the
@@ -73,21 +93,23 @@ var cnaNames = map[string]cnaMapping{
 //
 // The CPE's own name is its vendor and product as plain text: each CPE escape
 // becomes the character it quotes, and an unescaped "_" is read as a space. The
-// mapping gives the vendor and name fragment for the nearby-name check: the
-// table's, or with no table row the CPE's own name. Every name is listed once.
+// mapping gives the CPE spellings whose NVD rows are the product's, and the
+// vendor and name fragment for the nearby-name check: the table's, or with no
+// table row the CPE's own. Every name is listed once.
 func NamesFor(p ProductRef) (names []CNAName, mapping cnaMapping, mapped bool) {
+	ownCPE := p.Vendor + ":" + p.Product
 	own := CNAName{Vendor: cnaText(p.Vendor), Product: cnaText(p.Product)}
 	names = []CNAName{own}
-	row, mapped := cnaNames[p.Vendor+":"+p.Product]
+	row, mapped := cnaNames[ownCPE]
 	if !mapped {
-		return names, cnaMapping{Fragment: own.Product, Vendor: own.Vendor}, false
+		return names, cnaMapping{CPEs: []string{ownCPE}, Fragment: own.Product, Vendor: own.Vendor}, false
 	}
 	for _, n := range row.Names {
 		if !slices.Contains(names, n) {
 			names = append(names, n)
 		}
 	}
-	row.Names = slices.Clone(row.Names)
+	row.CPEs, row.Names = slices.Clone(row.CPEs), slices.Clone(row.Names)
 	return names, row, true
 }
 

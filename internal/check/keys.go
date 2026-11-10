@@ -71,7 +71,8 @@ type CNANearRow struct{ CVEID, Vendor, Product, Status string }
 
 // itemKeys holds the indices into Keys of the keys one item uses; -1 for none.
 type itemKeys struct {
-	pkg, cpe   int
+	pkg        int
+	cpes       []int
 	cnaNames   []int
 	cnaPackage int
 	near       int
@@ -89,7 +90,7 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 	var b keyBuilder
 	uses := make([]itemKeys, len(items))
 	for i, item := range items {
-		use := itemKeys{pkg: -1, cpe: -1, cnaPackage: -1, near: -1}
+		use := itemKeys{pkg: -1, cnaPackage: -1, near: -1}
 		switch {
 		case item.Error != nil:
 		case item.Package != nil:
@@ -101,9 +102,12 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			}
 		case item.Product != nil:
 			p := *item.Product
-			lo := "cpe:2.3:" + p.Part + ":" + p.Vendor + ":" + p.Product + ":"
-			use.cpe = add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo)})
 			names, mapping, _ := NamesFor(p)
+			// Every spelling the mapping lists is this product, with the item's part.
+			for _, cpe := range mapping.CPEs {
+				lo := "cpe:2.3:" + p.Part + ":" + cpe + ":"
+				use.cpes = append(use.cpes, add(&b.cpes, &b.keys.CPEPrefixes, CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}))
+			}
 			for _, n := range names {
 				k := add(&b.cnaNames, &b.keys.CNANames, cnaNameKey(n))
 				if !slices.Contains(use.cnaNames, k) {

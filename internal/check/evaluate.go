@@ -193,8 +193,8 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 			a.cna = append(a.cna, row)
 		}
 	}
-	if use.cpe >= 0 {
-		kr := data.CPEs[use.cpe]
+	for _, k := range use.cpes {
+		kr := data.CPEs[k]
 		count(len(kr.Rows), kr.Overflow)
 		for _, row := range kr.Rows {
 			a := r.advisory(row.CVEID, row.Status)

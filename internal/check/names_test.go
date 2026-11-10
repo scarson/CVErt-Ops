@@ -4,11 +4,26 @@ package check
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
 func TestNamesFor(t *testing.T) {
 	t.Parallel()
+	// Both CPE spellings of nginx, and of .NET, share one table row, so each
+	// spelling reads the other's NVD rows.
+	nginx := cnaMapping{
+		CPEs: []string{"f5:nginx", "nginx:nginx"},
+		Names: []CNAName{
+			{Vendor: "f5", Product: "nginx open source"}, {Vendor: "f5", Product: "nginx"}, {Vendor: "nginx", Product: "nginx"},
+		},
+		Fragment: "nginx", Vendor: "f5",
+	}
+	dotnet := cnaMapping{
+		CPEs:     []string{"microsoft:.net", "microsoft:.net_core"},
+		Names:    []CNAName{{Vendor: "microsoft", Product: ".net ", Prefix: true}},
+		Fragment: ".net", Vendor: "microsoft",
+	}
 	tests := []struct {
 		name        string
 		product     ProductRef
@@ -25,6 +40,7 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "nodejs", Product: "nodejs"},
 			},
 			wantMapping: cnaMapping{
+				CPEs:     []string{"nodejs:node.js"},
 				Names:    []CNAName{{Vendor: "nodejs", Product: "node"}, {Vendor: "nodejs", Product: "nodejs"}},
 				Fragment: "node", Vendor: "nodejs",
 			},
@@ -34,27 +50,24 @@ func TestNamesFor(t *testing.T) {
 			name:        "openssl:openssl: its own name only, not mapped",
 			product:     ProductRef{Part: "a", Vendor: "openssl", Product: "openssl"},
 			wantNames:   []CNAName{{Vendor: "openssl", Product: "openssl"}},
-			wantMapping: cnaMapping{Fragment: "openssl", Vendor: "openssl"},
+			wantMapping: cnaMapping{CPEs: []string{"openssl:openssl"}, Fragment: "openssl", Vendor: "openssl"},
 		},
 		{
 			name:        "apache:http_server: underscore read as a space",
 			product:     ProductRef{Part: "a", Vendor: "apache", Product: "http_server"},
 			wantNames:   []CNAName{{Vendor: "apache", Product: "http server"}},
-			wantMapping: cnaMapping{Fragment: "http server", Vendor: "apache"},
+			wantMapping: cnaMapping{CPEs: []string{"apache:http_server"}, Fragment: "http server", Vendor: "apache"},
 		},
 		{
-			name:    "nginx:nginx: its own name and the table's F5 names",
+			name:    "nginx:nginx: its own name equals a table name and is listed once",
 			product: ProductRef{Part: "a", Vendor: "nginx", Product: "nginx"},
 			wantNames: []CNAName{
 				{Vendor: "nginx", Product: "nginx"},
 				{Vendor: "f5", Product: "nginx open source"},
 				{Vendor: "f5", Product: "nginx"},
 			},
-			wantMapping: cnaMapping{
-				Names:    []CNAName{{Vendor: "f5", Product: "nginx open source"}, {Vendor: "f5", Product: "nginx"}},
-				Fragment: "nginx", Vendor: "f5",
-			},
-			wantMapped: true,
+			wantMapping: nginx,
+			wantMapped:  true,
 		},
 		{
 			name:    "f5:nginx: its own name equals a table name and is listed once",
@@ -62,12 +75,10 @@ func TestNamesFor(t *testing.T) {
 			wantNames: []CNAName{
 				{Vendor: "f5", Product: "nginx"},
 				{Vendor: "f5", Product: "nginx open source"},
+				{Vendor: "nginx", Product: "nginx"},
 			},
-			wantMapping: cnaMapping{
-				Names:    []CNAName{{Vendor: "f5", Product: "nginx open source"}, {Vendor: "f5", Product: "nginx"}},
-				Fragment: "nginx", Vendor: "f5",
-			},
-			wantMapped: true,
+			wantMapping: nginx,
+			wantMapped:  true,
 		},
 		{
 			name:    "microsoft:.net: the .net prefix",
@@ -76,11 +87,8 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "microsoft", Product: ".net"},
 				{Vendor: "microsoft", Product: ".net ", Prefix: true},
 			},
-			wantMapping: cnaMapping{
-				Names:    []CNAName{{Vendor: "microsoft", Product: ".net ", Prefix: true}},
-				Fragment: ".net", Vendor: "microsoft",
-			},
-			wantMapped: true,
+			wantMapping: dotnet,
+			wantMapped:  true,
 		},
 		{
 			name:    "microsoft:.net_core: the .net prefix",
@@ -89,11 +97,8 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "microsoft", Product: ".net core"},
 				{Vendor: "microsoft", Product: ".net ", Prefix: true},
 			},
-			wantMapping: cnaMapping{
-				Names:    []CNAName{{Vendor: "microsoft", Product: ".net ", Prefix: true}},
-				Fragment: ".net", Vendor: "microsoft",
-			},
-			wantMapped: true,
+			wantMapping: dotnet,
+			wantMapped:  true,
 		},
 		{
 			name:    "php:php",
@@ -102,8 +107,11 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "php", Product: "php"},
 				{Vendor: "php group", Product: "php"},
 			},
-			wantMapping: cnaMapping{Names: []CNAName{{Vendor: "php group", Product: "php"}}, Fragment: "php", Vendor: "php group"},
-			wantMapped:  true,
+			wantMapping: cnaMapping{
+				CPEs:  []string{"php:php"},
+				Names: []CNAName{{Vendor: "php group", Product: "php"}}, Fragment: "php", Vendor: "php group",
+			},
+			wantMapped: true,
 		},
 		{
 			name:    "postgresql:postgresql",
@@ -112,8 +120,11 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "postgresql", Product: "postgresql"},
 				{Vendor: "n/a", Product: "postgresql"},
 			},
-			wantMapping: cnaMapping{Names: []CNAName{{Vendor: "n/a", Product: "postgresql"}}, Fragment: "postgresql", Vendor: "n/a"},
-			wantMapped:  true,
+			wantMapping: cnaMapping{
+				CPEs:  []string{"postgresql:postgresql"},
+				Names: []CNAName{{Vendor: "n/a", Product: "postgresql"}}, Fragment: "postgresql", Vendor: "n/a",
+			},
+			wantMapped: true,
 		},
 		{
 			name:    "python:python",
@@ -123,6 +134,7 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "python software foundation", Product: "cpython"},
 			},
 			wantMapping: cnaMapping{
+				CPEs:     []string{"python:python"},
 				Names:    []CNAName{{Vendor: "python software foundation", Product: "cpython"}},
 				Fragment: "python", Vendor: "python software foundation",
 			},
@@ -133,14 +145,14 @@ func TestNamesFor(t *testing.T) {
 			name:        `foo\:bar:product: an escaped vendor becomes foo:bar`,
 			product:     ProductRef{Part: "a", Vendor: `foo\:bar`, Product: "product"},
 			wantNames:   []CNAName{{Vendor: "foo:bar", Product: "product"}},
-			wantMapping: cnaMapping{Fragment: "product", Vendor: "foo:bar"},
+			wantMapping: cnaMapping{CPEs: []string{`foo\:bar:product`}, Fragment: "product", Vendor: "foo:bar"},
 		},
 		{
 			// An escaped underscore is a literal underscore, not a space.
 			name:        `vendor:a\_b_c\.d\\e: escapes and underscores`,
 			product:     ProductRef{Part: "a", Vendor: "vendor", Product: `a\_b_c\.d\\e`},
 			wantNames:   []CNAName{{Vendor: "vendor", Product: `a_b c.d\e`}},
-			wantMapping: cnaMapping{Fragment: `a_b c.d\e`, Vendor: "vendor"},
+			wantMapping: cnaMapping{CPEs: []string{`vendor:a\_b_c\.d\\e`}, Fragment: `a_b c.d\e`, Vendor: "vendor"},
 		},
 		{
 			// The table is keyed by the CPE's spelling as written, so an escaped
@@ -148,7 +160,7 @@ func TestNamesFor(t *testing.T) {
 			name:        `microsoft:\.net: escaped spelling is not a table key`,
 			product:     ProductRef{Part: "a", Vendor: "microsoft", Product: `\.net`},
 			wantNames:   []CNAName{{Vendor: "microsoft", Product: ".net"}},
-			wantMapping: cnaMapping{Fragment: ".net", Vendor: "microsoft"},
+			wantMapping: cnaMapping{CPEs: []string{`microsoft:\.net`}, Fragment: ".net", Vendor: "microsoft"},
 		},
 	}
 	for _, tt := range tests {
@@ -184,6 +196,26 @@ func TestCNANamesTableIsLowerCase(t *testing.T) {
 		if m.Fragment == "" || m.Vendor == "" || len(m.Names) == 0 {
 			t.Errorf("table %q is incomplete: %+v", key, m)
 		}
+		if !slices.Contains(m.CPEs, key) {
+			t.Errorf("table %q lists CPEs %q, which do not hold its own key", key, m.CPEs)
+		}
+	}
+}
+
+// Every CPE a table row lists finds that row, and no CPE is in two rows.
+func TestCNATableIndexesEveryCPE(t *testing.T) {
+	t.Parallel()
+	listed := 0
+	for _, m := range cnaTable {
+		listed += len(m.CPEs)
+		for _, cpe := range m.CPEs {
+			if !reflect.DeepEqual(cnaNames[cpe], m) {
+				t.Errorf("CPE %q finds %+v, want its row %+v", cpe, cnaNames[cpe], m)
+			}
+		}
+	}
+	if listed != len(cnaNames) {
+		t.Errorf("table rows list %d CPEs, index holds %d: a CPE is in two rows", listed, len(cnaNames))
 	}
 }
 
@@ -202,9 +234,10 @@ func TestNamesForDoesNotShareTheTable(t *testing.T) {
 	t.Parallel()
 	_, mapping, _ := NamesFor(ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"})
 	mapping.Names[0].Product = "changed"
+	mapping.CPEs[0] = "changed"
 	_, again, _ := NamesFor(ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"})
-	if again.Names[0].Product != "node" {
-		t.Errorf("NamesFor returned the table's own slice: table now holds %+v", again.Names)
+	if again.Names[0].Product != "node" || again.CPEs[0] != "nodejs:node.js" {
+		t.Errorf("NamesFor returned the table's own slices: table now holds %+v and %q", again.Names, again.CPEs)
 	}
 }
 

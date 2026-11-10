@@ -190,7 +190,15 @@ func parsePurl(item Item, raw string) Item {
 // formatted string. The version component counts as stated unless it is "*", "-"
 // or empty. Both versions lose one leading "v" or "V" before a digit, because
 // node --version prints v24.22.0 and product versions compare as dotted numbers.
+//
+// A CPE 2.3 formatted string is printable ASCII, so any other character refuses
+// the item before lower-casing: Go's strings.ToLower and PostgreSQL's lower(),
+// which folds stored CNA names, can disagree outside ASCII, and a key that
+// misses its stored rows would read as not affected.
 func parseCPE(item Item, raw, version string) Item {
+	if strings.ContainsFunc(raw, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
+		return refuse(item, "invalid_cpe")
+	}
 	cpe := strings.ToLower(raw)
 	if !strings.HasPrefix(cpe, "cpe:2.3:") {
 		return refuse(item, "invalid_cpe")

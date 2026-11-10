@@ -204,7 +204,7 @@ In production only Caddy publishes host ports, so everything else goes through y
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NVD_API_KEY` | (none) | NVD API key (recommended for higher rate limits) |
-| `GITHUB_TOKEN` | (none) | GitHub token for the GHSA feed (recommended for higher rate limits) |
+| `GITHUB_GHSA_TOKEN` | (none) | GitHub token for the GHSA feed (recommended for higher rate limits) |
 | `FEED_SCHEDULER_ENABLED` | `true` | Enable automatic feed scheduling |
 
 ## Next Steps

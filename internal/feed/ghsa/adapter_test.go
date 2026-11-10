@@ -1251,6 +1251,21 @@ func TestFetch_TokenAuthHeaderSet(t *testing.T) {
 	}
 }
 
+// GITHUB_TOKEN is set by GitHub Actions and the gh CLI for other purposes, so
+// the adapter must not send it to the advisories endpoint.
+func TestNewReadsGHSATokenOnly(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "unrelated-token")
+	t.Setenv("GITHUB_GHSA_TOKEN", "ghsa-token")
+	if got := New(nil).token; got != "ghsa-token" {
+		t.Errorf("token = %q, want %q", got, "ghsa-token")
+	}
+
+	t.Setenv("GITHUB_GHSA_TOKEN", "")
+	if got := New(nil).token; got != "" {
+		t.Errorf("token with only GITHUB_TOKEN set = %q, want empty", got)
+	}
+}
+
 func TestFetch_NoTokenOmitsAuthHeader(t *testing.T) {
 	t.Parallel()
 

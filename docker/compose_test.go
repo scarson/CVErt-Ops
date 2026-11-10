@@ -42,7 +42,7 @@ var settingsWithheldFromApp = map[string]string{
 
 // settingsReadOutsideConfig lists settings the binary reads with os.Getenv
 // rather than through config.Config.
-var settingsReadOutsideConfig = []string{"GITHUB_TOKEN"}
+var settingsReadOutsideConfig = []string{"GITHUB_GHSA_TOKEN"}
 
 // configSettings returns every environment variable config.Config reads.
 func configSettings(t *testing.T) []string {
@@ -204,7 +204,7 @@ func TestProductionRenderCarriesOperatorSettings(t *testing.T) {
 		"TRUSTED_PROXIES=172.16.0.0/12\n"+
 		"SMTP_HOST=smtp.example.test\n"+
 		"SMTP_PORT=587\n"+
-		"GITHUB_TOKEN=test-github-token\n")
+		"GITHUB_GHSA_TOKEN=test-github-token\n")
 	rendered, err := renderCompose(t, envFile, baseFile, productionFile)
 	if err != nil {
 		t.Fatalf("render: %v", err)
@@ -219,7 +219,7 @@ func TestProductionRenderCarriesOperatorSettings(t *testing.T) {
 		"TRUSTED_PROXIES":       "172.16.0.0/12",
 		"SMTP_HOST":             "smtp.example.test",
 		"SMTP_PORT":             "587",
-		"GITHUB_TOKEN":          "test-github-token",
+		"GITHUB_GHSA_TOKEN":     "test-github-token",
 	} {
 		if got := app.Environment[key]; got == nil || *got != want {
 			t.Errorf("app %s = %v, want %q", key, got, want)

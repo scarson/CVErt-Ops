@@ -631,9 +631,12 @@ func TestWithOrgSnapshotTx_Mode(t *testing.T) {
 	ctx := context.Background()
 	orgID := checkOrg(t, tdb)
 
-	var readOnly, isolation string
+	var readOnly, isolation, jit string
 	err := tdb.AppStore.WithOrgSnapshotTx(ctx, orgID, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, "SHOW transaction_read_only").Scan(&readOnly); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, "SHOW jit").Scan(&jit); err != nil {
 			return err
 		}
 		return tx.QueryRowContext(ctx, "SHOW transaction_isolation").Scan(&isolation)
@@ -643,6 +646,9 @@ func TestWithOrgSnapshotTx_Mode(t *testing.T) {
 	}
 	if readOnly != "on" || isolation != "repeatable read" {
 		t.Errorf("transaction_read_only = %q, transaction_isolation = %q; want on, repeatable read", readOnly, isolation)
+	}
+	if jit != "off" {
+		t.Errorf("jit = %q inside the snapshot, want off", jit)
 	}
 }
 

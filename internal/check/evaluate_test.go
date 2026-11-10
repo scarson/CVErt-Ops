@@ -73,22 +73,37 @@ func (r *testRows) overflowPackages(eco, name string) *testRows {
 	return r
 }
 
-func (r *testRows) cpeKey(vendor, product string) int {
+// cpeKeys returns the index of every key of the product: one per item version.
+func (r *testRows) cpeKeys(vendor, product string) []int {
 	r.t.Helper()
 	lo := "cpe:2.3:a:" + vendor + ":" + product + ":"
-	return r.found("CPE", slices.IndexFunc(r.keys.CPEPrefixes, func(k CPEKey) bool { return k.Lo == lo }))
+	var found []int
+	for i, k := range r.keys.CPEPrefixes {
+		if k.Lo == lo {
+			found = append(found, i)
+		}
+	}
+	if len(found) == 0 {
+		r.t.Fatalf("KeysFor gave no CPE key")
+	}
+	return found
 }
 
+// cpes adds rows at every key of the product, as the product's stored rows are
+// read for each item version.
 func (r *testRows) cpes(vendor, product string, rows ...CPERow) *testRows {
 	r.t.Helper()
-	i := r.cpeKey(vendor, product)
-	r.data.CPEs[i].Rows = append(r.data.CPEs[i].Rows, rows...)
+	for _, i := range r.cpeKeys(vendor, product) {
+		r.data.CPEs[i].Rows = append(r.data.CPEs[i].Rows, rows...)
+	}
 	return r
 }
 
 func (r *testRows) overflowCPEs(vendor, product string) *testRows {
 	r.t.Helper()
-	r.data.CPEs[r.cpeKey(vendor, product)].Overflow = true
+	for _, i := range r.cpeKeys(vendor, product) {
+		r.data.CPEs[i].Overflow = true
+	}
 	return r
 }
 

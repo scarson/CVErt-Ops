@@ -168,6 +168,15 @@ A version that is not dotted numbers, such as `1.24rc1` or `8.5.4-0ubuntu1.4` gi
 
 A suffix never moves a version past a different leading number in any version scheme this applies to (pre-releases, letter releases, `-rc1`, `(55)se`), except an epoch, which is excluded. A fixed bound that is not dotted numbers gives no `fixed_version`, because `NumericOrder` cannot order it (section 7). CNA versions keep their own rules (section 4.3); this applies to NVD rows only.
 
+**Rows below the version are not read** (amended 2026-11-10; Sam's decision). The lookup read every vulnerable row of a product for every item version. On the partial ingest `o:linux:linux_kernel` has 82,061 such rows, about 90% of them exact 2.6.x releases from 2004 to 2014, so every kernel item passed the 50,000-row limit and answered `too_many_candidates`. A publication-date cutoff was considered and rejected: 7 kernel CVEs from before 2015 have rows with no bounds, which hold an item at cannot evaluate, and dropping them could give a wrong "not affected". The lookup instead leaves out rows that cannot matter to the item's version:
+
+- **The rule** (`version.ProductRangeBelow`). A row's range lies wholly below a version when it has exactly one upper bound, that bound follows `Introduced` (decided above it, or the identical text with an inclusive bound), and the bound is decided below the version. "Decided" is the leading-number decision above, taken only between plain bounds: at most 256 bytes, starting with a digit, and holding none of `%`, `*`, `?`, `\`, `:` and `!`. `CheckProduct` answers Not affected on such a row for that version and for every dotted-number version at or above it.
+- **The floor.** A CPE key carries a floor: the first two components of the item version (`6.12` for `6.12.7`). The floor is at or below the version, so a row below the floor is below the version. Items of one product whose versions share a floor share one read; that is why the floor is not the whole version. An item version that is not dotted numbers has no floor, and its key reads every row as before.
+- **What the lookup returns.** For a key with a floor: every row the rule does not report, and for each CVE with reported rows one row holding their count. A counted CVE is still NVD-analysed: its counted rows are compared rows that answer Not affected, so step 4 of section 4.4 applies and the CVE is not read as unanalysed (`cna_cannot_clear`). It is counted in `counts` (`not_affected`, or `retracted` by its status) as before, and its counted rows still count towards its 1,000-range limit.
+- **Kept, because the rule cannot reason about them or they can still matter:** a row with no bounds or with `-`; a literal version component with bounds; two start bounds or two end bounds; a row with no upper bound; an inverted or empty range, and one whose bounds have no decided order; any bound the rule does not call plain (an epoch, a wildcard, an encoded or escaped character, no leading digit); a CPE that is not 13 components; a row whose range contains the version or ends at it; and every row above the version.
+- **Why no answer changes.** The verdict of section 4.1 needs only that a left-out row answers Not affected, which the rule guarantees. Fix reporting (section 7) checks each candidate against every range of the advisory, and a left-out range is no longer among them. That cannot change `fixed_version`: a candidate from an NVD row is the upper bound of a range that contains the version, so it is above the version; a candidate from a CNA entry is above the version in that entry's own order, and for dotted numbers none of the CNA orders (`semver`, `python`, `maven`, `rpm`, `custom`) places a version below one that dotted-number order places above it (tested); a candidate that is not dotted numbers gives no fix with or without the row. A left-out row answers Not affected for every such candidate. Rows above the version are kept for this reason: `[2.0, 3.0)` rejects the candidate `2.0` of `[1.0, 2.0)`.
+- **What it does not help.** Only rows below the version are left out, so an old version of a large product still reads most of its rows: kernel `2.6.32` (floor `2.6`) still passes the limit. Tests evaluate the same items from the filtered and unfiltered rows, in `internal/check` over every row shape alone and in pairs, and in `internal/store` through both statements, and require equal results.
+
 ### 4.3 CNA `affected[]`
 
 **Rule: CNA data can report Affected and can name a fix. It can never report Not affected.** Section 2 has the real records behind this.
@@ -379,14 +388,36 @@ Version comparison costs 5.2 µs for dpkg and 2.3 µs for numeric on the develop
 
 **Bounds.** Each statement reads each key through `CROSS JOIN LATERAL (... LIMIT 50001)`, still one statement per data source, with the key's position returned so rows can be attributed. The key limit stops one key from flooding memory. Measured on the same synthetic data with 300 keys, one holding 90,000 rows: 110,951 rows in 0.7 to 1.6 s, one index scan per key under a `Limit`, the same plan generic and custom, and only that key at the limit.
 
+**The CPE lookup and rows below the version** (amended 2026-11-10; Sam's decision; rule in section 4.2). The CPE statement takes each key's floor with its prefix range. A key with no floor is read under the `LIMIT` as described above. A key with a floor reads every vulnerable row of its product once into a materialised CTE, marking each row the rule reports and keeping only its `cve_id`; it then returns the unmarked rows and, grouped by CVE, the count of the marked ones, each under the key's `LIMIT`. The rule is stated in SQL by `version.ProductRangeBelowSQL` beside its Go form, and a store test holds the two together over every row shape, bound kind and floor. The CVE status is read by a scalar subquery per returned row, because with a join the planner chose a hash join over all of `cves` (about 80 ms).
+
+The limits count what the lookup returns: a stored row counts one, and a CVE's counted rows count one together, towards the 50,000 of the key and of the item, and the 200,000 and 128 MiB of the request. The 1,000-range limit of an advisory counts every stored row, returned or counted.
+
+Measured on the copy of the partial ingest (PostgreSQL 18.4, 1,215,035 CPE rows, 302,045 `cves`), `EXPLAIN (ANALYZE, BUFFERS)`, one key unless stated, JIT off, warm cache, execution time for a custom plan / a generic plan. The plan shape is the same in both modes.
+
+| Key (floor) | Rows of the product | Before: rows, time | After: stored rows + CVE counts, time |
+|---|---:|---|---|
+| Kernel `6.12.0` (`6.12`) | 82,061 | 50,001 (limit), 81 / 24 ms | 14 + 2,050, 238 / 231 ms |
+| Kernel `2.6.32` (`2.6`) | 82,061 | 50,001 (limit), 76 / 24 ms | 50,001 (limit) + 218, 327 / 319 ms |
+| Kernel, no floor (`6.8.0-45-generic`) | 82,061 | 50,001 (limit), 77 / 25 ms | 50,001 (limit), 86 / 85 ms |
+| Kernel, floors `6.12`, `6.6`, `5.15`, `4.19` | 82,061 | one read, 76 / 24 ms | 64 + 8,198 over four keys, 935 / 908 ms |
+| Firefox `130.0` | 35,051 | 35,051, 61 / 21 ms | 37 + 1,418, 96 / 99 ms |
+| Chrome `120.0.6099.109` (`120.0`) | 31,425 | 31,425, 48 / 17 ms | 11 + 1,535, 100 / 95 ms |
+| PHP `8.3.4` (`8.3`) | 16,090 | 16,090, 33 / 9 ms | 4 + 592, 49 / 46 ms |
+| OpenSSL `3.0.13` (`3.0`) | 4,299 | 4,299, 7 / 3 ms | 82 + 165, 13 / 13 ms |
+| Those five products, one floor each | 168,926 | 136,866, 69 / 69 ms | 148 + 5,760, 493 / 502 ms |
+
+A key with a floor costs about 2.8 µs per row of its product, whatever it returns, because the rule parses each row's bounds; the earlier statement stopped at the `LIMIT`. The read is slower and returns 17 to 27 times fewer rows for these products. Evaluation, which cost 100 to 150 ms and about 54 MiB per item for 35,000 rows (plan, Phase 4 notes), then has that many fewer rows to compare. The cost is per distinct product and floor: a request with many floors of one large product pays the product's read once for each.
+
+**JIT is off in the snapshot** (`SET LOCAL jit = off`). The planner cannot see how many rows a key holds, so the statement's estimated cost passes PostgreSQL's default JIT thresholds, and compiling its expressions cost more than it saved: 30 to 70 ms for one key, and 0.96 to 1.24 s where a statement of four or five keys also passed the inlining and optimisation thresholds (2.07 s against 0.93 s, and 2.39 s against 0.49 s). The earlier statements pass the same thresholds at a few more keys.
+
 The limits a caller sees are counted in Go as rows arrive, because no single statement sees them all:
 
 | Limit | Counted over | When passed |
 |---|---|---|
-| 50,000 rows for one item | All sources and name variants that item uses, including a key that reached its limit | That item is `cannot_evaluate`, `too_many_candidates`; the others are answered |
+| 50,000 rows for one item | All sources and name variants that item uses, including a key that reached its limit. For a CPE key with a floor, the rows it returns: stored rows, and one for each CVE's left-out rows (amended 2026-11-10; Sam's decision) | That item is `cannot_evaluate`, `too_many_candidates`; the others are answered |
 | 200,000 rows for one request | Every statement | Reading stops; 422 `candidate_limit_exceeded` |
 | 128 MiB of row data for one request | Every statement, including each CNA row's variable `versions` array | Same 422 |
-| 1,000 ranges for one component in one advisory | Package and CPE rows, each CNA `versions` entry and each segment it expands to | That advisory is `cannot_evaluate`, `too_many_ranges` |
+| 1,000 ranges for one component in one advisory | Package and CPE rows, including CPE rows the lookup left out and counted, each CNA `versions` entry and each segment it expands to | That advisory is `cannot_evaluate`, `too_many_ranges` |
 
 A partial read cannot say which items lost rows, and a truncated read is exactly how a wrong "not affected" happens, so nothing is answered from one. The 200,000 figure is about twice the rows I expect from a request of a few hundred items, including one package the size of the Linux kernel; none of these limits has been measured on real data (section 13).
 

@@ -9,9 +9,23 @@ const evidenceNVDCPE = "nvd_cpe"
 
 // CPERow is one cve_cpe_matches row with vulnerable = true. CPE is the stored
 // cpe_normalized string; an absent bound is "". Status is its CVE's cves.status.
+//
+// A row with Below above zero is not a stored row: it stands for that many rows
+// of the CVE, under one key, that the store left out because their ranges lie
+// wholly below the key's floor (CPERowBelow). Its CPE and bounds are "".
 type CPERow struct {
 	CVEID, CPE, VersionStartIncluding, VersionStartExcluding, VersionEndIncluding, VersionEndExcluding string
 	Status                                                                                             string
+	Below                                                                                              int
+}
+
+// CPERowBelow reports whether row's range lies wholly below ver, by
+// version.ProductRangeBelow: the row answers NotAffected for ver and for every
+// dotted-number version at or above it. The store's CPE lookup states the same
+// rule in SQL and does not return such rows.
+func CPERowBelow(ver string, row CPERow) bool {
+	r, reason := cpeRange(row)
+	return reason == "" && version.ProductRangeBelow(ver, r)
 }
 
 // EvaluateCPERows decides one advisory's verdict for version ver of a product,
@@ -22,10 +36,17 @@ type CPERow struct {
 // combines package rows; a versionEndExcluding bound of a row containing the
 // version is a fix candidate, a versionEndIncluding bound is not.
 //
+// below is the number of the advisory's rows the store left out as lying wholly
+// below the floor of ver's key, which is at or below ver. Each answers
+// NotAffected, so they count as compared rows that exclude the version. They
+// add no range for fix validation: a fix candidate is at or above ver, and such
+// a row answers NotAffected there too.
+//
 // It calls m.Tick once per row and returns as soon as Tick refuses; the caller
 // then discards the outcome and reports m.Err.
-func EvaluateCPERows(m *workMeter, ver string, rows []CPERow) Outcome {
+func EvaluateCPERows(m *workMeter, ver string, rows []CPERow, below int) Outcome {
 	var verdicts rowVerdicts
+	verdicts.anyNotAffected = below > 0
 	for _, row := range rows {
 		if !m.Tick() {
 			return Outcome{}

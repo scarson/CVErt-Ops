@@ -17,6 +17,7 @@ import (
 
 	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
+	"github.com/scarson/cvert-ops/internal/version"
 )
 
 // ErrCandidateLimit is returned when one version check request reads more rows,
@@ -41,6 +42,57 @@ func cpeIndexExpr(column string) string {
 	return column + ` COLLATE "C"`
 }
 
+// The CPE lookup leaves out the rows check.CPERowBelow reports for a key's
+// floor, by the same rule in SQL. cpeRangeSQL is the FROM items that read row q
+// of cve_cpe_matches as check's cpeRange reads it, each computed once per row
+// (OFFSET 0 keeps the planner from copying an expression into every use):
+//
+//   - c.parts is the CPE split at its unescaped colons, with every escaped
+//     character replaced by a lone backslash, so a component that held an escape
+//     holds a backslash and is never read as a version.
+//   - r.stated says whether the row states a range: 13 components; with version
+//     component * or empty, at most one start bound; otherwise a version
+//     component other than - and no bound.
+//   - r.introduced and r.upper are the range: for * or empty, from the start
+//     bound, or 0 with none, to the one end bound, upper being empty with two
+//     end bounds or none; otherwise the version component alone, inclusive.
+//   - b holds the leading numbers of each bound. Those of introduced are not
+//     read where it is the upper bound's own text.
+//
+// v, a FROM item of the statement, holds the same for the key's floor.
+var cpeRangeSQL = `
+      CROSS JOIN LATERAL (
+        SELECT string_to_array(
+                 CASE WHEN strpos(q.cpe_normalized, '\') = 0 THEN q.cpe_normalized
+                      ELSE regexp_replace(q.cpe_normalized, '\\.', '\\', 'g') END, ':') AS parts,
+               COALESCE(q.version_start_including, '') AS si, COALESCE(q.version_start_excluding, '') AS se,
+               COALESCE(q.version_end_including, '') AS ei, COALESCE(q.version_end_excluding, '') AS ee
+        OFFSET 0) c
+      CROSS JOIN LATERAL (
+        SELECT cardinality(c.parts) = 13
+                 AND CASE WHEN c.parts[6] IN ('*', '') THEN c.si = '' OR c.se = ''
+                          ELSE c.parts[6] <> '-' AND c.si = '' AND c.se = '' AND c.ei = '' AND c.ee = '' END AS stated,
+               CASE WHEN c.parts[6] NOT IN ('*', '') THEN c.parts[6]
+                    WHEN c.si = '' AND c.se = '' THEN '0'
+                    ELSE c.si || c.se END AS introduced,
+               CASE WHEN c.parts[6] NOT IN ('*', '') THEN c.parts[6]
+                    WHEN c.ei <> '' AND c.ee <> '' THEN ''
+                    ELSE c.ei || c.ee END AS upper,
+               c.parts[6] NOT IN ('*', '') OR c.ei <> '' AS inclusive
+        OFFSET 0) r
+      CROSS JOIN LATERAL (
+        SELECT CASE WHEN r.introduced <> r.upper THEN ` + version.LeadingSQL("r.introduced") + ` END AS introduced_lead,
+               ` + version.LeadingSQL("r.upper") + ` AS upper_lead
+        OFFSET 0) b`
+
+// cpeBelowSQL is whether row q states a range lying wholly below key k's floor,
+// over cpeRangeSQL's FROM items: TRUE, or FALSE or NULL for a row to keep.
+var cpeBelowSQL = "(r.stated AND " + version.ProductRangeBelowSQL(
+	version.BoundSQL{Text: "r.introduced", Leading: "b.introduced_lead", Dotted: version.DottedSQL("r.introduced")},
+	version.BoundSQL{Text: "r.upper", Leading: "b.upper_lead", Dotted: version.DottedSQL("r.upper")},
+	version.BoundSQL{Text: "k.floor", Leading: "v.lead", Dotted: "v.dotted"},
+	"r.inclusive") + ")"
+
 // rangeSeparator joins the bounds of one nearby-name key's vendor ranges into
 // one statement parameter, which checkCNANearSQL splits on chr(31). No bound
 // holds it: parseCPE takes only printable ASCII, and the name table's CPEs are
@@ -62,6 +114,17 @@ func cnaNameIndexExpr(column string) string {
 // runs before it: a row with no cves row (cve_affected_packages has no foreign
 // key to cves) must still be returned and counted, or a key over its limit
 // could look complete.
+//
+// The CPE lookup has two forms, and each key runs one. A key with no floor reads
+// its rows under the LIMIT, as the other lookups do. A key with a floor reads
+// every row of its product once, into scanned, marking the rows cpeBelowSQL
+// reports and keeping only the CVE of each. It then returns the unmarked rows,
+// which could matter to a version at or above the floor, and one row per CVE of
+// the marked rows with their count in below, so the CVE is still known to be
+// NVD-analysed and its ranges still count towards its range limit. Each of the
+// two has the key's LIMIT; the read into scanned is bounded by the product's
+// size, not by the LIMIT. The CVE status is looked up per returned row, after
+// the LIMIT, so the planner cannot choose to read all of cves for it.
 var (
 	checkPackagesSQL = `
 SELECT k.ord, p.cve_id, p.ecosystem, p.package_name, COALESCE(p.range_type, ''), COALESCE(p.introduced, ''),
@@ -75,17 +138,38 @@ CROSS JOIN LATERAL (
 LEFT JOIN cves c ON c.cve_id = p.cve_id`
 
 	checkCPESQL = `
-SELECT k.ord, m.cve_id, m.cpe_normalized, COALESCE(m.version_start_including, ''), COALESCE(m.version_start_excluding, ''),
-       COALESCE(m.version_end_including, ''), COALESCE(m.version_end_excluding, ''), COALESCE(c.status, '')
-FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS k(lo, hi, ord)
+SELECT k.ord, m.cve_id, m.cpe_normalized, m.si, m.se, m.ei, m.ee,
+       COALESCE((SELECT s.status FROM cves s WHERE s.cve_id = m.cve_id), ''), m.below
+FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS k(lo, hi, floor, ord)
 CROSS JOIN LATERAL (
-  SELECT q.* FROM cve_cpe_matches q
-  WHERE ` + cpeIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
-    AND ` + cpeIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
-    AND q.vulnerable
-  LIMIT $3
-) m
-LEFT JOIN cves c ON c.cve_id = m.cve_id`
+  SELECT ` + version.LeadingSQL("k.floor") + ` AS lead, ` + version.DottedSQL("k.floor") + ` AS dotted OFFSET 0) v
+CROSS JOIN LATERAL (
+  WITH scanned AS MATERIALIZED (
+    SELECT q.cve_id, x.below,
+           CASE WHEN x.below THEN '' ELSE q.cpe_normalized END AS cpe_normalized,
+           CASE WHEN x.below THEN '' ELSE c.si END AS si, CASE WHEN x.below THEN '' ELSE c.se END AS se,
+           CASE WHEN x.below THEN '' ELSE c.ei END AS ei, CASE WHEN x.below THEN '' ELSE c.ee END AS ee
+    FROM cve_cpe_matches q` + cpeRangeSQL + `
+      CROSS JOIN LATERAL (SELECT ` + cpeBelowSQL + ` IS TRUE AS below OFFSET 0) x
+    WHERE v.dotted
+      AND ` + cpeIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
+      AND ` + cpeIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
+      AND q.vulnerable
+  )
+  (SELECT q.cve_id, q.cpe_normalized, COALESCE(q.version_start_including, '') AS si,
+          COALESCE(q.version_start_excluding, '') AS se, COALESCE(q.version_end_including, '') AS ei,
+          COALESCE(q.version_end_excluding, '') AS ee, 0::bigint AS below
+   FROM cve_cpe_matches q
+   WHERE NOT v.dotted
+     AND ` + cpeIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
+     AND ` + cpeIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
+     AND q.vulnerable
+   LIMIT $4)
+  UNION ALL
+  (SELECT cve_id, cpe_normalized, si, se, ei, ee, 0::bigint FROM scanned WHERE NOT below LIMIT $4)
+  UNION ALL
+  (SELECT cve_id, '', '', '', '', '', count(*) FROM scanned WHERE below GROUP BY cve_id LIMIT $4)
+) m`
 
 	// The index holds 256 characters of each name, so the whole vendor and
 	// product are rechecked; full_product is empty for a prefix key.
@@ -219,15 +303,16 @@ func (r *checkRead) lookups(ctx context.Context, keys check.Keys, cands check.Ca
 		return err
 	}
 
-	los, his := make([]string, len(keys.CPEPrefixes)), make([]string, len(keys.CPEPrefixes))
+	n := len(keys.CPEPrefixes)
+	los, his, floors := make([]string, n), make([]string, n), make([]string, n)
 	for i, k := range keys.CPEPrefixes {
-		los[i], his[i] = k.Lo, k.Hi
+		los[i], his[i], floors[i] = k.Lo, k.Hi, k.Floor
 	}
-	err = readKeyRows(ctx, r, "cpe", checkCPESQL, []any{pq.Array(los), pq.Array(his), limit}, cands.CPEs,
+	err = readKeyRows(ctx, r, "cpe", checkCPESQL, []any{pq.Array(los), pq.Array(his), pq.Array(floors), limit}, cands.CPEs,
 		func(rows *sql.Rows) (s scanned[check.CPERow], err error) {
 			m := &s.row
 			err = rows.Scan(&s.ord, &m.CVEID, &m.CPE, &m.VersionStartIncluding, &m.VersionStartExcluding,
-				&m.VersionEndIncluding, &m.VersionEndExcluding, &m.Status)
+				&m.VersionEndIncluding, &m.VersionEndExcluding, &m.Status, &m.Below)
 			s.cveID, s.size = m.CVEID, byteLen(m.CVEID, m.CPE, m.VersionStartIncluding, m.VersionStartExcluding,
 				m.VersionEndIncluding, m.VersionEndExcluding, m.Status)
 			return s, err
@@ -236,7 +321,7 @@ func (r *checkRead) lookups(ctx context.Context, keys check.Keys, cands check.Ca
 		return err
 	}
 
-	n := len(keys.CNANames)
+	n = len(keys.CNANames)
 	vs, nameLos, nameHis := make([]string, n), make([]string, n), make([]string, n)
 	fullVendors, fullProducts := make([]string, n), make([]string, n)
 	for i, k := range keys.CNANames {

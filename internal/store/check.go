@@ -33,9 +33,6 @@ type checkLimits struct {
 // defaultCheckLimits is the limits ReadCheckCandidates applies.
 var defaultCheckLimits = checkLimits{KeyRows: 50_000, RequestRows: 200_000, RequestBytes: 128 << 20}
 
-// checkFeeds are the feeds check.FeedStatuses reports on.
-var checkFeeds = []string{"ghsa", "nvd", "osv"}
-
 // cpeIndexExpr is the expression cve_cpe_matches_check_idx indexes, on column.
 // The C collation lets a range on a CPE prefix use the index whatever the
 // database collation.
@@ -419,7 +416,7 @@ func (r *checkRead) enrichment(ctx context.Context) (map[string]check.CVEEnrichm
 // feeds reads the feed_sync_state rows of the feeds a version check depends on.
 // A feed with no row is absent.
 func (r *checkRead) feeds(ctx context.Context) ([]check.FeedRow, error) {
-	rows, err := r.tx.QueryContext(ctx, checkFeedsSQL, pq.Array(checkFeeds))
+	rows, err := r.tx.QueryContext(ctx, checkFeedsSQL, pq.Array(check.FeedNames()))
 	if err != nil {
 		return nil, fmt.Errorf("feeds: %w", err)
 	}

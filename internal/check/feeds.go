@@ -4,6 +4,8 @@ package check
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/ecosystem"
@@ -57,6 +59,12 @@ var walkFinished = map[string]func(cursor []byte) bool{
 		}
 		return json.Unmarshal(cursor, &c) == nil && c.CaughtUp
 	},
+}
+
+// FeedNames returns the feeds FeedStatuses reports on, sorted: the feed_sync_state
+// rows a version check reads.
+func FeedNames() []string {
+	return slices.Sorted(maps.Keys(walkFinished))
 }
 
 // FeedStatuses returns the status of ghsa, osv and nvd, each present. A feed is

@@ -4,7 +4,9 @@ package check
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -109,6 +111,24 @@ func TestFeedStatusesListsEveryCheckFeed(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("FeedStatuses = %+v, want %+v", got, want)
+	}
+}
+
+// TestFeedNames checks that FeedNames, which the store reads feed rows for, are
+// the feeds FeedStatuses reports on, sorted.
+func TestFeedNames(t *testing.T) {
+	t.Parallel()
+	if got, want := FeedNames(), []string{"ghsa", "nvd", "osv"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("FeedNames() = %v, want %v", got, want)
+	}
+	statuses := FeedStatuses(nil, feedNow)
+	if got := slices.Sorted(maps.Keys(statuses)); !reflect.DeepEqual(got, FeedNames()) {
+		t.Errorf("FeedStatuses reports on %v, FeedNames() = %v", got, FeedNames())
+	}
+	names := FeedNames()
+	names[0] = "changed"
+	if FeedNames()[0] != "ghsa" {
+		t.Error("FeedNames returned a slice the caller can change")
 	}
 }
 

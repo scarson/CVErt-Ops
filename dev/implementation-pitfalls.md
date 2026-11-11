@@ -349,6 +349,8 @@ GitHub's GraphQL API enforces rate limits per token (5,000 points/hour). The GHS
 
 **The Lesson:** Internal pagination defeats the handler's crash recovery mechanism. When an adapter fetches all pages internally, the handler cannot persist intermediate progress. Always return one logical page per adapter call and let the handler own the persistence lifecycle.
 
+**The same flaw with a file list:** an index such as MSRC's `changes.csv` names one document per request, so downloading every listed document in one `Fetch()` is internal pagination too. MSRC's first sync lists every file it publishes (10,146 on 2026-11-11); at one request per second that is nearly three hours, and a job is capped at 10 minutes. The first sync could never finish: each job hit the time limit or an HTTP 429, saved nothing, and the next job asked for the same files again, which kept the upstream rate limit in force. Page the list in a fixed order, and when entries can share a sort key (1,179 MSRC files share one timestamp), put a tie-break, such as the path, in the cursor.
+
 ---
 
 ### FEED-20: Response Body Must Be Drained After json.Decoder

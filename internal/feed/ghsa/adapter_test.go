@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/scarson/cvert-ops/internal/feed"
 )
 
 func TestParseLinkHeader(t *testing.T) {
@@ -1393,6 +1397,53 @@ func TestFetchPage_SyntaxErrorStopsStream(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "syntax error") {
 		t.Errorf("expected warning log about syntax error, got: %s", buf.String())
+	}
+}
+
+func TestFetchPage_BodyEndingInsideRecordReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// A connection closed mid-page: the decoder's error is sticky, so a
+	// skip-and-continue loop would spin on the unread record forever.
+	body := `[
+		{"ghsa_id": "GHSA-good-0001-aaaa", "cve_id": "CVE-2025-40001", "summary": "ok"},
+		{"ghsa_id": "GHSA-good-0002-bb`
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	target, _ := url.Parse(ts.URL)
+	client := &http.Client{
+		Transport: &redirectTransport{
+			target: target,
+			inner:  http.DefaultTransport,
+		},
+	}
+	adapter := New(client)
+
+	type result struct {
+		res *feed.FetchResult
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		res, err := adapter.Fetch(context.Background(), nil)
+		done <- result{res, err}
+	}()
+	select {
+	case r := <-done:
+		if !errors.Is(r.err, io.ErrUnexpectedEOF) {
+			t.Fatalf("err = %v, want io.ErrUnexpectedEOF", r.err)
+		}
+		if r.res != nil {
+			t.Fatalf("result = %+v, want none from a truncated page", r.res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fetch did not return on a truncated body")
 	}
 }
 

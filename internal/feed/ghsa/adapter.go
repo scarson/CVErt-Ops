@@ -218,6 +218,13 @@ func (a *Adapter) fetchPage(ctx context.Context, since, after string) ([]feed.Ca
 					"feed", SourceName, "error", err)
 				return patches, nextAfter, nil
 			}
+			// Only a type error leaves the decoder past the record. Any other
+			// error, such as a body cut short, is sticky: every later Decode
+			// returns it again, so the page fails and is fetched again.
+			var typeErr *json.UnmarshalTypeError
+			if !errors.As(err, &typeErr) {
+				return nil, "", fmt.Errorf("ghsa: decode advisory: %w", err)
+			}
 			slog.Warn("skipping malformed record in feed stream",
 				"feed", SourceName, "error", err)
 			continue

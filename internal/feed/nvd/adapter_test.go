@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -529,6 +531,37 @@ func TestParseNVDResponse(t *testing.T) {
 		}
 		if !strings.Contains(buf.String(), "skipping malformed record") {
 			t.Errorf("expected warning log about skipped record, got: %s", buf.String())
+		}
+	})
+
+	t.Run("body that ends inside a record returns an error", func(t *testing.T) {
+		t.Parallel()
+		// A connection closed mid-page: the decoder's error is sticky, so a
+		// skip-and-continue loop would spin on the unread record forever.
+		body := `{
+			"totalResults": 2,
+			"vulnerabilities": [
+				{"cve": {"id": "CVE-2024-0001", "descriptions": [{"lang": "en", "value": "Good record"}]}},
+				{"cve": {"id": "CVE-2024-00`
+		type result struct {
+			patches []feed.CanonicalPatch
+			err     error
+		}
+		done := make(chan result, 1)
+		go func() {
+			patches, _, _, err := parseNVDResponse(strings.NewReader(body))
+			done <- result{patches, err}
+		}()
+		select {
+		case r := <-done:
+			if !errors.Is(r.err, io.ErrUnexpectedEOF) {
+				t.Fatalf("err = %v, want io.ErrUnexpectedEOF", r.err)
+			}
+			if r.patches != nil {
+				t.Fatalf("patches = %d, want none from a truncated page", len(r.patches))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("parseNVDResponse did not return on a truncated body")
 		}
 	})
 

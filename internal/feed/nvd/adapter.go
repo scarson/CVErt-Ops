@@ -449,6 +449,13 @@ func parseNVDResponse(body interface{ Read([]byte) (int, error) }) (
 							"feed", SourceName, "error", err)
 						return patches, totalResults, responseTimestamp, nil
 					}
+					// Only a type error leaves the decoder past the record. Any other
+					// error, such as a body cut short, is sticky: every later Decode
+					// returns it again, so the page fails and is fetched again.
+					var typeErr *json.UnmarshalTypeError
+					if !errors.As(err, &typeErr) {
+						return nil, 0, time.Time{}, fmt.Errorf("decode vulnerability: %w", err)
+					}
 					slog.Warn("skipping malformed record in feed stream",
 						"feed", SourceName, "error", err)
 					continue

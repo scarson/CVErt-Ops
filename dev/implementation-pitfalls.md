@@ -73,7 +73,7 @@ for dec.More() {
 if _, err := dec.Token(); err != nil { return err } // consume ']'
 ```
 
-> **WARNING:** Do NOT use `continue` after a `json.Decoder.Decode()` error. After `Decode` returns an error, the decoder's internal state is undefined. Subsequent calls to `More()` and `Decode()` may skip or garble valid records. Either abort the feed or manually consume tokens to resync.
+> **WARNING:** Do NOT use `continue` after a `json.Decoder.Decode()` error, with one exception: a `*json.UnmarshalTypeError`, which `Decode` returns only after reading the whole value, so the next `Decode` starts at the next record. Every other error is sticky. Each later `Decode` returns it again, while `More()` still sees the unread value and returns true, so a skip-and-continue loop never ends. A body cut short is the common case: it gives `io.ErrUnexpectedEOF`, not a `*json.SyntaxError`. In the NVD, GHSA and KEV adapters, one dropped NVD connection spun this loop for 11 hours (2026-11-10). The loop also never checked the context, so the job's time limit did not stop it. It held the only `feed_ingest` slot and wrote 50 GB of warnings. For a read error, fail the page so that it is fetched again from the same cursor.
 
 **The Lesson:** Always verify a feed's actual wire format before writing the parser. Vulnerability feed APIs are rarely top-level JSON arrays. The "obvious" streaming pattern is often wrong. Verify with `curl | jq 'keys'` before writing a single line of adapter code.
 
@@ -405,7 +405,7 @@ When building or reviewing a feed adapter, verify each of the following:
 
 - [ ] **Wire format verified** — checked the actual API response structure with `curl | jq 'keys'` before writing the parser (FEED-1)
 - [ ] **No `Decode(&slice)`** — streaming uses `Token()`+`More()` loop, never decodes into a slice (FEED-1)
-- [ ] **Decoder errors abort** — no `continue` after `json.Decoder.Decode()` error; decoder state is undefined after error (FEED-1)
+- [ ] **Decoder errors abort** — `continue` after a `json.Decoder.Decode()` error only for `*json.UnmarshalTypeError`; any other error is sticky and a skip loop spins forever, so fail the page (FEED-1)
 - [ ] **ZIP via temp file** — HTTP response bodies streamed to disk before `zip.NewReader`, never `io.ReadAll` (FEED-2)
 - [ ] **Timestamp fallback parser** — all feed timestamps parsed via multi-layout fallback, never raw `time.RFC3339` (FEED-3)
 - [ ] **No `defer` in loops** — archive iteration uses explicit `Close()` at every exit path (FEED-5)

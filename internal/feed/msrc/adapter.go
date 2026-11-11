@@ -4,12 +4,14 @@ package msrc
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,17 +33,28 @@ const (
 
 	// maxCSAFDocSize caps the CSAF response body to prevent OOM from malformed responses.
 	maxCSAFDocSize = 1 << 20 // 1 MB
+
+	// csafFilesPerPage is how many CSAF files one Fetch downloads. changes.csv lists
+	// every file MSRC publishes (10,146 on 2026-11-11), far more than one job can
+	// download at one request per second. A page of 100 takes about 100 seconds,
+	// inside the ingest handler's per-page time reserve.
+	csafFilesPerPage = 100
 )
 
-// Cursor is the JSON-serializable sync state for the MSRC adapter.
+// Cursor is the JSON-serializable sync state for the MSRC adapter. Files are
+// merged in (timestamp, path) order; the cursor names the last file merged.
 type Cursor struct {
 	LastUpdated string `json:"last_updated"`
+	// LastPath is the path of the last file merged at LastUpdated. Many files
+	// share a timestamp, so a page can end partway through them.
+	LastPath string `json:"last_path,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the MSRC CSAF feed.
 type Adapter struct {
 	client      *http.Client
 	rateLimiter *rate.Limiter
+	pageSize    int
 }
 
 // New creates an MSRC adapter. Pass nil client to use http.DefaultClient.
@@ -52,6 +65,7 @@ func New(client *http.Client) *Adapter {
 	return &Adapter{
 		client:      feed.WrapClientWithUA(client),
 		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
+		pageSize:    csafFilesPerPage,
 	}
 }
 
@@ -286,8 +300,8 @@ func buildVendorEnrichment(vuln csaf.Vulnerability, lookup map[string]string) *f
 }
 
 // Fetch implements feed.Adapter. Two-phase:
-// 1. Download changes.csv to discover CSAF files updated since LastUpdated cursor
-// 2. Download each pending CSAF file, parse, convert to patches
+// 1. Download changes.csv to find the CSAF files after the cursor, in (timestamp, path) order
+// 2. Download the first page of those files, parse, convert to patches
 func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.FetchResult, error) {
 	var cur Cursor
 	if len(cursorJSON) > 0 {
@@ -324,27 +338,20 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		return nil, err
 	}
 
-	// Filter entries newer than cursor timestamp
+	// Keep the entries after the cursor, in the order they are merged.
 	var pending []changeEntry
-	var latestTimestamp string
 	for _, entry := range allEntries {
-		if entry.Timestamp > latestTimestamp {
-			latestTimestamp = entry.Timestamp
+		if compareEntry(entry, cur) > 0 {
+			pending = append(pending, entry)
 		}
-		if cur.LastUpdated != "" && entry.Timestamp <= cur.LastUpdated {
-			continue
-		}
-		pending = append(pending, entry)
 	}
+	slices.SortFunc(pending, func(x, y changeEntry) int {
+		return cmp.Or(cmp.Compare(x.Timestamp, y.Timestamp), cmp.Compare(x.Path, y.Path))
+	})
 
 	// Short-circuit: no pending entries
 	if len(pending) == 0 {
-		effectiveTimestamp := cur.LastUpdated
-		if latestTimestamp > effectiveTimestamp {
-			effectiveTimestamp = latestTimestamp
-		}
-		nextCursor := Cursor{LastUpdated: effectiveTimestamp}
-		nextCursorJSON, err := json.Marshal(nextCursor)
+		nextCursorJSON, err := json.Marshal(cur)
 		if err != nil {
 			return nil, fmt.Errorf("msrc: marshal cursor: %w", err)
 		}
@@ -358,7 +365,12 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		}, nil
 	}
 
-	// Phase 2: fetch CSAF documents for each pending entry
+	lastPage := len(pending) <= a.pageSize
+	if !lastPage {
+		pending = pending[:a.pageSize]
+	}
+
+	// Phase 2: fetch the CSAF documents in this page
 	fetchedAt := time.Now().UTC()
 	var allPatches []feed.CanonicalPatch
 
@@ -400,12 +412,9 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		allPatches = append(allPatches, patches...)
 	}
 
-	// Update cursor to the latest timestamp seen
-	effectiveTimestamp := cur.LastUpdated
-	if latestTimestamp > effectiveTimestamp {
-		effectiveTimestamp = latestTimestamp
-	}
-	nextCursor := Cursor{LastUpdated: effectiveTimestamp}
+	// The cursor names the last file in this page.
+	last := pending[len(pending)-1]
+	nextCursor := Cursor{LastUpdated: last.Timestamp, LastPath: last.Path}
 	nextCursorJSON, err := json.Marshal(nextCursor)
 	if err != nil {
 		return nil, fmt.Errorf("msrc: marshal cursor: %w", err)
@@ -418,6 +427,13 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 			FetchedAt:  fetchedAt,
 		},
 		NextCursor: nextCursorJSON,
-		LastPage:   true,
+		LastPage:   lastPage,
 	}, nil
+}
+
+// compareEntry orders a changes.csv entry against the cursor by timestamp, then
+// path. It returns a positive number when the entry comes after the cursor. An
+// empty cursor comes before every entry.
+func compareEntry(entry changeEntry, cur Cursor) int {
+	return cmp.Or(cmp.Compare(entry.Timestamp, cur.LastUpdated), cmp.Compare(entry.Path, cur.LastPath))
 }

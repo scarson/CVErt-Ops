@@ -138,7 +138,7 @@ func TestOrgRateLimitMiddleware_BurstCapped(t *testing.T) {
 	makeReq := func() int {
 		ctx := context.WithValue(context.Background(), ctxOrgID, orgID)
 		ctx = context.WithValue(ctx, ctxTierResolver, resolver)
-		req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		return rec.Code
@@ -156,7 +156,7 @@ func TestOrgRateLimitMiddleware_BurstCapped(t *testing.T) {
 	// Also verify the Retry-After header is present.
 	ctx := context.WithValue(context.Background(), ctxOrgID, orgID)
 	ctx = context.WithValue(ctx, ctxTierResolver, resolver)
-	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusTooManyRequests {

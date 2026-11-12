@@ -44,7 +44,7 @@ func TestRequireSiteAdmin_NonAdmin_403(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -84,7 +84,7 @@ func TestRequireSiteAdmin_Admin_200(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -212,7 +212,7 @@ func TestAdminRoutes_APIKey_403(t *testing.T) {
 		t.Fatalf("issue token: %v", err)
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/orgs", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("cookie request: %v", err)

@@ -56,8 +56,8 @@ func TestNewAPIServer_AuditsMutations(t *testing.T) {
 		ts.URL+"/api/v1/orgs/"+org.ID.String()+"/channels", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
-	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: token}) //nolint:gosec // G124: request cookie; Secure/HttpOnly/SameSite are response-only attributes
+	resp, err := ts.Client().Do(req)                                //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("create channel: %v", err)
 	}

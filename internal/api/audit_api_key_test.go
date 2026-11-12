@@ -61,7 +61,7 @@ func TestAuditLog_RecordsActingAPIKey(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 		ts.URL+"/api/v1/orgs/"+orgID.String()+"/audit-log?entity_type=channel", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("list audit log: %v", err)

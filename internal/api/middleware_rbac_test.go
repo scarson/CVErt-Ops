@@ -74,7 +74,7 @@ func TestRequireOrgRole_SufficientRole_200(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -104,7 +104,7 @@ func TestRequireOrgRole_InsufficientRole_403(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -132,7 +132,7 @@ func TestRequireOrgRole_NotAMember_403(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -223,7 +223,7 @@ func TestRequireOrgRole_NoUserID_401(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		})
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/"+uuid.New().String()+"/resource", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orgs/"+uuid.New().String()+"/resource", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -252,7 +252,7 @@ func TestRequireOrgRole_InvalidOrgID_400(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/orgs/not-a-uuid/resource", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orgs/not-a-uuid/resource", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -302,7 +302,7 @@ func TestRequireOrgRole_ExactRoleMatch(t *testing.T) {
 			t.Cleanup(ts.Close)
 
 			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
-			req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+			req.AddCookie(requestCookie("access_token", token))
 			resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server, not user input
 			if err != nil {
 				t.Fatalf("request: %v", err)
@@ -459,7 +459,7 @@ func TestRequireOrgRole_DeactivatedMember(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/orgs/"+org.ID.String()+"/resource", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: ts.URL is httptest.Server
 	if err != nil {
 		t.Fatalf("request: %v", err)

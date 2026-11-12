@@ -37,7 +37,7 @@ func TestReadyzHandler_NilDB_Returns503(t *testing.T) {
 	t.Parallel()
 
 	handler := readyzHandler(nil, 34)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -61,7 +61,7 @@ func TestReadyzHandler_ContentType(t *testing.T) {
 	t.Parallel()
 
 	handler := readyzHandler(nil, 34)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -93,7 +93,7 @@ func TestReadyzHandler_DirtyMigration_Returns503(t *testing.T) {
 	})
 
 	handler := readyzHandler(pool, version)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -126,7 +126,7 @@ func TestReadyzHandler_AppRole_ReportsCurrentMigrations(t *testing.T) {
 	}
 
 	handler := readyzHandler(db.AppStore.Pool(), version)
-	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

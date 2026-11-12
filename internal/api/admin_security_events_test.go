@@ -38,7 +38,7 @@ func TestAdminSecurityEvents_RequiresSiteAdmin(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet,
 		ts.URL+"/api/v1/admin/security-events", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {
@@ -89,7 +89,7 @@ func (env secEventsTestEnv) doGet(t *testing.T, url string) *http.Response {
 	t.Helper()
 	ctx := context.Background()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: env.token})
+	req.AddCookie(requestCookie("access_token", env.token))
 	resp, err := env.ts.Client().Do(req) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {
 		t.Fatalf("request %s: %v", url, err)

@@ -51,7 +51,7 @@ func TestAdminListUsers_BasicPagination(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/admin/users?limit=10", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -105,7 +105,7 @@ func TestAdminDisableUser_Success(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+target.ID.String()+"/disable", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -152,7 +152,7 @@ func TestAdminDisableUser_SelfDisablePrevented(t *testing.T) {
 	// Admin tries to disable themselves.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+admin.ID.String()+"/disable", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -200,7 +200,7 @@ func TestAdminEnableUser_Success(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+target.ID.String()+"/enable", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -251,7 +251,7 @@ func TestAdminResetPassword_Success(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/admin/users/"+target.ID.String()+"/reset-password", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -305,7 +305,7 @@ func TestAdminUsers_RequiresSiteAdmin(t *testing.T) {
 
 	for _, ep := range endpoints {
 		req, _ := http.NewRequestWithContext(ctx, ep.method, ts.URL+ep.path, nil)
-		req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+		req.AddCookie(requestCookie("access_token", token))
 		if ep.method != http.MethodGet {
 			req.Header.Set("X-Requested-By", "CVErt-Ops")
 		}
@@ -363,7 +363,7 @@ func (s siteAdminResetTest) resetPassword(t *testing.T, ctx context.Context, use
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		s.ts.URL+"/api/v1/admin/users/"+userID.String()+"/reset-password", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: s.adminToken})
+	req.AddCookie(requestCookie("access_token", s.adminToken))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := s.ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {

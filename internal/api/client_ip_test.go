@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +33,7 @@ func newClientIPTestHandler(t *testing.T, trustedProxies string) http.Handler {
 }
 
 func serveRateLimited(h http.Handler, remoteAddr string, headers map[string]string) int {
-	req := httptest.NewRequest(http.MethodGet, rateLimitedPath, nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, rateLimitedPath, nil)
 	req.RemoteAddr = remoteAddr
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -205,7 +206,7 @@ func TestClientIPMiddleware_ResolvesClientIP(t *testing.T) {
 				got, _ = r.Context().Value(ctxClientIP).(string)
 				gotRemoteAddr = r.RemoteAddr
 			}))
-			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 			req.RemoteAddr = tt.remoteAddr
 			for k, v := range tt.headers {
 				req.Header.Set(k, v)

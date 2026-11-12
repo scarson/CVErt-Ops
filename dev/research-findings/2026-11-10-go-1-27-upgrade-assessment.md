@@ -1,7 +1,7 @@
 # Go 1.27 Upgrade Assessment
 
 > **Assessed:** 2026-11-10
-> **Target:** Go 1.27.3 (latest 1.27.x on the assessment date)
+> **Target:** Go 1.27.4 (released 2026-11-10). The assessment below was first run against Go 1.27.3; "Go 1.27.4 re-verification" records the checks repeated on 1.27.4.
 > **Tree tested:** `origin/dev` at `4356557`. `dev` advanced to `72f8953` before this report was committed; that commit changes one implementation-log file only, so the results apply unchanged.
 > **Sources:** [Go 1.27 release notes](https://go.dev/doc/go1.27), [Go release history](https://go.dev/doc/devel/release), [golangci-lint releases](https://github.com/golangci/golangci-lint/releases), [golangci-lint CHANGELOG](https://github.com/golangci/golangci-lint/blob/main/CHANGELOG.md)
 
@@ -9,7 +9,7 @@
 
 ## Summary
 
-Upgrading to Go 1.27.3 is safe and low-risk. No production or test code needs to change for the new toolchain.
+Upgrading to Go 1.27 is safe and low-risk. It was assessed on 1.27.3 and re-verified on 1.27.4. No production or test code needs to change for the new toolchain.
 
 - `go build ./...` and `go vet ./...` are clean under 1.27.3.
 - The full Go test suite passes under 1.27.3: 38 packages ok, 0 failures.
@@ -17,25 +17,41 @@ Upgrading to Go 1.27.3 is safe and low-risk. No production or test code needs to
 
 The real cost of the upgrade is golangci-lint. The pinned v2.10.1 cannot lint a Go 1.27 module, and every version that can (v2.14.0, v2.15.0) reports 240 new findings. All 240 are false positives or test-code noise, but each must be fixed or suppressed inline before the CI lint job passes.
 
-There is no security deadline. `dev` is on Go 1.26.10, which received the same `crypto/x509` security fix as 1.27.3 (both released 2026-10-19). Go 1.26 is supported until Go 1.28 ships, expected around February 2027.
+**Security timing.** Go 1.27.4 and 1.26.11 (both released 2026-11-10) contain security fixes to cgo, the go command, the compiler, the linker and `net/http`. `dev` was on Go 1.26.10, which lacks them, so a toolchain move was due either way: to 1.26.11 or 1.27.4. Before that release, 1.26.10 and 1.27.3 carried the same `crypto/x509` fix (both 2026-10-19) and there was no deadline. Go 1.26 remains supported until Go 1.28 ships, expected around February 2027.
 
 ---
 
-## Current version pins (on `dev`)
+## Go 1.27.4 re-verification (2026-11-11)
+
+Go 1.27.4 was released on 2026-11-10, after the assessment below was run on 1.27.3. The upgrade targets 1.27.4, so the key checks were repeated on the upgrade branch (`dev` plus the lint cleanup and version bump):
+
+| Check | Result |
+|---|---|
+| `golang:1.27.4-alpine` and `golang:1.27-alpine` on Docker Hub | Both published |
+| golangci-lint v2.15.0, built with go1.27.3, on a module with `go 1.27.4` | Works. The CI release binary predates 1.27.4, so this is the case CI runs. |
+| `go build ./...` and `go vet ./...` under 1.27.4 | Clean |
+| golangci-lint v2.15.0 on the upgrade branch under 1.27.4 | **0 issues** (one warning: `exhaustruct` deprecated) |
+| gofmt 1.27.4 on the upgrade branch | No file newly unformatted compared with `dev`'s existing 23-file drift (after realigning `internal/api/oauth_oidc_test.go`, whose comment columns the cookie rewrite had shifted) |
+| Full Go suite under 1.27.4 | **38 packages ok, 0 FAIL**, 4 packages without test files |
+| `material_hash` probe, 1.26.10 vs 1.27.4 | **Identical for all 68 CVEs** from all eight feeds, with 68 distinct row digests. The dump is also byte-identical to the earlier 1.27.3 run. |
+
+---
+
+## Version pins before the upgrade (on `dev`)
 
 | Location | Pin |
 |---|---|
 | `go.mod` line 3 | `go 1.26.10` |
 | `.github/workflows/ci.yml` lines 22, 57, 95, 115, 149, 209 | `go-version: "1.26"` (six `actions/setup-go` steps; resolves to the latest 1.26.x) |
-| `.github/workflows/ci.yml` line 37 | golangci-lint `version: v2.10.1` (via `golangci/golangci-lint-action` v9.2.0) |
+| `.github/workflows/ci.yml` line 37 | golangci-lint `version: v2.10.1` (via `golangci/golangci-lint-action` v9.3.0) |
 | `.github/workflows/ci.yml` line 162 | `govulncheck@latest` (no pin; scans with the toolchain from `setup-go`) |
 | `docker/Dockerfile` | `node:24-alpine` (frontend stage), `golang:1.26-alpine` (builder stage), `gcr.io/distroless/static-debian12:nonroot` (runtime) |
 | Docs | `CLAUDE.md:7`, `AGENTS.md:7`, `README.md:153` and `:198`, `PLAN.md:7`, `:37` and `:1542` say "Go 1.26" |
 
 Go release dates relevant to this assessment:
 
-- go1.27.0: 2026-08-19. go1.27.1: 2026-09-01. go1.27.2: 2026-10-08 (security fixes to the go command, `crypto/tls`, `html/template`, `net/http`, `net/textproto`, `os`). go1.27.3: 2026-10-19 (security fix to `crypto/x509`).
-- go1.26.10: 2026-10-19 (security fix to `crypto/x509`, matching 1.27.3).
+- go1.27.0: 2026-08-19. go1.27.1: 2026-09-01. go1.27.2: 2026-10-08 (security fixes to the go command, `crypto/tls`, `html/template`, `net/http`, `net/textproto`, `os`). go1.27.3: 2026-10-19 (security fix to `crypto/x509`). go1.27.4: 2026-11-10 (security fixes to cgo, the go command, the compiler, the linker and `net/http`; bug fixes to the assembler, compiler, runtime, toolchain bootstrapping, and the `crypto/fips140`, `crypto/hkdf`, `crypto/rsa`, `crypto/tls` and `net` packages).
+- go1.26.10: 2026-10-19 (security fix to `crypto/x509`, matching 1.27.3). go1.26.11: 2026-11-10 (the same security fixes as 1.27.4).
 
 ---
 
@@ -277,16 +293,16 @@ There is no supply-chain reduction to gain, so the switch is not recommended.
 
 On a branch from `dev`:
 
-1. `go.mod`: `go 1.26.10` → `go 1.27.3`.
+1. `go.mod`: `go 1.26.10` → `go 1.27.4`.
 2. `.github/workflows/ci.yml`: the six `go-version: "1.26"` lines (22, 57, 95, 115, 149, 209) → `"1.27"`; golangci-lint `version: v2.10.1` (line 37) → `v2.15.0`.
-3. `docker/Dockerfile`: builder stage `golang:1.26-alpine` → `golang:1.27-alpine`. Both `golang:1.27-alpine` and `golang:1.27.3-alpine` are published on Docker Hub.
+3. `docker/Dockerfile`: builder stage `golang:1.26-alpine` → `golang:1.27-alpine`. `golang:1.27-alpine`, `golang:1.27.3-alpine` and `golang:1.27.4-alpine` are published on Docker Hub. Official golang images set `GOTOOLCHAIN=local`, so a locally cached `golang:1.27-alpine` older than 1.27.4 fails with "go.mod requires go >= 1.27.4"; pull the image again in that case.
 4. `gofmt -w internal/ingest/handler_deadline_test.go`.
 5. Lint cleanup:
    - 54 noctx fixes (`httptest.NewRequestWithContext(t.Context(), ...)`).
    - A request-cookie test helper to replace the 171 test-file G124 sites.
    - Inline `//nolint:gosec` with reasons on the 13 production G124 sites, the G710 site and the G703 site.
 6. Docs: change "Go 1.26" to "Go 1.27" in `CLAUDE.md:7`, `AGENTS.md:7`, `README.md:153` and `:198`, and `PLAN.md:7` and `:37`. Leave `PLAN.md:1542` and the dated plans under `dev/plans/` alone; they record what was true when written.
-7. Verify: `golangci-lint run` (v2.15.0) exits 0, and the full suite passes under 1.27.3.
+7. Verify: `golangci-lint run` (v2.15.0) exits 0, and the full suite passes under 1.27.4.
 
 Separate follow-ups, not part of the upgrade:
 

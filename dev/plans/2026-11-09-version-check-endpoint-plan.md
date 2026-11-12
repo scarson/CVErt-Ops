@@ -107,14 +107,14 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is done (2026-11-12). Phase 3 (endpoint) is complete in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218), open and unmerged. Phase 4's go/no-go run is done (2026-11-12) and waits for Sam's decision.
+**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is done (2026-11-12). Phase 3 (endpoint) is in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218). Phase 4's go/no-go run is done (2026-11-12); the roll-up and Ubuntu changes it led to are in PR #218 at `0241f0d` (Deviations). Steps 5 (merge) and 6 (index write cost) follow.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ✅ Done 2026-11-12 | No code. Worker builds: `2c9fac0`, `4356557`, `f663fd7`, `f56bde0` | Completion signals met 2026-11-12 06:56 UTC. Fixes found during the ingest: [PR #217](https://github.com/scarson/CVErt-Ops/pull/217), [PR #221](https://github.com/scarson/CVErt-Ops/pull/221), [PR #222](https://github.com/scarson/CVErt-Ops/pull/222). Measurements in Phase 4's notes |
 | 3 — Endpoint | 🚧 PR open 2026-11-10, awaiting Phase 4 | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end review fixes: round 1 `3781bec` to `3d8243a`, round 2 `b4a1e86` to `a4fa730`, round 3 `378ccbc` to `a72bd84`, round 4 `238ba4b`, `86d5578`. Head `5c4e025` | Branch `claude/check-endpoint-734a7a`. [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) to `dev`, unmerged until Phase 4 reports. Lint clean and full suite passed at `5c4e025` |
-| 4 — Measurement and merge | 🚧 Go/no-go run done 2026-11-12, awaiting Sam | | Branch `claude/check-endpoint-734a7a`. Provisional run on the partial ingest, then the go/no-go run on the complete ingest at `7dae4bf` (Phase 4 notes). Every product's current release answers `cannot_evaluate`. Sam decides the go/no-go |
+| 4 — Measurement and merge | 🚧 Roll-up changed 2026-11-12; Steps 5 and 6 next | `0241f0d` | Branch `claude/check-endpoint-734a7a`. Go/no-go run on the complete ingest at `7dae4bf`: every current release answered `cannot_evaluate`. Two independent reviews, at Sam's instruction, agreed the changes built in `0241f0d`; re-measured on the copy (Phase 4 notes) |
 
 ### Deviations
 
@@ -190,6 +190,8 @@ notes and commit messages.
 - Phase 2 completion: the final backup's full restore was tested later than planned. At completion the database was 34 GB and the Docker data disk shared a drive with 23 GB free, so the backup was checked first by reading every data block and restoring the schema alone into a scratch database. Once space was freed, during Phase 4, a full restore into a throwaway database passed on 2026-11-12: the restored row counts match the counts at dump time exactly.
 - Phase 4 go/no-go run (2026-11-12): the copy was migrated to version 61 before measuring, because merging `dev` into PR #218 brought migrations 000060 and 000061 (#224, #225), and the CPE statement at `7dae4bf` reads the index 000061 rebuilds. The ingest database itself stays at version 59.
 - Phase 4 Step 3, "a current patched version": NVD's highest fix bounds were not the current releases, because the CNAs publish fixes NVD has not yet analysed. Each current version is the lowest on its line for which the endpoint lists nothing Affected, found by moving to the highest same-line `fixed_version` the endpoint reported until none was left.
+- Phase 4 Step 4, the go/no-go decision (2026-11-12): Sam asked for two independent reviews of the options (Claude Fable 5.2 and Codex, both at high effort), kept open for discussion, with their consensus to be built. Five rounds and measurements on the copy reached consensus on every point. The design changed (design sections 4.3, 4.5, 4.7, 6, 9, 11, 12 and 15, each marked as amended 2026-11-12), built in `0241f0d` on PR #218: item status `unresolved` and the new reasons `evaluation_failed`, `sdk_version_not_comparable` and `distro_stream_incomplete`; `data_incomplete` also with no advisory; failure flags kept per advisory; `counts.cannot_evaluate_by_reason`; both Ubuntu streams read for a release, with `ecosystem` on package ranges and `fix_ecosystem` on advisories, and Pro sub-streams never cleared; `.NET` SDK numbers not cleared by runtime ranges; `nodejs:nodejs` and `f5:nginx_open_source` in the name table; the .NET Framework, OpenAPI.NET and Ruby's OpenSSL extension as other products; CNA bounds with a letter suffix read by their leading numbers to say a version is outside; check slots from 4 to 1. Not built: loosening `cna_cannot_clear` or clearing on unreadable CNA entries (counterexamples in design section 15), and the `cna_cannot_clear` splits.
+
 ### Discoveries
 
 - `packageurl-go` was already in the module graph at v0.1.5 through `osv-scalibr`. Task 1.1 made v0.1.7 a direct dependency, which raises `osv-scalibr`'s copy to v0.1.7 as well. `internal/version` tests pass.
@@ -238,10 +240,15 @@ notes and commit messages.
 - **For Sam, OSV archive reuse (not changed):** every OSV backfill job downloads the whole 2.9 GB `all.zip` again. The backfill took 135 OSV jobs, about 390 GB of downloads. Keeping the first job's archive for the length of the backfill (keyed by the cursor's `snapshot`) would save that at the cost of 2.9 GB of disk held during the backfill.
 - `cve_affected_packages_eco_pkg_idx`: no application query used it (5 scans since the stats were last reset, a period with no API traffic). Migration 000061 (#225) dropped it.
 - **Ingest pace on this host:** 49 hours end to end, of which 11 were the decode-loop stall. OSV was last, at about 70,000 advisories an hour once the other feeds had caught up, and about ten times slower on its last `UBUNTU-CVE-*` records, whose merge rebuilds CVEs that many feeds already describe. `feed_ingest` runs one job at a time and the feeds take turns.
-- **For Sam (go/no-go run, wrong "not affected"):** 34,326 `UBUNTU-CVE-*` records have rows only under `Ubuntu:Pro:*` releases, with no standard-stream row for the same package: 16,337 for 20.04, 17,352 for 18.04, 18,100 for 16.04, 5,077 for 22.04, 4,028 for 24.04 and 1,636 for 26.04. A standard-stream item (`Ubuntu:<release>:LTS`) reads no Pro rows, so for these records it reads no advisory at all and can answer `not_affected` where Ubuntu reports the package affected. This is the round 2 review's Pro-row note, now counted. The rows are as OSV publishes them: OSV's own record for UBUNTU-CVE-2007-4774 lists four kernel packages, all under `Ubuntu:Pro:14.04:LTS`, and UBUNTU-CVE-2005-10004 lists Pro 14.04 to 20.04 only. So the decision belongs to the check endpoint: whether a standard-stream item may read Pro rows. All 65,453 OSV `UBUNTU-CVE-*` records are stored under their own IDs.
-- **For Sam (go/no-go run):** Microsoft's CNA states both runtime versions (`10.0.15`) and SDK versions (`10.0.403`) under one product, `.NET 10.0`, and NVD's `microsoft:.net` mixes them too. A runtime version is inside the SDK ranges by number, so `.NET` `10.0.15` (the current runtime) answers Affected from SDK ranges, and an advisory with both kinds of range reports no `fixed_version`.
+- **For Sam (go/no-go run, wrong "not affected"; fixed in `0241f0d`):** 27,145 `UBUNTU-CVE-*` records have rows only under a plain `Ubuntu:Pro:<release>` stream, with no standard-stream row for the same package: 16,337 for 20.04, 17,352 for 18.04, 18,100 for 16.04, 14,444 for 14.04, 5,077 for 22.04, 4,028 for 24.04 and 1,636 for 26.04 (a record can count under several releases). An earlier total of 34,326 also counted the FIPS and Realtime sub-streams, which have no standard counterpart by construction. A standard-stream item (`Ubuntu:<release>:LTS`) read no Pro rows, so for these records it read no advisory at all and could answer `not_affected` where Ubuntu reports the package affected. The reverse also held: of 2,687,259 standard rows on releases with a Pro stream, 70 have a Pro row for the same record and package, so a Pro item missed every standard USN (USN-8847-1 for `openssl` under `Ubuntu:Pro:22.04:LTS`). This is the round 2 review's Pro-row note, now counted. The rows are as OSV publishes them: OSV's own record for UBUNTU-CVE-2007-4774 lists four kernel packages, all under `Ubuntu:Pro:14.04:LTS`, and UBUNTU-CVE-2005-10004 lists Pro 14.04 to 20.04 only. So the decision belongs to the check endpoint: whether a standard-stream item may read Pro rows. All 65,453 OSV `UBUNTU-CVE-*` records are stored under their own IDs.
+- **For Sam (go/no-go run):** Microsoft's CNA states both runtime versions (`10.0.15`) and SDK versions (`10.0.403`) under one product, `.NET 10.0`. NVD's `microsoft:.net` and `.net_core` rows state runtime versions only: no vulnerable row on any line has a bound with a third component of 100 or more, so runtime ranges would clear an SDK version (fixed in `0241f0d`: `sdk_version_not_comparable`). A runtime version is inside the SDK ranges by number, so `.NET` `10.0.15` (the current runtime) answers Affected from SDK ranges, and an advisory with both kinds of range reports no `fixed_version`.
 - **For Sam (go/no-go run):** with NVD complete, the CPE lookup's row filter no longer brings the LTS kernels under the 50,000-row limit: `o:linux:linux_kernel` has 165,349 vulnerable rows, and `5.15.170`, `6.1.140` and `6.6.95` each answer `too_many_candidates`; `6.12.50` and later are answered. Every kernel version also carries 73 `no_version_bounds` advisories, so no kernel item answers `not_affected`.
 - **For Sam (go/no-go run, memory):** 500 items over the largest CPE products took 8.1 to 8.3 s and allocated 3.97 GiB, with 605 to 687 MiB resident afterwards (2.0 s and 1.2 GiB on the partial ingest). Four such requests at once, one per check slot, would not fit the 1 GiB container that also runs the worker.
+- **Go/no-go run, missing CPE spellings (fixed in `0241f0d`):** NVD files recent nginx CVEs under `f5:nginx_open_source` (45 vulnerable rows, 26 CVEs) and Node 0.6 to 0.10 under `nodejs:nodejs` (3 CVEs); the name table had neither. 25 of the 27 nginx advisories that answered `cna_cannot_clear` at `1.31.7` had NVD rows there, and older nginx versions missed Affected advisories (`1.29.3`: 18 Affected before, 20 after).
+- **Go/no-go run, Ubuntu Pro sub-streams:** `FIPS`, `FIPS-updates`, `FIPS-preview` and `Realtime` list only some of their release's advisories for their own packages: `Ubuntu:Pro:FIPS-updates:22.04:LTS` lists `openssl` but not USN-8847-1, USN-8678-1 or USN-8625-1, and the Realtime streams miss 19,444 and 14,714 of the plain streams' (record, package) pairs. A sub-stream item now never answers `not_affected` (`distro_stream_incomplete`).
+- **Go/no-go run, what the 48 `cna_name_uncertain` advisories were:** the .NET Framework (16 CVEs), ASP.NET Core (8), OpenAPI.NET (2), the `Microsoft.NetCore.App.Runtime.*` and `Microsoft.AspNetCore.App.Runtime.*` packages (2), PTC's `.NET-SDK` filed under Microsoft (2), NGINX Plus beside NGINX Open Source (6), NGINX JavaScript, Ingress Controller and Gateway Fabric (11), and Ruby's OpenSSL extension (1). The Visual Studio entries listed beside them never matched the fragment `.net`.
+- **Go/no-go run, what the 117 `cna_cannot_clear` advisories were:** each had a CNA name row whose entries stated versions that exclude the current release (OpenSSL CVE-2026-88822 is `[4.0.0, 4.0.4)` at `4.0.4`); 84 had no NVD CPE row at all. For these products `unresolved` is the steady answer until NVD analyses the CVE.
+
 ---
 
 ## Rules for every task
@@ -1423,7 +1430,7 @@ Retraction: pass `c.status` through as each row's `Status`. Do not filter reject
 
 ## Phase 4 — Measurement and merge
 
-**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T10:30Z on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest, then as the go/no-go run on a copy of the complete ingest on 2026-11-12 (Phase 4 notes below). Step 4: reported to Sam on 2026-11-12; Steps 5 and 6 wait for his decision.
+**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T10:30Z on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest, then as the go/no-go run on a copy of the complete ingest on 2026-11-12 (Phase 4 notes below). Step 4: reported to Sam on 2026-11-12; Sam had two independent reviews decide, and their consensus changed the roll-up (Deviations), built in `0241f0d` and re-measured. Steps 5 and 6 follow.
 
 Needs Phase 2's database and Phase 3's branch.
 
@@ -1451,7 +1458,7 @@ A copy of the complete ingest: 2,619,748 CVEs, 7,491,658 package rows, 3,244,484
 - Node `24.22.0` lists CVE-2026-111497 as Affected, with fixed `24.22.1`. Node `24.22.1` does not list it.
 - `php8.5` `8.5.4-0ubuntu1.4` in `Ubuntu:26.04:LTS` lists `UBUNTU-CVE-2026-109618` and `UBUNTU-CVE-2026-109619` as Affected, each with fixed `8.5.4-0ubuntu1.5` and `in_cisa_kev: true`. It also lists `USN-8948-1` (fixed `8.5.4-0ubuntu1.5`) and `UBUNTU-CVE-2026-17545` (no fix).
 
-**Items (Step 3).** Every product's current release answers `cannot_evaluate`, with no advisory Affected. Every older version answers `affected`, except OpenSSL `1.1.1w`, which answers `invalid_version` on all 328 advisories: a letter release is not dotted numbers (design section 3.3). The current releases are later than NVD's highest fix bounds (Deviations).
+**Items (Step 3).** Every product's current release answers `cannot_evaluate`, with no advisory Affected. Every older version answers `affected`, except OpenSSL `1.1.1w`, which answers `invalid_version` on 322 of its 328 advisories (5 `cna_indeterminate`, 1 `cna_name_uncertain`): a letter release is not dotted numbers (design section 3.3). The current releases are later than NVD's highest fix bounds (Deviations).
 
 | Current release | Affected / Cannot evaluate / Not affected | What holds it at `cannot_evaluate` |
 |---|---|---|
@@ -1527,7 +1534,7 @@ The six current releases have 338 `cannot_evaluate` advisories. By reason:
 Allocations were the same. The check read keeps `jit = off`.
 
 **Data** (`03-phase4-extra.sql` on the copy):
-- **Ubuntu Pro rows with no standard row:** 34,326 `UBUNTU-CVE-*` records (649,816 rows); see Discoveries.
+- **Ubuntu Pro rows with no standard row:** 27,145 `UBUNTU-CVE-*` records under the plain Pro streams (347,410 rows); see Discoveries. The figure first recorded here, 34,326 records (649,816 rows), counted the FIPS and Realtime sub-streams too.
 - **CPE products with vulnerable rows under both `a:` and `o:`:** 237 of 121,741, covering 41,280 CVEs. The largest are Cisco ASA software (14,535 `o:` rows, 47 `a:`), VMware ESXi (8,999 / 38) and Xen (2,833 / 22).
 - **CNA entries with a `*` lower bound and an upper bound** (read as indeterminate): 983 entries in 591 CVEs, 978 of them `affected`. The largest names are MySQL Server (161 CVEs), Zephyr (59) and MediaWiki (38).
 - **`SEMVER` package rows:** 264,987 in 233,040 records:
@@ -1544,6 +1551,31 @@ Allocations were the same. The check read keeps `jit = off`.
 
   None are in `Root:*` or `GitHub Actions`.
 - **Stored CNA package keys with whitespace:** none.
+
+#### After the roll-up change, 2026-11-12, `0241f0d`
+
+The same 22 items on the same copy, `serve` built at `0241f0d` with JIT off. Acceptance passes, as before.
+
+| Item | Before (`7dae4bf`) | After (`0241f0d`) |
+|---|---|---|
+| Node `26.13.1` | `cannot_evaluate`, 0 / 60 / 186 | `unresolved`, 0 / 60 / 189 |
+| PHP `8.5.12` | `cannot_evaluate`, 0 / 11 / 730 | `unresolved`, 0 / 11 / 730 |
+| .NET SDK `10.0.404` | `cannot_evaluate`, 0 / 91 / 132 | `cannot_evaluate`, `sdk_version_not_comparable`, 0 / 80 / 134 |
+| nginx `1.31.7` | `cannot_evaluate`, 0 / 50 / 36 | `unresolved`, 0 / 25 / 61 |
+| OpenSSL `4.0.4` | `cannot_evaluate`, 0 / 90 / 238 | `unresolved`, 0 / 48 / 279 |
+| PostgreSQL `18.6` | `cannot_evaluate`, 0 / 36 / 174 | `unresolved`, 0 / 36 / 174 |
+| OpenSSL `1.1.1w` | `cannot_evaluate`, 0 / 328 / 0 | `cannot_evaluate`, `invalid_version`, 0 / 327 / 0 |
+| nginx `1.29.3` | `affected`, 18 / 32 / 36 | `affected`, 20 / 21 / 45 |
+
+Counts are Affected / Cannot evaluate / Not affected.
+
+- nginx: `cna_cannot_clear` fell from 27 to 2, because the NVD rows under `f5:nginx_open_source` are now read.
+- OpenSSL `4.0.4`: `cna_indeterminate` fell from 85 to 43 through the letter-suffix rule for CNA bounds, and the Ruby extension's `cna_name_uncertain` is gone.
+- .NET: `cna_name_uncertain` fell from 30 to 12 and `cna_indeterminate` from 42 to 16, since the .NET Framework entries are no longer read as .NET; those CVEs now answer `cna_cannot_clear` (52).
+- Ubuntu, probes on the copy:
+  - A `Ubuntu:Pro:22.04:LTS` item for `openssl` `3.0.2-0ubuntu1.25` now lists the 14 standard-stream USNs, with `fix_ecosystem` `Ubuntu:22.04:LTS`.
+  - A standard item for `ruby-rack` lists 23 advisories whose fix is published only in Pro.
+  - A `FIPS-updates` item for `curl`, which has no rows there, answers `distro_stream_incomplete`.
 
 #### Phase 2 measurements (Phase 2 Steps 5 and 6), complete ingest
 

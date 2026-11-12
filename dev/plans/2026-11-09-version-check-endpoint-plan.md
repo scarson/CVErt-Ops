@@ -107,14 +107,14 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is run by another session. Phase 3 (endpoint) is complete in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218), open and unmerged until Phase 4 reports.
+**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is done (2026-11-12). Phase 3 (endpoint) is complete in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218), open and unmerged. Phase 4's go/no-go run is done (2026-11-12) and waits for Sam's decision.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
-| 2 — Full ingest | 🚧 In progress (another session) | | Worker running since 2026-11-10T05:34Z (its log, `C:\tmp\cvert-check-ingest\worker.err.log`). At 2026-11-10T10:16Z `ghsa` had finished; `nvd`, `osv` and `mitre` had not |
+| 2 — Full ingest | ✅ Done 2026-11-12 | No code. Worker builds: `2c9fac0`, `4356557`, `f663fd7`, `f56bde0` | Completion signals met 2026-11-12 06:56 UTC. Fixes found during the ingest: [PR #217](https://github.com/scarson/CVErt-Ops/pull/217), [PR #221](https://github.com/scarson/CVErt-Ops/pull/221), [PR #222](https://github.com/scarson/CVErt-Ops/pull/222). Measurements in Phase 4's notes |
 | 3 — Endpoint | 🚧 PR open 2026-11-10, awaiting Phase 4 | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end review fixes: round 1 `3781bec` to `3d8243a`, round 2 `b4a1e86` to `a4fa730`, round 3 `378ccbc` to `a72bd84`, round 4 `238ba4b`, `86d5578`. Head `5c4e025` | Branch `claude/check-endpoint-734a7a`. [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) to `dev`, unmerged until Phase 4 reports. Lint clean and full suite passed at `5c4e025` |
-| 4 — Measurement and merge | 🚧 In progress, claimed 2026-11-10T10:30Z | | Branch `claude/check-endpoint-734a7a`. Provisional run on the partial ingest done; the go/no-go run waits for Phase 2's completion signals. Sam decides the go/no-go |
+| 4 — Measurement and merge | 🚧 Go/no-go run done 2026-11-12, awaiting Sam | | Branch `claude/check-endpoint-734a7a`. Provisional run on the partial ingest, then the go/no-go run on the complete ingest at `7dae4bf` (Phase 4 notes). Every product's current release answers `cannot_evaluate`. Sam decides the go/no-go |
 
 ### Deviations
 
@@ -185,6 +185,11 @@ notes and commit messages.
 - **Decided by Sam on 2026-11-10, design change to section 4.2:** NVD bounds that are not dotted numbers (`2.0b10`, `1.0.2zf`) are compared by their leading dotted numbers where those differ (`version.CheckProduct`, `6ef031b`; review fixes `4300c7c`: CPE wildcards, `%` and empty ranges are never compared). Added to PR #218. Effect in Phase 4 notes; log `dev/implementation-log/2026-11-10T1041Z-check-nvd-bounds-by-leading-numbers.md`.
 - **Decided by Sam on 2026-11-10, design change to sections 4.2 and 9:** the CPE lookup leaves unread the NVD rows whose ranges lie wholly below the key's floor, and returns one count row per CVE for them (`08b6595`). The floor was first the item version's first two components, one key per floor; the controller's end-to-end run showed that form reading a product once per floor (50 Firefox versions 4.7 s, and HTTP 422 for 500 heavy items and for 300 kernel versions), so the rework (`2e5a57f`) gives each product one key whose floor is the lowest version asked of it (log `dev/implementation-log/2026-11-10T1148Z-check-cpe-lookup-one-read-per-product.md`). The rework also folds in an independent review of `08b6595`: stored rows and count rows share one `LIMIT`, and each advisory's CPE rows are sorted before evaluation so its reason and matched ranges do not depend on the order rows are read in. `CPEKey` gains `Floor`, `CPERow` gains `Below`, `EvaluateCPERows` takes the count, and the version check snapshot sets `jit = off`. Kernel `6.12.0` reads 2,064 rows in place of 82,061 and is answered; no answer changes for an item that was under its limits. The commits are on the implementing agent's branch, for the controller session to merge into the branch of PR #218. Measurements in Phase 4 notes ("Rows below the version"); log `dev/implementation-log/2026-11-10T1129Z-check-cpe-lookup-leaves-rows-below-the-version-unread.md`.
 
+- Phase 2 Step 1: the ingest ran from `dev` at `2c9fac0`, not the Phase 1 merge `45357f5`. `2c9fac0` adds PR #215 (docs) and PR #216, which renamed the GHSA token variable to `GITHUB_GHSA_TOKEN`; the Phase 1 merge reads the old name. The worker was later restarted on `4356557`, `f663fd7` and `f56bde0` to pick up PRs #217, #221 and #222. No build added a migration; the database stayed at version 59.
+- Phase 2 Step 3: the env copy differs from the developer's `.env` in two ways besides the port. `DB_QUERY_EXEC_MODE` is `cache_describe`, because `.env` said `simple_protocol` and current code refuses it. `APP_DB_PASSWORD` is generated, because `.env` had none and the compose file requires it.
+- Phase 2 completion: the final backup's full restore was not tested. The database is 34 GB and the Docker data disk shares a drive that had 23 GB free, so a second copy in the same cluster could have filled the drive (space was freed later, during Phase 4). The backup was checked by reading every data block and restoring the schema alone into a scratch database. A backup taken partway through the ingest, on 2026-11-10, passed a full restore.
+- Phase 4 go/no-go run (2026-11-12): the copy was migrated to version 61 before measuring, because merging `dev` into PR #218 brought migrations 000060 and 000061 (#224, #225), and the CPE statement at `7dae4bf` reads the index 000061 rebuilds. The ingest database itself stays at version 59.
+- Phase 4 Step 3, "a current patched version": NVD's highest fix bounds were not the current releases, because the CNAs publish fixes NVD has not yet analysed. Each current version is the lowest on its line for which the endpoint lists nothing Affected, found by moving to the highest same-line `fixed_version` the endpoint reported until none was left.
 ### Discoveries
 
 - `packageurl-go` was already in the module graph at v0.1.5 through `osv-scalibr`. Task 1.1 made v0.1.7 a direct dependency, which raises `osv-scalibr`'s copy to v0.1.7 as well. `internal/version` tests pass.
@@ -223,6 +228,20 @@ notes and commit messages.
 - Found by the end-to-end run of 300 kernel items (2026-11-10, not changed, present before the rule): `evaluateItem` (`internal/check/evaluate.go`) groups every row of an item's keys in `rowsOf` before it looks at the keys' overflow flags, so each item of a key over its limit allocates for 50,000 rows and then answers `too_many_candidates`: 5.1 GiB for the 300 items. Checking the flags first would avoid it. Fixed in `bfe4426` at Sam's request (`overItemLimit` runs before `rowsOf`): the 300 items now allocate 51 MiB in 0.29 s, down from 5.35 GiB in 2.3 s, with identical responses. Log `dev/implementation-log/2026-11-10T2049Z-check-refuse-over-limit-items-before-grouping.md`.
 - **Decided by Sam on 2026-11-12 (affects Phase 3):** a CPE or package name over the btree row limit failed the merge of its CVE. Migration 000061 (bounded CPE and package keys) rebuilt `cve_cpe_matches_check_idx` on `left(cpe_normalized, 512) COLLATE "C"`. CPEs stay stored in full, because watchlists and this endpoint match them by prefix. Task 3.9's CPE statement, `CPEKey` and its tests, and design section 9 were updated to match. The merge leaves out package names over 1,024 bytes (`maxIndexedPackageNameBytes` in `internal/merge/pipeline.go`), so `cve_affected_packages_check_idx` is unchanged. The migration also dropped `cve_affected_packages_eco_pkg_idx`, which no query could use, so Phase 4 no longer measures it.
 
+- **Feed client body cap (fixed, PR #217):** the shared feed HTTP client capped bodies at 512 MiB and cut off larger ones without an error, so MITRE's and OSV's archives were truncated and ingested partly. It now fails loudly. See `dev/implementation-log/2026-11-10T0600Z-feed-body-cap-fails-loudly.md`.
+- **Decode loop (fixed, PR #221):** an NVD page body that ended early made the NVD, GHSA and KEV parsers log and skip the same sticky `json.Decoder` error forever. The ingest made no progress for 11 hours. A record is now skipped only on `*json.UnmarshalTypeError`; any other error fails the page. Pitfall FEED-1 and `dev/implementation-log/2026-11-11T0453Z-feed-decode-errors-fail-the-page.md`.
+- **MSRC never finished a first sync (fixed, PR #222):** the adapter downloaded all 10,146 CSAF files in `changes.csv` in one page, more than a 10-minute job can do at one request per second, and every failure discarded the whole batch. It now pages 100 files at a time with a (timestamp, path) cursor, and finished all 10,146 files. Pitfall FEED-19 and `dev/implementation-log/2026-11-11T1447Z-msrc-pages-csaf-downloads.md`.
+- **Long index keys (fixed, PRs #224 and #225):** a reference URL, CPE or package name over the btree row limit failed the merge of its CVE. Red Hat sends a reference URL over 3,000 bytes for CVE-2006-4339, so 11 of 89 Red Hat jobs failed during the ingest; Red Hat is not a completion signal. The kept ingest database needs a worker build with migrations 000060 and 000061 before Red Hat stops failing there.
+- **For Sam, NVD syntax errors (not changed):** on a `*json.SyntaxError` the NVD parser returns the records read so far as a success, and the cursor still advances by 2,000, so the rest of that page is lost silently. Failing the page instead would make a page that is always corrupt retry forever. `internal/feed/nvd/adapter.go` `parseNVDResponse`.
+- **For Sam, NVD body limit (not changed):** NVD reads each page through `io.LimitReader` at 50 MB, which ends a larger page without an error of its own. Since PR #221 such a page fails instead of looping, but it would fail on every retry. Measured pages are 6 to 10 MB.
+- **For Sam, MSRC rate limit (not changed):** MSRC answers HTTP 429 after anywhere from 10 to a few hundred requests at one per second, and a job that saved pages and then got a 429 still counts as a failure, so its backoff grows. The first sync finished anyway; a slower rate or treating a 429 after saved pages as a partial run would make it steadier.
+- **For Sam, OSV archive reuse (not changed):** every OSV backfill job downloads the whole 2.9 GB `all.zip` again. The backfill took 135 OSV jobs, about 390 GB of downloads. Keeping the first job's archive for the length of the backfill (keyed by the cursor's `snapshot`) would save that at the cost of 2.9 GB of disk held during the backfill.
+- `cve_affected_packages_eco_pkg_idx`: no application query used it (5 scans since the stats were last reset, a period with no API traffic). Migration 000061 (#225) dropped it.
+- **Ingest pace on this host:** 49 hours end to end, of which 11 were the decode-loop stall. OSV was last, at about 70,000 advisories an hour once the other feeds had caught up, and about ten times slower on its last `UBUNTU-CVE-*` records, whose merge rebuilds CVEs that many feeds already describe. `feed_ingest` runs one job at a time and the feeds take turns.
+- **For Sam (go/no-go run, wrong "not affected"):** 34,326 `UBUNTU-CVE-*` records have rows only under `Ubuntu:Pro:*` releases, with no standard-stream row for the same package: 16,337 for 20.04, 17,352 for 18.04, 18,100 for 16.04, 5,077 for 22.04, 4,028 for 24.04 and 1,636 for 26.04. A standard-stream item (`Ubuntu:<release>:LTS`) reads no Pro rows, so for these records it reads no advisory at all and can answer `not_affected` where Ubuntu reports the package affected. This is the round 2 review's Pro-row note, now counted.
+- **For Sam (go/no-go run):** Microsoft's CNA states both runtime versions (`10.0.15`) and SDK versions (`10.0.403`) under one product, `.NET 10.0`, and NVD's `microsoft:.net` mixes them too. A runtime version is inside the SDK ranges by number, so `.NET` `10.0.15` (the current runtime) answers Affected from SDK ranges, and an advisory with both kinds of range reports no `fixed_version`.
+- **For Sam (go/no-go run):** with NVD complete, the CPE lookup's row filter no longer brings the LTS kernels under the 50,000-row limit: `o:linux:linux_kernel` has 165,349 vulnerable rows, and `5.15.170`, `6.1.140` and `6.6.95` each answer `too_many_candidates`; `6.12.50` and later are answered. Every kernel version also carries 73 `no_version_bounds` advisories, so no kernel item answers `not_affected`.
+- **For Sam (go/no-go run, memory):** 500 items over the largest CPE products took 8.1 to 8.3 s and allocated 3.97 GiB, with 605 to 687 MiB resident afterwards (2.0 s and 1.2 GiB on the partial ingest). Four such requests at once, one per check slot, would not fit the 1 GiB container that also runs the worker.
 ---
 
 ## Rules for every task
@@ -703,7 +722,7 @@ Remove `cnaPriority` and its comment at `resolve.go:46-49`, which are now false.
 
 ## Phase 2 — Full ingest
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ DONE 2026-11-12. No code ships in this phase. The ingest started 2026-11-10 05:34 UTC and met all four completion signals at 06:56 UTC on 2026-11-12: 2,619,718 CVEs, 3,334,425 source rows, 7,491,658 `cve_affected_packages` rows. The worker ran from `dev` at `2c9fac0`, then at `4356557`, `f663fd7` and `f56bde0` as fixes for problems found on the way merged (PRs #217, #221, #222; see Discoveries). A full backup was taken at completion. The database is kept after Phase 4; it is not scratch.
 
 Starts when Phase 1 is on `dev`. It runs for hours in the background, so Phase 3 proceeds at the same time. No code changes here.
 
@@ -1404,7 +1423,7 @@ Retraction: pass `c.status` through as each row's `Status`. Do not filter reject
 
 ## Phase 4 — Measurement and merge
 
-**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T10:30Z on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest (Phase 4 notes below). The go/no-go run repeats them when Phase 2's completion signals are met.
+**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T10:30Z on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest, then as the go/no-go run on a copy of the complete ingest on 2026-11-12 (Phase 4 notes below). Step 4: reported to Sam on 2026-11-12; Steps 5 and 6 wait for his decision.
 
 Needs Phase 2's database and Phase 3's branch.
 
@@ -1423,6 +1442,175 @@ Needs Phase 2's database and Phase 3's branch.
 **Step 6: Measure index write cost on a copy, and keep the ingest.** Sam keeps the full ingest as lasting data: the database `cvert_ops`, the Docker volume `cvert-check-ingest-pgdata`, its container, and the locked `check-ingest` worktree, whose files the container mounts. None of them is changed or removed. (Deviation, 2026-11-10: this step first measured on the ingest database and then removed the Phase 2 containers and worktree.) Measure on a copy: `cvert_phase4`, re-made from `cvert_ops` with `pg_dump`, or a restore of a backup from the kept-data backups folder. On the copy, set the NVD cursor back 7 days, run a worker pointed at the copy until it catches up, and record CVEs merged per minute from its log. Drop the four indexes from Task 1.2 on the copy and repeat. Record both rates here, then drop the copy database.
 
 ### Phase 4 notes
+
+#### Go/no-go run, 2026-11-12, complete ingest
+
+A copy of the complete ingest: 2,619,748 CVEs, 7,491,658 package rows, 3,244,484 CPE rows and 684,174 CNA rows. The copy was migrated to version 61 (Deviations), and `serve` was built at `7dae4bf` with JIT off. Every response reported `data_complete: true`.
+
+**Acceptance (Step 2): pass.**
+- Node `24.22.0` lists CVE-2026-111497 as Affected, with fixed `24.22.1`. Node `24.22.1` does not list it.
+- `php8.5` `8.5.4-0ubuntu1.4` in `Ubuntu:26.04:LTS` lists `UBUNTU-CVE-2026-109618` and `UBUNTU-CVE-2026-109619` as Affected, each with fixed `8.5.4-0ubuntu1.5` and `in_cisa_kev: true`. It also lists `USN-8948-1` (fixed `8.5.4-0ubuntu1.5`) and `UBUNTU-CVE-2026-17545` (no fix).
+
+**Items (Step 3).** Every product's current release answers `cannot_evaluate`, with no advisory Affected. Every older version answers `affected`, except OpenSSL `1.1.1w`, which answers `invalid_version` on all 328 advisories: a letter release is not dotted numbers (design section 3.3). The current releases are later than NVD's highest fix bounds (Deviations).
+
+| Current release | Affected / Cannot evaluate / Not affected | What holds it at `cannot_evaluate` |
+|---|---|---|
+| Node `26.13.1` | 0 / 60 / 186 | 59 `cna_cannot_clear`, 1 `cna_indeterminate` |
+| PHP `8.5.12` | 0 / 11 / 730 | 6 `cna_indeterminate` (15 free-text entries), 3 `no_version_bounds`, 1 `invalid_range` (CVE-2006-3017), 1 `cna_cannot_clear` |
+| .NET SDK `10.0.404` | 0 / 91 / 132 | 42 `cna_indeterminate`, 30 `cna_name_uncertain`, 19 `cna_cannot_clear` |
+| nginx `1.31.7` | 0 / 50 / 36 | 27 `cna_cannot_clear`, 17 `cna_name_uncertain`, 4 `cna_indeterminate`, 2 `invalid_range` |
+| OpenSSL `4.0.4` | 0 / 90 / 238 | 85 `cna_indeterminate`, 4 `cna_cannot_clear`, 1 `cna_name_uncertain` |
+| PostgreSQL `18.6` | 0 / 36 / 174 | 28 `cna_indeterminate` (50 free-text entries), 7 `cna_cannot_clear`, 1 `no_version_bounds` |
+
+Older versions:
+
+| Version | Affected / Cannot evaluate / Not affected |
+|---|---|
+| Node `26.12.1` | 15 / 45 / 186 (15 CVEs the Node CNA fixed in `26.13.1`, not yet analysed by NVD) |
+| Node `24.22.1`, `18.20.0` | 15 / 45 / 186; 27 / 46 / 173 |
+| PHP `7.4.33` | 5 / 11 / 725 |
+| .NET `10.0.15` (runtime), `10.0.14`, `8.0.0` | 12 / 80 / 131; 24 / 68 / 131; 114 / 49 / 60 |
+| nginx `1.29.3`, `1.20.0` | 18 / 32 / 36; 24 / 29 / 33 |
+| OpenSSL `3.5.4`, `1.1.1w` | 62 / 62 / 204; 0 / 328 / 0 |
+| PostgreSQL `18.5`, `13.0` | 28 / 36 / 146; 70 / 13 / 127 |
+
+The six current releases have 338 `cannot_evaluate` advisories. By reason:
+
+- **`cna_indeterminate`, 166.** The CNA entry cannot be read for the version, and where NVD has analysed the CVE it says Not affected. Design section 15 keeps these at cannot evaluate. The entries are of three kinds:
+  - free text: `Fixed in OpenSSL 3.0.2 (Affected 3.0.0,3.0.1)`, `9.2.x before 9.2.22`;
+  - ranges with letter versions: `1.1.1` lessThan `1.1.1t`, version type `custom`;
+  - entries with `changes`.
+
+  The leading-number rule decides letter ranges for NVD bounds (`4.0.4` is past `1.1.1t`), but it does not apply to CNA entries. Free text would stay undecided under any rule.
+- **`cna_cannot_clear`, 117.** The CNA names the product, but NVD has no row for that product. Either NVD has not analysed the CVE, which covers most recent CVEs, or it analysed it under another product (CVE-2021-22959 is under `llhttp:llhttp`). 57 of the 144 Node CNA rows belong to CVEs with no NVD CPE row at all. The Node CNA states the affected lines (4 to 23 for CVE-2025-23083) and does not name 26, but design section 4.4 lets a CNA entry alone condemn a version, never clear one.
+- **`cna_name_uncertain`, 48.** Nearby CNA names that are other products:
+  - .NET: `Microsoft Visual Studio 2022 version 17.14`, `Microsoft Visual Studio 2026 version 18.10`, and the `Microsoft .NET Framework` 3.5 to 4.8.1 entries;
+  - nginx: `NGINX Plus`, `NGINX JavaScript`, `NGINX Ingress Controller`, `NGINX Gateway Fabric`;
+  - OpenSSL: `OpenSSL extension of Ruby (Git trunk)`.
+
+  Name table rows marking these as other products would answer them from the item's own data. No item answered `cna_product_not_mapped`.
+- **`no_version_bounds`, 4, and `invalid_range`, 3.** Rows from 1999 to 2006 for PHP, PostgreSQL and nginx.
+
+**Linux kernel.**
+- CPE `o:linux:linux_kernel` has 165,349 vulnerable rows.
+- A single kernel from `6.12.50` up is answered:
+  - `6.12.50`: 2,546 Affected, 94 Cannot evaluate, 12,648 Not affected;
+  - `7.2.7`: 8 Affected, 94 Cannot evaluate, 15,186 Not affected.
+- `6.6.95`, `6.1.140` and `5.15.170` answer `too_many_candidates`.
+- The 10-kernel LTS fleet answers `too_many_candidates`, with or without `6.8.0-45-generic`, because its floor is `5.15.170`.
+- Every kernel version carries 73 `no_version_bounds` advisories.
+- OSV's package key `Linux`/`kernel` (88,857 rows) answers `too_many_candidates`.
+- The CNA name `linux`/`linux` holds 36,476 rows, under the 50,000-row limit.
+
+**Cost.** Each request is one item list, run three times with JIT off:
+
+| Request | Time | Allocated |
+|---|---|---|
+| The 22 go/no-go items | 0.47 to 0.57 s | 83 MiB |
+| 50 Firefox versions | 0.96 to 0.98 s | 502 MiB |
+| One kernel `6.12.50` | 0.79 to 0.91 s | 107 MiB |
+| 500 items over the largest CPE products | 8.1 to 8.3 s | 3.97 GiB |
+| 300 kernel versions | 0.40 s | 55 MiB |
+
+- The 500-item request left 605 to 687 MiB resident. 322 of its items answered `affected`, 128 `cannot_evaluate` and 50 `too_many_candidates`.
+- All 300 kernel versions answered `too_many_candidates`.
+
+**JIT.** The same binary was run with `SET LOCAL jit = on` in place of `off`, three runs each. JIT on was never faster:
+
+| Request | JIT on | JIT off |
+|---|---|---|
+| Go/no-go items | 1.04 to 1.16 s | 0.47 to 0.57 s |
+| 500 heavy items | 8.8 to 9.1 s | 8.1 to 8.3 s |
+| 50 Firefox versions | 0.96 to 1.06 s | 0.96 to 0.98 s |
+| Kernel `6.12.50` | 0.83 to 0.87 s | 0.79 to 0.91 s |
+
+Allocations were the same. The check read keeps `jit = off`.
+
+**Data** (`03-phase4-extra.sql` on the copy):
+- **Ubuntu Pro rows with no standard row:** 34,326 `UBUNTU-CVE-*` records (649,816 rows); see Discoveries.
+- **CPE products with vulnerable rows under both `a:` and `o:`:** 237 of 121,741, covering 41,280 CVEs. The largest are Cisco ASA software (14,535 `o:` rows, 47 `a:`), VMware ESXi (8,999 / 38) and Xen (2,833 / 22).
+- **CNA entries with a `*` lower bound and an upper bound** (read as indeterminate): 983 entries in 591 CVEs, 978 of them `affected`. The largest names are MySQL Server (161 CVEs), Zephyr (59) and MediaWiki (38).
+- **`SEMVER` package rows:** 264,987 in 233,040 records:
+
+  | Ecosystem | Rows |
+  |---|---|
+  | npm | 219,919 |
+  | Bitnami | 26,152 |
+  | Go | 12,457 |
+  | crates.io | 3,864 |
+  | Julia | 2,054 |
+  | Hex | 467 |
+  | SwiftURL | 74 |
+
+  None are in `Root:*` or `GitHub Actions`.
+- **Stored CNA package keys with whitespace:** none.
+
+#### Phase 2 measurements (Phase 2 Steps 5 and 6), complete ingest
+
+Measured on 2026-11-12 at 07:13 UTC on the complete ingest, before Phase 4's own runs: 2,619,746 CVEs; 7,491,658 package rows; 3,244,484 CPE rows (2,649,617 vulnerable); 684,184 CNA rows. Both queries the plan review flagged (M2 and M6, the last measurement in Step 5) return rows.
+
+**Largest keys against the limits** (design section 9: 50,000 rows for one item, 200,000 for one request):
+
+- Package keys: OSV's `Linux`/`kernel` has 88,857 rows, over the item limit. The next largest are Ubuntu and Debian kernel builds, at 19,800 to 20,300 rows each. 1 package key is over 50,000.
+- CPE products (vulnerable rows): `o:linux:linux_kernel` 165,349; `o:cisco:ios` 69,369; `o:juniper:junos` 63,845. These 3 are over 50,000. Then come `a:mozilla:firefox` (38,199) and `a:google:chrome` (37,623).
+- CNA names: `n/a`/`n/a` 144,540 (the lookup excludes `n/a`); `linux`/`linux` 36,476; the largest Microsoft product 7,406.
+- An item for the Linux kernel by package always answers `too_many_candidates`. A CPE item reads only the rows at or above its request's lowest version for that product (the CPE row filter), so whether it passes the limit depends on that version (kernel results in the go/no-go run above). A request with the 10 largest package keys among 300 read 234,046 rows, over the 200,000 request limit.
+
+**CNA package keys with no package rows:** 4,255 CVEs have a CNA entry with a `package_key`. 3,905 of them have no `cve_affected_packages` row under that CVE ID:
+
+| Purl type | CVEs |
+|---|---|
+| npm | 511 |
+| Maven | 453 |
+| PyPI | 347 |
+| Go | 340 |
+| Packagist | 163 |
+| crates.io | 111 |
+| NuGet | 15 |
+| RubyGems | 14 |
+| Key with no purl type | 1,951 |
+
+573 of the 3,905 have no GHSA or OSV source at all. Stored keys containing whitespace: 0, so trimming is not needed now.
+
+**Several fixes under one `introduced`, outside `Root:*` and `GIT`:** 3,117 rows in 984 advisories with no ecosystem, OSS-Fuzz 1,383 rows, PyPI 518, Linux 428, and Alpine releases 11 to 123 rows each. Inside `Root:*` and `GIT`: 84,335 rows.
+
+**Index use** (`pg_stat_user_indexes` since the stats were last reset: the ingest worker plus read-only measurement runs, no API traffic). The check indexes are used:
+
+| Index | Scans |
+|---|---|
+| `cve_affected_packages_check_idx` | 986 |
+| `cve_cna_affected_check_idx` | 324 |
+| `cve_cpe_matches_check_idx` | 300 |
+| `cve_cna_affected_package_key_idx` | 6 |
+
+`cve_affected_packages_eco_pkg_idx` was scanned 5 times; migration 000061 dropped it.
+
+**Vulnerable CPE rows with no version bounds:** 381,011 of 2,649,617 rows (14.4%). 39,344 of 122,336 products (32.2%) have at least one.
+
+**NVD past the CNA's clean bound** (CVEs with one CNA product and one NVD product, NVD analysed):
+
+| Step | CVEs |
+|---|---|
+| One product on each side | 124,944 |
+| CNA entry has `lessThan` | 40,544 |
+| CNA bound is numeric | 26,168 |
+| NVD bound is numeric too | 25,945 |
+| NVD reports a version at or past the CNA's highest clean bound | 3,645 (14.1%) |
+
+The examples are mostly Linux kernel CVEs where the CNA's bound is a series such as `6.2` and NVD's is a release such as `7.2.6`.
+
+**Query plans (Step 6).** `EXPLAIN (ANALYZE, BUFFERS)` on the statements in `internal/store/check.go` at PR #218's `6fdc2bb`, with real keys. That is before the CPE row filter (`08b6595`) and before the bounded CPE key (`7dae4bf`), so the CPE row reads every vulnerable row of each product. Each lookup ran twice under a custom plan (second figure warm) and once under a generic plan:
+
+| Lookup | Keys | Rows | Custom plan, first / second | Generic plan | Index |
+|---|---|---|---|---|---|
+| Packages | 300 (the 10 largest and 290 random) | 234,046 | 1.16 s / 0.93 s | 1.05 s | `cve_affected_packages_check_idx` |
+| CPE | 100 products (the 5 largest and 95 random) | 226,944 | 0.90 s / 0.65 s | 0.29 s | `cve_cpe_matches_check_idx` |
+| CNA names | 105 (100 exact, 5 vendor prefixes) | | 26 ms / 10 ms | 10 ms | `cve_cna_affected_check_idx` |
+| CNA package keys | 100 | | 7 ms | | `cve_cna_affected_package_key_idx` |
+| CNA near names | the 3 largest vendors | 70,160 | 0.80 s / 0.65 s | 0.80 s | `cve_cna_affected_check_idx` |
+| CVE search, ecosystem and package filter, largest key | 1 | | 177 ms | | `cve_affected_packages_check_idx` |
+
+Every lookup reads its keys through the index named. The second packages run still read 182,000 buffers from outside Postgres's shared buffers, so these times depend on the OS file cache of a 34 GB database.
 
 #### Provisional run, 2026-11-10T10:22Z, partial ingest
 

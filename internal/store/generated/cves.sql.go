@@ -514,7 +514,7 @@ func (q *Queries) GetEPSSStaging(ctx context.Context, cveID string) (EpssStaging
 const insertAffectedCPE = `-- name: InsertAffectedCPE :exec
 INSERT INTO cve_affected_cpes (cve_id, cpe, cpe_normalized)
 VALUES ($1, $2, $3)
-ON CONFLICT (cve_id, cpe_normalized) DO NOTHING
+ON CONFLICT (cve_id, text_key_digest(cpe_normalized)) DO NOTHING
 `
 
 type InsertAffectedCPEParams struct {

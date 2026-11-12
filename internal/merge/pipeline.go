@@ -18,8 +18,16 @@ import (
 	"github.com/scarson/cvert-ops/internal/dbutil"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 	"github.com/scarson/cvert-ops/internal/feed"
+	logpkg "github.com/scarson/cvert-ops/internal/log"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 )
+
+// maxIndexedPackageNameBytes keeps a stored package name under the btree row limit
+// of cve_affected_packages_check_idx, which indexes the folded name. Folding can make
+// a name longer (lower-casing Ⱥ turns 2 bytes into 3), so the limit leaves room for
+// that. No registry allows a name near this length, and a watchlist item, matched by
+// its exact folded name of at most 255 characters, cannot match a longer one.
+const maxIndexedPackageNameBytes = 1024
 
 // Ingest merges a single source patch into the canonical CVE corpus.
 // It executes all steps within a single database/sql transaction protected by
@@ -224,6 +232,11 @@ func canonicalize(ctx context.Context, q *generated.Queries, cveID string) error
 		return fmt.Errorf("merge: delete affected packages: %w", err)
 	}
 	for _, pkg := range resolved.AffectedPackages {
+		if len(pkg.PackageName) > maxIndexedPackageNameBytes {
+			logpkg.FromContext(ctx).WarnContext(ctx, "merge: package name too long to index, entry left out",
+				"cve_id", cveID, "ecosystem", pkg.Ecosystem, "name_bytes", len(pkg.PackageName))
+			continue
+		}
 		if err := q.InsertAffectedPackage(ctx, generated.InsertAffectedPackageParams{
 			CveID:        cveID,
 			Ecosystem:    pkg.Ecosystem,

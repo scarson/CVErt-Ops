@@ -120,7 +120,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- name: InsertAffectedCPE :exec
 INSERT INTO cve_affected_cpes (cve_id, cpe, cpe_normalized)
 VALUES ($1, $2, $3)
-ON CONFLICT (cve_id, cpe_normalized) DO NOTHING;
+ON CONFLICT (cve_id, text_key_digest(cpe_normalized)) DO NOTHING;
 
 -- name: InsertCPEMatch :exec
 INSERT INTO cve_cpe_matches (

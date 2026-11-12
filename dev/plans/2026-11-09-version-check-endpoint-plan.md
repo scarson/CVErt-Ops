@@ -132,7 +132,8 @@ notes and commit messages.
 - Pitfall DB-19 (`dev/implementation-pitfalls.md`, "CREATE INDEX CONCURRENTLY requires migration framework coordination") says `IF NOT EXISTS` makes a retry succeed. A failed concurrent build leaves an INVALID index of that name, and `IF NOT EXISTS` then skips it without an error. The check lookups would fall back to the slow plans design section 9 measured. A `doctor` check for `pg_index.indisvalid = false` would surface it. This affects every migration, not only 000059.
 - **Decided by Sam on 2026-11-09 (affects Phase 3):** design section 3.2 refuses only the `repository_url` qualifier as naming a possibly non-public package. The purl specification also defines `download_url` and `vcs_url`, so `pkg:npm/foo@1?download_url=https://evil/x.tgz` maps to public npm `foo`. A request purl with either qualifier is refused with `unsupported_repository` (Task 3.2), because a private fork answered as the public package could get a wrong "not affected". A stored CNA `packageURL` with either qualifier keeps its key, and `FromPurl` stays as it is: CNA data can only condemn a version, so the worst case is a false Affected, while dropping the key would lose evidence.
 - `FromPurl` accepts namespace shapes no registry holds: `pkg:npm/scope/name` (no `@`), a Maven namespace containing `/`, and Composer names with three segments. They name no real package, so a lookup answers `no_advisory_found`, never a wrong "not affected". Phase 3's `ParseItem` could refuse them as `invalid_purl`.
-- `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
+- `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`left(cpe_normalized, 512) COLLATE "C"`, defined in migration 000061) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
+- **Decided by Sam on 2026-11-12 (affects Phase 3):** a CPE or package name over the btree row limit failed the merge of its CVE. Migration 000061 (bounded CPE and package keys) rebuilt `cve_cpe_matches_check_idx` on `left(cpe_normalized, 512) COLLATE "C"`. CPEs stay stored in full, because watchlists and this endpoint match them by prefix. Task 3.9's CPE statement, `CPEKey` and its tests, and design section 9 were updated to match. The merge leaves out package names over 1,024 bytes (`maxIndexedPackageNameBytes` in `internal/merge/pipeline.go`), so `cve_affected_packages_check_idx` is unchanged. The migration also dropped `cve_affected_packages_eco_pkg_idx`, which no query could use, so Phase 4 no longer measures it.
 
 ---
 
@@ -626,7 +627,7 @@ Starts when Phase 1 is on `dev`. It runs for hours in the background, so Phase 3
 
 **Step 4: Wait for the completion signals.** In `feed_sync_state`: `nvd` with `cursor_json->>'caught_up' = 'true'`, `ghsa` with non-empty `cursor_json->>'since'`, `osv` with `cursor_json->>'last_modified'` non-zero, and `mitre` having a recent `last_success_at`. If a feed fails repeatedly, find the root cause, and record it under Discoveries.
 
-**Step 5: Record the data-side measurements** from design section 13 in this plan's Phase 4 notes: largest row counts per package and per CPE product, and how they compare to the 50,000 and 200,000 limits; how many CVEs have `package_key` with no row in `cve_affected_packages`; rows sharing the "several fixes under one `introduced`" shape outside `Root:*` and `GIT`; whether `cve_affected_packages_eco_pkg_idx` is still used (`pg_stat_user_indexes`); share of vulnerable CPE rows with no bounds; and, for CVEs with one CNA product and one NVD product and NVD analysis, how often NVD reports a version at or past the CNA's highest clean bound.
+**Step 5: Record the data-side measurements** from design section 13 in this plan's Phase 4 notes: largest row counts per package and per CPE product, and how they compare to the 50,000 and 200,000 limits; how many CVEs have `package_key` with no row in `cve_affected_packages`; rows sharing the "several fixes under one `introduced`" shape outside `Root:*` and `GIT`; share of vulnerable CPE rows with no bounds; and, for CVEs with one CNA product and one NVD product and NVD analysis, how often NVD reports a version at or past the CNA's highest clean bound.
 
 > **Verify first (unverified repair, plan review 2026-11-09):** the last measurement above and the write-cost step in Phase 4 were added in the last review wave. Before relying on them, confirm each query returns rows on the ingested data.
 
@@ -1103,7 +1104,7 @@ func NamesFor(p ProductRef) (names []CNAName, mapping cnaMapping, mapped bool)
 // position is the key index that rows in Candidates refer to.
 type Keys struct {
 	Packages       []PackageKey   // Ecosystem and folded name
-	CPEPrefixes    []CPEKey       // Lo "cpe:2.3:a:nodejs:node.js:", Hi "cpe:2.3:a:nodejs:node.js;"
+	CPEPrefixes    []CPEKey       // Lo "cpe:2.3:a:nodejs:node.js:", Hi "cpe:2.3:a:nodejs:node.js;", Prefix (see below)
 	CNANames       []CNANameKey   // see below
 	CNAPackageKeys []string       // ecosystem.PackageKeyFor; non-distro package items only
 	CNANear        []CNANearKey   // V, FullVendor, Fragment, VendorLo "cpe:2.3:a:microsoft:", VendorHi "cpe:2.3:a:microsoft;"
@@ -1129,6 +1130,8 @@ func KeysFor(items []Item) Keys
 ```
 
 A `CNANameKey` is built from lower-cased names, cut to 256 characters by rune count to match SQL `left`. `V` is the cut vendor. For an exact name, `Lo` is the cut product and `Hi` is `Lo + "\x01"`, built after the cut so a long name cannot collapse the interval. For a prefix, `Lo` is the cut prefix and `Hi` is that prefix with its last rune incremented. `FullVendor` is the whole lower-cased vendor, and `FullProduct` is the whole lower-cased product, or `""` for a prefix key.
+
+A `CPEKey` matches `cve_cpe_matches_check_idx`, which holds the first 512 characters of `cpe_normalized` (migration 000061). `Prefix` is the whole CPE prefix. `Lo` is `Prefix` cut to 512 characters by rune count, to match SQL `left`, and `Hi` is `Lo` with its last rune incremented, built after the cut. The statement rechecks `Prefix` against the whole value.
 
 Each row type gains `Status string` (the `cves.status` of its CVE), and retraction is decided in `Evaluate` by `isRetracted`, using `lower(status)` in `rejected` or `withdrawn`. A row in `CNANear` that is the same row as one of the item's `CNANames` rows (same CVE, vendor and product) is dropped. Any other `CNANear` row makes its CVE's advisory cannot evaluate, `cna_name_uncertain`, unless that advisory already reports Affected.
 
@@ -1159,6 +1162,7 @@ Read `dev/implementation-pitfalls.md` §2.17 (transaction helper selection), ARC
 - A CPE key `foo:bar` does not return `foo:barbaz`, and `foo\:bar` does not return `foo\:barbaz`.
 - A CNA prefix key returns `.NET 9.0 runtime`, and an exact key does not return a longer name.
 - A product name over 256 characters: two names sharing the first 256, and only the exact one matches.
+- A CPE key over 512 characters: two stored CPEs sharing the first 512, and only the one that starts with the whole prefix is returned.
 - The nearby-name statement returns a row whose CVE has only a CPE row for another vendor, and none where the CVE has a CPE row for this vendor.
 - `TestReadCheckCandidates_OneSnapshot`: call `readCheckCandidates` with an `afterStatement` callback that commits a change from another connection after the first statement, and assert the second statement sees the original state. `testutil` imports `store`, so these tests are in package `store_test`, and `export_test.go` exposes `readCheckCandidates` and `checkLimits` to them.
 - Limits, by calling `readCheckCandidates` with lowered `checkLimits`: a key at its limit has `Overflow` true and other keys are complete; a request over the row limit or the byte limit returns `ErrCandidateLimit`.
@@ -1191,16 +1195,18 @@ CROSS JOIN LATERAL (
 ) p
 JOIN cves c ON c.cve_id = p.cve_id;
 
--- CPE. lo is 'cpe:2.3:a:nodejs:node.js:'; hi is 'cpe:2.3:a:nodejs:node.js;'.
+-- CPE. lo is 'cpe:2.3:a:nodejs:node.js:'; hi is 'cpe:2.3:a:nodejs:node.js;', both
+-- cut to 512 characters as CPEKey defines them. prefix is the whole prefix.
 SELECT k.ord, m.cve_id, m.cpe_normalized, m.version_start_including, m.version_start_excluding,
        m.version_end_including, m.version_end_excluding, c.status
-FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS k(lo, hi, ord)
+FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS k(lo, hi, prefix, ord)
 CROSS JOIN LATERAL (
   SELECT q.* FROM cve_cpe_matches q
-  WHERE q.cpe_normalized COLLATE "C" >= k.lo COLLATE "C"
-    AND q.cpe_normalized COLLATE "C" <  k.hi COLLATE "C"
+  WHERE left(q.cpe_normalized, 512) COLLATE "C" >= k.lo COLLATE "C"
+    AND left(q.cpe_normalized, 512) COLLATE "C" <  k.hi COLLATE "C"
+    AND starts_with(q.cpe_normalized, k.prefix)
     AND q.vulnerable
-  LIMIT $3
+  LIMIT $4
 ) m
 JOIN cves c ON c.cve_id = m.cve_id;
 

@@ -4,7 +4,7 @@
 > **Author:** Sam (Enterprise Solutions Architect)
 > **Date:** 2026-02-19
 > **Status:** All research decisions resolved. Ready for implementation. See `research.md` for detailed findings.
-> **Language:** Go 1.26
+> **Language:** Go 1.27
 
 ---
 
@@ -34,7 +34,7 @@ The product ships as:
 
 | Layer | Choice | Notes |
 |---|---|---|
-| **Language** | Go 1.26 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
+| **Language** | Go 1.27 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
 | **HTTP framework** | `huma` + `chi` | Code-first OpenAPI 3.1; automatic struct-tag validation; RFC 9457 errors. See section 18.2 |
 | **Database** | Postgres 15+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
 | **Migrations** | `golang-migrate` | SQL migration files; one per change; embedded via `embed.FS` |

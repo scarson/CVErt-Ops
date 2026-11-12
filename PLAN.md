@@ -2175,7 +2175,7 @@ PK `(cve_id, source_name, source_id)`. Columns: `normalized_json jsonb`, `source
 PK `id uuid`. Columns: `cve_id`, `source_name`, `ingested_at`, `payload jsonb`. Index: `(cve_id, source_name, ingested_at desc)`.
 
 ### `cve_references`
-PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constraint: `UNIQUE(cve_id, url_canonical)`. Indexes: `cve_id`, `url_canonical`.
+PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constraint: unique index on `(cve_id, reference_url_digest(url_canonical))`, where `reference_url_digest` is the SHA-256 of the URL: a reference URL has no length bound, and a btree row holds at most 2,704 bytes. Index: `cve_id`.
 
 ### `cve_affected_packages`
 PK `id uuid`. Columns: `cve_id`, `ecosystem`, `package_name`, `namespace`, `range_type`, `introduced`, `fixed`, `last_affected`, `events jsonb`. Indexes: `(ecosystem, package_name)`, `cve_id`, and `cve_affected_packages_check_idx` on `(ecosystem, <folded package_name>)`, where the folded expression is exactly what `ecosystem.FoldedNameSQL("ecosystem", "package_name")` builds (lower case, and PyPI separator runs collapsed), so the version check endpoint's package lookup can use it.

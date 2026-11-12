@@ -6,6 +6,7 @@
 -- so a long URL failed the merge of its CVE and stopped the feed job (Red Hat sends
 -- one over 3,000 bytes for CVE-2006-4339). Uniqueness is enforced on a SHA-256
 -- digest of the canonical URL instead, which is 32 bytes whatever the URL's length.
+-- text_key_digest serves any btree key over unbounded text that needs only equality.
 --
 -- sha256(text::bytea) would parse backslashes as bytea escapes, and convert_to is
 -- STABLE, so it cannot appear in an index expression by itself. The database
@@ -13,13 +14,13 @@
 -- practice. md5(text) is IMMUTABLE but can fail on a server whose OpenSSL runs in
 -- FIPS mode. The SQL-standard body is parsed when the function is created, so
 -- search_path cannot redirect it later.
-CREATE OR REPLACE FUNCTION reference_url_digest(url text) RETURNS bytea
+CREATE OR REPLACE FUNCTION text_key_digest(value text) RETURNS bytea
     LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
-    RETURN sha256(convert_to(url, 'UTF8'));
+    RETURN sha256(convert_to(value, 'UTF8'));
 
 -- InsertCVEReference names this expression in its ON CONFLICT target.
 CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS cve_references_cve_url_digest_uq
-    ON cve_references (cve_id, reference_url_digest(url_canonical));
+    ON cve_references (cve_id, text_key_digest(url_canonical));
 
 DROP INDEX CONCURRENTLY IF EXISTS cve_references_cve_url_uq;
 

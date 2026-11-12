@@ -12,4 +12,4 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS cve_references_cve_url_uq
 
 DROP INDEX CONCURRENTLY IF EXISTS cve_references_cve_url_digest_uq;
 
-DROP FUNCTION IF EXISTS reference_url_digest(text);
+DROP FUNCTION IF EXISTS text_key_digest(text);

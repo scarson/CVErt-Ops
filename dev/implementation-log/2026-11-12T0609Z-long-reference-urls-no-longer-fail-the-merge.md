@@ -2,7 +2,7 @@
 
 ## What was built
 
-- Migration 000060 adds `reference_url_digest(text)`, an IMMUTABLE SQL function that returns the SHA-256 of a URL. The unique index `cve_references_cve_url_digest_uq` on `(cve_id, reference_url_digest(url_canonical))` replaces `cve_references_cve_url_uq` on `(cve_id, url_canonical)`. The migration also drops `cve_references_url_canonical_idx`.
+- Migration 000060 adds `text_key_digest(text)`, an IMMUTABLE SQL function that returns the SHA-256 of a URL. The unique index `cve_references_cve_url_digest_uq` on `(cve_id, text_key_digest(url_canonical))` replaces `cve_references_cve_url_uq` on `(cve_id, url_canonical)`. The migration also drops `cve_references_url_canonical_idx`.
 - `InsertCVEReference` names the digest expression in its `ON CONFLICT` target.
 - New tests in `internal/merge/pipeline_integration_test.go`:
   - `TestIngest_LongReferenceURLIsStored` merges a record with an over-long reference.

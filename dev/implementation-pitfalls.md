@@ -868,12 +868,12 @@ Alternatively, if the helper takes a plain `int32`, document that `0` is a valid
 
 **The Flaw:** `cve_references` had btree indexes on `(cve_id, url_canonical)` and on `url_canonical`. A btree row holds at most 2,704 bytes (after PostgreSQL compresses the key), and a reference URL has no length bound. Red Hat sends a reference over 3,000 bytes for CVE-2006-4339.
 
-**Status: FIXED — migration 000060 enforces reference uniqueness on `reference_url_digest(url_canonical)`, a SHA-256 digest, and drops the index on `url_canonical` alone, which no query used.**
+**Status: FIXED — migration 000060 enforces reference uniqueness on `text_key_digest(url_canonical)`, a SHA-256 digest, and drops the index on `url_canonical` alone, which no query used.**
 
 **Why It Matters:** The insert fails with `index row size N exceeds btree version 4 maximum 2704` (SQLSTATE 54000). That rolls back the merge of the CVE, and the feed job stops at the same record on every run. Red Hat failed this way on every run of a full ingest and never recorded a success. Nothing in the data looks wrong until a feed sends one long value.
 
 **The Fix:** Index a bounded form of any feed-supplied text that has no length limit:
-- for uniqueness, an IMMUTABLE digest of the value (`reference_url_digest` in migration 000060), and name the same expression in the `ON CONFLICT` target
+- for uniqueness, an IMMUTABLE digest of the value (`text_key_digest` in migration 000060), and name the same expression in the `ON CONFLICT` target
 - for prefix or equality lookups that tolerate truncation, `left(value, 256)` (`cve_cna_affected_check_idx` in migration 000059)
 - or cap the value where it is parsed (`maxPackageKeyBytes` in `internal/ecosystem/purl.go`)
 

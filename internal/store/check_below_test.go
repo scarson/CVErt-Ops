@@ -111,7 +111,7 @@ func gizmoKeys(floors ...string) check.Keys {
 	product := productKeys("a", "acme", "gizmo").CPEPrefixes[0]
 	var keys check.Keys
 	for _, floor := range floors {
-		keys.CPEPrefixes = append(keys.CPEPrefixes, check.CPEKey{Lo: product.Lo, Hi: product.Hi, Floor: floor})
+		keys.CPEPrefixes = append(keys.CPEPrefixes, check.CPEKey{Lo: product.Lo, Hi: product.Hi, Prefix: product.Prefix, Floor: floor})
 	}
 	return keys
 }
@@ -187,7 +187,7 @@ func TestReadCheckCandidates_CPERowsBelowEscapedColon(t *testing.T) {
 	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-72001",
 		CPEMatches: []feed.CPEMatch{{CPE: cpe, CPENormalized: cpe, Vulnerable: true}}})
 
-	keys := check.Keys{CPEPrefixes: []check.CPEKey{{Lo: `cpe:2.3:a:v\:1:2.0:`, Hi: `cpe:2.3:a:v\:1:2.0;`, Floor: "6.12.0"}}}
+	keys := check.Keys{CPEPrefixes: []check.CPEKey{{Lo: `cpe:2.3:a:v\:1:2.0:`, Hi: `cpe:2.3:a:v\:1:2.0;`, Prefix: `cpe:2.3:a:v\:1:2.0:`, Floor: "6.12.0"}}}
 	cands, _, _ := readCheck(t, tdb, checkOrg(t, tdb), keys, store.DefaultCheckLimits, nil)
 	want := []check.CPERow{{CVEID: "CVE-2026-72001", CPE: cpe}}
 	if got := cands.CPEs[0].Rows; !reflect.DeepEqual(got, want) {
@@ -240,7 +240,7 @@ func TestReadCheckCandidates_CPERowsBelowChangeNoAnswer(t *testing.T) {
 			floors++
 		}
 		every := keys
-		every.CPEPrefixes = []check.CPEKey{{Lo: keys.CPEPrefixes[0].Lo, Hi: keys.CPEPrefixes[0].Hi}}
+		every.CPEPrefixes = []check.CPEKey{{Lo: keys.CPEPrefixes[0].Lo, Hi: keys.CPEPrefixes[0].Hi, Prefix: keys.CPEPrefixes[0].Prefix}}
 
 		// A range limit of 30 holds every 40-row CVE at too_many_ranges, which
 		// needs the count of the rows left out; 1,000 lets each be evaluated.

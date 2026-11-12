@@ -33,7 +33,7 @@ func exactName(vendor, product string) CNANameKey {
 // vendorRange is the range on cpe_normalized of every CPE of part:vendor.
 func vendorRange(part, vendor string) CPEKey {
 	lo := "cpe:2.3:" + part + ":" + vendor + ":"
-	return CPEKey{Lo: lo, Hi: "cpe:2.3:" + part + ":" + vendor + ";"}
+	return CPEKey{Lo: lo, Hi: "cpe:2.3:" + part + ":" + vendor + ";", Prefix: lo}
 }
 
 func TestKeysFor(t *testing.T) {
@@ -45,9 +45,9 @@ func TestKeysFor(t *testing.T) {
 			{Ecosystem: "PyPI", Name: "foo-bar"},
 		},
 		CPEPrefixes: []CPEKey{
-			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;", Floor: "24.22.0"},
-			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;", Floor: "9.0.1"},
-			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;", Floor: "9.0.1"},
+			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;", Prefix: "cpe:2.3:a:nodejs:node.js:", Floor: "24.22.0"},
+			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;", Prefix: "cpe:2.3:a:microsoft:.net:", Floor: "9.0.1"},
+			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;", Prefix: "cpe:2.3:a:microsoft:.net_core:", Floor: "9.0.1"},
 		},
 		CNANames: []CNANameKey{
 			exactName("nodejs", "node.js"),
@@ -106,7 +106,7 @@ func TestKeysForCPESpellings(t *testing.T) {
 	t.Parallel()
 	prefix := func(part, vendor, product, floor string) CPEKey {
 		lo := "cpe:2.3:" + part + ":" + vendor + ":" + product + ":"
-		return CPEKey{Lo: lo, Hi: upperOfPrefix(lo), Floor: floor}
+		return CPEKey{Lo: lo, Hi: strings.TrimSuffix(lo, ":") + ";", Prefix: lo, Floor: floor}
 	}
 	keys, uses := keysWithUses(parseItems(
 		RawItem{CPE: "cpe:2.3:a:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
@@ -179,7 +179,7 @@ func TestKeysForRedundantEscapes(t *testing.T) {
 func TestKeysForCPEEscapes(t *testing.T) {
 	t.Parallel()
 	got := KeysFor(parseItems(RawItem{CPE: `cpe:2.3:a:foo\:bar:baz_qux:1.0:*:*:*:*:*:*:*`}))
-	wantCPE := []CPEKey{{Lo: `cpe:2.3:a:foo\:bar:baz_qux:`, Hi: `cpe:2.3:a:foo\:bar:baz_qux;`, Floor: "1.0"}}
+	wantCPE := []CPEKey{{Lo: `cpe:2.3:a:foo\:bar:baz_qux:`, Hi: `cpe:2.3:a:foo\:bar:baz_qux;`, Prefix: `cpe:2.3:a:foo\:bar:baz_qux:`, Floor: "1.0"}}
 	if !reflect.DeepEqual(got.CPEPrefixes, wantCPE) {
 		t.Errorf("CPE keys = %+v, want %+v", got.CPEPrefixes, wantCPE)
 	}
@@ -220,6 +220,35 @@ func TestKeysForLongNames(t *testing.T) {
 	if near.V != cutVendor || near.FullVendor != vendor || near.Fragment != product {
 		t.Errorf("long nearby-name key: V %d runes, FullVendor %d runes, Fragment %d runes; want 256, 300, 300",
 			utf8.RuneCountInString(near.V), utf8.RuneCountInString(near.FullVendor), utf8.RuneCountInString(near.Fragment))
+	}
+}
+
+// TestCPEKeyCutToIndexLength checks that a CPE key's range is on the first 512
+// runes of its prefix, as cve_cpe_matches_check_idx holds them, and that the
+// whole prefix is kept for the store to recheck.
+func TestCPEKeyCutToIndexLength(t *testing.T) {
+	t.Parallel()
+	short := "cpe:2.3:a:nodejs:node.js:"
+	if got, want := CPEKeyFor(short), (CPEKey{Lo: short, Hi: "cpe:2.3:a:nodejs:node.js;", Prefix: short}); got != want {
+		t.Errorf("CPEKeyFor(%q) = %+v, want %+v", short, got, want)
+	}
+
+	// Two-byte runes, so a cut by bytes would differ from SQL left by characters.
+	product := strings.Repeat("é", 600)
+	long := "cpe:2.3:a:v:" + product + ":"
+	got := CPEKeyFor(long)
+	lo := string([]rune(long)[:512])
+	if got.Lo != lo || got.Hi != nextPrefix(lo) || got.Prefix != long {
+		t.Errorf("long CPE key: Lo %d runes, Hi %q…, Prefix %d runes; want Lo 512 runes, Hi Lo with its last rune incremented, Prefix %d runes",
+			utf8.RuneCountInString(got.Lo), got.Hi[len(got.Hi)-4:], utf8.RuneCountInString(got.Prefix), utf8.RuneCountInString(long))
+	}
+
+	keys := KeysFor([]Item{{Product: &ProductRef{Part: "a", Vendor: "v", Product: product}}})
+	if len(keys.CPEPrefixes) != 1 || keys.CPEPrefixes[0] != got {
+		t.Errorf("KeysFor CPE keys = %+v, want the one CPEKeyFor builds", keys.CPEPrefixes)
+	}
+	if len(keys.CNANear) != 1 || !reflect.DeepEqual(keys.CNANear[0].VendorRanges, []CPEKey{CPEKeyFor("cpe:2.3:a:v:")}) {
+		t.Errorf("KeysFor nearby-name vendor ranges = %+v, want the one CPEKeyFor builds", keys.CNANear)
 	}
 }
 

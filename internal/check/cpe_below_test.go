@@ -102,8 +102,8 @@ func TestKeysForCPEFloor(t *testing.T) {
 			}
 			keys, uses := keysWithUses(parseItems(raws...))
 			want := []CPEKey{
-				{Lo: "cpe:2.3:a:acme:gadget:", Hi: "cpe:2.3:a:acme:gadget;", Floor: "3.0"},
-				{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;", Floor: tc.want},
+				{Lo: "cpe:2.3:a:acme:gadget:", Hi: "cpe:2.3:a:acme:gadget;", Prefix: "cpe:2.3:a:acme:gadget:", Floor: "3.0"},
+				{Lo: widgetPrefix, Hi: "cpe:2.3:a:acme:widget;", Prefix: widgetPrefix, Floor: tc.want},
 			}
 			if !reflect.DeepEqual(keys.CPEPrefixes, want) {
 				t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, want)

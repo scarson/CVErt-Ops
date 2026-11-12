@@ -15,6 +15,10 @@ import (
 // holds, as SQL left(lower(...), 256) cuts them.
 const cnaNameRunes = 256
 
+// CPEKeyRunes is how many characters of cpe_normalized cve_cpe_matches_check_idx
+// holds, as SQL left(cpe_normalized, 512) cuts them.
+const CPEKeyRunes = 512
+
 // Keys is what the store must read, distinct across the request. Each slice's
 // position is the key index that rows in Candidates refer to.
 type Keys struct {
@@ -28,11 +32,15 @@ type Keys struct {
 // PackageKey is an ecosystem and a package name folded by ecosystem.FoldPackageName.
 type PackageKey struct{ Ecosystem, Name string }
 
-// CPEKey is the range [Lo, Hi) on cpe_normalized holding every CPE of one
-// part:vendor:product, or of one part:vendor in CNANearKey.VendorRanges, with
-// escapes as ProductRef holds them: as written, except that parseCPE drops the
-// backslash before ".", "-" and "_", which NVD writes bare. Lo ends in ":" and
-// Hi is Lo with that ":" replaced by ";", the next byte.
+// CPEKey finds every CPE that starts with Prefix: one part:vendor:product, or
+// one part:vendor in CNANearKey.VendorRanges, ending in ":", with escapes as
+// ProductRef holds them: as written, except that parseCPE drops the backslash
+// before ".", "-" and "_", which NVD writes bare. [Lo, Hi) is the range on the
+// first CPEKeyRunes runes of cpe_normalized, as the index holds them: Lo is
+// Prefix cut to that length and Hi is Lo with its last rune incremented, built
+// after the cut, so for a Prefix within the length Hi is Prefix ending in ";".
+// The store rechecks Prefix against the whole value. CPEKeyFor builds the
+// three.
 //
 // A request has one key for each product, so every item of the product shares
 // one read, as Keys promises. Floor is the lowest dotted-number version among
@@ -47,7 +55,13 @@ type PackageKey struct{ Ecosystem, Name string }
 // The rows a key returns therefore depend on the request's other items of the
 // same product, and so does whether the key passes its row limit. A key with a
 // floor never returns more rows than the same key with none.
-type CPEKey struct{ Lo, Hi, Floor string }
+type CPEKey struct{ Lo, Hi, Prefix, Floor string }
+
+// CPEKeyFor returns the key, with no floor, for the CPEs starting with prefix.
+func CPEKeyFor(prefix string) CPEKey {
+	lo := cutRunes(prefix, CPEKeyRunes)
+	return CPEKey{Lo: lo, Hi: nextPrefix(lo), Prefix: prefix}
+}
 
 // CNANameKey finds CNA rows for one CNAName. Names are lower-cased and cut to
 // 256 runes, as the index holds them. V is the cut vendor, and [Lo, Hi) is a
@@ -130,10 +144,8 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			// Every spelling NamesFor lists is this product, with the item's part.
 			var vendorRanges []CPEKey
 			for _, cpe := range cpes {
-				lo := "cpe:2.3:" + p.Part + ":" + cpe + ":"
-				use.cpes = append(use.cpes, b.addCPE(CPEKey{Lo: lo, Hi: upperOfPrefix(lo)}, item.Version))
-				vendorLo := "cpe:2.3:" + p.Part + ":" + splitCPE(cpe)[0] + ":"
-				if r := (CPEKey{Lo: vendorLo, Hi: upperOfPrefix(vendorLo)}); !slices.Contains(vendorRanges, r) {
+				use.cpes = append(use.cpes, b.addCPE(CPEKeyFor("cpe:2.3:"+p.Part+":"+cpe+":"), item.Version))
+				if r := CPEKeyFor("cpe:2.3:" + p.Part + ":" + splitCPE(cpe)[0] + ":"); !slices.Contains(vendorRanges, r) {
 					vendorRanges = append(vendorRanges, r)
 				}
 			}
@@ -146,7 +158,7 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			for _, n := range nearbyNames(p) {
 				vendor := strings.ToLower(n.Vendor)
 				use.near = append(use.near, b.addNear(CNANearKey{
-					V: cutRunes(vendor), FullVendor: vendor, Fragment: strings.ToLower(n.Product), VendorRanges: vendorRanges,
+					V: cutRunes(vendor, cnaNameRunes), FullVendor: vendor, Fragment: strings.ToLower(n.Product), VendorRanges: vendorRanges,
 				}))
 			}
 		}
@@ -206,7 +218,7 @@ func (b *keyBuilder) addNear(k CNANearKey) int {
 func nearKeyID(k CNANearKey) string {
 	fields := []string{k.V, k.FullVendor, k.Fragment}
 	for _, r := range k.VendorRanges {
-		fields = append(fields, r.Lo, r.Hi)
+		fields = append(fields, r.Prefix)
 	}
 	return strings.Join(fields, "\x00")
 }
@@ -230,27 +242,21 @@ func (b *keyBuilder) addCPE(key CPEKey, ver string) int {
 	return i
 }
 
-// upperOfPrefix turns a CPE prefix ending in ":" into the bound just above every
-// string it starts: the same prefix ending in ";".
-func upperOfPrefix(lo string) string {
-	return strings.TrimSuffix(lo, ":") + ";"
-}
-
 // cnaNameKey builds the key for one CNA name, as CNANameKey describes.
 func cnaNameKey(n CNAName) CNANameKey {
 	vendor, product := strings.ToLower(n.Vendor), strings.ToLower(n.Product)
-	lo := cutRunes(product)
+	lo := cutRunes(product, cnaNameRunes)
 	if n.Prefix {
-		return CNANameKey{V: cutRunes(vendor), Lo: lo, Hi: nextPrefix(lo), FullVendor: vendor}
+		return CNANameKey{V: cutRunes(vendor, cnaNameRunes), Lo: lo, Hi: nextPrefix(lo), FullVendor: vendor}
 	}
-	return CNANameKey{V: cutRunes(vendor), Lo: lo, Hi: lo + "\x01", FullVendor: vendor, FullProduct: product}
+	return CNANameKey{V: cutRunes(vendor, cnaNameRunes), Lo: lo, Hi: lo + "\x01", FullVendor: vendor, FullProduct: product}
 }
 
-// cutRunes returns the first 256 runes of s, as SQL left(s, 256) does.
-func cutRunes(s string) string {
+// cutRunes returns the first max runes of s, as SQL left(s, max) does.
+func cutRunes(s string, max int) string {
 	n := 0
 	for i := range s {
-		if n == cnaNameRunes {
+		if n == max {
 			return s[:i]
 		}
 		n++

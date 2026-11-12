@@ -4,6 +4,8 @@ package store_test
 
 import (
 	"io/fs"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,11 +40,34 @@ func TestCheckPackageIndexMatchesFoldedName(t *testing.T) {
 	}
 }
 
+// latestIndexMigration returns the body of the last up migration, in migration
+// order, that creates the index name, since a later migration may rebuild it.
+func latestIndexMigration(t *testing.T, name string) string {
+	t.Helper()
+	names, err := fs.Glob(migrations.FS, "*.up.sql")
+	if err != nil {
+		t.Fatalf("glob migrations: %v", err)
+	}
+	creates := regexp.MustCompile(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ` + regexp.QuoteMeta(name) + `\s`)
+	slices.Sort(names)
+	for _, n := range slices.Backward(names) {
+		body, err := fs.ReadFile(migrations.FS, n)
+		if err != nil {
+			t.Fatalf("read %s: %v", n, err)
+		}
+		if creates.Match(body) {
+			return string(body)
+		}
+	}
+	t.Fatalf("no up migration creates %s", name)
+	return ""
+}
+
 func TestCheckCPEIndexMatchesQuery(t *testing.T) {
 	t.Parallel()
 	want := "ON cve_cpe_matches ((" + store.CPEIndexExpr("cpe_normalized") + "))"
-	if !strings.Contains(checkLookupsMigration(t), want) {
-		t.Errorf("check_lookups migration does not index the CPE expression: want %q", want)
+	if !strings.Contains(latestIndexMigration(t, "cve_cpe_matches_check_idx"), want) {
+		t.Errorf("the last migration that creates cve_cpe_matches_check_idx does not index the CPE expression: want %q", want)
 	}
 }
 

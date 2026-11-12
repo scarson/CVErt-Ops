@@ -153,6 +153,51 @@ func TestReadCheckCandidates_CPEPrefix(t *testing.T) {
 	}
 }
 
+// TestReadCheckCandidates_CPEPrefixOverIndexLength checks a CPE key whose prefix
+// is longer than the 512 characters cve_cpe_matches_check_idx holds: of two
+// stored CPEs sharing their first 512 characters, only the one that starts with
+// the whole prefix is read, with a floor and without one.
+func TestReadCheckCandidates_CPEPrefixOverIndexLength(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	product := strings.Repeat("p", 600)
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90012", CPEMatches: []feed.CPEMatch{
+		cpeMatch("a:v:"+product, "2.0"),
+		cpeMatch("a:v:"+product+"q", "3.0"),
+	}})
+
+	key := productKeys("a", "v", product).CPEPrefixes[0]
+	want := cpeMatch("a:v:"+product, "2.0").CPENormalized
+	orgID := checkOrg(t, tdb)
+	for _, floor := range []string{"", "1.0"} {
+		key.Floor = floor
+		cands, _, _ := readCheck(t, tdb, orgID, check.Keys{CPEPrefixes: []check.CPEKey{key}}, store.DefaultCheckLimits, nil)
+		if rows := cands.CPEs[0].Rows; len(rows) != 1 || rows[0].CPE != want {
+			t.Errorf("floor %q: rows = %+v, want only the CPE under the whole prefix", floor, rows)
+		}
+	}
+}
+
+// TestReadCheckCandidates_CNANearVendorOverIndexLength checks that a nearby-name
+// key whose CPE vendor range is longer than 512 characters is lifted only by an
+// NVD row under the whole vendor, not by one sharing its first 512 characters.
+func TestReadCheckCandidates_CNANearVendorOverIndexLength(t *testing.T) {
+	t.Parallel()
+	tdb := testutil.NewTestDB(t)
+	vendor := strings.Repeat("w", 600)
+	ingestPatch(t, tdb, "nvd", feed.CanonicalPatch{CVEID: "CVE-2026-90049",
+		CNAAffected: []feed.CNAAffected{{Vendor: vendor, Product: "Gizmo Pro"}},
+		CPEMatches:  []feed.CPEMatch{cpeMatch("a:"+vendor+"x:gizmo", "")},
+	})
+
+	keys := check.Keys{CNANear: productKeys("a", vendor, "gizmo").CNANear}
+	cands, _, _ := readCheck(t, tdb, checkOrg(t, tdb), keys, store.DefaultCheckLimits, nil)
+	want := []check.CNANearRow{{CVEID: "CVE-2026-90049", Vendor: vendor, Product: "Gizmo Pro"}}
+	if len(cands.CNANear) != 1 || !reflect.DeepEqual(cands.CNANear[0].Rows, want) {
+		t.Errorf("nearby rows = %+v, want the CNA row (another vendor's NVD row lifts nothing)", cands.CNANear)
+	}
+}
+
 func TestReadCheckCandidates_CNANames(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)

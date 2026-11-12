@@ -159,7 +159,7 @@ func dockerClientEnvironment() []string {
 func writeEnvFile(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "stack.env")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { //nolint:gosec // G703: path is t.TempDir() joined with a constant file name
 		t.Fatalf("write env file: %v", err)
 	}
 	return path

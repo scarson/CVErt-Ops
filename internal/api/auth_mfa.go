@@ -565,7 +565,7 @@ func (srv *Server) issueRememberDeviceToken(ctx context.Context, userID uuid.UUI
 		return "", fmt.Errorf("store device token: %w", err)
 	}
 
-	cookie := &http.Cookie{
+	cookie := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_device_token",
 		Value:    token,
 		Path:     "/api/v1/auth/login",
@@ -1322,7 +1322,7 @@ func (srv *Server) resolveAccessTokenUserID(accessToken string) (uuid.UUID, erro
 
 // enrollmentTokenCookies creates the mfa_enroll_token Set-Cookie header.
 func enrollmentTokenCookies(token string, secure bool) []string {
-	c := &http.Cookie{
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_enroll_token",
 		Value:    token,
 		Path:     "/api/v1/auth/mfa",
@@ -1336,7 +1336,7 @@ func enrollmentTokenCookies(token string, secure bool) []string {
 
 // clearEnrollmentCookie expires the mfa_enroll_token cookie.
 func clearEnrollmentCookie(secure bool) string {
-	c := &http.Cookie{
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_enroll_token",
 		Value:    "",
 		Path:     "/api/v1/auth/mfa",

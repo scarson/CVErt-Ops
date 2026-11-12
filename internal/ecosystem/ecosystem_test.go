@@ -107,3 +107,28 @@ func TestOrdersBySemver(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseStreams(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		ecosystem string
+		want      []string
+	}{
+		{"Ubuntu:22.04:LTS", []string{"Ubuntu:22.04:LTS", "Ubuntu:Pro:22.04:LTS"}},
+		{"Ubuntu:Pro:22.04:LTS", []string{"Ubuntu:Pro:22.04:LTS", "Ubuntu:22.04:LTS"}},
+		{"Ubuntu:25.10", []string{"Ubuntu:25.10", "Ubuntu:Pro:25.10"}},
+		{"Ubuntu:Pro:25.10", []string{"Ubuntu:Pro:25.10", "Ubuntu:25.10"}},
+		// Sub-streams have their own builds and are read alone.
+		{"Ubuntu:Pro:FIPS-updates:22.04:LTS", []string{"Ubuntu:Pro:FIPS-updates:22.04:LTS"}},
+		{"Ubuntu:Pro:Realtime:24.04:LTS", []string{"Ubuntu:Pro:Realtime:24.04:LTS"}},
+		{"Ubuntu", []string{"Ubuntu"}},
+		{"Debian:13", []string{"Debian:13"}},
+		{"npm", []string{"npm"}},
+	}
+	for _, tt := range tests {
+		got := ReleaseStreams(tt.ecosystem)
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("ReleaseStreams(%q) = %q, want %q", tt.ecosystem, got, tt.want)
+		}
+	}
+}

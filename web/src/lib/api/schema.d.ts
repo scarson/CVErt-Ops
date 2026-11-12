@@ -2270,6 +2270,8 @@ export interface components {
              * @description Highest EPSS score of the CVEs in cve_ids; null when none of them has a score, which means not known.
              */
             epss_score: number | null;
+            /** @description The ecosystem of the package range that names fixed_version, preferring the item's own when several do. For an Ubuntu item it can be the release's other stream: Ubuntu:Pro:<release> means the fix is published only through Ubuntu Pro. Null when fixed_version is null or comes from an NVD or CNA range. */
+            fix_ecosystem: string | null;
             /**
              * @description Whether fixed_version is in the same major release as the version; null when fixed_version is null.
              * @enum {string|null}
@@ -2290,7 +2292,7 @@ export interface components {
              * @description Why the advisory could not be evaluated; null when it is affected.
              * @enum {string|null}
              */
-            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | null;
+            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | "evaluation_failed" | "sdk_version_not_comparable" | "distro_stream_incomplete" | null;
             /** @description The advisory's severity, as the feed sent it. */
             severity: string | null;
             /**
@@ -2329,6 +2331,10 @@ export interface components {
              * @description Advisory records that could not be evaluated for the version.
              */
             cannot_evaluate: number;
+            /** @description The advisory records that could not be evaluated, by reason, counted before the listing limit: each record is counted once, under the reason it shows. The values sum to cannot_evaluate. */
+            cannot_evaluate_by_reason: {
+                [key: string]: number;
+            };
             /**
              * Format: int64
              * @description Advisory records that do not report the version affected.
@@ -2395,21 +2401,23 @@ export interface components {
              */
             index: number;
             /**
-             * @description Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason.
+             * @description Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason. invalid_version: the item's own version order cannot read its version. sdk_version_not_comparable: a microsoft:.net or .net_core version numbered as an SDK (third component 100 or more, as 10.0.404); NVD and Microsoft state runtime versions, so send the runtime version (SDKs before 2.1.300 cannot be told apart). A .NET item checks the .NET runtime; ASP.NET Core is checked under its own CPE, microsoft:asp.net_core. too_many_ranges: an advisory has more ranges than the per-advisory limit. evaluation_failed: a comparison failed for an unclassified reason. data_incomplete: a feed the item depends on has not finished a full walk or has not succeeded for 7 days; it applies with no advisory too. distro_stream_incomplete: an Ubuntu Pro sub-stream such as FIPS or Realtime lists only some of its release's advisories, so its items are never cleared.
              * @enum {string|null}
              */
-            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | null;
+            reason: "unknown_version_scheme" | "invalid_version" | "invalid_range" | "commit_ranges_only" | "no_version_bounds" | "cna_cannot_clear" | "cna_indeterminate" | "cna_name_uncertain" | "cna_product_not_mapped" | "data_incomplete" | "distro_package_not_found" | "too_many_candidates" | "too_many_ranges" | "evaluation_failed" | "sdk_version_not_comparable" | "distro_stream_incomplete" | null;
             /**
-             * @description affected: at least one advisory reports this version affected. not_affected: the version is not in any analysed or CNA-named advisory held. cannot_evaluate: an advisory or an item-level rule could not decide. no_advisory_found: nothing known about this component, which is not a statement that it is safe. invalid: the item could not be read; see error.
+             * @description Only not_affected clears a version. affected: at least one advisory reports this version affected. not_affected: every advisory found was decided and none reports the version affected; the version is not in any analysed or CNA-named advisory held. unresolved: no advisory was established as affected, and the data leaves one or more advisories unresolved for this version; not a clean result: see each listed advisory's reason and counts.cannot_evaluate_by_reason. cannot_evaluate: the check could not be completed for this item; see reason, or, when reason is null, the listed advisories. no_advisory_found: no matching advisory was found in the searched data, which is not a statement that the component is safe. invalid: the item could not be read; see error.
              * @enum {string}
              */
-            status: "affected" | "not_affected" | "cannot_evaluate" | "no_advisory_found" | "invalid";
+            status: "affected" | "not_affected" | "unresolved" | "cannot_evaluate" | "no_advisory_found" | "invalid";
             /** @description Warnings about the answer. */
             warnings: "cna_product_not_mapped"[] | null;
         };
         CheckMatchedRange: {
             /** @description The CPE of an NVD CPE match. */
             cpe?: string;
+            /** @description The stored ecosystem of a package range. An Ubuntu item reads both its release's standard and Ubuntu Pro streams, so this names the stream the range came from. */
+            ecosystem?: string;
             /**
              * @description Where the range comes from: a package range, an NVD CPE match, or the CNA's affected data.
              * @enum {string}

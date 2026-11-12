@@ -173,7 +173,7 @@ func TestEvaluateRowsBelow(t *testing.T) {
 		r := rowsFor(t, items).cpes("acme", "widget", below(cveA, 3)).
 			cnaName("acme", "widget", false, cnaAt(cveA, "acme", "widget", noStatement), cnaAt(cveB, "acme", "widget", noStatement))
 		got := run(t, items, r).Results[0]
-		if want := (Counts{NotAffected: 1, CannotEvaluate: 1}); got.Counts != want {
+		if want := (Counts{NotAffected: 1, CannotEvaluate: 1}); !reflect.DeepEqual(countsOf(got.Counts), want) {
 			t.Errorf("counts = %+v, want %+v", got.Counts, want)
 		}
 		if want := map[string]string{cveB: "cannot_evaluate/cna_cannot_clear"}; !reflect.DeepEqual(advisoryReasons(got), want) {
@@ -204,7 +204,7 @@ func TestEvaluateRowsBelow(t *testing.T) {
 		if !reflect.DeepEqual(advisoryReasons(got), want) {
 			t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
 		}
-		if wantCounts := (Counts{CannotEvaluate: 2}); got.Counts != wantCounts {
+		if wantCounts := (Counts{CannotEvaluate: 2}); !reflect.DeepEqual(countsOf(got.Counts), wantCounts) {
 			t.Errorf("counts = %+v, want %+v", got.Counts, wantCounts)
 		}
 	})
@@ -221,7 +221,7 @@ func TestEvaluateRowsBelow(t *testing.T) {
 		if !reflect.DeepEqual(advisoryReasons(got), want) {
 			t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
 		}
-		if wantCounts := (Counts{CannotEvaluate: 2, NotAffected: 1}); got.Counts != wantCounts {
+		if wantCounts := (Counts{CannotEvaluate: 2, NotAffected: 1}); !reflect.DeepEqual(countsOf(got.Counts), wantCounts) {
 			t.Errorf("counts = %+v, want %+v", got.Counts, wantCounts)
 		}
 	})

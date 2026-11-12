@@ -341,13 +341,13 @@ func TestReadCheckCandidates_CPERowsBelowKeyLimit(t *testing.T) {
 		t.Fatalf("Evaluate: %v", err)
 	}
 	past, inside := res.Results[0], res.Results[1]
-	if want := (check.Counts{Affected: 1, NotAffected: 5, Retracted: 1}); inside.Status != check.StatusAffected || inside.Counts != want {
+	if want := (check.Counts{Affected: 1, NotAffected: 5, Retracted: 1}); inside.Status != check.StatusAffected || !reflect.DeepEqual(countsOf(inside.Counts), want) {
 		t.Errorf("6.12.0: status %s, counts %+v; want affected, %+v", inside.Status, inside.Counts, want)
 	}
 	if len(inside.Advisories) != 1 || inside.Advisories[0].FixedVersion == nil || *inside.Advisories[0].FixedVersion != "6.12.4" {
 		t.Errorf("6.12.0: advisories %+v, want CVE-2026-71011 fixed in 6.12.4", inside.Advisories)
 	}
-	if want := (check.Counts{NotAffected: 6, Retracted: 1}); past.Counts != want || past.Reason != nil && *past.Reason == check.ReasonTooManyCandidates {
+	if want := (check.Counts{NotAffected: 6, Retracted: 1}); !reflect.DeepEqual(countsOf(past.Counts), want) || past.Reason != nil && *past.Reason == check.ReasonTooManyCandidates {
 		t.Errorf("6.13.1: counts %+v, reason %v; want %+v and no too_many_candidates", past.Counts, past.Reason, want)
 	}
 
@@ -376,7 +376,7 @@ func TestReadCheckCandidates_CPERowsBelowKeyLimit(t *testing.T) {
 		t.Errorf("6.12.0 beside 6.12.0-rc1: status %s, want affected", r.Status)
 	}
 	rc := res.Results[1]
-	if want := (check.Counts{CannotEvaluate: 6, Retracted: 1}); rc.Status != check.StatusCannotEvaluate || rc.Counts != want {
+	if want := (check.Counts{CannotEvaluate: 6, Retracted: 1}); rc.Status != check.StatusCannotEvaluate || !reflect.DeepEqual(countsOf(rc.Counts), want) {
 		t.Errorf("6.12.0-rc1: status %s, counts %+v; want cannot_evaluate, %+v", rc.Status, rc.Counts, want)
 	}
 	for _, a := range rc.Advisories {
@@ -404,4 +404,11 @@ func TestReadCheckCandidates_CPERowsBelowNeverReadMore(t *testing.T) {
 			t.Errorf("floor %q: %d rows, overflow %v; want 3 rows and overflow", floor, len(got.Rows), got.Overflow)
 		}
 	}
+}
+
+// countsOf returns c without its counts by reason, so a test can compare the
+// totals alone.
+func countsOf(c check.Counts) check.Counts {
+	c.CannotEvaluateByReason = nil
+	return c
 }

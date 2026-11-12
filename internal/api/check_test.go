@@ -569,7 +569,7 @@ func assertSameJSON(t *testing.T, name string, value, into any) {
 }
 
 // fillValue sets every exported field reachable from v: an allocated pointer, one
-// element in each slice and a non-zero scalar.
+// element in each slice and map, and a non-zero scalar.
 func fillValue(t *testing.T, v reflect.Value) {
 	t.Helper()
 	switch v.Kind() {
@@ -589,6 +589,12 @@ func fillValue(t *testing.T, v reflect.Value) {
 	case reflect.Slice:
 		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
 		fillValue(t, v.Index(0))
+	case reflect.Map:
+		key, elem := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+		fillValue(t, key)
+		fillValue(t, elem)
+		v.Set(reflect.MakeMapWithSize(v.Type(), 1))
+		v.SetMapIndex(key, elem)
 	case reflect.String:
 		v.SetString("x")
 	case reflect.Int:

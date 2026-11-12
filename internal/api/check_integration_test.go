@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -327,7 +328,7 @@ func TestCheckIntegration_GoldenCorpus(t *testing.T) {
 
 	t.Run("No comparator", func(t *testing.T) {
 		res := checkItems(t, f, pkgItem("Root:Debian:12", "rootio-linux", "6.1.159-1.root.io.1")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusCannotEvaluate, "unknown_version_scheme")
 		wantAdvisory(t, res, "ROOT-OS-DEBIAN-12-CVE-2025-40110", check.VerdictCannotEvaluate, "unknown_version_scheme", "")
 	})
 
@@ -335,7 +336,7 @@ func TestCheckIntegration_GoldenCorpus(t *testing.T) {
 		results := checkItems(t, f, cpeItem("fastify:fastify", "5.12.3"), cpeItem("fastify:fastify", "5.12.6"))
 		wantItem(t, results.Results[0], check.StatusAffected, "")
 		wantAdvisory(t, results.Results[0], "CVE-2026-107832", check.VerdictAffected, "", "5.12.6")
-		wantItem(t, results.Results[1], check.StatusCannotEvaluate, "")
+		wantItem(t, results.Results[1], check.StatusUnresolved, "")
 		wantAdvisory(t, results.Results[1], "CVE-2026-107832", check.VerdictCannotEvaluate, "cna_cannot_clear", "")
 	})
 
@@ -346,7 +347,7 @@ func TestCheckIntegration_GoldenCorpus(t *testing.T) {
 		if len(a.MatchedRanges) != 1 || a.MatchedRanges[0].Evidence != "cna" {
 			t.Errorf("matched_ranges = %+v, want the CNA range", a.MatchedRanges)
 		}
-		wantItem(t, results.Results[1], check.StatusCannotEvaluate, "")
+		wantItem(t, results.Results[1], check.StatusUnresolved, "")
 		wantAdvisory(t, results.Results[1], "CVE-2026-107832", check.VerdictCannotEvaluate, "cna_cannot_clear", "")
 	})
 
@@ -438,6 +439,12 @@ const (
 	cna70007Framework48 = `[{"vendor":"Microsoft","product":"Microsoft .NET Framework 4.8","versions":[
 		{"version":"4.8.0","lessThan":"4.8.4811.0","versionType":"custom","status":"affected"}]}]`
 
+	// An ASP.NET Core entry in the shape of Microsoft's CNA records. ASP.NET Core
+	// ships inside the .NET SDK and shared runtime, so it stays a nearby name of
+	// microsoft:.net.
+	cnaASPNETCore = `[{"vendor":"Microsoft","product":"ASP.NET Core 9.0","versions":[
+		{"version":"9.0.0","lessThan":"9.0.11","versionType":"semver","status":"affected"}]}]`
+
 	// CVE-2024-27980, the whole array.
 	cna27980 = `[{"vendor":"NodeJS","product":"Node","defaultStatus":"unaffected","versions":[
 		{"versionType":"semver","version":"4.0","status":"affected","lessThan":"4.*"},
@@ -484,7 +491,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		for _, res := range results.Results {
 			wantItem(t, res, check.StatusNoAdvisoryFound, "")
 			wantNoAdvisory(t, res, cve)
-			if res.Counts != (CheckCounts{Retracted: 1}) {
+			if !reflect.DeepEqual(countsOf(res.Counts), (CheckCounts{Retracted: 1})) {
 				t.Errorf("item %d: counts %+v, want one retracted", res.Index, res.Counts)
 			}
 		}
@@ -498,7 +505,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		ingestCheckPatch(t, f, "mitre", testutil.GoldenPatch(t, "mitre", "CVE-2026-56847"))
 
 		res := checkItems(t, f, cpeItem("nodejs:node.js", "26.4.0")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, "CVE-2026-56847", check.VerdictCannotEvaluate, "cna_cannot_clear", "")
 	})
 
@@ -508,7 +515,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		ingestCheckPatch(t, f, "mitre", mitreCNAPatch(t, "CVE-2024-7347", cna7347NGINX))
 
 		res := checkItems(t, f, cpeItem("f5:nginx", "1.27.0")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, "CVE-2024-7347", check.VerdictCannotEvaluate, "cna_indeterminate", "")
 	})
 
@@ -523,7 +530,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 			vulnerableCPE("a:nodejs:node.js", "21.0.0", "21.7.3")))
 
 		res := checkItems(t, f, cpeItem("nodejs:node.js", "12.22.12")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, cve, check.VerdictCannotEvaluate, "cna_indeterminate", "")
 	})
 
@@ -536,7 +543,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		ingestCheckPatch(t, f, "nvd", nvdCPEPatch(cve, vulnerableCPE("a:acme:widget", "0.1.0", "0.5.0")))
 
 		results := checkItems(t, f, cpeItem("acme:widget", "1.5.0"), cpeItem("acme:widget", "3.0.0"))
-		wantItem(t, results.Results[0], check.StatusCannotEvaluate, "")
+		wantItem(t, results.Results[0], check.StatusUnresolved, "")
 		wantAdvisory(t, results.Results[0], cve, check.VerdictCannotEvaluate, "cna_indeterminate", "")
 		// Above the line the wildcard names, the CNA makes no statement, so NVD's
 		// rows answer.
@@ -613,12 +620,12 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		}
 	})
 
-	// nearbyNameFixture holds a CVE with no NVD rows whose only CNA entry is
-	// CVE-2026-70007's Microsoft .NET Framework 4.8 entry, plus the given NVD rows.
+	// nearbyNameFixture holds a CVE whose only CNA entry is an ASP.NET Core entry,
+	// plus the given NVD rows.
 	nearbyNameFixture := func(t *testing.T, cve string, nvd ...feed.CPEMatch) *securityFixture {
 		t.Helper()
 		f := newCompleteCheckFixture(t)
-		ingestCheckPatch(t, f, "mitre", mitreCNAPatch(t, cve, cna70007Framework48))
+		ingestCheckPatch(t, f, "mitre", mitreCNAPatch(t, cve, cnaASPNETCore))
 		if len(nvd) > 0 {
 			ingestCheckPatch(t, f, "nvd", nvdCPEPatch(cve, nvd...))
 		}
@@ -630,8 +637,18 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		const cve = "CVE-2026-90111"
 		f := nearbyNameFixture(t, cve)
 		res := checkItems(t, f, cpeItem("microsoft:.net", "9.0.20")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, cve, check.VerdictCannotEvaluate, "cna_name_uncertain", "")
+	})
+
+	t.Run("The .NET Framework is another product of .NET", func(t *testing.T) {
+		t.Parallel()
+		const cve = "CVE-2026-90116"
+		f := newCompleteCheckFixture(t)
+		ingestCheckPatch(t, f, "mitre", mitreCNAPatch(t, cve, cna70007Framework48))
+		res := checkItems(t, f, cpeItem("microsoft:.net", "9.0.20")).Results[0]
+		wantNoAdvisory(t, res, cve)
+		wantItem(t, res, check.StatusNoAdvisoryFound, "")
 	})
 
 	t.Run("An unrelated CPE does not count as analysis", func(t *testing.T) {
@@ -639,18 +656,18 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		const cve = "CVE-2026-90112"
 		f := nearbyNameFixture(t, cve, vulnerableCPE("a:nodejs:node.js", "24.0.0", "24.22.1"))
 		res := checkItems(t, f, cpeItem("microsoft:.net", "9.0.20")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, cve, check.VerdictCannotEvaluate, "cna_name_uncertain", "")
 	})
 
 	t.Run("The vendor's other CPE does", func(t *testing.T) {
 		t.Parallel()
 		const cve = "CVE-2026-90113"
-		f := nearbyNameFixture(t, cve, vulnerableCPE("a:microsoft:.net_framework", "4.8.0", "4.8.4811.0"))
+		f := nearbyNameFixture(t, cve, vulnerableCPE("a:microsoft:asp.net_core", "9.0.0", "9.0.11"))
 		res := checkItems(t, f, cpeItem("microsoft:.net", "9.0.20")).Results[0]
 		wantNoAdvisory(t, res, cve)
 		wantItem(t, res, check.StatusNoAdvisoryFound, "")
-		if res.Counts != (CheckCounts{}) {
+		if !reflect.DeepEqual(countsOf(res.Counts), (CheckCounts{})) {
 			t.Errorf("counts %+v, want none: the CVE is not one of the item's advisories", res.Counts)
 		}
 	})
@@ -664,7 +681,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		ingestCheckPatch(t, f, "nvd", nvdCPEPatch(cve, vulnerableCPE("a:acme:widget", "5.0", "6.0")))
 
 		results := checkItems(t, f, cpeItem("acme:widget", "1.5"), cpeItem("acme:widget", "2.5"))
-		wantItem(t, results.Results[0], check.StatusCannotEvaluate, "")
+		wantItem(t, results.Results[0], check.StatusUnresolved, "")
 		wantAdvisory(t, results.Results[0], cve, check.VerdictCannotEvaluate, "cna_indeterminate", "")
 		wantItem(t, results.Results[1], check.StatusAffected, "")
 		wantAdvisory(t, results.Results[1], cve, check.VerdictAffected, "", "3.0")
@@ -679,7 +696,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		ingestCheckPatch(t, f, "nvd", nvdCPEPatch(cve, vulnerableCPE("a:acme:widget", "5.0", "6.0")))
 
 		res := checkItems(t, f, cpeItem("acme:widget", "1.5")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, cve, check.VerdictCannotEvaluate, "cna_indeterminate", "")
 	})
 
@@ -702,7 +719,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 			results := checkItems(t, f, cpeItem("acme:sorted", v), cpeItem("acme:reversed", v))
 			sorted, reversed := results.Results[0], results.Results[1]
 			if sorted.Status != reversed.Status || strOrEmpty(sorted.Reason) != strOrEmpty(reversed.Reason) ||
-				sorted.Counts != reversed.Counts || len(sorted.Advisories) != len(reversed.Advisories) {
+				!reflect.DeepEqual(sorted.Counts, reversed.Counts) || len(sorted.Advisories) != len(reversed.Advisories) {
 				t.Errorf("%s: sorted %s %+v %s, reversed %s %+v %s", v, sorted.Status, sorted.Counts, describeAdvisories(sorted),
 					reversed.Status, reversed.Counts, describeAdvisories(reversed))
 				continue
@@ -799,7 +816,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		wantItem(t, res, check.StatusAffected, "")
 		wantAdvisory(t, res, "CVE-2026-90122", check.VerdictAffected, "", "2.0")
 		wantNoAdvisory(t, res, "CVE-2026-90123")
-		if res.Counts != (CheckCounts{Affected: 1}) {
+		if !reflect.DeepEqual(countsOf(res.Counts), (CheckCounts{Affected: 1})) {
 			t.Errorf("counts %+v, want only the exact name's advisory", res.Counts)
 		}
 	})
@@ -818,7 +835,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		ingestCheckPatch(t, f, "mitre", mitreCNAPatch(t, cve, acmeCNA("widget", strings.Join(entries, ","))))
 
 		res := checkItems(t, f, cpeItem("acme:widget", "5.0")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusCannotEvaluate, "too_many_ranges")
 		wantAdvisory(t, res, cve, check.VerdictCannotEvaluate, "too_many_ranges", "")
 	})
 
@@ -850,7 +867,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 
 		res := checkItems(t, f, pkgItem("Ubuntu:26.04:LTS", "retracted-src", "1.0-1")).Results[0]
 		wantItem(t, res, check.StatusNoAdvisoryFound, "")
-		if res.Counts != (CheckCounts{Retracted: 1}) {
+		if !reflect.DeepEqual(countsOf(res.Counts), (CheckCounts{Retracted: 1})) {
 			t.Errorf("counts %+v, want one retracted", res.Counts)
 		}
 	})
@@ -880,7 +897,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 				Introduced: "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567", Fixed: "89abcdef0123456789abcdef0123456789abcdef"}}})
 
 		res := checkItems(t, f, pkgItem("PyPI", "git-only", "1.0")).Results[0]
-		wantItem(t, res, check.StatusCannotEvaluate, "")
+		wantItem(t, res, check.StatusUnresolved, "")
 		wantAdvisory(t, res, cve, check.VerdictCannotEvaluate, "commit_ranges_only", "")
 	})
 
@@ -891,7 +908,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 
 		res := checkItems(t, f, cpeItem("acme:gadget", "2.5")).Results[0]
 		wantItem(t, res, check.StatusCannotEvaluate, "cna_product_not_mapped")
-		if res.Counts != (CheckCounts{NotAffected: 1}) {
+		if !reflect.DeepEqual(countsOf(res.Counts), (CheckCounts{NotAffected: 1})) {
 			t.Errorf("counts %+v, want the advisory not affected", res.Counts)
 		}
 	})
@@ -913,7 +930,7 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		f.api.checkLimits = check.Limits{ItemRows: 3, AdvisoryRanges: check.DefaultLimits.AdvisoryRanges}
 		res := checkItems(t, f, cpeItem("acme:widget", "5.0")).Results[0]
 		wantItem(t, res, check.StatusCannotEvaluate, "too_many_candidates")
-		if len(res.Advisories) != 0 || res.Counts != (CheckCounts{}) {
+		if len(res.Advisories) != 0 || !reflect.DeepEqual(countsOf(res.Counts), (CheckCounts{})) {
 			t.Errorf("counts %+v, advisories %s; want none listed past the limit", res.Counts, describeAdvisories(res))
 		}
 	})
@@ -956,4 +973,11 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		wantItem(t, results.Results[1], check.StatusAffected, "")
 		wantAdvisory(t, results.Results[1], "CVE-2026-90135", check.VerdictAffected, "", "2.0.0")
 	})
+}
+
+// countsOf returns c without its counts by reason, so a test can compare the
+// totals alone.
+func countsOf(c CheckCounts) CheckCounts {
+	c.CannotEvaluateByReason = nil
+	return c
 }

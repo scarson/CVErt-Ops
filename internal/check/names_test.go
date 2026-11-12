@@ -12,7 +12,8 @@ func TestNamesFor(t *testing.T) {
 	t.Parallel()
 	// Both CPE spellings of nginx, and of .NET, share one table row, so each
 	// spelling reads the other's NVD rows.
-	nginx := []string{"f5:nginx", "nginx:nginx"}
+	nginx := []string{"f5:nginx", "nginx:nginx", "f5:nginx_open_source"}
+	node := []string{"nodejs:node.js", "nodejs:nodejs"}
 	dotnet := []string{"microsoft:.net", "microsoft:.net_core"}
 	tests := []struct {
 		name       string
@@ -29,7 +30,18 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "nodejs", Product: "node"},
 				{Vendor: "nodejs", Product: "nodejs"},
 			},
-			wantCPEs:   []string{"nodejs:node.js"},
+			wantCPEs:   node,
+			wantMapped: true,
+		},
+		{
+			// NVD files Node 0.6 to 0.10 under nodejs:nodejs.
+			name:    "nodejs:nodejs: its own name equals a table name and is listed once",
+			product: ProductRef{Part: "a", Vendor: "nodejs", Product: "nodejs"},
+			wantNames: []CNAName{
+				{Vendor: "nodejs", Product: "nodejs"},
+				{Vendor: "nodejs", Product: "node"},
+			},
+			wantCPEs:   node,
 			wantMapped: true,
 		},
 		{
@@ -72,6 +84,19 @@ func TestNamesFor(t *testing.T) {
 			wantNames: []CNAName{
 				{Vendor: "f5", Product: "nginx"},
 				{Vendor: "f5", Product: "nginx open source"},
+				{Vendor: "nginx", Product: "nginx"},
+			},
+			wantCPEs:   nginx,
+			wantMapped: true,
+		},
+		{
+			// NVD files recent nginx CVEs under f5:nginx_open_source.
+			name:    "f5:nginx_open_source: its own name equals a table name and is listed once",
+			product: ProductRef{Part: "a", Vendor: "f5", Product: "nginx_open_source"},
+			wantNames: []CNAName{
+				{Vendor: "f5", Product: "nginx open source"},
+				{Vendor: "f5", Product: "nginx_open_source"},
+				{Vendor: "f5", Product: "nginx"},
 				{Vendor: "nginx", Product: "nginx"},
 			},
 			wantCPEs:   nginx,

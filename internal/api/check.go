@@ -21,8 +21,11 @@ import (
 
 // Version check limits (design sections 3.4 and 9).
 const (
-	maxCheckItems       = 500
-	maxConcurrentChecks = 4
+	maxCheckItems = 500
+	// maxConcurrentChecks is 1 until peak memory per check is measured: on the
+	// complete corpus one 500-item request allocated 3.97 GiB in all, and the
+	// process shares its container with the worker.
+	maxConcurrentChecks = 1
 	checkTimeout        = 30 * time.Second
 	// checkWriteTimeout bounds writing a version check response to the client.
 	checkWriteTimeout = 30 * time.Second
@@ -70,8 +73,8 @@ type CheckFeedStatus struct {
 type CheckItemResult struct {
 	Index               int             `json:"index" doc:"Position of the item in the request."`
 	ID                  *string         `json:"id" doc:"The item's id, or null when it had none or it was too long."`
-	Status              string          `json:"status" enum:"affected,not_affected,cannot_evaluate,no_advisory_found,invalid" doc:"affected: at least one advisory reports this version affected. not_affected: the version is not in any analysed or CNA-named advisory held. cannot_evaluate: an advisory or an item-level rule could not decide. no_advisory_found: nothing known about this component, which is not a statement that it is safe. invalid: the item could not be read; see error."`
-	Reason              *string         `json:"reason" enum:"unknown_version_scheme,invalid_version,invalid_range,commit_ranges_only,no_version_bounds,cna_cannot_clear,cna_indeterminate,cna_name_uncertain,cna_product_not_mapped,data_incomplete,distro_package_not_found,too_many_candidates,too_many_ranges" doc:"Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason."`
+	Status              string          `json:"status" enum:"affected,not_affected,unresolved,cannot_evaluate,no_advisory_found,invalid" doc:"Only not_affected clears a version. affected: at least one advisory reports this version affected. not_affected: every advisory found was decided and none reports the version affected; the version is not in any analysed or CNA-named advisory held. unresolved: no advisory was established as affected, and the data leaves one or more advisories unresolved for this version; not a clean result: see each listed advisory's reason and counts.cannot_evaluate_by_reason. cannot_evaluate: the check could not be completed for this item; see reason, or, when reason is null, the listed advisories. no_advisory_found: no matching advisory was found in the searched data, which is not a statement that the component is safe. invalid: the item could not be read; see error."`
+	Reason              *string         `json:"reason" enum:"unknown_version_scheme,invalid_version,invalid_range,commit_ranges_only,no_version_bounds,cna_cannot_clear,cna_indeterminate,cna_name_uncertain,cna_product_not_mapped,data_incomplete,distro_package_not_found,too_many_candidates,too_many_ranges,evaluation_failed,sdk_version_not_comparable,distro_stream_incomplete" doc:"Set when an item-level rule gave the status; null when the status comes from the listed advisories, each of which carries its own reason. invalid_version: the item's own version order cannot read its version. sdk_version_not_comparable: a microsoft:.net or .net_core version numbered as an SDK (third component 100 or more, as 10.0.404); NVD and Microsoft state runtime versions, so send the runtime version (SDKs before 2.1.300 cannot be told apart). A .NET item checks the .NET runtime; ASP.NET Core is checked under its own CPE, microsoft:asp.net_core. too_many_ranges: an advisory has more ranges than the per-advisory limit. evaluation_failed: a comparison failed for an unclassified reason. data_incomplete: a feed the item depends on has not finished a full walk or has not succeeded for 7 days; it applies with no advisory too. distro_stream_incomplete: an Ubuntu Pro sub-stream such as FIPS or Realtime lists only some of its release's advisories, so its items are never cleared."`
 	Component           *CheckComponent `json:"component" doc:"What the item was checked as; null for an invalid item."`
 	DataComplete        bool            `json:"data_complete" doc:"Every feed this item depends on is complete."`
 	Counts              CheckCounts     `json:"counts" doc:"Counts of advisory records found for the item, by verdict."`
@@ -100,6 +103,8 @@ type CheckCounts struct {
 	CannotEvaluate int `json:"cannot_evaluate" doc:"Advisory records that could not be evaluated for the version."`
 	NotAffected    int `json:"not_affected" doc:"Advisory records that do not report the version affected."`
 	Retracted      int `json:"retracted" doc:"Advisory records whose CVE is rejected or withdrawn; they take no part in the status."`
+
+	CannotEvaluateByReason map[string]int `json:"cannot_evaluate_by_reason" doc:"The advisory records that could not be evaluated, by reason, counted before the listing limit: each record is counted once, under the reason it shows. The values sum to cannot_evaluate."`
 }
 
 // CheckAdvisory is one listed advisory.
@@ -107,9 +112,10 @@ type CheckAdvisory struct {
 	AdvisoryID         string              `json:"advisory_id" doc:"Advisory or CVE ID; works with GET /cves/{cve_id}."`
 	CVEIDs             []string            `json:"cve_ids" doc:"CVE IDs the advisory names."`
 	Verdict            string              `json:"verdict" enum:"affected,cannot_evaluate" doc:"This advisory's verdict for the version."`
-	Reason             *string             `json:"reason" enum:"unknown_version_scheme,invalid_version,invalid_range,commit_ranges_only,no_version_bounds,cna_cannot_clear,cna_indeterminate,cna_name_uncertain,cna_product_not_mapped,data_incomplete,distro_package_not_found,too_many_candidates,too_many_ranges" doc:"Why the advisory could not be evaluated; null when it is affected."`
+	Reason             *string             `json:"reason" enum:"unknown_version_scheme,invalid_version,invalid_range,commit_ranges_only,no_version_bounds,cna_cannot_clear,cna_indeterminate,cna_name_uncertain,cna_product_not_mapped,data_incomplete,distro_package_not_found,too_many_candidates,too_many_ranges,evaluation_failed,sdk_version_not_comparable,distro_stream_incomplete" doc:"Why the advisory could not be evaluated; null when it is affected."`
 	FixedVersion       *string             `json:"fixed_version" doc:"The lowest version the advisory data no longer reports as affected; null when none is known."`
 	FixMajor           *string             `json:"fix_major" enum:"same,different,unknown" doc:"Whether fixed_version is in the same major release as the version; null when fixed_version is null."`
+	FixEcosystem       *string             `json:"fix_ecosystem" doc:"The ecosystem of the package range that names fixed_version, preferring the item's own when several do. For an Ubuntu item it can be the release's other stream: Ubuntu:Pro:<release> means the fix is published only through Ubuntu Pro. Null when fixed_version is null or comes from an NVD or CNA range."`
 	MatchedRanges      []CheckMatchedRange `json:"matched_ranges" doc:"Ranges that contain the version. At most 20."`
 	MatchedRangesTotal int                 `json:"matched_ranges_total" doc:"How many ranges contain the version. Verdicts and fixes use all of them."`
 	Severity           *string             `json:"severity" doc:"The advisory's severity, as the feed sent it."`
@@ -122,6 +128,7 @@ type CheckAdvisory struct {
 type CheckMatchedRange struct {
 	Evidence     string `json:"evidence" enum:"package_range,nvd_cpe,cna" doc:"Where the range comes from: a package range, an NVD CPE match, or the CNA's affected data."`
 	CPE          string `json:"cpe,omitempty" doc:"The CPE of an NVD CPE match."`
+	Ecosystem    string `json:"ecosystem,omitempty" doc:"The stored ecosystem of a package range. An Ubuntu item reads both its release's standard and Ubuntu Pro streams, so this names the stream the range came from."`
 	Introduced   string `json:"introduced" doc:"Lower bound, inclusive; empty when the range has none."`
 	Fixed        string `json:"fixed,omitempty" doc:"Upper bound, exclusive."`
 	LastAffected string `json:"last_affected,omitempty" doc:"Upper bound, inclusive."`

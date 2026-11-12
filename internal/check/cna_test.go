@@ -932,3 +932,50 @@ func TestCNAVersionDecodesStoredJSON(t *testing.T) {
 		}
 	})
 }
+
+// TestReadCNAEntrySuffixBounds checks CNA bounds that are a number followed by a
+// suffix, such as OpenSSL's 1.1.1t, under versionType custom: when the leading
+// numbers decide that the version is outside the entry, the entry says nothing
+// about it; otherwise, and for any bound outside the strict suffix grammar or
+// any entry with changes, it stays Indeterminate. Such an entry never reads as
+// Affected or clean on its own.
+func TestReadCNAEntrySuffixBounds(t *testing.T) {
+	t.Parallel()
+	custom := func(from, lessThan, lessThanOrEqual string) CNAVersion {
+		return CNAVersion{Version: from, LessThan: lessThan, LessThanOrEqual: lessThanOrEqual, Status: "affected", VersionType: "custom"}
+	}
+	tests := []struct {
+		name    string
+		entry   CNAVersion
+		version string
+		want    Reading
+	}{
+		{"a later line past a letter bound", custom("1.1.1", "1.1.1t", ""), "4.0.4", NoStatement},
+		{"no versionType is read as custom", CNAVersion{Version: "1.1.1", LessThan: "1.1.1t", Status: "affected"}, "4.0.4", NoStatement},
+		{"an inclusive letter bound", custom("0", "", "1.0.2zf"), "3.5.4", NoStatement},
+		{"a letter lower bound above the version", custom("2.0b10", "3.0", ""), "1.4.0", NoStatement},
+		{"the same leading numbers do not decide", custom("1.1.1", "1.1.1t", ""), "1.1.1", Indeterminate},
+		{"a version inside by leading numbers stays indeterminate", custom("1.0a", "3.0b", ""), "2.0", Indeterminate},
+		{"several versions in one bound", custom("3.0.0.0", "2.0.50727.8987 AND 4.7.4150.0", ""), "4.7.3000.0", Indeterminate},
+		{"a range written in the bound", custom("1.0", "1.0-2.5", ""), "3.0", Indeterminate},
+		{"an epoch", custom("0", "1:2.0a", ""), "3.0", Indeterminate},
+		{"a wildcard in the bound", custom("1.0", "1.*a", ""), "3.0", Indeterminate},
+		{"an inverted range", custom("2.0a", "1.0b", ""), "4.0", Indeterminate},
+		{"a semver entry keeps its own order", CNAVersion{Version: "1.1.1", LessThan: "1.1.1t", Status: "affected", VersionType: "semver"}, "4.0.4", Indeterminate},
+		{
+			"an entry with changes",
+			CNAVersion{Version: "1.0", LessThan: "1.1.1t", Status: "affected", VersionType: "custom",
+				Changes: []CNAChange{{At: "1.0.5", Status: "unaffected"}}},
+			"4.0.4", Indeterminate,
+		},
+		{"no upper bound", custom("1.0a", "", ""), "4.0", Indeterminate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := readCNA(t, tt.version, oneEntry(tt.entry)); got.Reading != tt.want {
+				t.Errorf("%+v / %s = %v, want %v", tt.entry, tt.version, got.Reading, tt.want)
+			}
+		})
+	}
+}

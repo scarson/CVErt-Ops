@@ -42,10 +42,12 @@ func TestKeysFor(t *testing.T) {
 		Packages: []PackageKey{
 			{Ecosystem: "npm", Name: "fastify"},
 			{Ecosystem: "Ubuntu:26.04:LTS", Name: "php8.5"},
+			{Ecosystem: "Ubuntu:Pro:26.04:LTS", Name: "php8.5"},
 			{Ecosystem: "PyPI", Name: "foo-bar"},
 		},
 		CPEPrefixes: []CPEKey{
 			{Lo: "cpe:2.3:a:nodejs:node.js:", Hi: "cpe:2.3:a:nodejs:node.js;", Prefix: "cpe:2.3:a:nodejs:node.js:", Floor: "24.22.0"},
+			{Lo: "cpe:2.3:a:nodejs:nodejs:", Hi: "cpe:2.3:a:nodejs:nodejs;", Prefix: "cpe:2.3:a:nodejs:nodejs:", Floor: "24.22.0"},
 			{Lo: "cpe:2.3:a:microsoft:.net:", Hi: "cpe:2.3:a:microsoft:.net;", Prefix: "cpe:2.3:a:microsoft:.net:", Floor: "9.0.1"},
 			{Lo: "cpe:2.3:a:microsoft:.net_core:", Hi: "cpe:2.3:a:microsoft:.net_core;", Prefix: "cpe:2.3:a:microsoft:.net_core:", Floor: "9.0.1"},
 		},
@@ -74,17 +76,21 @@ func TestKeysFor(t *testing.T) {
 func TestKeysForItemUses(t *testing.T) {
 	t.Parallel()
 	_, uses := keysWithUses(keysItems())
-	none := itemKeys{pkg: -1, cnaPackage: -1}
+	none := itemKeys{cnaPackage: -1}
 	want := []itemKeys{
-		{pkg: 0, cnaPackage: 0},
-		{pkg: 0, cnaPackage: 0},
-		{pkg: 1, cnaPackage: -1}, // distro items use no CNA rows
-		{pkg: -1, cpes: []int{0}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: []int{0}},
-		// Both .NET spellings read the NVD rows under each.
-		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{3, 4}, cnaPackage: -1, near: []int{1}},
-		{pkg: -1, cpes: []int{1, 2}, cnaNames: []int{5, 6, 4}, cnaPackage: -1, near: []int{1}},
+		{pkgs: []int{0}, cnaPackage: 0},
+		{pkgs: []int{0}, cnaPackage: 0},
+		// An Ubuntu item reads its release's standard and Pro streams; distro
+		// items use no CNA rows.
+		{pkgs: []int{1, 2}, cnaPackage: -1},
+		// Node reads the NVD rows under both of its spellings.
+		{cpes: []int{0, 1}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: []int{0}},
+		// Both .NET spellings read the NVD rows under each, and leave out the
+		// CNA rows of the .NET Framework and OpenAPI.NET.
+		{cpes: []int{2, 3}, cnaNames: []int{3, 4}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
+		{cpes: []int{2, 3}, cnaNames: []int{5, 6, 4}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
 		none, // an invalid item uses no keys
-		{pkg: 2, cnaPackage: 1},
+		{pkgs: []int{3}, cnaPackage: 1},
 	}
 	if !reflect.DeepEqual(uses, want) {
 		t.Errorf("item keys =\n%+v\nwant\n%+v", uses, want)
@@ -115,14 +121,14 @@ func TestKeysForCPESpellings(t *testing.T) {
 		RawItem{CPE: "cpe:2.3:o:f5:nginx:1.13.0:*:*:*:*:*:*:*"},
 	))
 	wantPrefixes := []CPEKey{
-		prefix("a", "f5", "nginx", "1.13.0"), prefix("a", "nginx", "nginx", "1.13.0"),
+		prefix("a", "f5", "nginx", "1.13.0"), prefix("a", "nginx", "nginx", "1.13.0"), prefix("a", "f5", "nginx_open_source", "1.13.0"),
 		prefix("a", "acme", "widget", "1.0"),
-		prefix("o", "f5", "nginx", "1.13.0"), prefix("o", "nginx", "nginx", "1.13.0"),
+		prefix("o", "f5", "nginx", "1.13.0"), prefix("o", "nginx", "nginx", "1.13.0"), prefix("o", "f5", "nginx_open_source", "1.13.0"),
 	}
 	if !reflect.DeepEqual(keys.CPEPrefixes, wantPrefixes) {
 		t.Errorf("CPE keys =\n%+v\nwant\n%+v", keys.CPEPrefixes, wantPrefixes)
 	}
-	wantUses := [][]int{{0, 1}, {0, 1}, {2}, {3, 4}}
+	wantUses := [][]int{{0, 1, 2}, {0, 1, 2}, {3}, {4, 5, 6}}
 	for i, want := range wantUses {
 		if !reflect.DeepEqual(uses[i].cpes, want) {
 			t.Errorf("item %d CPE keys = %v, want %v", i, uses[i].cpes, want)

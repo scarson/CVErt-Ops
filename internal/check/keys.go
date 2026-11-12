@@ -107,13 +107,17 @@ type KeyRows[T any] struct {
 type CNANearRow struct{ CVEID, Vendor, Product, Status string }
 
 // itemKeys holds the indices into Keys of the keys one item uses; -1 or empty
-// for none.
+// for none. pkgs holds one package key per ecosystem whose rows apply to the
+// item's package (ecosystem.ReleaseStreams).
 type itemKeys struct {
-	pkg        int
+	pkgs       []int
 	cpes       []int
 	cnaNames   []int
 	cnaPackage int
 	near       []int
+	// otherProducts are the CNA products the item's CNA rows must not be read
+	// as (otherProducts in names.go).
+	otherProducts []CNAName
 }
 
 // KeysFor returns the distinct keys of the valid items.
@@ -128,18 +132,22 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 	var b keyBuilder
 	uses := make([]itemKeys, len(items))
 	for i, item := range items {
-		use := itemKeys{pkg: -1, cnaPackage: -1}
+		use := itemKeys{cnaPackage: -1}
 		switch {
 		case item.Error != nil:
 		case item.Package != nil:
 			eco, name := item.Package.Ecosystem, item.Package.Name
-			use.pkg = add(&b.packages, &b.keys.Packages, PackageKey{Ecosystem: eco, Name: ecosystem.FoldPackageName(eco, name)})
+			for _, stream := range ecosystem.ReleaseStreams(eco) {
+				key := PackageKey{Ecosystem: stream, Name: ecosystem.FoldPackageName(stream, name)}
+				use.pkgs = append(use.pkgs, add(&b.packages, &b.keys.Packages, key))
+			}
 			// The CNA describes the upstream package, not a distro's build of it.
 			if key := ecosystem.PackageKeyFor(eco, name); !ecosystem.IsDistro(eco) && key != "" {
 				use.cnaPackage = add(&b.cnaPackages, &b.keys.CNAPackageKeys, key)
 			}
 		case item.Product != nil:
 			p := *item.Product
+			use.otherProducts = otherProducts[p.Vendor+":"+p.Product]
 			names, cpes, _ := NamesFor(p)
 			// Every spelling NamesFor lists is this product, with the item's part.
 			var vendorRanges []CPEKey

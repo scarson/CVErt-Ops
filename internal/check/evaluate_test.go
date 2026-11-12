@@ -3,10 +3,12 @@
 package check
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/ecosystem"
+	"github.com/scarson/cvert-ops/internal/version"
 )
 
 func parseItems(raws ...RawItem) []Item {
@@ -260,9 +263,16 @@ type summary struct {
 	listed   []string
 }
 
+// countsOf returns c without its counts by reason, which TestEvaluateCountsByReason
+// checks, so the other tests can compare the totals alone.
+func countsOf(c Counts) Counts {
+	c.CannotEvaluateByReason = nil
+	return c
+}
+
 func summarize(t *testing.T, r ItemResult) summary {
 	t.Helper()
-	s := summary{status: r.Status, reason: "null", warnings: r.Warnings, counts: r.Counts}
+	s := summary{status: r.Status, reason: "null", warnings: r.Warnings, counts: countsOf(r.Counts)}
 	if r.Reason != nil {
 		s.reason = string(*r.Reason)
 	}
@@ -288,6 +298,11 @@ var (
 	widgetItem = RawItem{CPE: "cpe:2.3:a:acme:widget:*:*:*:*:*:*:*:*", Version: "1.5.0"}
 	nodeItem   = RawItem{CPE: "cpe:2.3:a:nodejs:node.js:*:*:*:*:*:*:*:*", Version: "24.22.1"}
 	ubuntuItem = RawItem{Ecosystem: "Ubuntu:26.04:LTS", Name: "php8.5", Version: "8.5.4-0ubuntu1.4"}
+	ubuntuPro  = RawItem{Ecosystem: "Ubuntu:Pro:26.04:LTS", Name: "php8.5", Version: "8.5.4-0ubuntu1.4"}
+	fipsItem   = RawItem{Ecosystem: "Ubuntu:Pro:FIPS-updates:22.04:LTS", Name: "openssl", Version: "3.0.2-0ubuntu1.10+Fips1"}
+	dotnetCPE  = "cpe:2.3:a:microsoft:.net:*:*:*:*:*:*:*:*"
+	dotnetSDK  = RawItem{CPE: dotnetCPE, Version: "10.0.404"}
+	dotnetRT   = RawItem{CPE: dotnetCPE, Version: "10.0.15"}
 	widgetCPE  = "cpe:2.3:a:acme:widget:*:*:*:*:*:*:*:*"
 	nodeCPE    = "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*"
 )
@@ -368,10 +383,127 @@ func TestEvaluateItemStatus(t *testing.T) {
 				counts: Counts{Affected: 1, CannotEvaluate: 1}, listed: []string{cveB, cveA}},
 		},
 		{
-			name: "an advisory that cannot be evaluated beats data_incomplete, with a null item reason", raw: npmItem,
+			name: "an advisory over the range limit beats data_incomplete", raw: npmItem,
+			rows: func(r *testRows) {
+				r.packages("npm", "pkg", clearPkg(cveA), cannotPkg(cveA), clearPkg(cveB))
+			},
+			feeds:  feedsWith(false),
+			limits: Limits{ItemRows: 50000, AdvisoryRanges: 1},
+			want: summary{status: "cannot_evaluate", reason: "too_many_ranges", warnings: none,
+				counts: Counts{CannotEvaluate: 1, NotAffected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "affected beats an advisory over the range limit", raw: npmItem,
+			rows: func(r *testRows) {
+				r.packages("npm", "pkg", clearPkg(cveA), cannotPkg(cveA), affectedPkg(cveB))
+			},
+			limits: Limits{ItemRows: 50000, AdvisoryRanges: 1},
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1, CannotEvaluate: 1}, listed: []string{cveB, cveA}},
+		},
+		{
+			// A CPE version that is not dotted numbers cannot be compared with any
+			// NVD row, whatever else the data says.
+			name: "an item version its own order cannot read beats the range limit and data_incomplete",
+			raw:  RawItem{CPE: widgetCPE, Version: "1.5.0-beta"},
+			rows: func(r *testRows) {
+				r.cpes("acme", "widget", cpeAt(cveA, widgetCPE, "1.0.0", "2.0.0"), cpeAt(cveA, widgetCPE, "3.0.0", "4.0.0"))
+			},
+			feeds:  feedsWith(false),
+			limits: Limits{ItemRows: 50000, AdvisoryRanges: 1},
+			want: summary{status: "cannot_evaluate", reason: "invalid_version", warnings: none,
+				counts: Counts{CannotEvaluate: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "an unreadable item version with no advisory is no_advisory_found", raw: RawItem{CPE: nodeCPE, Version: "24.x"},
+			want: summary{status: "no_advisory_found", reason: "null", warnings: none},
+		},
+		{
+			// opam has no version order here, so no row can be compared.
+			name: "an ecosystem with no version order", raw: RawItem{Ecosystem: "opam", Name: "pkg", Version: "1.0"},
+			rows: func(r *testRows) { r.packages("opam", "pkg", pkgAt(cveA, "0", "2.0")) },
+			want: summary{status: "cannot_evaluate", reason: "unknown_version_scheme", warnings: none,
+				counts: Counts{CannotEvaluate: 1}, listed: []string{cveA}},
+		},
+		{
+			// PyPI reads 1.0.post1, but a SEMVER row is also read as SemVer, which
+			// cannot. The item's version is valid, so the item gives no reason and
+			// the advisory carries invalid_version.
+			name: "a row that cannot read a version its own order reads", raw: RawItem{Ecosystem: "PyPI", Name: "pkg", Version: "1.0.post1"},
+			rows: func(r *testRows) {
+				r.packages("PyPI", "pkg", PackageRow{CVEID: cveA, RangeType: "SEMVER", Introduced: "0", Fixed: "0.5.0"}, clearPkg(cveB))
+			},
+			want: summary{status: "cannot_evaluate", reason: "null", warnings: none,
+				counts: Counts{CannotEvaluate: 1, NotAffected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "an SDK-numbered .NET version cannot be cleared by runtime-numbered ranges", raw: dotnetSDK,
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")) },
+			want: summary{status: "cannot_evaluate", reason: "sdk_version_not_comparable", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "an SDK-numbered .NET version can be affected", raw: dotnetSDK,
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "")) },
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "a runtime-numbered .NET version is cleared as before", raw: dotnetRT,
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")) },
+			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "an SDK-numbered .NET version with no advisory", raw: dotnetSDK,
+			want: summary{status: "no_advisory_found", reason: "null", warnings: none},
+		},
+		{
+			name: "data_incomplete beats an advisory that cannot be evaluated", raw: npmItem,
 			rows:  func(r *testRows) { r.packages("npm", "pkg", cannotPkg(cveA), clearPkg(cveB)) },
 			feeds: feedsWith(false),
-			want: summary{status: "cannot_evaluate", reason: "null", warnings: none,
+			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none,
+				counts: Counts{CannotEvaluate: 1, NotAffected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "data_incomplete beats an incomplete Ubuntu Pro sub-stream", raw: fipsItem,
+			rows: func(r *testRows) {
+				r.packages(fipsItem.Ecosystem, "openssl", pkgAt(cveA, "0", "3.0.2-0ubuntu1.9+Fips1"))
+			},
+			feeds: feedsWith(false),
+			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			// A Pro sub-stream does not list every advisory of its release.
+			name: "an Ubuntu Pro sub-stream item is never cleared", raw: fipsItem,
+			rows: func(r *testRows) {
+				r.packages(fipsItem.Ecosystem, "openssl", pkgAt(cveA, "0", "3.0.2-0ubuntu1.9+Fips1"))
+			},
+			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "an Ubuntu Pro sub-stream item can be affected", raw: fipsItem,
+			rows: func(r *testRows) {
+				r.packages(fipsItem.Ecosystem, "openssl", pkgAt(cveA, "0", "3.0.2-0ubuntu1.11+Fips1"))
+			},
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "an Ubuntu Pro sub-stream item with no rows", raw: fipsItem,
+			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none},
+		},
+		{
+			name: "cna_product_not_mapped beats an advisory that cannot be evaluated", raw: widgetItem,
+			rows: func(r *testRows) { r.cpes("acme", "widget", cpeAt(cveA, widgetCPE, "", "")) },
+			want: summary{status: "cannot_evaluate", reason: "cna_product_not_mapped", warnings: none,
+				counts: Counts{CannotEvaluate: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "an advisory that cannot be evaluated gives unresolved", raw: npmItem,
+			rows: func(r *testRows) { r.packages("npm", "pkg", cannotPkg(cveA), clearPkg(cveB)) },
+			want: summary{status: "unresolved", reason: "null", warnings: none,
 				counts: Counts{CannotEvaluate: 1, NotAffected: 1}, listed: []string{cveA}},
 		},
 		{
@@ -427,6 +559,41 @@ func TestEvaluateItemStatus(t *testing.T) {
 			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
 		},
 		{
+			// Ubuntu publishes a universe package's fix in its Pro stream alone.
+			name: "an Ubuntu standard-stream item reads its release's Pro rows", raw: ubuntuItem,
+			rows: func(r *testRows) {
+				r.packages("Ubuntu:Pro:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.4+esm1"))
+			},
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1}, listed: []string{cveA}},
+		},
+		{
+			// Ubuntu does not repeat a standard-stream fix under Pro.
+			name: "an Ubuntu Pro item reads its release's standard rows", raw: ubuntuPro,
+			rows: func(r *testRows) {
+				r.packages("Ubuntu:Pro:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.3")).
+					packages("Ubuntu:26.04:LTS", "php8.5", pkgAt(cveB, "0", "8.5.4-0ubuntu1.5"))
+			},
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1, NotAffected: 1}, listed: []string{cveB}},
+		},
+		{
+			name: "an Ubuntu advisory with rows in both streams is affected if either row is", raw: ubuntuItem,
+			rows: func(r *testRows) {
+				r.packages("Ubuntu:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.3")).
+					packages("Ubuntu:Pro:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.4+esm1"))
+			},
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "an Ubuntu package with rows in the other stream only is found", raw: ubuntuItem,
+			rows: func(r *testRows) {
+				r.packages("Ubuntu:Pro:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.3"))
+			},
+			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
+		},
+		{
 			name: "a distro package with no rows", raw: ubuntuItem,
 			want: summary{status: "cannot_evaluate", reason: "distro_package_not_found", warnings: none},
 		},
@@ -443,7 +610,7 @@ func TestEvaluateItemStatus(t *testing.T) {
 		},
 		{
 			name: "a package with no rows on incomplete data", raw: npmItem, feeds: feedsWith(false),
-			want: summary{status: "no_advisory_found", reason: "null", warnings: none},
+			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none},
 		},
 		{
 			name: "a CPE with no CNA name and no rows carries a warning", raw: widgetItem,
@@ -472,6 +639,227 @@ func TestEvaluateItemStatus(t *testing.T) {
 			got := runWith(t, newWorkMeter(context.Background()), items, r, feeds, nil, limits)
 			if s := summarize(t, got.Results[0]); !reflect.DeepEqual(s, tt.want) {
 				t.Errorf("item = %+v\nwant   %+v", s, tt.want)
+			}
+		})
+	}
+}
+
+// TestEvaluateOtherProducts checks the CNA products named as other products of a
+// CPE: such a row is neither a name row for the item nor a nearby row that
+// blocks it, so a CVE whose CNA names only that product is not the item's. A CNA
+// product the list does not name still blocks.
+func TestEvaluateOtherProducts(t *testing.T) {
+	t.Parallel()
+	opensslCPE := "cpe:2.3:a:openssl:openssl:*:*:*:*:*:*:*:*"
+	// An entry that is Indeterminate for every version at or above 2.0, as the
+	// .NET Framework entries are for a .NET version.
+	framework := []CNAVersion{{Version: "2.0", LessThan: "2.0.50727.9073 AND 4.7.4150.0", Status: "affected", VersionType: "custom"}}
+	tests := []struct {
+		name    string
+		raw     RawItem
+		rows    func(r *testRows)
+		status  string
+		reasons map[string]string
+	}{
+		{
+			// The .net prefix reads .NET Framework 4.8 as a name row unless it is excluded.
+			name: ".NET Framework under the .net prefix", raw: dotnetRT,
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")).
+					cnaStored(cnaAt(cveA, "Microsoft", ".NET Framework 4.8", framework...))
+			},
+			status: "not_affected", reasons: map[string]string{},
+		},
+		{
+			name: "Microsoft .NET Framework, a nearby row", raw: dotnetRT,
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")).
+					nearStored(nearAt(cveB, "Microsoft", "Microsoft .NET Framework 3.5 AND 4.8"))
+			},
+			status: "not_affected", reasons: map[string]string{},
+		},
+		{
+			name: "OpenAPI.NET, a nearby row", raw: dotnetRT,
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")).
+					nearStored(nearAt(cveB, "microsoft", "OpenAPI.NET"))
+			},
+			status: "not_affected", reasons: map[string]string{},
+		},
+		{
+			// ASP.NET Core ships inside the .NET SDK and shared runtime.
+			name: "ASP.NET Core still blocks", raw: dotnetRT,
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")).
+					nearStored(nearAt(cveB, "Microsoft", "ASP.NET Core 10.0"))
+			},
+			status: "unresolved", reasons: map[string]string{cveB: "cannot_evaluate/cna_name_uncertain"},
+		},
+		{
+			name: "Ruby's OpenSSL extension, a nearby row", raw: RawItem{CPE: opensslCPE, Version: "4.0.4"},
+			rows: func(r *testRows) {
+				r.cpes("openssl", "openssl", cpeAt(cveA, opensslCPE, "4.0.0", "4.0.4")).
+					cnaStored(cnaAt(cveC, "OpenSSL", "OpenSSL", CNAVersion{Version: "1.0", LessThan: "1.1", Status: "affected", VersionType: "semver"})).
+					nearStored(nearAt(cveB, "OpenSSL", "OpenSSL extension of Ruby (Git trunk)"))
+			},
+			status: "unresolved", reasons: map[string]string{cveC: "cannot_evaluate/cna_cannot_clear"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(tt.raw)
+			r := rowsFor(t, items)
+			tt.rows(r)
+			got := run(t, items, r).Results[0]
+			if got.Status != tt.status || !reflect.DeepEqual(advisoryReasons(got), tt.reasons) {
+				t.Errorf("status %s, advisories %v; want %s, %v", got.Status, advisoryReasons(got), tt.status, tt.reasons)
+			}
+		})
+	}
+}
+
+// TestEvaluateCountsByReason checks that every advisory that cannot be
+// evaluated is counted under its one reason, including those past the listing
+// limit, so the counts by reason sum to cannot_evaluate.
+func TestEvaluateCountsByReason(t *testing.T) {
+	t.Parallel()
+	items := parseItems(npmItem)
+	r := rowsFor(t, items)
+	for i := range maxListedAdvisories {
+		r.packages("npm", "pkg", cannotPkg(fmt.Sprintf("CVE-2026-9%04d", i)))
+	}
+	r.packages("npm", "pkg", PackageRow{CVEID: cveA, RangeType: "GIT", Introduced: "0", Fixed: "abc123"}, clearPkg(cveB))
+	got := run(t, items, r).Results[0]
+	want := map[Reason]int{ReasonInvalidRange: maxListedAdvisories, ReasonCommitRangesOnly: 1}
+	if !reflect.DeepEqual(got.Counts.CannotEvaluateByReason, want) {
+		t.Errorf("counts by reason = %v, want %v", got.Counts.CannotEvaluateByReason, want)
+	}
+	if got.Counts.CannotEvaluate != maxListedAdvisories+1 || !got.AdvisoriesTruncated || len(got.Advisories) != maxListedAdvisories {
+		t.Errorf("cannot_evaluate %d, truncated %v, listed %d; want %d, true, %d",
+			got.Counts.CannotEvaluate, got.AdvisoriesTruncated, len(got.Advisories), maxListedAdvisories+1, maxListedAdvisories)
+	}
+	if empty := run(t, items, rowsFor(t, items)).Results[0].Counts.CannotEvaluateByReason; empty == nil || len(empty) != 0 {
+		t.Errorf("counts by reason with no advisory = %v, want an empty map", empty)
+	}
+}
+
+// TestEvaluateRangeLimitKeepsItsReason checks that an advisory over the range
+// limit keeps too_many_ranges when a nearby CNA name would also block it, so the
+// item reports the limit.
+func TestEvaluateRangeLimitKeepsItsReason(t *testing.T) {
+	t.Parallel()
+	items := parseItems(nodeItem)
+	r := rowsFor(t, items).
+		cpes("nodejs", "node.js", cpeAt(cveA, nodeCPE, "1.0.0", "2.0.0"), cpeAt(cveA, nodeCPE, "3.0.0", "4.0.0")).
+		near("nodejs", nearAt(cveA, "nodejs", "node-red"))
+	got := runWith(t, newWorkMeter(context.Background()), items, r, feedsWith(true), nil,
+		Limits{ItemRows: 50000, AdvisoryRanges: 1}).Results[0]
+	if want := map[string]string{cveA: "cannot_evaluate/too_many_ranges"}; !reflect.DeepEqual(advisoryReasons(got), want) {
+		t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
+	}
+	if got.Status != StatusCannotEvaluate || got.Reason == nil || *got.Reason != ReasonTooManyRanges {
+		t.Errorf("item status = %s, reason %v; want cannot_evaluate, too_many_ranges", got.Status, got.Reason)
+	}
+}
+
+// TestEvaluationFailed forces a comparison error reasonFor cannot classify: the
+// row is flagged, the advisory gets evaluation_failed, and the item reports a
+// failed check rather than unresolved.
+func TestEvaluationFailed(t *testing.T) {
+	t.Parallel()
+	var v rowVerdicts
+	v.compare("1.0", Bound{Check: func(string, version.Range) (version.Status, error) {
+		return version.CannotEvaluate, errors.New("an error the version package does not classify")
+	}}, Matched{})
+	out := v.outcome()
+	if out.Verdict != CannotEvaluate || out.Reason != "" || !out.EvaluationFailed {
+		t.Fatalf("row outcome = %+v, want CannotEvaluate, no reason, EvaluationFailed", out)
+	}
+	var logs bytes.Buffer
+	out = withFailureReason(slog.New(slog.NewTextHandler(&logs, nil)), cveA, out)
+	if out.Reason != ReasonEvaluationFailed || !out.EvaluationFailed {
+		t.Errorf("advisory outcome = %+v, want reason evaluation_failed", out)
+	}
+	if got := logs.String(); !strings.Contains(got, "level=ERROR") || !strings.Contains(got, "advisory_id="+cveA) {
+		t.Errorf("log = %q, want an error naming the advisory", got)
+	}
+
+	item := parseItems(npmItem)[0]
+	res := ItemResult{Counts: Counts{CannotEvaluate: 1}, DataComplete: true}
+	var tally itemTally
+	tally.add(out)
+	setStatus(&res, item, itemRows{advisories: map[string]*advisoryRows{cveA: {}}}, tally)
+	if res.Status != StatusCannotEvaluate || res.Reason == nil || *res.Reason != ReasonEvaluationFailed {
+		t.Errorf("item status = %s, reason %v; want cannot_evaluate, evaluation_failed", res.Status, res.Reason)
+	}
+}
+
+// TestEvaluateFixEcosystem checks that a package item reports the ecosystem of
+// each matched package range and of the row that names fixed_version, preferring
+// the item's own stream when both streams name the same fix, and none for a fix
+// that no package row names.
+func TestEvaluateFixEcosystem(t *testing.T) {
+	t.Parallel()
+	const own, pro = "Ubuntu:26.04:LTS", "Ubuntu:Pro:26.04:LTS"
+	tests := []struct {
+		name        string
+		rows        func(r *testRows)
+		wantFix     string
+		wantFixEco  string // "" for null
+		wantMatched []string
+	}{
+		{
+			name:        "a fix in the Pro stream only",
+			rows:        func(r *testRows) { r.packages(pro, "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.4+esm1")) },
+			wantFix:     "8.5.4-0ubuntu1.4+esm1",
+			wantFixEco:  pro,
+			wantMatched: []string{pro},
+		},
+		{
+			name: "the same fix in both streams names the item's own",
+			rows: func(r *testRows) {
+				r.packages(pro, "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.5")).
+					packages(own, "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.5"))
+			},
+			wantFix:     "8.5.4-0ubuntu1.5",
+			wantFixEco:  own,
+			wantMatched: []string{own, pro},
+		},
+		{
+			name:        "no fix",
+			rows:        func(r *testRows) { r.packages(own, "php8.5", pkgAt(cveA, "0", "")) },
+			wantMatched: []string{own},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(ubuntuItem)
+			r := rowsFor(t, items)
+			tt.rows(r)
+			res := run(t, items, r).Results[0]
+			if len(res.Advisories) != 1 {
+				t.Fatalf("advisories = %+v, want one", res.Advisories)
+			}
+			a := res.Advisories[0]
+			fix, fixEco := "", ""
+			if a.FixedVersion != nil {
+				fix = *a.FixedVersion
+			}
+			if a.FixEcosystem != nil {
+				fixEco = *a.FixEcosystem
+			}
+			if fix != tt.wantFix || fixEco != tt.wantFixEco {
+				t.Errorf("fixed_version %q, fix_ecosystem %q; want %q, %q", fix, fixEco, tt.wantFix, tt.wantFixEco)
+			}
+			var matched []string
+			for _, m := range a.MatchedRanges {
+				matched = append(matched, m.Ecosystem)
+			}
+			slices.Sort(matched)
+			if !slices.Equal(matched, tt.wantMatched) {
+				t.Errorf("matched range ecosystems = %q, want %q", matched, tt.wantMatched)
 			}
 		})
 	}
@@ -554,7 +942,7 @@ func TestEvaluateTooManyRanges(t *testing.T) {
 		if !reflect.DeepEqual(advisoryReasons(got), want) {
 			t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
 		}
-		if wantCounts := (Counts{Affected: 1, CannotEvaluate: 2, NotAffected: 1}); got.Counts != wantCounts {
+		if wantCounts := (Counts{Affected: 1, CannotEvaluate: 2, NotAffected: 1}); !reflect.DeepEqual(countsOf(got.Counts), wantCounts) {
 			t.Errorf("counts = %+v, want %+v", got.Counts, wantCounts)
 		}
 	})
@@ -585,8 +973,8 @@ func TestEvaluateTooManyRanges(t *testing.T) {
 		if want := map[string]string{cveA: "cannot_evaluate/too_many_ranges"}; !reflect.DeepEqual(advisoryReasons(got), want) {
 			t.Errorf("advisories = %v, want %v", advisoryReasons(got), want)
 		}
-		if got.Status != StatusCannotEvaluate || got.Reason != nil {
-			t.Errorf("item status = %s, reason %v; want cannot_evaluate with a null reason", got.Status, got.Reason)
+		if got.Status != StatusCannotEvaluate || got.Reason == nil || *got.Reason != ReasonTooManyRanges {
+			t.Errorf("item status = %s, reason %v; want cannot_evaluate, too_many_ranges", got.Status, got.Reason)
 		}
 	})
 }
@@ -616,7 +1004,7 @@ func TestEvaluateListing(t *testing.T) {
 		if len(got.Advisories) != 100 || !got.AdvisoriesTruncated {
 			t.Fatalf("listed %d, truncated %v; want 100, true", len(got.Advisories), got.AdvisoriesTruncated)
 		}
-		if want := (Counts{Affected: 103, CannotEvaluate: 1, NotAffected: 2}); got.Counts != want {
+		if want := (Counts{Affected: 103, CannotEvaluate: 1, NotAffected: 2}); !reflect.DeepEqual(countsOf(got.Counts), want) {
 			t.Errorf("counts = %+v, want %+v", got.Counts, want)
 		}
 		if first := got.Advisories[0].AdvisoryID; first != "CVE-2026-1102" {
@@ -687,14 +1075,14 @@ func TestEvaluateAdvisoryFields(t *testing.T) {
 	wantDistro := []Advisory{
 		{
 			AdvisoryID: "UBUNTU-CVE-2026-109618", CVEIDs: []string{"CVE-2026-109618"}, Verdict: VerdictAffected,
-			FixedVersion: &fix, FixMajor: ptr("same"),
-			MatchedRanges:      []MatchedRange{{Evidence: "package_range", Introduced: "0", Fixed: fix}},
+			FixedVersion: &fix, FixMajor: ptr("same"), FixEcosystem: ptr("Ubuntu:26.04:LTS"),
+			MatchedRanges:      []MatchedRange{{Evidence: "package_range", Ecosystem: "Ubuntu:26.04:LTS", Introduced: "0", Fixed: fix}},
 			MatchedRangesTotal: 1, Severity: ptr("medium"), CVSSv3Score: ptr(5.3), EPSSScore: ptr(0.4), InCISAKEV: ptr(true),
 		},
 		{
 			AdvisoryID: "USN-8948-1", CVEIDs: []string{}, Verdict: VerdictAffected,
-			FixedVersion: &fix, FixMajor: ptr("same"),
-			MatchedRanges:      []MatchedRange{{Evidence: "package_range", Introduced: "0", Fixed: fix}},
+			FixedVersion: &fix, FixMajor: ptr("same"), FixEcosystem: ptr("Ubuntu:26.04:LTS"),
+			MatchedRanges:      []MatchedRange{{Evidence: "package_range", Ecosystem: "Ubuntu:26.04:LTS", Introduced: "0", Fixed: fix}},
 			MatchedRangesTotal: 1, Severity: ptr("low"),
 		},
 	}
@@ -806,7 +1194,7 @@ func TestEvaluateOtherCPESpellings(t *testing.T) {
 			stored := "cpe:2.3:a:" + tt.vendor + ":" + tt.product + ":*:*:*:*:*:*:*:*"
 			r := rowsFor(t, items).cpes(tt.vendor, tt.product, cpeAt(cveA, stored, tt.start, tt.end))
 			got := run(t, items, r).Results[0]
-			if got.Status != StatusAffected || got.Counts != (Counts{Affected: 1}) {
+			if got.Status != StatusAffected || !reflect.DeepEqual(countsOf(got.Counts), (Counts{Affected: 1})) {
 				t.Errorf("status = %s, counts %+v; want affected by %s; advisories %s",
 					got.Status, got.Counts, cveA, jsonOf(t, got.Advisories))
 			}
@@ -843,7 +1231,7 @@ func TestEvaluateNearbyLiftEverySpelling(t *testing.T) {
 				nearStored(nearAt(cveA, "F5", "NGINX Plus"), stored)
 			got := run(t, items, r).Results
 			for i, res := range got {
-				if res.Status != StatusNotAffected || res.Counts != (Counts{NotAffected: 1}) {
+				if res.Status != StatusNotAffected || !reflect.DeepEqual(countsOf(res.Counts), (Counts{NotAffected: 1})) {
 					t.Errorf("item %d: status = %s, counts %+v, advisories %v; want not_affected by %s",
 						i, res.Status, res.Counts, advisoryReasons(res), cveA)
 				}
@@ -893,8 +1281,8 @@ func TestEvaluateCNAUnderscoreKept(t *testing.T) {
 			r := rowsFor(t, items)
 			tt.rows(r)
 			got := run(t, items, r).Results[0]
-			if got.Status != StatusCannotEvaluate || !reflect.DeepEqual(advisoryReasons(got), tt.want) {
-				t.Errorf("status = %s, advisories %v; want cannot_evaluate with %v", got.Status, advisoryReasons(got), tt.want)
+			if got.Status != StatusUnresolved || !reflect.DeepEqual(advisoryReasons(got), tt.want) {
+				t.Errorf("status = %s, advisories %v; want unresolved with %v", got.Status, advisoryReasons(got), tt.want)
 			}
 		})
 	}
@@ -1056,7 +1444,7 @@ func TestEvaluateCNANameUncertain(t *testing.T) {
 			if !reflect.DeepEqual(advisoryReasons(got), tt.want) {
 				t.Errorf("advisories = %v, want %v", advisoryReasons(got), tt.want)
 			}
-			if got.Counts != tt.count {
+			if !reflect.DeepEqual(countsOf(got.Counts), tt.count) {
 				t.Errorf("counts = %+v, want %+v", got.Counts, tt.count)
 			}
 		})
@@ -1284,9 +1672,9 @@ func TestEvaluateJSON(t *testing.T) {
 		want := `{"data_complete":true,"feeds":[{"name":"nvd","complete":true,"last_success_at":"2026-11-08T10:15:00Z"}],` +
 			`"results":[{"index":0,"id":"runner-node","status":"affected","reason":null,` +
 			`"component":{"kind":"product","part":"a","vendor":"nodejs","product":"node.js","version":"24.22.0"},` +
-			`"data_complete":true,"counts":{"affected":1,"cannot_evaluate":0,"not_affected":0,"retracted":0},` +
+			`"data_complete":true,"counts":{"affected":1,"cannot_evaluate":0,"not_affected":0,"retracted":0,"cannot_evaluate_by_reason":{}},` +
 			`"advisories":[{"advisory_id":"CVE-2026-111497","cve_ids":["CVE-2026-111497"],"verdict":"affected","reason":null,` +
-			`"fixed_version":"24.22.1","fix_major":"same",` +
+			`"fixed_version":"24.22.1","fix_major":"same","fix_ecosystem":null,` +
 			`"matched_ranges":[{"evidence":"nvd_cpe","cpe":"cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*","introduced":"23.0.0","fixed":"24.22.1"}],` +
 			`"matched_ranges_total":1,"severity":"HIGH","cvss_v3_score":7.5,"epss_score":0.01,"in_cisa_kev":false}],` +
 			`"advisories_truncated":false,"warnings":[],"error":null}]}`
@@ -1299,12 +1687,12 @@ func TestEvaluateJSON(t *testing.T) {
 		t.Parallel()
 		items := parseItems(RawItem{Ecosystem: "Ubuntu:26.04:LTS", Name: "php8.5", Version: "8.5.4-0ubuntu1.4"}, RawItem{Ecosystem: "npm"})
 		got := runWith(t, newWorkMeter(context.Background()), items, rowsFor(t, items), feeds, nil, DefaultLimits)
-		want := `[{"index":0,"id":null,"status":"cannot_evaluate","reason":"distro_package_not_found",` +
+		want := `[{"index":0,"id":null,"status":"cannot_evaluate","reason":"data_incomplete",` +
 			`"component":{"kind":"package","ecosystem":"Ubuntu:26.04:LTS","name":"php8.5","version":"8.5.4-0ubuntu1.4"},` +
-			`"data_complete":false,"counts":{"affected":0,"cannot_evaluate":0,"not_affected":0,"retracted":0},` +
+			`"data_complete":false,"counts":{"affected":0,"cannot_evaluate":0,"not_affected":0,"retracted":0,"cannot_evaluate_by_reason":{}},` +
 			`"advisories":[],"advisories_truncated":false,"warnings":[],"error":null},` +
 			`{"index":1,"id":null,"status":"invalid","reason":null,"component":null,"data_complete":false,` +
-			`"counts":{"affected":0,"cannot_evaluate":0,"not_affected":0,"retracted":0},"advisories":[],` +
+			`"counts":{"affected":0,"cannot_evaluate":0,"not_affected":0,"retracted":0,"cannot_evaluate_by_reason":{}},"advisories":[],` +
 			`"advisories_truncated":false,"warnings":[],` +
 			`"error":{"code":"invalid_form","message":"` + itemErrorMessages["invalid_form"] + `"}}]`
 		if s := jsonOf(t, got.Results); s != want {

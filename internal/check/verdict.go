@@ -39,21 +39,35 @@ const (
 	ReasonDistroPackageNotFound Reason = "distro_package_not_found"
 	ReasonTooManyCandidates     Reason = "too_many_candidates"
 	ReasonTooManyRanges         Reason = "too_many_ranges"
+	// ReasonEvaluationFailed is a comparison that failed for a reason the
+	// version package did not classify. No path gives one today.
+	ReasonEvaluationFailed        Reason = "evaluation_failed"
+	ReasonSDKVersionNotComparable Reason = "sdk_version_not_comparable"
+	ReasonDistroStreamIncomplete  Reason = "distro_stream_incomplete"
 )
 
-// Matched is one range that contains the version, for the response.
+// Matched is one range that contains the version, for the response. Ecosystem
+// is the stored ecosystem of a package range.
 type Matched struct {
-	Evidence, CPE, Introduced, Fixed, LastAffected string
+	Evidence, CPE, Ecosystem, Introduced, Fixed, LastAffected string
 }
 
 // Outcome is what one source says about one advisory.
+//
+// VersionFailure and EvaluationFailed record failures of any row, whatever
+// Reason shows: VersionFailure is the first invalid_version or
+// unknown_version_scheme a row gave, and EvaluationFailed is set when a row's
+// comparison failed with an error reasonFor cannot classify. Item status reads
+// them (design section 4.7), because one row's reason can hide another's.
 type Outcome struct {
-	Verdict    Verdict
-	Reason     Reason
-	Matched    []Matched
-	Candidates []string // upper bounds of ranges reporting Affected
-	Ranges     []Bound  // every range, for validating fix candidates
-	Comparable bool     // at least one row was compared
+	Verdict          Verdict
+	Reason           Reason
+	Matched          []Matched
+	Candidates       []string // upper bounds of ranges reporting Affected
+	Ranges           []Bound  // every range, for validating fix candidates
+	Comparable       bool     // at least one row was compared
+	VersionFailure   Reason
+	EvaluationFailed bool
 }
 
 // Bound is one range with the order that reads it.
@@ -108,6 +122,14 @@ func (v *rowVerdicts) cannotEvaluate(reason Reason) {
 		v.out.Reason = reason
 	}
 	v.anyCannotEvaluate = true
+	switch reason {
+	case ReasonInvalidVersion, ReasonUnknownVersionScheme:
+		if v.out.VersionFailure == "" {
+			v.out.VersionFailure = reason
+		}
+	case "":
+		v.out.EvaluationFailed = true
+	}
 }
 
 // outcome returns the combined verdict. With no rows recorded it is CannotEvaluate.

@@ -7,6 +7,7 @@ const (
 	StatusAffected        = "affected"
 	StatusNotAffected     = "not_affected"
 	StatusCannotEvaluate  = "cannot_evaluate"
+	StatusUnresolved      = "unresolved"
 	StatusNoAdvisoryFound = "no_advisory_found"
 	StatusInvalid         = "invalid"
 )
@@ -63,12 +64,15 @@ type Component struct {
 	Version   string `json:"version"`
 }
 
-// Counts are of advisory records, over every advisory found for the item.
+// Counts are of advisory records, over every advisory found for the item, listed
+// or not. CannotEvaluateByReason counts each advisory that cannot be evaluated
+// under its one reason, so its values sum to CannotEvaluate.
 type Counts struct {
-	Affected       int `json:"affected"`
-	CannotEvaluate int `json:"cannot_evaluate"`
-	NotAffected    int `json:"not_affected"`
-	Retracted      int `json:"retracted"`
+	Affected               int            `json:"affected"`
+	CannotEvaluate         int            `json:"cannot_evaluate"`
+	NotAffected            int            `json:"not_affected"`
+	Retracted              int            `json:"retracted"`
+	CannotEvaluateByReason map[Reason]int `json:"cannot_evaluate_by_reason"`
 }
 
 // Advisory is one listed advisory: one that reports the component Affected or
@@ -80,6 +84,7 @@ type Advisory struct {
 	Reason             *Reason        `json:"reason"`
 	FixedVersion       *string        `json:"fixed_version"`
 	FixMajor           *string        `json:"fix_major"`
+	FixEcosystem       *string        `json:"fix_ecosystem"`
 	MatchedRanges      []MatchedRange `json:"matched_ranges"`
 	MatchedRangesTotal int            `json:"matched_ranges_total"`
 	Severity           *string        `json:"severity"`
@@ -89,10 +94,11 @@ type Advisory struct {
 }
 
 // MatchedRange is one range that contains the version. CPE is set for NVD CPE
-// evidence; an absent bound is omitted.
+// evidence and Ecosystem for package range evidence; an absent bound is omitted.
 type MatchedRange struct {
 	Evidence     string `json:"evidence"`
 	CPE          string `json:"cpe,omitempty"`
+	Ecosystem    string `json:"ecosystem,omitempty"`
 	Introduced   string `json:"introduced"`
 	Fixed        string `json:"fixed,omitempty"`
 	LastAffected string `json:"last_affected,omitempty"`

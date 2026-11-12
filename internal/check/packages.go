@@ -47,7 +47,7 @@ func EvaluatePackageRows(m *workMeter, ecosystem, ver string, rows []PackageRow)
 		verdicts.compare(ver, Bound{
 			Range: version.Range{Introduced: row.Introduced, Fixed: row.Fixed, LastAffected: row.LastAffected},
 			Check: rowCheck(ecosystem, row.RangeType),
-		}, Matched{Evidence: evidencePackageRange})
+		}, Matched{Evidence: evidencePackageRange, Ecosystem: row.Ecosystem})
 	}
 	return verdicts.outcome()
 }

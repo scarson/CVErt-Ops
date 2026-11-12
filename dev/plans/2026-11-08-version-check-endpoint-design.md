@@ -194,6 +194,8 @@ Comparator, from `versionType`:
 
 Bounds are normalised first. A wildcard lower bound `8.1.*` becomes `8.1`. A free-text `version` such as `>= 20.0.0, <= 20.10.27` (common in GitHub-issued records, for example CVE-2024-41110 for moby) is read with the GHSA range grammar, which moves from `internal/feed/ghsa` to `internal/version`.
 
+**Bounds with a suffix** (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction). An entry with no `changes`, `versionType` `custom` or absent, and one finite upper bound, whose bounds are dotted numbers or a number followed directly by a suffix (`1.1.1t`, `1.0.2zf`, `2.0b10`: no whitespace, none of `, ; / ( ) < > = & |`, letters after at most one separator, no epoch, wildcard, escape or `%`), with at least one such suffix, is compared by the leading-number rule of section 4.2 (`version.CheckProduct`). Where that rule decides the version is outside the entry, the entry says nothing about it (No statement), instead of Indeterminate for every version at or above its start. A version the rule places inside, or cannot place, keeps the entry Indeterminate, and an inverted range stays Indeterminate. The rule never makes a CNA entry Affected or Not affected. `lessThan: "2.0.50727.8987 AND 4.7.4150.0"` does not match the suffix form and stays Indeterminate.
+
 **No version information** is an entry whose `version` is absent or a sentinel (`unspecified`, `n/a`, `unknown`, `*`) with no upper bound and no `changes[]`, or whose `versionType` is `git`, as commit ranges are set aside in section 4.1. Everything else is read as segments.
 
 **Segments.** `changes[]` is sorted by `at` under the entry's comparator, as the CVE schema requires of clients. If the comparator cannot read an `at`, the entry has no reliable segments and is Indeterminate for every version at or above its lower bound, or for every version if the lower bound cannot be read either. Otherwise the first segment runs from `version` with the entry's `status`, and each change starts a segment at its `at` with its `status`. Each segment includes its start and stops before the next start. The last stops at the upper bound, which it includes for `lessThanOrEqual`. An entry with no `changes[]` is one segment. Each segment is judged on its own boundaries, so unreadable outer bounds do not spoil a readable inner segment.
@@ -245,12 +247,16 @@ The CPE's own vendor and product (with `_` read as a space) are always looked up
 
 | CPE | CNA vendor and product | Name fragment |
 |---|---|---|
-| `nodejs:node.js` | `nodejs` / `node`, `nodejs` / `nodejs` | `node` |
+| `nodejs:node.js`, `nodejs:nodejs` | `nodejs` / `node`, `nodejs` / `nodejs` | `node` |
 | `php:php` | `php group` / `php` | `php` |
-| `f5:nginx`, `nginx:nginx` | `f5` / `nginx open source`, `f5` / `nginx` | `nginx` |
+| `f5:nginx`, `nginx:nginx`, `f5:nginx_open_source` | `f5` / `nginx open source`, `f5` / `nginx` | `nginx` |
 | `microsoft:.net`, `microsoft:.net_core` | `microsoft` / prefix `.net ` (so `.NET 6.0`, `.NET 9.0 runtime` and later majors) | `.net` |
 | `postgresql:postgresql` | `n/a` / `postgresql` | `postgresql` |
 | `python:python` | `python software foundation` / `cpython` | `python` |
+
+CPE spellings added to the table (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction): NVD files Node 0.6 to 0.10 under `nodejs:nodejs` (3 CVEs), and recent nginx CVEs under `f5:nginx_open_source` (45 vulnerable rows, 26 CVEs; 25 of the 27 nginx advisories that answered `cna_cannot_clear` at `1.31.7` have NVD rows there). Not added: `microsoft:.net_sdk` and `.net_core_sdk` (SDK-numbered bounds; section 4.7's SDK rule), `nodejs:undici`, `f5:nginx_plus`, `microsoft:.net_framework`, `microsoft:asp.net_core`.
+
+**Other products** (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction). Some CNA products a name or a nearby name of a CPE finds are other products. For `microsoft:.net` and `.net_core`: products starting `.net framework` or `microsoft .net framework` (the .NET Framework, whose versions are 2.x to 4.x; Microsoft lists a `.NET x.0` entry beside it when both are affected, and `.NET Framework 4.8` also starts with the `.net ` prefix), and `OpenAPI.NET`, a separate library. For `openssl:openssl`: `OpenSSL extension of Ruby (Git trunk)`, which NVD files as `ruby-lang:ruby`. Such a row is neither a name row nor a nearby row for that CPE. Not listed, so they still block: ASP.NET Core and the `Microsoft.NetCore.App.Runtime.*` and `Microsoft.AspNetCore.App.Runtime.*` packages (they ship inside the SDK and shared runtime), `Microsoft / .NET-SDK`, NGINX Plus, NGINX JavaScript, NGINX Ingress Controller and NGINX Gateway Fabric. On the complete ingest the 48 `cna_name_uncertain` advisories came from the .NET Framework (16 CVEs, 12 of them with a direct `.NET x.0` entry too), ASP.NET Core (8), OpenAPI.NET (2), the runtime packages (2), PTC's `.NET-SDK` (2), NGINX Plus beside NGINX Open Source (6), the three NGINX components (11) and Ruby's OpenSSL extension (1).
 
 **A product with no CNA name cannot be cleared.** With no table entry and no direct match, a CVE NVD has not analysed cannot be seen at all. An answer that would be `not_affected` becomes `cannot_evaluate`, reason `cna_product_not_mapped` (section 4.7), and `no_advisory_found` carries the same name as a warning. A status-keyed script would miss a warning, which is the reason a distro lookup with no rows is not `no_advisory_found` either.
 
@@ -268,19 +274,34 @@ Distro items do not use this: the CNA describes the upstream package, not the di
 
 Advisories that report Not affected are counted, not listed. That is what "`24.22.1` returns nothing for it" means.
 
+The roll-up was changed after the go/no-go run (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction): every current release of the six products answered `cannot_evaluate` with no advisory Affected, so `cannot_evaluate` no longer told a caller whether the check had worked. `unresolved` now separates "the data leaves advisories unresolved" from "the check could not be completed". Each rule can only move an item away from `not_affected`.
+
 | Condition, checked in order | `status` |
 |---|---|
 | Input invalid | `invalid` |
 | More candidate rows than the per-item limit | `cannot_evaluate`, reason `too_many_candidates`, with no advisories listed. The rows read are not all of them, so neither a verdict nor a fix can be trusted. |
 | Any advisory Affected | `affected` (true even on incomplete data) |
-| Any advisory cannot evaluate | `cannot_evaluate` |
-| Advisories found, all Not affected, data incomplete | `cannot_evaluate`, reason `data_incomplete` |
-| Advisories found, all Not affected, CPE item with no CNA name | `cannot_evaluate`, reason `cna_product_not_mapped` |
+| An advisory was found, and the item's own order cannot read its version (a CPE version that is not dotted numbers; a package version the ecosystem's order refuses) | `cannot_evaluate`, reason `invalid_version` |
+| An advisory was found, the item's ecosystem has no order, and an advisory failed with `unknown_version_scheme` | `cannot_evaluate`, reason `unknown_version_scheme` |
+| An advisory was found, and the item is a `.NET` product (the name table's .NET row) whose version has a third component of 100 or more | `cannot_evaluate`, reason `sdk_version_not_comparable` |
+| An advisory was found, and a row of any advisory failed with `invalid_version` | `cannot_evaluate`, reason null; the advisory carries `invalid_version` |
+| An advisory is over the per-advisory range limit | `cannot_evaluate`, reason `too_many_ranges` |
+| An advisory failed for a reason the version package does not classify (unreachable today; logged at error level) | `cannot_evaluate`, reason `evaluation_failed` |
+| Data incomplete, with or without advisories | `cannot_evaluate`, reason `data_incomplete` |
+| An Ubuntu Pro sub-stream item (section 6), with or without advisories | `cannot_evaluate`, reason `distro_stream_incomplete` |
+| Advisories found, CPE item with no CNA name | `cannot_evaluate`, reason `cna_product_not_mapped` |
+| Any advisory cannot evaluate | `unresolved` |
 | Advisories found, all Not affected | `not_affected` |
 | No advisories, distro ecosystem | `cannot_evaluate`, reason `distro_package_not_found` |
-| No advisories | `no_advisory_found` |
+| No advisories | `no_advisory_found`, with the `cna_product_not_mapped` warning for a CPE with no CNA name |
 
-The item's `reason` is set only when one of the item-level rows above produced the status. When the status comes from an advisory that answered cannot evaluate, the item's `reason` is null and each listed advisory carries its own.
+"An advisory was found" means an advisory that is not retracted; with none, the version rules do not apply and the rows from `data_incomplete` down decide. The failure flags (`invalid_version` and `unknown_version_scheme` from a row, `too_many_ranges`, `evaluation_failed`) are kept per advisory apart from the reason the advisory shows, because one row's reason can hide another's: an advisory over the range limit keeps `too_many_ranges` over the nearby-name rule. Only `not_affected` clears a version. `unresolved` is defined as "no advisory was established as affected, and the data leaves one or more advisories unresolved for this version" and is never described as clean.
+
+A CPE item with no CNA name and no advisory stays `no_advisory_found` with the warning: `no_advisory_found` says only that no matching advisory was found in the searched data, an unmapped name does not undermine that, and a block there could never be lifted for a product that has no CVE. A package item with no rows answers the same way.
+
+The item's `reason` is set only when one of the item-level rows above produced the status. When the status comes from an advisory that answered cannot evaluate, the item's `reason` is null and each listed advisory carries its own. `counts.cannot_evaluate_by_reason` counts every advisory that cannot be evaluated under its one reason, before the listing limit, so its values sum to `counts.cannot_evaluate`.
+
+**.NET SDK numbers.** NVD and Microsoft state .NET runtime versions (`10.0.15`); on the complete ingest no vulnerable `microsoft:.net` or `.net_core` row on any line has an SDK-numbered bound (third component 100 or more). An SDK version such as `10.0.404` is above every runtime bound of its line, so runtime ranges would clear it although the SDK ships an affected runtime. The rule above refuses to clear it; an advisory that reports it Affected still makes it `affected`. SDKs before 2.1.300 used numbers below 100 and are not detected. A runtime-numbered item inside a CNA's SDK-numbered range reports Affected and stays so after patching; that fails towards Affected and is not changed here. A `.NET` item checks the .NET runtime; ASP.NET Core is checked under its own CPE, `microsoft:asp.net_core`, where NVD files 41 CVEs.
 
 ## 5. "No advisory found" is not "not affected"
 
@@ -324,6 +345,10 @@ Counts are of advisory records. `USN-8948-1` and `UBUNTU-CVE-2026-109618` count 
 DATA-3 would be needed first only if the endpoint had to start from a CVE ID, or had to map binary names. An agent asking "what fixes CVE-X on Ubuntu 26.04" calls this endpoint with the package and version, and reads the advisory whose `cve_ids` holds CVE-X. That needs the package name; DATA-3 would let it start from the CVE alone. Binary names are handled below.
 
 **The acceptance example must change.** The requirement says `php` `8.5.4-0ubuntu1.4`. `php` is not a source package on Ubuntu 26.04, so no feed has it. The example that can pass names `php8.5`. Sam needs to accept this (section 15).
+
+**Ubuntu streams** (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction). OSV publishes Ubuntu rows under the standard stream (`Ubuntu:24.04:LTS`) and under Ubuntu Pro (`Ubuntu:Pro:24.04:LTS`), and almost never under both: of 2,687,259 standard rows on releases with a Pro stream, 70 have a Pro row for the same record, package and release; and 27,145 `UBUNTU-CVE-*` records (347,410 rows) have rows under a plain Pro stream only, mostly universe packages whose fixes ship only through Ubuntu Pro and releases past standard support. Each stream alone therefore misses advisories that apply to a machine in the other. An item for a release's standard or plain Pro stream reads both streams of that release, combined by the rule of section 4.1 (Affected if any row contains the version). Every matched package range reports its stored `ecosystem`, and the advisory reports `fix_ecosystem`, the ecosystem of a matched row whose fixed bound is `fixed_version` (the item's own when several are), so a fix published only through Pro shows as `Ubuntu:Pro:<release>`. `fixed_version` must clear every range of the advisory across both streams, as section 7 requires. Of the 70 rows with both, some carry a Pro fix on a different version lineage (`docker.io-app`: standard `27.5.1-0ubuntu3~22.04.2`, Pro `26.1.3-0ubuntu1~22.04.1+esm1`), which is why neither stream suppresses the other.
+
+**Ubuntu Pro sub-streams.** `FIPS`, `FIPS-updates`, `FIPS-preview` and `Realtime` (any `Ubuntu:Pro:<name>:<release>`) list their own builds of some packages and not every advisory of their release: `Ubuntu:Pro:FIPS-updates:22.04:LTS` lists `openssl` but none of USN-8847-1, USN-8678-1 or USN-8625-1, and the Realtime streams miss about 19,000 and 15,000 of the plain streams' pairs for their packages. Their versions do not order against the plain streams' (certified builds), so a sub-stream item reads only its own stream, keeps `affected` when its rows say so, and otherwise answers `cannot_evaluate`, `distro_stream_incomplete`, with or without advisories.
 
 **Binary names.** A caller with `dpkg-query` output has names like `php8.5-cli`, and a Debian or Ubuntu lookup with such a name finds nothing. Reporting `no_advisory_found` would read as clean to a script. So a zero-row lookup in a distro ecosystem answers `cannot_evaluate` with reason `distro_package_not_found`, and the description says to use the source package name. This also marks a real source package with no advisories as unanswered. That cost is small, because per-host distro matching stays with Trivy and few distro items will reach this endpoint.
 
@@ -431,7 +456,7 @@ The limits a caller sees are counted in Go as rows arrive, because no single sta
 
 A partial read cannot say which items lost rows, and a truncated read is exactly how a wrong "not affected" happens, so nothing is answered from one. The 200,000 figure is about twice the rows I expect from a request of a few hundred items, including one package the size of the Linux kernel; none of these limits has been measured on real data (section 13).
 
-Rows are read into memory, the transaction ends, and only then are versions compared, so no database connection is held for the comparison work. Fix validation (section 7) stops at the first candidate that passes, and the range limit keeps its worst case at about a million comparisons per advisory. The comparison loops, including candidate validation, check the 30-second context every 1,000 comparisons, because a context cannot interrupt pure computation. A process runs at most 4 checks at once, by the semaphore pattern `argon2Sem` uses, and a request that finds none free gets 503 with `Retry-After`. Each item lists at most 100 advisories (Affected first, then KEV, then score), with `advisories_truncated` set. Status and counts are always computed over all of them. Each advisory lists at most 20 matched ranges. The handler runs under a 30-second context limit.
+Rows are read into memory, the transaction ends, and only then are versions compared, so no database connection is held for the comparison work. Fix validation (section 7) stops at the first candidate that passes, and the range limit keeps its worst case at about a million comparisons per advisory. The comparison loops, including candidate validation, check the 30-second context every 1,000 comparisons, because a context cannot interrupt pure computation. A process runs at most 1 check at a time (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction; 4 before), by the semaphore pattern `argon2Sem` uses, and a request that finds none free gets 503 with `Retry-After`. On the complete ingest one 500-item request over the largest CPE products allocated 3.97 GiB in all and left 605 to 687 MiB resident, and the process shares its container with the worker. Measuring peak memory per check, with the worker running, gates the endpoint's release; the slot count is set from that. Each item lists at most 100 advisories (Affected first, then KEV, then score), with `advisories_truncated` set. Status and counts are always computed over all of them. Each advisory lists at most 20 matched ranges. The handler runs under a 30-second context limit.
 
 The index adds write cost to the merge's delete-and-reinsert of child rows. That has not been measured. Section 13 covers it.
 
@@ -463,7 +488,7 @@ The index adds write cost to the merge's delete-and-reinsert of child rows. That
       "reason": null,
       "component": {"kind": "product", "part": "a", "vendor": "nodejs", "product": "node.js", "version": "24.22.0"},
       "data_complete": true,
-      "counts": {"affected": 1, "cannot_evaluate": 0, "not_affected": 3, "retracted": 0},
+      "counts": {"affected": 1, "cannot_evaluate": 0, "not_affected": 3, "retracted": 0, "cannot_evaluate_by_reason": {}},
       "advisories": [
         {
           "advisory_id": "CVE-2026-111497",
@@ -472,6 +497,7 @@ The index adds write cost to the merge's delete-and-reinsert of child rows. That
           "reason": null,
           "fixed_version": "24.22.1",
           "fix_major": "same",
+          "fix_ecosystem": null,
           "matched_ranges": [
             {"evidence": "nvd_cpe", "cpe": "cpe:2.3:a:nodejs:node.js:*:*:*:*:-:*:*:*", "introduced": "23.0.0", "fixed": "24.22.1"}
           ],
@@ -496,15 +522,15 @@ Scores above illustrate the shape only. `in_cisa_kev` and `epss_score` are nulla
 
 | Field | Values |
 |---|---|
-| `status` | `affected`, `not_affected`, `cannot_evaluate`, `no_advisory_found`, `invalid` |
+| `status` | `affected`, `not_affected`, `unresolved`, `cannot_evaluate`, `no_advisory_found`, `invalid` |
 | `verdict` | `affected`, `cannot_evaluate` |
-| `reason` | `unknown_version_scheme`, `invalid_version`, `invalid_range`, `commit_ranges_only`, `no_version_bounds`, `cna_cannot_clear`, `cna_indeterminate`, `cna_name_uncertain`, `cna_product_not_mapped`, `data_incomplete`, `distro_package_not_found`, `too_many_candidates`, `too_many_ranges` |
+| `reason` | `unknown_version_scheme`, `invalid_version`, `invalid_range`, `commit_ranges_only`, `no_version_bounds`, `cna_cannot_clear`, `cna_indeterminate`, `cna_name_uncertain`, `cna_product_not_mapped`, `data_incomplete`, `distro_package_not_found`, `too_many_candidates`, `too_many_ranges`, `evaluation_failed`, `sdk_version_not_comparable`, `distro_stream_incomplete` |
 | `evidence` | `package_range`, `nvd_cpe`, `cna` |
 | `fix_major` | `same`, `different`, `unknown`, or `null` when `fixed_version` is `null` |
 | `warnings` | `cna_product_not_mapped` |
 | `error.code` | `invalid_form` (not exactly one of the three forms), `invalid_ecosystem`, `ecosystem_release_required`, `invalid_purl`, `unsupported_purl_type`, `unsupported_purl_namespace`, `unsupported_repository`, `distro_required`, `distro_not_recognised`, `conflicting_distro`, `invalid_cpe`, `version_required`, `conflicting_version`, `value_too_long`, `invalid_characters` |
 
-`matched_ranges` is capped at 20; `matched_ranges_total` says how many there were. Verdicts and fixes use all of them.
+`matched_ranges` is capped at 20; `matched_ranges_total` says how many there were. Verdicts and fixes use all of them. A package range carries its stored `ecosystem`; the advisory's `fix_ecosystem` names the ecosystem of the package range that gives `fixed_version`, null when the fix comes from an NVD or CNA range or there is none. `counts.cannot_evaluate_by_reason` maps each reason to its number of advisories (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction).
 | `component.kind` | `package`, `product` |
 
 **OpenAPI tests.** `POST /orgs/{org_id}/check` needs:
@@ -534,19 +560,20 @@ Golden data already holds real records for most acceptance cases. `testutil.Seed
 | Multi-branch package | `Packagist` / `drupal/core`, on one branch | Fix from that branch | `SeedCorpus` (`DRUPAL-CORE-2018-002`) |
 | Retracted | Package or CPE of a rejected or withdrawn record | Excluded, `counts.retracted` | `SeedCorpus` where a rejected or withdrawn golden record keeps rows; otherwise a targeted patch |
 | No comparator | The `Root:*` ecosystem, package and a version from `ROOT-OS-DEBIAN-12-CVE-2025-40110` | `cannot_evaluate`, `unknown_version_scheme` | `SeedCorpus` |
-| CNA only | CPE `fastify:fastify`, `5.12.3` and `5.12.6` (`CVE-2026-107832`, not yet analysed by NVD) | Affected, fixed `5.12.6`; then `cannot_evaluate`, never Not affected | `SeedCorpus` |
-| **CNA must not clear** | CVE-2026-56847 with NVD rows removed, `26.4.0` | `cannot_evaluate` | Targeted patch, real CNA values |
-| **`changes[]` must not clear** | CVE-2024-7347, `1.27.0`, no NVD rows | `cannot_evaluate` | Targeted patch, real CNA values |
-| Wildcard blocks NVD's answer | Node CNA `12.0` to `12.*`, NVD rows all Not affected, `12.22.12` | `cannot_evaluate`, `cna_indeterminate` | Targeted patch |
-| Wildcard runs to the end of its line | CNA `[1.0.0, 2.*)`, `1.5.0` and `3.0.0` | `cannot_evaluate`; then no statement | Targeted patch |
+| CNA only | CPE `fastify:fastify`, `5.12.3` and `5.12.6` (`CVE-2026-107832`, not yet analysed by NVD) | Affected, fixed `5.12.6`; then `unresolved`, never Not affected | `SeedCorpus` |
+| **CNA must not clear** | CVE-2026-56847 with NVD rows removed, `26.4.0` | `unresolved` | Targeted patch, real CNA values |
+| **`changes[]` must not clear** | CVE-2024-7347, `1.27.0`, no NVD rows | `unresolved` | Targeted patch, real CNA values |
+| Wildcard blocks NVD's answer | Node CNA `12.0` to `12.*`, NVD rows all Not affected, `12.22.12` | `unresolved`, `cna_indeterminate` | Targeted patch |
+| Wildcard runs to the end of its line | CNA `[1.0.0, 2.*)`, `1.5.0` and `3.0.0` | `unresolved`; then no statement | Targeted patch |
 | A step to `affected` is kept | CVE-2021-44228 values, `2.14.0`; and an entry first `unaffected` with a step to `affected` | Affected | Targeted patch, real CNA values |
 | Entry with no version information | CNA `unspecified`, NVD all Not affected | `not_affected` | Targeted patch |
 | Mixed snapshot | A merge commits between two reads | Both reads see one state | Concurrent test on the snapshot helper |
 | Copies disagree | MITRE CNA `[1,2)`, NVD relay `[1,3)`, NVD CPE `[1,2)`, `2.5` | Affected | Targeted patch |
 | Name the table lacks | `Microsoft` / `.NET 9.0 runtime`, `9.0.20`, NVD not analysed (CVE-2026-70007) | Affected, by the prefix row | Targeted patch, real CNA values |
-| Nearby name | `Microsoft` / `Microsoft .NET Framework 4.8` on a CVE with no NVD rows, `.net` CPE | Advisory `cannot_evaluate`, `cna_name_uncertain` | Targeted patch |
+| Nearby name | `Microsoft` / `ASP.NET Core 9.0` on a CVE with no NVD rows, `.net` CPE | Advisory `cannot_evaluate`, `cna_name_uncertain`; item `unresolved` | Targeted patch |
+| Another product of .NET | `Microsoft` / `Microsoft .NET Framework 4.8` on a CVE with no NVD rows, `.net` CPE | No advisory | Targeted patch |
 | An unrelated CPE does not count as analysis | Same CVE with one Node CPE row | Same result | Targeted patch |
-| The vendor's other CPE does | Same CVE with a `microsoft:.net_framework` row | No advisory for `.net` | Targeted patch |
+| The vendor's other CPE does | Same CVE with a `microsoft:asp.net_core` row | No advisory for `.net` | Targeted patch |
 | `unknown` first segment | CNA `{1.0, lessThan 3.0, unknown}` with a step to `affected` at 2.0; NVD all Not affected; `1.5` and `2.5` | `cna_indeterminate`; then Affected | Targeted patch |
 | Unreadable lower bound | CNA `1.0rc1` to `2.0` under `custom`, NVD all Not affected, `1.5` | `cna_indeterminate` | Targeted patch |
 | Unsorted `changes[]` | Same steps in reverse order | Same result as sorted | Table test |
@@ -556,13 +583,13 @@ Golden data already holds real records for most acceptance cases. `testutil.Seed
 | PyPI separators | CNA `pkg:pypi/friendly--bard`, item `friendly-bard` | Matches | Table test |
 | Name longer than the index key | Product over 256 characters, same first 256 as another | Only the exact one matches | Targeted patch |
 | Range limit counts CNA entries | One CNA row with over 1,000 `versions` entries | `cannot_evaluate`, `too_many_ranges` | Table test |
-| CNA package identity | `npm` / `fastify`, `5.12.3` and `5.12.6` | Affected, fixed `5.12.6`; then `cannot_evaluate` | `SeedCorpus` |
+| CNA package identity | `npm` / `fastify`, `5.12.3` and `5.12.6` | Affected, fixed `5.12.6`; then `unresolved` | `SeedCorpus` |
 | Private namespace | `pkg:hex/acme/foo@2.3.0` | `invalid`, `unsupported_purl_namespace` | None |
 | Conflicting epochs | `pkg:deb/debian/foo@2:1.0?distro=debian-13&epoch=1` | `invalid`, `conflicting_version` | None |
 | Retracted, distro | Distro package whose only record is rejected and keeps rows | `no_advisory_found` | Targeted patch |
 | Fix on another major line | Node `20.0.0` against `(, 22.23.4)`; Node `23.1.0` against `[23.0.0, 24.22.1)` | The fix, `fix_major: different` | `SeedCorpus` |
 | Candidates a comparator cannot order | CNA Python `1.1rc1` beside numeric bounds | `fixed_version` null | Targeted patch |
-| `GIT` only | Hand-built patch | `cannot_evaluate`, `commit_ranges_only` | Targeted patch |
+| `GIT` only | Hand-built patch | `unresolved`, `commit_ranges_only` | Targeted patch |
 | `v` prefix | CPE `nodejs:node.js`, `v24.22.0` | Same as `24.22.0`; `component.version` is `24.22.0` | `SeedCorpus` |
 | Exploit data on a distro record | `php8.5` example, with KEV and EPSS on the `CVE-2026-*` rows | `UBUNTU-CVE-*` shows `in_cisa_kev: true`; USN shows `null` | Same three records plus a targeted KEV patch |
 | Product with no CNA name | CPE with NVD rows, all Not affected, no table entry, no direct CNA rows | `cannot_evaluate`, `cna_product_not_mapped` | Targeted patch |
@@ -627,6 +654,8 @@ Each row gives the strongest argument for the alternative and why the recommenda
 | Item cap and limits | 500 items. Limits per item, per request and per advisory, counted across sources (section 9). | 1,000 items. Or total limit only. Or a continuation token for partial reads. | A host SBOM has thousands of components, so a client must split. A total limit alone is simpler. | The requirement sizes a run at a few hundred components, and the CLI can split. Without the per-item limit, one package larger than the total limit could never be answered and would fail every request that names it. A continuation token needs a stable snapshot across requests. Each limit is one constant. |
 | Concurrent checks | 4 per process, by the `argon2Sem` pattern; beyond that 503. | Rely on the org rate limit. Or admit requests by weight, per org. | A self-hosted single-tenant install rarely runs two checks at once, so this is code for a future problem. Weighted admission would be fairer in a shared install. | A request counts once against the rate limit whatever it costs, and can hold 128 MiB of row data. The pattern exists and is about ten lines. Four is a starting value, and fairness per org can follow if SaaS needs it. |
 | Purl parser | `packageurl-go`. | Our own parser, about 60 lines. | This is a security product and we use a small part of the library. Its normalisation can change under us. | Percent-decoding and per-type rules are where hand-written parsers go wrong. It has no transitive dependencies. A table test for each mapped type shows any behaviour change on upgrade. |
+
+**Decided after the go/no-go run** (amended 2026-11-12 after the Phase 4 go/no-go run; agreed by two independent reviews at Sam's instruction). Not built, each with a counterexample from the reviews: clearing on an unreadable CNA entry when the version's leading number is above every number in the entry (`8.0 and later` with NVD rows `[8.0, 8.5)` would clear `9.1.0`); loosening `cna_cannot_clear` above the CNA's highest clean bound (wrong for 14.1% of NVD-analysed CVEs in the Phase 2 measurement) or on a release line the CNA does not name (`version 0, lessThanOrEqual 3.2.1` and a still-vulnerable `4.0.0`; kernel CNA entries name series such as `6.2` while NVD has affected rows up to `7.2.6`); splitting `cna_cannot_clear` by NVD coverage or by what the CNA stated (all 117 measured advisories were "the CNA stated ranges and the version is outside them", so the split separated nothing); a rule that a nearby row does not block when the same CVE has a name row for the product; and a runtime-against-SDK-range rule for .NET, which needs a measurement first. On the complete ingest, every one of the 117 `cna_cannot_clear` advisories at the six current releases had a name row whose entries stated versions excluding the release, and 84 had no NVD CPE row at all, so for these products `unresolved` is the steady answer until NVD analyses the CVE.
 
 **Checked and left as they are:** failing the whole request for one bad item (simpler for a client, but this route is read-only and one typo should not cost 499 answers); an org-scoped route for global data (a global route would escape RBAC, the tier and the org rate limit); listing Not-affected advisories as proof (the requirement says such an advisory "returns nothing", and counts report them).
 

@@ -251,12 +251,59 @@ func readEntry(m *workMeter, ver string, e CNAVersion) reading {
 			return reading{result: NoStatement}
 		}
 	}
+	if outsideSuffixBounds(m, ver, e) {
+		return reading{result: NoStatement}
+	}
 	for _, s := range segments {
 		if s.possiblyContains(ver, order) {
 			return reading{result: Indeterminate}
 		}
 	}
 	return reading{result: NoStatement}
+}
+
+// suffixBound matches a bound that is dotted numbers followed directly by a
+// suffix that starts with a letter, after at most one separator: 1.1.1t,
+// 1.0.2zf, 2.0b10, 5.0-rc1. It holds no whitespace and none of , ; / ( ) < > = &
+// |, so text that states several versions or a range never matches.
+var suffixBound = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*[._+~-]?[A-Za-z][A-Za-z0-9._+~-]*$`)
+
+// outsideSuffixBounds reports whether a custom-typed entry with no changes and
+// one finite upper bound lies wholly on one side of ver by the leading-number
+// rule NVD bounds use (design section 4.2), when at least one of its bounds is
+// a number followed by a suffix (suffixBound) and every bound is that or dotted
+// numbers. Such a bound cannot be read by the custom order, so the entry would
+// otherwise be Indeterminate for every version at or above its start. It only
+// ever moves an entry to No statement: a version the leading numbers place
+// inside, or cannot place, keeps the entry Indeterminate, and
+// version.CheckProduct refuses an inverted range or an epoch.
+func outsideSuffixBounds(m *workMeter, ver string, e CNAVersion) bool {
+	if (e.VersionType != "custom" && e.VersionType != "") || len(e.Changes) > 0 {
+		return false
+	}
+	r := version.Range{Introduced: lowerBound(e.Version)}
+	switch {
+	case e.LessThan != "" && e.LessThanOrEqual == "":
+		r.Fixed = e.LessThan
+	case e.LessThanOrEqual != "" && e.LessThan == "":
+		r.LastAffected = e.LessThanOrEqual
+	default:
+		return false
+	}
+	upper := r.Fixed + r.LastAffected
+	if !suffixBound.MatchString(r.Introduced) && !suffixBound.MatchString(upper) {
+		return false
+	}
+	for _, b := range []string{r.Introduced, upper} {
+		if _, err := version.NumericOrder(b, b); err != nil && b != belowEverything && !suffixBound.MatchString(b) {
+			return false
+		}
+	}
+	if !m.Tick() {
+		return false
+	}
+	status, err := version.CheckProduct(ver, r)
+	return err == nil && status == version.NotAffected
 }
 
 // expandFreeText reads a free-text range such as ">= 20.0.0, <= 20.10.27", given

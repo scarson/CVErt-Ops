@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/scarson/cvert-ops/internal/ecosystem"
@@ -176,8 +178,8 @@ func overItemLimit(use itemKeys, data Candidates, limit int) bool {
 		total += rows
 		overflow = overflow || over
 	}
-	if use.pkg >= 0 {
-		count(len(data.Packages[use.pkg].Rows), data.Packages[use.pkg].Overflow)
+	for _, k := range use.pkgs {
+		count(len(data.Packages[k].Rows), data.Packages[k].Overflow)
 	}
 	if use.cnaPackage >= 0 {
 		count(len(data.CNAPackageKeys[use.cnaPackage].Rows), data.CNAPackageKeys[use.cnaPackage].Overflow)
@@ -197,11 +199,12 @@ func overItemLimit(use itemKeys, data Candidates, limit int) bool {
 // rowsOf collects an item's rows from the keys it uses. CNA name rows are
 // de-duplicated, because one stored row can come back through an exact name and
 // a prefix. A nearby-name row that is one of those CNA name rows (same CVE,
-// vendor and product, as stored) is dropped; any other marks its advisory.
+// vendor and product, as stored) is dropped; any other marks its advisory. A
+// CNA name or nearby row for one of the item's other products is dropped.
 func rowsOf(use itemKeys, data Candidates) itemRows {
 	r := itemRows{advisories: map[string]*advisoryRows{}}
-	if use.pkg >= 0 {
-		kr := data.Packages[use.pkg]
+	for _, k := range use.pkgs {
+		kr := data.Packages[k]
 		for _, row := range kr.Rows {
 			a := r.advisory(row.CVEID, row.Status)
 			a.packages = append(a.packages, row)
@@ -231,6 +234,9 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	for _, k := range use.cnaNames {
 		kr := data.CNANames[k]
 		for _, row := range kr.Rows {
+			if isOtherProduct(use.otherProducts, row.Vendor, row.Product) {
+				continue
+			}
 			r.cnaNameFound = true
 			nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] = true
 			identity := cnaRowIdentity(row)
@@ -245,7 +251,7 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	for _, k := range use.near {
 		kr := data.CNANear[k]
 		for _, row := range kr.Rows {
-			if nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] {
+			if nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] || isOtherProduct(use.otherProducts, row.Vendor, row.Product) {
 				continue
 			}
 			r.advisory(row.CVEID, row.Status).nearby = true
@@ -265,6 +271,7 @@ func cnaRowIdentity(row CNARow) string {
 func evaluateItem(m *workMeter, item Item, use itemKeys, data Candidates, feeds map[string]FeedStatus,
 	enrichment map[string]CVEEnrichment, limits Limits) ItemResult {
 	res := ItemResult{Advisories: []Advisory{}, Warnings: []string{}}
+	res.Counts.CannotEvaluateByReason = map[Reason]int{}
 	if item.Error != nil {
 		res.Status, res.Error = StatusInvalid, item.Error
 		return res
@@ -286,17 +293,19 @@ func evaluateItem(m *workMeter, item Item, use itemKeys, data Candidates, feeds 
 		cveIDs = append(cveIDs, id)
 	}
 	slices.Sort(cveIDs)
+	var t itemTally
 	for _, id := range cveIDs {
 		a := rows.advisories[id]
 		if a.retracted {
 			res.Counts.Retracted++
 			continue
 		}
-		adv, verdict := evaluateAdvisory(m, item, id, a, enrichment, limits)
+		adv, out := evaluateAdvisory(m, item, id, a, enrichment, limits)
 		if m.Err() != nil {
 			return res
 		}
-		switch verdict {
+		t.add(out)
+		switch out.Verdict {
 		case Affected:
 			res.Counts.Affected++
 		case NotAffected:
@@ -304,6 +313,7 @@ func evaluateItem(m *workMeter, item Item, use itemKeys, data Candidates, feeds 
 			continue
 		default:
 			res.Counts.CannotEvaluate++
+			res.Counts.CannotEvaluateByReason[out.Reason]++
 		}
 		res.Advisories = append(res.Advisories, adv)
 	}
@@ -312,34 +322,74 @@ func evaluateItem(m *workMeter, item Item, use itemKeys, data Candidates, feeds 
 	if len(res.Advisories) > maxListedAdvisories {
 		res.Advisories, res.AdvisoriesTruncated = res.Advisories[:maxListedAdvisories], true
 	}
-	setStatus(&res, item, rows)
+	setStatus(&res, item, rows, t)
 	return res
 }
 
+// itemTally is what an item's advisories say beyond their counts, for its
+// status: how many were evaluated (retracted ones are not), and the failure
+// flags of any of them, whatever reason each shows.
+type itemTally struct {
+	evaluated                            int
+	tooManyRanges, evaluationFailed      bool
+	invalidVersion, unknownVersionScheme bool
+}
+
+func (t *itemTally) add(out Outcome) {
+	t.evaluated++
+	t.tooManyRanges = t.tooManyRanges || out.Reason == ReasonTooManyRanges
+	t.evaluationFailed = t.evaluationFailed || out.EvaluationFailed
+	t.invalidVersion = t.invalidVersion || out.VersionFailure == ReasonInvalidVersion
+	t.unknownVersionScheme = t.unknownVersionScheme || out.VersionFailure == ReasonUnknownVersionScheme
+}
+
 // setStatus sets an evaluated item's status by design section 4.7, first match
-// wins. The item's reason is set only by an item-level row; when the status
-// comes from an advisory, each listed advisory carries its own.
-func setStatus(res *ItemResult, item Item, rows itemRows) {
+// wins. Each rule can only move an item away from not_affected, never towards
+// it. The item's reason is set only by an item-level rule; when the status comes
+// from an advisory, each listed advisory carries its own.
+func setStatus(res *ItemResult, item Item, rows itemRows, t itemTally) {
 	unmapped := false
 	if item.Product != nil {
 		_, _, inTable := NamesFor(*item.Product)
 		unmapped = !inTable && !rows.cnaNameFound
 	}
-	c := res.Counts
+	c, found := res.Counts, t.evaluated > 0
+	cannot := func(reason Reason) { res.Status, res.Reason = StatusCannotEvaluate, reasonPtr(reason) }
 	switch {
 	case c.Affected > 0:
 		res.Status = StatusAffected
-	case c.CannotEvaluate > 0:
+	// The item's version: rules about the item, which apply once an advisory
+	// was found for it.
+	case found && itemVersionRefused(item):
+		cannot(ReasonInvalidVersion)
+	case found && t.unknownVersionScheme && !itemHasOrder(item):
+		cannot(ReasonUnknownVersionScheme)
+	case found && dotNetSDKVersion(item):
+		cannot(ReasonSDKVersionNotComparable)
+	case found && t.invalidVersion:
+		// A row could not read a version the item's own order reads; the
+		// advisory carries invalid_version.
 		res.Status = StatusCannotEvaluate
-	case c.NotAffected > 0 && !res.DataComplete:
-		res.Status, res.Reason = StatusCannotEvaluate, reasonPtr(ReasonDataIncomplete)
-	case c.NotAffected > 0 && unmapped:
-		res.Status, res.Reason = StatusCannotEvaluate, reasonPtr(ReasonCNAProductNotMapped)
+	// Limits and failures of the check itself.
+	case t.tooManyRanges:
+		cannot(ReasonTooManyRanges)
+	case t.evaluationFailed:
+		cannot(ReasonEvaluationFailed)
+	// Coverage: incomplete feeds and partial streams undermine every answer
+	// below, including no_advisory_found.
+	case !res.DataComplete:
+		cannot(ReasonDataIncomplete)
+	case item.Package != nil && ecosystem.IsSubStream(item.Package.Ecosystem):
+		cannot(ReasonDistroStreamIncomplete)
+	case found && unmapped:
+		cannot(ReasonCNAProductNotMapped)
+	case c.CannotEvaluate > 0:
+		res.Status = StatusUnresolved
 	case c.NotAffected > 0:
 		res.Status = StatusNotAffected
 	// Retracted rows count as rows: they prove the package name exists.
 	case item.Package != nil && ecosystem.IsDistro(item.Package.Ecosystem) && len(rows.advisories) == 0:
-		res.Status, res.Reason = StatusCannotEvaluate, reasonPtr(ReasonDistroPackageNotFound)
+		cannot(ReasonDistroPackageNotFound)
 	default:
 		res.Status = StatusNoAdvisoryFound
 		if unmapped {
@@ -348,11 +398,60 @@ func setStatus(res *ItemResult, item Item, rows itemRows) {
 	}
 }
 
+// itemVersionRefused reports whether the item's own order cannot read its
+// version: dotted numbers for a product, the ecosystem's order for a package
+// whose ecosystem has one.
+func itemVersionRefused(item Item) bool {
+	if item.Product != nil {
+		_, err := version.NumericOrder(item.Version, item.Version)
+		return err != nil
+	}
+	order := version.EcosystemOrder(item.Package.Ecosystem)
+	if order == nil {
+		return false
+	}
+	_, err := order(item.Version, item.Version)
+	return err != nil
+}
+
+// itemHasOrder reports whether the item's versions have an order here: always
+// for a product, and for a package when its ecosystem has one.
+func itemHasOrder(item Item) bool {
+	return item.Product != nil || version.Supported(item.Package.Ecosystem)
+}
+
+// sdkFeatureBand is the lowest third component of a .NET SDK version from 2.1.300
+// on: SDKs number their releases 10.0.100, 10.0.404 and so on, while runtimes
+// number theirs 10.0.0 to 10.0.99. Earlier SDKs (2.1.4) cannot be told apart.
+const sdkFeatureBand = 100
+
+// dotNetSDKVersion reports whether the item is a .NET product (the name table's
+// .NET row) whose version is SDK-numbered. NVD and Microsoft state runtime
+// versions for .NET, and an SDK number is above every runtime bound of its line,
+// so a runtime range never contains it and cannot clear it.
+func dotNetSDKVersion(item Item) bool {
+	if item.Product == nil {
+		return false
+	}
+	_, cpes, _ := NamesFor(*item.Product)
+	if !slices.Contains(cpes, "microsoft:.net") {
+		return false
+	}
+	parts := strings.Split(item.Version, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	n, err := strconv.Atoi(parts[2])
+	return err == nil && n >= sdkFeatureBand
+}
+
 // evaluateAdvisory decides one advisory's verdict for an item and, unless it is
-// NotAffected, builds its listed form. The range limit is applied before any
-// row is read, so an oversized entry costs no comparisons.
+// NotAffected, builds its listed form. It returns the outcome, whose failure
+// flags item status reads. The range limit is applied before any row is read,
+// so an oversized entry costs no comparisons, and its reason is kept over the
+// nearby-name rule's.
 func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enrichment map[string]CVEEnrichment,
-	limits Limits) (Advisory, Verdict) {
+	limits Limits) (Advisory, Outcome) {
 	var out Outcome
 	switch {
 	case len(a.packages)+len(a.cpes)+a.cpesBelow+CNARangeCount(a.cna) > limits.AdvisoryRanges:
@@ -367,11 +466,13 @@ func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enric
 		primary := EvaluateCPERows(m, item.Version, a.cpes, a.cpesBelow)
 		out = Combine(primary, len(a.cpes)+a.cpesBelow > 0, ReadCNAEntries(m, item.Version, a.cna))
 	}
-	if a.nearby && out.Verdict != Affected {
-		out = Outcome{Verdict: CannotEvaluate, Reason: ReasonCNANameUncertain}
+	if a.nearby && out.Verdict != Affected && out.Reason != ReasonTooManyRanges {
+		out.Verdict, out.Reason = CannotEvaluate, ReasonCNANameUncertain
+		out.Matched, out.Candidates = nil, nil
 	}
+	out = withFailureReason(slog.Default(), id, out)
 	if out.Verdict == NotAffected {
-		return Advisory{}, NotAffected
+		return Advisory{}, out
 	}
 
 	adv := Advisory{AdvisoryID: id, CVEIDs: CVEIDsFor(id), Verdict: VerdictCannotEvaluate, MatchedRanges: []MatchedRange{}}
@@ -379,6 +480,7 @@ func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enric
 		adv.Verdict = VerdictAffected
 		if fixed, major := PickFix(m, item.Version, out.Candidates, fixOrder(item), out.Ranges, cnaReader(m, a.cna)); fixed != "" {
 			adv.FixedVersion, adv.FixMajor = &fixed, major
+			adv.FixEcosystem = fixEcosystem(item, out.Matched, fixed)
 		}
 	} else if out.Reason != "" {
 		adv.Reason = reasonPtr(out.Reason)
@@ -390,7 +492,42 @@ func evaluateAdvisory(m *workMeter, item Item, id string, a *advisoryRows, enric
 	own := enrichment[id]
 	adv.Severity, adv.CVSSv3Score = own.Severity, own.CVSSv3Score
 	adv.InCISAKEV, adv.EPSSScore = exploitData(adv.CVEIDs, enrichment)
-	return adv, out.Verdict
+	return adv, out
+}
+
+// fixEcosystem returns the ecosystem of a matched package range whose fixed bound
+// is fixed, preferring the item's own ecosystem when several streams name it, or
+// nil when no package range names it (a fix from a CPE or CNA range). It reads
+// every matched range, not only the listed ones.
+func fixEcosystem(item Item, matched []Matched, fixed string) *string {
+	var found *string
+	for _, mr := range matched {
+		if mr.Evidence != evidencePackageRange || mr.Fixed != fixed {
+			continue
+		}
+		if mr.Ecosystem == item.Package.Ecosystem {
+			eco := mr.Ecosystem
+			return &eco
+		}
+		if found == nil {
+			eco := mr.Ecosystem
+			found = &eco
+		}
+	}
+	return found
+}
+
+// withFailureReason gives an advisory that cannot be evaluated and has no reason
+// the reason evaluation_failed, and flags it as a failure of the check. Every
+// comparison error wraps one the version package classifies, so this means a
+// new error reasonFor does not map; it is logged to log so the mapping can be
+// added.
+func withFailureReason(log *slog.Logger, id string, out Outcome) Outcome {
+	if out.Verdict == CannotEvaluate && out.Reason == "" {
+		log.Error("check: an advisory could not be evaluated for an unclassified reason", "advisory_id", id)
+		out.Reason, out.EvaluationFailed = ReasonEvaluationFailed, true
+	}
+	return out
 }
 
 // compareCPERows orders an advisory's rows by CPE, then by their four bounds, so

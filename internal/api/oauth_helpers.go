@@ -22,7 +22,7 @@ func generateOAuthState() (string, error) {
 // setStateCookie sets the oauth_state HttpOnly cookie with a 5-minute expiry.
 // SameSite=Lax is REQUIRED (not Strict) — the callback is a cross-site redirect.
 func (srv *Server) setStateCookie(w http.ResponseWriter, state string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "oauth_state",
 		Value:    state,
 		HttpOnly: true,
@@ -41,7 +41,7 @@ func (srv *Server) validateStateCookie(r *http.Request, w http.ResponseWriter, s
 		return errors.New("missing oauth_state cookie")
 	}
 	// Delete the cookie immediately (one-time use).
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "oauth_state",
 		Value:    "",
 		HttpOnly: true,
@@ -59,7 +59,7 @@ func (srv *Server) validateStateCookie(r *http.Request, w http.ResponseWriter, s
 // setNonceCookie sets the oidc_nonce HttpOnly cookie for Google OIDC nonce verification.
 // SameSite=Lax required — same cross-site redirect reasoning as state.
 func (srv *Server) setNonceCookie(w http.ResponseWriter, nonce string) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "oidc_nonce",
 		Value:    nonce,
 		HttpOnly: true,
@@ -78,7 +78,7 @@ func (srv *Server) validateNonceCookie(r *http.Request, w http.ResponseWriter) (
 		return "", errors.New("missing oidc_nonce cookie")
 	}
 	// Delete the cookie immediately (one-time use).
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "oidc_nonce",
 		Value:    "",
 		HttpOnly: true,

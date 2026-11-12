@@ -37,7 +37,7 @@ func newOpenAPITestHandler(t *testing.T) http.Handler {
 // fetchSpec requests a spec document from handler and returns it decoded.
 func fetchSpec(t *testing.T, handler http.Handler, path string) map[string]any {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -131,7 +131,7 @@ func TestOpenAPISpec_MatchesRoutes(t *testing.T) {
 // TestOpenAPIDocsPage_LoadsSpecFromBasePath verifies the documentation page asks
 // for the spec where it is served.
 func TestOpenAPIDocsPage_LoadsSpecFromBasePath(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/docs", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/docs", nil)
 	rec := httptest.NewRecorder()
 	newOpenAPITestHandler(t).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

@@ -146,7 +146,7 @@ func TestAuditLog_NilWriterWithUserContext(t *testing.T) {
 	// auditLog should not panic.
 	uid := uuid.New()
 	ctx := context.WithValue(context.Background(), ctxUserID, uid)
-	req := httptest.NewRequest(http.MethodGet, "/test", nil).WithContext(ctx)
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/test", nil)
 
 	// auditLog with nil writer returns immediately — this exercises the nil check.
 	srv.auditLog(req, audit.Entry{Action: "test.action"})

@@ -3,16 +3,20 @@
 package merge_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/feed"
+	logpkg "github.com/scarson/cvert-ops/internal/log"
 	"github.com/scarson/cvert-ops/internal/merge"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -497,6 +501,201 @@ func TestIngest_ChildTableRewrite(t *testing.T) {
 	}
 	if len(refs2) != 1 {
 		t.Errorf("expected 1 reference after re-ingest, got %d", len(refs2))
+	}
+}
+
+// longReferenceURL returns a URL whose canonical form is far over the btree
+// row limit of 2,704 bytes even after PostgreSQL compresses it. Red Hat sends
+// such a reference for CVE-2006-4339. The path is pseudo-random Cyrillic а to я,
+// which the canonical form percent-encodes to six bytes per character.
+func longReferenceURL(t *testing.T) string {
+	t.Helper()
+	return "https://example.com/" + randomText(t, 4096, 'а', 32)
+}
+
+// A reference URL has no length bound, so one over the btree row limit must
+// not fail the merge of the CVE, and with it the whole feed job.
+func TestIngest_LongReferenceURLIsStored(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2024-99954"
+	long := longReferenceURL(t)
+	patch := feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+		References: []feed.ReferenceEntry{
+			{URL: long},
+			{URL: "https://example.com/short"},
+		},
+	}
+	if err := merge.Ingest(ctx, s.Store, patch, "redhat"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	refs, err := generated.New(s.DB()).GetCVEReferences(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEReferences: %v", err)
+	}
+	var found bool
+	for _, r := range refs {
+		if r.Url == long {
+			found = true
+		}
+	}
+	if len(refs) != 2 || !found {
+		t.Errorf("stored %d references (long URL stored: %v), want 2 including the long URL", len(refs), found)
+	}
+}
+
+// The reference uniqueness index must still reject a second row with the same
+// canonical URL when that URL is longer than the btree row limit.
+func TestInsertCVEReference_LongDuplicateIsIgnored(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	q := generated.New(s.DB())
+
+	cveID := "CVE-2024-99955"
+	long := longReferenceURL(t)
+	other := longReferenceURL(t)
+	for _, u := range []string{long, long, other} {
+		if err := q.InsertCVEReference(ctx, generated.InsertCVEReferenceParams{
+			CveID:        cveID,
+			Url:          u,
+			UrlCanonical: u,
+			Tags:         []string{},
+		}); err != nil {
+			t.Fatalf("InsertCVEReference: %v", err)
+		}
+	}
+
+	refs, err := q.GetCVEReferences(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEReferences: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Errorf("stored %d references, want 2: the duplicate must be ignored", len(refs))
+	}
+}
+
+// longCPE returns a CPE whose key cannot be compressed under the btree row limit.
+func longCPE(t *testing.T) string {
+	t.Helper()
+	return "cpe:2.3:a:vendor:product:" + randomText(t, 4096, 'а', 32)
+}
+
+// A CPE has no length bound, and a watchlist matches CPEs by prefix, so a long
+// one is stored rather than left out, and must not fail the merge of the CVE.
+func TestIngest_LongCPEIsStored(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2024-99956"
+	long := longCPE(t)
+	patch := feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+		AffectedCPEs: []feed.AffectedCPE{
+			{CPE: long, CPENormalized: long},
+			{CPE: "cpe:2.3:a:vendor:short:1.0:*:*:*:*:*:*:*", CPENormalized: "cpe:2.3:a:vendor:short:1.0:*:*:*:*:*:*:*"},
+		},
+		CPEMatches: []feed.CPEMatch{
+			{CPE: long, CPENormalized: long, VersionEndExcluding: "2.0", Vulnerable: true},
+		},
+	}
+	if err := merge.Ingest(ctx, s.Store, patch, "nvd"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	q := generated.New(s.DB())
+	cpes, err := q.GetCVEAffectedCPEs(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEAffectedCPEs: %v", err)
+	}
+	var found bool
+	for _, c := range cpes {
+		if c.CpeNormalized == long {
+			found = true
+		}
+	}
+	if len(cpes) != 2 || !found {
+		t.Errorf("stored %d CPEs (long CPE stored: %v), want 2 including the long CPE", len(cpes), found)
+	}
+	matches, err := q.GetCVEVulnerableCPEMatches(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEVulnerableCPEMatches: %v", err)
+	}
+	if len(matches) != 1 || matches[0].CpeNormalized != long {
+		t.Errorf("stored %d CPE matches, want the long one", len(matches))
+	}
+}
+
+// The CPE uniqueness index must still reject a second row with the same
+// normalized CPE when that CPE is longer than the btree row limit.
+func TestInsertAffectedCPE_LongDuplicateIsIgnored(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	q := generated.New(s.DB())
+
+	cveID := "CVE-2024-99957"
+	long := longCPE(t)
+	other := longCPE(t)
+	for _, c := range []string{long, long, other} {
+		if err := q.InsertAffectedCPE(ctx, generated.InsertAffectedCPEParams{
+			CveID:         cveID,
+			Cpe:           c,
+			CpeNormalized: c,
+		}); err != nil {
+			t.Fatalf("InsertAffectedCPE: %v", err)
+		}
+	}
+
+	cpes, err := q.GetCVEAffectedCPEs(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEAffectedCPEs: %v", err)
+	}
+	if len(cpes) != 2 {
+		t.Errorf("stored %d CPEs, want 2: the duplicate must be ignored", len(cpes))
+	}
+}
+
+// A package name over the index limit cannot be a real package, and a watchlist
+// item, matched by its exact folded name of at most 255 characters, cannot match
+// it. The merge leaves such an entry out, logs it, and stores the rest.
+func TestIngest_LongPackageNameIsLeftOut(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	var logs bytes.Buffer
+	ctx := logpkg.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+
+	cveID := "CVE-2024-99958"
+	patch := feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+		AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "npm", PackageName: randomText(t, 4096, 'а', 32), Fixed: "1.0.0"},
+			{Ecosystem: "npm", PackageName: "lodash", Fixed: "4.17.21"},
+		},
+	}
+	if err := merge.Ingest(ctx, s.Store, patch, "ghsa"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	pkgs, err := generated.New(s.DB()).GetCVEAffectedPackages(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEAffectedPackages: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].PackageName != "lodash" {
+		t.Errorf("stored %d packages, want only lodash", len(pkgs))
+	}
+	if got := logs.String(); !strings.Contains(got, "level=WARN") ||
+		!strings.Contains(got, "package name too long to index") ||
+		!strings.Contains(got, "cve_id="+cveID) {
+		t.Errorf("log = %q, want a warning naming the CVE", got)
 	}
 }
 

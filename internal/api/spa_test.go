@@ -22,7 +22,7 @@ func TestSPAHandler_ServesStaticFile(t *testing.T) {
 	}
 	handler := newSPAHandler(staticFS)
 
-	req := httptest.NewRequest(http.MethodGet, "/assets/index-abc.js", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/assets/index-abc.js", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -39,7 +39,7 @@ func TestSPAHandler_FallsBackToIndexHTML(t *testing.T) {
 	}
 	handler := newSPAHandler(staticFS)
 
-	req := httptest.NewRequest(http.MethodGet, "/cves/CVE-2024-1234", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/cves/CVE-2024-1234", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -57,7 +57,7 @@ func TestSPAHandler_CacheHeaders_HashedAsset(t *testing.T) {
 	}
 	handler := newSPAHandler(staticFS)
 
-	req := httptest.NewRequest(http.MethodGet, "/assets/index-abc.js", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/assets/index-abc.js", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -72,7 +72,7 @@ func TestSPAHandler_CacheHeaders_IndexHTML(t *testing.T) {
 	}
 	handler := newSPAHandler(staticFS)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

@@ -47,7 +47,7 @@ func TestBulkRetryDeliveries_IgnoresBodyLimit(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {
@@ -98,7 +98,7 @@ func TestBulkRetryDeliveries_DefaultLimit(t *testing.T) {
 		ts.URL+"/api/v1/admin/deliveries/retry-failed",
 		nil)
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive: test server URL
 	if err != nil {

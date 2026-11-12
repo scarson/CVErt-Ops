@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.26, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
+CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.27, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
 
 **Development status:** the application is under development and has no known users other than dev testers. Existing users, integrations and data are therefore not a backward compatibility consideration.
 
@@ -146,6 +146,8 @@ The flow is: `worktree branch → dev → main`. Use:
 git worktree add "$path" -b "$BRANCH_NAME" dev
 ```
 Worktree directory: `.claude/worktrees/` (already gitignored).
+
+A new worktree has no `web/dist`, which `web/embed.go` embeds and git ignores, so `go build ./...` and `go test` of `cmd/cvert-ops`, `internal/api` and `web` stop with `pattern all:dist: no matching files found` ("[setup failed]"). Before building or testing, copy the SPA build from the main checkout: `cp -r ../../../web/dist web/dist` from the worktree root. If the main checkout has none, run `cd web && npm run build` first.
 
 ### Worktree PR safety
 

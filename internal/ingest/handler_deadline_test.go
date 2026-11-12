@@ -120,13 +120,13 @@ func TestFeedHandler_DeadlineBeforeFirstPageCompletes_RecordsFailure(t *testing.
 			name: "during merge",
 			setup: func(expire func()) (*mockAdapter, *mockMerge) {
 				return &mockAdapter{
-						fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
-							return deadlineTestPage(`{"page":2}`, false, "CVE-2025-0001"), nil
-						},
-					}, &mockMerge{errFunc: func(feed.CanonicalPatch) error {
-						expire()
-						return context.DeadlineExceeded
-					}}
+					fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+						return deadlineTestPage(`{"page":2}`, false, "CVE-2025-0001"), nil
+					},
+				}, &mockMerge{errFunc: func(feed.CanonicalPatch) error {
+					expire()
+					return context.DeadlineExceeded
+				}}
 			},
 			wantText: "merge CVE-2025-0001",
 		},
@@ -322,20 +322,20 @@ func TestFeedHandler_DeadlineAfterCompletedPage_RecordsPartial(t *testing.T) {
 			setup: func(expire func()) (*mockAdapter, *mockMerge) {
 				calls := 0
 				return &mockAdapter{
-						fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
-							calls++
-							if calls == 1 {
-								return page1, nil
-							}
-							return page2, nil
-						},
-					}, &mockMerge{errFunc: func(patch feed.CanonicalPatch) error {
-						if patch.CVEID == "CVE-2025-0002" {
-							expire()
-							return context.DeadlineExceeded
+					fetchFunc: func(_ context.Context, _ json.RawMessage) (*feed.FetchResult, error) {
+						calls++
+						if calls == 1 {
+							return page1, nil
 						}
-						return nil
-					}}
+						return page2, nil
+					},
+				}, &mockMerge{errFunc: func(patch feed.CanonicalPatch) error {
+					if patch.CVEID == "CVE-2025-0002" {
+						expire()
+						return context.DeadlineExceeded
+					}
+					return nil
+				}}
 			},
 		},
 	}

@@ -142,7 +142,7 @@ func (f *securityFixture) call(t *testing.T, op, withKey, withCookie string) int
 		req.Header.Set("Authorization", "Bearer "+withKey)
 	}
 	if withCookie != "" {
-		req.AddCookie(&http.Cookie{Name: "access_token", Value: withCookie})
+		req.AddCookie(requestCookie("access_token", withCookie))
 		req.Header.Set("X-Requested-By", "CVErt-Ops")
 	}
 	resp, err := f.server.Client().Do(req) //nolint:gosec // G704: httptest server URL

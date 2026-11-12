@@ -48,7 +48,7 @@ func pgErrCode(err error) string {
 // authCookies returns Set-Cookie header values for the access and refresh tokens.
 // refresh_token is scoped to /api/v1/auth to limit its transmission surface.
 func authCookies(accessToken, refreshToken string, secure bool) []string {
-	access := &http.Cookie{
+	access := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "access_token",
 		Value:    accessToken,
 		Path:     "/",
@@ -57,7 +57,7 @@ func authCookies(accessToken, refreshToken string, secure bool) []string {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(accessTokenTTL.Seconds()),
 	}
-	refresh := &http.Cookie{
+	refresh := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "refresh_token",
 		Value:    refreshToken,
 		Path:     "/api/v1/auth",
@@ -71,7 +71,7 @@ func authCookies(accessToken, refreshToken string, secure bool) []string {
 
 // clearAuthCookies returns Set-Cookie headers that immediately expire both auth cookies.
 func clearAuthCookies(secure bool) []string {
-	access := &http.Cookie{
+	access := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "access_token",
 		Value:    "",
 		Path:     "/",
@@ -80,7 +80,7 @@ func clearAuthCookies(secure bool) []string {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 	}
-	refresh := &http.Cookie{
+	refresh := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "refresh_token",
 		Value:    "",
 		Path:     "/api/v1/auth",
@@ -235,7 +235,7 @@ func sha256Hex(s string) string {
 
 // pendingTokenCookies creates the mfa_pending_token Set-Cookie header.
 func pendingTokenCookies(token string, secure bool, ttl time.Duration) []string {
-	c := &http.Cookie{
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_pending_token",
 		Value:    token,
 		Path:     "/api/v1/auth",
@@ -249,7 +249,7 @@ func pendingTokenCookies(token string, secure bool, ttl time.Duration) []string 
 
 // clearPendingTokenCookie expires the mfa_pending_token cookie.
 func clearPendingTokenCookie(secure bool) string {
-	c := &http.Cookie{
+	c := &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE, which validateConfig requires for HTTPS deployments
 		Name:     "mfa_pending_token",
 		Value:    "",
 		Path:     "/api/v1/auth",

@@ -25,7 +25,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | § | Section | You're working on... | Entries | Checklist |
 |---|---------|---------------------|---------|-----------|
 | 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-20 | §1.C |
-| 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-25 | §2.C |
+| 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-26 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
 | 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
 | 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-25 | §5.C |
@@ -73,7 +73,7 @@ for dec.More() {
 if _, err := dec.Token(); err != nil { return err } // consume ']'
 ```
 
-> **WARNING:** Do NOT use `continue` after a `json.Decoder.Decode()` error. After `Decode` returns an error, the decoder's internal state is undefined. Subsequent calls to `More()` and `Decode()` may skip or garble valid records. Either abort the feed or manually consume tokens to resync.
+> **WARNING:** Do NOT use `continue` after a `json.Decoder.Decode()` error, with one exception: a `*json.UnmarshalTypeError`, which `Decode` returns only after reading the whole value, so the next `Decode` starts at the next record. Every other error is sticky. Each later `Decode` returns it again, while `More()` still sees the unread value and returns true, so a skip-and-continue loop never ends. A body cut short is the common case: it gives `io.ErrUnexpectedEOF`, not a `*json.SyntaxError`. In the NVD, GHSA and KEV adapters, one dropped NVD connection spun this loop for 11 hours (2026-11-10). The loop also never checked the context, so the job's time limit did not stop it. It held the only `feed_ingest` slot and wrote 50 GB of warnings. For a read error, fail the page so that it is fetched again from the same cursor.
 
 **The Lesson:** Always verify a feed's actual wire format before writing the parser. Vulnerability feed APIs are rarely top-level JSON arrays. The "obvious" streaming pattern is often wrong. Verify with `curl | jq 'keys'` before writing a single line of adapter code.
 
@@ -349,6 +349,8 @@ GitHub's GraphQL API enforces rate limits per token (5,000 points/hour). The GHS
 
 **The Lesson:** Internal pagination defeats the handler's crash recovery mechanism. When an adapter fetches all pages internally, the handler cannot persist intermediate progress. Always return one logical page per adapter call and let the handler own the persistence lifecycle.
 
+**The same flaw with a file list:** an index such as MSRC's `changes.csv` names one document per request, so downloading every listed document in one `Fetch()` is internal pagination too. MSRC's first sync lists every file it publishes (10,146 on 2026-11-11); at one request per second that is nearly three hours, and a job is capped at 10 minutes. The first sync could never finish: each job hit the time limit or an HTTP 429, saved nothing, and the next job asked for the same files again, which kept the upstream rate limit in force. Page the list in a fixed order, and when entries can share a sort key (1,179 MSRC files share one timestamp), put a tie-break, such as the path, in the cursor.
+
 ---
 
 ### FEED-20: Response Body Must Be Drained After json.Decoder
@@ -405,7 +407,7 @@ When building or reviewing a feed adapter, verify each of the following:
 
 - [ ] **Wire format verified** — checked the actual API response structure with `curl | jq 'keys'` before writing the parser (FEED-1)
 - [ ] **No `Decode(&slice)`** — streaming uses `Token()`+`More()` loop, never decodes into a slice (FEED-1)
-- [ ] **Decoder errors abort** — no `continue` after `json.Decoder.Decode()` error; decoder state is undefined after error (FEED-1)
+- [ ] **Decoder errors abort** — `continue` after a `json.Decoder.Decode()` error only for `*json.UnmarshalTypeError`; any other error is sticky and a skip loop spins forever, so fail the page (FEED-1)
 - [ ] **ZIP via temp file** — HTTP response bodies streamed to disk before `zip.NewReader`, never `io.ReadAll` (FEED-2)
 - [ ] **Timestamp fallback parser** — all feed timestamps parsed via multi-layout fallback, never raw `time.RFC3339` (FEED-3)
 - [ ] **No `defer` in loops** — archive iteration uses explicit `Close()` at every exit path (FEED-5)
@@ -862,6 +864,27 @@ Alternatively, if the helper takes a plain `int32`, document that `0` is a valid
 
 ---
 
+### DB-26: Btree Index Over Unbounded Feed Text Fails the Whole Merge
+
+**The Flaw:** `cve_references` had btree indexes on `(cve_id, url_canonical)` and on `url_canonical`. A btree row holds at most 2,704 bytes (after PostgreSQL compresses the key), and a reference URL has no length bound. Red Hat sends a reference over 3,000 bytes for CVE-2006-4339.
+
+**Status: FIXED — migration 000060 enforces reference uniqueness on `text_key_digest(url_canonical)`, a SHA-256 digest, and drops the index on `url_canonical` alone, which no query used. Migration 000061 does the same for `cve_affected_cpes`, keys `cve_cpe_matches_check_idx` on `left(cpe_normalized, 512)`, and drops two indexes no query could use. The merge leaves out package names over 1,024 bytes (`maxIndexedPackageNameBytes`).**
+
+**Why It Matters:** The insert fails with `index row size N exceeds btree version 4 maximum 2704` (SQLSTATE 54000). That rolls back the merge of the CVE, and the feed job stops at the same record on every run. Red Hat failed this way on every run of a full ingest and never recorded a success. Nothing in the data looks wrong until a feed sends one long value.
+
+**The Fix:** Index a bounded form of any feed-supplied text that has no length limit:
+- for uniqueness, an IMMUTABLE digest of the value (`text_key_digest` in migration 000060), and name the same expression in the `ON CONFLICT` target
+- for prefix or equality lookups that tolerate truncation, `left(value, N)` with the query's bounds cut the same way and a recheck of the whole value (`cve_cna_affected_check_idx` in migration 000059, `cve_cpe_matches_check_idx` in migration 000061)
+- or refuse the value where it is parsed or merged, when no value that long can be real (`maxPackageKeyBytes` in `internal/ecosystem/purl.go`, `maxIndexedPackageNameBytes` in `internal/merge/pipeline.go`). Allow for folding: `lower()` can make text longer in bytes.
+
+An index that no query can use still fails the insert, so drop it rather than bound it.
+
+`sha256(text::bytea)` parses backslashes as bytea escapes, and `convert_to` is STABLE, so the digest needs an IMMUTABLE SQL wrapper. `md5(text)` is IMMUTABLE but can fail on a server whose OpenSSL runs in FIPS mode.
+
+**The Lesson:** Before adding a btree index over feed-supplied text, find what bounds the value's length. A test for this must use pseudo-random multi-byte text: PostgreSQL compresses index keys, so a repeated character fits under the limit and proves nothing (testing-pitfalls.md §9, long values in btree-indexed columns).
+
+---
+
 ### Review Checklist
 
 Use this checklist when reviewing store methods, migrations, or SQL queries.
@@ -878,6 +901,7 @@ Use this checklist when reviewing store methods, migrations, or SQL queries.
 - [ ] **sqlc type casts:** Do sqlc queries include explicit type casts (`$1::text`, `$1::uuid`) for parameters in positions where type inference is ambiguous?
 - [ ] **EPSS staging lifecycle:** Merge pipeline reads and deletes from epss_staging inside the merge transaction (DB-7)?
 - [ ] **EPSS advisory lock:** EPSS two-statement pattern acquires the same per-CVE advisory lock as the merge pipeline (DB-8)?
+- [ ] **Bounded btree keys:** Does every btree index over feed-supplied text index a bounded form (digest, `left(...)`, or a length cap at parse time), so one long value cannot fail a merge (DB-26)?
 
 ---
 
@@ -2838,7 +2862,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | Section | Entries | Key Themes |
 |---------|---------|------------|
 | §1 Feed Adapters | FEED-1 – FEED-20 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain |
-| §2 Database & Query | DB-1 – DB-25 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value |
+| §2 Database & Query | DB-1 – DB-26 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
 | §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
 | §5 Notification & Alert | NOTIFY-1 – NOTIFY-25 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run, alert debounce index over open batches only |

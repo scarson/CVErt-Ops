@@ -31,7 +31,7 @@ Two viable API surfaces exist. **REST API is recommended** over GraphQL for this
 - **Safe adapter rate:** 1 req/sec (well within limits)
 - **Rate limit exceeded:** HTTP 403 or 429
 - **Response headers:** `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-reset` (Unix timestamp), `retry-after` (seconds, on secondary limit)
-- **Env var:** `GITHUB_TOKEN`
+- **Env var:** `GITHUB_GHSA_TOKEN`
 
 ## REST API Response Structure
 

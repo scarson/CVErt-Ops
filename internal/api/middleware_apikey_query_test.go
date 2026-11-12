@@ -75,7 +75,7 @@ func TestRejectAPIKeyQueryParams_BlocksSensitiveParams(t *testing.T) {
 	for _, param := range sensitiveNames {
 		t.Run(param, func(t *testing.T) {
 			t.Parallel()
-			req := httptest.NewRequest(http.MethodGet, "/?"+param+"=some-secret-value", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?"+param+"=some-secret-value", nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -96,7 +96,7 @@ func TestRejectAPIKeyQueryParams_CaseInsensitive(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/?API_KEY=some-value", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?API_KEY=some-value", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -112,7 +112,7 @@ func TestRejectAPIKeyQueryParams_AllowsNormalParams(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/?page=1&sort=name&filter=critical", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?page=1&sort=name&filter=critical", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -128,7 +128,7 @@ func TestRejectAPIKeyQueryParams_AllowsNoParams(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -155,7 +155,7 @@ func TestRejectAPIKeyQueryParams_AllowsEmptyValues(t *testing.T) {
 	for _, url := range emptyVariants {
 		t.Run(url, func(t *testing.T) {
 			t.Parallel()
-			req := httptest.NewRequest(http.MethodGet, url, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -173,7 +173,7 @@ func TestRejectAPIKeyQueryParams_ResponseFormat(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/?api_key=test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?api_key=test", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

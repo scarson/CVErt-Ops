@@ -12,7 +12,7 @@ RUN npm run build-only
 
 
 # ─── Stage 2: Build ───────────────────────────────────────────────────────────
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # git is required by some go module tooling; ca-certificates for go get over TLS
 RUN apk add --no-cache git ca-certificates

@@ -108,7 +108,7 @@ VALUES ($1, $2, $3);
 -- name: InsertCVEReference :exec
 INSERT INTO cve_references (cve_id, url, url_canonical, tags)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (cve_id, url_canonical) DO NOTHING;
+ON CONFLICT (cve_id, text_key_digest(url_canonical)) DO NOTHING;
 
 -- name: InsertAffectedPackage :exec
 INSERT INTO cve_affected_packages (
@@ -120,7 +120,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- name: InsertAffectedCPE :exec
 INSERT INTO cve_affected_cpes (cve_id, cpe, cpe_normalized)
 VALUES ($1, $2, $3)
-ON CONFLICT (cve_id, cpe_normalized) DO NOTHING;
+ON CONFLICT (cve_id, text_key_digest(cpe_normalized)) DO NOTHING;
 
 -- name: InsertCPEMatch :exec
 INSERT INTO cve_cpe_matches (

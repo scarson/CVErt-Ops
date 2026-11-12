@@ -4,7 +4,7 @@
 > **Author:** Sam (Enterprise Solutions Architect)
 > **Date:** 2026-02-19
 > **Status:** All research decisions resolved. Ready for implementation. See `research.md` for detailed findings.
-> **Language:** Go 1.26
+> **Language:** Go 1.27
 
 ---
 
@@ -34,7 +34,7 @@ The product ships as:
 
 | Layer | Choice | Notes |
 |---|---|---|
-| **Language** | Go 1.26 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
+| **Language** | Go 1.27 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
 | **HTTP framework** | `huma` + `chi` | Code-first OpenAPI 3.1; automatic struct-tag validation; RFC 9457 errors. See section 18.2 |
 | **Database** | Postgres 15+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
 | **Migrations** | `golang-migrate` | SQL migration files; one per change; embedded via `embed.FS` |
@@ -2177,16 +2177,16 @@ PK `(cve_id, source_name, source_id)`. Columns: `normalized_json jsonb`, `source
 PK `id uuid`. Columns: `cve_id`, `source_name`, `ingested_at`, `payload jsonb`. Index: `(cve_id, source_name, ingested_at desc)`.
 
 ### `cve_references`
-PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constraint: `UNIQUE(cve_id, url_canonical)`. Indexes: `cve_id`, `url_canonical`.
+PK `id uuid`. Columns: `cve_id`, `url`, `url_canonical`, `tags text[]`. Constraint: unique index on `(cve_id, text_key_digest(url_canonical))`, where `text_key_digest` is the SHA-256 of the URL: a reference URL has no length bound, and a btree row holds at most 2,704 bytes. Index: `cve_id`.
 
 ### `cve_affected_packages`
-PK `id uuid`. Columns: `cve_id`, `ecosystem`, `package_name`, `namespace`, `range_type`, `introduced`, `fixed`, `last_affected`, `events jsonb`. Indexes: `(ecosystem, package_name)`, `cve_id`, and `cve_affected_packages_check_idx` on `(ecosystem, <folded package_name>)`, where the folded expression is exactly what `ecosystem.FoldedNameSQL("ecosystem", "package_name")` builds (lower case, and PyPI separator runs collapsed), so the version check endpoint's package lookup can use it.
+PK `id uuid`. Columns: `cve_id`, `ecosystem`, `package_name`, `namespace`, `range_type`, `introduced`, `fixed`, `last_affected`, `events jsonb`. Indexes: `cve_id`, and `cve_affected_packages_check_idx` on `(ecosystem, <folded package_name>)`, where the folded expression is exactly what `ecosystem.FoldedNameSQL("ecosystem", "package_name")` builds (lower case, and PyPI separator runs collapsed), so the version check endpoint's package lookup can use it. The merge leaves out an entry whose `package_name` is over 1,024 bytes and logs a warning, so the folded key stays under the btree row limit of 2,704 bytes. No registry allows a name that long.
 
 ### `cve_affected_cpes`
-PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: `UNIQUE(cve_id, cpe_normalized)`. Indexes: `cpe_normalized`, `cve_id`. Holds every CPE a source names, including NVD `vulnerable: false` platforms. It is a `material_hash` input and what CPE watchlist items match.
+PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`. Constraint: unique index on `(cve_id, text_key_digest(cpe_normalized))`, the SHA-256 of the CPE, because a CPE has no length bound and is stored in full. Index: `cve_id`. Holds every CPE a source names, including NVD `vulnerable: false` platforms. It is a `material_hash` input and what CPE watchlist items match.
 
 ### `cve_cpe_matches`
-PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`, `version_start_including`, `version_start_excluding`, `version_end_including`, `version_end_excluding`, `vulnerable boolean not null`. FK `cve_id` to `cves` (`ON DELETE CASCADE`, deferred, because the late-binding CVE ID move updates child tables first). Indexes: `cve_id`, and `cve_cpe_matches_check_idx` on `(cpe_normalized COLLATE "C")`, so the version check endpoint's range on a CPE prefix uses an index whatever the database collation. One row per distinct NVD `cpeMatch` entry, since NVD repeats a criteria string with a different range per release branch. Not a `material_hash` input. "What is affected" reads only `vulnerable` rows.
+PK `id uuid`. Columns: `cve_id`, `cpe`, `cpe_normalized`, `version_start_including`, `version_start_excluding`, `version_end_including`, `version_end_excluding`, `vulnerable boolean not null`. FK `cve_id` to `cves` (`ON DELETE CASCADE`, deferred, because the late-binding CVE ID move updates child tables first). Indexes: `cve_id`, and `cve_cpe_matches_check_idx` on `(left(cpe_normalized, 512) COLLATE "C")`, so the version check endpoint's range on a CPE prefix uses an index whatever the database collation. The key holds the first 512 characters, because a CPE has no length bound, so a query cuts its bounds to 512 characters and also compares the whole value. One row per distinct NVD `cpeMatch` entry, since NVD repeats a criteria string with a different range per release branch. Not a `material_hash` input. "What is affected" reads only `vulnerable` rows.
 
 ### `cve_cna_affected`
 PK `id uuid`. Columns: `cve_id`, `vendor`, `product`, `package_name`, `collection_url`, `default_status`, `versions jsonb not null default '[]'`, `package_key text` (nullable). FK as `cve_cpe_matches`. Indexes: `cve_id`; `cve_cna_affected_check_idx` on `(left(lower(vendor), 256) COLLATE "C", left(lower(product), 256) COLLATE "C")`, cut to 256 characters because vendor and product can reach 2,048 and a key over the btree row limit would fail the CVE's merge; `cve_cna_affected_package_key_idx` on `(package_key) WHERE package_key IS NOT NULL`. One row per distinct CVE 5 `containers.cna.affected[]` entry across every source that carries one: the MITRE record and the copy NVD relays in `cve.affected[]`. Both copies are kept when they differ, because CNA data can only report a version as affected or unresolved, so a stale copy cannot clear one. `package_key` is the entry's `packageURL` mapped by `ecosystem.PackageKey` to `<ecosystem>/<folded name>`, the identity a version check package item looks up. It is NULL when the entry has no `packageURL`, or the mapping refuses it (a `repository_url`, a private namespace, a distro package, a key over 2,600 bytes). `versions` holds `version`, `less_than`, `less_than_or_equal`, `status`, `version_type`, and `changes`. Not a `material_hash` input.

@@ -97,7 +97,7 @@ func (srv *Server) oidcInitRedirect(w http.ResponseWriter, r *http.Request, conn
 	srv.setStateCookie(w, state)
 	srv.setNonceCookie(w, nonce)
 	authURL := oauthCfg.AuthCodeURL(state, oauth2.SetAuthURLParam("nonce", nonce))
-	http.Redirect(w, r, authURL, http.StatusFound)
+	http.Redirect(w, r, authURL, http.StatusFound) //nolint:gosec // G710: authURL is the configured IdP's discovered authorization endpoint, not request input
 }
 
 // oidcVerifyCallback validates state/nonce, loads the SSO connection, exchanges the

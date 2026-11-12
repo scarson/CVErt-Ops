@@ -214,13 +214,14 @@ notes and commit messages.
 - Phase 3 plan check: a nearby-name row is lifted only by an NVD row with the item's own CPE part (`cpe:2.3:<part>:<vendor>:`), so an `o:microsoft:windows` row does not lift a block for `a:microsoft:.net`. Design section 4.5 says "the CPE's own vendor". The difference gives more `cna_name_uncertain` answers, never a clearance.
 - **For Sam (Task 3.11, display only, no effect on verdicts):** an advisory known only from OSV, which includes every distro record, answers `severity` and `cvss_v3_score` as null. `internal/merge/resolve.go` takes a CVSS vector only from a source that also gives a score, OSV gives vectors only, and the OSV adapter sets no severity. Design section 6 says those fields "stay those of the distro's own record". The fix belongs in merge or the OSV adapter, not in the endpoint.
 - Task 3.11: the real CVE-2024-7347 CNA entry is `{1.5.13, lessThan *, affected, semver}` with changes at 1.26.2 and 1.27.1, not the `{1.25.0, lessThan 1.27.1}` in the plan's Task 3.5 table and `cnaNginx7347` in `internal/check/cna_test.go`. The verdict for 1.27.0 is the same. With the whole record and no NVD rows, the F5 / NGINX Plus entry makes the advisory `cna_name_uncertain` rather than the design's `cna_indeterminate`; both are cannot evaluate.
-- `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`cpe_normalized COLLATE "C"`) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
+- `TestCheckPackageIndexMatchesFoldedName` pins only the package index. Phase 3 should add the same pin tests for the CPE expression (`left(cpe_normalized, 512) COLLATE "C"`, defined in migration 000061) and the CNA expressions (`left(lower(vendor), 256) COLLATE "C"`, and the same for `product`) when `internal/store/check.go` builds those predicates.
 - **For Sam (Phase 4 provisional run):** old NVD rows whose exact version or bound is not dotted numbers (`php:2.0b10`, OpenSSL `1.0.2zf`) answer `invalid_range`, which holds Node, PHP, OpenSSL and PostgreSQL items at `cannot_evaluate` at every version, patched or not. A leading-number comparison rule would settle all but one of them as Not affected. Numbers in Phase 4 notes. Sam chose the rule on 2026-11-10; see Deviations.
 - **For Sam (Phase 4 provisional run):** `o:linux:linux_kernel` has 82,061 vulnerable rows before NVD finishes, over the 50,000 per-key limit, so every Linux kernel item answers `too_many_candidates`. A publication-date cutoff would drop old unbounded rows and can give a wrong "not affected"; a version-aware lookup filter would not (Phase 4 notes).
 - **Phase 4 provisional run, performance:** evaluation re-parses every bound per comparison (`internal/version` `CheckNumeric`, `validateRange`, `math/big`) and re-splits each CPE per item (`internal/check` `splitCPE`). 500 CPE items over the largest products took 14 to 18 s and allocated 11.4 GiB on the partial corpus. Re-measured on the complete corpus before a fix is proposed. Numbers in Phase 4 notes.
 - PostgreSQL JIT (found while measuring the CPE lookup, 2026-11-10): the planner cannot see how many rows a key holds, so a version check statement's estimated cost passes the default JIT thresholds once a request has a few keys. On the CPE statement JIT cost 30 to 70 ms for one key and 0.96 to 1.24 s for four or five, and saved nothing. `withOrgSnapshotTx` (`internal/store/store.go`) now runs `SET LOCAL jit = off`. The packages and CNA statements were not measured with and without it.
 - **For Sam (assessed 2026-11-10, not built):** the row filter of the CPE lookup does not carry over to package rows or CNA rows. Detail and measurements in Phase 4 notes ("Rows below the version", last two items).
 - Found by the end-to-end run of 300 kernel items (2026-11-10, not changed, present before the rule): `evaluateItem` (`internal/check/evaluate.go`) groups every row of an item's keys in `rowsOf` before it looks at the keys' overflow flags, so each item of a key over its limit allocates for 50,000 rows and then answers `too_many_candidates`: 5.1 GiB for the 300 items. Checking the flags first would avoid it. Fixed in `bfe4426` at Sam's request (`overItemLimit` runs before `rowsOf`): the 300 items now allocate 51 MiB in 0.29 s, down from 5.35 GiB in 2.3 s, with identical responses. Log `dev/implementation-log/2026-11-10T2049Z-check-refuse-over-limit-items-before-grouping.md`.
+- **Decided by Sam on 2026-11-12 (affects Phase 3):** a CPE or package name over the btree row limit failed the merge of its CVE. Migration 000061 (bounded CPE and package keys) rebuilt `cve_cpe_matches_check_idx` on `left(cpe_normalized, 512) COLLATE "C"`. CPEs stay stored in full, because watchlists and this endpoint match them by prefix. Task 3.9's CPE statement, `CPEKey` and its tests, and design section 9 were updated to match. The merge leaves out package names over 1,024 bytes (`maxIndexedPackageNameBytes` in `internal/merge/pipeline.go`), so `cve_affected_packages_check_idx` is unchanged. The migration also dropped `cve_affected_packages_eco_pkg_idx`, which no query could use, so Phase 4 no longer measures it.
 
 ---
 
@@ -714,7 +715,7 @@ Starts when Phase 1 is on `dev`. It runs for hours in the background, so Phase 3
 
 **Step 4: Wait for the completion signals.** In `feed_sync_state`: `nvd` with `cursor_json->>'caught_up' = 'true'`, `ghsa` with non-empty `cursor_json->>'since'`, `osv` with `cursor_json->>'last_modified'` non-zero, and `mitre` having a recent `last_success_at`. If a feed fails repeatedly, find the root cause, and record it under Discoveries.
 
-**Step 5: Record the data-side measurements** from design section 13 in this plan's Phase 4 notes: largest row counts per package and per CPE product, and how they compare to the 50,000 and 200,000 limits; how many CVEs have `package_key` with no row in `cve_affected_packages`; rows sharing the "several fixes under one `introduced`" shape outside `Root:*` and `GIT`; whether `cve_affected_packages_eco_pkg_idx` is still used (`pg_stat_user_indexes`); share of vulnerable CPE rows with no bounds; and, for CVEs with one CNA product and one NVD product and NVD analysis, how often NVD reports a version at or past the CNA's highest clean bound.
+**Step 5: Record the data-side measurements** from design section 13 in this plan's Phase 4 notes: largest row counts per package and per CPE product, and how they compare to the 50,000 and 200,000 limits; how many CVEs have `package_key` with no row in `cve_affected_packages`; rows sharing the "several fixes under one `introduced`" shape outside `Root:*` and `GIT`; share of vulnerable CPE rows with no bounds; and, for CVEs with one CNA product and one NVD product and NVD analysis, how often NVD reports a version at or past the CNA's highest clean bound.
 
 > **Verify first (unverified repair, plan review 2026-11-09):** the last measurement above and the write-cost step in Phase 4 were added in the last review wave. Before relying on them, confirm each query returns rows on the ingested data.
 
@@ -1191,7 +1192,7 @@ func NamesFor(p ProductRef) (names []CNAName, mapping cnaMapping, mapped bool)
 // position is the key index that rows in Candidates refer to.
 type Keys struct {
 	Packages       []PackageKey   // Ecosystem and folded name
-	CPEPrefixes    []CPEKey       // Lo "cpe:2.3:a:nodejs:node.js:", Hi "cpe:2.3:a:nodejs:node.js;"
+	CPEPrefixes    []CPEKey       // Lo "cpe:2.3:a:nodejs:node.js:", Hi "cpe:2.3:a:nodejs:node.js;", Prefix (see below)
 	CNANames       []CNANameKey   // see below
 	CNAPackageKeys []string       // ecosystem.PackageKeyFor; non-distro package items only
 	CNANear        []CNANearKey   // V, FullVendor, Fragment, VendorLo "cpe:2.3:a:microsoft:", VendorHi "cpe:2.3:a:microsoft;"
@@ -1217,6 +1218,8 @@ func KeysFor(items []Item) Keys
 ```
 
 A `CNANameKey` is built from lower-cased names, cut to 256 characters by rune count to match SQL `left`. `V` is the cut vendor. For an exact name, `Lo` is the cut product and `Hi` is `Lo + "\x01"`, built after the cut so a long name cannot collapse the interval. For a prefix, `Lo` is the cut prefix and `Hi` is that prefix with its last rune incremented. `FullVendor` is the whole lower-cased vendor, and `FullProduct` is the whole lower-cased product, or `""` for a prefix key.
+
+A `CPEKey` matches `cve_cpe_matches_check_idx`, which holds the first 512 characters of `cpe_normalized` (migration 000061). `Prefix` is the whole CPE prefix. `Lo` is `Prefix` cut to 512 characters by rune count, to match SQL `left`, and `Hi` is `Lo` with its last rune incremented, built after the cut. The statement rechecks `Prefix` against the whole value.
 
 Each row type gains `Status string` (the `cves.status` of its CVE), and retraction is decided in `Evaluate` by `isRetracted`, using `lower(status)` in `rejected` or `withdrawn`. A row in `CNANear` that is the same row as one of the item's `CNANames` rows (same CVE, vendor and product) is dropped. Any other `CNANear` row makes its CVE's advisory cannot evaluate, `cna_name_uncertain`, unless that advisory already reports Affected.
 
@@ -1247,6 +1250,7 @@ Read `dev/implementation-pitfalls.md` §2.17 (transaction helper selection), ARC
 - A CPE key `foo:bar` does not return `foo:barbaz`, and `foo\:bar` does not return `foo\:barbaz`.
 - A CNA prefix key returns `.NET 9.0 runtime`, and an exact key does not return a longer name.
 - A product name over 256 characters: two names sharing the first 256, and only the exact one matches.
+- A CPE key over 512 characters: two stored CPEs sharing the first 512, and only the one that starts with the whole prefix is returned.
 - The nearby-name statement returns a row whose CVE has only a CPE row for another vendor, and none where the CVE has a CPE row for this vendor.
 - `TestReadCheckCandidates_OneSnapshot`: call `readCheckCandidates` with an `afterStatement` callback that commits a change from another connection after the first statement, and assert the second statement sees the original state. `testutil` imports `store`, so these tests are in package `store_test`, and `export_test.go` exposes `readCheckCandidates` and `checkLimits` to them.
 - Limits, by calling `readCheckCandidates` with lowered `checkLimits`: a key at its limit has `Overflow` true and other keys are complete; a request over the row limit or the byte limit returns `ErrCandidateLimit`.
@@ -1279,16 +1283,18 @@ CROSS JOIN LATERAL (
 ) p
 JOIN cves c ON c.cve_id = p.cve_id;
 
--- CPE. lo is 'cpe:2.3:a:nodejs:node.js:'; hi is 'cpe:2.3:a:nodejs:node.js;'.
+-- CPE. lo is 'cpe:2.3:a:nodejs:node.js:'; hi is 'cpe:2.3:a:nodejs:node.js;', both
+-- cut to 512 characters as CPEKey defines them. prefix is the whole prefix.
 SELECT k.ord, m.cve_id, m.cpe_normalized, m.version_start_including, m.version_start_excluding,
        m.version_end_including, m.version_end_excluding, c.status
-FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS k(lo, hi, ord)
+FROM unnest($1::text[], $2::text[], $3::text[]) WITH ORDINALITY AS k(lo, hi, prefix, ord)
 CROSS JOIN LATERAL (
   SELECT q.* FROM cve_cpe_matches q
-  WHERE q.cpe_normalized COLLATE "C" >= k.lo COLLATE "C"
-    AND q.cpe_normalized COLLATE "C" <  k.hi COLLATE "C"
+  WHERE left(q.cpe_normalized, 512) COLLATE "C" >= k.lo COLLATE "C"
+    AND left(q.cpe_normalized, 512) COLLATE "C" <  k.hi COLLATE "C"
+    AND starts_with(q.cpe_normalized, k.prefix)
     AND q.vulnerable
-  LIMIT $3
+  LIMIT $4
 ) m
 JOIN cves c ON c.cve_id = m.cve_id;
 

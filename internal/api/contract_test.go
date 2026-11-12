@@ -157,7 +157,7 @@ func TestWriteProblemTyped_IncludesType(t *testing.T) {
 }
 
 func TestDecodeJSON_MalformedInput(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{bad"))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader("{bad"))
 	detail := decodeJSON(r, &struct{}{})
 	if detail == nil {
 		t.Fatal("expected error detail for malformed JSON")
@@ -168,7 +168,7 @@ func TestDecodeJSON_MalformedInput(t *testing.T) {
 }
 
 func TestDecodeJSON_ValidInput(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
 	var dst struct{ Name string `json:"name"` }
 	detail := decodeJSON(r, &dst)
 	if detail != nil {
@@ -198,7 +198,7 @@ func TestClearableField_Decode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(tt.input))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/", strings.NewReader(tt.input))
 			var dst body
 			if detail := decodeJSON(r, &dst); detail != nil {
 				t.Fatalf("unexpected error: %v", detail)
@@ -219,7 +219,7 @@ func TestClearableField_Decode(t *testing.T) {
 // TestClearableField_DecodeWrongType verifies that a value of the wrong JSON
 // type is rejected rather than treated as null.
 func TestClearableField_DecodeWrongType(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"group_id":42}`))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/", strings.NewReader(`{"group_id":42}`))
 	var dst struct {
 		GroupID clearableField[string] `json:"group_id,omitempty"`
 	}
@@ -340,7 +340,7 @@ func TestCursorSurvivesURLQueryParam(t *testing.T) {
 
 func TestParseLimitParam(t *testing.T) {
 	t.Run("missing returns default", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 		rec := httptest.NewRecorder()
 		limit, ok := parseLimitParam(rec, r, 50, 200)
 		if !ok || limit != 50 {
@@ -348,7 +348,7 @@ func TestParseLimitParam(t *testing.T) {
 		}
 	})
 	t.Run("valid value", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodGet, "/?limit=25", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?limit=25", nil)
 		rec := httptest.NewRecorder()
 		limit, ok := parseLimitParam(rec, r, 50, 200)
 		if !ok || limit != 25 {
@@ -356,7 +356,7 @@ func TestParseLimitParam(t *testing.T) {
 		}
 	})
 	t.Run("exceeds max", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodGet, "/?limit=999", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?limit=999", nil)
 		rec := httptest.NewRecorder()
 		_, ok := parseLimitParam(rec, r, 50, 200)
 		if ok {

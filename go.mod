@@ -1,6 +1,6 @@
 module github.com/scarson/cvert-ops
 
-go 1.26.10
+go 1.27.4
 
 require (
 	github.com/KimMachineGun/automemlimit v0.7.5

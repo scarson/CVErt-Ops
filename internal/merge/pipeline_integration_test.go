@@ -500,6 +500,82 @@ func TestIngest_ChildTableRewrite(t *testing.T) {
 	}
 }
 
+// longReferenceURL returns a URL whose canonical form is far over the btree
+// row limit of 2,704 bytes even after PostgreSQL compresses it. Red Hat sends
+// such a reference for CVE-2006-4339. The path is pseudo-random Cyrillic а to я,
+// which the canonical form percent-encodes to six bytes per character.
+func longReferenceURL(t *testing.T) string {
+	t.Helper()
+	return "https://example.com/" + randomText(t, 4096, 'а', 32)
+}
+
+// A reference URL has no length bound, so one over the btree row limit must
+// not fail the merge of the CVE, and with it the whole feed job.
+func TestIngest_LongReferenceURLIsStored(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	cveID := "CVE-2024-99954"
+	long := longReferenceURL(t)
+	patch := feed.CanonicalPatch{
+		CVEID:  cveID,
+		Status: "published",
+		References: []feed.ReferenceEntry{
+			{URL: long},
+			{URL: "https://example.com/short"},
+		},
+	}
+	if err := merge.Ingest(ctx, s.Store, patch, "redhat"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	refs, err := generated.New(s.DB()).GetCVEReferences(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEReferences: %v", err)
+	}
+	var found bool
+	for _, r := range refs {
+		if r.Url == long {
+			found = true
+		}
+	}
+	if len(refs) != 2 || !found {
+		t.Errorf("stored %d references (long URL stored: %v), want 2 including the long URL", len(refs), found)
+	}
+}
+
+// The reference uniqueness index must still reject a second row with the same
+// canonical URL when that URL is longer than the btree row limit.
+func TestInsertCVEReference_LongDuplicateIsIgnored(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	q := generated.New(s.DB())
+
+	cveID := "CVE-2024-99955"
+	long := longReferenceURL(t)
+	other := longReferenceURL(t)
+	for _, u := range []string{long, long, other} {
+		if err := q.InsertCVEReference(ctx, generated.InsertCVEReferenceParams{
+			CveID:        cveID,
+			Url:          u,
+			UrlCanonical: u,
+			Tags:         []string{},
+		}); err != nil {
+			t.Fatalf("InsertCVEReference: %v", err)
+		}
+	}
+
+	refs, err := q.GetCVEReferences(ctx, cveID)
+	if err != nil {
+		t.Fatalf("GetCVEReferences: %v", err)
+	}
+	if len(refs) != 2 {
+		t.Errorf("stored %d references, want 2: the duplicate must be ignored", len(refs))
+	}
+}
+
 // TestIngest_FTSIndexUpdated verifies that Ingest upserts the FTS search
 // index entry for the CVE.
 func TestIngest_FTSIndexUpdated(t *testing.T) {

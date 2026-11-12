@@ -649,7 +649,7 @@ func (q *Queries) InsertCVERawPayload(ctx context.Context, arg InsertCVERawPaylo
 const insertCVEReference = `-- name: InsertCVEReference :exec
 INSERT INTO cve_references (cve_id, url, url_canonical, tags)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (cve_id, url_canonical) DO NOTHING
+ON CONFLICT (cve_id, text_key_digest(url_canonical)) DO NOTHING
 `
 
 type InsertCVEReferenceParams struct {

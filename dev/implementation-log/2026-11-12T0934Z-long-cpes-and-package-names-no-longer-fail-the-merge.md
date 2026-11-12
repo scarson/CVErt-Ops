@@ -40,4 +40,4 @@ The audit for the long-reference-URL fix found three more columns that the btree
 - The three new tests failed first with `index row size ... exceeds btree version 4 maximum 2704`, on `cve_affected_cpes_cve_cpe_uq` and `cve_affected_packages_eco_pkg_idx`. They pass after the change, with the long-reference and long-CNA tests.
 - Migration 000061 down and up were run against a test database with a statement runner that splits each file on `;`, as golang-migrate does. Down restored the four original index definitions. Up restored the new ones.
 - `golangci-lint` v2.15.0 on `./internal/merge/...` and `./internal/store/...`: 0 issues.
-- Full suite: see the PR.
+- `go test ./... -count=1 -timeout=600s` passes at 2a23341 (38 packages). The commits after it change only docs.

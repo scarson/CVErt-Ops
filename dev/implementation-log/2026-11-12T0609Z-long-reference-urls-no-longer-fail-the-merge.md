@@ -56,3 +56,4 @@ Red Hat had failed on every run of the full ingest: 11 consecutive failures in `
 - Migration 000060's down and up files were run once against a test database. Down restored `cve_references_cve_url_uq` and `cve_references_url_canonical_idx` and removed the function. Up restored the digest index and the function.
 - `go test ./internal/feed/redhat/... ./internal/merge/... -count=1` passes.
 - `golangci-lint run` v2.15.0, the CI pin, on `./internal/merge/...` and `./internal/store/...`: 0 issues. The v2.10.1 in `~/go/bin` cannot lint a Go 1.27 module, so this ran through `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0`.
+- `go test ./... -count=1 -timeout=600s` passes at 27d3058. The first run failed at setup in `cmd/cvert-ops`, `internal/api` and `web`, because the worktree had no `web/dist`. Those three packages passed after the main checkout's build was copied in.

@@ -31,7 +31,7 @@ func TestContextLoggerMiddleware_InjectsRequestID(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	req := httptest.NewRequest("GET", "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), "GET", "/test", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 

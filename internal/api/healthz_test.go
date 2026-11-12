@@ -12,7 +12,7 @@ import (
 func TestHealthzHandler_ReturnsAlive(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	healthzHandler().ServeHTTP(rec, req)
 
@@ -32,7 +32,7 @@ func TestHealthzHandler_ReturnsAlive(t *testing.T) {
 func TestHealthzHandler_ContentType(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	healthzHandler().ServeHTTP(rec, req)
 

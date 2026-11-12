@@ -41,7 +41,7 @@ func TestAdminReloadConfig_RequiresSiteAdmin(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reload-config", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -90,7 +90,7 @@ func TestAdminReloadConfig_ReloadsFromSecretsFile(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reload-config", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -148,7 +148,7 @@ func TestAdminReloadConfig_NoSecretsFile_200(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reload-config", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -207,7 +207,7 @@ func TestAdminReloadConfig_InvalidConfig_400(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reload-config", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -265,7 +265,7 @@ func TestAdminReloadConfig_CallsRescan(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reload-config", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
@@ -310,7 +310,7 @@ func TestAdminReloadConfig_DoesNotLeakErrorDetails(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/admin/reload-config", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: token})
+	req.AddCookie(requestCookie("access_token", token))
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {

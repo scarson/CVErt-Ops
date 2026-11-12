@@ -224,7 +224,7 @@ func TestMFAChallengeEmailOTP(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("challenge request: %v", err)
@@ -254,7 +254,7 @@ func TestMFAChallengeTOTP(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("challenge request: %v", err)
@@ -276,7 +276,7 @@ func TestMFAChallengeInvalidToken(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: "invalid-token"})
+	req.AddCookie(requestCookie("mfa_pending_token", "invalid-token"))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("challenge request: %v", err)
@@ -316,7 +316,7 @@ func TestMFAVerifyTOTP(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -370,7 +370,7 @@ func TestMFAVerifyEmailOTP(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -411,7 +411,7 @@ func TestMFAVerifyRecoveryCode(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -445,7 +445,7 @@ func TestMFAVerifyWrongCode(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -481,7 +481,7 @@ func TestMFAVerifyTOTPReplay(t *testing.T) {
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req1.Header.Set("Content-Type", "application/json")
-	req1.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt1})
+	req1.AddCookie(requestCookie("mfa_pending_token", pt1))
 	resp1, err := ts.Client().Do(req1) //nolint:gosec
 	if err != nil {
 		t.Fatalf("first verify: %v", err)
@@ -499,7 +499,7 @@ func TestMFAVerifyTOTPReplay(t *testing.T) {
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt2})
+	req2.AddCookie(requestCookie("mfa_pending_token", pt2))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec
 	if err != nil {
 		t.Fatalf("second verify: %v", err)
@@ -538,7 +538,7 @@ func TestMFAVerifyTokenVersionMismatch(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -579,7 +579,7 @@ func TestMFAVerifyWithRemainingPending(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -711,7 +711,7 @@ func TestTOTPConfirm(t *testing.T) {
 
 	// Confirm enrollment.
 	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -755,7 +755,7 @@ func TestTOTPConfirmWrongCode(t *testing.T) {
 	setupResp.Body.Close() //nolint:errcheck,gosec
 
 	// Confirm with wrong code.
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", `{"code":"000000"}`, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -789,7 +789,7 @@ func TestTOTPConfirmWrongLengthCode(t *testing.T) {
 	enrollToken := cookieValue(setupResp, "mfa_enroll_token")
 	setupResp.Body.Close() //nolint:errcheck,gosec
 
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", `{"code":"12345 "}`, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -852,7 +852,7 @@ func TestTOTPDoubleEnrollment(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -915,7 +915,7 @@ func TestTOTPConfirmDecryptsWithPreviousKey(t *testing.T) {
 
 	// Confirm enrollment — must decrypt with fallback to previous key.
 	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -1028,7 +1028,7 @@ func TestEmailOTPSetup_ReissuesPendingTokenTTL(t *testing.T) {
 		t.Fatalf("issue pending token: %v", err)
 	}
 
-	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	cookies := []*http.Cookie{requestCookie("mfa_pending_token", pendingToken)}
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
@@ -1126,7 +1126,7 @@ func TestEmailOTPAlreadyEnrolled(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -1168,7 +1168,7 @@ func fullTOTPLogin(t *testing.T, ctx context.Context, srv *Server, ts *httptest.
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -1364,7 +1364,7 @@ func TestMFARemoveLastMethodBlocked(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -1506,7 +1506,7 @@ func TestRememberDeviceFlow(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -1528,7 +1528,7 @@ func TestRememberDeviceFlow(t *testing.T) {
 	loginReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/login", bytes.NewBufferString(loginBody))
 	loginReq.Header.Set("Content-Type", "application/json")
-	loginReq.AddCookie(&http.Cookie{Name: "mfa_device_token", Value: deviceToken})
+	loginReq.AddCookie(requestCookie("mfa_device_token", deviceToken))
 	loginResp2, err := ts.Client().Do(loginReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("second login: %v", err)
@@ -1580,7 +1580,7 @@ func TestRememberDeviceOrgDisallowed(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -1631,7 +1631,7 @@ func TestRememberDeviceInvalidatedOnPasswordChange(t *testing.T) {
 	changePWReq := authedRequest(t, ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/change-password",
 		fmt.Sprintf(`{"current_password":%q,"new_password":"new-secure-password-1"}`, password),
-		[]*http.Cookie{{Name: "access_token", Value: accessToken}})
+		[]*http.Cookie{requestCookie("access_token", accessToken)})
 	changePWResp, err := ts.Client().Do(changePWReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("change password: %v", err)
@@ -1680,7 +1680,7 @@ func TestEnrollment_RejectsOutOfOrderPending(t *testing.T) {
 		t.Fatalf("issue pending token: %v", err)
 	}
 
-	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	cookies := []*http.Cookie{requestCookie("mfa_pending_token", pendingToken)}
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
@@ -1720,7 +1720,7 @@ func TestEnrollment_AcceptsCorrectOrder(t *testing.T) {
 		t.Fatalf("issue pending token: %v", err)
 	}
 
-	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	cookies := []*http.Cookie{requestCookie("mfa_pending_token", pendingToken)}
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
@@ -1765,7 +1765,7 @@ func TestEnrollment_RejectsStaleTokenVersion(t *testing.T) {
 	}
 
 	// Attempt enrollment with the now-stale pending token.
-	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	cookies := []*http.Cookie{requestCookie("mfa_pending_token", pendingToken)}
 	req := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
@@ -1802,7 +1802,7 @@ func confirmTOTPEnrollment(t *testing.T, ctx context.Context, ts *httptest.Serve
 	if err != nil {
 		t.Fatalf("generate TOTP: %v", err)
 	}
-	confirmCookies := append(append([]*http.Cookie{}, cookies...), &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(append([]*http.Cookie{}, cookies...), requestCookie("mfa_enroll_token", enrollToken))
 	confirmResp, err := ts.Client().Do(authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", //nolint:gosec
 		fmt.Sprintf(`{"code":%q}`, code), confirmCookies))
 	if err != nil {
@@ -1844,7 +1844,7 @@ func TestEnrollmentConfirm_IgnoresOtherUsersPendingToken(t *testing.T) {
 		t.Fatalf("expected pending=[mfa_enrollment_required] for B, got %v", bodyB.Pending)
 	}
 
-	cookies := append(accessA, &http.Cookie{Name: "mfa_pending_token", Value: pendingB})
+	cookies := append(accessA, requestCookie("mfa_pending_token", pendingB))
 	resp := confirmTOTPEnrollment(t, ctx, ts, cookies)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
@@ -1890,7 +1890,7 @@ func TestEnrollmentConfirm_IgnoresOutOfOrderPendingToken(t *testing.T) {
 		t.Fatalf("issue pending token: %v", err)
 	}
 
-	cookies := append(access, &http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	cookies := append(access, requestCookie("mfa_pending_token", pendingToken))
 	resp := confirmTOTPEnrollment(t, ctx, ts, cookies)
 	defer resp.Body.Close() //nolint:errcheck,gosec
 
@@ -1926,7 +1926,7 @@ func TestEmailOTPSetup_IgnoresOtherUsersPendingToken(t *testing.T) {
 		t.Fatalf("issue pending token: %v", err)
 	}
 
-	cookies := append(access, &http.Cookie{Name: "mfa_pending_token", Value: pendingB})
+	cookies := append(access, requestCookie("mfa_pending_token", pendingB))
 	resp, err := ts.Client().Do(authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/setup", "", cookies)) //nolint:gosec
 	if err != nil {
 		t.Fatalf("email OTP setup: %v", err)
@@ -1968,7 +1968,7 @@ func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
 	}
 
 	// Setup TOTP using the pending token.
-	setupCookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	setupCookies := []*http.Cookie{requestCookie("mfa_pending_token", pendingToken)}
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", setupCookies)
 	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
 	if err != nil {
@@ -1995,8 +1995,8 @@ func TestEnrollment_IssuesFullTokensOnCompletion(t *testing.T) {
 	// Confirm enrollment with both the enroll token and the pending token.
 	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
 	confirmCookies := []*http.Cookie{
-		{Name: "mfa_enroll_token", Value: enrollToken},
-		{Name: "mfa_pending_token", Value: pendingToken},
+		requestCookie("mfa_enroll_token", enrollToken),
+		requestCookie("mfa_pending_token", pendingToken),
 	}
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
@@ -2057,7 +2057,7 @@ func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req1.Header.Set("Content-Type", "application/json")
-	req1.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt1})
+	req1.AddCookie(requestCookie("mfa_pending_token", pt1))
 	resp1, err := ts.Client().Do(req1) //nolint:gosec
 	if err != nil {
 		t.Fatalf("first verify: %v", err)
@@ -2089,7 +2089,7 @@ func TestTOTP_ReplayPrevention_SkewWindow(t *testing.T) {
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt2})
+	req2.AddCookie(requestCookie("mfa_pending_token", pt2))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec
 	if err != nil {
 		t.Fatalf("second verify: %v", err)
@@ -2218,7 +2218,7 @@ func TestTOTPConfirm_CodeCannotBeReplayedAtLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate TOTP: %v", err)
 	}
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm",
 		fmt.Sprintf(`{"code":%q}`, code), confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
@@ -2238,7 +2238,7 @@ func TestTOTPConfirm_CodeCannotBeReplayedAtLogin(t *testing.T) {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/verify",
 			bytes.NewBufferString(fmt.Sprintf(`{"method":"totp","code":%q}`, code)))
 		req.Header.Set("Content-Type", "application/json")
-		req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+		req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 		resp, err := ts.Client().Do(req) //nolint:gosec
 		if err != nil {
 			t.Fatalf("verify: %v", err)
@@ -2375,7 +2375,7 @@ func TestTOTP_ConcurrentReplay(t *testing.T) {
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 				ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 			req.Header.Set("Content-Type", "application/json")
-			req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+			req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 			resp, reqErr := ts.Client().Do(req) //nolint:gosec
 			if reqErr != nil {
 				t.Errorf("goroutine %d: request error: %v", idx, reqErr)
@@ -2546,7 +2546,7 @@ func TestEventWriterInfrastructure_SmokeTest(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify request: %v", err)
@@ -2598,7 +2598,7 @@ func TestEmailOTPConfirm_WrongCode(t *testing.T) {
 	setupResp.Body.Close() //nolint:errcheck,gosec
 
 	// Submit wrong code.
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/email-otp/confirm", `{"code":"000000"}`, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -2689,7 +2689,7 @@ func TestPendingToken_RejectedAsAccessToken(t *testing.T) {
 
 	// Use the pending token as an access_token on a protected endpoint.
 	req := authedRequest(t, ctx, http.MethodGet, ts.URL+"/api/v1/auth/mfa/methods", "",
-		[]*http.Cookie{{Name: "access_token", Value: pendingToken}})
+		[]*http.Cookie{requestCookie("access_token", pendingToken)})
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("methods request: %v", err)
@@ -2740,7 +2740,7 @@ func TestTOTPConfirm_CrossUserEnrollment_Rejected(t *testing.T) {
 		t.Fatalf("generate TOTP: %v", err)
 	}
 	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
-	confirmCookies := append(cookiesB, &http.Cookie{Name: "mfa_enroll_token", Value: enrollTokenA})
+	confirmCookies := append(cookiesB, requestCookie("mfa_enroll_token", enrollTokenA))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -2772,7 +2772,7 @@ func TestMFAVerify_WrongCode_NoAuthCookies(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -2812,7 +2812,7 @@ func TestMFAChallenge_WellFormedWrongKey(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: fakeToken})
+	req.AddCookie(requestCookie("mfa_pending_token", fakeToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("challenge: %v", err)
@@ -2843,7 +2843,7 @@ func TestMFAChallenge_ExpiredPendingToken(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/challenge", bytes.NewBufferString(reqBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: expiredToken})
+	req.AddCookie(requestCookie("mfa_pending_token", expiredToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("challenge: %v", err)
@@ -2878,7 +2878,7 @@ func TestMFAVerify_TOTP_EmitsSuccessEvent(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -2913,7 +2913,7 @@ func TestMFAVerify_TOTP_EmitsFailedEvent(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -3091,7 +3091,7 @@ func TestEnrollment_CompletionIssuesFullTokens(t *testing.T) {
 	}
 
 	// Start TOTP setup.
-	cookies := []*http.Cookie{{Name: "mfa_pending_token", Value: pendingToken}}
+	cookies := []*http.Cookie{requestCookie("mfa_pending_token", pendingToken)}
 	setupReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/setup", "", cookies)
 	setupResp, err := ts.Client().Do(setupReq) //nolint:gosec
 	if err != nil {
@@ -3113,8 +3113,8 @@ func TestEnrollment_CompletionIssuesFullTokens(t *testing.T) {
 	}
 	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
 	confirmCookies := []*http.Cookie{
-		{Name: "mfa_pending_token", Value: pendingToken},
-		{Name: "mfa_enroll_token", Value: enrollToken},
+		requestCookie("mfa_pending_token", pendingToken),
+		requestCookie("mfa_enroll_token", enrollToken),
 	}
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
@@ -3144,7 +3144,7 @@ func TestMFAMethods_InvalidAccessToken(t *testing.T) {
 	_, ts := newMFAServer(t, db)
 
 	req := authedRequest(t, ctx, http.MethodGet, ts.URL+"/api/v1/auth/mfa/methods", "",
-		[]*http.Cookie{{Name: "access_token", Value: "garbage-not-a-jwt"}})
+		[]*http.Cookie{requestCookie("access_token", "garbage-not-a-jwt")})
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("methods: %v", err)
@@ -3173,7 +3173,7 @@ func TestMFAMethods_ExpiredAccessToken(t *testing.T) {
 	}
 
 	req := authedRequest(t, ctx, http.MethodGet, ts.URL+"/api/v1/auth/mfa/methods", "",
-		[]*http.Cookie{{Name: "access_token", Value: expiredToken}})
+		[]*http.Cookie{requestCookie("access_token", expiredToken)})
 	resp, err := ts.Client().Do(req) //nolint:gosec
 	if err != nil {
 		t.Fatalf("methods: %v", err)
@@ -3209,7 +3209,7 @@ func TestMFARemoveMethod_NotEnrolled(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)
@@ -3293,7 +3293,7 @@ func TestTOTPConfirm_SecondEnrollment_NoRecoveryCodes(t *testing.T) {
 		t.Fatalf("generate TOTP: %v", err)
 	}
 	confirmBody := fmt.Sprintf(`{"code":%q}`, code)
-	confirmCookies := append(accessCookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(accessCookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm", confirmBody, confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
 	if err != nil {
@@ -3404,7 +3404,7 @@ func TestTOTPConfirm_EmitsEnrollmentEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate TOTP: %v", err)
 	}
-	confirmCookies := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	confirmCookies := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	confirmReq := authedRequest(t, ctx, http.MethodPost, ts.URL+"/api/v1/auth/mfa/totp/confirm",
 		fmt.Sprintf(`{"code":%q}`, code), confirmCookies)
 	confirmResp, err := ts.Client().Do(confirmReq) //nolint:gosec
@@ -3452,7 +3452,7 @@ func TestRecoveryCodeRegen_EmitsEvent(t *testing.T) {
 	verifyReq, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(verifyBody))
 	verifyReq.Header.Set("Content-Type", "application/json")
-	verifyReq.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pt})
+	verifyReq.AddCookie(requestCookie("mfa_pending_token", pt))
 	verifyResp, err := ts.Client().Do(verifyReq) //nolint:gosec
 	if err != nil {
 		t.Fatalf("verify: %v", err)

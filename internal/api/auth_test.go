@@ -427,7 +427,7 @@ func TestRefreshRotates(t *testing.T) {
 
 	// Refresh: should issue new tokens and mark old JTI used.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: oldRefreshToken})
+	req.AddCookie(requestCookie("refresh_token", oldRefreshToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh request: %v", err)
@@ -472,7 +472,7 @@ func TestRefreshGraceWindow(t *testing.T) {
 
 	// First refresh: consumes the token, returns new tokens.
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req1.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp1, err := ts.Client().Do(req1) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("first refresh: %v", err)
@@ -484,7 +484,7 @@ func TestRefreshGraceWindow(t *testing.T) {
 
 	// Second refresh with the SAME (now-used) token — within grace window → 200.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req2.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("grace refresh: %v", err)
@@ -508,7 +508,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 
 	// Refresh normally (token A consumed, replaced by B).
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req1.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp1, _ := ts.Client().Do(req1) //nolint:gosec // G704 false positive
 	resp1.Body.Close()               //nolint:errcheck,gosec // G104
 
@@ -525,7 +525,7 @@ func TestRefreshTheftDetection(t *testing.T) {
 
 	// Re-use the same token after grace window — theft detected → 401.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req2.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("theft re-use: %v", err)
@@ -558,7 +558,7 @@ func TestLogoutClearsCookies(t *testing.T) {
 	refreshToken := cookieValue(loginResp, "refresh_token")
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/logout", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	req.AddCookie(requestCookie("refresh_token", refreshToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("logout: %v", err)
@@ -590,7 +590,7 @@ func TestGetMe(t *testing.T) {
 	accessToken := cookieValue(loginResp, "access_token")
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("get me: %v", err)
@@ -645,7 +645,7 @@ func TestChangePassword_Success(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -686,7 +686,7 @@ func TestChangePassword_WrongCurrentPassword(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -715,7 +715,7 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -727,7 +727,7 @@ func TestChangePassword_InvalidatesRefreshTokens(t *testing.T) {
 
 	// Old refresh token should now be rejected (token_version mismatch).
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	req2.AddCookie(requestCookie("refresh_token", refreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh after change-password: %v", err)
@@ -792,7 +792,7 @@ func TestRefreshInvalidToken(t *testing.T) {
 
 	// Refresh with garbage token.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: "totally-invalid-jwt"})
+	req.AddCookie(requestCookie("refresh_token", "totally-invalid-jwt"))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -822,7 +822,7 @@ func TestRefreshRevokedTokenVersion(t *testing.T) {
 
 	// The refresh token's token_version no longer matches → 401.
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: refreshToken})
+	req.AddCookie(requestCookie("refresh_token", refreshToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -859,7 +859,7 @@ func TestGetMe_InvalidToken(t *testing.T) {
 	_, ts := newRegisterServer(t, db, "open")
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: "garbage-token"})
+	req.AddCookie(requestCookie("access_token", "garbage-token"))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("get me: %v", err)
@@ -916,7 +916,7 @@ func TestChangePassword_OAuthOnlyAccount(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: accessToken})
+	req.AddCookie(requestCookie("access_token", accessToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1312,7 +1312,7 @@ func TestChangePassword_ClearsForcePasswordReset(t *testing.T) {
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1365,7 +1365,7 @@ func TestChangePassword_RestrictedSession_RejectsStaleTokenVersion(t *testing.T)
 		bytes.NewBufferString(`{"new_password":"test-new-password-1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1479,7 +1479,7 @@ func TestChangePassword_RestrictedSession_PendingTokenHasFreshTokenVersion(t *te
 		bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Requested-By", "CVErt-Ops")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("change-password: %v", err)
@@ -1548,7 +1548,7 @@ func TestRefresh_TokenReuse_EmitsSecurityEvent(t *testing.T) {
 
 	// First refresh: consumes the token.
 	req1, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req1.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req1.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp1, err := ts.Client().Do(req1) //nolint:gosec
 	if err != nil {
 		t.Fatalf("first refresh: %v", err)
@@ -1568,7 +1568,7 @@ func TestRefresh_TokenReuse_EmitsSecurityEvent(t *testing.T) {
 
 	// Re-use the token after grace window — theft detected → 401.
 	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/refresh", nil)
-	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: firstRefreshToken})
+	req2.AddCookie(requestCookie("refresh_token", firstRefreshToken))
 	resp2, err := ts.Client().Do(req2) //nolint:gosec
 	if err != nil {
 		t.Fatalf("theft re-use: %v", err)

@@ -33,7 +33,7 @@ func TestHandler_MetricsNotOnMainRouter(t *testing.T) {
 
 	// /metrics should NOT be handled by the main router — it should NOT
 	// return Prometheus exposition format content.
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

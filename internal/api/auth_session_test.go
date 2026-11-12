@@ -64,7 +64,7 @@ func pendingCookie(t *testing.T, ctx context.Context, ts *httptest.Server, email
 	if value == "" {
 		t.Fatalf("login for %s did not set mfa_pending_token", email)
 	}
-	return &http.Cookie{Name: "mfa_pending_token", Value: value}
+	return requestCookie("mfa_pending_token", value)
 }
 
 // fullSessionCookies logs in a user without pending steps and returns the access token cookie.
@@ -264,7 +264,7 @@ func TestMFAVerify_TypedProblems(t *testing.T) {
 	}{
 		{"wrong code", []*http.Cookie{pt}, problemTypeInvalidCode},
 		{"no pending token", nil, problemTypePendingSessionInvalid},
-		{"garbage pending token", []*http.Cookie{{Name: "mfa_pending_token", Value: "not-a-jwt"}}, problemTypePendingSessionInvalid},
+		{"garbage pending token", []*http.Cookie{requestCookie("mfa_pending_token", "not-a-jwt")}, problemTypePendingSessionInvalid},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -324,7 +324,7 @@ func TestTOTPConfirm_TypedProblems(t *testing.T) {
 		t.Fatal("setup did not set mfa_enroll_token")
 	}
 
-	withEnroll := append(cookies, &http.Cookie{Name: "mfa_enroll_token", Value: enrollToken})
+	withEnroll := append(cookies, requestCookie("mfa_enroll_token", enrollToken))
 	wrong := doSessionRequest(t, ctx, ts, http.MethodPost, "/api/v1/auth/mfa/totp/confirm", `{"code":"000000"}`, withEnroll)
 	defer wrong.Body.Close() //nolint:errcheck,gosec // G104
 	if wrong.StatusCode != http.StatusUnauthorized {
@@ -367,7 +367,7 @@ func TestEnrollment_PendingTokenProblems(t *testing.T) {
 	_, ts := newMFAServer(t, db)
 
 	garbage := doSessionRequest(t, ctx, ts, http.MethodPost, "/api/v1/auth/mfa/totp/setup", "",
-		[]*http.Cookie{{Name: "mfa_pending_token", Value: "not-a-jwt"}})
+		[]*http.Cookie{requestCookie("mfa_pending_token", "not-a-jwt")})
 	defer garbage.Body.Close() //nolint:errcheck,gosec // G104
 	if garbage.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("setup with invalid pending token: got %d, want 401", garbage.StatusCode)
@@ -428,7 +428,7 @@ func TestChangePassword_InvalidPendingTokenIsTyped(t *testing.T) {
 	_, ts := newMFAServer(t, db)
 
 	resp := doSessionRequest(t, ctx, ts, http.MethodPost, "/api/v1/auth/change-password",
-		`{"new_password":"a-brand-new-password"}`, []*http.Cookie{{Name: "mfa_pending_token", Value: "not-a-jwt"}})
+		`{"new_password":"a-brand-new-password"}`, []*http.Cookie{requestCookie("mfa_pending_token", "not-a-jwt")})
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 
 	if resp.StatusCode != http.StatusUnauthorized {

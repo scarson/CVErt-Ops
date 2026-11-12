@@ -54,7 +54,7 @@ func postMFAVerify(t *testing.T, ctx context.Context, ts *httptest.Server, pendi
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		ts.URL+"/api/v1/auth/mfa/verify", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: "mfa_pending_token", Value: pendingToken})
+	req.AddCookie(requestCookie("mfa_pending_token", pendingToken))
 	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("verify request: %v", err)

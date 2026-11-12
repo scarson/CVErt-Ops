@@ -40,7 +40,7 @@ func TestSCIMScheme_ForwardedProtoTrust(t *testing.T) {
 				got = scimScheme(r)
 				gotBase = scimBaseURL(r)
 			}))
-			req := httptest.NewRequest(http.MethodGet, "http://cvert.example/api/v1/orgs/o/scim/v2/Users", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://cvert.example/api/v1/orgs/o/scim/v2/Users", nil)
 			req.RemoteAddr = tt.remoteAddr
 			if tt.tls {
 				req.TLS = &tls.ConnectionState{} //nolint:exhaustruct // test: only non-nil TLS state matters

@@ -134,7 +134,7 @@ func TestClientIPMiddleware_SetsContextIP(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req.RemoteAddr = "192.168.1.100:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -157,7 +157,7 @@ func TestClientIPMiddleware_NoPort(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req.RemoteAddr = "10.0.0.1"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -177,7 +177,7 @@ func TestClientIPMiddleware_IPv6(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req.RemoteAddr = "[::1]:8080"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -256,7 +256,7 @@ func TestAuthRateLimit_ExtractsIPFromHostPort(t *testing.T) {
 	})))
 
 	// Request from same IP but different ports should share the same bucket.
-	req1 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req1 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req1.RemoteAddr = "172.16.0.1:11111"
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, req1)
@@ -264,7 +264,7 @@ func TestAuthRateLimit_ExtractsIPFromHostPort(t *testing.T) {
 		t.Fatalf("first request: got %d, want 200", rec1.Code)
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/test", nil)
 	req2.RemoteAddr = "172.16.0.1:22222"
 	rec2 := httptest.NewRecorder()
 	handler.ServeHTTP(rec2, req2)

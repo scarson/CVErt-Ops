@@ -147,6 +147,8 @@ git worktree add "$path" -b "$BRANCH_NAME" dev
 ```
 Worktree directory: `.claude/worktrees/` (already gitignored).
 
+A new worktree has no `web/dist`, which `web/embed.go` embeds and git ignores, so `go build ./...` and `go test` of `cmd/cvert-ops`, `internal/api` and `web` stop with `pattern all:dist: no matching files found` ("[setup failed]"). Before building or testing, copy the SPA build from the main checkout: `cp -r ../../../web/dist web/dist` from the worktree root. If the main checkout has none, run `cd web && npm run build` first.
+
 ### Worktree PR safety
 
 When PRing from a worktree that was created from `main` and merged `dev`:

@@ -128,16 +128,15 @@ func OrdersBySemver(ecosystem string) bool {
 // or its plain Ubuntu Pro stream ("Ubuntu:Pro:22.04:LTS"), capturing the release.
 var ubuntuPlainStream = regexp.MustCompile(`^Ubuntu:(?:Pro:)?([0-9]+\.[0-9]+(?::LTS)?)$`)
 
-// ubuntuSubStream matches an Ubuntu Pro sub-stream, such as
-// "Ubuntu:Pro:FIPS-updates:22.04:LTS" or "Ubuntu:Pro:Realtime:24.04:LTS": a name
-// that is not a release between "Pro:" and the release.
-var ubuntuSubStream = regexp.MustCompile(`^Ubuntu:Pro:[A-Za-z][^:]*:`)
-
-// IsSubStream reports whether ecosystem is an Ubuntu Pro sub-stream. A
-// sub-stream lists its own builds of some packages and not every advisory of its
-// release for them, so no row in it proves a package clear.
+// IsSubStream reports whether ecosystem is an Ubuntu stream other than a
+// release's standard or plain Pro stream: a Pro sub-stream such as
+// "Ubuntu:Pro:FIPS-updates:22.04:LTS" or "Ubuntu:Pro:Realtime:24.04:LTS", or a
+// stream such as "Ubuntu:Nvidia-BlueField:22.04:LTS". A sub-stream lists its own
+// builds of some packages and not every advisory of its release for them, so no
+// row in it proves a package clear. Any Ubuntu ecosystem that is not a plain
+// stream counts, so a new stream is covered when it first appears.
 func IsSubStream(ecosystem string) bool {
-	return ubuntuSubStream.MatchString(ecosystem)
+	return strings.HasPrefix(ecosystem, "Ubuntu:") && !ubuntuPlainStream.MatchString(ecosystem)
 }
 
 // ReleaseStreams returns the ecosystems whose package rows apply to a package in

@@ -969,6 +969,11 @@ func TestReadCNAEntrySuffixBounds(t *testing.T) {
 			"4.0.4", Indeterminate,
 		},
 		{"no upper bound", custom("1.0a", "", ""), "4.0", Indeterminate},
+		{"both upper bounds", CNAVersion{Version: "1.0", LessThan: "1.1a", LessThanOrEqual: "1.1b", Status: "affected", VersionType: "custom"}, "4.0", Indeterminate},
+		{"a line wildcard written with x is read by the wildcard rule", custom("1.0a", "2.x", ""), "4.0", NoStatement},
+		{"a line wildcard written with x, inside its line", custom("1.0a", "2.x", ""), "2.5", Indeterminate},
+		{"a wildcard after a suffix", custom("1.0", "1.0-beta.x", ""), "4.0", Indeterminate},
+		{"a free-text range with letter bounds", CNAVersion{Version: ">= 1.0a, < 1.1b", Status: "affected", VersionType: "custom"}, "4.0", NoStatement},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

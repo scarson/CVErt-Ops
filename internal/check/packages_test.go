@@ -116,7 +116,7 @@ func TestEvaluatePackageRows(t *testing.T) {
 		{
 			name: "version the ecosystem cannot read is invalid_version", ecosystem: "npm", version: "banana",
 			rows:       []PackageRow{pkgRow("ECOSYSTEM", "0", "4.17.21", "")},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, VersionFailure: ReasonInvalidVersion},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, InvalidVersion: true},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "4.17.21"}},
 		},
 
@@ -204,7 +204,7 @@ func TestEvaluatePackageRows(t *testing.T) {
 		{
 			name: "SEMVER range in Debian that dpkg excludes and SemVer cannot read is invalid_version", ecosystem: "Debian:13", version: "1:2.0.0",
 			rows:       []PackageRow{pkgRow("SEMVER", "0", "3.0.0", "")},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, VersionFailure: ReasonInvalidVersion},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, InvalidVersion: true},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "3.0.0"}},
 		},
 		// 2.5.0_rc1 is an Alpine version SemVer cannot read, and 2.0.0-1 a SemVer
@@ -212,7 +212,7 @@ func TestEvaluatePackageRows(t *testing.T) {
 		{
 			name: "SEMVER range in Alpine that SemVer excludes and Alpine cannot read is invalid_version", ecosystem: "Alpine:v3.20", version: "2.0.0-1",
 			rows:       []PackageRow{pkgRow("SEMVER", "2.0.0", "3.0.0", "")},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, VersionFailure: ReasonInvalidVersion},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, InvalidVersion: true},
 			wantRanges: []version.Range{{Introduced: "2.0.0", Fixed: "3.0.0"}},
 		},
 		{
@@ -254,13 +254,13 @@ func TestEvaluatePackageRows(t *testing.T) {
 		{
 			name: "Root ecosystem is unknown_version_scheme", ecosystem: "Root:x", version: "1.0.0",
 			rows:       []PackageRow{pkgRow("ECOSYSTEM", "0", "2.0.0", "")},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonUnknownVersionScheme, VersionFailure: ReasonUnknownVersionScheme},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonUnknownVersionScheme, UnknownVersionScheme: true},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "2.0.0"}},
 		},
 		{
 			name: "GitHub Actions is unknown_version_scheme", ecosystem: "GitHub Actions", version: "1.0.0",
 			rows:       []PackageRow{pkgRow("ECOSYSTEM", "0", "2.0.0", "")},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonUnknownVersionScheme, VersionFailure: ReasonUnknownVersionScheme},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonUnknownVersionScheme, UnknownVersionScheme: true},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "2.0.0"}},
 		},
 
@@ -319,7 +319,7 @@ func TestEvaluatePackageRows(t *testing.T) {
 				pkgRow("SEMVER", "0", "2.0.0", ""),
 				pkgRow("VERSIONS", "", "", ""),
 			},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, Comparable: true, VersionFailure: ReasonInvalidVersion},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidVersion, Comparable: true, InvalidVersion: true},
 			wantRanges: []version.Range{{Introduced: "0", Fixed: "1.0"}, {Introduced: "0", Fixed: "2.0.0"}, {}},
 		},
 		{
@@ -329,7 +329,7 @@ func TestEvaluatePackageRows(t *testing.T) {
 				pkgRow("ECOSYSTEM", "0", "1.0", ""),
 				pkgRow("SEMVER", "0", "2.0.0", ""),
 			},
-			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidRange, Comparable: true, VersionFailure: ReasonInvalidVersion},
+			want:       Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidRange, Comparable: true, InvalidVersion: true},
 			wantRanges: []version.Range{{}, {Introduced: "0", Fixed: "1.0"}, {Introduced: "0", Fixed: "2.0.0"}},
 		},
 		{

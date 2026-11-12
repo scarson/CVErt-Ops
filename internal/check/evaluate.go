@@ -339,8 +339,8 @@ func (t *itemTally) add(out Outcome) {
 	t.evaluated++
 	t.tooManyRanges = t.tooManyRanges || out.Reason == ReasonTooManyRanges
 	t.evaluationFailed = t.evaluationFailed || out.EvaluationFailed
-	t.invalidVersion = t.invalidVersion || out.VersionFailure == ReasonInvalidVersion
-	t.unknownVersionScheme = t.unknownVersionScheme || out.VersionFailure == ReasonUnknownVersionScheme
+	t.invalidVersion = t.invalidVersion || out.InvalidVersion
+	t.unknownVersionScheme = t.unknownVersionScheme || out.UnknownVersionScheme
 }
 
 // setStatus sets an evaluated item's status by design section 4.7, first match
@@ -441,8 +441,13 @@ func dotNetSDKVersion(item Item) bool {
 	if len(parts) < 3 {
 		return false
 	}
-	n, err := strconv.Atoi(parts[2])
-	return err == nil && n >= sdkFeatureBand
+	// Compared as digits, so a component too large for an int is still read.
+	digits := parts[2]
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimLeft(digits, "0"))
+	return err != nil || n >= sdkFeatureBand
 }
 
 // evaluateAdvisory decides one advisory's verdict for an item and, unless it is
@@ -517,15 +522,26 @@ func fixEcosystem(item Item, matched []Matched, fixed string) *string {
 	return found
 }
 
-// withFailureReason gives an advisory that cannot be evaluated and has no reason
-// the reason evaluation_failed, and flags it as a failure of the check. Every
-// comparison error wraps one the version package classifies, so this means a
-// new error reasonFor does not map; it is logged to log so the mapping can be
-// added.
+// withFailureReason makes an advisory that cannot be evaluated show the failure
+// that decides its item's status (design section 4.7), whatever row reason came
+// first: too_many_ranges stays; then evaluation_failed, for a row whose
+// comparison failed with an error reasonFor cannot classify or an outcome with
+// no reason; then unknown_version_scheme; then invalid_version. Every
+// comparison error wraps one the version package classifies, so
+// evaluation_failed means a new error reasonFor does not map; it is logged to
+// log so the mapping can be added.
 func withFailureReason(log *slog.Logger, id string, out Outcome) Outcome {
-	if out.Verdict == CannotEvaluate && out.Reason == "" {
+	if out.Verdict != CannotEvaluate || out.Reason == ReasonTooManyRanges {
+		return out
+	}
+	switch {
+	case out.EvaluationFailed || out.Reason == "":
 		log.Error("check: an advisory could not be evaluated for an unclassified reason", "advisory_id", id)
 		out.Reason, out.EvaluationFailed = ReasonEvaluationFailed, true
+	case out.UnknownVersionScheme:
+		out.Reason = ReasonUnknownVersionScheme
+	case out.InvalidVersion:
+		out.Reason = ReasonInvalidVersion
 	}
 	return out
 }

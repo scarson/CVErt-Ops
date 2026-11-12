@@ -5,6 +5,8 @@ package check
 import (
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // CNAName is one way to find CNA rows for a CPE product.
@@ -103,9 +105,17 @@ var dotNetOtherProducts = []CNAName{
 }
 
 // isOtherProduct reports whether a stored CNA vendor and product is one of
-// names, the other products of an item's CPE.
+// names, the other products of an item's CPE. A prefix name matches only up to
+// a word boundary: ".net framework" matches ".NET Framework 4.8" and not
+// ".NET FrameworkExtensions".
 func isOtherProduct(names []CNAName, vendor, product string) bool {
-	return slices.ContainsFunc(names, func(n CNAName) bool { return n.Matches(vendor, product) })
+	return slices.ContainsFunc(names, func(n CNAName) bool {
+		if !n.Matches(vendor, product) {
+			return false
+		}
+		rest := []rune(strings.ToLower(product))[utf8.RuneCountInString(n.Product):]
+		return !n.Prefix || len(rest) == 0 || !unicode.IsLetter(rest[0]) && !unicode.IsDigit(rest[0])
+	})
 }
 
 // cnaNames finds cnaTable's row for a CPE "vendor:product".
@@ -136,12 +146,23 @@ func NamesFor(p ProductRef) (names []CNAName, cpes []string, mapped bool) {
 	if !mapped {
 		return names, []string{ownCPE}, false
 	}
-	for _, n := range row.Names {
+	// Every spelling of the row is the same product, so each reads the CNA
+	// names of the others too.
+	for _, cpe := range row.CPEs {
+		vp := splitCPE(cpe)
+		names = appendNew(names, ownNames(ProductRef{Part: p.Part, Vendor: vp[0], Product: vp[1]})...)
+	}
+	return appendNew(names, row.Names...), slices.Clone(row.CPEs), true
+}
+
+// appendNew appends each name that names does not already hold.
+func appendNew(names []CNAName, more ...CNAName) []CNAName {
+	for _, n := range more {
 		if !slices.Contains(names, n) {
 			names = append(names, n)
 		}
 	}
-	return names, slices.Clone(row.CPEs), true
+	return names
 }
 
 // nearbyNames returns the vendors and name fragments of the nearby-name check

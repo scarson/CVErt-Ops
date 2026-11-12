@@ -53,12 +53,12 @@ func TestKeysFor(t *testing.T) {
 		},
 		CNANames: []CNANameKey{
 			exactName("nodejs", "node.js"),
-			exactName("nodejs", "node"),
 			exactName("nodejs", "nodejs"),
+			exactName("nodejs", "node"),
 			exactName("microsoft", ".net"),
-			{V: "microsoft", Lo: ".net ", Hi: ".net!", FullVendor: "microsoft", FullProduct: ""},
 			exactName("microsoft", ".net core"),
 			exactName("microsoft", ".net_core"),
+			{V: "microsoft", Lo: ".net ", Hi: ".net!", FullVendor: "microsoft", FullProduct: ""},
 		},
 		CNAPackageKeys: []string{"npm/fastify", "PyPI/foo-bar"},
 		CNANear: []CNANearKey{
@@ -87,8 +87,8 @@ func TestKeysForItemUses(t *testing.T) {
 		{cpes: []int{0, 1}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: []int{0}},
 		// Both .NET spellings read the NVD rows under each, and leave out the
 		// CNA rows of the .NET Framework and OpenAPI.NET.
-		{cpes: []int{2, 3}, cnaNames: []int{3, 4}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
-		{cpes: []int{2, 3}, cnaNames: []int{5, 6, 4}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
+		{cpes: []int{2, 3}, cnaNames: []int{3, 4, 5, 6}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
+		{cpes: []int{2, 3}, cnaNames: []int{4, 5, 3, 6}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
 		none, // an invalid item uses no keys
 		{pkgs: []int{3}, cnaPackage: 1},
 	}

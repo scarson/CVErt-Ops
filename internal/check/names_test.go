@@ -23,12 +23,13 @@ func TestNamesFor(t *testing.T) {
 		wantMapped bool
 	}{
 		{
-			name:    "nodejs:node.js: its own name and both table names",
+			// Every spelling of a row reads every spelling's own name, then the table's.
+			name:    "nodejs:node.js: its own name, the other spelling's, and the table's",
 			product: ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"},
 			wantNames: []CNAName{
 				{Vendor: "nodejs", Product: "node.js"},
-				{Vendor: "nodejs", Product: "node"},
 				{Vendor: "nodejs", Product: "nodejs"},
+				{Vendor: "nodejs", Product: "node"},
 			},
 			wantCPEs:   node,
 			wantMapped: true,
@@ -39,6 +40,7 @@ func TestNamesFor(t *testing.T) {
 			product: ProductRef{Part: "a", Vendor: "nodejs", Product: "nodejs"},
 			wantNames: []CNAName{
 				{Vendor: "nodejs", Product: "nodejs"},
+				{Vendor: "nodejs", Product: "node.js"},
 				{Vendor: "nodejs", Product: "node"},
 			},
 			wantCPEs:   node,
@@ -72,8 +74,9 @@ func TestNamesFor(t *testing.T) {
 			product: ProductRef{Part: "a", Vendor: "nginx", Product: "nginx"},
 			wantNames: []CNAName{
 				{Vendor: "nginx", Product: "nginx"},
-				{Vendor: "f5", Product: "nginx open source"},
 				{Vendor: "f5", Product: "nginx"},
+				{Vendor: "f5", Product: "nginx open source"},
+				{Vendor: "f5", Product: "nginx_open_source"},
 			},
 			wantCPEs:   nginx,
 			wantMapped: true,
@@ -83,8 +86,9 @@ func TestNamesFor(t *testing.T) {
 			product: ProductRef{Part: "a", Vendor: "f5", Product: "nginx"},
 			wantNames: []CNAName{
 				{Vendor: "f5", Product: "nginx"},
-				{Vendor: "f5", Product: "nginx open source"},
 				{Vendor: "nginx", Product: "nginx"},
+				{Vendor: "f5", Product: "nginx open source"},
+				{Vendor: "f5", Product: "nginx_open_source"},
 			},
 			wantCPEs:   nginx,
 			wantMapped: true,
@@ -107,6 +111,8 @@ func TestNamesFor(t *testing.T) {
 			product: ProductRef{Part: "a", Vendor: "microsoft", Product: ".net"},
 			wantNames: []CNAName{
 				{Vendor: "microsoft", Product: ".net"},
+				{Vendor: "microsoft", Product: ".net core"},
+				{Vendor: "microsoft", Product: ".net_core"},
 				{Vendor: "microsoft", Product: ".net ", Prefix: true},
 			},
 			wantCPEs:   dotnet,
@@ -118,6 +124,7 @@ func TestNamesFor(t *testing.T) {
 			wantNames: []CNAName{
 				{Vendor: "microsoft", Product: ".net core"},
 				{Vendor: "microsoft", Product: ".net_core"},
+				{Vendor: "microsoft", Product: ".net"},
 				{Vendor: "microsoft", Product: ".net ", Prefix: true},
 			},
 			wantCPEs:   dotnet,
@@ -305,7 +312,7 @@ func TestNamesForDoesNotShareTheTable(t *testing.T) {
 	names[1].Product = "changed"
 	cpes[0] = "changed"
 	again, againCPEs, _ := NamesFor(node)
-	if again[1].Product != "node" || againCPEs[0] != "nodejs:node.js" {
+	if again[1].Product != "nodejs" || againCPEs[0] != "nodejs:node.js" {
 		t.Errorf("NamesFor returned the table's own slices: table now gives %+v and %q", again, againCPEs)
 	}
 }

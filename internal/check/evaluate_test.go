@@ -458,6 +458,26 @@ func TestEvaluateItemStatus(t *testing.T) {
 			want: summary{status: "no_advisory_found", reason: "null", warnings: none},
 		},
 		{
+			name: "the highest runtime number is not an SDK number", raw: RawItem{CPE: dotnetCPE, Version: "10.0.99"},
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")) },
+			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "the lowest SDK number", raw: RawItem{CPE: dotnetCPE, Version: "10.0.100"},
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")) },
+			want: summary{status: "cannot_evaluate", reason: "sdk_version_not_comparable", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "an SDK number under microsoft:.net_core, with a fourth component",
+			raw:  RawItem{CPE: "cpe:2.3:a:microsoft:.net_core:*:*:*:*:*:*:*:*", Version: "8.0.404.1"},
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net_core", cpeAt(cveA, "cpe:2.3:a:microsoft:.net_core:*:*:*:*:*:*:*:*", "8.0.0", "8.0.11"))
+			},
+			want: summary{status: "cannot_evaluate", reason: "sdk_version_not_comparable", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
 			name: "data_incomplete beats an advisory that cannot be evaluated", raw: npmItem,
 			rows:  func(r *testRows) { r.packages("npm", "pkg", cannotPkg(cveA), clearPkg(cveB)) },
 			feeds: feedsWith(false),
@@ -493,6 +513,30 @@ func TestEvaluateItemStatus(t *testing.T) {
 		{
 			name: "an Ubuntu Pro sub-stream item with no rows", raw: fipsItem,
 			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none},
+		},
+		{
+			name: "an Ubuntu Pro sub-stream item with an advisory that cannot be evaluated", raw: fipsItem,
+			rows: func(r *testRows) { r.packages(fipsItem.Ecosystem, "openssl", pkgAt(cveA, "", "3.0.2-0ubuntu1.11+Fips1")) },
+			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none,
+				counts: Counts{CannotEvaluate: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "an Ubuntu Pro sub-stream item whose only rows are retracted", raw: fipsItem,
+			rows: func(r *testRows) {
+				r.packages(fipsItem.Ecosystem, "openssl", withStatus(pkgAt(cveA, "0", "3.0.2-0ubuntu1.11+Fips1"), "REJECTED"))
+			},
+			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none,
+				counts: Counts{Retracted: 1}},
+		},
+		{
+			// Ubuntu publishes some streams outside Pro, for NVIDIA BlueField hardware.
+			name: "a stream outside Pro that is not a release is never cleared",
+			raw:  RawItem{Ecosystem: "Ubuntu:Nvidia-BlueField:22.04:LTS", Name: "linux-bluefield", Version: "5.15.0-1060.62"},
+			rows: func(r *testRows) {
+				r.packages("Ubuntu:Nvidia-BlueField:22.04:LTS", "linux-bluefield", pkgAt(cveA, "0", "5.15.0-1050.52"))
+			},
+			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none,
+				counts: Counts{NotAffected: 1}},
 		},
 		{
 			name: "cna_product_not_mapped beats an advisory that cannot be evaluated", raw: widgetItem,
@@ -719,6 +763,113 @@ func TestEvaluateOtherProducts(t *testing.T) {
 	}
 }
 
+// TestEvaluateReviewFindings covers the shapes the implementation review found:
+// each CPE spelling of a table row reads every spelling's own CNA names; a .NET
+// SDK component too large for a machine integer is still an SDK number; a row's
+// version failure is the advisory's reason, whichever row comes first, and both
+// kinds are kept; an exclusion prefix ends at a word boundary.
+func TestEvaluateReviewFindings(t *testing.T) {
+	t.Parallel()
+	nodeAlias := "cpe:2.3:a:nodejs:nodejs:*:*:*:*:*:*:*:*"
+	affected24 := CNAVersion{Version: "24.0.0", LessThan: "24.1.0", Status: "affected", VersionType: "semver"}
+	semverRow := PackageRow{CVEID: cveA, RangeType: "SEMVER", Introduced: "0", Fixed: "2.0.0"}
+	ecoRow := PackageRow{CVEID: cveA, RangeType: "ECOSYSTEM", Introduced: "0", Fixed: "2.0.0"}
+	tests := []struct {
+		name    string
+		raw     RawItem
+		rows    func(r *testRows)
+		status  string
+		reason  string
+		reasons map[string]string
+	}{
+		{
+			name: "nodejs:nodejs reads the CNA name of nodejs:node.js", raw: RawItem{CPE: nodeAlias, Version: "24.0.5"},
+			rows: func(r *testRows) {
+				r.cpes("nodejs", "nodejs", cpeAt(cveB, nodeAlias, "20.0.0", "21.0.0")).
+					cnaName("nodejs", "node.js", false, cnaAt(cveA, "nodejs", "node.js", affected24))
+			},
+			status: "affected", reason: "null", reasons: map[string]string{cveA: "affected/null"},
+		},
+		{
+			name: "microsoft:.net reads the CNA name of microsoft:.net_core", raw: dotnetRT,
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net", cpeAt(cveB, dotnetCPE, "8.0.0", "8.0.5")).
+					cnaName("microsoft", ".net core", false, cnaAt(cveA, "Microsoft", ".NET Core",
+						CNAVersion{Version: "10.0.0", LessThan: "10.0.16", Status: "affected", VersionType: "semver"}))
+			},
+			status: "affected", reason: "null", reasons: map[string]string{cveA: "affected/null"},
+		},
+		{
+			name: "an SDK component too large for an int", raw: RawItem{CPE: dotnetCPE, Version: "10.0.18446744073709551616"},
+			rows:   func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")) },
+			status: "cannot_evaluate", reason: "sdk_version_not_comparable", reasons: map[string]string{},
+		},
+		{
+			// Debian reads 1:5.0; the SEMVER row cannot, and the first row's range
+			// is malformed. The item's status comes from the version failure, so
+			// the advisory shows it.
+			name: "a version failure is the advisory's reason after another failing row", raw: RawItem{Ecosystem: "Debian:13", Name: "pkg", Version: "1:5.0"},
+			rows: func(r *testRows) {
+				r.packages("Debian:13", "pkg", PackageRow{CVEID: cveA, RangeType: "ECOSYSTEM", Fixed: "2.0"}, semverRow, clearPkg(cveB))
+			},
+			status: "cannot_evaluate", reason: "null", reasons: map[string]string{cveA: "cannot_evaluate/invalid_version"},
+		},
+		{
+			name: "both version failure kinds are kept, SEMVER row first", raw: RawItem{Ecosystem: "opam", Name: "pkg", Version: "banana"},
+			rows:   func(r *testRows) { r.packages("opam", "pkg", semverRow, ecoRow) },
+			status: "cannot_evaluate", reason: "unknown_version_scheme", reasons: map[string]string{cveA: "cannot_evaluate/unknown_version_scheme"},
+		},
+		{
+			name: "both version failure kinds are kept, ECOSYSTEM row first", raw: RawItem{Ecosystem: "opam", Name: "pkg", Version: "banana"},
+			rows:   func(r *testRows) { r.packages("opam", "pkg", ecoRow, semverRow) },
+			status: "cannot_evaluate", reason: "unknown_version_scheme", reasons: map[string]string{cveA: "cannot_evaluate/unknown_version_scheme"},
+		},
+		{
+			// Only ".NET Framework" itself, followed by a word boundary, is the
+			// .NET Framework.
+			name: "an exclusion prefix ends at a word boundary", raw: dotnetRT,
+			rows: func(r *testRows) {
+				r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "8.0.0", "8.0.5")).
+					cnaStored(cnaAt(cveA, "Microsoft", ".NET FrameworkExtensions 10.0",
+						CNAVersion{Version: "10.0.0", LessThan: "10.0.16", Status: "affected", VersionType: "semver"}))
+			},
+			status: "affected", reason: "null", reasons: map[string]string{cveA: "affected/null"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			items := parseItems(tt.raw)
+			r := rowsFor(t, items)
+			tt.rows(r)
+			got := run(t, items, r).Results[0]
+			reason := "null"
+			if got.Reason != nil {
+				reason = string(*got.Reason)
+			}
+			if got.Status != tt.status || reason != tt.reason || !reflect.DeepEqual(advisoryReasons(got), tt.reasons) {
+				t.Errorf("status %s, reason %s, advisories %v; want %s, %s, %v",
+					got.Status, reason, advisoryReasons(got), tt.status, tt.reason, tt.reasons)
+			}
+		})
+	}
+}
+
+// TestEvaluateMaskedEvaluationFailure checks that a row's unclassified failure is
+// the advisory's reason and is logged even when another row's reason came first.
+func TestEvaluateMaskedEvaluationFailure(t *testing.T) {
+	t.Parallel()
+	out := Outcome{Verdict: CannotEvaluate, Reason: ReasonInvalidRange, EvaluationFailed: true, InvalidVersion: true}
+	var logs bytes.Buffer
+	out = withFailureReason(slog.New(slog.NewTextHandler(&logs, nil)), cveA, out)
+	if out.Reason != ReasonEvaluationFailed {
+		t.Errorf("reason = %s, want evaluation_failed", out.Reason)
+	}
+	if !strings.Contains(logs.String(), "advisory_id="+cveA) {
+		t.Errorf("log = %q, want an error naming the advisory", logs.String())
+	}
+}
+
 // TestEvaluateCountsByReason checks that every advisory that cannot be
 // evaluated is counted under its one reason, including those past the listing
 // limit, so the counts by reason sum to cannot_evaluate.
@@ -830,6 +981,27 @@ func TestEvaluateFixEcosystem(t *testing.T) {
 			name:        "no fix",
 			rows:        func(r *testRows) { r.packages(own, "php8.5", pkgAt(cveA, "0", "")) },
 			wantMatched: []string{own},
+		},
+		{
+			// The standard fix still holds the version inside the Pro range, so the
+			// Pro fix is the lowest that clears both.
+			name: "a later Pro fix above the standard one",
+			rows: func(r *testRows) {
+				r.packages(own, "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.5")).
+					packages(pro, "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.5+esm1"))
+			},
+			wantFix:     "8.5.4-0ubuntu1.5+esm1",
+			wantFixEco:  pro,
+			wantMatched: []string{own, pro},
+		},
+		{
+			// An unbounded standard row holds every Pro fix inside it.
+			name: "an unbounded standard row and a Pro fix",
+			rows: func(r *testRows) {
+				r.packages(own, "php8.5", pkgAt(cveA, "0", "")).
+					packages(pro, "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.5+esm1"))
+			},
+			wantMatched: []string{own, pro},
 		},
 	}
 	for _, tt := range tests {

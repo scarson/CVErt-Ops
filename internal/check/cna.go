@@ -294,6 +294,10 @@ func outsideSuffixBounds(m *workMeter, ver string, e CNAVersion) bool {
 	if !suffixBound.MatchString(r.Introduced) && !suffixBound.MatchString(upper) {
 		return false
 	}
+	// A value shaped like a wildcard (2.x, 1.0-beta.x) names no single version.
+	if wildcardShaped.MatchString(r.Introduced) || wildcardShaped.MatchString(upper) {
+		return false
+	}
 	for _, b := range []string{r.Introduced, upper} {
 		if _, err := version.NumericOrder(b, b); err != nil && b != belowEverything && !suffixBound.MatchString(b) {
 			return false

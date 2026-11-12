@@ -108,6 +108,25 @@ func TestOrdersBySemver(t *testing.T) {
 	}
 }
 
+func TestIsSubStream(t *testing.T) {
+	t.Parallel()
+	for _, eco := range []string{
+		"Ubuntu:Pro:FIPS:20.04:LTS", "Ubuntu:Pro:FIPS-updates:22.04:LTS", "Ubuntu:Pro:FIPS-preview:22.04:LTS",
+		"Ubuntu:Pro:Realtime:24.04:LTS", "Ubuntu:Nvidia-BlueField:22.04:LTS", "Ubuntu:SomeNewStream:26.04:LTS",
+	} {
+		if !IsSubStream(eco) {
+			t.Errorf("IsSubStream(%q) = false, want true", eco)
+		}
+	}
+	for _, eco := range []string{
+		"Ubuntu:22.04:LTS", "Ubuntu:Pro:22.04:LTS", "Ubuntu:25.10", "Ubuntu:Pro:25.10", "Ubuntu", "Debian:13", "npm",
+	} {
+		if IsSubStream(eco) {
+			t.Errorf("IsSubStream(%q) = true, want false", eco)
+		}
+	}
+}
+
 func TestReleaseStreams(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -954,6 +954,33 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		}
 	})
 
+	t.Run("Ubuntu standard and Pro streams", func(t *testing.T) {
+		t.Parallel()
+		f := newCompleteCheckFixture(t)
+		// A universe package whose fix Ubuntu publishes only in Pro, and a main
+		// package whose fix it publishes only in the standard stream.
+		const proOnly, stdOnly = "UBUNTU-CVE-2026-90136", "USN-9001-1"
+		ingestCheckPatch(t, f, "osv", feed.CanonicalPatch{CVEID: proOnly, SourceID: proOnly, AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "Ubuntu:Pro:22.04:LTS", PackageName: "universe-pkg", RangeType: "ECOSYSTEM", Introduced: "0", Fixed: "1.0-1ubuntu0.1~esm1"}}})
+		ingestCheckPatch(t, f, "osv", feed.CanonicalPatch{CVEID: stdOnly, SourceID: stdOnly, AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "Ubuntu:22.04:LTS", PackageName: "main-pkg", RangeType: "ECOSYSTEM", Introduced: "0", Fixed: "2.0-1ubuntu0.2"}}})
+
+		results := checkItems(t, f, pkgItem("Ubuntu:22.04:LTS", "universe-pkg", "1.0-1"), pkgItem("Ubuntu:Pro:22.04:LTS", "main-pkg", "2.0-1ubuntu0.1"),
+			pkgItem("Ubuntu:Pro:FIPS-updates:22.04:LTS", "main-pkg", "2.0-1ubuntu0.1"))
+		wantItem(t, results.Results[0], check.StatusAffected, "")
+		a := wantAdvisory(t, results.Results[0], proOnly, check.VerdictAffected, "", "1.0-1ubuntu0.1~esm1")
+		if a != nil && (a.FixEcosystem == nil || *a.FixEcosystem != "Ubuntu:Pro:22.04:LTS") {
+			t.Errorf("fix_ecosystem = %v, want Ubuntu:Pro:22.04:LTS", a.FixEcosystem)
+		}
+		wantItem(t, results.Results[1], check.StatusAffected, "")
+		a = wantAdvisory(t, results.Results[1], stdOnly, check.VerdictAffected, "", "2.0-1ubuntu0.2")
+		if a != nil && (len(a.MatchedRanges) != 1 || a.MatchedRanges[0].Ecosystem != "Ubuntu:22.04:LTS") {
+			t.Errorf("matched_ranges = %+v, want one from Ubuntu:22.04:LTS", a.MatchedRanges)
+		}
+		// A sub-stream reads only its own rows, and has none here.
+		wantItem(t, results.Results[2], check.StatusCannotEvaluate, "distro_stream_incomplete")
+	})
+
 	t.Run("Per-item limit", func(t *testing.T) {
 		t.Parallel()
 		f := newCompleteCheckFixture(t)

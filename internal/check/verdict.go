@@ -54,20 +54,21 @@ type Matched struct {
 
 // Outcome is what one source says about one advisory.
 //
-// VersionFailure and EvaluationFailed record failures of any row, whatever
-// Reason shows: VersionFailure is the first invalid_version or
-// unknown_version_scheme a row gave, and EvaluationFailed is set when a row's
-// comparison failed with an error reasonFor cannot classify. Item status reads
-// them (design section 4.7), because one row's reason can hide another's.
+// InvalidVersion, UnknownVersionScheme and EvaluationFailed record failures of
+// any row, whatever Reason shows: a row gave invalid_version, a row gave
+// unknown_version_scheme, or a row's comparison failed with an error reasonFor
+// cannot classify. Item status reads them (design section 4.7), because one
+// row's reason can hide another's.
 type Outcome struct {
-	Verdict          Verdict
-	Reason           Reason
-	Matched          []Matched
-	Candidates       []string // upper bounds of ranges reporting Affected
-	Ranges           []Bound  // every range, for validating fix candidates
-	Comparable       bool     // at least one row was compared
-	VersionFailure   Reason
-	EvaluationFailed bool
+	Verdict              Verdict
+	Reason               Reason
+	Matched              []Matched
+	Candidates           []string // upper bounds of ranges reporting Affected
+	Ranges               []Bound  // every range, for validating fix candidates
+	Comparable           bool     // at least one row was compared
+	InvalidVersion       bool
+	UnknownVersionScheme bool
+	EvaluationFailed     bool
 }
 
 // Bound is one range with the order that reads it.
@@ -123,10 +124,10 @@ func (v *rowVerdicts) cannotEvaluate(reason Reason) {
 	}
 	v.anyCannotEvaluate = true
 	switch reason {
-	case ReasonInvalidVersion, ReasonUnknownVersionScheme:
-		if v.out.VersionFailure == "" {
-			v.out.VersionFailure = reason
-		}
+	case ReasonInvalidVersion:
+		v.out.InvalidVersion = true
+	case ReasonUnknownVersionScheme:
+		v.out.UnknownVersionScheme = true
 	case "":
 		v.out.EvaluationFailed = true
 	}

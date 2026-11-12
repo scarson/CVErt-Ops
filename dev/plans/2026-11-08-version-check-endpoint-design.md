@@ -339,8 +339,9 @@ One SQL statement per data source (packages, CPE rows, CNA names, CNA package ke
 CREATE INDEX CONCURRENTLY IF NOT EXISTS cve_affected_packages_check_idx
     ON cve_affected_packages (ecosystem,
         (CASE WHEN ecosystem = 'PyPI' THEN regexp_replace(lower(package_name), '[-_.]+', '-', 'g') ELSE lower(package_name) END));
+-- Migration 000061 (bounded CPE and package keys) replaced the full-value key with left(..., 512).
 CREATE INDEX CONCURRENTLY IF NOT EXISTS cve_cpe_matches_check_idx
-    ON cve_cpe_matches ((cpe_normalized COLLATE "C"));
+    ON cve_cpe_matches ((left(cpe_normalized, 512) COLLATE "C"));
 CREATE INDEX CONCURRENTLY IF NOT EXISTS cve_cna_affected_check_idx
     ON cve_cna_affected ((left(lower(vendor), 256) COLLATE "C"), (left(lower(product), 256) COLLATE "C"));
 CREATE INDEX CONCURRENTLY IF NOT EXISTS cve_cna_affected_package_key_idx
@@ -348,7 +349,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS cve_cna_affected_package_key_idx
 ```
 
 - The package expression is `ecosystem.FoldedNameSQL`'s output, and the query is built from that function, so the two cannot drift. A test asserts the index definition matches.
-- CPE rows are found by a range on the prefix, with the collation written on both comparisons: `m.cpe_normalized COLLATE "C" >= k.lo COLLATE "C" AND m.cpe_normalized COLLATE "C" < k.hi COLLATE "C"`, for `lo = 'cpe:2.3:a:nodejs:node.js:'` and `hi = 'cpe:2.3:a:nodejs:node.js;'`. Without it, on a database that is not C-collated, the index is not used. `LIKE` with array parameters cannot use a btree. Taking the prefix as written also means escaped colons need no special handling.
+- CPE rows are found by a range on the prefix, with the collation written on both comparisons: `left(m.cpe_normalized, 512) COLLATE "C" >= k.lo COLLATE "C" AND left(m.cpe_normalized, 512) COLLATE "C" < k.hi COLLATE "C"`, for `lo = 'cpe:2.3:a:nodejs:node.js:'` and `hi = 'cpe:2.3:a:nodejs:node.js;'`. Without it, on a database that is not C-collated, the index is not used. `LIKE` with array parameters cannot use a btree. Taking the prefix as written also means escaped colons need no special handling. A CPE has no length bound, so the index holds its first 512 characters: `lo` and `hi` are cut to 512 characters the way CNA keys are cut, and the statement rechecks `starts_with(m.cpe_normalized, k.prefix)` with the whole prefix.
 - CNA rows are found by `left(lower(vendor), 256) COLLATE "C" = k.v COLLATE "C"` and a range on `left(lower(product), 256) COLLATE "C"`. Lookup keys are cut to the same 256 characters, or a longer name could never match. A prefix row uses its prefix bounds. An exact name uses `[name, name || chr(1))`. Both the whole vendor and the whole product are then rechecked in the same statement, because the index holds only 256 characters. `lower(vendor)` alone does not use this index.
 - CNA `vendor` and `product` can each reach 2,048 characters, and a value over the btree row limit would fail the merge of that whole CVE. `left(..., 256)` keeps the key under the limit. The migration comment on `cve_cna_affected` already records this hazard.
 - `cve_cna_affected` gains a nullable `package_key text` (section 4.6), written by merge.
@@ -529,7 +530,7 @@ The verdict functions also get table tests for each row of sections 4.1 to 4.7 a
 - Whether the "several fixes under one `introduced`" shape occurs outside `Root:*` and `GIT`.
 - Real row counts per package, to confirm the 50,000 and 200,000 limits.
 - Write cost of the three new indexes during a backfill.
-- `cve_affected_packages_eco_pkg_idx` may become redundant.
+- `cve_affected_packages_eco_pkg_idx` is no longer measured: migration 000061 dropped it, since no query compares the raw package name.
 - How often a looser CNA rule would be wrong: for CVEs with one product on each side and NVD analysis, how often NVD reports a version at or past the CNA's highest clean bound. The golden data is too small to decide this (section 15).
 - Share of CPE lookups blocked by a vulnerable row with no version bounds. In the golden NVD page, 11 of 503 vulnerable rows have `*` and no bounds.
 - How many CPE items answer `cna_product_not_mapped` or `cna_name_uncertain`, and for which names. Those are the table rows worth adding.

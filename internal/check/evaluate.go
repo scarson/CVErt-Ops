@@ -441,13 +441,13 @@ func dotNetSDKVersion(item Item) bool {
 	if len(parts) < 3 {
 		return false
 	}
-	// Compared as digits, so a component too large for an int is still read.
+	// Compared as digits, so a component of any length is read: three or more
+	// significant digits is sdkFeatureBand or more.
 	digits := parts[2]
 	if digits == "" || strings.Trim(digits, "0123456789") != "" {
 		return false
 	}
-	n, err := strconv.Atoi(strings.TrimLeft(digits, "0"))
-	return err != nil || n >= sdkFeatureBand
+	return len(strings.TrimLeft(digits, "0")) >= len(strconv.Itoa(sdkFeatureBand))
 }
 
 // evaluateAdvisory decides one advisory's verdict for an item and, unless it is

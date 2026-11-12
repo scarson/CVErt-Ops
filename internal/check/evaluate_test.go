@@ -458,6 +458,16 @@ func TestEvaluateItemStatus(t *testing.T) {
 			want: summary{status: "no_advisory_found", reason: "null", warnings: none},
 		},
 		{
+			name: "a release's first runtime is not an SDK number", raw: RawItem{CPE: dotnetCPE, Version: "10.0.0"},
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "9.0.0", "9.0.11")) },
+			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "a zero third component written with leading zeros", raw: RawItem{CPE: dotnetCPE, Version: "10.0.000"},
+			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "9.0.0", "9.0.11")) },
+			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
+		},
+		{
 			name: "the highest runtime number is not an SDK number", raw: RawItem{CPE: dotnetCPE, Version: "10.0.99"},
 			rows: func(r *testRows) { r.cpes("microsoft", ".net", cpeAt(cveA, dotnetCPE, "10.0.0", "10.0.13")) },
 			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},

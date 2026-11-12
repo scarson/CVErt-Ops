@@ -25,6 +25,7 @@ import (
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/audit"
+	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/config"
 	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/notify"
@@ -52,6 +53,8 @@ type Server struct {
 	store                 *store.Store
 	cfg                   *config.Config
 	argon2Sem             chan struct{}
+	checkSem              chan struct{} // slots for concurrent version checks
+	checkLimits           check.Limits  // per-item and per-advisory version check limits
 	rateLimiter           *ipRateLimiter
 	ghOAuth               *oauth2.Config             // nil when GitHub OAuth is not configured
 	ghAPIBaseURL          string                     // GitHub REST API base URL; overridable in tests
@@ -110,6 +113,8 @@ func NewServer(s *store.Store, cfg *config.Config, deps ServerDeps) (*Server, er
 		store:                 s,
 		cfg:                   cfg,
 		argon2Sem:             sem,
+		checkSem:              make(chan struct{}, maxConcurrentChecks),
+		checkLimits:           check.DefaultLimits,
 		rateLimiter:           rl,
 		orgRL:                 orgRL,
 		tierCache:             tc,
@@ -357,7 +362,7 @@ func (srv *Server) Handler() http.Handler {
 					r.Route("/items", func(r chi.Router) {
 						r.With(srv.RequireOrgRole(RoleViewer)).Get("/", srv.listWatchlistItemsHandler)
 						r.With(srv.RequireOrgRole(RoleMember)).Post("/", srv.createWatchlistItemHandler)
-					r.With(srv.RequireOrgRole(RoleMember)).Put("/", srv.replaceWatchlistItemsHandler)
+						r.With(srv.RequireOrgRole(RoleMember)).Put("/", srv.replaceWatchlistItemsHandler)
 						r.With(srv.RequireOrgRole(RoleMember)).Delete("/{item_id}", srv.deleteWatchlistItemHandler)
 					})
 				})
@@ -449,6 +454,9 @@ func (srv *Server) Handler() http.Handler {
 
 			// Inbound webhook for custom feed data ingestion (member+)
 			r.With(srv.RequireOrgRole(RoleMember)).Post("/ingest", srv.ingestHandler)
+
+			// Version check of listed components against the global CVE corpus (viewer+)
+			r.With(srv.RequireOrgRole(RoleViewer)).Post("/check", srv.checkComponentsHandler)
 
 			// AI-powered search and summarization (viewer+ per PLAN.md §7.3)
 			r.Route("/ai", func(r chi.Router) {

@@ -317,6 +317,9 @@ func TestOpenAPISpec(t *testing.T) {
 		// Spec-only: Org Tier
 		"/orgs/{org_id}/tier",
 
+		// Spec-only: Version check
+		"/orgs/{org_id}/check",
+
 		// Spec-only: Admin Feeds
 		"/admin/feeds",
 		"/admin/feeds/{feed}/run",

@@ -34,6 +34,8 @@ var sessionOnlyBodies = map[string]string{
 // each kind of caller.
 type securityFixture struct {
 	server    *httptest.Server
+	api       *Server
+	db        *testutil.TestDB
 	orgID     uuid.UUID
 	keys      map[string]string // API key by role
 	session   string            // access token of the org's owner
@@ -98,7 +100,7 @@ func newSecurityFixture(t *testing.T) *securityFixture {
 	srv.cfg.EmailVerificationMaxPerHour = 100
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &securityFixture{server: ts, orgID: org.ID, keys: keys, session: session, siteAdmin: siteAdmin}
+	return &securityFixture{server: ts, api: srv, db: db, orgID: org.ID, keys: keys, session: session, siteAdmin: siteAdmin}
 }
 
 // fillPath substitutes path parameters. IDs are random, so a request that passes

@@ -72,19 +72,51 @@ var ecosystems = map[string]ecosystemRule{
 // OSV ecosystem. The returned error is non-nil exactly when the status is
 // CannotEvaluate, and it says why.
 func Check(ecosystem, version string, r Range) (Status, error) {
-	name, rule, err := lookupEcosystem(ecosystem)
+	s, err := ecosystemScheme(ecosystem)
 	if err != nil {
 		return CannotEvaluate, err
 	}
+	return s.check(version, r)
+}
 
-	return scheme{
-		valid: func(v string) bool {
-			return len(v) <= maxVersionLen && !gitCommit.MatchString(v) && rule.syntax.MatchString(v)
-		},
-		compare: func(a, b string) (int, error) {
-			return compareInEcosystem(name, a, b)
-		},
-	}.check(version, r)
+// semverScheme orders versions as SemVer, with npm's syntax gate and ordering. It is
+// for ranges typed SEMVER in an ecosystem whose native order is not SemVer.
+var semverScheme = scheme{
+	valid: func(v string) bool {
+		return len(v) <= maxVersionLen && !gitCommit.MatchString(v) && semverSyntax.MatchString(v)
+	},
+	compare: func(a, b string) (int, error) {
+		return compareInEcosystem("npm", a, b)
+	},
+}
+
+// CheckSemver reports whether version is inside r under SemVer ordering,
+// whatever the ecosystem. A suffix such as 1.2.3-1ubuntu1 reads as a SemVer
+// prerelease. The returned error is non-nil exactly when the status is
+// CannotEvaluate, and it says why.
+func CheckSemver(version string, r Range) (Status, error) {
+	return semverScheme.check(version, r)
+}
+
+// Order compares two versions: negative when a sorts below b, positive when
+// above. It returns an error when either version cannot be read under the
+// ordering, because any answer would then be a guess.
+type Order func(a, b string) (int, error)
+
+// SemverOrder is the Order of CheckSemver.
+func SemverOrder(a, b string) (int, error) {
+	return semverScheme.order(a, b)
+}
+
+// EcosystemOrder returns the native Order of the named OSV ecosystem, or nil
+// when versions in it cannot be compared.
+func EcosystemOrder(ecosystem string) Order {
+	if !Supported(ecosystem) {
+		return nil
+	}
+	return func(a, b string) (int, error) {
+		return Compare(ecosystem, a, b)
+	}
 }
 
 // Supported reports whether versions in the named ecosystem can be compared.
@@ -96,16 +128,27 @@ func Supported(ecosystem string) bool {
 // Compare orders two versions of the named ecosystem: negative when a sorts below
 // b, positive when above. It returns an error when either cannot be compared reliably.
 func Compare(ecosystem, a, b string) (int, error) {
-	name, rule, err := lookupEcosystem(ecosystem)
+	s, err := ecosystemScheme(ecosystem)
 	if err != nil {
 		return 0, err
 	}
-	for _, v := range []string{a, b} {
-		if len(v) > maxVersionLen || gitCommit.MatchString(v) || !rule.syntax.MatchString(v) {
-			return 0, fmt.Errorf("%w: %q", ErrInvalidVersion, v)
-		}
+	return s.order(a, b)
+}
+
+// ecosystemScheme returns the validation and ordering of the named ecosystem.
+func ecosystemScheme(ecosystem string) (scheme, error) {
+	name, rule, err := lookupEcosystem(ecosystem)
+	if err != nil {
+		return scheme{}, err
 	}
-	return compareInEcosystem(name, a, b)
+	return scheme{
+		valid: func(v string) bool {
+			return len(v) <= maxVersionLen && !gitCommit.MatchString(v) && rule.syntax.MatchString(v)
+		},
+		compare: func(a, b string) (int, error) {
+			return compareInEcosystem(name, a, b)
+		},
+	}, nil
 }
 
 func lookupEcosystem(ecosystem string) (string, ecosystemRule, error) {

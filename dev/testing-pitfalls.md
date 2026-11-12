@@ -96,7 +96,7 @@ Feed adapters process untrusted external data. Every adapter test suite must cov
 
 ### When to use `SeedCorpus` vs hand-crafted fixtures
 
-`testutil.SeedCorpus(t, db)` seeds a test database with 68 real advisory records from 8 feed adapters via golden fixtures and the real merge pipeline. It provides a realistic, deterministic corpus for integration tests. Requires Docker (testcontainers).
+`testutil.SeedCorpus(t, db)` seeds a test database with 71 real advisory records from 8 feed adapters via golden fixtures and the real merge pipeline. It provides a realistic, deterministic corpus for integration tests. Requires Docker (testcontainers).
 
 **Use `SeedCorpus` when:**
 - Testing features that query across the CVE corpus (alert evaluation, search/FTS, reports, watchlists)

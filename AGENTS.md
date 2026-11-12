@@ -148,7 +148,7 @@ This is a security product — supply chain risk from unmaintained dependencies 
 
 ### Test data seeding
 
-- **`testutil.SeedCorpus(t, db)`** — seeds a test database with 68 real advisory records from 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) via golden fixtures and the real merge pipeline. Requires Docker (testcontainers). Use this for integration tests that need a realistic CVE corpus (alert evaluation, search, reports, watchlists).
+- **`testutil.SeedCorpus(t, db)`** — seeds a test database with 71 real advisory records from 8 feeds (NVD, MITRE, GHSA, OSV, KEV, MSRC, Red Hat, EPSS) via golden fixtures and the real merge pipeline. Requires Docker (testcontainers). Use this for integration tests that need a realistic CVE corpus (alert evaluation, search, reports, watchlists).
 - **Do NOT seed CVE test data with raw SQL inserts** — use `SeedCorpus` or store methods. Raw inserts bypass `material_hash` computation, child table population, and FTS index updates. See `dev/testing-pitfalls.md` §7.
 - **Golden file tests** exist for each feed adapter at `internal/feed/<adapter>/golden_test.go`. They serve captured real API responses via httptest. Do not delete or skip these — they catch upstream schema drift that unit tests with hand-crafted fixtures cannot detect.
 - **When NOT to use `SeedCorpus`:** For unit tests that need a specific CVE shape (e.g., CVSS 0.0, null description, specific CWE), hand-craft the `CanonicalPatch` directly. `SeedCorpus` provides breadth, not targeted edge cases. For adapter unit tests, continue using inline JSON fixtures for precise control over individual fields.

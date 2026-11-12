@@ -118,7 +118,31 @@ func (s *Store) withBypassRawTx(ctx context.Context, fn func(*sql.Tx) error) err
 // values; formatting is safe because orgID is a typed uuid.UUID, not
 // user-supplied text.
 func (s *Store) withOrgRawTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	return s.withOrgRawTxOptions(ctx, orgID, nil, fn)
+}
+
+// withOrgSnapshotTx is withOrgRawTx in one read-only REPEATABLE READ snapshot, for
+// reads that must not mix states from before and after a concurrent merge.
+//
+// JIT compilation is off inside it. Its statements are the version check
+// lookups, whose estimated cost passes PostgreSQL's JIT thresholds once a
+// request has a few keys, and compiling them costs more than it saves
+// (measurements in section 9 of
+// dev/plans/2026-11-08-version-check-endpoint-design.md).
+func (s *Store) withOrgSnapshotTx(ctx context.Context, orgID uuid.UUID, fn func(*sql.Tx) error) error {
+	opts := &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+	return s.withOrgRawTxOptions(ctx, orgID, opts, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "SET LOCAL jit = off"); err != nil {
+			return fmt.Errorf("set jit off: %w", err)
+		}
+		return fn(tx)
+	})
+}
+
+// withOrgRawTxOptions is withOrgRawTx with the transaction begun with opts; nil
+// gives the default isolation level, read-write.
+func (s *Store) withOrgRawTxOptions(ctx context.Context, orgID uuid.UUID, opts *sql.TxOptions, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("begin org tx: %w", err)
 	}

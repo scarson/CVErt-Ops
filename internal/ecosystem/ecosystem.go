@@ -123,3 +123,36 @@ func NeedsRelease(value string) bool {
 func OrdersBySemver(ecosystem string) bool {
 	return semverEcosystems[ecosystem]
 }
+
+// ubuntuPlainStream matches an Ubuntu release's standard stream ("Ubuntu:22.04:LTS")
+// or its plain Ubuntu Pro stream ("Ubuntu:Pro:22.04:LTS"), capturing the release.
+var ubuntuPlainStream = regexp.MustCompile(`^Ubuntu:(?:Pro:)?([0-9]+\.[0-9]+(?::LTS)?)$`)
+
+// IsSubStream reports whether ecosystem is an Ubuntu stream other than a
+// release's standard or plain Pro stream: a Pro sub-stream such as
+// "Ubuntu:Pro:FIPS-updates:22.04:LTS" or "Ubuntu:Pro:Realtime:24.04:LTS", or a
+// stream such as "Ubuntu:Nvidia-BlueField:22.04:LTS". A sub-stream lists its own
+// builds of some packages and not every advisory of its release for them, so no
+// row in it proves a package clear. Any Ubuntu ecosystem that is not a plain
+// stream counts, so a new stream is covered when it first appears.
+func IsSubStream(ecosystem string) bool {
+	return strings.HasPrefix(ecosystem, "Ubuntu:") && !ubuntuPlainStream.MatchString(ecosystem)
+}
+
+// ReleaseStreams returns the ecosystems whose package rows apply to a package in
+// ecosystem: ecosystem itself first, and for an Ubuntu release's standard or plain
+// Pro stream, the other of the two. Ubuntu publishes most fixes in one stream only:
+// a universe package's fix is often in Pro alone, and a main package's standard
+// fix is not repeated under Pro, so either stream alone misses advisories that
+// apply to a machine in the other. Pro sub-streams (FIPS, Realtime) have their own
+// builds and are returned alone.
+func ReleaseStreams(ecosystem string) []string {
+	m := ubuntuPlainStream.FindStringSubmatch(ecosystem)
+	if m == nil {
+		return []string{ecosystem}
+	}
+	if strings.HasPrefix(ecosystem, "Ubuntu:Pro:") {
+		return []string{ecosystem, "Ubuntu:" + m[1]}
+	}
+	return []string{ecosystem, "Ubuntu:Pro:" + m[1]}
+}

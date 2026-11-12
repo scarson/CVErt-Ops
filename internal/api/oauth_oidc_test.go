@@ -409,7 +409,7 @@ func doLinkInit(t *testing.T, ctx context.Context, ts *httptest.Server, orgID, a
 		t.Fatalf("new request: %v", err)
 	}
 	initReq.AddCookie(requestCookie("access_token", accessToken))
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("link init: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestIdentityLinking_Success(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	initReq.AddCookie(requestCookie("access_token", accessToken))
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -494,7 +494,7 @@ func TestIdentityLinking_Success(t *testing.T) {
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
 	cbReq.AddCookie(requestCookie("access_token", accessToken))
-	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestIdentityLinking_AlreadyLinked(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	initReq.AddCookie(requestCookie("access_token", accessToken))
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -583,7 +583,7 @@ func TestIdentityLinking_AlreadyLinked(t *testing.T) {
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
 	cbReq.AddCookie(requestCookie("access_token", accessToken))
-	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestIdentityLinking_InvalidJWT(t *testing.T) {
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
 	cbReq.AddCookie(requestCookie("access_token", "not-a-valid-jwt"))
-	cbResp, err := client.Do(cbReq)                                               //nolint:gosec // G704 false positive
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestIdentityLinking_NoSSOConnection(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	initReq.AddCookie(requestCookie("access_token", accessToken))
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("link init: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestIdentityLinking_DisabledSSO(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	initReq.AddCookie(requestCookie("access_token", accessToken))
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("link init: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestAudit_IdentityLinking(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	initReq.AddCookie(requestCookie("access_token", accessToken))
-	initResp, err := client.Do(initReq)                                       //nolint:gosec // G704 false positive
+	initResp, err := client.Do(initReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -873,7 +873,7 @@ func TestAudit_IdentityLinking(t *testing.T) {
 	cbReq.AddCookie(stateCookie)
 	cbReq.AddCookie(nonceCookie)
 	cbReq.AddCookie(requestCookie("access_token", accessToken))
-	cbResp, err := client.Do(cbReq)                                         //nolint:gosec // G704 false positive
+	cbResp, err := client.Do(cbReq) //nolint:gosec // G704 false positive
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}

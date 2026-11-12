@@ -191,6 +191,14 @@ func parsePurl(item Item, raw string) Item {
 // formatted string. The version component counts as stated unless it is "*", "-"
 // or empty. Both versions lose one leading "v" or "V" before a digit, because
 // node --version prints v24.22.0 and product versions compare as dotted numbers.
+// An update component other than "*", "-" or empty (rc1, sp2) names a version
+// other than the release, so it is kept with the version, joined by "-": the
+// result is not dotted numbers and is never compared as the release.
+//
+// Vendor and product may hold, unescaped, only letters, digits, ".", "-", "_"
+// and the wildcards "*" and "?", as CPE 2.3 requires; NVD stores every other
+// character escaped (notepad\+\+), so an unescaped one would match no row and
+// read as nothing known.
 //
 // A CPE 2.3 formatted string is printable ASCII, so any other character refuses
 // the item before lower-casing: Go's strings.ToLower and PostgreSQL's lower(),
@@ -210,7 +218,8 @@ func parseCPE(item Item, raw, version string) Item {
 	}
 	// Values are checked after dropping escapes, so "\-" cannot become the NA value "-".
 	part, vendor, product := parts[2], dropRedundantEscapes(parts[3]), dropRedundantEscapes(parts[4])
-	if part != "a" && part != "o" && part != "h" || !literalCPEValue(vendor) || !literalCPEValue(product) {
+	if part != "a" && part != "o" && part != "h" || !literalCPEValue(vendor) || !literalCPEValue(product) ||
+		!escapedAsCPERequires(vendor) || !escapedAsCPERequires(product) {
 		return refuse(item, "invalid_cpe")
 	}
 
@@ -228,6 +237,9 @@ func parseCPE(item Item, raw, version string) Item {
 	case stated == "":
 		stated = own
 	}
+	if update := parts[6]; update != "*" && update != "-" && update != "" {
+		stated += "-" + update
+	}
 	item.Product = &ProductRef{Part: part, Vendor: vendor, Product: product}
 	item.Version = stated
 	return item
@@ -235,6 +247,23 @@ func parseCPE(item Item, raw, version string) Item {
 
 func literalCPEValue(v string) bool {
 	return v != "" && v != "*" && v != "-"
+}
+
+// escapedAsCPERequires reports whether every character of a lower-cased CPE
+// value that is not escaped by a backslash is a letter, a digit, ".", "-", "_",
+// "*" or "?".
+func escapedAsCPERequires(v string) bool {
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch {
+		case c == '\\':
+			i++
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', strings.IndexByte(".-_*?", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // dropRedundantEscapes removes the backslash before ".", "-" or "_" in a CPE

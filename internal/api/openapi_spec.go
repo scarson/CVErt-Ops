@@ -1633,9 +1633,10 @@ func registerCheckSpecOps(api huma.API) {
 		Description: "For each listed component version, says which advisories affect it, which range matched, " +
 			"and the lowest version the advisory data no longer reports as affected. Takes 1 to 500 items within " +
 			"the 1 MiB request limit, and reads only the global CVE corpus. An item that cannot be read is answered " +
-			"with status invalid, and the others are still answered. no_advisory_found means nothing is known about " +
-			"the component, not that it is safe; not_affected means the version is not in any analysed or CNA-named " +
-			"advisory held. Answers 422 with problem type urn:cvert:error:candidate_limit_exceeded when the request " +
+			"with status invalid, and the others are still answered. Only not_affected clears a version: it means the " +
+			"version is not in any analysed or CNA-named advisory held. unresolved means no advisory was established as " +
+			"affected and the data leaves some unresolved; cannot_evaluate means the check could not be completed for " +
+			"the item; no_advisory_found means no matching advisory was found, not that the component is safe. Answers 422 with problem type urn:cvert:error:candidate_limit_exceeded when the request " +
 			"reads more candidate rows than one request may (split the request), and 503 when no check slot is " +
 			"free (with Retry-After) or the check did not finish within 30 seconds. Item values are not stored or logged.",
 		Tags: []string{"Version Check"},

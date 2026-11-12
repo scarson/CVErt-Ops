@@ -94,6 +94,16 @@ func TestParseItemAccepts(t *testing.T) {
 			Item{Product: &ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"}, Version: "vv1"}},
 		{"cpe version and version field differ only in case", RawItem{CPE: "cpe:2.3:a:acme:tool:1.0RC1:*:*:*:*:*:*:*", Version: "1.0RC1"},
 			Item{Product: &ProductRef{Part: "a", Vendor: "acme", Product: "tool"}, Version: "1.0RC1"}},
+		// An update component such as rc1 names a version other than the release,
+		// so it is kept with the version and the version is not dotted numbers.
+		{"cpe update component kept with the version", RawItem{CPE: "cpe:2.3:a:nodejs:node.js:22.0.0:rc1:*:*:*:*:*:*"},
+			Item{Product: &ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"}, Version: "22.0.0-rc1"}},
+		{"cpe update component kept with the version field", RawItem{CPE: "cpe:2.3:a:nodejs:node.js:*:rc1:*:*:*:*:*:*", Version: "22.0.0"},
+			Item{Product: &ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"}, Version: "22.0.0-rc1"}},
+		{"cpe update dash is no update", RawItem{CPE: "cpe:2.3:a:nodejs:node.js:22.0.0:-:*:*:*:*:*:*"},
+			Item{Product: &ProductRef{Part: "a", Vendor: "nodejs", Product: "node.js"}, Version: "22.0.0"}},
+		{"cpe escaped plus in product", RawItem{CPE: `cpe:2.3:a:notepad-plus-plus:notepad\+\+:8.6:*:*:*:*:*:*:*`},
+			Item{Product: &ProductRef{Part: "a", Vendor: "notepad-plus-plus", Product: `notepad\+\+`}, Version: "8.6"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,6 +182,11 @@ func TestParseItemRefuses(t *testing.T) {
 		{"cpe product escaped dash", RawItem{CPE: `cpe:2.3:a:acme:\-:1.0:*:*:*:*:*:*:*`}, "invalid_cpe"},
 		{"cpe non-ASCII vendor", RawItem{CPE: "cpe:2.3:a:ärzte:app:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
 		{"cpe space in vendor", RawItem{CPE: "cpe:2.3:a:node js:app:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
+		// A CPE 2.3 formatted string escapes every character other than letters,
+		// digits, ".", "-", "_" and the wildcards; NVD stores notepad\+\+, so a bare
+		// "+" would find no row and read as nothing known.
+		{"cpe unescaped plus in product", RawItem{CPE: "cpe:2.3:a:notepad-plus-plus:notepad++:8.6:*:*:*:*:*:*:*"}, "invalid_cpe"},
+		{"cpe unescaped bang in vendor", RawItem{CPE: "cpe:2.3:a:foo!bar:app:*:*:*:*:*:*:*:*", Version: "1.0"}, "invalid_cpe"},
 		{"cpe version asterisk and no version field", RawItem{CPE: cpe}, "version_required"},
 		{"cpe version dash and no version field", RawItem{CPE: "cpe:2.3:a:nodejs:node.js:-:*:*:*:*:*:*:*"}, "version_required"},
 		{"cpe version empty and no version field", RawItem{CPE: "cpe:2.3:a:nodejs:node.js::*:*:*:*:*:*:*"}, "version_required"},

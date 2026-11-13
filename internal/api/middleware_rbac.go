@@ -50,14 +50,9 @@ func (srv *Server) RequireOrgRole(minRole Role) func(http.Handler) http.Handler 
 				return
 			}
 
-			effectiveRole := parseRole(member.Role)
-
 			// Cap effective role to the API key's role when the request is API-key-authenticated.
-			if apiKeyRoleStr, ok := r.Context().Value(ctxAPIKeyRole).(string); ok && apiKeyRoleStr != "" {
-				if keyRole := parseRole(apiKeyRoleStr); keyRole < effectiveRole {
-					effectiveRole = keyRole
-				}
-			}
+			apiKeyRole, _ := r.Context().Value(ctxAPIKeyRole).(string)
+			effectiveRole := capToKeyRole(parseRole(member.Role), apiKeyRole)
 
 			if effectiveRole < minRole {
 				writeProblem(w, http.StatusForbidden, "forbidden")

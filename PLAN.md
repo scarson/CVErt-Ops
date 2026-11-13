@@ -2265,6 +2265,7 @@ See section 18.1 for full schema.
 - `POST /api/v1/auth/refresh` — rotate refresh token, issue new access token
 - `POST /api/v1/auth/logout` — log out, clear auth cookies
 - `GET /api/v1/auth/me` — current user profile + org memberships
+- `GET /api/v1/whoami` — the calling credential: for an API key, the key (ID, name, role, expiry) and its org with the role it acts with, tier and rate limit; for a session, each active org with the same fields (any credential; a key's call counts against its org's rate limit)
 - `POST /api/v1/auth/change-password` — change password (authenticated)
 - `GET /api/v1/auth/invitations/{token}` — public invitation detail
 - `POST /api/v1/auth/invitations/{token}/accept` — accept invitation (authenticated)

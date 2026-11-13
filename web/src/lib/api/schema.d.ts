@@ -1844,6 +1844,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/whoami": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Describe the calling credential
+         * @description For an API key: the key's ID, name, role and expiry, and its org with the role the key acts with, the org's tier and its rate limit. A key's request counts against its org's rate limit. For a browser session: the user and each org where the membership is active. Answers 403 for a key whose creator is no longer an active member of the key's org.
+         */
+        get: operations["whoami"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2198,6 +2218,84 @@ export interface components {
             source_id?: string;
             source_name: string;
             source_url?: string;
+        };
+        CallerAPIKey: {
+            /**
+             * Format: date-time
+             * @description When the key stops working; null when it does not expire.
+             */
+            expires_at: string | null;
+            /**
+             * Format: uuid
+             * @description API key ID.
+             */
+            id: string;
+            /** @description The name given when the key was created. */
+            name: string;
+            /**
+             * @description The highest role the key may act with. org.role is this, lowered to the creator's current org role.
+             * @enum {string}
+             */
+            role: "viewer" | "member" | "admin";
+        };
+        CallerIdentity: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example /api/v1/schemas/CallerIdentity.json
+             */
+            readonly $schema?: string;
+            /** @description The calling key. Present only when principal is api_key. */
+            api_key?: components["schemas"]["CallerAPIKey"];
+            /** @description The org the key belongs to; a key can reach no other org. Present only when principal is api_key. */
+            org?: components["schemas"]["CallerOrg"];
+            /** @description Each org where the user's membership is active, by name. Present only when principal is session. */
+            orgs?: components["schemas"]["CallerOrg"][] | null;
+            /**
+             * @description api_key for a Bearer API key, session for a browser session cookie.
+             * @enum {string}
+             */
+            principal: "api_key" | "session";
+            /**
+             * Format: uuid
+             * @description The user the request acts as. For an API key, the user who created it.
+             */
+            user_id: string;
+        };
+        CallerOrg: {
+            /**
+             * Format: uuid
+             * @description Organization ID, for /orgs/{org_id} paths.
+             */
+            id: string;
+            /** @description Organization name. */
+            name: string;
+            /** @description The API rate limit that applies to requests in this org. */
+            rate_limit: components["schemas"]["CallerRateLimit"];
+            /**
+             * @description The role requests act with in this org.
+             * @enum {string}
+             */
+            role: "viewer" | "member" | "admin" | "owner";
+            /** @description The org's subscription tier. */
+            tier: string;
+        };
+        CallerRateLimit: {
+            /**
+             * Format: int64
+             * @description Requests that may be sent at once when the bucket is full.
+             */
+            burst: number;
+            /**
+             * Format: int64
+             * @description Sustained requests a minute.
+             */
+            requests_per_minute: number;
+            /**
+             * @description Who shares the bucket. org: every key and session acting in the org.
+             * @enum {string}
+             */
+            scope: "org";
         };
         ChangePasswordInputBody: {
             /**
@@ -8686,6 +8784,35 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    whoami: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CallerIdentity"];
+                };
             };
             /** @description Error */
             default: {

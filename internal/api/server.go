@@ -274,6 +274,9 @@ func (srv *Server) Handler() http.Handler {
 	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/callback", srv.oidcCallbackHandler)
 	apiRouter.With(srv.authRateLimit()).Get("/auth/oidc/link-callback", srv.oidcLinkCallbackHandler)
 
+	// ── Credential self-description (API key or session) ────────────────────
+	apiRouter.With(srv.RequireAuthenticated()).Get("/whoami", srv.whoamiHandler)
+
 	// ── Admin routes (authenticated + site admin, not org-scoped) ───────────
 	apiRouter.Route("/admin", func(r chi.Router) {
 		r.Use(srv.RequireAuthenticated())

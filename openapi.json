@@ -1099,6 +1099,162 @@
         ],
         "type": "object"
       },
+      "CallerAPIKey": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "description": "When the key stops working; null when it does not expire.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "API key ID.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "description": "The name given when the key was created.",
+            "type": "string"
+          },
+          "role": {
+            "description": "The highest role the key may act with. org.role is this, lowered to the creator's current org role.",
+            "enum": [
+              "viewer",
+              "member",
+              "admin"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "CallerIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "description": "A URL to the JSON Schema for this object.",
+            "examples": [
+              "/api/v1/schemas/CallerIdentity.json"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "type": "string"
+          },
+          "api_key": {
+            "$ref": "#/components/schemas/CallerAPIKey",
+            "description": "The calling key. Present only when principal is api_key."
+          },
+          "org": {
+            "$ref": "#/components/schemas/CallerOrg",
+            "description": "The org the key belongs to; a key can reach no other org. Present only when principal is api_key."
+          },
+          "orgs": {
+            "description": "Each org where the user's membership is active, by name. Present only when principal is session.",
+            "items": {
+              "$ref": "#/components/schemas/CallerOrg"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "principal": {
+            "description": "api_key for a Bearer API key, session for a browser session cookie.",
+            "enum": [
+              "api_key",
+              "session"
+            ],
+            "type": "string"
+          },
+          "user_id": {
+            "description": "The user the request acts as. For an API key, the user who created it.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "CallerOrg": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Organization ID, for /orgs/{org_id} paths.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "description": "Organization name.",
+            "type": "string"
+          },
+          "rate_limit": {
+            "$ref": "#/components/schemas/CallerRateLimit",
+            "description": "The API rate limit that applies to requests in this org."
+          },
+          "role": {
+            "description": "The role requests act with in this org.",
+            "enum": [
+              "viewer",
+              "member",
+              "admin",
+              "owner"
+            ],
+            "type": "string"
+          },
+          "tier": {
+            "description": "The org's subscription tier.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "tier",
+          "rate_limit"
+        ],
+        "type": "object"
+      },
+      "CallerRateLimit": {
+        "additionalProperties": false,
+        "properties": {
+          "burst": {
+            "description": "Requests that may be sent at once when the bucket is full.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "requests_per_minute": {
+            "description": "Sustained requests a minute.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "scope": {
+            "description": "Who shares the bucket. org: every key and session acting in the org.",
+            "enum": [
+              "org"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "requests_per_minute",
+          "burst"
+        ],
+        "type": "object"
+      },
       "ChangePasswordInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -14341,6 +14497,46 @@
           "Watchlists"
         ],
         "x-min-role": "member"
+      }
+    },
+    "/whoami": {
+      "get": {
+        "description": "For an API key: the key's ID, name, role and expiry, and its org with the role the key acts with, the org's tier and its rate limit. A key's request counts against its org's rate limit. For a browser session: the user and each org where the membership is active. Answers 403 for a key whose creator is no longer an active member of the key's org.",
+        "operationId": "whoami",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallerIdentity"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Describe the calling credential",
+        "tags": [
+          "Auth"
+        ]
       }
     }
   },

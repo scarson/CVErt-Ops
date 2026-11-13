@@ -16,6 +16,8 @@
 | 1 | Pilot — self-review (session), all lenses, whole doc | `ec239ff` | runner | complete | ineligible — self-review · ordinal — |
 | 2 | Independent — dispatched subagent (Claude Opus 5.5, high; cross-provider Codex available but not used — light mode, SHOULD not REQUIRED), all lenses, whole doc, single agent, cold, prompts v4 | `39a4a13` | 1 agent, all lenses | dispatched → 1 of 1 returned | grouped as-raised substantive 15 · previous-wave repairs judged defective / independently reviewed 0/7 (pilot wave) · review-record substantive / total substantive 0/15 · backstop ordinal 1 · evaluation exempt (first independent round) |
 | 3 | Self-review of the round 2 repair wave (session), all lenses, whole doc | `39a4a13` + working tree | runner | complete | ineligible — self-review · ordinal — |
+| 4 | Independent — dispatched subagent (Claude Opus 5.5, high; cross-provider not used, as round 2), all lenses, whole doc, single agent, cold, prompts v4 | `2713b8b` | 1 agent, all lenses | dispatched → 1 of 1 returned | grouped as-raised substantive 14 · previous-wave repairs judged defective / independently reviewed 5/16 (L8, L12, L14, L15, L18) · review-record substantive / total substantive 0/14 · backstop ordinal 2 · evaluation: no trigger (plateau needs a second stalled round; recursion 31% < 33%) |
+| 5 | Self-review of the round 4 repair wave (session), all lenses, whole doc (wave read as one diff) | `2713b8b` + working tree | runner | complete | ineligible — self-review · ordinal — |
 
 - **Per-lens coverage** (one row per whole-doc round; cell = finding IDs or NSF):
 
@@ -24,9 +26,11 @@
 | 1 | NSF (narrowed: unpinned; P0-1 standing) | L5 | L4 | NSF | L2 | L3, L7 | L1, L3, L6 | NSF |
 | 2 | L14, L15, L23 (standing) | L8, L9, L16, L18, L12 | L11, L16, L15 | L13, L17, L12, L8 | L8, L9, L10, L16, L19, L20 | L10, L20, L21 | L12, L13, L14, L18, L22, L10 | L15, L11 |
 | 3 | NSF (narrowed) | L24 | NSF | NSF | NSF | NSF | L25 | NSF |
+| 4 | L27, L33, L40 (standing) | L28, L29, L31 | L28, L29, L30, L37 | L26, L32, L35 | L26, L28, L31, L32, L33, L37 | L36, L38 | L26, L33, L34, L36, L39 | L30 |
+| 5 | NSF (narrowed) | L41 | NSF | NSF | NSF | NSF | NSF | NSF |
 
 - **Gate:** not posed
-- **Breaker:** eligible after independently re-reviewed repair wave `not yet` · next backstop ordinal `2` · active trigger `none` · one-additional-read authorization `none` · in-flight `round 2 independent reviewer, ordinal 1`
+- **Breaker:** eligible after round 4 (independent re-review of the rounds 2–3 repair wave) · next backstop ordinal `3` · active trigger `none` · one-additional-read authorization `none` · in-flight `none`
 - **Closure:** cold reader — pending · verifier — pending · pooled attempt — · live-vs-snapshot re-compare — pending
 - Terminal state:
 
@@ -60,6 +64,22 @@
 | L23 | 2 | requirements trace | — | duplicate of P0-1 | closed |
 | L24 | 3 | unstated assumptions | forced correction | confirmed | fixed |
 | L25 | 3 | downstream readiness | forced correction | judged non-substantive — sentence order only; fixed anyway | fixed |
+| L26 | 4 | seams & contracts, failure modes, downstream readiness | forced correction | confirmed | fixed |
+| L27 | 4 | requirements trace | forced correction | confirmed | fixed |
+| L28 | 4 | unstated assumptions, alternatives & rationale | documentary gap | confirmed | fixed |
+| L29 | 4 | unstated assumptions, alternatives & rationale | forced correction | confirmed | fixed |
+| L30 | 4 | simplicity & proportionality | forced correction | confirmed | fixed |
+| L31 | 4 | unstated assumptions, failure modes | documentary gap | confirmed | fixed |
+| L32 | 4 | seams & contracts, requirements trace | forced correction | confirmed | fixed |
+| L33 | 4 | requirements trace, failure modes, downstream readiness | forced correction | confirmed | fixed |
+| L34 | 4 | downstream readiness | forced correction | confirmed | fixed |
+| L35 | 4 | seams & contracts | forced correction | confirmed | fixed |
+| L36 | 4 | change & reversibility, downstream readiness | forced correction | confirmed | fixed |
+| L37 | 4 | alternatives & rationale, failure modes | documentary gap | confirmed | fixed |
+| L38 | 4 | change & reversibility | documentary gap | confirmed | fixed |
+| L39 | 4 | downstream readiness | forced correction | confirmed | fixed |
+| L40 | 4 | requirements trace | — | duplicate of P0-1 | closed |
+| L41 | 5 | unstated assumptions | forced correction | confirmed | fixed |
 
 ### Detail — P0-1
 
@@ -268,4 +288,132 @@
 - **Axes:** objective · determinate · repairs
 - **Source raw:** round 3 (runner)
 - **Action:** move the example after the folding sentence. · **taken:** moved · **Before:** ecosystem sentence, then example · **After:** example, then ecosystem sentence
+
+### Detail — L26
+
+- **Anchor:** 3.2 Operators — "A rule holds at most 50 values across all its `affected.cpe_product` and `affected.package` conditions"
+- **Claim:** the cap leaves out ecosystem values, which section 5.1 turned into per-value terms and per-pair terms, and conditions per rule are unbounded, so a rule can still pass 65,535 parameters (pitfall DB-12). The L8 and L12 repairs are defective here.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R1
+- **Action:** bind package names and ecosystem values as arrays (one parameter per list, as the compiler does today); keep per-value terms only for products; cap products at 50 per rule and conditions at 100 per rule; rewrite the package predicate table. · **taken:** section 3.2 now caps product values at 50 and conditions at 100, and binds package and ecosystem lists as arrays; section 5.1's package SQL and predicate table rewritten to array parameters; section 8 rows and section 12/13 updated · **Before:** "A rule holds at most 50 values across all its `affected.cpe_product` and `affected.package` conditions together" · **After:** "**At most 50 `affected.cpe_product` values per rule** ... **At most 100 conditions per rule** ... Package names and ecosystem values do not count towards the 50: they are bound as arrays"
+
+### Detail — L27
+
+- **Anchor:** 1. Requirements — "matches a Node CVE on the day the CNA record lands"
+- **Claim:** section 1 restates the acceptance case with open question 1's substitution already applied; the requirement names the Brotli CVE.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R2
+- **Action:** restate the acceptance requirement with the Brotli CVE, pointing at section 2 and open question 1. · **taken:** section 1 item 5 restored · **Before:** "matches a Node CVE on the day the CNA record lands" · **After:** "matches the Brotli CVE (CVE-2026-111497) on the day the CNA record lands ... open question 1 proposes a Node-named CVE instead."
+
+### Detail — L28
+
+- **Anchor:** 7. Material hash and CNA product names — "Cost: the hash of every CVE with CNA rows ... changes on its next merge"
+- **Claim:** the ongoing cost is unstated: every later CNA product edit re-fires every rule matching the CVE, and because both copies are kept, one edit can move the hash twice (once per copy).
+- **Axes:** contestable severity · determinate record — **source:** repo (`internal/merge/resolve.go` `resolveCNAAffected` keeps every distinct copy)
+- **Source raw:** round-4-independent.md, local ID R3
+- **Action:** add the ongoing cost to section 7 and open question 2. · **taken:** section 7 cost paragraph and open question 2 gained the ongoing and double-move cost · **Before:** (none) · **After:** "After that, the cost continues: every later CNA product edit is a material change that re-fires every rule matching the CVE ... one edit can move the hash twice"
+
+### Detail — L29
+
+- **Anchor:** 3.3 Sources — "It holds NVD's platform CPEs (`vulnerable = false`) beside the vulnerable ones"
+- **Claim:** incomplete: `cve_affected_cpes` also holds CPEs a CNA lists in its own record, MSRC product names and Red Hat CPEs; reading only the CNA-supplied ones is not weighed. · **Evidence:** `internal/feed/mitre/adapter.go` appends `affected[].cpes`; runner's m2 counted 5,162 CVEs with a non-NVD CPE 2.3 row and no NVD match.
+- **Axes:** objective (description) · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R4
+- **Action:** correct the description; record why the CNA-supplied CPEs are not read (the table has no source column) with the 5,162 count. · **taken:** section 3.3 describes every source in `cve_affected_cpes` and why the CNA-supplied CPEs are not read · **Before:** "It holds NVD's platform CPEs (`vulnerable = false`) beside the vulnerable ones" · **After:** "It holds every CPE string any source names ... 5,162 CVEs have a CPE 2.3 row there that is not one of NVD's and no NVD match. But the table records no source"
+
+### Detail — L30
+
+- **Anchor:** 3.4 — "A new package `internal/product` takes everything both callers need"
+- **Claim:** `internal/alert/dsl` can import `internal/check` directly (`internal/check` imports only `ecosystem` and `version`), so a new package and the move are unneeded; only the two index-expression helpers in `internal/store` must move, into `internal/check`. · **Evidence:** reviewer ran `go list -deps ./internal/check`.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R5
+- **Action:** replace the new package with exports from `internal/check` and move the two helpers there; sweep every mention of `internal/product`. · **taken:** section 3.4 rewritten: no new package; `internal/check` exports, the two store helpers move into it; sections 5.1, 12 and 16 swept (no `internal/product` remains) · **Before:** "A new package `internal/product` takes everything" · **After:** "The rule compiler (`internal/alert/dsl`) imports `internal/check` ... no code moves except" (evidence: `go list -deps ./internal/check` re-run by runner: ecosystem, version only)
+
+### Detail — L31
+
+- **Anchor:** 5.1 — "In SQL the following character is tested with `!~ '^[[:alnum:]]'`"
+- **Claim:** character classes and `lower()` depend on the database locale, while the hash lower-cases in Go; the parity test runs on one locale and the measurements on PostgreSQL 18 only.
+- **Axes:** contestable severity · determinate record — **source:** session
+- **Source raw:** round-4-independent.md, local ID R6
+- **Action:** state the assumption and its bounded effect (table names and rule values are ASCII, so only stored non-ASCII text varies); section 13 repeats the plan rows on the oldest PostgreSQL the project runs in CI if it is not 18. · **taken:** section 5.1 gained the locale paragraph; section 13 repeats rows on another PostgreSQL major if used · **Before:** (none) · **After:** "PostgreSQL's `lower()` and `[[:alnum:]]` follow the database's character type ..."
+
+### Detail — L32
+
+- **Anchor:** 3.1 Value — "So every product a rule accepts, the check accepts too."
+- **Claim:** a product ending in a lone backslash passes the listed checks and escapes the prefix separator; the check refuses it. The L14 repair is defective.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R7
+- **Action:** refuse a component that ends in an unescaped backslash. · **taken:** section 3.1 refuses a trailing unescaped backslash and states why the check refuses it; section 8 row and section 12 test added · **Before:** "So every product a rule accepts, the check accepts too." · **After:** "and a trailing unescaped backslash, which in a full CPE escapes the next colon, so the check refuses that CPE for its component count (`splitCPE`). Every product a rule accepts, the check accepts too; the parser's tests run each refusal through both." (evidence: `internal/check/input.go` `splitCPE`, `escapedAsCPERequires` re-read)
+
+### Detail — L33
+
+- **Anchor:** 4.2 Correlation — "each `affected.package` condition must hold on one `cve_affected_packages` row together with every `affected.ecosystem` condition"
+- **Claim:** three compile rules are unstated: several ecosystem conditions with one package condition, a rule with ecosystem conditions only, and whether absorbed ecosystem conditions are also emitted; `{ecosystem eq npm, ecosystem eq PyPI, package contains x}` would silently match nothing. The L15 repair is incomplete here.
+- **Axes:** objective · determinate (one reading follows from section 4.2) · repairs
+- **Source raw:** round-4-independent.md, local ID R8
+- **Action:** state the three rules and add a validator warning for more than one `eq`/`in` ecosystem condition beside a package condition. · **taken:** section 4.2 gained four compile rules and the several-ecosystems example; section 8 warning and section 12 test added · **Before:** (none) · **After:** "As compile rules, for an `and` rule: 1. Each package condition becomes one set ..."
+
+### Detail — L34
+
+- **Anchor:** 12. Tests — "the CVE IDs from dry-run (no candidate IDs) equal the IDs from evaluating the corpus in 1,000-ID pages"
+- **Claim:** `DryRun` returns a count and at most 10 sample IDs, so the test cannot get the dry-run ID list.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R9
+- **Action:** compare `store.ExecuteDSLQuery` paged to the end (no candidate IDs) against the alert events an activation scan writes (candidate pages). · **taken:** section 12's path-equivalence test compares `ExecuteDSLQuery` paged to the end with activation-scan events · **Before:** "the CVE IDs from dry-run (no candidate IDs)" · **After:** "the CVE IDs that `store.ExecuteDSLQuery` returns when paged to the end (no candidate IDs) equal the CVE IDs of the alert events an activation scan writes"
+
+### Detail — L35
+
+- **Anchor:** 5.2 Compiler and evaluator contract — "`CompiledRule.Where(candidateIDs []string) sq.Sqlizer`"
+- **Claim:** the contract does not say what an empty, non-nil slice means; `queryCandidates` treats it as no filter.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R10
+- **Action:** state that an empty slice, like nil, means no candidate filter. · **taken:** section 5.2 states nil and empty both mean no filter · **Before:** (none) · **After:** "A nil or empty slice means no candidate filter, as `queryCandidates` already treats an empty list."
+
+### Detail — L36
+
+- **Anchor:** 5.3 — "kept in the shared session notes outside the repository"
+- **Claim:** a later run cannot repeat the measurements like for like without the queries. The L18 repair is defective.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R11
+- **Action:** add an appendix with the measured statements of the chosen form. · **taken:** added Appendix A with the measured statements; section 5.3 points to it · **Before:** "The measurement queries are read-only SQL kept in the shared session notes outside the repository" · **After:** "Appendix A holds the measured statements" (checked against the session's m7, m8, m10, m11 query files; the saved-search row's narrower ranges and name recorded)
+
+### Detail — L37
+
+- **Anchor:** 5.3 — "The 10.5 s row is the slow case"
+- **Claim:** two alternatives are unrecorded: an index on the folded name alone, and expanding to the ecosystems present.
+- **Axes:** contestable · determinate record — **source:** session (runner weighed both while designing)
+- **Source raw:** round-4-independent.md, local ID R12
+- **Action:** record both with reasons. · **taken:** section 5.3 records both rejected remedies · **Before:** (none) · **After:** "Two remedies were weighed and not chosen: an index on the folded name alone ... and expanding a missing ecosystem to the ecosystems present"
+
+### Detail — L38
+
+- **Anchor:** 7 and 4.3 — cost and reversal
+- **Claim:** moving 405,809 hashes also bumps their `date_modified_canonical`, which API pollers and digests read as modified and the batch path evaluates; reverting the correlation change has no stated path.
+- **Axes:** objective · determinate · records — **source:** repo (`date_modified_canonical` moves only with the hash, PLAN.md §5.3 and §10.3)
+- **Source raw:** round-4-independent.md, local ID R13
+- **Action:** add both. · **taken:** section 7 gained the `date_modified_canonical` cost; section 4.3 gained the revert path · **Before:** (none) · **After:** "Each moved hash also moves the CVE's `date_modified_canonical` ..." / "Without a version, reverting the correlation is a code revert"
+
+### Detail — L39
+
+- **Anchor:** 4.1 Exact match — "An empty value is refused."
+- **Claim:** a whitespace-only value is not refused (testing-pitfalls §4).
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round-4-independent.md, local ID R14
+- **Action:** refuse empty and whitespace-only values; add to section 8 and the tests. · **taken:** section 4.1, section 8 and section 12 refuse whitespace-only values · **Before:** "An empty value is refused." · **After:** "An empty or whitespace-only value is refused."
+
+### Detail — L40
+
+- **Anchor:** 1. Requirements — "Status: unconfirmed."
+- **Claim:** requirements completeness unverifiable — unpinned (standing finding).
+- **Axes:** objective · choice
+- **Source raw:** round-4-independent.md, standing finding
+- **Action:** none; duplicate of P0-1.
+
+### Detail — L41
+
+- **Anchor:** 3.2 Operators — "100 is far above any rule seen"
+- **Claim:** unverified: no rules were inspected. · **Evidence:** the kept ingest holds no rules; none were counted.
+- **Axes:** objective · determinate · repairs
+- **Source raw:** round 5 (runner)
+- **Action:** state the bound as a judgment and give the derived worst-case parameter count. · **taken:** rewrote the sentence · **Before:** "the project has no users, and 100 is far above any rule seen." · **After:** "100 is a judgment, not a measurement ... under 3,000 parameters." (derived: 50 x ~40 + 100 x 4 = 2,400)
 

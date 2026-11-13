@@ -1,6 +1,6 @@
 # Independent review, round 4: product conditions and correlated package conditions in alert rules (MATCH-2)
 
-Reviewed: the snapshot at `C:\Users\Sam\AppData\Local\Temp\claude\fca09f7c163a3f5b\02f52364-7dc0-4cc4-9bd7-c5bcaa70a3b5\scratchpad\round4-snapshot.md` (cold read; no prior review artifacts or history read). Claims were checked against the work tree at `C:\Users\Sam\Code\CVErt-Ops\.claude\worktrees\match2-design-e1e345`. No database was queried.
+Reviewed: the snapshot at `the design at commit 2713b8b (a scratch copy)` (cold read; no prior review artifacts or history read). Claims were checked against the work tree at `the worktree`. No database was queried.
 
 Findings are ranked from most to least severe across all lenses. The per-lens lines are at the end.
 

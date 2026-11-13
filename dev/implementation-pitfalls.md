@@ -683,6 +683,8 @@ rows, err := tx.Query(ctx,
 
 **Note:** This finding was independently flagged in two separate review rounds (as 2.12 and 12.1), confirming its importance. The `ANY` array pattern is the universal replacement for dynamic `IN` clauses.
 
+**Squirrel builds the flawed form for you.** `sq.Eq{col: slice}` renders `col IN (?, ?, ...)`, one placeholder per element (`Placeholders(valVal.Len())` in squirrel's `expr.go`), and `sq.NotEq` does the same with `NOT IN`. The alert DSL's `setSQL` (`internal/alert/dsl/compiler.go`) builds `in` and `not_in` this way, so one `cve_id in [...]` condition of about 260,000 short IDs fits in the 1 MiB request limit and passes 65,535 parameters. Use `sq.Expr(col+" = ANY(?)", pq.Array(vals))` instead. The fix is part of the MATCH-2 work (`dev/plans/2026-11-13-product-match-rules-design.md` section 3.2).
+
 **The Lesson:** Never use dynamic `IN ($1, $2, ..., $N)` construction for user-controlled lists. The limit is invisible during development (test watchlists are small) and catastrophic in production (one enterprise user brings down the worker). `ANY($1::type[])` is always the correct pattern.
 
 ---
@@ -885,6 +887,24 @@ An index that no query can use still fails the insert, so drop it rather than bo
 
 ---
 
+### DB-27: A Rule Predicate Over Child Tables Is Fast or Slow by Its Shape, Not Its Logic
+
+**The Flaw:** Alert rules, dry-runs and saved searches run one predicate in two settings: against a handful of candidate CVE IDs (realtime, batch, activation) and against the whole corpus (dry-run, saved search, AI search). Three logically equivalent ways to write a condition over `cve_cpe_matches`, `cve_cna_affected` or `cve_affected_packages` were measured on the full ingest (about 2.6 million CVEs, PostgreSQL 18, 2026-11-13) and fail in one setting or the other:
+
+- **`EXISTS (...) OR EXISTS (...)`, correlated on `cves.cve_id`:** PostgreSQL cannot turn an `OR` of sublinks into a semi-join, so a whole-corpus run probes both tables once per CVE row: 11.1 s for a Node.js product dry-run against a 14 s statement timeout. Against one candidate CVE it is fast (0.34 ms).
+- **An uncorrelated `cves.cve_id IN (SELECT ...)` whose lookup joins `unnest($lo[], $hi[])` range arrays:** the planner chose a sequential scan of `cve_cpe_matches` instead of the range index: 7.7 to 13.9 s under `and`, past 60 s under `or`. Written as explicitly `OR`-ed range predicates, the same lookup used a bitmap `OR` over `cve_cpe_matches_check_idx`: 2.6 ms.
+- **`cves.cve_id NOT IN (SELECT ...)` over a large set:** past a 60 s timeout for `ecosystem neq npm`, where a correlated `NOT EXISTS` took 243 ms.
+
+An uncorrelated set without the candidate IDs inside it is also slow on the candidate paths: it builds the whole product's set for one CVE (283 ms for `linux:linux_kernel`, against 0.28 ms with the IDs inside).
+
+**Why It Matters:** Both settings run in production. A dry-run that times out returns an error to the user, and a realtime predicate that builds a whole set runs for every active rule on every changed CVE during ingest.
+
+**The Fix:** Write each positive condition as `cves.cve_id IN (<uncorrelated set>)`, and repeat the caller's candidate IDs inside every branch of the set (`AND x.cve_id = ANY($candidates)`) when the caller has them. Write ranges and name terms as explicit `OR`-ed predicates, not joins to `unnest()`. Keep negative conditions as correlated `NOT EXISTS`. Verify each new shape with `EXPLAIN ANALYZE` in both settings, on the full ingest; the plans depend on PostgreSQL 18 features (btree skip scan) that 15 to 17 lack. Measurements and statements: `dev/plans/2026-11-13-product-match-rules-design.md` section 5 and Appendix A.
+
+**The Lesson:** For a DSL predicate, a query is not verified until it has been explained against one candidate CVE and against the whole corpus.
+
+---
+
 ### Review Checklist
 
 Use this checklist when reviewing store methods, migrations, or SQL queries.
@@ -902,6 +922,7 @@ Use this checklist when reviewing store methods, migrations, or SQL queries.
 - [ ] **EPSS staging lifecycle:** Merge pipeline reads and deletes from epss_staging inside the merge transaction (DB-7)?
 - [ ] **EPSS advisory lock:** EPSS two-statement pattern acquires the same per-CVE advisory lock as the merge pipeline (DB-8)?
 - [ ] **Bounded btree keys:** Does every btree index over feed-supplied text index a bounded form (digest, `left(...)`, or a length cap at parse time), so one long value cannot fail a merge (DB-26)?
+- [ ] **DSL predicate shape:** Was each new alert-rule or search predicate explained against one candidate CVE and against the whole corpus, with positive conditions as uncorrelated sets carrying the candidate IDs, `OR`-ed range predicates rather than joins to `unnest()`, and negative conditions as `NOT EXISTS` (DB-27)?
 
 ---
 
@@ -1663,7 +1684,8 @@ SELECT pg_advisory_xact_lock(1178944836, hashtext($org_id::text));  -- first sta
 INSERT INTO alert_events (..., feed_seq) VALUES (..., nextval('alert_event_feed_seq'));
 ```
 Postgres makes a commit visible before it releases the committing transaction's locks, so the next writer in the org draws a larger value only after the previous row is visible or rolled back: position order is commit order per org. The rules that keep it true:
-- every writer of `feed_seq` (insert, and the reopen that moves an event forward) takes the org lock before touching the row. A writer that locks the row first can deadlock with an insert of the same event, which holds the org lock and waits on the row
+- every writer of `feed_seq` takes the org lock before touching the row: insert, reopen and resolve in the store, and the late-binding move in the merge pipeline (`moveAlertEvents`). A writer that locks the row first can deadlock with an insert of the same event, which holds the org lock and waits on the row
+- a transaction that changes events of several orgs (the late-binding move) takes their locks in lock-key order (`hashtext(org_id::text)`), and changes only the events of orgs it has locked
 - the sequence keeps `CACHE 1`, or cached values are handed out in a different order from the lock
 - the column has no default, so an insert that does not draw a position fails instead of taking one without the lock
 

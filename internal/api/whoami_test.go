@@ -282,14 +282,17 @@ func TestWhoami_APIKeyDeactivatedMembership(t *testing.T) {
 func TestWhoami_APIKeyCountsAgainstOrgRateLimit(t *testing.T) {
 	t.Parallel()
 	f := newWhoamiFixture(t)
+	// 6 requests a minute: a burst of 1, and the next token after 10 seconds, so the
+	// second call is refused however slowly the test machine runs.
+	if _, err := f.db.DB().ExecContext(context.Background(),
+		`UPDATE organizations SET tier_overrides = '{"api_rate_limit": 6}' WHERE id = $1`, f.orgID); err != nil {
+		t.Fatalf("set rate limit: %v", err)
+	}
 	raw, _ := f.createKey(t, "busy", "viewer", sql.NullTime{})
-	// The free tier allows a burst of 10.
-	for i := range 10 {
-		if status, body := f.get(t, raw, ""); status != http.StatusOK {
-			t.Fatalf("call %d: status = %d, want 200 (body %s)", i+1, status, body)
-		}
+	if status, body := f.get(t, raw, ""); status != http.StatusOK {
+		t.Fatalf("call 1: status = %d, want 200 (body %s)", status, body)
 	}
 	if status, _ := f.get(t, raw, ""); status != http.StatusTooManyRequests {
-		t.Errorf("call 11: status = %d, want 429", status)
+		t.Errorf("call 2: status = %d, want 429", status)
 	}
 }

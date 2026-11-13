@@ -627,6 +627,52 @@ func TestGetMe(t *testing.T) {
 	}
 }
 
+// TestGetMe_LeavesOutDeactivatedMembership lists only orgs the user can open: every
+// org route refuses a deactivated membership.
+func TestGetMe_LeavesOutDeactivatedMembership(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	regOut := doRegister(t, ctx, ts, "me-left@example.com", "test-password-1234")
+	userID, err := uuid.Parse(regOut.UserID)
+	if err != nil {
+		t.Fatalf("parse user id: %v", err)
+	}
+	left, err := db.CreateOrg(ctx, "Left Org")
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	if err := db.CreateOrgMember(ctx, left.ID, userID, "member"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if err := db.DeactivateOrgMember(ctx, left.ID, userID); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	loginResp := doLogin(t, ctx, ts, "me-left@example.com", "test-password-1234")
+	loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/auth/me", nil)
+	req.AddCookie(requestCookie("access_token", cookieValue(loginResp, "access_token")))
+	resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+	if err != nil {
+		t.Fatalf("get me: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	var body struct {
+		Orgs []struct {
+			OrgID string `json:"org_id"`
+		} `json:"orgs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode me response: %v", err)
+	}
+	if len(body.Orgs) != 1 || body.Orgs[0].OrgID != regOut.OrgID {
+		t.Errorf("orgs = %+v, want only the registration org %s", body.Orgs, regOut.OrgID)
+	}
+}
+
 // ── Task 29: Change password ──────────────────────────────────────────────────
 
 func TestChangePassword_Success(t *testing.T) {

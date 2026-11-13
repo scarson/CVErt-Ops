@@ -4,7 +4,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.27, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
+CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.27, PostgreSQL 18+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
 
 **PLAN.md** — full PRD. Key sections: §3 feed adapters · §4–5 data model + merge · §6 RLS/multi-tenancy · §7 auth · §9 watchlists · §10 alert DSL · §11 notifications · §12 reports · §16 API contract · §18 phases · §21 retention · Appendix A schema · Appendix B endpoints.
 

@@ -38,7 +38,16 @@
 
 [^w]: Repair-wave discipline rule 4 (wave above ten fixes). Elective: counts toward no gate timing, coverage or breaker evidence. [^g]: The 8 open rows plus the phase-minted P0-1 are in the gate list with the original design decisions.
 
-- Terminal state: stopped awaiting user (2026-11-13) — the gate (section 12 of the doc) awaits Sam's answers; this session was started by another session and cannot reach him. Rows X1–X3 (post-gate merge of `dev`) are unreviewed and fall to the resumed run's re-sweep check and closure legs.
+- Terminal state: (cleared on resume 2026-11-13 — Sam answered part of the gate; see "Gate answers" below)
+
+### Gate answers (Sam, 2026-11-13, in this session's chat)
+
+Sam's words: "Steelman all of this, then get an independent Fable review. Read the 2026-07-28 spec. Strong disagree on deferring streamable HTTP - that should be primary if anything. Hand-rolled API client needs very strong justification of benefits over generated."
+
+- **Item 5 (streamable HTTP):** answered — not deferred; streamable HTTP is the primary MCP transport. Folded as row G1.
+- **Item 3 (client code):** answered as a burden of proof — the hand-written recommendation stands only with very strong justification over generated. The runner measured the generated option (row G2); the evidence does not meet that bar, so the design now recommends the generated client. The final choice remains Sam's.
+- **All items:** steelman each (row G3). Independent review by Claude Fable (row G4 records the round).
+- Items 1, 2, 4, 6–15 remain open.
 
 ### Index (append-only rows; State cells edited in place)
 
@@ -114,6 +123,9 @@
 | X1 | M | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
 | X2 | M | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
 | X3 | M | downstream readiness | documentary gap | confirmed | fixed |
+| G1 | G1 | alternatives & rationale, seams & contracts, failure modes | genuine choice (answered) | folded | fixed |
+| G2 | G1 | alternatives & rationale | genuine choice (answered as burden of proof) | folded with new evidence | fixed; final choice open — gate |
+| G3 | G1 | alternatives & rationale | documentary gap | confirmed | fixed |
 
 ### Detail — P0-1
 
@@ -532,6 +544,24 @@ After the gate was posed, `origin/dev` moved to `7d3571c`: `GET /whoami` (PR #23
 - **X1:** 10 `whoami` row. Landed shape (`internal/api/whoami.go`): `principal`, `user_id`, `api_key {id, name, role, expires_at}`, `org {id, name, role, tier, rate_limit {scope, requests_per_minute, burst}}`; applies the membership check (line 78); is inside the org rate limiter (`allowOrgRequest`, line 82); returns no server version. **Action:** row rewritten to state what landed and what is still missing (server version); 5.6 sentence adjusted.
 - **X2:** 10 FEED-2 row. Landed: `cve {status, severity, cvss_v3_score, cvss_v4_score, in_cisa_kev, epss_score}` and `rule {name, deleted, matched_watchlist_items}`. **Action:** row rewritten as landed.
 - **X3:** 1 "Depends on unbuilt work", 10 heading and closing paragraph, 13 items 1 and 3, 5.2 `whoami` and `events list` rows, 7.2 `list_alert_events` row. **Action:** state that AUTH-5 and FEED-2 have landed and only FEED-1 is outstanding.
+
+### Gate fold 1 (rows G1–G3)
+
+Evidence gathered for the fold, 2026-11-13:
+
+- **MCP 2026-07-28** (read at modelcontextprotocol.io: changelog, transports overview, Streamable HTTP, authorization, security best practices, tools). Stateless: no sessions, no `initialize`; every request carries protocol version and client capabilities in `_meta`; `server/discover` required; each message is its own POST; replies are one JSON object or a request-scoped SSE stream; cancellation is closing the response stream; `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` headers required and validated against the body (`-32020` HeaderMismatch); Origin MUST be validated (403 when present and invalid); authorization is OPTIONAL, and HTTP implementations that support it SHOULD conform to the OAuth 2.1 profile (Protected Resource Metadata MUST then be implemented); servers MUST NOT accept or transit tokens not issued for them; stdio SHOULD take credentials from the environment; `tools/list` MUST NOT vary per connection but MAY vary by the request's authorization, SHOULD be deterministically ordered, and carries `ttlMs` and `cacheScope`.
+- **go-sdk v1.8.0** (module cache): `latestProtocolVersion = "2026-07-28"` (`mcp/shared.go` line 50); `StreamableHTTPOptions.Stateless`, `DisableLocalhostProtection` (protection on by default), `MaxRequestBodyBytes`; cross-origin protection by wrapping with `http.CrossOriginProtection`; `NewStreamableHTTPHandler(getServer func(*http.Request) *Server, ...)` builds a server per request; `RequestExtra.Header` exposes the HTTP headers to a tool handler; `auth.RequireBearerToken` and `auth.ProtectedResourceMetadataHandler` exist for a later OAuth profile.
+- **Generated client** (scratch, from the served 3.0 document dumped by a temporary test, since deleted): oapi-codegen v2.8.2 with `include-operation-ids` for the 14 operations: 4,293 lines (unfiltered: 29,521 for 140 operations); `go build` and `go vet` clean; links `oapi-codegen/runtime` v1.9.0, `apapsch/go-jsonmerge/v2` v2.0.0 (MIT, last push 2021-11, no advisories; imported by `runtime/jsonmerge.go` for union types, never called by the filtered client) and `google/uuid` (already required). Response types keep `Body []byte` beside typed `JSON200` and the problem body; `HttpRequestDoer` and `RequestEditorFn` let the wrapper supply transport, retries and the key; enumerations become typed constants (`CheckItemResultStatusAffected` ...), with the server's field documentation as comments. `ogen` v1.24.0 (Apache-2.0, active) was checked as the other generator: its generated code imports `go-faster/jx`, `go-faster/errors` and OpenTelemetry, a heavier runtime.
+
+- **G1:** streamable HTTP becomes the primary transport. **Action:** 7 rewritten around an HTTP endpoint in `serve` (7.1 guarantee via in-process dispatch with the caller's key; 7.6 becomes the endpoint section), stdio kept for hosts that cannot send headers; 1, 3, 8, 9, 10, 12, 13 updated to match.
+- **G2:** client code. **Action:** 4.2 rewritten with the measurements; recommendation changed to the generated client wrapped by a thin hand-written layer for retries, batching and exit codes; 9.1 conformance test replaced by generation drift check; 2's oapi-codegen row updated; 12 item 3 restated with the new recommendation and `go-jsonmerge` age exception.
+- **G3:** steelman. **Action:** 12 gives, for every item, the strongest case for the option not recommended and whether it changes the recommendation.
+
+**Taken (one rewrite pass, the document written whole):**
+- G1: 1 (MCP-1 bullet, protocol paragraph, not-in-scope adds the OAuth profile); 2 (three new rows: 2026-07-28 transport facts, authorization and tools facts, go-sdk facts; `/whoami` added to the rate-limit row); 3 (stdio only in `cvert`, HTTP needs no binary); 4.1 (HTTP advisories note, protocol row, `mcp-go` supports 2026-07-28); 5.6 (skew differs by transport); 7 restructured: 7.1 two transports, 7.2 endpoint, 7.3 in-process dispatch and enforcement (formerly 7.1), 7.4 tools with authorization-varying list (formerly 7.2), 7.5 input schemas (split from 7.2), 7.6 descriptions (formerly 7.3), 7.7 results (formerly 7.4), 7.8 limits (formerly 7.5, lane now stdio-only), 7.9 stdio (startup rules moved from 7.1; bridge alternative recorded), 7.10 authorization profile (replaces "defer"); 8.1 adds `internal/api/mcp.go` and `internal/apiclient/gen`; 8.3 two host examples; 9.3 rewritten for HTTP, 9.4 stdio, 9.5 run cost; 10 `whoami` row mentions HTTP MCP cost; 11 acceptance per transport; 12 items 5, 16, 17, 18; 13 four pull requests.
+- G2: 4.2 rewritten with the measurements; 2 last row; 5.3 passthrough via `Body`; 5.6 "generated from the spec of its own commit"; 7.5 and 7.6 use generated constants; 8.2 `tool` directive and regeneration check; 9.1 conformance bullet replaced; 12 item 3.
+- G3: 12, every item. Items 13 and 14 changed recommendation on the steelman (pace long runs only; apply ARCH-13 cleaning to descriptions); item 7 marked close.
+- Wave self-check: section cross-references re-read after renumbering (all resolve); one garbled sentence in 8.3 rewritten. Numbers re-derived: 86,400 = 60 × 1,440; 288 = 1,440 / 5.
 
 ### Detail — F38, F39
 

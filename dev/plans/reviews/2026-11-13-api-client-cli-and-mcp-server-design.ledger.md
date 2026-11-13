@@ -15,7 +15,8 @@
 | 1 | Pilot — self-review (session), all lenses, whole doc | `c8f941d` | runner | complete — 13 raised (12 substantive, all fixed; 1 judged non-substantive) | ineligible — self-review · ordinal — |
 | 2 | Fan-out — 6 members, all lenses in batches, whole doc, cold, prompts v4: extent batch, unstated assumptions, alternatives & rationale, change & reversibility, downstream readiness — dispatched subagents (Claude Opus 5.5, high); seam batch — cross-model (codex `gpt-6.1-sol`, high, read-only sandbox) | `b493321` | 2a extent · 2b seam (cross-model) · 2c unstated assumptions · 2d alternatives & rationale · 2e change & reversibility · 2f downstream readiness | complete — 6 of 6 returned (codex exit 0, report complete with per-lens lines); 73 raw findings → 39 ledger rows (35 substantive: 27 fixed, 8 escalated; 4 other) | opening first independent round — exempt · grouped as-raised substantive 35 · previous-wave repairs judged defective / independently reviewed: n/a (pilot wave not separately re-reviewed by a qualifying round) · review-record substantive / total substantive 0/35 · backstop ordinals 1–6 · evaluation: exempt |
 | 2w | Repair-wave integration read — dispatched subagent (Claude Opus 5.5, high), wave diff vs `b493321` + whole doc, elective, not a lens round | working tree after round-2 fixes | 1 agent | complete — 14 defects (W1–W14), all fixed | elective — not qualifying · ordinal — |
-| 3 | Gate — posed 2026-11-13: 15 items (section 12 of the doc); user not reachable from this session | — | — | stopped awaiting user | — |
+| 3 | Gate — posed 2026-11-13: 15 items (section 12 of the doc); user not reachable from this session | — | — | stopped awaiting user; resumed 2026-11-13 with items 3 and 5 answered | — |
+| 4 | Re-sweep after gate fold 1 (sections added and restructured: 7.1–7.10, 4.2, 12). 4a: Claude Fable (Sam's request), all lenses, whole doc, cold, prompts v4. 4b: seam batch, cross-model (codex `gpt-6.1-sol`, high, read-only sandbox), cold, prompts v4 — the HTTP endpoint is a named surface (security, new boundary). Fan-out width not used: the Fable reader carries every lens, and the cross-model member covers the security batch [^r4] | `808b0db` | 4a Fable all-lens · 4b codex seam batch | complete — 2 of 2 returned (codex: first launch died on a broken install, relaunched, exit 0). 26 raw findings (Fable R0–R20, codex R1–R5) → 23 ledger rows K1–K23: 21 substantive (17 fixed, 4 escalated: K6, K7, K12, K22, plus K18's choice part), 2 other | re-sweep — not qualifying · ordinal — |
 
 - **Per-lens coverage** (one row per whole-doc round; cell = finding IDs or NSF):
 
@@ -35,7 +36,12 @@
 | 2 | Fan-out — 6 members, cold, prompts v4: 5 dispatched subagents (Claude Opus 5.5, high) + seam batch cross-model (codex `gpt-6.1-sol`, high) | 39 | 35 | 27 | 8 | 4 | 8 |
 | 2w | Repair-wave integration read — dispatched subagent (Claude Opus 5.5, high), elective [^w] | 14 | 14 | 14 | 0 | 0 | 8 |
 | 3 | Gate — posed, 15 items; stopped awaiting user [^g] | — | — | — | — | — | 8 |
+| G1 | Gate fold 1 — Sam answered items 3 and 5; steelman added; 18 items after the fold [^g1] | — | — | — | — | — | 7 |
+| 4 | Re-sweep — Claude Fable (all lenses) + codex `gpt-6.1-sol` high (seam batch, cross-model), whole doc, cold, prompts v4 | 23 | 21 | 17 | 4 | 2 | 11 |
 
+[^g1]: Item 5 closed (decided); item 3 answered as a burden of proof and kept open for Sam's final word with the new recommendation, so open drops from 8 to 7. Round 4's escalations (K6 and K12 into item 14, K7 into item 3, K22 and K18's choice into item 11) join existing items; the open count counts ledger rows, not section 12 items.
+
+[^r4]: Lens selection disclosure: the fold changed every section bearing on seams, failure modes, alternatives and downstream readiness, so all lenses were re-run in one whole-doc read; Claude Fable is a premium tier, used on Sam's explicit request.
 [^w]: Repair-wave discipline rule 4 (wave above ten fixes). Elective: counts toward no gate timing, coverage or breaker evidence. [^g]: The 8 open rows plus the phase-minted P0-1 are in the gate list with the original design decisions.
 
 - Terminal state: (cleared on resume 2026-11-13 — Sam answered part of the gate; see "Gate answers" below)
@@ -126,6 +132,30 @@ Sam's words: "Steelman all of this, then get an independent Fable review. Read t
 | G1 | G1 | alternatives & rationale, seams & contracts, failure modes | genuine choice (answered) | folded | fixed |
 | G2 | G1 | alternatives & rationale | genuine choice (answered as burden of proof) | folded with new evidence | fixed; final choice open — gate |
 | G3 | G1 | alternatives & rationale | documentary gap | confirmed | fixed |
+| K1 | 4 | failure modes, seams & contracts, unstated assumptions | forced correction | confirmed | fixed |
+| K2 | 4 | seams & contracts, failure modes, simplicity & proportionality, alternatives & rationale | forced correction | confirmed | fixed |
+| K3 | 4 | unstated assumptions, downstream readiness | forced correction | confirmed | fixed |
+| K4 | 4 | failure modes, downstream readiness | forced correction | confirmed | fixed |
+| K5 | 4 | downstream readiness, requirements trace | forced correction | confirmed | fixed |
+| K6 | 4 | seams & contracts, downstream readiness | genuine choice | confirmed | open — gate (item 14) |
+| K7 | 4 | unstated assumptions, alternatives & rationale | genuine choice | confirmed | open — gate (item 3) |
+| K8 | 4 | downstream readiness, unstated assumptions | forced correction | confirmed | fixed |
+| K9 | 4 | failure modes | forced correction | confirmed | fixed |
+| K10 | 4 | failure modes | forced correction | confirmed | fixed |
+| K11 | 4 | unstated assumptions, simplicity & proportionality, seams & contracts | forced correction | confirmed | fixed |
+| K12 | 4 | failure modes | genuine choice | confirmed | open — gate (item 14) |
+| K13 | 4 | downstream readiness, seams & contracts | forced correction | confirmed | fixed |
+| K14 | 4 | seams & contracts, alternatives & rationale | forced correction + documentary gap | confirmed | fixed |
+| K15 | 4 | simplicity & proportionality, alternatives & rationale | documentary gap | confirmed | fixed |
+| K16 | 4 | alternatives & rationale | forced correction | confirmed | fixed |
+| K17 | 4 | unstated assumptions | forced correction | confirmed | fixed |
+| K18 | 4 | failure modes | forced correction + genuine choice | confirmed | retry list fixed; already-absent — gate (item 11) |
+| K19 | 4 | change & reversibility | documentary gap | confirmed | fixed |
+| K20 | 4 | downstream readiness | forced correction | confirmed | fixed |
+| K21 | 4 | seams & contracts, failure modes | forced correction | confirmed | fixed |
+| K22 | 4 | seams & contracts, failure modes | genuine choice | confirmed | open — gate (item 11) |
+| K23 | 4 | requirements trace | — | duplicate of P0-1 | closed |
+| X4 | M2 | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
 
 ### Detail — P0-1
 
@@ -562,6 +592,37 @@ Evidence gathered for the fold, 2026-11-13:
 - G2: 4.2 rewritten with the measurements; 2 last row; 5.3 passthrough via `Body`; 5.6 "generated from the spec of its own commit"; 7.5 and 7.6 use generated constants; 8.2 `tool` directive and regeneration check; 9.1 conformance bullet replaced; 12 item 3.
 - G3: 12, every item. Items 13 and 14 changed recommendation on the steelman (pace long runs only; apply ARCH-13 cleaning to descriptions); item 7 marked close.
 - Wave self-check: section cross-references re-read after renumbering (all resolve); one garbled sentence in 8.3 rewritten. Numbers re-derived: 86,400 = 60 × 1,440; 288 = 1,440 / 5.
+
+### Round 4 — re-sweep after gate fold 1 (raw `round-4-fable.md` R0–R20; `round-4-seam.md` R1–R5)
+
+Codex's first launch failed at once (`Missing optional dependency @openai/codex-win32-x64`; the global package had been upgraded to 0.169.0 at 02:47 without its platform binary); reinstalled the same version, relaunched the same brief, exit 0, report complete. Logged in the papercuts log. Fable read 558 lines and ran two probes in the session scratchpad (chi routing, `go get -tool` on a copy of `go.mod`). Host figures checked by the runner: Claude Code's default limit of 25,000 tokens per MCP tool result (Claude Code MCP docs, via web search; larger results are saved to a file); Codex `tool_timeout_sec` default 60 s (secondary sources).
+
+- **K1** (Fable R1): the in-process transport, given the outer context, inherits chi's routing context and 404s (probe: `strip chi route context=false ... 404`; `=true ... 200`); it also inherits the outer auth context values; the per-call deadline's source is unstated. **Action:** 7.3: the inner request gets a fresh context that carries no outer values, cancelled when the tool call's context ends (outer cancellation and the per-call deadline), with the request ID passed as a header.
+- **K2** (Fable R2; codex R3): role and org for the per-request server; `getServer` called twice and cannot return an error; `whoami` per request double-charges. **Action:** 7.2–7.4, 7.8, 7.9, 10: over HTTP the handler takes the org and effective role from the authenticated request (the same code `whoami` uses), memoised per request; a lookup failure builds a read-only server; no `whoami` call over HTTP. Over stdio: startup `whoami`; if it fails, the process offers read tools only for its lifetime.
+- **K3** (Fable R3): no per-request log exists; `Mcp-Method` absent for older clients. **Action:** 7.2: the tool layer logs one line per tool call (tool name, key ID, outcome, duration) from the tool handler, not from headers; 9.3 verifies the guarantee through the rate limiter and the audit log.
+- **K4** (Fable R4): write gate stated only for the list. **Action:** 7.4 states an unoffered tool is not callable (the SDK answers unknown tool); 9.3 and 9.4 call unoffered write tools.
+- **K5** (Fable R5; part of codex R1): preamble wrong; recommended options unspecified. **Action:** 12 preamble corrected; items 7, 8, 11, 13 specify their recommended options fully.
+- **K6** (Fable R6): `Sanitize` is in `internal/ai`, which the boundary forbids. **Action:** gate item 14 gains the choice (move to a store-free package, recommended; or copy).
+- **K7** (Fable R7): the `tool` directive adds 14 requirements to `go.mod`, including `gopkg.in/yaml.v3` (archived) and `go-yit` (2022 commit). **Action:** gate item 3 gains the choice; recommendation: the generator in its own module (`tools/go.mod`); 4.2 and 8.2 updated.
+- **K8** (Fable R8): Go cannot iterate constants; oapi-codegen emits no value lists (`constants.tmpl`). **Action:** 4.2, 7.5, 7.6, 9.1: value lists are written beside the schemas and descriptions, and a test compares each with the enum in `openapi-3.0.json`.
+- **K9** (Fable R9): `events list --all` stuck at the 10,000 stop; mid-walk failure output undefined. **Action:** 5.2: reaching 10,000 prints the items and `next_cursor` with `truncated: true` and exits 0; a mid-walk failure prints what was fetched with `next_cursor` and exits with the failure's code; 5.4 exit 2 text.
+- **K10** (Fable R10): 422 splits past the deadline. **Action:** 7.8: answered items returned, the rest in `unanswered` with "send fewer items".
+- **K11** (Fable R11; codex R2): no total result budget; `matched_ranges_total` dropped; `advisories_truncated` reused; CNA versions uncapped. **Action:** 7.7: a 48 KiB budget per result with an overflow rule, `matched_ranges_total`, `advisories_omitted`, CNA versions capped.
+- **K12** (Fable R12): untrusted strings beyond descriptions. **Action:** gate item 14 widened; 7.6 labels every tool that returns such text.
+- **K13** (Fable R13 items 1–12; codex R5): missing contracts. **Action:** 7.7 result shapes for all twelve tools incl. `valid: false`; 5.3 table rule for other commands; 8.1 policy fields; 7.3 allowlist source (method and path, PUT excluded) tested against the spec; 2 and 13 name the means for the score filters (string query parameters); 7.4 unknown write-tool name fails startup; 7.5 `validate_rule` conditions schema tied to item 12; 5.2 page sizes; 9.3/9.4 observation hook; 9.2 rate-limit test accounting; 5.1 `cves` commands skip `whoami`; 7.7 omitted scores become null.
+- **K14** (Fable R14): FEED-1 need asks exactly-once; `since` interim unmentioned. **Action:** 10 restated as at-least-once with stable IDs and `last_fired_at`, with consumer de-duplication; `since` with overlap recorded as the fallback if FEED-1 slips. Hand-over note updated.
+- **K15** (Fable R15): stdio has no named consumer. **Action:** documentary: the private requirement names stdio (`cvert-ops mcp` over stdio, with HTTP optional); Sam's answer reordered the two, it did not drop stdio. 7.1 and item 5 say so; item 5 records the HTTP-only case.
+- **K16** (Fable R16): loopback rationale wrong; `EXTERNAL_URL` defaults to localhost. **Action:** 7.3 rationale rewritten (client address and trusted proxies, extra connection); 7.7 notes `EXTERNAL_URL` must be set.
+- **K17** (Fable R17): host timeout and `Origin` assumptions. **Action:** 7.8 deadline 50 s, below Codex's 60 s default; 7.2 the 403 body names the cause, and the plan probes each named host's headers.
+- **K18** (Fable R18): `DELETE` and read-only `POST`s not retried; already-absent. **Action:** 5.5 retry list adds `DELETE`, `rules validate`, `rules dry-run`; gate item 11 adds the already-absent choice.
+- **K19** (Fable R19): reversal costs. **Action:** 5.6 and 4.2 state them.
+- **K20** (Fable R20): requirement IDs collide with pitfall IDs. **Action:** every bare requirement ID qualified as "requirement X", pitfalls as "implementation pitfall X".
+- **K21** (codex R4): time-limit 503 has no problem type. **Action:** 5.5, 6.2, 13: the server's time-limit 503 gains its own problem type (small server change in the first pull request); clients split only on it.
+- **K22** (codex R1; Fable R5 item 11): client-side mixed-list check races. **Action:** gate item 11 recommendation changed to a server-side replace scoped to one item type.
+
+**X4 (requirement FEED-1 landed, 2026-11-13):** the requesting session reported FEED-1 merged to `dev` at `9bcf4ab` (pull request 234). Read at `origin/dev`: `order=asc&after=`, `feed_seq` drawn under the org's transaction-scoped advisory lock (commit `18be575` message: commits become visible in position order, exactly once with no overlap window), `next_cursor` on every page in that order including empty ones, start from the beginning with no `after`, versioned cursor (`v: 1`) refused with 400 "invalid after" when unknown, `limit` up to 1,000 and 100 with `expand=rule`, `last_match_state` and `since` refused with `order=asc`, a reopen moves the event to a new position. **Action:** 1 "Depends on other work"; 2 events row; 5.2 `events list` split into feed order and `--newest` (since `--open` cannot combine with feed order); 5.3 `next_cursor` sentence; 7.4 `list_alert_events` row (`open_only` dropped, `order=asc`); 7.7 reopen note; 9.2 feed-order test; 10 FEED-1 row rewritten as landed and closing paragraph; 13 events moved into the first pull request, list of pull requests reduced to three. Hand-over note in the shared notes folder updated.
+
+**Taken (round 4 wave, span-local edits):** K1 7.3 identity/transport paragraphs; K2 7.1 table row and inputs sentence, 7.3 identity paragraph, 7.4 first paragraph, 7.8 cost paragraph, 7.9, 10 `whoami` row; K3 7.2 logging bullet, 9.3 guarantee bullet; K4 7.4 first paragraph, 9.3 write-tools bullet, 9.4 first bullet; K5 12 preamble, items 7, 8, 11, 13; K6 and K12 item 14 rewritten, 7.6 untrusted-text bullet; K7 4.2 build-time bullet, item 3, 8.2; K8 4.2 enumerations bullet, 7.5, 7.6 test sentence, 9.1; K9 5.2 `--all` paragraphs, 5.4 exit 2 row; K10 7.8 `check_components` bullet; K11 7.7 size paragraph and per-tool lists; K13 7.7 per-tool list (twelve tools), 5.3 other-commands sentence, 8.1 policy fields, 7.3 allowlist paragraph, 2 score-filter row and 13, 7.4 unknown-name sentence, 5.6, 7.5 `validate_rule` sentence, 5.2 page sizes, 9.3 and 9.4 gate observation, 9.2 rate-limit bullet, 5.1 organisation row, 7.7 omitted-score sentence; K14 superseded by X4 (FEED-1 landed exactly-once, so the at-least-once fallback was not written); K15 1 MCP-1 bullet, 7.1 last paragraph, item 5; K16 7.3 loopback paragraph, 7.7 `EXTERNAL_URL` sentence; K17 7.2 Origin bullet, 7.8 deadline bullet (50 s), 7.2 limits bullet; K18 5.5 retry bullet; K19 5.6, 4.2 reach bullet; K20 1 ID paragraph and each bare use (script check: only the explaining line remains); K21 2 new row, 5.5, 6.2 step 4, 13. Facts re-checked at write time: Claude Code 25,000-token default (web search of its MCP docs); Codex `tool_timeout_sec` 60 s (secondary sources, flagged in 7.8 for the plan to confirm); `validateRuleResponse` fields (`internal/api/alert_rules.go`); FEED-1 behaviour (`origin/dev` source and commit message).
 
 ### Detail — F38, F39
 

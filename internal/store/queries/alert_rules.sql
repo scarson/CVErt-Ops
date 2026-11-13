@@ -70,11 +70,17 @@ SET status               = $2,
     error_message        = $5
 WHERE id = $1;
 
+-- name: LockAlertEventFeed :exec
+-- Takes the org's alert-event feed lock until the transaction ends. Run it before any
+-- statement that draws a feed_seq, so positions become visible in position order.
+SELECT pg_advisory_xact_lock(1178944836, hashtext(sqlc.arg(org_id)::uuid::text));
+
 -- name: InsertAlertEvent :one
 -- Exactly-once insert: fan-out only when a new row is created.
 -- Returns the new row id; empty result means the event already existed (DO NOTHING).
-INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery)
-VALUES ($1, $2, $3, $4, true, $5)
+-- The caller holds the org's feed lock (LockAlertEventFeed).
+INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, feed_seq)
+VALUES ($1, $2, $3, $4, true, $5, nextval('alert_event_feed_seq'))
 ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING
 RETURNING id;
 
@@ -82,11 +88,15 @@ RETURNING id;
 -- Reopens a resolved event when its CVE matches the rule again at the same material_hash.
 -- Returns the id only when this statement changed the state, so fan-out stays exactly-once.
 -- An empty result means the event is already open or does not exist.
+-- The reopened event moves to a new feed position, so a feed poller sees the fire.
+-- The caller holds the org's feed lock (LockAlertEventFeed), taken before this
+-- statement locks the row.
 UPDATE alert_events
 SET last_match_state  = true,
     suppress_delivery = $5,
     last_fired_at     = now(),
-    times_fired       = times_fired + 1
+    times_fired       = times_fired + 1,
+    feed_seq          = nextval('alert_event_feed_seq')
 WHERE org_id = $1
   AND rule_id = $2
   AND cve_id = $3

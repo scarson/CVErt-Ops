@@ -27,7 +27,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-20 | §1.C |
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-26 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
-| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-11 | §4.C |
+| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-12 | §4.C |
 | 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-25 | §5.C |
 | 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-45 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
@@ -1651,6 +1651,30 @@ feeds, err := store.ListRegisteredFeeds(ctx)
 
 ---
 
+### API-12: A Sequence or Timestamp Cursor Skips Rows That Commit Out of Order
+
+**The Flaw:** A polling feed ordered by a sequence (or identity, or insert timestamp) column, with the client keeping the last value it saw. The value is assigned when the row is inserted, but the row becomes visible when its transaction commits, and transactions commit in any order.
+
+**Why It Matters:** Transaction A takes value 100 and is still open. Transaction B takes 101 and commits. A poll returns 101 and the client stores cursor 101. A then commits 100, which is below the cursor, so no later poll returns it. The event is lost silently, and only under concurrent writers, so single-threaded tests never show it.
+
+**The Fix:** Draw the position while holding a lock that is released only after the commit is visible (`alert_events.feed_seq`, migration 000062, `LockAlertEventFeed`):
+```sql
+SELECT pg_advisory_xact_lock(1178944836, hashtext($org_id::text));  -- first statement
+INSERT INTO alert_events (..., feed_seq) VALUES (..., nextval('alert_event_feed_seq'));
+```
+Postgres makes a commit visible before it releases the committing transaction's locks, so the next writer in the org draws a larger value only after the previous row is visible or rolled back: position order is commit order per org. The rules that keep it true:
+- every writer of `feed_seq` (insert, and the reopen that moves an event forward) takes the org lock before touching the row. A writer that locks the row first can deadlock with an insert of the same event, which holds the org lock and waits on the row
+- the sequence keeps `CACHE 1`, or cached values are handed out in a different order from the lock
+- the column has no default, so an insert that does not draw a position fails instead of taking one without the lock
+
+The lock is per org and held only for the writer's own short transaction, so writers in one org queue behind each other for milliseconds.
+
+Rejected: ordering by the inserting transaction's ID (`xid8` from `pg_current_xact_id()`), returning only rows below `pg_snapshot_xmin(pg_current_snapshot())`. It is exactly-once inside one cluster, but transaction IDs are relative to the cluster: after `pg_dump` and restore into a fresh cluster (a documented recovery path) new events get IDs below every stored cursor and are never returned. It also delays every org's feed while any write transaction on the server is open, including in other databases. A sequence and the lock have neither problem, since the sequence's state is dumped with the data.
+
+**The Lesson:** A cursor is safe only if no row can become visible later with a key below the cursor. Ask "is the key assigned at insert or at commit?" for every polling cursor, and check that the key survives a dump and restore. NOTIFY-20 and NOTIFY-21 are the timestamp versions of this flaw, fixed there with an overlap window and idempotent re-processing.
+
+---
+
 ### Review Checklist
 
 When writing or reviewing HTTP handlers and middleware, verify each item:
@@ -1664,6 +1688,7 @@ When writing or reviewing HTTP handlers and middleware, verify each item:
 - [ ] PATCH handlers validate every field with the same constraints as the corresponding POST handler (API-9)
 - [ ] API contract consistency: error format (RFC 9457), list shape (`{items, next_cursor}`), cursor format (base64 JSON), validation status (422), tier errors (429 not 403) (API-10)
 - [ ] Admin/management endpoints discover resources dynamically, not from hardcoded lists (API-11)
+- [ ] A polling cursor's key is assigned in commit order: a sequence value is drawn only while holding a lock released after commit, by every writer, before it locks the row (API-12)
 
 ---
 
@@ -2864,7 +2889,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §1 Feed Adapters | FEED-1 – FEED-20 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain |
 | §2 Database & Query | DB-1 – DB-26 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
-| §4 API & HTTP | API-1 – API-11 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
+| §4 API & HTTP | API-1 – API-12 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
 | §5 Notification & Alert | NOTIFY-1 – NOTIFY-25 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run, alert debounce index over open batches only |
 | §6 Architecture & Ops | ARCH-1 – ARCH-45 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 

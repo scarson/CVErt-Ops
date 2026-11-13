@@ -9131,6 +9131,7 @@
     },
     "/orgs/{org_id}/alert-events": {
       "get": {
+        "description": "With order=asc the list is a feed for pollers: store next_cursor, which is present once a position exists, and pass it as after on the next poll. Each fire of an event is returned exactly once, with no overlap between polls: an event enters the feed when it first fires and again each time it is reopened (times_fired counts the fires, and a reopen not yet read collapses into one entry). A resolve does not put an event back in the feed. A page shorter than limit means the poller has caught up. The guarantee covers the unfiltered feed and the rule_id filter. With cve_id, an event renamed to that CVE ID after the poller passed it is not returned. last_match_state and since cannot be combined with order=asc. With expand=rule, limit is at most 100.",
         "operationId": "list-alert-events",
         "parameters": [
           {
@@ -9185,13 +9186,52 @@
             }
           },
           {
-            "description": "Pagination cursor",
+            "description": "Pagination cursor for the default, descending order: the next_cursor of the previous page.",
             "explode": false,
             "in": "query",
             "name": "cursor",
             "schema": {
-              "description": "Pagination cursor",
+              "description": "Pagination cursor for the default, descending order: the next_cursor of the previous page.",
               "type": "string"
+            }
+          },
+          {
+            "description": "desc (default): newest first by first fire, paged with cursor. asc: feed order, for polling, paged with after.",
+            "explode": false,
+            "in": "query",
+            "name": "order",
+            "schema": {
+              "default": "desc",
+              "description": "desc (default): newest first by first fire, paged with cursor. asc: feed order, for polling, paged with after.",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "With order=asc: the next_cursor of the previous response. Omit to start from the oldest event.",
+            "explode": false,
+            "in": "query",
+            "name": "after",
+            "schema": {
+              "description": "With order=asc: the next_cursor of the previous response. Omit to start from the oldest event.",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Events per page; at most 100 with expand=rule.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "description": "Events per page; at most 100 with expand=rule.",
+              "format": "int64",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
             }
           },
           {

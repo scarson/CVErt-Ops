@@ -61,6 +61,12 @@ type ListAlertEventsParams struct {
 	ExpandCVE bool
 	// ExpandRule adds each event's rule name and matching watchlist items (AlertEventListRow.Rule).
 	ExpandRule bool
+	// Ascending lists in feed order, feed_seq ascending, starting after AfterSeq when it
+	// is set. Positions become visible in position order (see LockAlertEventFeed), so a
+	// poller that resumes from the last row's FeedSeq sees each fire exactly once.
+	// AfterTime and AfterID are ignored.
+	Ascending bool
+	AfterSeq  *int64
 }
 
 // AlertEventListRow is an alert event with the context ListAlertEvents was asked to expand.
@@ -331,6 +337,9 @@ func (s *Store) UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status str
 func (s *Store) InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.LockAlertEventFeed(ctx, orgID); err != nil {
+			return fmt.Errorf("lock alert event feed: %w", err)
+		}
 		var err error
 		id, err = q.InsertAlertEvent(ctx, generated.InsertAlertEventParams{
 			OrgID:            orgID,
@@ -362,6 +371,11 @@ func (s *Store) InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, c
 func (s *Store) ReopenAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		// The feed lock comes before the row lock: an insert of the same event holds
+		// the feed lock and can wait on this row, so the reverse order could deadlock.
+		if err := q.LockAlertEventFeed(ctx, orgID); err != nil {
+			return fmt.Errorf("lock alert event feed: %w", err)
+		}
 		var err error
 		id, err = q.ReopenAlertEvent(ctx, generated.ReopenAlertEventParams{
 			OrgID:            orgID,
@@ -446,9 +460,9 @@ var alertEventWatchlistMatchesSQL = `LEFT JOIN LATERAL (
 ) m ON true`
 
 // ListAlertEvents returns a page of alert events for an org, with optional filters.
-// Ordered by first_fired_at DESC, id DESC. Caller passes Limit+1 to detect next page.
-// ExpandCVE and ExpandRule add context from cves, alert_rules and watchlist_items in
-// the same query.
+// Ordered by first_fired_at DESC, id DESC, or in feed order when p.Ascending is set.
+// A descending caller passes Limit+1 to detect a next page. ExpandCVE and ExpandRule add context from
+// cves, alert_rules and watchlist_items in the same query.
 func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAlertEventsParams) ([]AlertEventListRow, error) {
 	limit := p.Limit
 	if limit <= 0 {
@@ -456,11 +470,22 @@ func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAler
 	}
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	sb := psql.
-		Select("ae.id, ae.rule_id, ae.org_id, ae.cve_id, ae.material_hash, ae.last_match_state, ae.suppress_delivery, ae.first_fired_at, ae.last_fired_at, ae.times_fired").
+		Select("ae.id, ae.rule_id, ae.org_id, ae.cve_id, ae.material_hash, ae.last_match_state, ae.suppress_delivery, ae.first_fired_at, ae.last_fired_at, ae.times_fired, ae.feed_seq").
 		From("alert_events ae").
 		Where(sq.Eq{"ae.org_id": orgID}).
-		OrderBy("ae.first_fired_at DESC, ae.id DESC").
 		Limit(uint64(limit)) //nolint:gosec // G115: limit validated by caller
+
+	if p.Ascending {
+		sb = sb.OrderBy("ae.feed_seq")
+		if p.AfterSeq != nil {
+			sb = sb.Where(sq.Gt{"ae.feed_seq": *p.AfterSeq})
+		}
+	} else {
+		sb = sb.OrderBy("ae.first_fired_at DESC, ae.id DESC")
+		if p.AfterTime != nil && p.AfterID != nil {
+			sb = sb.Where("(ae.first_fired_at, ae.id) < (?, ?)", *p.AfterTime, *p.AfterID)
+		}
+	}
 
 	if p.ExpandCVE {
 		sb = sb.Columns("c.cve_id IS NOT NULL", "c.status", "c.severity", "c.cvss_v3_score", "c.cvss_v4_score", "COALESCE(c.in_cisa_kev, false)", "c.epss_score").
@@ -483,9 +508,6 @@ func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAler
 	if p.Since != nil {
 		sb = sb.Where(sq.GtOrEq{"ae.last_fired_at": *p.Since})
 	}
-	if p.AfterTime != nil && p.AfterID != nil {
-		sb = sb.Where("(ae.first_fired_at, ae.id) < (?, ?)", *p.AfterTime, *p.AfterID)
-	}
 
 	query, args, err := sb.ToSql()
 	if err != nil {
@@ -505,7 +527,7 @@ func (s *Store) ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAler
 			dest := []any{
 				&e.ID, &e.RuleID, &e.OrgID, &e.CveID, &e.MaterialHash,
 				&e.LastMatchState, &e.SuppressDelivery,
-				&e.FirstFiredAt, &e.LastFiredAt, &e.TimesFired,
+				&e.FirstFiredAt, &e.LastFiredAt, &e.TimesFired, &e.FeedSeq,
 			}
 			var (
 				cveFound, ruleFound bool

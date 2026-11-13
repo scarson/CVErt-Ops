@@ -15,7 +15,7 @@ The requirements come from the private homelab integration requirements (section
 
 **Not in scope:** scoped API keys (AUTH-3; a viewer-role key is how an agent is made read-only for now), MCP resources and prompts (MCP-2), rule creation or editing from either client, key rotation (AUTH-6), private advisories (INV-3), and a non-interactive bootstrap command (OPS-2).
 
-**Depends on unbuilt work.** Three API changes are being built in a parallel session and are designed against here as the requirements state them: `GET /api/v1/whoami` (AUTH-5), an ascending `after` cursor on alert events (FEED-1) and `expand=cve,rule` on alert events (FEED-2). Section 10 lists exactly what each part of this design needs from them. Nothing that depends on them is built before they land.
+**Depends on other work.** Three API changes from a parallel session: `GET /api/v1/whoami` (AUTH-5) and `expand=cve,rule` on alert events (FEED-2) are on `dev` (pull requests 232 and 233); an ascending `after` cursor on alert events (FEED-1) is not yet built. Section 10 lists what this design needs from each and what landed. Nothing that depends on FEED-1 is built before it lands.
 
 **Evidence.** Code was read at `origin/dev` commit `5598af6`. The MCP SDK was built and scanned from a scratch module on 2026-11-13 (section 4). Repository status for every candidate dependency was read from the GitHub API and web searches on 2026-11-13.
 
@@ -118,12 +118,12 @@ The client never logs a request body or the key. Check items describe what an or
 
 | Command | Request | Notes |
 |---|---|---|
-| `whoami` | `GET /whoami` | Waits for AUTH-5. |
+| `whoami` | `GET /whoami` | Prints the server's response (section 10). |
 | `cves search [flags]` | `GET /cves` | Flags mirror the endpoint's filters: `--q`, `--severity` (repeatable), `--date-from`, `--date-to`, `--cwe`, `--ecosystem`, `--package`, `--kev`, `--exploit`, `--cvss-min`, `--cvss-max`, `--epss-min`, `--epss-max`, `--limit`, `--cursor`, `--all`. |
 | `cves get <id>` | `GET /cves/{id}` | Takes any stored record ID, including the advisory IDs the check endpoint returns. |
 | `cves sources <id>` | `GET /cves/{id}/sources` | |
 | `check [--input purls\|json\|trivy] [FILE\|-]` | `POST /orgs/{org}/check`, batched | Section 6. |
-| `events list [--after CURSOR] [--rule ID] [--cve ID] [--open] [--limit N] [--all]` | `GET /orgs/{org}/alert-events?after=...&expand=cve,rule` | Waits for FEED-1 and FEED-2. `--open` sends `last_match_state=true`, as the MCP tool's `open_only` does. |
+| `events list [--after CURSOR] [--rule ID] [--cve ID] [--open] [--limit N] [--all]` | `GET /orgs/{org}/alert-events?after=...&expand=cve,rule` | Waits for FEED-1. `--open` sends `last_match_state=true`, as the MCP tool's `open_only` does. |
 | `rules list [--cursor C] [--all]` | `GET /orgs/{org}/alert-rules` | |
 | `rules validate [FILE\|-]` | `POST /orgs/{org}/alert-rules/validate` | Body `{logic, conditions, watchlist_ids}`. |
 | `rules dry-run <rule-id>` | `POST /orgs/{org}/alert-rules/{id}/dry-run` | |
@@ -183,7 +183,7 @@ Requests are never sent in parallel. The org shares one rate bucket and the serv
 
 ### 5.6 Compatibility
 
-The application has no users besides its developers, so the JSON output and exit codes carry no compatibility promise until a release says otherwise; `docs/client.md` says so. The client is built and tested against the spec of its own commit. A client calling a server from another commit may send a parameter the server no longer accepts, which the server rejects (exit 8), or read a field the server has renamed, which shows up as a missing value and not as an error. Nothing in this design detects version skew. `cvert --version` prints the client's version, and `whoami` returns the server's (section 10), so a person can compare them once server builds set a version.
+The application has no users besides its developers, so the JSON output and exit codes carry no compatibility promise until a release says otherwise; `docs/client.md` says so. The client is built and tested against the spec of its own commit. A client calling a server from another commit may send a parameter the server no longer accepts, which the server rejects (exit 8), or read a field the server has renamed, which shows up as a missing value and not as an error. Nothing in this design detects version skew. `cvert --version` prints the client's version; `whoami` does not yet return the server's (section 10), so comparing the two needs that follow-up and server builds that set a version.
 
 The same holds for the MCP tool set: tool names, input schemas and result fields may change between commits until a release. A tool that is renamed or removed disappears from the tool list, which an agent host reports as an unknown tool, not as a wrong answer.
 
@@ -259,7 +259,7 @@ Read tools are always registered. Write tools are registered only with `cvert mc
 | `search_advisories` | `GET /cves` | `query`, `severity[]`, `in_cisa_kev`, `ecosystem`, `package_name`, `cwe_id`, `modified_since`, `min_cvss`, `min_epss`, `limit` (1 to 50, default 20), `cursor` | read-only |
 | `get_advisory` | `GET /cves/{id}` | `id` | read-only |
 | `check_components` | `POST /orgs/{org}/check`, as in section 6 with the limits of section 7.5 | `items[]`, 1 to 500, each exactly one of `{purl}`, `{ecosystem, name, version}`, `{cpe, version}`, with an optional `id` of at most 128 characters | read-only |
-| `list_alert_events` | `GET /orgs/{org}/alert-events?expand=cve,rule` | `after`, `rule_id`, `cve_id`, `open_only`, `limit` (1 to 100, default 50) | read-only; waits for FEED-1, FEED-2 |
+| `list_alert_events` | `GET /orgs/{org}/alert-events?expand=cve,rule` | `after`, `rule_id`, `cve_id`, `open_only`, `limit` (1 to 100, default 50) | read-only; waits for FEED-1 |
 | `list_rules` | `GET /orgs/{org}/alert-rules` | `cursor` | read-only |
 | `validate_rule` | `POST .../alert-rules/validate` | `logic` (`and`, `or`), `conditions[]`, `watchlist_ids[]` | read-only |
 | `dry_run_rule` | `POST .../alert-rules/{id}/dry-run` | `rule_id` | read-only |
@@ -388,15 +388,15 @@ The CLI's commands run in process through a `run(args, env, stdin, stdout, stder
 
 Go builds one test binary per package, and each test binary that calls `testutil.NewTestDB` starts one PostgreSQL container, with a cloned database per test. The CLI tests (`cmd/cvert`) and the MCP tests (`internal/mcpserver`) are in two packages, so they add two containers to a full test run.
 
-## 10. What waits for the parallel session
+## 10. What this design needs from the parallel session
 
 | Work here | Needs | Exact need |
 |---|---|---|
-| Every org-scoped command and tool, and MCP startup | AUTH-5 `GET /whoami` | Accepts an API key. Returns at least the org ID, org name, the key's ID, name, role and expiry, the org's tier and rate limit per minute, and the server's version (which reads `dev` until server builds set it). Applies the same org membership check as org routes, so a key whose creator has left the org fails here and not on every later call. The design assumes it is outside the org rate limiter, like `/cves`; if it is inside, each CLI invocation costs one more request of the org's budget, which works but should be stated in `docs/client.md`. |
+| Every org-scoped command and tool, and MCP startup | AUTH-5 `GET /whoami` — landed (`internal/api/whoami.go`) | Landed: accepts an API key and returns `api_key {id, name, role, expires_at}` and `org {id, name, role, tier, rate_limit {scope, requests_per_minute, burst}}`; applies the org membership check, so a key whose creator has left the org fails here. It counts against the org rate limit, so each CLI invocation spends one request of the org's budget on it; `docs/client.md` says so. Still missing: the server's version, which section 5.6 would use and which reads `dev` until server builds set it; a small follow-up to `whoami`. |
 | `events list --after`, `list_alert_events` | FEED-1 | An ascending order selected by `after`; a `limit` parameter; a way to start (an ascending first page with no `after`, or a documented starting cursor); and a cursor returned on every page that holds items, including the last, so a poller can store it and resume after the last event it saw. Every event must reach a poller exactly once, including an event whose transaction commits after a later event's (with `first_fired_at DEFAULT now()` and a random UUID tiebreak, a late commit lands behind a cursor already handed out; implementation pitfall NOTIFY-20 records the same failure in the alert evaluator), and including a resolved event that is reopened, which changes an existing row. A cursor stored by a poller must stay valid across server upgrades, or be refused with a problem type of its own, so a poller can tell a stale cursor from a bad request. The design treats an absent cursor on an empty page as "keep the previous one". |
-| Event context in `events list` and `list_alert_events` | FEED-2 | `expand=cve,rule` giving at least severity, KEV, EPSS and the rule name. |
+| Event context in `events list` and `list_alert_events` | FEED-2 `expand=cve,rule` — landed (`internal/api/alert_events.go`) | Landed: `cve {status, severity, cvss_v3_score, cvss_v4_score, in_cisa_kev, epss_score}` and `rule {name, deleted, matched_watchlist_items}`, which covers severity, KEV, EPSS and the rule name. |
 
-Every org-scoped request needs the org ID from `whoami`, so every org-scoped command and tool, and MCP startup, waits for AUTH-5. What can be built before it lands: configuration, the API client and its conformance test, exit codes, the `cves` commands, check batching and Trivy reading as unit-tested code, and the MCP tools' schemas, descriptions and result shaping. The plan builds those first and the org-scoped commands and the MCP server after AUTH-5 merges.
+Every org-scoped request needs the org ID from `whoami`, which has landed, so everything except `events list --after` and `list_alert_events` can be built now. Those two wait for FEED-1.
 
 ## 11. Acceptance
 
@@ -430,6 +430,6 @@ Each item states the question, the options, and a recommendation. Elsewhere, the
 
 Three pull requests, each with an implementation plan reviewed first:
 
-1. `internal/apiclient`, `cmd/cvert` with configuration, exit codes, the `cves`, `check`, `rules` and `watchlists` commands, the `depguard` rule and the `go list -deps` test, the CI build without `web/dist`, the Dockerfile change, and `docs/client.md`. The server's spec gains the four undocumented `/cves` score filters (section 2). Org-scoped commands land once AUTH-5 has merged.
+1. `internal/apiclient`, `cmd/cvert` with configuration, exit codes, the `cves`, `check`, `rules` and `watchlists` commands, the `depguard` rule and the `go list -deps` test, the CI build without `web/dist`, the Dockerfile change, and `docs/client.md`. The server's spec gains the four undocumented `/cves` score filters (section 2).
 2. `cvert mcp` with the read tools and the write flag.
-3. `events list` and `list_alert_events`, after FEED-1 and FEED-2.
+3. `events list` and `list_alert_events`, after FEED-1.

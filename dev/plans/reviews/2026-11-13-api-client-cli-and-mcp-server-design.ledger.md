@@ -38,7 +38,7 @@
 
 [^w]: Repair-wave discipline rule 4 (wave above ten fixes). Elective: counts toward no gate timing, coverage or breaker evidence. [^g]: The 8 open rows plus the phase-minted P0-1 are in the gate list with the original design decisions.
 
-- Terminal state: stopped awaiting user (2026-11-13) — the gate (section 12 of the doc) awaits Sam's answers; this session was started by another session and cannot reach him.
+- Terminal state: stopped awaiting user (2026-11-13) — the gate (section 12 of the doc) awaits Sam's answers; this session was started by another session and cannot reach him. Rows X1–X3 (post-gate merge of `dev`) are unreviewed and fall to the resumed run's re-sweep check and closure legs.
 
 ### Index (append-only rows; State cells edited in place)
 
@@ -111,6 +111,9 @@
 | W12 | 2w | repair integration | forced correction | confirmed | fixed |
 | W13 | 2w | repair integration | forced correction | confirmed | fixed |
 | W14 | 2w | repair integration | forced correction | confirmed | fixed |
+| X1 | M | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
+| X2 | M | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
+| X3 | M | downstream readiness | documentary gap | confirmed | fixed |
 
 ### Detail — P0-1
 
@@ -521,6 +524,14 @@ A fresh-context Opus read of the round-2 wave diff against `b493321`. Not a lens
 - **W12 (D12):** 12 item 13's "over 10,000 … exits 6" conflicts with `--all` stopping above 10,000 with exit 2. **Action:** "a list of 10,000 items".
 - **W13 (D13):** rebuttal-shaped clauses in 5.2, 4.1, the 2 check row, and 9.2's wrong decision pointer. **Action:** rewritten as plain design text; 9.2 points at 7(b).
 - **W14 (D14):** `internal/alert/dsl` imports store code directly; `cves.go` line numbers; the `go list -deps` test placed in `.golangci.yml`; 7.5's request count. **Action:** corrected each; F3's spec fix notes huma's pointer restriction.
+
+### Post-gate merge of `dev` (round M, runner, not a review round)
+
+After the gate was posed, `origin/dev` moved to `7d3571c`: `GET /whoami` (PR #232) and `expand=cve,rule` on alert events (PR #233) landed; the ascending `after` cursor (FEED-1) did not. Merged into this branch as `bd90312`. Section 10 described both as unbuilt, so three spans became stale. Source for every row: repo at `bd90312`.
+
+- **X1:** 10 `whoami` row. Landed shape (`internal/api/whoami.go`): `principal`, `user_id`, `api_key {id, name, role, expires_at}`, `org {id, name, role, tier, rate_limit {scope, requests_per_minute, burst}}`; applies the membership check (line 78); is inside the org rate limiter (`allowOrgRequest`, line 82); returns no server version. **Action:** row rewritten to state what landed and what is still missing (server version); 5.6 sentence adjusted.
+- **X2:** 10 FEED-2 row. Landed: `cve {status, severity, cvss_v3_score, cvss_v4_score, in_cisa_kev, epss_score}` and `rule {name, deleted, matched_watchlist_items}`. **Action:** row rewritten as landed.
+- **X3:** 1 "Depends on unbuilt work", 10 heading and closing paragraph, 13 items 1 and 3, 5.2 `whoami` and `events list` rows, 7.2 `list_alert_events` row. **Action:** state that AUTH-5 and FEED-2 have landed and only FEED-1 is outstanding.
 
 ### Detail — F38, F39
 

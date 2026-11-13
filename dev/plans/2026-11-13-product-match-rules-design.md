@@ -4,7 +4,7 @@ Date: 2026-11-13. Author: Claude, for Sam. Status: draft for Sam's review. No im
 
 Review ledger: `dev/plans/reviews/2026-11-13-product-match-rules-design.ledger.md`.
 
-Review record: TERMINATED-FOR-EXECUTION after 6 rounds — 11 verify-first flags annotated in place. The review stopped when three independent rounds kept finding defects at about the same rate (15, 14, 11), so this design is partially verified, not certified clean. Each "Verify before building" note marks a span to check before relying on it; defects found while building come back to this document as findings. Section 15's open questions are Sam's to answer.
+Review record: the first review run stopped after 6 rounds (three independent rounds found 15, 14 and 11 defects), with 11 open findings noted in place. A second run, an independent review by Claude Fable at Sam's request followed by a discussion of its disputed findings, resolved all 11 notes and its own 11 findings: each is fixed in the text or is an open question in section 15. The second run's fixes have not had an independent re-read; defects found while building come back to this document as findings. Section 15's open questions are Sam's to answer.
 
 ## 1. Requirements
 
@@ -12,9 +12,9 @@ Status: unconfirmed. Paraphrased from requirement MATCH-2 of the private homelab
 
 1. **Product field.** The alert rule language gets a field for a CPE vendor and product, so a rule can say "this product, with severity high or above" without a watchlist. Version conditions come later (requirement MATCH-3, not designed here).
 2. **Correlation.** `affected.ecosystem` and `affected.package` are matched within one affected-package entry, not anywhere in the CVE.
-3. **Exact match.** `affected.package` gets an exact-match operator.
+3. **Exact match.** `affected.package` gets an exact-match operator. This design reads "exact" as equal after the ecosystem's own name folding (section 4.1, open question 7).
 4. **Watchlists.** The requirement's title names watchlists as well as rules; its text and acceptance case concern rules only.
-5. **Acceptance.** A rule `{affected.cpe_product eq nodejs:node.js, severity in [critical, high]}` matches the Brotli CVE (CVE-2026-111497) on the day the CNA record lands, before NVD has analysed it. Section 2 shows that this CVE's CNA record does not name Node; open question 1 proposes a Node-named CVE instead.
+5. **Acceptance.** A rule `{affected.cpe_product eq nodejs:node.js, severity in [critical, high]}` matches the Brotli CVE (CVE-2026-111497) on the day the CNA record lands, before NVD has analysed it. Section 2 shows that this CVE's CNA record does not name Node; open question 1 proposes a Node-named CVE instead. "On the day the CNA record lands" also depends on how often the MITRE and NVD feeds are polled, which this design does not change.
 
 Why it matters: Node, PHP and .NET in runner tool caches are invisible to per-host scanners, so a rule on the product is the only alert for them, and NVD analyses only a minority of new CVEs within weeks (section 2).
 
@@ -57,15 +57,17 @@ The field is named `affected.cpe_product`, as the requirement writes it, because
 `eq` and `in`. Two limits keep a rule's statement bounded:
 
 - **At most 50 `affected.cpe_product` values per rule**, across all its product conditions (an `eq` counts as one). Each product value becomes its own `OR` terms and bind parameters (38 for `nodejs:node.js`: 6 prefix ranges of 3 and 5 CNA names of 4), because the index needs them as separate predicates (section 5.1); 50 values make at most a few thousand parameters.
-- **At most 100 conditions per rule**, of any field. Every condition adds parameters, so without a bound on conditions a rule could still pass PostgreSQL's 65,535-parameter limit inside the 1 MiB request limit, fail on every evaluation, and hold the batch cursor for all rules (pitfall DB-12). Today no limit exists. 100 is a judgment, not a measurement: there are no production rules to count it against. With both limits, a rule's worst case is about 50 product values of about 40 parameters each plus 100 conditions of at most 4 each, under 3,000 parameters.
+- **At most 100 conditions per rule**, of any field. Every condition adds parameters, so without a bound on conditions a rule could still pass PostgreSQL's 65,535-parameter limit inside the 1 MiB request limit, fail on every evaluation, and hold the batch cursor for all rules (pitfall DB-12). Today no limit exists. 100 is a judgment, not a measurement: there are no production rules to count it against.
 
-Package names and ecosystem values do not count towards the 50: they are bound as arrays, one parameter per list, as the compiler binds `in` lists today (section 5.1).
+**Every list is bound as one array parameter**, `= ANY(?)` or `<> ALL(?)` with `pq.Array`, including the existing `in` and `not_in` of `cve_id`, `severity` and the other set fields. Today `setSQL` passes `sq.Eq{expr: vals}`, which squirrel expands to `IN (?, ?, …)`, one placeholder per value, so a single `cve_id in [...]` condition can pass 65,535 parameters inside 1 MiB on its own; that changes in this work. Package names and ecosystem values therefore cost one parameter per list and do not count towards the 50.
 
-> **Verify before building (open review finding):** "as the compiler binds `in` lists today" is false. `setSQL` uses `sq.Eq{expr: vals}`, which squirrel expands to `IN (?, ?, …)`, one placeholder per value, so one `cve_id in [...]` condition can pass 65,535 parameters inside 1 MiB and the 100-condition limit does not prevent it. Before building, bind every list as `= ANY(?)` with `pq.Array` (or cap list length), then recount the worst case.
+With both limits and array binding, a rule's worst case without candidate IDs is about 50 product values of about 40 parameters each plus 100 conditions of at most 4 each, under 2,500 parameters. The candidate-ID arrays the evaluator adds are counted in section 5.2.
 
 The value carries no CPE part (`a`, `o`, `h`), and the field matches all three. The requirement's example has no part. Matching every part can only add matches for the 589 pairs that NVD files under more than one part, which fails towards alerting.
 
 `neq` and `not_in` are refused: "no source names this product" is a noise filter, a different need from the alerting use cases, and with name aliasing across two sources its meaning would need its own design. Text operators are refused: a substring of a CPE name has no index and no stable meaning across the two sources. Either can be added later without changing stored rules.
+
+Back-out: once this ships, stored rules and saved searches can hold `affected.cpe_product` and `affected.package` `eq`/`in`. If the code is reverted, `Compile` refuses the unknown field or operator, and the evaluator sets each such rule to `status=error` on its next evaluation (`failUncompilableRule`); a saved search holding one fails when it runs. Re-enabling a rule after a fix runs a new activation scan. The rules affected can be listed with `SELECT id FROM alert_rules WHERE conditions::text LIKE '%affected.cpe_product%' OR conditions::text ~ '"affected.package"[^}]*"operator": *"(eq|in)"'`.
 
 ### 3.3 Sources
 
@@ -74,7 +76,12 @@ A CVE matches a product when either source names it:
 1. **NVD:** a `cve_cpe_matches` row with `vulnerable = true` whose `cpe_normalized` starts with `cpe:2.3:<part>:<vendor>:<product>:` for any part, for any of the product's CPE spellings (section 3.4).
 2. **CNA:** a `cve_cna_affected` row whose vendor and product, in lower case, equal one of the product's CNA names, or start with a prefix name, and are not one of the product's other products (section 3.4). Every stored copy is read: the MITRE record's and NVD's relay of it.
 
-> **Verify before building (open review finding):** CNA rows match whatever their status, while NVD rows are filtered to `vulnerable`. A CNA entry whose versions are all `unaffected` still matches, and the version check (`internal/check/cna.go` `readEntry`) reads the same entry as no statement. Decide whether a rule skips such entries, and test both kinds.
+A CNA row matches whatever its versions' statuses say, including an entry whose every version is `unaffected`; the version check (`internal/check/cna.go` `readEntry`) reads such an entry as no statement. This is recommended, not settled (open question 9):
+
+- A rule with no version condition asks whether the CNA names the product. Status belongs with version conditions (requirement MATCH-3), which will read `versions` anyway.
+- Filtering on status would make a match depend on the `versions` JSON, which neither option of section 7 tracks, so a CNA changing `unaffected` to `affected` would be another unevaluated change.
+- It is not inconsistent with filtering NVD rows on `vulnerable`: `vulnerable = false` marks a platform or configuration CPE ("runs on"), not a statement that the product is unaffected.
+- Cost: an alert for a CVE whose CNA lists the product only to say it is not affected. On the kept ingest 3,149 entries on 1,648 CVEs list versions that are all `unaffected` with no `affected` default; none is under the six products the name table maps.
 
 Not read:
 
@@ -93,7 +100,13 @@ The rule field uses the same table, so a rule and a check of one product read th
 - `internal/check` exports what the compiler needs: the name lookup (`NamesFor`, `CNAName`, the other-product list and rule behind `isOtherProduct`), `ProductRef`, a value parser holding section 3.1's checks, and the key builders `CPEKeyFor` and `cnaNameKey` with `cutRunes`, `nextPrefix` and the limits `CPEKeyRunes` and `cnaNameRunes`;
 - the index-expression helpers `cpeIndexExpr` and `cnaNameIndexExpr` move from `internal/store/check.go` to `internal/check`, exported, and `internal/store` calls them there. The compiler cannot import `internal/store`, which imports `internal/alert/dsl`, and an expression that drifts from `cve_cpe_matches_check_idx` or `cve_cna_affected_check_idx` falls back to a sequential scan without an error.
 
-Two rows are added to the Node row's names: `node.js` / `node.js` and `the node.js project` / `node.js` (section 2). A table edit reaches a rule only for CVEs evaluated after it ships (realtime, batch, EPSS or an activation scan); nothing re-evaluates the corpus for it. A check sees it on its next request. The table's tests cover both callers.
+Two rows are added to the Node row's names: `node.js` / `node.js` and `the node.js project` / `node.js` (section 2). They change no match today: all 19 stored rows are on CVEs NVD has analysed under `nodejs:node.js`. A check sees a table edit on its next request.
+
+A rule does not: an edit to the table changes which stored CVEs a product rule matches, and nothing evaluates those CVEs until each next changes materially, so a newly matched CVE does not alert and an unmatched one keeps an open event. Pitfall NOTIFY-2 rejects leaving such a blind zone documented and unfixed. No blind zone exists at ship time, so this work builds the guard, not the remedy:
+
+- A unit test pins a digest of the whole table: every row's CPE spellings, CNA names and nearby-name fragment, and `otherProducts`. Any edit fails the test until its author updates the digest. The failure message points to this section.
+- The step an edit must ship with: on worker start, if the table's digest differs from the one stored in the database, run evaluation, with delivery, of every active rule that has an `affected.cpe_product` condition, over the CVEs with a CNA row under any vendor in a changed entry or a vulnerable CPE match row under any CPE spelling in a changed entry (adding a spelling makes a rule on one spelling read rows under the other), then store the new digest. `date_modified_canonical` does not move, because it must keep meaning "materially changed" for API polling and digests (section 7). The first edit that changes a match builds this step.
+- The test only proves the digest was touched, not that the step was built or run; it is a prompt to the author and reviewer, not a proof.
 
 ### 3.5 Alert behaviour over a CVE's life
 
@@ -101,8 +114,7 @@ For a Node CVE such as CVE-2026-123866:
 
 1. The CNA record arrives (MITRE, or NVD's relay before analysis). The CVE is new, so its first `material_hash` runs realtime evaluation, and the rule fires. If another feed (OSV, GHSA, KEV) delivered the CVE first without a CNA entry, the CNA rows arrive on a later merge, which is step 4's case.
 2. NVD analyses the CVE and adds CPEs. `cve_affected_cpes` is a `material_hash` input, so the hash changes and the rule fires a second time for the same CVE. This is the existing meaning of a material change (PLAN.md §5.3, affected CPE set). It means two notifications per product CVE that NVD analyses later.
-3. NVD flips a CPE between vulnerable and not vulnerable with the same criteria string. The hash does not change, so a rule that starts or stops matching because of the flip is not evaluated until the next material change. This gap is accepted: closing it would put the vulnerable flag into the hash, which changes the hash of every NVD-analysed CVE.
-   > **Verify before building (open review finding):** this reason is weak beside section 7, which recommends a corpus-wide hash move for CNA products: the vulnerable flag could move in the same one-time change, or section 7's separate signal could cover both (pitfall NOTIFY-2). Re-decide together with open question 2.
+3. NVD flips a CPE between vulnerable and not vulnerable with the same criteria string. The hash does not change, so a rule that starts or stops matching because of the flip is not evaluated until the next material change. Pitfall NOTIFY-2 rejects leaving this open, and the remedy is the same choice as step 4: section 7's hash option could add the vulnerable product set in the same one-time move, and its separate-signal option covers both. Open question 2.
 4. The CNA changes its product names, with nothing else material. Section 7.
 
 ### 3.6 Alternatives not chosen
@@ -114,9 +126,9 @@ For a Node CVE such as CVE-2026-123866:
 
 ### 4.1 Exact match
 
-`affected.package` gains `eq` and `in`. A value matches a stored row when the names are equal after folding for the row's ecosystem (`ecosystem.FoldPackageName`, the folding merge and the watchlist package match use). So `Foo_Bar` matches PyPI `foo-bar` and npm `foo_bar`, not npm `foo-bar`. Stored ecosystems are canonical OSV names (`internal/ecosystem`), so ecosystems are compared exactly, where today's compiler lower-cases them. An empty or whitespace-only value is refused. Section 5.1 gives the SQL.
+`affected.package` gains `eq` and `in`. A value matches a stored row when the names are equal after folding for the row's ecosystem (`ecosystem.FoldPackageName`, the folding merge and the watchlist package match use). So `Foo_Bar` matches PyPI `foo-bar` and npm `foo_bar`, not npm `foo-bar`. "Exact" therefore means equal after the ecosystem's own folding, never a comparison of the stored spelling (open question 7 asks Sam to confirm this reading). An empty or whitespace-only value is refused. Section 5.1 gives the SQL.
 
-> **Verify before building (open review finding):** exact ecosystem comparison departs from PLAN.md §10.2, which requires case-insensitive `eq`, and from `watchlistExpr`, which compares `lower()`; section 11 does not list a PLAN change for it. Either keep `lower()` and check with `EXPLAIN` that the index still serves, or amend §10.2.
+Ecosystems are compared exactly, where today's compiler and `watchlistExpr` lower-case them. Rule values must be canonical OSV names already (`ecosystem.Valid`), and stored values are canonical since the ecosystem vocabulary was unified at ingest, so the two readings agree on stored data; the exact form lets `cve_affected_packages_check_idx` serve `ecosystem = ANY`, which `lower(ecosystem)` cannot. It departs from PLAN.md §10.2, which requires case-insensitive `eq`; section 11 amends §10.2 for ecosystems, and open question 10 asks Sam to accept that or keep `lower()` at the index's cost.
 
 ### 4.2 Correlation
 
@@ -145,7 +157,7 @@ An existing `and` rule with an ecosystem and a package condition matches fewer C
 
 ### 5.1 The CVE-set form
 
-Each product condition, and each package condition with its correlated ecosystem conditions, compiles to a membership test on a set of CVE IDs. For a product:
+Each product condition, and each package condition with its correlated ecosystem conditions, compiles to a membership test on a set of CVE IDs. For a product condition (one set per condition, whatever the length of its `in` list):
 
 ```sql
 cves.cve_id IN (
@@ -158,16 +170,20 @@ cves.cve_id IN (
     UNION ALL
     SELECT a.cve_id FROM cve_cna_affected a
     WHERE a.cve_id = ANY($candidates)          -- only when the caller has candidate IDs
-      AND ((left(lower(a.vendor), 256) COLLATE "C" = $v1 AND left(lower(a.product), 256) COLLATE "C" = $p1
-            AND lower(a.vendor) = $fullv1 AND lower(a.product) = $fullp1)
-        OR ...)                                -- one term per CNA name; a range for a prefix name
-      AND NOT (...)                            -- the product's other products
+      AND (
+            ((<name term a1> OR <name term a2> ...) AND NOT (<other products of value a>))
+         OR ((<name term b1> ...) AND NOT (<other products of value b>))
+         OR ...)                               -- one group per value of the in list
 )
 ```
 
-A row is one of the product's other products when its lower-cased vendor equals the other product's vendor, and its lower-cased product equals the other product's name or, for a prefix, starts with it and is followed by nothing or by a character that is neither a letter nor a digit. This is the rule `check.isOtherProduct` applies today: `.NET Framework 4.8` is excluded from `microsoft:.net`, `.NET FrameworkExtensions` is not. In SQL the following character is tested with `!~ '^[[:alnum:]]'`. Go's `unicode.IsLetter` and PostgreSQL's `[[:alnum:]]` can disagree outside ASCII, so a parity test runs every other-product entry, and product names followed by a non-ASCII letter, through both (section 12).
+A name term is `(left(lower(a.vendor), 256) COLLATE "C" = $v AND left(lower(a.product), 256) COLLATE "C" = $p AND lower(a.vendor) = $fullv AND lower(a.product) = $fullp)`, or for a prefix name a range on the cut product with the same full-vendor recheck. Each value's other products exclude rows only within that value's group. One shared exclusion would be wrong: in `in [microsoft:.net, microsoft:.net_framework]`, the CNA row `Microsoft` / `.NET Framework` is an other product of the first value and a name of the second, and must match through the second.
 
-PostgreSQL's `lower()` and `[[:alnum:]]` follow the database's character type, while names in the table and rule values are ASCII and are lower-cased in Go. Only stored non-ASCII text can therefore compare differently between deployments, and its effect is bounded: a stored name whose non-ASCII letter lower-cases to ASCII in one locale, or an other product followed by a non-ASCII letter, matches or is excluded in one locale and not another.
+A row is one of a value's other products when its lower-cased vendor equals the other product's vendor, and its lower-cased product equals the other product's name or, for a prefix, starts with it and is followed by nothing or by a character that is not an ASCII letter or digit. In SQL the following character is tested with `!~ '^[a-z0-9]'` on the lower-cased product, and `isOtherProduct` changes from `unicode.IsLetter`/`IsDigit` to the same ASCII test, so both sides agree whatever the database's character type. Every name and other product in the table is ASCII; the only change in behaviour is that a prefix followed by a non-ASCII letter now counts as a word boundary. On the kept ingest no Microsoft product name has a non-ASCII character after either `.NET Framework` prefix (0 rows), so no stored row changes.
+
+PostgreSQL's `lower()` follows the database's character type, while names in the table and rule values are ASCII and are lower-cased in Go. Only stored non-ASCII vendor or product text can therefore compare differently between deployments: such a name, whose non-ASCII letter lower-cases to an ASCII letter in one locale, matches a table name in that locale and not in another.
+
+The SQL for product sets, name terms and other products is built in `internal/alert/dsl` by an exported function, from the names, keys and index expressions `internal/check` exports (section 3.4).
 
 For a package condition (compile rules in section 4.2):
 
@@ -175,18 +191,18 @@ For a package condition (compile rules in section 4.2):
 cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY($candidates)        -- only when the caller has candidate IDs
-      AND (cap.ecosystem = ANY($ecos1) OR cap.ecosystem LIKE ANY($releases1))   -- one line per eq/in ecosystem condition
+      AND (cap.ecosystem = ANY($ecos1) [OR cap.ecosystem LIKE ANY($releases1)])   -- one line per eq/in ecosystem condition
       AND <package predicate>
 )
 ```
 
-`$ecosN` holds an ecosystem condition's values and `$releasesN` the same values, LIKE-escaped, followed by `:%`, so `Debian` also matches `Debian:13`, as today. Every list is one array parameter, whatever its length.
+`$ecosN` holds an ecosystem condition's values. The bracketed release arm is emitted only when the condition names a base ecosystem that takes a release suffix (`Debian`, `Ubuntu`, `Packagist` and the others in `internal/ecosystem`'s `takesSuffix`, which gains an exported accessor), and `$releasesN` then holds those base names, LIKE-escaped, followed by `:%`, so `Debian` also matches `Debian:13`, as today. A line with no release arm leaves `ecosystem = ANY` for the index to serve. Every list is one array parameter, whatever its length.
 
-> **Verify before building (open review finding):** the fast package plan measured (0.52 ms) had no release arm. `OR cap.ecosystem LIKE ANY($releases)` on every ecosystem line, `npm` included, may stop `cve_affected_packages_check_idx` serving the condition. Emit the release arm only for values whose ecosystem takes a release suffix, and confirm index use with `EXPLAIN`. The package predicate:
+The package predicate:
 
 | Operator | Predicate |
 |---|---|
-| `eq` or `in` | `(cap.ecosystem = 'PyPI' AND <folded name> = ANY($pypiNames)) OR (cap.ecosystem <> 'PyPI' AND <folded name> = ANY($names))`. `<folded name>` is `ecosystem.FoldedNameSQL("cap.ecosystem", "cap.package_name")`, the expression of `cve_affected_packages_check_idx`; `$pypiNames` holds the values folded with `FoldPackageName("PyPI", …)` and `$names` the values lower-cased, which is the folding of every other ecosystem. With an ecosystem condition naming exact values, the index serves `ecosystem = ANY` with `<folded name> = ANY`; a release prefix (`Debian`) or no ecosystem condition reads without it (0.90 s and 10.5 s dry-run, section 5.3). |
+| `eq` or `in` | `<folded name> = ANY($names)`, where `<folded name>` is `ecosystem.FoldedNameSQL("cap.ecosystem", "cap.package_name")`, the expression of `cve_affected_packages_check_idx`, and `$names` holds the values folded in Go for the ecosystems the rule names. Folding differs only for PyPI. When the rule's ecosystem values include PyPI and another ecosystem, or the rule names no ecosystem, the predicate has two arms: `(cap.ecosystem = 'PyPI' AND <folded name> = ANY($pypiNames)) OR (cap.ecosystem <> 'PyPI' AND <folded name> = ANY($names))`. Measured: `npm` with `in [lodash, express, axios]` reads the index on both columns (4.7 ms); with no ecosystem, PostgreSQL 18 reads the index by skip scan on the ecosystem column (217 ms cold, 16 ms warm, section 5.3). |
 | `contains`, `starts_with`, `ends_with` | `lower(cap.package_name) ILIKE $pattern`, escaped as today. |
 
 `neq` and `not_in` on `affected.ecosystem` keep today's correlated `NOT EXISTS`, not `NOT IN`: on the kept ingest a dry-run of `ecosystem neq npm` with severity critical ran 243 ms as `NOT EXISTS` and hit a 60 s statement timeout as `cves.cve_id NOT IN (...)`. Ranges, prefixes, names and folded package names are built in Go from `internal/check` and `internal/ecosystem` and passed as parameters, never concatenated.
@@ -207,9 +223,16 @@ This also changes how today's `affected.ecosystem` (`eq`, `in`) and `affected.pa
 | `alert.Evaluator.queryCandidates` (realtime, batch, EPSS, activation) | its own list |
 | `alert.Evaluator.DryRun`, `store.ExecuteDSLQuery` (saved searches, AI search) | none |
 
-> **Verify before building (open review finding):** a plan author still has to decide the field kind that gives `affected.cpe_product` its own `TypeDesc` (section 10), whether `Compile` re-applies value parsing and the limits to stored rules, how duplicate values count toward the 50, and the create-and-PATCH symmetry tests (testing-pitfalls §4).
+`queryCandidates` keeps appending `cves.cve_id = ANY(?)` itself; each set repeats the same list. Squirrel numbers every placeholder separately, so the array is sent once per copy: two copies per product condition (one per branch), one per package condition, and one outer. A rule at the limits carries about 200 copies; a batch chunk is 5,000 IDs, so that rule sends about a million IDs per statement. Section 13 measures this case; a common rule of a few conditions carries a handful of copies.
 
-`queryCandidates` keeps appending `cves.cve_id = ANY(?)` itself; the set repeats the same list. The rule cache keeps caching `CompiledRule`. The watchlist pre-filter (`watchlistExpr`) is unchanged.
+The rule cache keeps caching `CompiledRule`. The watchlist pre-filter (`watchlistExpr`) is unchanged.
+
+Decided for the compiler:
+
+- `affected.cpe_product` gets its own field kind, `kindProduct`, so `ExportFieldDescriptions` gives it `TypeDesc` `"CPE vendor:product"` (section 10).
+- `Compile` re-applies the value parser and both limits to every stored rule, as `Validate` does at save. A stored rule that fails them compiles to an error, and the evaluator sets it to `status=error` (`failUncompilableRule`), failing closed as PLAN.md §10.5 requires.
+- Values are counted towards the 50-product limit after normalisation (lower case, redundant escapes dropped) and de-duplication, so `NodeJS:Node.js` and `nodejs:node\.js` count once.
+- Create and PATCH run the same validation and return the same errors (section 12 tests both, testing-pitfalls §4).
 
 ### 5.3 Measurements
 
@@ -227,15 +250,21 @@ This also changes how today's `affected.ecosystem` (`eq`, `in`) and `affected.pa
 | Dry-run, `linux:linux_kernel` alone / `or` `in_cisa_kev` | not measured | 0.85 s / 1.23 s |
 | Dry-run, `Debian` and `openssl` correlated (value folded per row) | not applicable | 0.90 s |
 | Dry-run, `npm` and `eq lodash`, single values compared with the index expression | not applicable | 0.52 ms |
-| Dry-run, `affected.package eq openssl`, no ecosystem (value folded per row) | not applicable | 10.5 s |
+| Dry-run, `affected.package eq openssl`, no ecosystem (value folded per row, a form not built) | not applicable | 10.5 s |
+| Dry-run, `affected.package eq openssl`, no ecosystem, pre-folded two-arm form of section 5.1 | not applicable | 217 ms cold, 16 ms warm (index skip scan) |
+| Dry-run, `npm` and `in [lodash, express, axios]`, one-arm array form | not applicable | 4.7 ms |
 | Dry-run, `affected.ecosystem neq npm` with severity critical | 243 ms (`NOT EXISTS`) | over 60 s (`NOT IN`; not used, section 5.1) |
 | Saved-search shape (`ORDER BY date_modified_canonical DESC, cve_id DESC LIMIT 51`), `linux:linux_kernel` | not measured | 357 ms |
 
-Realtime evaluates every active rule against each CVE whose hash changed, so its cost per rule is what matters at ingest; under 1 ms per product rule adds little to a merge that takes milliseconds. The 10.5 s row is the slow case: a package name with no ecosystem cannot use `cve_affected_packages_check_idx`, whose first column is the ecosystem. The validator warns about it (section 8), but AI search acts only on validation errors (`internal/api/ai.go`), so a generated rule of that shape runs with no warning shown, within 4 s of the 14 s timeout. Two remedies were weighed and not chosen: an index on the folded name alone, which costs a write on each of 7.5 million package rows at every merge for a shape the warning already discourages; and expanding a missing ecosystem to the ecosystems present, which needs a query for the stored ecosystem list (hundreds of release strings) before every evaluation. The array form of section 5.1 was measured only with single values (the 0.52 ms row); section 13 measures it with lists.
+Realtime evaluates every active rule against each CVE whose hash changed, so its cost per rule is what matters at ingest; under 1 ms per product rule adds little to a merge that takes milliseconds. A package name with no ecosystem was the one slow case, at 10.5 s with the value folded per row. The form section 5.1 builds compares against values folded in Go, and PostgreSQL 18 then reads `cve_affected_packages_check_idx` by skip scan over its ecosystem column (1,001 index searches): 217 ms cold. PostgreSQL 15 to 17 have no skip scan, so there the shape may still scan the table; section 13 measures it. The validator's warning reaches only the validate endpoint: create, PATCH, saved searches and AI search act on errors alone (section 8), so the warning cannot be what keeps the shape cheap. Three remedies were weighed:
 
-Appendix A holds the measured statements, so the implementation plan can repeat these rows on the kept ingest once the code exists (section 13).
+- an index on the folded name alone, which costs a write on each of 7.5 million package rows at every merge, and which PostgreSQL 18's skip scan makes unnecessary;
+- expanding a missing ecosystem to the ecosystems present, which needs a query for the stored ecosystem list (hundreds of release strings) before every evaluation;
+- refusing `affected.package` `eq` or `in` in an `and` rule with no `eq` or `in` ecosystem condition. The operators are new, so no stored rule breaks, and under `and` the fix is to add the ecosystem. Under `or` nothing correlates, so refusing there would remove `eq` from every `or` rule. Open question 8.
 
-> **Verify before building (open review finding):** under `or`, the `IN` set runs as a SubPlan that is hashed only when its estimated size fits in `hash_mem` (default `work_mem` 4 MB × `hash_mem_multiplier` 2, which the project does not set). A wide `or` product rule in dry-run or a saved search may fall back to a SubPlan rescanned for each CVE row. Measure an `or` rule with 50 large products in dry-run before relying on the `or` rows above.
+The `or` rows above ran with hashed SubPlans. A SubPlan is hashed only when its estimated size fits in `hash_mem` (default `work_mem` 4 MB × `hash_mem_multiplier` 2; the project sets neither), so a wide `or` product rule may fall back to a SubPlan rescanned for each CVE row; section 13 measures it.
+
+Appendix A holds the measured statements, so the implementation plan can repeat these rows on the kept ingest once the code exists (section 13). The batch rows above compare different products across the two forms, so the batch cost of the set form against today's form is not known; the set form was chosen on the dry-run rows and the equal realtime rows.
 
 ## 6. Indexes
 
@@ -260,15 +289,15 @@ Cost: the hash of every CVE with CNA rows (405,809 of about 2.6 million) changes
 
 **Alternative: a separate evaluation signal.** Merge could compare the CNA product set (and NVD's vulnerable flags, section 3.5 step 3) before and after, and on a difference run realtime evaluation and record the CVE for the next batch run, without changing `material_hash`. This closes both gaps with no corpus-wide re-fire, and a new match still fires, because no event exists for that rule and CVE at the current hash. The cost is a second change-tracking mechanism: realtime is best-effort, so the batch path needs its own record of such CVEs (a column or a queue beside `date_modified_canonical`, which must keep meaning "materially changed" for API polling), and a rule whose match flips this way would resolve and reopen at one hash. It is the better choice if re-fires on existing instances matter more than one more mechanism.
 
-Without either, section 3.5's step 4 stays a documented gap. Open question 2.
+**NVD's vulnerable flag** (section 3.5 step 3) belongs to the same choice. With the hash option, `MaterialFields` can carry the set of vulnerable CPE `part:vendor:product` keys in the same one-time move, at the cost of moving the hash of every NVD-analysed CVE rather than only those with CNA rows. With the separate signal, merge compares that set as well.
 
-> **Verify before building (open review finding):** neither option covers the inputs version conditions (requirement MATCH-3) will read: CNA versions and NVD ranges. A hash of product pairs alone may be followed by another corpus-wide hash move when version conditions land. Weigh this when answering open question 2.
+**Version conditions** (requirement MATCH-3) will read CNA versions and NVD ranges, which neither option tracks as designed here. The separate signal extends to them by comparing more fields; the hash option would need another corpus-wide hash move when version conditions land, unless MATCH-3 adds a separate signal then.
+
+Leaving both gaps open is not an option: pitfall NOTIFY-2 rejects documenting a correctness gap in alerting instead of closing it. Open question 2.
 
 ## 8. Validation and messages
 
-Errors stop a save; warnings are returned with a valid rule. Messages follow the existing `ValidationError` list (`internal/alert/dsl/validator.go`), one entry per problem, with the condition index.
-
-> **Verify before building (open review finding):** "warnings are returned with a valid rule" holds only for `POST .../alert-rules/validate`. Create and PATCH (`internal/api/alert_rules.go`) check blocking errors only, and saved searches and AI search drop warnings, so a stored rule of the several-ecosystems shape (section 4.2) stops matching with no signal to its owner. Decide whether create and PATCH return warnings or that shape becomes an error.
+Errors stop a save. Messages follow the existing `ValidationError` list (`internal/alert/dsl/validator.go`), one entry per problem, with the condition index. Today warnings reach a caller only through `POST .../alert-rules/validate`: create and PATCH (`internal/api/alert_rules.go`) act on blocking errors alone, and saved searches and AI search drop warnings. So a warning cannot be relied on to stop a rule shape. Open question 11 asks whether create and PATCH return warnings, or the several-ecosystems shape below (which section 4.2 makes match nothing) becomes an error; the recommendation is an error, because a rule that can never match is a mistake whoever wrote it.
 
 | Case | Severity | Message |
 |---|---|---|
@@ -277,14 +306,14 @@ Errors stop a save; warnings are returned with a valid rule. Messages follow the
 | Part ends in an unescaped backslash | error | `vendor and product must not end in an unescaped backslash` |
 | Unescaped character that CPE 2.3 requires escaped | error | `character "+" must be escaped with a backslash, as NVD writes CPE names (for example "notepad\+\+")`, naming the first such character |
 | Over 255 characters | error | `value must not exceed 255 characters` |
-| `in` with no values | error | `value must list at least one item` |
+| `in` with no values, on `affected.cpe_product` or `affected.package` (existing fields keep today's behaviour) | error | `value must list at least one item` |
 | More than 50 values across the rule's `affected.cpe_product` conditions | error, rule-level (index -1) | `a rule may name at most 50 products in total` |
 | More than 100 conditions | error, rule-level (index -1) | `a rule may hold at most 100 conditions` |
-| An `and` rule with a package condition and more than one `affected.ecosystem` condition using `eq` or `in` | warning, rule-level | `every ecosystem condition must hold on the same package row, so only an ecosystem all of them name can match; use one "in" condition if any of them is enough` |
+| An `and` rule with a package condition and more than one `affected.ecosystem` condition using `eq` or `in` | warning, rule-level (error if open question 11 is answered so) | `every ecosystem condition must hold on the same package row, so only an ecosystem all of them name can match; use one "in" condition if any of them is enough` |
 | An operator other than `eq` or `in` on `affected.cpe_product` | error | the existing `operator %q is not valid for field %q` |
 | A product with no row in the name table | warning | `no other CNA spelling is known for "x:y"; before NVD analyses a CVE, it matches only if the CNA record names vendor "x" and product "y"` (with `_` shown as a space where the own names do) |
 | `affected.package` `eq` or `in` with an empty or whitespace-only value | error | `value must not be empty` |
-| `affected.package` `eq` or `in` in an `or` rule, or in an `and` rule that has no `affected.ecosystem` condition with `eq` or `in` | warning | `without an ecosystem condition in an "and" rule, this match cannot use an index, so dry-run and saved searches can be slow` |
+| `affected.package` `eq` or `in` in an `or` rule, or in an `and` rule that has no `affected.ecosystem` condition with `eq` or `in` | warning (error in the `and` case if open question 8 is answered so) | `without an ecosystem condition in an "and" rule, this match reads every ecosystem, which is slow before PostgreSQL 18` |
 
 `affected.cpe_product` joins `selectiveFields`, so a regex rule with a product condition is allowed without a watchlist. The validator needs no database; the warning about unmapped products comes from the table in code.
 
@@ -297,7 +326,7 @@ Interaction with the existing CPE item, which stays as it is: a CPE item matches
 ## 10. Frontend, AI search and API description
 
 - **SPA:** no change. There is no rule editor, and the CVE detail page's affected section is not part of this work.
-- **AI search:** the prompt lists every registered field from `ExportFieldDescriptions`, so the new field and operators appear without code, and `PromptVersion` changes. One line is added to the prompt's notes: `affected.cpe_product` takes `vendor:product` from a CPE name, such as `nodejs:node.js`. `FieldDescription.TypeDesc` for the field is `"CPE vendor:product"`.
+- **AI search:** the prompt lists every registered field from `ExportFieldDescriptions`, so the new field and operators appear without code, and `PromptVersion` changes. Three lines are added to the prompt's notes: `affected.cpe_product` takes `vendor:product` from a CPE name, such as `nodejs:node.js`; in an `and` rule, `affected.ecosystem` and `affected.package` describe the same package, so name the package's ecosystem with it; and `affected.package` `eq` matches a whole package name. `FieldDescription.TypeDesc` for the field is `"CPE vendor:product"`.
 - **OpenAPI:** no change; rule conditions are JSON the spec does not enumerate. `schema.d.ts` is not regenerated.
 
 ## 11. PLAN.md changes
@@ -305,6 +334,8 @@ Interaction with the existing CPE item, which stays as it is: a CPE item matches
 - §10.1: add `affected.cpe_product` (CPE `vendor:product`; NVD vulnerable CPE rows and CNA names) and note that `affected.ecosystem` and `affected.package` are matched on one row under `and`.
 - §10.2: `affected.package` takes `eq` and `in`, compared after package-name folding.
 - §10.2's list of selective constraints for regex rules: add `affected.cpe_product`.
+- §10.2: the rule limits (50 product values, 100 conditions), the empty-`in` error on the new operators, and lists bound as one array parameter.
+- §10.2's case-insensitive `eq`: ecosystems are compared exactly, because rule values and stored values are both canonical names, if open question 10 is accepted.
 - §10.5: record that the correlation change ships without a `dsl_version` bump, if open question 5 is accepted.
 - §5.3, if open question 2 is accepted: the CNA product set is material.
 - Appendix A's `cve_cpe_matches` and `cve_cna_affected` entries: alert rules read them.
@@ -319,14 +350,16 @@ TDD per the project rules. Integration tests use testcontainers through `testuti
 - Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE.
 - `affected.package eq " "` is refused.
 - The unmapped-product warning appears for `example:widget` and not for `nodejs:node.js`; the several-ecosystems warning appears for `{ecosystem eq npm, ecosystem eq PyPI, package contains x}`.
-- `internal/check` keeps its existing name tests, plus the two new Node names.
+- `internal/check` keeps its existing name tests, plus the two new Node names, and `isOtherProduct` treats a non-ASCII letter after a prefix as a boundary.
+- The table digest test (section 3.4) fails when any row, CPE spelling, CNA name, fragment or other product changes, and its message names section 3.4's required step.
+- Create and PATCH return the same validation errors for the same conditions (testing-pitfalls §4); a stored rule edited past a limit compiles to an error.
 
-**Parity (integration, `internal/check` with a test database):** for every other-product entry, and for each entry's name followed by an ASCII letter, a digit, a space, nothing, and a non-ASCII letter (`é`), the SQL exclusion and `isOtherProduct` agree.
+**Parity (integration, in `internal/alert`, which has a `TestMain`):** for every other-product entry, and for each entry's name followed by an ASCII letter, a digit, a space, nothing, and a non-ASCII letter (`é`), the SQL exclusion built by `internal/alert/dsl` and `check.IsOtherProduct` agree. Both sides use the ASCII test of section 5.1, so the result does not depend on the database's character type.
 
 **Integration with `testutil.SeedCorpus`** (71 records). The golden NVD page holds CVE-2026-56847 (CNA `nodejs` / `node` and NVD `nodejs:node.js`), CVE-2026-111497 (CNA `Google` / `Brotli`, NVD lists Node) and CVE-2026-107832 (`Awaiting Analysis`, CNA `fastify` / `fastify` only, with a CVSS metric).
 
-- A rule `{affected.cpe_product eq fastify:fastify, severity in [critical, high, medium]}` matches CVE-2026-107832 with no NVD row; this is the seeded form of the acceptance case. The test asserts the severity it relies on.
-  > **Verify before building (open review finding):** as written this test cannot pass. CVE-2026-107832's only severity in the golden fixtures is CVSS 3.1 3.7 LOW (`internal/feed/nvd/testdata/golden/page-001.json`). Include `low` in the rule, or use another seeded CNA-only record, after checking its severity.
+- A rule `{affected.cpe_product eq fastify:fastify, severity in [critical, high, medium, low]}` matches CVE-2026-107832 with no NVD row; this is the seeded form of the acceptance case. The CVE's only severity in the golden fixtures is CVSS 3.1 3.7 LOW (`internal/feed/nvd/testdata/golden/page-001.json`), and the test asserts it, so a fixture change fails loudly. The same rule without `low` does not match.
+- Two product values in one condition: `in [microsoft:.net, microsoft:.net_framework]` matches a hand-built CNA row `Microsoft` / `.NET Framework` (the second value's own name), which `microsoft:.net` alone does not (section 5.1).
 - `nodejs:node.js` matches CVE-2026-56847 and CVE-2026-111497; `google:brotli` matches CVE-2026-111497 from both sources.
 - **Same answer on every path:** for a set of rules (each section 3 and 4 shape, `and` and `or`), the CVE IDs that `store.ExecuteDSLQuery` returns when paged to the end (no candidate IDs) equal the CVE IDs of the alert events an activation scan writes (1,000-ID candidate pages). Both are public seams; `DryRun` returns only a count and 10 samples, so it is checked on count alone. This is the guard on section 5.2's two forms of one rule.
 
@@ -350,31 +383,36 @@ TDD per the project rules. Integration tests use testcontainers through `testuti
 On the kept complete ingest, with the built code:
 
 - the section 5.3 rows for realtime (one CVE, `linux:linux_kernel`), batch (5,000 IDs), dry-run (Node, `linux:linux_kernel`) and the saved-search shape;
-- a rule of 50 product values (table-mapped and unmapped) and 100 conditions, realtime against one CVE and dry-run, including planning time;
-- the array form of section 5.1's package predicate: `npm` with an `in` of 50 names (expected to read `cve_affected_packages_check_idx`), `Debian` with `eq openssl`, and `eq` and `contains` with no ecosystem;
-- if CI or a deployment runs a PostgreSQL major other than 18, the realtime and dry-run rows again on that major;
-  > **Verify before building (open review finding):** every test helper and compose file pins `postgres:18-alpine`, so this condition never triggers and PostgreSQL 15 to 17 are never measured. PostgreSQL 18 adds planner features the measured plans may rely on (btree skip scan, `OR` lists turned into arrays). Measure the realtime and dry-run rows on PostgreSQL 15 before claiming support for it.
-- a full activation scan of a 50-value rule: the scan must finish well inside the 15 minutes after which `SweepZombieActivations` fails the job and sets the rule to `error` (about 2,600 pages of 1,000 IDs, so under about 340 ms a page).
+- the limit rule: 50 product values, the 50 products with the most vulnerable CPE rows (the largest is `linux:linux_kernel`), spread over enough conditions to reach 100, measured realtime against one CVE, dry-run, and **batch with a 5,000-ID chunk**, where the candidate array is sent about 200 times (section 5.2), including planning time;
+- an `or` rule with 50 of those products in dry-run, checking that the set SubPlan stays hashed (section 5.3);
+- the array form of section 5.1's package predicate: `npm` with an `in` of 50 names, `Debian` with `eq openssl`, and `eq` and `contains` with no ecosystem;
+- the realtime, batch and dry-run rows again on PostgreSQL 15. Every test helper and compose file pins `postgres:18-alpine`, and PostgreSQL 18 adds planner features these plans use or may use (btree skip scan, `OR` lists turned into arrays), so the supported range 15 and later is unmeasured until this runs;
+- a full activation scan of the limit rule: it must finish well inside the 15 minutes after which `SweepZombieActivations` fails the job and sets the rule to `error` (about 2,600 pages of 1,000 IDs, so under about 340 ms a page, which must also cover `cveExists` and `InsertAlertEvent`, two statements per matched CVE).
 
-A realtime row over 5 ms, a dry-run over 5 s other than the no-ecosystem package rows, or an activation over 7 minutes goes back to Sam before merge.
+Thresholds that go back to Sam before merge: a realtime row over 5 ms; a batch chunk over 3 s, well under the 14 s statement timeout, because a failed batch statement holds the cursor for every rule for up to 30 runs (`batchMaxHeldRuns`); a dry-run over 5 s; an activation over 7 minutes. If the limit rule fails the batch threshold, the fallback is a lower limit on set-type conditions only (`affected.cpe_product`, `affected.package`, and `eq`/`in` ecosystem conditions in a rule with no package condition), which are the conditions that carry candidate-array copies; scalar conditions keep the limit of 100. A shared candidate CTE is not the fallback: a CTE referenced from several branches is materialised, and a join to it is the `unnest` shape section 5.1 measured as a sequential scan.
 
 ## 14. Not in scope
 
 - Version conditions in rules (requirement MATCH-3).
 - CNA `package_key` for `affected.package`. 3,905 CVEs have a CNA package key and no package row under that CVE, 573 of them with no GHSA or OSV source at all (measured on the kept ingest for Phase 4 of `dev/plans/2026-11-09-version-check-endpoint-plan.md`). A package rule could read them, but that changes what "package" means for a rule; a later change can add it.
 - `neq` and `not_in` on `affected.cpe_product` (section 3.2).
-- NVD's vulnerable flag in `material_hash` (section 3.5).
 - Showing CNA rows on the CVE detail page.
 
 ## 15. Open questions for Sam
 
 1. **Acceptance case.** The requirement's example, the Brotli CVE, names only `Google` / `Brotli` in its CNA record, so no CNA-based rule for Node can match it before NVD analysis. Proposed acceptance: a Node CVE whose CNA names Node (CVE-2026-123866 live; a CNA-only copy of CVE-2026-56847 in tests). For bundled-library advisories like Brotli, the day-one rule names the library (`google:brotli`). Accept?
-2. **How a CNA product change gets evaluated** (section 7). Options: add the CNA product set to `material_hash` (recommended: one mechanism; costs one more alert per matching CVE with CNA data on instances that already have rules as feeds redeliver those CVEs, 405,809 CVEs shown as modified, and afterwards a re-fire of every matching rule on each CNA product edit, sometimes twice); a separate evaluation signal (no re-fires, closes the vulnerable-flag gap too, but a second change-tracking mechanism); or neither (a documented gap).
+2. **How a change in CNA product names, or in NVD's vulnerable flag, gets evaluated** (sections 3.5 and 7). Leaving it open is not an option (pitfall NOTIFY-2). Options:
+   - Add the CNA product set, and if wanted the vulnerable CPE set, to `material_hash` (recommended): one mechanism. Costs one more alert per matching CVE with CNA data on instances that already have rules, as feeds redeliver those CVEs; 405,809 CVEs shown as modified; afterwards a re-fire of every matching rule on each CNA product edit, sometimes twice. Adding the vulnerable set moves every NVD-analysed CVE's hash too. Version conditions (MATCH-3) may need another move.
+   - A separate evaluation signal: no re-fires, closes both gaps and extends to MATCH-3's inputs, but a second change-tracking mechanism.
 3. **Watchlist product item type** (section 9). Recommended later, as its own change, if a rule's `in` list is not enough.
 4. **Nearby CNA names** (section 3.3). Recommended no: a rule on `f5:nginx` would also alert for NGINX Plus and other F5 nginx products before NVD analysis. Yes would trade that noise for the CNA spellings the table does not know.
 5. **No `dsl_version` bump for correlation** (section 4.3). Recommended no bump: existing `and` rules with an ecosystem and a package condition narrow, and their CVEs that stop matching send resolution notifications.
 6. **How far correlation reaches** (section 4.2). Recommended: each package condition is correlated with the rule's `eq`/`in` ecosystem conditions, and package conditions stay independent of each other, which is what the requirement names and keeps "affects both a and b" expressible. The alternative correlates every package and ecosystem condition on one row, so `{package eq a, package eq b}` matches nothing; it is simpler to state and has no use the narrower reading lacks.
-7. **Requirements wording** (section 1). Section 1 paraphrases the private requirement. Confirm it, or correct it, so the design can be checked against it.
+7. **Requirements wording** (section 1). Section 1 paraphrases the private requirement. Confirm it, or correct it, so the design can be checked against it. In particular, confirm that "exact match" means equal after the ecosystem's own name folding (section 4.1), not equal to the stored spelling.
+8. **`affected.package` `eq`/`in` with no ecosystem** (section 5.3). Options: refuse it in an `and` rule with no `eq`/`in` ecosystem condition, and allow it under `or`; or allow it everywhere with a warning. Recommended: allow it, because the form that will be built runs in 217 ms cold on PostgreSQL 18; revisit if the PostgreSQL 15 measurement of section 13 is slow. Refusing everywhere would remove `eq` from `or` rules and is not offered.
+9. **CNA entries whose versions are all `unaffected`** (section 3.3). Recommended: they match, failing towards alerting; status belongs to version conditions. Cost: alerts where the CNA lists the product only to say it is unaffected (3,149 entries on 1,648 CVEs on the kept ingest; none under the six mapped products).
+10. **Exact ecosystem comparison** (section 4.1). Recommended: compare ecosystems exactly and amend PLAN.md §10.2's case-insensitive `eq` for ecosystems, so the index serves; both sides are canonical names. The alternative keeps `lower()` and loses the index on the ecosystem column.
+11. **Warnings at save** (section 8). Today only the validate endpoint returns warnings. Recommended: make the several-ecosystems shape an error, because it can never match. The alternative is to return warnings from create and PATCH too, which changes their response for every rule.
 
 ## 16. Delivery
 
@@ -402,7 +440,21 @@ LIMIT 5001;
 
 Dry-run: the same with no `cve_id = ANY(...)` filter anywhere; the Node rows use Node's three ranges and the CNA names `nodejs` / `node`, `nodejs` / `nodejs`, `nodejs` / `node.js`, and add `AND lower(cves.severity) IN ('critical','high')` where the row says so. Saved-search shape: the `linux:linux_kernel` dry-run with only `<range a>`, `<range o>` and the name `linux` / `linux kernel`, and `ORDER BY cves.date_modified_canonical DESC, cves.cve_id DESC LIMIT 51`.
 
-Package rows (value folded per row, as measured; section 5.1's array form is not yet measured):
+Package rows in section 5.1's array form, with `<folded name>` the `CASE` expression of `ecosystem.FoldedNameSQL`:
+
+```sql
+-- no ecosystem, eq openssl, two arms: 217 ms cold, 16 ms warm (skip scan on cve_affected_packages_check_idx)
+SELECT cves.cve_id FROM cves
+WHERE cves.cve_id IN (
+        SELECT cap.cve_id FROM cve_affected_packages cap
+        WHERE (cap.ecosystem = 'PyPI' AND <folded name> = ANY(ARRAY['openssl']))
+           OR (cap.ecosystem <> 'PyPI' AND <folded name> = ANY(ARRAY['openssl'])))
+  AND <status> LIMIT 5001;
+-- npm with in [lodash, express, axios], one arm, 4.7 ms:
+--   WHERE cap.ecosystem = ANY(ARRAY['npm']) AND <folded name> = ANY(ARRAY['lodash','express','axios'])
+```
+
+Package rows with the value folded per row (the earlier form, not built):
 
 ```sql
 -- Debian and openssl, 0.90 s

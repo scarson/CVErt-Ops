@@ -514,3 +514,118 @@
 - **Claim:** requirements completeness unverifiable — unpinned (standing finding).
 - **Source raw:** round-6-independent.md, standing finding
 - **Action:** none; duplicate of P0-1.
+
+## Run 2 — 2026-11-13
+
+### Run header (mutable — update at every phase transition)
+
+- **Doc:** `dev/plans/2026-11-13-product-match-rules-design.md` · **baseline snapshot:** `7369080` (run 1's terminal commit)
+- **Origin:** Sam asked for an independent review by Claude Fable and for the runner to discuss its findings with that reviewer. Run 1 closed as terminated-for-execution; this is a new review. Fable is the premium tier, used here on Sam's explicit request.
+- **Mode:** light — **surface fired:** none — **evidence:** as run 1.
+- **Requirements:** unpinned — section 1 still awaits Sam's confirmation (open question 7); requirements trace narrowed to internal consistency.
+- **Repo tier:** 1.
+- **Current phase:** 3 (fixes applied; ledger-briefed fix check by the same reviewer)
+- **Rounds:**
+
+| Round | Route (reviewer · slice · scope · shape · context · model+effort · prompts vN) | Snapshot | Roster | Status | Breaker evidence |
+|---|---|---|---|---|---|
+| 1 | Independent — dispatched subagent (Claude Fable, on Sam's request), all lenses, whole doc, single agent, cold, prompts v4; followed by a ledger-briefed discussion with the same agent on M2, M5, M7 and the CNA all-unaffected question | `7369080` | 1 agent, all lenses | complete; 11 raised, 11 substantive; discussion converged on all contested items | ordinal 1 · exempt (first independent round of this run) |
+| 2 | Ledger-briefed fix check — same Fable agent, the diff from `7369080` against the agreed dispositions | see commit after this row | 1 agent | pending | elective, additive; does not count toward closure |
+
+- **Gate:** not posed in-session: open questions 1–11 in doc section 15 go to Sam on PR 236 (8–11 are new in this run)
+- **Breaker:** next backstop ordinal `2` · active trigger `none` · in-flight `none`
+- **Closure:** cold reader — pending · verifier — pending
+- Terminal state:
+
+### Index (append-only rows; State cells edited in place)
+
+| ID | Round | Lens(es) | Class | Disposition | State |
+|---|---|---|---|---|---|
+| M1 | 1 | seams & contracts, failure modes, downstream readiness | forced correction | confirmed | fixed |
+| M2 | 1 | alternatives & rationale, failure modes | forced correction (rationale) + genuine choice (remedy) | confirmed | rationale fixed; remedy is open question 8 |
+| M3 | 1 | downstream readiness, requirements trace | forced correction (form) + genuine choices (content) | confirmed | fixed — all 11 notes resolved |
+| M4 | 1 | failure modes, unstated assumptions | forced correction | confirmed | fixed |
+| M5 | 1 | unstated assumptions, failure modes, downstream readiness | forced correction (measurement) + genuine choice (shape) | confirmed | fixed |
+| M6 | 1 | change & reversibility | documentary gap | confirmed | fixed |
+| M7 | 1 | failure modes, unstated assumptions | genuine choice | confirmed | fixed (guard built now; remedy specified) |
+| M8 | 1 | requirements trace | documentary gap | confirmed | fixed |
+| M9 | 1 | seams & contracts, downstream readiness | forced correction | confirmed | fixed |
+| M10 | 1 | simplicity & proportionality | forced correction | confirmed | fixed |
+| M11 | 1 | downstream readiness | forced correction | confirmed | fixed |
+
+### Detail — M1
+
+- **Anchor:** 5.1 — "`AND NOT (...)` -- the product's other products"
+- **Claim:** an `in` list of products has no stated set structure; one shared `NOT` excludes a row that is one value's other product and another value's name (`microsoft:.net` with `microsoft:.net_framework`).
+- **Source raw:** run-2-round-1-fable.md, local ID R1
+- **Action:** scope each value's exclusion to its own names: `(names_a AND NOT others_a) OR (names_b AND NOT others_b)`; add the two-value test. · **taken:** section 5.1 gives one product set per condition with each value's name group carrying its own exclusion; section 12 tests `in [microsoft:.net, microsoft:.net_framework]` against `Microsoft` / `.NET Framework`.
+
+### Detail — M2
+
+- **Anchor:** 5.3 — "a shape the warning already discourages"
+- **Claim:** the rationale contradicts the document: the warning reaches no executing path; the simplest remedy (make the shape an error) is unweighed.
+- **Source raw:** run-2-round-1-fable.md, local ID R2
+- **Action:** correct the rationale; record the error option; Sam decides (new open question). · **taken:** discussion: reviewer recommended refusing the shape in `and` rules only, conditioned on measuring the form actually built. Runner measured it (m12): 217 ms cold, 16 ms warm on PostgreSQL 18 by index skip scan, against 10.5 s for the per-row form. Section 5.3 rewritten with the three remedies; open question 8 recommends allowing it, revisiting after the PostgreSQL 15 measurement.
+
+### Detail — M3
+
+- **Anchor:** header "11 verify-first flags"; 15. Open questions
+- **Claim:** the verify-first notes hold undecided decisions section 15 does not list, and section 3.2 still states the claim its note calls false.
+- **Source raw:** run-2-round-1-fable.md, local ID R3
+- **Action:** resolve each note: decide the determinate ones in the text, move the genuine choices to section 15, move measurements to section 13, then remove the notes. · **taken:** list binding decided (`= ANY(?)` everywhere, worst case recounted); acceptance test adds `low`; compiler decisions listed in 5.2; release arm emitted only for suffix-taking base names; `or` hash_mem and PostgreSQL 15 moved to section 13; vulnerable flag folded into open question 2 with MATCH-3; CNA all-unaffected, warnings at save and exact ecosystem comparison are open questions 9, 11 and 10. `grep "Verify before building"` returns nothing.
+
+### Detail — M4
+
+- **Anchor:** 12 — "a non-ASCII letter (`é`), the SQL exclusion and `isOtherProduct` agree"
+- **Claim:** the parity test asserts agreement that section 5.1 says depends on database ctype.
+- **Source raw:** run-2-round-1-fable.md, local ID R4
+- **Action:** use an ASCII letter-or-digit test on both sides (table names are ASCII); state the small change to `isOtherProduct`. · **taken:** ASCII `!~ '^[a-z0-9]'` on both sides; `isOtherProduct` changes to match; runner checked the kept ingest: 0 Microsoft product names with a non-ASCII character after a `.NET Framework` prefix.
+
+### Detail — M5
+
+- **Anchor:** 5.2 — "the set repeats the same list"; 13
+- **Claim:** each branch carries its own copy of the candidate array; the limit rule is not measured on batch at 5,000 IDs; no batch threshold; activation products unnamed; per-match statements unmentioned.
+- **Source raw:** run-2-round-1-fable.md, local ID R5
+- **Action:** add the batch measurement and threshold, name the products, state the per-match cost; shape change only if measurement fails. · **taken:** discussion: reviewer conceded the per-condition count and the case against a CTE; asked for a threshold set against the cursor-hold consequence and for the fallback cap to cover set-type conditions only. Section 5.2 states the copies; section 13 measures the limit rule on batch at 5,000 IDs with the 50 largest products, threshold 3 s, fallback cap on set-type conditions, no CTE.
+
+### Detail — M6
+
+- **Anchor:** 4.3 — "reverting the correlation is a code revert"
+- **Claim:** the back-out of the new field and operators is unstated: stored rules using them go to `status=error` on a revert. · source: repo (`compiler.go`, `failUncompilableRule`)
+- **Source raw:** run-2-round-1-fable.md, local ID R6
+- **Action:** state it in section 4.3 or 3.2. · **taken:** section 3.2 states the back-out of the field and operators, with a query listing affected rules (`alert_rules.conditions` is JSONB, migration 000015).
+
+### Detail — M7
+
+- **Anchor:** 3.4 — "nothing re-evaluates the corpus for it"
+- **Claim:** a name-table edit changes stored rules' matches with no evaluation (pitfall NOTIFY-2); open question 2 still offers "neither", which NOTIFY-2 rejects.
+- **Source raw:** run-2-round-1-fable.md, local ID R7
+- **Action:** discuss remedies with the reviewer; remove the "neither" option. · **taken:** discussion: reviewer accepted a table digest test, on three conditions: the digest covers every table part; the required step is stated now; that step is the worker-start evaluation, not a `date_modified_canonical` bump. It also added the NVD-side scope and the residual that CI cannot prove the step ran. Section 3.4 states all of these; open question 2 no longer offers "neither".
+
+### Detail — M8
+
+- **Anchor:** 1 and 4.1 — "exact-match operator"; "on the day the CNA record lands"
+- **Claim:** the design reads "exact" as equal after folding without saying so; day-one depends on feed polling, unstated. The standing unpinned item duplicates P0-1 of run 1.
+- **Source raw:** run-2-round-1-fable.md, local ID R8
+- **Action:** say both in the text; fold "exact" into open question 7. · **taken:** section 1 and 4.1 state the folding reading of "exact" (open question 7) and the feed-polling dependence of "on the day".
+
+### Detail — M9
+
+- **Anchor:** 12 — "Parity (integration, `internal/check` with a test database)"
+- **Claim:** no unit owns the product-set SQL; the parity test cannot live in package `check` with a test database (import cycle, no `TestMain`).
+- **Source raw:** run-2-round-1-fable.md, local ID R9
+- **Action:** the SQL fragment builder lives in `internal/alert/dsl` (exported); the parity test lives in `internal/alert`, which has a `TestMain`. · **taken:** section 5.1 names `internal/alert/dsl` as owner of the product-set SQL; the parity test lives in `internal/alert` (`main_test.go` has `TestMain`, runner checked).
+
+### Detail — M10
+
+- **Anchor:** 5.1 — the two-arm PyPI predicate
+- **Claim:** with known ecosystem values the compiler can emit one arm per folding rule present; two arms only when PyPI and another ecosystem are both named, or no ecosystem is.
+- **Source raw:** run-2-round-1-fable.md, local ID R10
+- **Action:** emit only the arms the ecosystem values need. · **taken:** section 5.1 emits one arm unless PyPI and another ecosystem are both named or none is; measured one-arm `npm` `in` of 3 names at 4.7 ms on the index (m12).
+
+### Detail — M11
+
+- **Anchor:** 8, 10, 11 and 5.3
+- **Claim:** empty-`in` scope unstated; PLAN.md entries for the limits missing; AI prompt not told about correlation or `eq`; batch comparison of forms is not like for like.
+- **Source raw:** run-2-round-1-fable.md, local ID R11
+- **Action:** scope empty-`in` to the new operators; add PLAN entries; add prompt notes; state the batch comparison limit. · **taken:** empty-`in` error scoped to the new operators; section 11 adds PLAN entries for limits, empty `in`, array binding and exact ecosystems; section 10 adds two prompt notes; section 5.3 states the batch comparison is not like for like.

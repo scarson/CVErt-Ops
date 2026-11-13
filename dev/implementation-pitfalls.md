@@ -27,7 +27,7 @@ This document serves three audiences. Start here, then go directly to the sectio
 | 1 | [Feed Adapters & Data Ingestion](#1-feed-adapters--data-ingestion) | Feed adapters, streaming, ZIP, cursors, aliases | FEED-1 – FEED-20 | §1.C |
 | 2 | [Database & Query Patterns](#2-database--query-patterns) | Store methods, migrations, SQL, RLS, transaction helpers | DB-1 – DB-26 | §2.C |
 | 3 | [Authentication & Security](#3-authentication--security) | Auth, OAuth, JWT, API keys, MFA, lockout, secrets | AUTH-1 – AUTH-25 | §3.C |
-| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-12 | §4.C |
+| 4 | [API Design & HTTP](#4-api-design--http) | HTTP handlers, middleware, pagination, validation | API-1 – API-13 | §4.C |
 | 5 | [Notification & Alert Evaluation](#5-notification--alert-evaluation) | Alerts, delivery, webhooks, fan-out, debounce | NOTIFY-1 – NOTIFY-25 | §5.C |
 | 6 | [Architecture & Operations](#6-architecture--operations) | Startup, config, deployment, scheduling, cross-cutting | ARCH-1 – ARCH-45 | §6.C |
 | A | [Historical Changelog](#appendix-a-historical-changelog) | Provenance, validation dates, review process meta-observations | — | — |
@@ -1675,6 +1675,18 @@ Rejected: ordering by the inserting transaction's ID (`xid8` from `pg_current_xa
 
 ---
 
+### API-13: An In-Process Request Built on the Outer Request's Context Is Routed With the Outer Route
+
+**The Flaw:** A handler dispatches a second request to the server's own chi router in process (the design for the MCP endpoint does this: `dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`, section 7.3) and builds that request with the outer request's context.
+
+**Why It Matters:** `chi.Mux.ServeHTTP` reuses a routing context it finds in the request's context ("a routing context already exists from a parent router", `chi/v5` `mux.go`), so the inner request is routed with the outer request's remaining path and method, not its own URL, and gets 404. A probe against chi v5.5.0 with a sub-router mounted at `/api/v1` gave 404 for an inner `GET /api/v1/whoami` with the outer context and 200 with the routing context removed (found by design review, 2026-11-13). The same reuse appends the inner route pattern to the outer routing context, which the HTTP metrics middleware reads after the handler returns. The outer context also carries the outer request's authentication values, so code downstream can see an identity the inner request's own authentication never set.
+
+**The Fix:** Give the inner request a fresh context that carries none of the outer request's values, cancelled when the outer work ends (`context.AfterFunc` on the outer context, plus any deadline of its own). Pass what the inner request legitimately needs (the `Authorization` header, the peer address and forwarding headers, the request ID) as request fields and headers, so the inner middleware sets everything else itself.
+
+**The Lesson:** A context is not a cancellation channel only; it carries every value the outer middleware stored. When a request is re-entered into the same middleware chain, start from an empty context and copy what is needed explicitly.
+
+---
+
 ### Review Checklist
 
 When writing or reviewing HTTP handlers and middleware, verify each item:
@@ -1689,6 +1701,7 @@ When writing or reviewing HTTP handlers and middleware, verify each item:
 - [ ] API contract consistency: error format (RFC 9457), list shape (`{items, next_cursor}`), cursor format (base64 JSON), validation status (422), tier errors (429 not 403) (API-10)
 - [ ] Admin/management endpoints discover resources dynamically, not from hardcoded lists (API-11)
 - [ ] A polling cursor's key is assigned in commit order: a sequence value is drawn only while holding a lock released after commit, by every writer, before it locks the row (API-12)
+- [ ] A request dispatched to the server's own router in process gets a fresh context with none of the outer request's values (API-13)
 
 ---
 
@@ -2889,7 +2902,7 @@ All pitfalls by domain, with entry count and key themes. For detailed status per
 | §1 Feed Adapters | FEED-1 – FEED-20 | Streaming JSON (Token/More), ZIP temp-file bridging, timestamp parsing, null bytes, alias PK resolution, NVD rate limits/cursors, one-page-per-Fetch, response body drain |
 | §2 Database & Query | DB-1 – DB-26 | EPSS two-statement pattern + advisory locks, FTS isolation, RLS dual-layer (org_id + SET LOCAL), transaction helper selection, IS DISTINCT FROM guards, CREATE INDEX CONCURRENTLY, soft-delete partial indexes, ANY() arrays, nullable zero-value, bounded btree keys over feed text |
 | §3 Auth & Security | AUTH-1 – AUTH-25 | JWT WithValidMethods, argon2 semaphore (non-blocking), refresh JTI + theft detection, OAuth state/nonce, API keys (opaque + sha256), webhook HMAC + redirect SSRF, identity by provider_user_id, atomic token consumption, security code dedup, enumeration-safe error paths, in-memory state eviction/normalization |
-| §4 API & HTTP | API-1 – API-12 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery |
+| §4 API & HTTP | API-1 – API-13 | WithoutCancel for background goroutines, PATCH pointer types, RequestSize + Slowloris timeouts, keyset pagination composite cursor, pgx SimpleProtocol, unique constraint → 409, PATCH/POST validation parity, API contract consistency, admin dynamic resource discovery, commit-order polling cursor, fresh context for in-process dispatch |
 | §5 Notification & Alert | NOTIFY-1 – NOTIFY-25 | Activation scan (silent + async + paginated + zombie sweep), EPSS separate evaluator, dry-run isolation, rejected CVE filter, webhook delivery (3-phase + timeout + MaxConnsPerHost + body drain), fan-out (WaitGroup + per-channel continue), debounce, soft-delete channels, retry jitter, evaluator cursor re-scan window, digest re-scan window with sent-version list, digest total count beyond the row limit, digest claim held for the whole run, alert debounce index over open batches only |
 | §6 Architecture & Ops | ARCH-1 – ARCH-45 | RLS deployment config, timezone/automemlimit/SimpleProtocol imports, migration locks, DST-safe scheduling, connection pool sizing, statement timeout, rate limiter eviction, feature flag enforcement points, infrastructure-consumer connection, silent error suppression, config constant invariants, goroutine lifecycle (WithoutCancel + join + semaphore + timeout) |
 

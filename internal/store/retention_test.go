@@ -121,8 +121,8 @@ func TestCleanupAlertEvents_OrgFilter(t *testing.T) {
 		{org2.ID, ruleID2, "CVE-2024-0002"},
 	} {
 		if _, err := db.Pool().Exec(ctx,
-			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-			 VALUES ($1, $2, $3, $4, $5, $5)`,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+			 VALUES ($1, $2, $3, $4, $5, $5, nextval('alert_event_feed_seq'))`,
 			p.orgID, p.ruleID, p.cveID, "hash1", oldTime,
 		); err != nil {
 			t.Fatalf("seed alert_events: %v", err)
@@ -179,8 +179,8 @@ func TestCleanupAlertEvents_AgesFromLastFire(t *testing.T) {
 		{"CVE-2024-0004", oldTime},
 	} {
 		if _, err := db.Pool().Exec(ctx,
-			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-			 VALUES ($1, $2, $3, 'hash1', $4, $5)`,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+			 VALUES ($1, $2, $3, 'hash1', $4, $5, nextval('alert_event_feed_seq'))`,
 			org.ID, ruleID, e.cveID, oldTime, e.lastFired,
 		); err != nil {
 			t.Fatalf("seed alert_events: %v", err)

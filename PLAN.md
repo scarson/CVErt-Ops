@@ -2344,7 +2344,7 @@ See section 18.1 for full schema.
 - `DELETE /api/v1/orgs/{org_id}/alert-rules/{id}/channels/{channel_id}` — unbind channel (member+)
 
 **Alert events (chi-registered, flat — not nested under rules):**
-- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=` compared against the event's most recent fire; `?expand=cve,rule` embeds each event's CVE severity, CVSS, KEV and EPSS, and its rule name and matching watchlist items, in the same query)
+- `GET /api/v1/orgs/{org_id}/alert-events` — list (viewer+, filters: `?rule_id=`, `?cve_id=`, `?last_match_state=`, `?since=` compared against the event's most recent fire; `?expand=cve,rule` embeds each event's CVE severity, CVSS, KEV and EPSS, and its rule name and matching watchlist items, in the same query; `?order=asc` with `?after=` and `?limit=` (1 to 1000, 100 with `expand=rule`) is a polling feed that returns each fire of an event exactly once, in order of a per-org position drawn under a lock so it follows commit order (implementation-pitfalls.md API-12))
 
 **Deliveries (chi-registered, flat — not nested under channels):**
 - `GET /api/v1/orgs/{org_id}/deliveries` — list (viewer+, filters: `?channel_id=`, `?rule_id=`, `?status=`)

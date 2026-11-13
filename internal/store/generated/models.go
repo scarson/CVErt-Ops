@@ -112,6 +112,8 @@ type AlertEvent struct {
 	FirstFiredAt     time.Time
 	LastFiredAt      time.Time
 	TimesFired       int32
+	// Position in the alert-event feed. Draw it with nextval('alert_event_feed_seq') only while holding pg_advisory_xact_lock(1178944836, hashtext(org_id::text)).
+	FeedSeq int64
 }
 
 type AlertRule struct {

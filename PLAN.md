@@ -36,7 +36,7 @@ The product ships as:
 |---|---|---|
 | **Language** | Go 1.27 | Single binary; goroutine concurrency; stdlib `regexp` (RE2-equivalent); Green Tea GC |
 | **HTTP framework** | `huma` + `chi` | Code-first OpenAPI 3.1; automatic struct-tag validation; RFC 9457 errors. See section 18.2 |
-| **Database** | Postgres 15+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
+| **Database** | Postgres 18+ | `pgx` (driver) + `sqlc` (type-safe SQL codegen) + `squirrel` (dynamic DSL queries) |
 | **Migrations** | `golang-migrate` | SQL migration files; one per change; embedded via `embed.FS` |
 | **Validation** | `go-playground/validator` + huma struct tags | Struct tag validation (huma auto-validates requests) + handwritten rules for security-critical inputs |
 | **Auth / JWT** | `golang-jwt/jwt/v5` | Access + refresh tokens |
@@ -2153,7 +2153,7 @@ WHERE p.id = doomed.id;
 # Appendix A — Schema-First Plan (Models, Keys, Indexes, Migrations)
 
 ## A.1 Conventions
-- **DB:** Postgres 15+  
+- **DB:** Postgres 18+  
 - **PKs:** UUIDv4 for org-scoped (generated via `gen_random_uuid()`); `cve_id` (text) for CVEs
 - **Times:** `timestamptz` UTC, default `now()`
 - **JSON:** `jsonb`

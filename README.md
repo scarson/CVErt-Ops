@@ -152,7 +152,7 @@ The background worker handles feed ingestion, alert evaluation, notification del
 |-------|-----------|
 | Language | Go 1.27 |
 | HTTP framework | chi + huma (code-first OpenAPI 3.1) |
-| Database | PostgreSQL 15+ with Row-Level Security |
+| Database | PostgreSQL 18+ with Row-Level Security |
 | Queries | sqlc (static) + squirrel (dynamic DSL) |
 | Auth | JWT (HS256) + Argon2id + OAuth/OIDC |
 | AI | Google Gemini via `google.golang.org/genai` |
@@ -196,7 +196,7 @@ web/                 Vue 3 SPA
 ### Prerequisites
 
 - Go 1.27+
-- PostgreSQL 15+
+- PostgreSQL 18+
 - Node.js 24+ (for frontend development)
 - Docker and Docker Compose (recommended for local Postgres)
 

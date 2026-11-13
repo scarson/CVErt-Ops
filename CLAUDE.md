@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.27, PostgreSQL 15+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
+CVErt Ops is an open-source vulnerability intelligence and alerting application (Go 1.27, PostgreSQL 18+). API-first, single static binary, multi-tenant with RBAC. Self-hosted first, SaaS later.
 
 **Development status:** the application is under development and has no known users other than dev testers. Existing users, integrations and data are therefore not a backward compatibility consideration.
 

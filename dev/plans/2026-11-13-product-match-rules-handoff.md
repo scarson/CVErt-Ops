@@ -49,7 +49,7 @@ The ten decisions in design section 15.2 were taken by the design and can be ove
 
 1. **Implementation plan.** Use `superpowers-plus:writing-plans-enhanced`, which runs its own plan review. Read design sections 3 to 8, 12, 13 and 16 in full. Commit order is design section 16. The plan must schedule:
    - `schema-review`, then `migration`, for the two `cves` columns and their partial index (design section 7.2);
-   - the measurements and thresholds of design section 13, on the kept ingest and on PostgreSQL 15;
+   - the measurements and thresholds of design section 13, on the kept ingest;
    - `/pitfall-check` before the evaluator commit, and `/plan-check` against PLAN.md §10 before merge.
 2. **PLAN.md updates** listed in design section 11, in the implementation pull request, not before.
 
@@ -106,4 +106,4 @@ A second pass through rounds 1 to 7 after the round 6 fix found nothing further.
 
 > You are continuing CVErt-Ops requirement MATCH-2, product conditions in alert rules. Read `dev/plans/2026-11-13-product-match-rules-handoff.md`, then `dev/plans/2026-11-13-product-match-rules-design.md` in full. The design is approved: Sam's two rulings are in its section 15.1, and its section 15.2 records the other decisions. Do not reopen them without asking Sam.
 >
-> Write the implementation plan with the `superpowers-plus:writing-plans-enhanced` skill, following the design's section 16 commit order. Include `schema-review` and `migration` for the re-check columns, every measurement and threshold in section 13 (on the kept full ingest, read-only, and on PostgreSQL 15), `/pitfall-check` before the evaluator commit and `/plan-check` against PLAN.md §10 before merge. Pitfall DB-27 in `dev/implementation-pitfalls.md` governs the query shapes. Branch from local `dev` in a new worktree. Do not quote or commit the private requirements document.
+> Write the implementation plan with the `superpowers-plus:writing-plans-enhanced` skill, following the design's section 16 commit order. Include `schema-review` and `migration` for the re-check columns, every measurement and threshold in section 13 (on the kept full ingest, read-only), `/pitfall-check` before the evaluator commit and `/plan-check` against PLAN.md §10 before merge. Pitfall DB-27 in `dev/implementation-pitfalls.md` governs the query shapes. Branch from local `dev` in a new worktree. Do not quote or commit the private requirements document.

@@ -20,7 +20,7 @@ Why it matters: Node, PHP and .NET in runner tool caches are invisible to per-ho
 
 ## 2. Findings that shaped the design
 
-Measured on 2026-11-13 against the complete ingest kept from Phase 2 of the version check plan (`dev/plans/2026-11-09-version-check-endpoint-plan.md`; about 2.6 million CVEs; PostgreSQL 18), read-only. The project supports PostgreSQL 15 and later; plans were measured on 18 only. Code read at `dev` `5598af6`.
+Measured on 2026-11-13 against the complete ingest kept from Phase 2 of the version check plan (`dev/plans/2026-11-09-version-check-endpoint-plan.md`; about 2.6 million CVEs; PostgreSQL 18), read-only. The project supports PostgreSQL 18 and later, so the measured version is the oldest supported one. Code read at `dev` `5598af6`.
 
 | Finding | Evidence | Consequence |
 |---|---|---|
@@ -257,7 +257,7 @@ Decided for the compiler:
 | Dry-run, `affected.ecosystem neq npm` with severity critical | 243 ms (`NOT EXISTS`) | over 60 s (`NOT IN`; not used, section 5.1) |
 | Saved-search shape (`ORDER BY date_modified_canonical DESC, cve_id DESC LIMIT 51`), `linux:linux_kernel` | not measured | 357 ms |
 
-Realtime evaluates every active rule against each CVE whose hash changed, so its cost per rule is what matters at ingest; under 1 ms per product rule adds little to a merge that takes milliseconds. A package name with no ecosystem was the one slow case, at 10.5 s with the value folded per row. The form section 5.1 builds compares against values folded in Go, and PostgreSQL 18 then reads `cve_affected_packages_check_idx` by skip scan over its ecosystem column (1,001 index searches): 217 ms cold. PostgreSQL 15 to 17 have no skip scan, so there the shape may still scan the table; section 13 measures it. The validator's warning reaches only the validate endpoint: create, PATCH, saved searches and AI search act on errors alone (section 8), so the warning cannot be what keeps the shape cheap. Three remedies were weighed:
+Realtime evaluates every active rule against each CVE whose hash changed, so its cost per rule is what matters at ingest; under 1 ms per product rule adds little to a merge that takes milliseconds. A package name with no ecosystem was the one slow case, at 10.5 s with the value folded per row. The form section 5.1 builds compares against values folded in Go, and PostgreSQL 18 then reads `cve_affected_packages_check_idx` by skip scan over its ecosystem column (1,001 index searches): 217 ms cold. Skip scan arrived in PostgreSQL 18, the oldest supported version, so every supported server can read the index this way. The validator's warning reaches only the validate endpoint: create, PATCH, saved searches and AI search act on errors alone (section 8), so the warning cannot be what keeps the shape cheap. Three remedies were weighed:
 
 - an index on the folded name alone, which costs a write on each of 7.5 million package rows at every merge, and which PostgreSQL 18's skip scan makes unnecessary;
 - expanding a missing ecosystem to the ecosystems present, which needs a query for the stored ecosystem list (hundreds of release strings) before every evaluation;
@@ -408,7 +408,6 @@ On the kept complete ingest, with the built code:
 - the limit rule: 50 one-value `affected.cpe_product` conditions naming the 50 products with the most vulnerable CPE rows (the largest is `linux:linux_kernel`), plus 50 one-value `affected.package` conditions, measured under `or` and under `and` (under `and` it can match nothing and the planner may stop at the first empty set, so `or` gives the worst case and is the one the thresholds apply to), realtime against one CVE, dry-run, and **batch with a 5,000-ID chunk**, where the candidate array is sent about 150 times (section 5.2), including planning time;
 - an `or` rule with 50 of those products in dry-run, checking that the set SubPlan stays hashed (section 5.3);
 - the array form of section 5.1's package predicate: `npm` with an `in` of 50 names, `Debian` with `eq openssl`, and `eq` and `contains` with no ecosystem;
-- the realtime, batch and dry-run rows again on PostgreSQL 15, including the dry-run of `affected.package eq openssl` with no ecosystem in the built form. Every test helper and compose file pins `postgres:18-alpine`, and PostgreSQL 18 adds planner features these plans use or may use (btree skip scan, `OR` lists turned into arrays), so the supported range 15 and later is unmeasured until this runs. If the no-ecosystem package dry-run takes over 5 s cold on PostgreSQL 15, the decision to allow that shape (section 15.2) is revisited;
 - a full activation scan of the limit rule under `or`, so that it matches and the per-match statements run: it must finish well inside the 15 minutes after which `SweepZombieActivations` fails the job and sets the rule to `error` (about 2,600 pages of 1,000 IDs, so under about 340 ms a page, which must also cover `cveExists` and `InsertAlertEvent`, two statements per matched CVE).
 
 Thresholds that go back to Sam before merge: a realtime row over 5 ms; a batch chunk over 3 s, well under the 14 s statement timeout, because a failed batch statement holds the cursor for every rule for up to 30 runs (`batchMaxHeldRuns`); a dry-run over 5 s, except a substring package condition with no ecosystem, which takes 4.7 s in today's form and goes back only if the set form is slower than that; an activation over 7 minutes. If the limit rule fails the batch threshold, the fallback is a lower limit on set-type conditions only (`affected.cpe_product`, `affected.package`, and `eq`/`in` ecosystem conditions in a rule with no package condition), which are the conditions that carry candidate-array copies; scalar conditions keep the limit of 100. A shared candidate CTE is not the fallback: a CTE referenced from several branches is materialised, and a join to it is the `unnest` shape section 5.1 measured as a sequential scan.
@@ -493,7 +492,7 @@ Each decision says what was decided, why, and what was rejected. Sam can overtur
 - Rejected:
   - refusing it in `and` rules;
   - a new index, which costs a write on each of 7.5 million package rows at every update.
-- Revisited if: the PostgreSQL 15 measurement in section 13 takes over 5 s, because PostgreSQL 15 to 17 cannot use the index this way.
+- Revisited if: the section 13 measurement of the no-ecosystem package dry-run takes over 5 s cold.
 
 **CNA entries that list every version as unaffected still match** (section 3.3).
 

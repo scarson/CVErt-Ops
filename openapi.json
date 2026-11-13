@@ -493,9 +493,69 @@
         ],
         "type": "object"
       },
+      "AlertEventCVEContext": {
+        "additionalProperties": false,
+        "properties": {
+          "cvss_v3_score": {
+            "description": "CVSS v3 base score.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "cvss_v4_score": {
+            "description": "CVSS v4 base score.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "epss_score": {
+            "description": "EPSS probability, 0 to 1; null when not scored.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "in_cisa_kev": {
+            "description": "Whether the CVE is in the CISA Known Exploited Vulnerabilities catalog.",
+            "type": "boolean"
+          },
+          "severity": {
+            "description": "Severity as the feed sent it; compare case-insensitively.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "The CVE's status as the feed sent it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "status",
+          "severity",
+          "cvss_v3_score",
+          "cvss_v4_score",
+          "in_cisa_kev",
+          "epss_score"
+        ],
+        "type": "object"
+      },
       "AlertEventEntry": {
         "additionalProperties": false,
         "properties": {
+          "cve": {
+            "$ref": "#/components/schemas/AlertEventCVEContext",
+            "description": "With expand=cve: the CVE's fields as held now. Absent when the CVE is not in the corpus."
+          },
           "cve_id": {
             "type": "string"
           },
@@ -513,6 +573,10 @@
           },
           "material_hash": {
             "type": "string"
+          },
+          "rule": {
+            "$ref": "#/components/schemas/AlertEventRuleContext",
+            "description": "With expand=rule: the rule's name and the watchlist items that match the CVE."
           },
           "rule_id": {
             "type": "string"
@@ -535,6 +599,85 @@
           "first_fired_at",
           "last_fired_at",
           "times_fired"
+        ],
+        "type": "object"
+      },
+      "AlertEventRuleContext": {
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "description": "The rule has been deleted since the event fired.",
+            "type": "boolean"
+          },
+          "matched_watchlist_items": {
+            "description": "Items of the rule's watchlists that match the CVE, by the conditions rule evaluation uses, read now: an item added or removed since the event fired is reflected. Empty for a rule with no watchlists.",
+            "items": {
+              "$ref": "#/components/schemas/AlertEventWatchlistMatch"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The rule's name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "deleted",
+          "matched_watchlist_items"
+        ],
+        "type": "object"
+      },
+      "AlertEventWatchlistMatch": {
+        "additionalProperties": false,
+        "properties": {
+          "cpe": {
+            "description": "For a cpe item: the normalized CPE prefix.",
+            "type": "string"
+          },
+          "cve_id": {
+            "description": "For a cve item: the CVE ID.",
+            "type": "string"
+          },
+          "ecosystem": {
+            "description": "For a package item: the ecosystem as listed.",
+            "type": "string"
+          },
+          "item_id": {
+            "description": "Watchlist item ID.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "item_type": {
+            "description": "Item type.",
+            "enum": [
+              "cve",
+              "package",
+              "cpe"
+            ],
+            "type": "string"
+          },
+          "namespace": {
+            "description": "For a package item: the namespace, when listed.",
+            "type": "string"
+          },
+          "package_name": {
+            "description": "For a package item: the package name as listed.",
+            "type": "string"
+          },
+          "watchlist_id": {
+            "description": "Watchlist ID.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "watchlist_id",
+          "item_id",
+          "item_type"
         ],
         "type": "object"
       },
@@ -9048,6 +9191,16 @@
             "name": "cursor",
             "schema": {
               "description": "Pagination cursor",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule.",
+            "explode": false,
+            "in": "query",
+            "name": "expand",
+            "schema": {
+              "description": "Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule.",
               "type": "string"
             }
           }

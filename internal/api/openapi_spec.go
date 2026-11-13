@@ -888,6 +888,7 @@ type specListAlertEventsInput struct {
 	LastMatchState string `query:"last_match_state" doc:"Filter by last match state"`
 	Since          string `query:"since" doc:"Filter events since timestamp (RFC3339)"`
 	Cursor         string `query:"cursor" doc:"Pagination cursor"`
+	Expand         string `query:"expand" doc:"Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule."`
 }
 type specListAlertEventsOutput struct {
 	Body struct {

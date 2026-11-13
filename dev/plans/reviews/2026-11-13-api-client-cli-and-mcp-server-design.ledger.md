@@ -170,6 +170,7 @@ Sam's words: "Steelman all of this, then get an independent Fable review. Read t
 | V8 | 4w | repair integration | forced correction | confirmed | fixed |
 | V9 | 4w | repair integration | forced correction | confirmed | fixed |
 | V10 | 4w | repair integration | forced correction | confirmed | fixed |
+| X5 | M3 | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
 
 ### Detail — P0-1
 
@@ -652,6 +653,10 @@ Fresh-context Opus read of `808b0db..e7295cf`. Runner re-checked: `implementatio
 - **V8 (D8):** the NOTIFY-20 clause reads as fixing the evaluator. **Action:** 10 cites implementation pitfall API-12 for sequence cursors, with NOTIFY-20 as its timestamp form.
 - **V9 (D9):** two clauses shaped as answers to a reviewer. **Action:** rewritten as plain text.
 - **V10 (D10):** the 100-row `expand=rule` cap and `limit` apply in both orders. **Action:** 2 events row corrected.
+
+### X5 — the feed became a change feed (2026-11-13, after the second gate posing)
+
+The requesting session reported pull requests 237 (`43b5e2b`) and 238 (`17fe1cd`) merged to `dev`. Read at `origin/dev` (`c462e6a` commit message, `internal/api/alert_events.go`, PLAN.md line 2347): every change to an event (first fire, reopen, resolve, move to a new CVE ID by late binding) gives it a new feed position under the org lock; each entry shows the event's current state; unread changes to one event collapse into one entry; `last_match_state` and `since` are accepted with `order=asc`. PLAN.md now requires, before a multi-tenant hosted deployment, that the feed cursor stop revealing cross-org volume (encrypt it, or per-org positions under cursor version 2). Pull request 238 (`/auth/me` lists active memberships only) touches nothing this design uses. **Action:** 2 events row; 5.2 `events list` rows merged (filters in feed order, with the warning that a filtered poll skips non-matching changes for good) and `--newest` kept as an order switch; 7.4 `list_alert_events` gains a `state` filter; 7.7 result semantics (current state, collapse, CVE move); 9.2 test adds a resolve; 10 FEED-1 row (change feed, cross-org cursor requirement and its effect on stored cursors). Unreviewed: falls to the resumed run's Phase 5 check and closure.
 
 ### Detail — F38, F39
 

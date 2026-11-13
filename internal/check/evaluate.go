@@ -385,6 +385,11 @@ func setStatus(res *ItemResult, item Item, rows itemRows, t itemTally) {
 		cannot(ReasonCNAProductNotMapped)
 	case c.CannotEvaluate > 0:
 		res.Status = StatusUnresolved
+	// A distro whose feed records issued fixes only has no row for a
+	// vulnerability it has not fixed, so its rows can show a missing fix but
+	// cannot clear a version.
+	case c.NotAffected > 0 && item.Package != nil && ecosystem.ListsFixesOnly(item.Package.Ecosystem):
+		res.Status, res.Reason = StatusUnresolved, reasonPtr(ReasonDistroListsFixesOnly)
 	case c.NotAffected > 0:
 		res.Status = StatusNotAffected
 	// Retracted rows count as rows: they prove the package name exists.

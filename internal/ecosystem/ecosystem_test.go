@@ -127,6 +127,39 @@ func TestIsSubStream(t *testing.T) {
 	}
 }
 
+func TestListsFixesOnly(t *testing.T) {
+	t.Parallel()
+	// Distros whose stored rows include unfixed ranges, measured on the full
+	// ingest on 2026-11-13, and their streams.
+	for _, eco := range []string{
+		"Alpaquita:stream", "BellSoft Hardened Containers:stream", "Chainguard", "Debian:13", "Echo:1",
+		"MinimOS", "Ubuntu:26.04:LTS", "Ubuntu:Pro:FIPS-updates:22.04:LTS", "Wolfi",
+		// Not a distro: the rule is about distro feeds.
+		"npm", "PyPI", "Go",
+	} {
+		if ListsFixesOnly(eco) {
+			t.Errorf("ListsFixesOnly(%q) = true, want false", eco)
+		}
+	}
+	// Distros with no unfixed row on the full ingest, and so every distro not
+	// known to list unfixed vulnerabilities.
+	for _, eco := range []string{
+		"AlmaLinux:9", "Alpine:v3.22", "Azure Linux:3", "Mageia:9", "Red Hat:enterprise_linux:9::baseos",
+		"Red Hat:enterprise_linux:10.2", "Red Hat Lightwell:1", "Rocky Linux:9", "SUSE:Linux Enterprise Server 15 SP7",
+		"TuxCare:7", "openEuler:24.03-LTS", "openSUSE:Leap 15.6",
+	} {
+		if !ListsFixesOnly(eco) {
+			t.Errorf("ListsFixesOnly(%q) = false, want true", eco)
+		}
+	}
+	// A misspelt entry would leave its distro fixes-only without notice.
+	for base := range listsUnfixed {
+		if !IsDistro(base) {
+			t.Errorf("listsUnfixed holds %q, which is not a distro base name", base)
+		}
+	}
+}
+
 func TestReleaseStreams(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

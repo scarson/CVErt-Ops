@@ -981,6 +981,24 @@ func TestCheckIntegration_TargetedPatches(t *testing.T) {
 		wantItem(t, results.Results[2], check.StatusCannotEvaluate, "distro_stream_incomplete")
 	})
 
+	t.Run("Distros whose feeds list fixes only", func(t *testing.T) {
+		t.Parallel()
+		f := newCompleteCheckFixture(t)
+		// Red Hat's OSV records are issued errata; Debian's include unfixed ranges.
+		const rhsa, dsa = "RHSA-2026:90137", "DEBIAN-CVE-2026-90138"
+		ingestCheckPatch(t, f, "osv", feed.CanonicalPatch{CVEID: rhsa, SourceID: rhsa, AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "Red Hat:enterprise_linux:9::baseos", PackageName: "openssl-libs", RangeType: "ECOSYSTEM", Introduced: "0", Fixed: "1:3.0.7-27.el9"}}})
+		ingestCheckPatch(t, f, "osv", feed.CanonicalPatch{CVEID: dsa, SourceID: dsa, AffectedPackages: []feed.AffectedPackage{
+			{Ecosystem: "Debian:13", PackageName: "openssl", RangeType: "ECOSYSTEM", Introduced: "0", Fixed: "3.5.1-1"}}})
+
+		results := checkItems(t, f, pkgItem("Red Hat:enterprise_linux:9::baseos", "openssl-libs", "1:3.0.7-27.el9"),
+			pkgItem("Red Hat:enterprise_linux:9::baseos", "openssl-libs", "1:3.0.7-25.el9"), pkgItem("Debian:13", "openssl", "3.5.1-1"))
+		wantItem(t, results.Results[0], check.StatusUnresolved, "distro_lists_fixes_only")
+		wantItem(t, results.Results[1], check.StatusAffected, "")
+		wantAdvisory(t, results.Results[1], rhsa, check.VerdictAffected, "", "1:3.0.7-27.el9")
+		wantItem(t, results.Results[2], check.StatusNotAffected, "")
+	})
+
 	t.Run("Per-item limit", func(t *testing.T) {
 		t.Parallel()
 		f := newCompleteCheckFixture(t)

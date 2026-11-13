@@ -1,6 +1,6 @@
 # Proposal: unfixed Red Hat package states for the version check
 
-**Status:** proposed 2026-11-13, for Sam's decision. Nothing here is built.
+**Status:** proposed 2026-11-13, for Sam's decision. Option A (section 2) was built on 2026-11-13 at Sam's decision. Option B is not built.
 
 **Context:** the version check endpoint (design: `dev/plans/2026-11-08-version-check-endpoint-design.md`; section 6, "Distros whose feeds list fixes only", records the gap this proposal addresses). For Red Hat, AlmaLinux, Rocky Linux, Alpine, SUSE and openSUSE, the stored package rows list issued fixes only, so the data cannot show a package that the distribution reports affected and has not fixed. For those distros, a clean result only means "no published fix is missing". This proposal asks whether Red Hat's own per-package states can fill the gap for RHEL, so that a RHEL item can earn `not_affected`.
 
@@ -39,7 +39,7 @@ All figures below come from read-only queries on the kept full ingest (`cvert_op
 - 75 map to several sources, where one advisory fixed several sources at the same NEVRA (`golang` and `go-toolset`; the `gstreamer1-plugins-*` set).
 - 400 do not map. Part of that is the incomplete Red Hat feed (next point).
 
-**The kept ingest's Red Hat feed is incomplete.** Its worker stopped at list page 645 (64,134 CVEs), on a reference URL too long for the btree index (`cve_references_cve_url_uq`). Migration 000060 on `dev` (reference URL digest) fixes that, but the kept ingest's worker predates it. The counts above are therefore lower bounds. The adapter's cursor (`after_date`, `page`) also has no `caught_up` flag, so the endpoint's `data_complete` cannot report this feed yet.
+**The kept ingest's Red Hat feed was incomplete when these counts were taken.** Its worker had stopped at list page 645 (64,134 CVEs), on a reference URL too long for the btree index (`cve_references_cve_url_uq`), which migration 000060 (reference URL digest) fixes. So the counts above are lower bounds. On 2026-11-13 the kept ingest's worker was moved to a build of `dev`, and the feed resumed past that CVE. The adapter's cursor now records `caught_up` once a walk reaches its last list page. The check does not report this feed in `data_complete` yet, because it reads no Red Hat data; option B would add it.
 
 **Other distros.**
 - **AlmaLinux and Rocky Linux** rebuild RHEL and publish their own errata on their own schedule. A RHEL "Fix deferred" says nothing authoritative about whether Alma has shipped a fix.
@@ -48,7 +48,7 @@ All figures below come from read-only queries on the kept full ingest (`cvert_op
 
 ## 2. Options
 
-**A. Fix-only distros answer `unresolved` where they would answer `not_affected`.** This changes status only, needs no new data, and holds for all six distros. It is needed whatever else is decided, because B covers RHEL main streams only, and only once the Red Hat feed is complete. This was recommended separately on 2026-11-13.
+**A. Fix-only distros answer `unresolved` where they would answer `not_affected`.** This changes status only, needs no new data, and holds for every fix-only distro. A measurement over all distros on 2026-11-13 found eleven with no unfixed row, not six (design section 6 lists them). It is needed whatever else is decided, because B covers RHEL main streams only, and only once the Red Hat feed is complete. Built on 2026-11-13 (reason `distro_lists_fixes_only`).
 
 **B. Read Red Hat's unfixed states in the check.** Recommended shape in section 3. RHEL main streams gain both an earned `not_affected` and an `affected` answer for CVEs Red Hat has not fixed. Today those CVEs are invisible, even under A.
 
@@ -101,14 +101,14 @@ All figures below come from read-only queries on the kept full ingest (`cvert_op
 
 ## 6. Recommendation
 
-Build rule A now. It makes all six fix-only distros correct, at the cost of never answering `not_affected` for them.
+Build rule A now (done 2026-11-13). It makes every fix-only distro correct, at the cost of never answering `not_affected` for them.
 
 Defer B until RHEL clearing is a product need, for example a customer or an agent workflow that checks RHEL hosts here rather than with Trivy. When it is, build it as in section 3, after the pre-build measurement in section 4.
 
 Treat SUSE the same way later, from its CSAF VEX files. Alpine stays under rule A.
 
 **Decisions for Sam:**
-1. Rule A now, as recommended separately?
+1. Rule A now? (Decided 2026-11-13: yes, and built.)
 2. B now, later, or never?
 3. If B: a separate state table (recommended) or rows in `cve_affected_packages`?
 4. If B: request field `source_name` plus the derived map (recommended), or either alone?

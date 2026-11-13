@@ -45,6 +45,10 @@ var dateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 type Cursor struct {
 	AfterDate string `json:"after_date"`
 	Page      int    `json:"page,omitempty"`
+	// CaughtUp is true once a walk has reached its last list page. A cleared
+	// cursor starts false, so a refill reports Red Hat data as incomplete until
+	// it finishes.
+	CaughtUp bool `json:"caught_up,omitempty"`
 }
 
 // Adapter implements feed.Adapter for the Red Hat Security Data API.
@@ -73,18 +77,18 @@ type listEntry struct {
 
 // detailRecord represents the full Red Hat CVE detail response.
 type detailRecord struct {
-	Name            string            `json:"name"`
-	ThreatSeverity  string            `json:"threat_severity"`
-	PublicDate      string            `json:"public_date"`
-	CWE             string            `json:"cwe"`
-	CVSS3           *cvss3Info        `json:"cvss3"`
-	Details         []string          `json:"details"`
-	References      []string          `json:"references"`
-	Bugzilla        *bugzillaInfo     `json:"bugzilla"`
+	Name            string              `json:"name"`
+	ThreatSeverity  string              `json:"threat_severity"`
+	PublicDate      string              `json:"public_date"`
+	CWE             string              `json:"cwe"`
+	CVSS3           *cvss3Info          `json:"cvss3"`
+	Details         []string            `json:"details"`
+	References      []string            `json:"references"`
+	Bugzilla        *bugzillaInfo       `json:"bugzilla"`
 	AffectedRelease affectedReleaseList `json:"affected_release"`
-	PackageState    packageStateList   `json:"package_state"`
-	Mitigation      *mitigationInfo   `json:"mitigation"`
-	UpstreamFix     string            `json:"upstream_fix"`
+	PackageState    packageStateList    `json:"package_state"`
+	Mitigation      *mitigationInfo     `json:"mitigation"`
+	UpstreamFix     string              `json:"upstream_fix"`
 }
 
 type cvss3Info struct {
@@ -155,11 +159,11 @@ type mitigationInfo struct {
 // fixStatePriority maps fix state strings to severity rankings.
 // Lower number = more severe. States not in the map get priority 0 (worst).
 var fixStatePriority = map[string]int{
-	"Affected":             1,
-	"Will not fix":         2,
-	"Fix deferred":         3,
-	"Under investigation":  4,
-	"Not affected":         5,
+	"Affected":            1,
+	"Will not fix":        2,
+	"Fix deferred":        3,
+	"Under investigation": 4,
+	"Not affected":        5,
 }
 
 // parseListResponse decodes the Red Hat CVE list endpoint JSON array.
@@ -478,7 +482,8 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 
 	// Determine next cursor for pagination.
 	// When fullPage: advance to the next page with same AfterDate.
-	// When !fullPage (last page): advance AfterDate to today, reset Page.
+	// When !fullPage (last page): advance AfterDate to today, reset Page, and
+	// mark the walk caught up. A full page keeps the flag it was given.
 	// Always return non-nil NextCursor so the caller persists the new position.
 	var next Cursor
 	if fullPage {
@@ -489,10 +494,12 @@ func (a *Adapter) Fetch(ctx context.Context, cursorJSON json.RawMessage) (*feed.
 		next = Cursor{
 			AfterDate: cur.AfterDate,
 			Page:      page + 1,
+			CaughtUp:  cur.CaughtUp,
 		}
 	} else {
 		next = Cursor{
 			AfterDate: fetchedAt.Format("2006-01-02"),
+			CaughtUp:  true,
 		}
 	}
 	nextCursor, err := json.Marshal(next)

@@ -48,6 +48,21 @@ var distros = map[string]bool{
 	"openEuler": true, "openSUSE": true,
 }
 
+// listsUnfixed holds the distros whose stored rows include ranges with no fix:
+// on the full ingest of 2026-11-13, every other distro stored none. A distro
+// added to distros is fixes-only until its data shows otherwise.
+var listsUnfixed = map[string]bool{
+	"Alpaquita": true, "BellSoft Hardened Containers": true, "Chainguard": true, "Debian": true,
+	"Echo": true, "MinimOS": true, "Ubuntu": true, "Wolfi": true,
+}
+
+// ListsFixesOnly reports whether ecosystem is a distribution whose feed records
+// only issued fixes, so a vulnerability it has not fixed has no row.
+func ListsFixesOnly(ecosystem string) bool {
+	base, _, _ := strings.Cut(ecosystem, ":")
+	return distros[base] && !listsUnfixed[base]
+}
+
 // fromGHSA maps the REST API's package.ecosystem values to canonical names.
 var fromGHSA = map[string]string{
 	"actions": "GitHub Actions", "composer": "Packagist", "erlang": "Hex", "go": "Go",

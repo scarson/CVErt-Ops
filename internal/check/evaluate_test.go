@@ -300,6 +300,8 @@ var (
 	ubuntuItem = RawItem{Ecosystem: "Ubuntu:26.04:LTS", Name: "php8.5", Version: "8.5.4-0ubuntu1.4"}
 	ubuntuPro  = RawItem{Ecosystem: "Ubuntu:Pro:26.04:LTS", Name: "php8.5", Version: "8.5.4-0ubuntu1.4"}
 	fipsItem   = RawItem{Ecosystem: "Ubuntu:Pro:FIPS-updates:22.04:LTS", Name: "openssl", Version: "3.0.2-0ubuntu1.10+Fips1"}
+	rhelItem   = RawItem{Ecosystem: "Red Hat:enterprise_linux:9::baseos", Name: "openssl-libs", Version: "1:3.0.7-27.el9"}
+	alpineItem = RawItem{Ecosystem: "Alpine:v3.22", Name: "openssl", Version: "3.3.2-r0"}
 	dotnetCPE  = "cpe:2.3:a:microsoft:.net:*:*:*:*:*:*:*:*"
 	dotnetSDK  = RawItem{CPE: dotnetCPE, Version: "10.0.404"}
 	dotnetRT   = RawItem{CPE: dotnetCPE, Version: "10.0.15"}
@@ -526,7 +528,9 @@ func TestEvaluateItemStatus(t *testing.T) {
 		},
 		{
 			name: "an Ubuntu Pro sub-stream item with an advisory that cannot be evaluated", raw: fipsItem,
-			rows: func(r *testRows) { r.packages(fipsItem.Ecosystem, "openssl", pkgAt(cveA, "", "3.0.2-0ubuntu1.11+Fips1")) },
+			rows: func(r *testRows) {
+				r.packages(fipsItem.Ecosystem, "openssl", pkgAt(cveA, "", "3.0.2-0ubuntu1.11+Fips1"))
+			},
 			want: summary{status: "cannot_evaluate", reason: "distro_stream_incomplete", warnings: none,
 				counts: Counts{CannotEvaluate: 1}, listed: []string{cveA}},
 		},
@@ -611,6 +615,43 @@ func TestEvaluateItemStatus(t *testing.T) {
 			name: "a distro package with advisories, all not affected", raw: ubuntuItem,
 			rows: func(r *testRows) { r.packages("Ubuntu:26.04:LTS", "php8.5", pkgAt(cveA, "0", "8.5.4-0ubuntu1.3")) },
 			want: summary{status: "not_affected", reason: "null", warnings: none, counts: Counts{NotAffected: 1}},
+		},
+		{
+			// Red Hat's rows are issued errata only, so no row means "not fixed" as
+			// well as "not affected".
+			name: "a fixes-only distro package with advisories, all not affected, is unresolved", raw: rhelItem,
+			rows: func(r *testRows) { r.packages(rhelItem.Ecosystem, "openssl-libs", pkgAt(cveA, "0", "1:3.0.7-25.el9")) },
+			want: summary{status: "unresolved", reason: "distro_lists_fixes_only", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "a fixes-only distro package below a published fix is affected", raw: rhelItem,
+			rows: func(r *testRows) {
+				r.packages(rhelItem.Ecosystem, "openssl-libs", pkgAt(cveA, "0", "1:3.0.7-25.el9"), pkgAt(cveB, "0", "1:3.0.7-29.el9"))
+			},
+			want: summary{status: "affected", reason: "null", warnings: none,
+				counts: Counts{Affected: 1, NotAffected: 1}, listed: []string{cveB}},
+		},
+		{
+			name: "an Alpine package with advisories, all not affected, is unresolved", raw: alpineItem,
+			rows: func(r *testRows) { r.packages(alpineItem.Ecosystem, "openssl", pkgAt(cveA, "0", "3.3.1-r0")) },
+			want: summary{status: "unresolved", reason: "distro_lists_fixes_only", warnings: none,
+				counts: Counts{NotAffected: 1}},
+		},
+		{
+			name: "a fixes-only distro advisory that cannot be evaluated leaves the reason to the advisory", raw: rhelItem,
+			rows: func(r *testRows) {
+				r.packages(rhelItem.Ecosystem, "openssl-libs", pkgAt(cveA, "", "1:3.0.7-29.el9"), pkgAt(cveB, "0", "1:3.0.7-25.el9"))
+			},
+			want: summary{status: "unresolved", reason: "null", warnings: none,
+				counts: Counts{CannotEvaluate: 1, NotAffected: 1}, listed: []string{cveA}},
+		},
+		{
+			name: "data_incomplete beats distro_lists_fixes_only", raw: rhelItem,
+			rows:  func(r *testRows) { r.packages(rhelItem.Ecosystem, "openssl-libs", pkgAt(cveA, "0", "1:3.0.7-25.el9")) },
+			feeds: feedsWith(false),
+			want: summary{status: "cannot_evaluate", reason: "data_incomplete", warnings: none,
+				counts: Counts{NotAffected: 1}},
 		},
 		{
 			// Ubuntu publishes a universe package's fix in its Pro stream alone.

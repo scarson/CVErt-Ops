@@ -342,9 +342,9 @@ func TestDetailToPatch_WorstCaseFixState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		states     []string
-		wantWorst  string
+		name      string
+		states    []string
+		wantWorst string
 	}{
 		{
 			name:      "Affected wins over all",
@@ -798,6 +798,9 @@ func TestFetch_Pagination(t *testing.T) {
 	if cur.Page != 2 {
 		t.Errorf("cursor.Page = %d, want 2", cur.Page)
 	}
+	if cur.CaughtUp {
+		t.Error("cursor.CaughtUp = true after a full first page; the walk has not finished")
+	}
 
 	// Second fetch: use returned cursor for page 2
 	result2, err := adapter.Fetch(context.Background(), result.NextCursor)
@@ -817,6 +820,24 @@ func TestFetch_Pagination(t *testing.T) {
 	}
 	if lastCur.Page != 0 {
 		t.Errorf("Page should be 0 (reset) on last page, got %d", lastCur.Page)
+	}
+	if !lastCur.CaughtUp {
+		t.Error("cursor.CaughtUp = false after the last page; the walk has finished")
+	}
+
+	// A later run that finds a full page of changes keeps the flag: the corpus was
+	// complete before those changes.
+	caughtUp, _ := json.Marshal(Cursor{AfterDate: "2025-01-01", CaughtUp: true})
+	result3, err := adapter.Fetch(context.Background(), caughtUp)
+	if err != nil {
+		t.Fatalf("Fetch after catching up: %v", err)
+	}
+	var keptCur Cursor
+	if err := json.Unmarshal(result3.NextCursor, &keptCur); err != nil {
+		t.Fatalf("unmarshal cursor after catching up: %v", err)
+	}
+	if keptCur.Page != 2 || !keptCur.CaughtUp {
+		t.Errorf("cursor after a full page of changes = %+v, want page 2 with CaughtUp", keptCur)
 	}
 }
 

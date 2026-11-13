@@ -214,7 +214,7 @@ func TestReopenAlertEvent(t *testing.T) {
 		if len(events) != 1 {
 			t.Fatalf("events = %d, want 1", len(events))
 		}
-		return events[0]
+		return events[0].AlertEvent
 	}
 	reopen := func(materialHash string, suppressDelivery bool) uuid.UUID {
 		t.Helper()

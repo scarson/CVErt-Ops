@@ -2042,17 +2042,79 @@ export interface components {
             package_name: string;
             range_type?: string;
         };
+        AlertEventCVEContext: {
+            /**
+             * Format: double
+             * @description CVSS v3 base score.
+             */
+            cvss_v3_score: number | null;
+            /**
+             * Format: double
+             * @description CVSS v4 base score.
+             */
+            cvss_v4_score: number | null;
+            /**
+             * Format: double
+             * @description EPSS probability, 0 to 1; null when not scored.
+             */
+            epss_score: number | null;
+            /** @description Whether the CVE is in the CISA Known Exploited Vulnerabilities catalog. */
+            in_cisa_kev: boolean;
+            /** @description Severity as the feed sent it; compare case-insensitively. */
+            severity: string | null;
+            /** @description The CVE's status as the feed sent it. */
+            status: string | null;
+        };
         AlertEventEntry: {
+            /** @description With expand=cve: the CVE's fields as held now. Absent when the CVE is not in the corpus. */
+            cve?: components["schemas"]["AlertEventCVEContext"];
             cve_id: string;
             first_fired_at: string;
             id: string;
             last_fired_at: string;
             last_match_state: boolean;
             material_hash: string;
+            /** @description With expand=rule: the rule's name and the watchlist items that match the CVE. */
+            rule?: components["schemas"]["AlertEventRuleContext"];
             rule_id: string;
             suppress_delivery: boolean;
             /** Format: int32 */
             times_fired: number;
+        };
+        AlertEventRuleContext: {
+            /** @description The rule has been deleted since the event fired. */
+            deleted: boolean;
+            /** @description Items of the rule's watchlists that match the CVE, by the conditions rule evaluation uses, read now: an item added or removed since the event fired is reflected. Empty for a rule with no watchlists. */
+            matched_watchlist_items: components["schemas"]["AlertEventWatchlistMatch"][] | null;
+            /** @description The rule's name. */
+            name: string;
+        };
+        AlertEventWatchlistMatch: {
+            /** @description For a cpe item: the normalized CPE prefix. */
+            cpe?: string;
+            /** @description For a cve item: the CVE ID. */
+            cve_id?: string;
+            /** @description For a package item: the ecosystem as listed. */
+            ecosystem?: string;
+            /**
+             * Format: uuid
+             * @description Watchlist item ID.
+             */
+            item_id: string;
+            /**
+             * @description Item type.
+             * @enum {string}
+             */
+            item_type: "cve" | "package" | "cpe";
+            /** @description For a package item: the namespace, when listed. */
+            namespace?: string;
+            /** @description For a package item: the package name as listed. */
+            package_name?: string;
+            /**
+             * Format: uuid
+             * @description Watchlist ID.
+             */
+            watchlist_id: string;
         };
         AlertRuleEntry: {
             /**
@@ -5837,6 +5899,8 @@ export interface operations {
                 since?: string;
                 /** @description Pagination cursor */
                 cursor?: string;
+                /** @description Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule. */
+                expand?: string;
             };
             header?: never;
             path: {

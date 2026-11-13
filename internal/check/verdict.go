@@ -44,6 +44,7 @@ const (
 	ReasonEvaluationFailed        Reason = "evaluation_failed"
 	ReasonSDKVersionNotComparable Reason = "sdk_version_not_comparable"
 	ReasonDistroStreamIncomplete  Reason = "distro_stream_incomplete"
+	ReasonDistroListsFixesOnly    Reason = "distro_lists_fixes_only"
 )
 
 // Matched is one range that contains the version, for the response. Ecosystem

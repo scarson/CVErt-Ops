@@ -448,13 +448,15 @@ func TestReasonValues(t *testing.T) {
 		"unknown_version_scheme", "invalid_version", "invalid_range", "commit_ranges_only",
 		"no_version_bounds", "cna_cannot_clear", "cna_indeterminate", "cna_name_uncertain",
 		"cna_product_not_mapped", "data_incomplete", "distro_package_not_found",
-		"too_many_candidates", "too_many_ranges",
+		"too_many_candidates", "too_many_ranges", "evaluation_failed", "sdk_version_not_comparable",
+		"distro_stream_incomplete", "distro_lists_fixes_only",
 	}
 	got := []Reason{
 		ReasonUnknownVersionScheme, ReasonInvalidVersion, ReasonInvalidRange, ReasonCommitRangesOnly,
 		ReasonNoVersionBounds, ReasonCNACannotClear, ReasonCNAIndeterminate, ReasonCNANameUncertain,
 		ReasonCNAProductNotMapped, ReasonDataIncomplete, ReasonDistroPackageNotFound,
-		ReasonTooManyCandidates, ReasonTooManyRanges,
+		ReasonTooManyCandidates, ReasonTooManyRanges, ReasonEvaluationFailed, ReasonSDKVersionNotComparable,
+		ReasonDistroStreamIncomplete, ReasonDistroListsFixesOnly,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%d reasons, want %d", len(got), len(want))

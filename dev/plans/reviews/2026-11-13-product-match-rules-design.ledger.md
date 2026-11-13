@@ -522,9 +522,9 @@
 - **Doc:** `dev/plans/2026-11-13-product-match-rules-design.md` · **baseline snapshot:** `7369080` (run 1's terminal commit)
 - **Origin:** Sam asked for an independent review by Claude Fable and for the runner to discuss its findings with that reviewer. Run 1 closed as terminated-for-execution; this is a new review. Fable is the premium tier, used here on Sam's explicit request.
 - **Mode:** light — **surface fired:** none — **evidence:** as run 1.
-- **Requirements:** unpinned — section 1 still awaits Sam's confirmation (open question 7); requirements trace narrowed to internal consistency.
+- **Requirements:** pinned 2026-11-13 — Sam confirmed section 1's restatement verbatim: "Q1. yes." (including the folding reading of "exact" and the substituted acceptance case).
 - **Repo tier:** 1.
-- **Current phase:** stopped at the gate — every finding fixed or an open question; the last one-line fix (M22) had no further check
+- **Current phase:** closed
 - **Rounds:**
 
 | Round | Route (reviewer · slice · scope · shape · context · model+effort · prompts vN) | Snapshot | Roster | Status | Breaker evidence |
@@ -533,17 +533,17 @@
 | 2 | Ledger-briefed fix check — same Fable agent, the diff from `7369080` against the agreed dispositions | `bdb2d5f` | 1 agent | complete: resolved R1, R3, R6, R8–R11 and R7's conditions; conceded R2 on PostgreSQL 18; raised 10 problems in the fix wave (M12–M21) | elective, additive; does not count toward closure |
 | 3 | Ledger-briefed fix check — same Fable agent, `git diff bdb2d5f ecedc92` | `ecedc92` | 1 agent | complete: all 10 resolved; raised 1 new problem (M22) | elective, additive |
 
-- **Gate:** not posed in-session: open questions 1–12 in doc section 15 go to Sam on PR 236 (8–12 are new in this run)
+- **Gate:** answered 2026-11-13. Sam asked that every question carry full plain-language context and that the runner judge which were really his. The runner decided 10 (doc section 15.2, each with alternatives) and put 2 to Sam. Sam: "Q1. yes." and "Q2: ... B is obviously correct. The excess rule firing on info churn is what we're trying to avoid." Folded: section 1 status pinned; section 7 rewritten to specify the separate re-check signal (`match_inputs_hash`, `date_match_inputs_changed`) with the material-hash option recorded as rejected; section 15 rewritten as rulings plus decisions; tests, PLAN changes, indexes and delivery updated.
 - **Breaker:** next backstop ordinal `2` · active trigger `none` · in-flight `none`
 - **Closure:** cold reader — not dispatched · verifier — not dispatched (the gate questions come first; a closure pair runs after Sam answers them)
-- Terminal state: stopped awaiting user — open questions 1–12 in doc section 15 are posed to Sam on PR 236
+- Terminal state: closed at Sam's instruction without closure legs (2026-11-13: "Land your PR after the handoff push, you've already gotten reviews from me and other agents."). Not certified clean: the gate fold (sections 7 and 15) and M22 had no independent check; defects found while building come back to the design as findings.
 
 ### Index (append-only rows; State cells edited in place)
 
 | ID | Round | Lens(es) | Class | Disposition | State |
 |---|---|---|---|---|---|
 | M1 | 1 | seams & contracts, failure modes, downstream readiness | forced correction | confirmed | fixed |
-| M2 | 1 | alternatives & rationale, failure modes | forced correction (rationale) + genuine choice (remedy) | confirmed | rationale fixed; remedy is open question 8 |
+| M2 | 1 | alternatives & rationale, failure modes | forced correction (rationale) + genuine choice (remedy) | confirmed | rationale fixed; remedy decided in doc section 15.2 (allowed, measured) |
 | M3 | 1 | downstream readiness, requirements trace | forced correction (form) + genuine choices (content) | confirmed | fixed — all 11 notes resolved |
 | M4 | 1 | failure modes, unstated assumptions | forced correction | confirmed | fixed |
 | M5 | 1 | unstated assumptions, failure modes, downstream readiness | forced correction (measurement) + genuine choice (shape) | confirmed | fixed |
@@ -562,7 +562,7 @@
 | M17 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
 | M18 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
 | M19 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
-| M20 | 2 | downstream readiness, failure modes | genuine choice | confirmed | recommendation stated; open question 12 for Sam |
+| M20 | 2 | downstream readiness, failure modes | genuine choice | confirmed | decided in doc section 15.2 ("Notifications after a name-table edit"), deferred to when the step is built |
 | M21 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
 | M22 | 3 | downstream readiness | forced correction | confirmed | fixed |
 

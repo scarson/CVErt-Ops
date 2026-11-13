@@ -421,6 +421,10 @@ func (s *Store) GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID u
 func (s *Store) ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) (bool, error) {
 	var suppressed []bool
 	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		// The feed lock comes before the row locks, as in ReopenAlertEvent.
+		if err := q.LockAlertEventFeed(ctx, orgID); err != nil {
+			return fmt.Errorf("lock alert event feed: %w", err)
+		}
 		var err error
 		suppressed, err = q.ResolveAlertEvent(ctx, generated.ResolveAlertEventParams{
 			RuleID: ruleID,

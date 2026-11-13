@@ -204,12 +204,6 @@ func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request
 			writeProblem(w, http.StatusBadRequest, "cursor pages the descending order; use after with order=asc")
 			return
 		}
-		// A resolve changes last_match_state without moving the event in the feed,
-		// so a filter on it, or on last_fired_at, could pass an event before it matches.
-		if query.Has("last_match_state") || query.Has("since") {
-			writeProblem(w, http.StatusBadRequest, "last_match_state and since cannot be used with order=asc")
-			return
-		}
 		p.Ascending = true
 		p.Limit = limit
 		if s := query.Get("after"); s != "" {

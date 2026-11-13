@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/sqlc-dev/pqtype"
 
 	"github.com/scarson/cvert-ops/internal/dbutil"
@@ -479,34 +481,88 @@ func bindAdvisoryToCVE(ctx context.Context, tx *sql.Tx, q *generated.Queries, pa
 }
 
 // moveAlertEvents carries a CVE's alert events to its new ID and reports whether any
-// moved. alert_events is
-// org-scoped, and this worker path acts across orgs. An event that would collide
-// with one already under the new ID is closed instead, so it cannot stay open
-// against a CVE that no longer exists.
+// moved. alert_events is org-scoped, and this worker path acts across orgs. An event
+// that would collide with one already under the new ID is closed instead, so it
+// cannot stay open against a CVE that no longer exists. Moved and closed events take
+// new feed positions, so a feed poller sees them change.
 func moveAlertEvents(ctx context.Context, tx *sql.Tx, oldID, newID string) (bool, error) {
 	if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
 		return false, fmt.Errorf("enable rls bypass (%s→%s): %w", oldID, newID, err)
 	}
-	moved, err := tx.ExecContext(ctx, `
-		UPDATE alert_events a SET cve_id = $2
-		WHERE a.cve_id = $1
-		  AND NOT EXISTS (
-		      SELECT 1 FROM alert_events t
-		      WHERE t.org_id = a.org_id AND t.rule_id = a.rule_id
-		        AND t.cve_id = $2 AND t.material_hash = a.material_hash
-		  )`, oldID, newID)
+	// Positions may be drawn only under each org's feed lock, taken before the rows.
+	// Events of an org that was not locked yet (one inserted since the last look)
+	// are left for the next round, so the loop ends when no event remains to move.
+	locked := []uuid.UUID{} // not nil: pq.Array sends a nil slice as NULL, and <> ALL(NULL) matches nothing
+	moved := false
+	for {
+		orgs, err := lockAlertEventFeedsFor(ctx, tx, oldID, locked)
+		if err != nil {
+			return false, fmt.Errorf("lock alert event feeds (%s→%s): %w", oldID, newID, err)
+		}
+		if len(orgs) == 0 {
+			return moved, nil
+		}
+		locked = append(locked, orgs...)
+		res, err := tx.ExecContext(ctx, `
+			UPDATE alert_events a SET cve_id = $2, feed_seq = nextval('alert_event_feed_seq')
+			WHERE a.cve_id = $1 AND a.org_id = ANY($3)
+			  AND NOT EXISTS (
+			      SELECT 1 FROM alert_events t
+			      WHERE t.org_id = a.org_id AND t.rule_id = a.rule_id
+			        AND t.cve_id = $2 AND t.material_hash = a.material_hash
+			  )`, oldID, newID, pq.Array(locked))
+		if err != nil {
+			return false, fmt.Errorf("move alert events (%s→%s): %w", oldID, newID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE alert_events SET last_match_state = false, feed_seq = nextval('alert_event_feed_seq')
+			WHERE cve_id = $1 AND org_id = ANY($2) AND last_match_state`, oldID, pq.Array(locked)); err != nil {
+			return false, fmt.Errorf("close alert events (%s→%s): %w", oldID, newID, err)
+		}
+		count, err := res.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("count moved alert events (%s→%s): %w", oldID, newID, err)
+		}
+		moved = moved || count > 0
+	}
+}
+
+// lockAlertEventFeedsFor takes the feed lock (LockAlertEventFeed) of each org that has
+// an event under cveID and is not in held, and returns those orgs.
+// Locks are taken in lock-key order, so two transactions locking overlapping sets of
+// orgs cannot each wait for a lock the other holds.
+func lockAlertEventFeedsFor(ctx context.Context, tx *sql.Tx, cveID string, held []uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT org_id, hashtext(org_id::text) AS lock_key
+		FROM alert_events
+		WHERE cve_id = $1 AND org_id <> ALL($2)
+		ORDER BY lock_key, org_id`, cveID, pq.Array(held))
 	if err != nil {
-		return false, fmt.Errorf("move alert events (%s→%s): %w", oldID, newID, err)
+		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx,
-		"UPDATE alert_events SET last_match_state = false WHERE cve_id = $1", oldID); err != nil {
-		return false, fmt.Errorf("close alert events (%s→%s): %w", oldID, newID, err)
+	var orgs []uuid.UUID
+	for rows.Next() {
+		var org uuid.UUID
+		var key int32
+		if err := rows.Scan(&org, &key); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		orgs = append(orgs, org)
 	}
-	count, err := moved.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("count moved alert events (%s→%s): %w", oldID, newID, err)
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
-	return count > 0, nil
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	q := generated.New(tx)
+	for _, org := range orgs {
+		if err := q.LockAlertEventFeed(ctx, org); err != nil {
+			return nil, err
+		}
+	}
+	return orgs, nil
 }
 
 // migrateCVEPK renames a CVE's primary key from oldID to newID across all

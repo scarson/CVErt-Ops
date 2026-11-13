@@ -113,7 +113,11 @@ WHERE rule_id = $1 AND org_id = $2 AND last_match_state = true;
 -- Marks the CVE's still-matching events as no longer matching and returns the
 -- suppress_delivery flag of each one it changed. A row already resolved is left out,
 -- and a concurrent resolver waits on the row lock and then finds nothing to change.
+-- A resolved event moves to a new feed position, so a feed poller sees it close. The
+-- caller holds the org's feed lock (LockAlertEventFeed), taken before this statement
+-- locks the rows.
 UPDATE alert_events
-SET last_match_state = false
+SET last_match_state = false,
+    feed_seq         = nextval('alert_event_feed_seq')
 WHERE rule_id = $1 AND org_id = $2 AND cve_id = $3 AND last_match_state = true
 RETURNING suppress_delivery;

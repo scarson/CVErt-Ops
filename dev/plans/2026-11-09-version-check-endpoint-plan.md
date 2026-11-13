@@ -107,14 +107,14 @@ notes and commit messages.
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-09 — 8 rounds, 5 verify-first flags annotated in place
-**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is done (2026-11-12). Phase 3 (endpoint) is in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218). Phase 4's go/no-go run is done (2026-11-12); the roll-up and Ubuntu changes it led to are in PR #218 at `0241f0d` (Deviations). Steps 5 (merge) and 6 (index write cost) follow.
+**Overall:** Phase 1 shipped to `dev` (merge `45357f5`). Phase 2 (full ingest) is done (2026-11-12). Phase 3 (endpoint) and the Phase 4 changes shipped to `dev` in [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) (merge `d6919bf`, 2026-11-12). Phase 4 is done: the go/no-go run (2026-11-12) led to the roll-up and Ubuntu changes (Deviations), and the index write cost was measured on 2026-11-13 (Phase 4 notes).
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Data changes | ✅ Shipped 2026-11-10 | Merge `45357f5` on `dev`. Tasks: `2018ce4` (purl mapping), `c79cd32` (package key and indexes), `80c273b` (every CNA copy), `356bf6e` (NVD `caught_up`), `397a8c3` (`PLAN.md`). Review fixes: `ac5ad2b`, `7882fef`, `2899441`, `b741212` | Branch `claude/check-data-72f424`. [PR #213](https://github.com/scarson/CVErt-Ops/pull/213). Lint clean and full suite passed at `b741212` |
 | 2 — Full ingest | ✅ Done 2026-11-12 | No code. Worker builds: `2c9fac0`, `4356557`, `f663fd7`, `f56bde0` | Completion signals met 2026-11-12 06:56 UTC. Fixes found during the ingest: [PR #217](https://github.com/scarson/CVErt-Ops/pull/217), [PR #221](https://github.com/scarson/CVErt-Ops/pull/221), [PR #222](https://github.com/scarson/CVErt-Ops/pull/222). Measurements in Phase 4's notes |
 | 3 — Endpoint | 🚧 PR open 2026-11-10, awaiting Phase 4 | Task 3.1 `74b5011`, Task 3.2 `a9f86cf`, Task 3.3 `e7d2e87`, Task 3.4 `ae67ed3`, Task 3.5 `d251fe2`, review fixes `6e54c4d`, `7b5b880`, `8cf9c18`, `6618ae4`, `66a4091`; Task 3.6 `ac983d0`; Task 3.7 `cc2c772`; Task 3.8 `a6a97ce`, `4d31bda`; Task 3.9 `df55220`; Task 3.10 `6e8f968`; Task 3.11 `efd1df4`. Phase-end review fixes: round 1 `3781bec` to `3d8243a`, round 2 `b4a1e86` to `a4fa730`, round 3 `378ccbc` to `a72bd84`, round 4 `238ba4b`, `86d5578`. Head `5c4e025` | Branch `claude/check-endpoint-734a7a`. [PR #218](https://github.com/scarson/CVErt-Ops/pull/218) to `dev`, unmerged until Phase 4 reports. Lint clean and full suite passed at `5c4e025` |
-| 4 — Measurement and merge | 🚧 Roll-up changed 2026-11-12; Steps 5 and 6 next | `0241f0d` | Branch `claude/check-endpoint-734a7a`. Go/no-go run on the complete ingest at `7dae4bf`: every current release answered `cannot_evaluate`. Two independent reviews, at Sam's instruction, agreed the changes built in `0241f0d`; re-measured on the copy (Phase 4 notes) |
+| 4 — Measurement and merge | ✅ Done 2026-11-13 | `0241f0d`, `d6919bf` | Branch `claude/check-endpoint-734a7a`. Go/no-go run on the complete ingest at `7dae4bf`: every current release answered `cannot_evaluate`. Two independent reviews, at Sam's instruction, agreed the changes built in `0241f0d`; re-measured on the copy (Phase 4 notes). PR #218 merged to `dev` as `d6919bf`. Index write cost: smaller than run-to-run variation (Phase 4 notes) |
 
 ### Deviations
 
@@ -181,6 +181,7 @@ notes and commit messages.
   - `1644687`: a CPE vendor or product that is only an escaped `-` is `invalid_cpe`. `NamesFor` returns `(names, cpes, mapped)`, and `nearbyNames` is the one source of nearby-name inputs. `a72bd84`: the 503 detail names no time limit.
 - Phase 4 Step 1: `serve` reads a `pg_dump` copy of the ingest database (`cvert_phase4`), not the database itself, because its embedded worker pool would claim the Phase 2 worker's feed jobs and run them with older feed code. Detail at Phase 4 Step 1.
 - Phase 4 Step 6: the index write cost is measured on a copy, and the Phase 2 ingest (database, volume, container and the locked `check-ingest` worktree) is kept as lasting data at Sam's request, not removed. Detail at Phase 4 Step 6.
+- Phase 4 Step 6, how it ran (2026-11-13): each run restored the copy from one dump, so no run merged data an earlier run had rewritten, and every run read the same fixed 7-day NVD window. The rate is taken from merge time alone (`cve_raw_payloads.ingested_at`), not from the worker log, because NVD fetch time and two HTTP 524 retries would otherwise count. The step ran four times, alternating with and without the indexes, not twice, because the first pair differed by more than the effect later turned out to be. Detail in Phase 4 notes.
 - `715df44`, controller's change after its end-to-end check of `2e5a57f`: a CPE item version that is not dotted numbers (`6.8.0-45-generic`) no longer clears its product's floor. No row can be compared with it, so it shares the floored read, and `EvaluateCPERows` answers it `invalid_version` on every advisory with rows, read or left out, whichever row comes first. Before, the first row's reason (`no_version_bounds`, `invalid_range`) could stand in place of `invalid_version`, a reason-only change for such items. A 10-version LTS kernel fleet answers identically with or without such an item. Log `dev/implementation-log/2026-11-10T1200Z-check-non-dotted-version-shares-the-floor.md`.
 - **Decided by Sam on 2026-11-10, design change to section 4.2:** NVD bounds that are not dotted numbers (`2.0b10`, `1.0.2zf`) are compared by their leading dotted numbers where those differ (`version.CheckProduct`, `6ef031b`; review fixes `4300c7c`: CPE wildcards, `%` and empty ranges are never compared). Added to PR #218. Effect in Phase 4 notes; log `dev/implementation-log/2026-11-10T1041Z-check-nvd-bounds-by-leading-numbers.md`.
 - **Decided by Sam on 2026-11-10, design change to sections 4.2 and 9:** the CPE lookup leaves unread the NVD rows whose ranges lie wholly below the key's floor, and returns one count row per CVE for them (`08b6595`). The floor was first the item version's first two components, one key per floor; the controller's end-to-end run showed that form reading a product once per floor (50 Firefox versions 4.7 s, and HTTP 422 for 500 heavy items and for 300 kernel versions), so the rework (`2e5a57f`) gives each product one key whose floor is the lowest version asked of it (log `dev/implementation-log/2026-11-10T1148Z-check-cpe-lookup-one-read-per-product.md`). The rework also folds in an independent review of `08b6595`: stored rows and count rows share one `LIMIT`, and each advisory's CPE rows are sorted before evaluation so its reason and matched ranges do not depend on the order rows are read in. `CPEKey` gains `Floor`, `CPERow` gains `Below`, `EvaluateCPERows` takes the count, and the version check snapshot sets `jit = off`. Kernel `6.12.0` reads 2,064 rows in place of 82,061 and is answered; no answer changes for an item that was under its limits. The commits are on the implementing agent's branch, for the controller session to merge into the branch of PR #218. Measurements in Phase 4 notes ("Rows below the version"); log `dev/implementation-log/2026-11-10T1129Z-check-cpe-lookup-leaves-rows-below-the-version-unread.md`.
@@ -1432,7 +1433,7 @@ Retraction: pass `c.status` through as each row's `Status`. Do not filter reject
 
 ## Phase 4 — Measurement and merge
 
-**Execution Status:** 🚧 IN PROGRESS, claimed 2026-11-10T10:30Z on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest, then as the go/no-go run on a copy of the complete ingest on 2026-11-12 (Phase 4 notes below). Step 4: reported to Sam on 2026-11-12; Sam had two independent reviews decide, and their consensus changed the roll-up (Deviations), built in `0241f0d` and re-measured. Steps 5 and 6 follow.
+**Execution Status:** ✅ COMPLETE 2026-11-13, on branch `claude/check-endpoint-734a7a`. Steps 1 to 3 ran once on a copy of the partial ingest, then as the go/no-go run on a copy of the complete ingest on 2026-11-12 (Phase 4 notes below). Step 4: reported to Sam on 2026-11-12; Sam had two independent reviews decide, and their consensus changed the roll-up (Deviations), built in `0241f0d` and re-measured. Step 5: PR #218 merged to `dev` as `d6919bf` on 2026-11-12, after a review of the whole PR. Step 6: measured on 2026-11-13 (Phase 4 notes, "Index write cost"); the copy is dropped and the kept ingest is unchanged.
 
 Needs Phase 2's database and Phase 3's branch.
 
@@ -1578,6 +1579,30 @@ Counts are Affected / Cannot evaluate / Not affected.
   - A `Ubuntu:Pro:22.04:LTS` item for `openssl` `3.0.2-0ubuntu1.25` now lists the 14 standard-stream USNs, with `fix_ecosystem` `Ubuntu:22.04:LTS`.
   - A standard item for `ruby-rack` lists 23 advisories whose fix is published only in Pro.
   - A `FIPS-updates` item for `curl`, which has no rows there, answers `distro_stream_incomplete`.
+
+#### Index write cost (Step 6), 2026-11-13
+
+**Result:** on this host, the four check lookup indexes slow NVD merges by less than the variation between identical runs. The two runs with the indexes averaged about 7% slower than the two without, but the slowest and fastest runs of each case overlap. The cost is too small to measure here and is no reason to change the indexes.
+
+**Method.**
+- One `pg_dump` of the kept ingest (`cvert_ops`, 2,619,748 CVEs) was taken at 2026-11-13T00:55Z. Each run restored it into `cvert_phase4`, migrated it to version 61, and ran `VACUUM ANALYZE`.
+- The runs without the indexes then dropped the four indexes from Task 1.2: `cve_affected_packages_check_idx`, `cve_cpe_matches_check_idx`, `cve_cna_affected_check_idx` and `cve_cna_affected_package_key_idx`.
+- The NVD cursor was set to the fixed window 2026-11-06T00:55Z to 2026-11-13T00:55Z. A `worker` built at `453ec86` (the code merged as `d6919bf`) ran against the copy, with the feed scheduler and retention cleanup off, and one NVD job was queued at a time until a job ended `success`.
+- The copy already held the window's data, but this still exercises the indexes. The merge deletes and re-inserts every child row of each CVE it touches (packages, CPEs, CPE matches, CNA entries), for every feed's rows, whether or not anything changed.
+- Merge time: each merge's transaction start is in `cve_raw_payloads.ingested_at`. The gap between consecutive NVD rows is one merge, and gaps of 5 s or more (NVD fetches) are left out.
+
+| Run (in order) | Indexes | Merges | Merge time | Merges per minute | Median merge | p99 merge |
+|---|---|---|---|---|---|---|
+| 1 | with | 11,961 | 360 s | 1,994 | 21 ms | 190 ms |
+| 2 | without | 11,961 | 240 s | 2,990 | 14 ms | 144 ms |
+| 3 | with | 11,987 | 263 s | 2,735 | 15 ms | 148 ms |
+| 4 | without | 11,987 | 339 s | 2,122 | 20 ms | 171 ms |
+
+Means: 2,364 merges per minute with the indexes, 2,556 without. Runs 3 and 4 read 26 more records than runs 1 and 2. NVD returned them for the same window, presumably because they had been modified again inside it. Run 4's NVD fetches failed twice with HTTP 524, and the job was queued again each time. Those waits are not in its merge time.
+
+**What limits the result.** Docker Desktop on this host is shared with other sessions, and runs of the same case differed by about 40%. The kept Phase 2 worker, which writes to `cvert_ops` in the same cluster, ran one 6-second NVD job (82 records) between runs 1 and 2, and nothing else during the runs. Telling a cost of about 10% apart from this noise would take more runs on a quiet host. The question that matters here is whether the indexes cost too much, and the answer is no, so that was not done.
+
+After the runs, `cvert_phase4` and the dump were dropped. `cvert_ops`, its volume, its container and the `check-ingest` worktree are unchanged.
 
 #### Phase 2 measurements (Phase 2 Steps 5 and 6), complete ingest
 

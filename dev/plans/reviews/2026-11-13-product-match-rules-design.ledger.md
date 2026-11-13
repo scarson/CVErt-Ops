@@ -530,9 +530,9 @@
 | Round | Route (reviewer · slice · scope · shape · context · model+effort · prompts vN) | Snapshot | Roster | Status | Breaker evidence |
 |---|---|---|---|---|---|
 | 1 | Independent — dispatched subagent (Claude Fable, on Sam's request), all lenses, whole doc, single agent, cold, prompts v4; followed by a ledger-briefed discussion with the same agent on M2, M5, M7 and the CNA all-unaffected question | `7369080` | 1 agent, all lenses | complete; 11 raised, 11 substantive; discussion converged on all contested items | ordinal 1 · exempt (first independent round of this run) |
-| 2 | Ledger-briefed fix check — same Fable agent, the diff from `7369080` against the agreed dispositions | see commit after this row | 1 agent | pending | elective, additive; does not count toward closure |
+| 2 | Ledger-briefed fix check — same Fable agent, the diff from `7369080` against the agreed dispositions | `bdb2d5f` | 1 agent | complete: resolved R1, R3, R6, R8–R11 and R7's conditions; conceded R2 on PostgreSQL 18; raised 10 problems in the fix wave (M12–M21) | elective, additive; does not count toward closure |
 
-- **Gate:** not posed in-session: open questions 1–11 in doc section 15 go to Sam on PR 236 (8–11 are new in this run)
+- **Gate:** not posed in-session: open questions 1–12 in doc section 15 go to Sam on PR 236 (8–12 are new in this run)
 - **Breaker:** next backstop ordinal `2` · active trigger `none` · in-flight `none`
 - **Closure:** cold reader — pending · verifier — pending
 - Terminal state:
@@ -552,6 +552,17 @@
 | M9 | 1 | seams & contracts, downstream readiness | forced correction | confirmed | fixed |
 | M10 | 1 | simplicity & proportionality | forced correction | confirmed | fixed |
 | M11 | 1 | downstream readiness | forced correction | confirmed | fixed |
+
+| M12 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M13 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M14 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M15 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M16 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M17 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M18 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M19 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M20 | 2 | downstream readiness, failure modes | genuine choice | confirmed | recommendation stated; open question 12 for Sam |
+| M21 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
 
 ### Detail — M1
 
@@ -629,3 +640,73 @@
 - **Claim:** empty-`in` scope unstated; PLAN.md entries for the limits missing; AI prompt not told about correlation or `eq`; batch comparison of forms is not like for like.
 - **Source raw:** run-2-round-1-fable.md, local ID R11
 - **Action:** scope empty-`in` to the new operators; add PLAN entries; add prompt notes; state the batch comparison limit. · **taken:** empty-`in` error scoped to the new operators; section 11 adds PLAN entries for limits, empty `in`, array binding and exact ecosystems; section 10 adds two prompt notes; section 5.3 states the batch comparison is not like for like.
+
+### Detail — M12
+
+- **Anchor:** 8 and Q11 — "which section 4.2 makes match nothing"; "because it can never match"
+- **Claim:** false in general: two ecosystem conditions can share an ecosystem (`in [npm, PyPI]` with `eq npm`; `Debian` with `Debian:13`); an error on "more than one" would refuse satisfiable rules.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** define the never-matching shape as an empty intersection (a value matches itself and, when its base takes a suffix, its releases); error only on that; warning dropped.
+
+### Detail — M13
+
+- **Anchor:** 5.1 — "`$releasesN` then holds those base names"
+- **Claim:** a suffixed value such as `Ubuntu:22.04` loses today's match of `Ubuntu:22.04:LTS` (`affectedEcosystemSQL` appends `:%` to every value).
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** emit the release arm for every value whose base takes a suffix, bare or suffixed.
+
+### Detail — M14
+
+- **Anchor:** 5.2 — "about 200 copies ... about a million IDs"
+- **Claim:** arithmetic: 50 product conditions (100 copies) plus 50 other conditions plus one outer is about 150 copies, about 750,000 IDs; section 13 repeats 200.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** recompute in both places.
+
+### Detail — M15
+
+- **Anchor:** 13 — "50 product values ... spread over enough conditions to reach 100"
+- **Claim:** impossible: 50 values fill at most 50 conditions.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** name the limit rule: 50 one-value product conditions plus 50 one-value package conditions.
+
+### Detail — M16
+
+- **Anchor:** 5.3, 13, Q8 — "section 13 measures it"
+- **Claim:** the PostgreSQL 15 bullet does not name the no-ecosystem package form or the threshold that reopens question 8.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** name both in the PostgreSQL 15 bullet and in Q8.
+
+### Detail — M17
+
+- **Anchor:** 8 table — "which is slow before PostgreSQL 18"
+- **Claim:** states an unmeasured result, and the message also reaches PostgreSQL 18 users.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** reword to what is known.
+
+### Detail — M18
+
+- **Anchor:** 13 thresholds — "a dry-run over 5 s"
+- **Claim:** the exception for no-ecosystem package rows was dropped, but `contains` with no ecosystem is 4.7 s today and its set form is unmeasured.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** compare substring rows with no ecosystem against today's form instead of the 5 s line.
+
+### Detail — M19
+
+- **Anchor:** 3.4 — "if the table's digest differs ... under any vendor in a changed entry"
+- **Claim:** one whole-table digest cannot say which entry changed, a removed entry's vendors are gone, and the first build has no stored previous table.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** store per-entry records holding each entry's CPE spellings, vendors and digest; evaluate over every entry when no record exists.
+
+### Detail — M20
+
+- **Anchor:** 3.4 — "run evaluation, with delivery"
+- **Claim:** delivering for every historical CVE that newly matches is the burst pitfall NOTIFY-1 suppresses for activation scans; accepted in discussion without being raised.
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** state the choice with a recommendation (deliver for CVEs published in the last 30 days, record older matches silently as activation does) and add open question 12.
+
+### Detail — M21
+
+- **Anchor:** 5.1 — "so both sides agree whatever the database's character type"
+- **Claim:** overclaim: the test runs on `lower(a.product)`, and `lower()` follows the ctype (KELVIN SIGN).
+- **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
+- **Action:** limit the claim to the boundary test and point to the `lower()` paragraph.

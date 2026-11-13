@@ -423,8 +423,8 @@ func insertAlertEventBackdated(t *testing.T, s *testutil.TestDB, ctx context.Con
 	// with PostgreSQL interval parsing (e.g., "10m0s" is not accepted by Postgres).
 	backdateSeconds := int(backdateDuration.Seconds())
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at)
-		VALUES ($1, $2, $3, $4, true, false, now() - ($5 * interval '1 second'), now() - ($5 * interval '1 second'))`,
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at, feed_seq)
+		VALUES ($1, $2, $3, $4, true, false, now() - ($5 * interval '1 second'), now() - ($5 * interval '1 second'), nextval('alert_event_feed_seq'))`,
 		orgID, ruleID, cveID, materialHash, backdateSeconds,
 	)
 	if err != nil {
@@ -991,16 +991,16 @@ func TestOrphanedAlertEvents_SuppressedAndNonMatchingExcluded(t *testing.T) {
 		t.Fatalf("set bypass_rls: %v", err)
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at)
-		VALUES ($1, $2, 'CVE-SUPPRESS-1', $3, true, true, now() - interval '15 minutes', now() - interval '15 minutes')`,
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at, feed_seq)
+		VALUES ($1, $2, 'CVE-SUPPRESS-1', $3, true, true, now() - interval '15 minutes', now() - interval '15 minutes', nextval('alert_event_feed_seq'))`,
 		orgID, ruleID, uuid.New().String())
 	if err != nil {
 		t.Fatalf("insert suppressed event: %v", err)
 	}
 	// Insert a non-matching event (last_match_state=false) backdated.
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at)
-		VALUES ($1, $2, 'CVE-NOMATCH-1', $3, false, false, now() - interval '15 minutes', now() - interval '15 minutes')`,
+		INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, first_fired_at, last_fired_at, feed_seq)
+		VALUES ($1, $2, 'CVE-NOMATCH-1', $3, false, false, now() - interval '15 minutes', now() - interval '15 minutes', nextval('alert_event_feed_seq'))`,
 		orgID, ruleID, uuid.New().String())
 	if err != nil {
 		t.Fatalf("insert non-matching event: %v", err)

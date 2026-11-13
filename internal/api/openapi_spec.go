@@ -887,7 +887,10 @@ type specListAlertEventsInput struct {
 	CveID          string `query:"cve_id" doc:"Filter by CVE ID"`
 	LastMatchState string `query:"last_match_state" doc:"Filter by last match state"`
 	Since          string `query:"since" doc:"Filter events since timestamp (RFC3339)"`
-	Cursor         string `query:"cursor" doc:"Pagination cursor"`
+	Cursor         string `query:"cursor" doc:"Pagination cursor for the default, descending order: the next_cursor of the previous page."`
+	Order          string `query:"order" enum:"desc,asc" default:"desc" doc:"desc (default): newest first by first fire, paged with cursor. asc: feed order, for polling, paged with after."`
+	After          string `query:"after" doc:"With order=asc: the next_cursor of the previous response. Omit to start from the oldest event."`
+	Limit          int    `query:"limit" minimum:"1" maximum:"1000" default:"100" doc:"Events per page; at most 100 with expand=rule."`
 	Expand         string `query:"expand" doc:"Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule."`
 }
 type specListAlertEventsOutput struct {
@@ -903,7 +906,13 @@ func registerAlertEventsSpecOps(api huma.API) {
 		Method:      http.MethodGet,
 		Path:        "/orgs/{org_id}/alert-events",
 		Summary:     "List alert events",
-		Tags:        []string{"Alert Events"},
+		Description: "With order=asc the list is a feed for pollers: store next_cursor, which is present once a position exists, and pass it as after on the next poll. " +
+			"Each fire of an event is returned exactly once, with no overlap between polls: an event enters the feed when it first fires " +
+			"and again each time it is reopened (times_fired counts the fires, and a reopen not yet read collapses into one entry). " +
+			"A resolve does not put an event back in the feed. A page shorter than limit means the poller has caught up. " +
+			"The guarantee covers the unfiltered feed and the rule_id filter. With cve_id, an event renamed to that CVE ID after the poller passed it is not returned. " +
+			"last_match_state and since cannot be combined with order=asc. With expand=rule, limit is at most 100.",
+		Tags: []string{"Alert Events"},
 	}, noopHandler[specListAlertEventsInput, specListAlertEventsOutput]())
 }
 

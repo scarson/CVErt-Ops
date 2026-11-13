@@ -3,8 +3,10 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,26 +128,102 @@ type alertEventCursor struct {
 	ID string `json:"id"` // UUID tiebreaker
 }
 
+// alertEventFeedCursor is the opaque ?after= position in the ascending feed.
+type alertEventFeedCursor struct {
+	V   int   `json:"v"` // cursor format; alertEventFeedCursorVersion
+	Seq int64 `json:"s"` // alert_events.feed_seq of the last event read
+}
+
+// alertEventFeedCursorVersion lets a later change of position scheme refuse old
+// cursors instead of misreading them.
+const alertEventFeedCursorVersion = 1
+
+const (
+	defaultAlertEventLimit = 100
+	maxAlertEventLimit     = 1000
+	// maxExpandedRuleLimit caps pages with expand=rule: each event reads every live
+	// item of its rule's watchlists and probes the CVE's affected ranges for each.
+	maxExpandedRuleLimit = 100
+)
+
+// decodeAlertEventFeedCursor parses an ?after= value.
+func decodeAlertEventFeedCursor(s string) (int64, bool) {
+	var cur alertEventFeedCursor
+	if err := decodePageCursor(s, &cur); err != nil || cur.V != alertEventFeedCursorVersion {
+		return 0, false
+	}
+	return cur.Seq, true
+}
+
+func encodeAlertEventFeedCursor(seq int64) string {
+	return encodePageCursor(alertEventFeedCursor{V: alertEventFeedCursorVersion, Seq: seq})
+}
+
 // listAlertEventsHandler handles GET /api/v1/orgs/{org_id}/alert-events.
 // Optional filters: ?rule_id=, ?cve_id=, ?last_match_state=, ?since=.
 // ?since= keeps events whose most recent fire is at or after the given time.
-// Cursor-based pagination on (first_fired_at DESC, id DESC) via ?cursor= parameter.
+// The default order is (first_fired_at DESC, id DESC), paged with ?cursor=.
+// ?order=asc lists in feed order from ?after=, and next_cursor is always the
+// position to resume from, so a poller sees each fire exactly once.
 func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := r.Context().Value(ctxOrgID).(uuid.UUID)
 	if !ok {
 		writeProblem(w, http.StatusBadRequest, "bad request")
 		return
 	}
-
-	const limit = 100
-	p := store.ListAlertEventsParams{Limit: limit + 1}
+	query := r.URL.Query()
 
 	expandCVE, expandRule, ok := parseAlertEventExpand(r)
 	if !ok {
 		writeProblem(w, http.StatusBadRequest, "invalid expand (comma-separated cve, rule)")
 		return
 	}
-	p.ExpandCVE, p.ExpandRule = expandCVE, expandRule
+
+	limit, maxLimit := defaultAlertEventLimit, maxAlertEventLimit
+	if expandRule {
+		maxLimit = maxExpandedRuleLimit
+	}
+	if s := query.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > maxLimit {
+			writeProblem(w, http.StatusBadRequest, fmt.Sprintf("invalid limit (1 to %d)", maxLimit))
+			return
+		}
+		limit = n
+	}
+	p := store.ListAlertEventsParams{Limit: limit + 1, ExpandCVE: expandCVE, ExpandRule: expandRule}
+
+	switch query.Get("order") {
+	case "", "desc":
+		if query.Has("after") {
+			writeProblem(w, http.StatusBadRequest, "after requires order=asc")
+			return
+		}
+	case "asc":
+		if query.Has("cursor") {
+			writeProblem(w, http.StatusBadRequest, "cursor pages the descending order; use after with order=asc")
+			return
+		}
+		// A resolve changes last_match_state without moving the event in the feed,
+		// so a filter on it, or on last_fired_at, could pass an event before it matches.
+		if query.Has("last_match_state") || query.Has("since") {
+			writeProblem(w, http.StatusBadRequest, "last_match_state and since cannot be used with order=asc")
+			return
+		}
+		p.Ascending = true
+		p.Limit = limit
+		if s := query.Get("after"); s != "" {
+			after, ok := decodeAlertEventFeedCursor(s)
+			if !ok {
+				writeProblem(w, http.StatusBadRequest, "invalid after")
+				return
+			}
+			p.AfterSeq = &after
+		}
+	default:
+		writeProblem(w, http.StatusBadRequest, "invalid order (asc or desc)")
+		return
+	}
 
 	if s := r.URL.Query().Get("rule_id"); s != "" {
 		id, err := uuid.Parse(s)
@@ -198,7 +276,15 @@ func (srv *Server) listAlertEventsHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	var cursor string
-	if len(events) > limit {
+	if p.Ascending {
+		// Always say where to resume: the last event, or the given position when
+		// nothing new is visible yet.
+		if len(events) > 0 {
+			cursor = encodeAlertEventFeedCursor(events[len(events)-1].FeedSeq)
+		} else if p.AfterSeq != nil {
+			cursor = encodeAlertEventFeedCursor(*p.AfterSeq)
+		}
+	} else if len(events) > limit {
 		events = events[:limit]
 		last := events[len(events)-1]
 		cursor = encodePageCursor(alertEventCursor{

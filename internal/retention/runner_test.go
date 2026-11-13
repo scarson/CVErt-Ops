@@ -130,8 +130,8 @@ func TestRunner_AllTables(t *testing.T) {
 		t.Fatalf("create rule: %v", err)
 	}
 	if _, err := db.Pool().Exec(ctx,
-		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-		 VALUES ($1, $2, 'CVE-2024-ALL', 'hash', $3, $3)`, org.ID, ruleID, old,
+		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+		 VALUES ($1, $2, 'CVE-2024-ALL', 'hash', $3, $3, nextval('alert_event_feed_seq'))`, org.ID, ruleID, old,
 	); err != nil {
 		t.Fatalf("seed alert event: %v", err)
 	}
@@ -357,14 +357,14 @@ func TestRunner_PerOrgGroup(t *testing.T) {
 
 	// Seed alert events at boundary timestamp for both orgs.
 	if _, err := db.Pool().Exec(ctx,
-		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-		 VALUES ($1, $2, 'CVE-2024-ORG1', 'hash', $3, $3)`, orgFree.ID, ruleIDFree, boundary,
+		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+		 VALUES ($1, $2, 'CVE-2024-ORG1', 'hash', $3, $3, nextval('alert_event_feed_seq'))`, orgFree.ID, ruleIDFree, boundary,
 	); err != nil {
 		t.Fatalf("seed free event: %v", err)
 	}
 	if _, err := db.Pool().Exec(ctx,
-		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-		 VALUES ($1, $2, 'CVE-2024-ORG2', 'hash', $3, $3)`, orgEnt.ID, ruleIDEnt, boundary,
+		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+		 VALUES ($1, $2, 'CVE-2024-ORG2', 'hash', $3, $3, nextval('alert_event_feed_seq'))`, orgEnt.ID, ruleIDEnt, boundary,
 	); err != nil {
 		t.Fatalf("seed ent event: %v", err)
 	}
@@ -543,8 +543,8 @@ func TestRunner_UnlimitedRetentionSkipsOrg(t *testing.T) {
 		t.Fatalf("create rule: %v", err)
 	}
 	if _, err := db.Pool().Exec(ctx,
-		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-		 VALUES ($1, $2, 'CVE-2024-UNLIM', 'hash', $3, $3)`, org.ID, ruleID, old,
+		`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+		 VALUES ($1, $2, 'CVE-2024-UNLIM', 'hash', $3, $3, nextval('alert_event_feed_seq'))`, org.ID, ruleID, old,
 	); err != nil {
 		t.Fatalf("seed alert event: %v", err)
 	}

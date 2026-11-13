@@ -25,6 +25,7 @@ import (
 // item, one event for a held CVE that the item matches, and a viewer key.
 type expandAPIFixture struct {
 	server *httptest.Server
+	db     *testutil.TestDB
 	orgID  uuid.UUID
 	ruleID uuid.UUID
 	itemID uuid.UUID
@@ -92,10 +93,16 @@ func newExpandAPIFixture(t *testing.T) *expandAPIFixture {
 		t.Fatalf("insert event: %v", err)
 	}
 
+	// Polling tests send more requests than the free tier's burst allows.
+	if _, err := db.DB().ExecContext(ctx,
+		`UPDATE organizations SET tier_overrides = '{"api_rate_limit": 100000}' WHERE id = $1`, org.ID); err != nil {
+		t.Fatalf("raise rate limit: %v", err)
+	}
+
 	srv := newAuthTestServer(t, "test-jwt-secret-alert-expand", db)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &expandAPIFixture{server: ts, orgID: org.ID, ruleID: rule.ID, itemID: item.ID, key: raw}
+	return &expandAPIFixture{server: ts, db: db, orgID: org.ID, ruleID: rule.ID, itemID: item.ID, key: raw}
 }
 
 func (f *expandAPIFixture) list(t *testing.T, query string) (int, []byte) {

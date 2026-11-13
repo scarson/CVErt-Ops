@@ -832,8 +832,8 @@ func TestListAlertEvents_SinceCountsMostRecentFire(t *testing.T) {
 		{"CVE-2024-0042", firstFired},
 	} {
 		if _, err := s.Pool().Exec(ctx,
-			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at)
-			 VALUES ($1, $2, $3, 'h', $4, $5)`,
+			`INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, first_fired_at, last_fired_at, feed_seq)
+			 VALUES ($1, $2, $3, 'h', $4, $5, nextval('alert_event_feed_seq'))`,
 			org.ID, r.ID, e.cveID, firstFired, e.lastFired,
 		); err != nil {
 			t.Fatalf("seed alert_events: %v", err)

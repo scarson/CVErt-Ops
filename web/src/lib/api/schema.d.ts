@@ -922,7 +922,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List alert events */
+        /**
+         * List alert events
+         * @description With order=asc the list is a feed for pollers: store next_cursor, which is present once a position exists, and pass it as after on the next poll. Each fire of an event is returned exactly once, with no overlap between polls: an event enters the feed when it first fires and again each time it is reopened (times_fired counts the fires, and a reopen not yet read collapses into one entry). A resolve does not put an event back in the feed. A page shorter than limit means the poller has caught up. The guarantee covers the unfiltered feed and the rule_id filter. With cve_id, an event renamed to that CVE ID after the poller passed it is not returned. last_match_state and since cannot be combined with order=asc. With expand=rule, limit is at most 100.
+         */
         get: operations["list-alert-events"];
         put?: never;
         post?: never;
@@ -5897,8 +5900,14 @@ export interface operations {
                 last_match_state?: string;
                 /** @description Filter events since timestamp (RFC3339) */
                 since?: string;
-                /** @description Pagination cursor */
+                /** @description Pagination cursor for the default, descending order: the next_cursor of the previous page. */
                 cursor?: string;
+                /** @description desc (default): newest first by first fire, paged with cursor. asc: feed order, for polling, paged with after. */
+                order?: "desc" | "asc";
+                /** @description With order=asc: the next_cursor of the previous response. Omit to start from the oldest event. */
+                after?: string;
+                /** @description Events per page; at most 100 with expand=rule. */
+                limit?: number;
                 /** @description Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule. */
                 expand?: string;
             };

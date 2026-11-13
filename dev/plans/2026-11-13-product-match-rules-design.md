@@ -82,10 +82,15 @@ The rule field uses the same table, so a rule and a check of one product read th
 
 For a Node CVE such as CVE-2026-123866:
 
-1. The CNA record arrives (MITRE, or NVD's relay before analysis). The CVE is new, so its first `material_hash` runs realtime evaluation, and the rule fires.
+1. The CNA record arrives (MITRE, or NVD's relay before analysis). The CVE is new, so its first `material_hash` runs realtime evaluation, and the rule fires. If another feed (OSV, GHSA, KEV) delivered the CVE first without a CNA entry, the CNA rows arrive on a later merge, which is step 4's case.
 2. NVD analyses the CVE and adds CPEs. `cve_affected_cpes` is a `material_hash` input, so the hash changes and the rule fires a second time for the same CVE. This is the existing meaning of a material change (PLAN.md §5.3, affected CPE set). It means two notifications per product CVE that NVD analyses later.
 3. NVD flips a CPE between vulnerable and not vulnerable with the same criteria string. The hash does not change, so a rule that starts or stops matching because of the flip is not evaluated until the next material change. This gap is accepted: closing it would put the vulnerable flag into the hash, which changes the hash of every NVD-analysed CVE.
 4. The CNA changes its product names, with nothing else material. Section 7.
+
+### 3.6 Alternatives not chosen
+
+- **Separate `affected.vendor` and `affected.product` fields**, correlated like the package fields. A vendor alone is not a usable key: the CNA and NVD spell vendors differently (`php group` against `php`, `the node.js project` against `nodejs`), so a vendor value would match one source and miss the other, and only the pair can go through the name table.
+- **Extend the CPE watchlist item to read CNA names**, with no rule field. The requirement asks for a rule that works without a watchlist, and changing the CPE item would change what existing items match, including their platform CPEs (section 9).
 
 ## 4. Package conditions: exact match and correlation
 
@@ -95,7 +100,7 @@ For a Node CVE such as CVE-2026-123866:
 
 ### 4.2 Correlation
 
-Under `logic: and`, every `affected.package` condition and every `affected.ecosystem` condition with `eq` or `in` must hold for one `cve_affected_packages` row. `{affected.ecosystem eq Debian, affected.package eq openssl}` means "a Debian row (any release) for openssl".
+Under `logic: and`, every `affected.package` condition and every `affected.ecosystem` condition with `eq` or `in` must hold for one `cve_affected_packages` row. `{affected.ecosystem eq Debian, affected.package eq openssl}` means "a Debian row (any release) for openssl". Two package conditions in one `and` rule must also hold on one row, so `{affected.package eq a, affected.package eq b}` matches nothing; "a CVE that affects a or b" is `affected.package in [a, b]`, and "a CVE that affects both" needs two rules.
 
 - `affected.ecosystem` with `neq` or `not_in` stays a condition on the whole CVE: "the CVE has no row in this ecosystem". Read per row it would mean "some row in another ecosystem", which says nothing useful.
 - Under `logic: or`, each condition is matched on its own, as today. "Npm, or a package named lodash" has no single row to correlate.
@@ -128,6 +133,8 @@ cves.cve_id IN (
       AND NOT (...)                            -- the product's other products
 )
 ```
+
+A row is one of the product's other products when its lower-cased vendor equals the other product's vendor, and its lower-cased product equals the other product's name or, for a prefix, starts with it and is followed by nothing or by a character that is neither a letter nor a digit. This is the rule `check.isOtherProduct` applies today: `.NET Framework 4.8` is excluded from `microsoft:.net`, `.NET FrameworkExtensions` is not.
 
 `neq` and `not_in` on `affected.ecosystem` compile to `cves.cve_id NOT IN (...)`; `cve_id` is `NOT NULL` in every child table, so `NOT IN` cannot meet a NULL. Ranges, prefixes and names are built in Go from `internal/product` (as `check.CPEKeyFor` and `cnaNameKey` build them today) and passed as parameters, never concatenated.
 
@@ -185,9 +192,9 @@ So the realtime path pays no new write cost: merge already maintains all of thes
 
 A rule now matches on CNA product names, which are not a `material_hash` input. A CNA that corrects `n/a` to a real product, or renames one, with nothing else material, does not run realtime evaluation and does not move `date_modified_canonical`, so the batch path does not see it either. The rule misses that CVE until its next material change.
 
-**Recommendation: add the CNA product identity to `material_hash`.** `MaterialFields` gains `affected_products`: the sorted, distinct pairs of lower-cased, trimmed CNA vendor and product, with empty values kept as empty strings. PLAN.md §5.3 already treats "what is affected" as material (packages and the CPE set); this adds the CNA's statement of it. Lower-casing and trimming keep the NVD relay and the MITRE copy of one entry from moving the hash when they differ only in case or spaces (721 stored rows have surrounding spaces).
+**Recommendation: add the CNA product identity to `material_hash`.** `MaterialFields` gains `affected_products`: the sorted, distinct pairs of CNA vendor and product, lower-cased as the match compares them, with a missing value as an empty string. PLAN.md §5.3 already treats "what is affected" as material (packages and the CPE set); this adds the CNA's statement of it. Lower-casing keeps the NVD relay and the MITRE copy of one entry from moving the hash when they differ only in case. Spaces are not trimmed, because the match does not trim either: the 721 stored rows with surrounding spaces match no name, and a change to their spacing changes no match.
 
-Cost: the hash of every CVE with CNA rows (405,809 of about 2.6 million) changes on its next merge. On an instance with active rules, each such CVE that matches a rule fires once more at its new hash, spread over the weeks in which feeds deliver those CVEs again; an OSV backfill would deliver most of them at once. The golden material hashes are regenerated in the same pull request. With no users this is accepted, but Sam's own instances may have rules. Open question 2.
+Cost: the hash of every CVE with CNA rows (405,809 of about 2.6 million) changes on its next merge. On an instance with active rules, each such CVE that matches a rule fires once more at its new hash, spread over the weeks in which feeds deliver those CVEs again; an OSV backfill would deliver most of them at once. The golden material hashes are regenerated in the same pull request. With no users this is accepted, but Sam's own instances may have rules. Reverting the change later moves the same hashes back, at the same cost. Open question 2.
 
 Without it, section 3.5's step 4 stays a documented gap.
 
@@ -205,7 +212,7 @@ Errors stop a save; warnings are returned with a valid rule. Messages follow the
 | An operator other than `eq` or `in` on `affected.cpe_product` | error | the existing `operator %q is not valid for field %q` |
 | A product with no row in the name table | warning | `no other CNA spelling is known for "x:y"; before NVD analyses a CVE, it matches only if the CNA record names vendor "x" and product "y"` (with `_` shown as a space where the own names do) |
 | `affected.package` `eq` or `in` with an empty value | error | `value must not be empty` |
-| `affected.package` `eq` or `in` with no `affected.ecosystem` `eq` or `in` condition in an `and` rule, or in an `or` rule | warning | `without an ecosystem condition in an "and" rule, this match cannot use an index, so dry-run and saved searches can be slow` |
+| `affected.package` `eq` or `in` in an `or` rule, or in an `and` rule that has no `affected.ecosystem` condition with `eq` or `in` | warning | `without an ecosystem condition in an "and" rule, this match cannot use an index, so dry-run and saved searches can be slow` |
 
 `affected.cpe_product` joins `selectiveFields`, so a regex rule with a product condition is allowed without a watchlist. The validator needs no database; the warning about unmapped products comes from the table in code.
 

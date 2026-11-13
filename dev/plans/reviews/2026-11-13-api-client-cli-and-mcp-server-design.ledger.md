@@ -7,7 +7,7 @@
 - **Doc:** `dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md` · **baseline snapshot:** `c8f941d`
 - **Mode:** full — **surface fired:** security; new boundary between trust-separated systems — **evidence:** section 7.1 puts an MCP server between an agent host (untrusted tool caller) and the API, holding the caller's key; section 5.1 handles the key.
 - **Requirements:** unpinned — the design restates its requirements (section 1) from a private requirements document not in the repository; the session was started by another session, so the user was not asked. Requirements trace narrowed to internal consistency; standing entry P0-1 routes completeness to the gate.
-- **Current phase:** 4 (gate posed). On resume: record Sam's answers, fold them, run the Phase 5 re-sweep check against `b493321`, then closure (cold reader + ledger verifier on one snapshot).
+- **Current phase:** 4 (gate re-posed after fold 1 and round 4). On resume: record Sam's answers to section 12, fold them, run the Phase 5 re-sweep check against `808b0db` (the last default-route whole-doc round's snapshot), then closure (cold reader + ledger verifier on one snapshot). The breaker is eligible from now on: round 4 independently re-reviewed the round-2 wave. Next backstop ordinal 7.
 - **Rounds** (logical dispatch and prospective ordinal written BEFORE LAUNCH, completed at return):
 
 | Round | Route (reviewer · slice · scope · shape · context · model+effort · prompts vN) | Snapshot | Roster | Status | Breaker evidence |
@@ -25,7 +25,7 @@
 | 1 | P0-1 (standing); internal consistency NSF | L5 | L8, L9, L10 | L1, L4 | L1, L2, L3, L4 | L11 | L3, L6, L7, L12 | L13 (non-substantive) |
 | 2 | F4, F5, F8, F17, F18, F19, F20, F21, F30; standing finding F38 (duplicate of P0-1) | F1, F2, F3, F4, F6, F11, F13, F14, F16, F17, F23, F26, F36, F37 | F14, F21, F23, F24, F25, F26, F27, F28, F29 | F4, F5, F6, F7, F8, F12 | F4, F5, F6, F7, F8 | F13, F14, F30, F31, F32, F33 | F1, F2, F3, F4, F5, F6, F9, F10, F11, F12, F13, F15, F17, F23, F34, F35 | F21, F22, F23, F30 |
 
-- **Gate:** posed 2026-11-13 — the batched list is section 12 of the doc (15 items): rows P0-1, F1, F21 (with F28), F24, F25, F26, F30, F32, F35, plus the design's original decisions (binary, client code, MCP SDK, streamable HTTP, tool set, no org setting, PLAN.md). Gate basis: round 2 yielded 35 substantive, all dispositioned; the integration read added 14 forced corrections and no new escalations.
+- **Gate:** partial — items 3 (as a burden of proof) and 5 answered 2026-11-13; re-posed 2026-11-13 with 18 items, 17 open (section 12 of the doc). Original posing — the batched list was section 12 of the doc (15 items): rows P0-1, F1, F21 (with F28), F24, F25, F26, F30, F32, F35, plus the design's original decisions (binary, client code, MCP SDK, streamable HTTP, tool set, no org setting, PLAN.md). Gate basis: round 2 yielded 35 substantive, all dispositioned; the integration read added 14 forced corrections and no new escalations.
 - **Breaker:** eligible after independently re-reviewed repair wave `not yet` · next backstop ordinal `7` · active trigger `none` · one-additional-read authorization `none` · in-flight `none`
 - **Closure:** cold reader — not dispatched · verifier — not dispatched · pooled attempt `—` · live-vs-snapshot re-compare — pending
 - **Round table** (derived from the index rows):
@@ -38,13 +38,17 @@
 | 3 | Gate — posed, 15 items; stopped awaiting user [^g] | — | — | — | — | — | 8 |
 | G1 | Gate fold 1 — Sam answered items 3 and 5; steelman added; 18 items after the fold [^g1] | — | — | — | — | — | 7 |
 | 4 | Re-sweep — Claude Fable (all lenses) + codex `gpt-6.1-sol` high (seam batch, cross-model), whole doc, cold, prompts v4 | 23 | 21 | 17 | 4 | 2 | 11 |
+| 4w | Repair-wave integration read — dispatched subagent (Claude Opus 5.5, high), `808b0db..e7295cf`, elective | 10 | 10 | 10 | 0 | 0 | 11 |
+| 5 | Gate — re-posed 2026-11-13 with 17 open items (section 12, items 1–4 and 6–18); stopped awaiting user [^g5] | — | — | — | — | — | 11 |
+
+[^g5]: Not resolved by the runner: every open item is a genuine choice. Closure (cold reader + ledger verifier) runs after Sam's answers and the Phase 5 re-sweep check against `808b0db`; rows X1–X4, G1–G3, K1–K23 and V1–V10 are its first subject.
 
 [^g1]: Item 5 closed (decided); item 3 answered as a burden of proof and kept open for Sam's final word with the new recommendation, so open drops from 8 to 7. Round 4's escalations (K6 and K12 into item 14, K7 into item 3, K22 and K18's choice into item 11) join existing items; the open count counts ledger rows, not section 12 items.
 
 [^r4]: Lens selection disclosure: the fold changed every section bearing on seams, failure modes, alternatives and downstream readiness, so all lenses were re-run in one whole-doc read; Claude Fable is a premium tier, used on Sam's explicit request.
 [^w]: Repair-wave discipline rule 4 (wave above ten fixes). Elective: counts toward no gate timing, coverage or breaker evidence. [^g]: The 8 open rows plus the phase-minted P0-1 are in the gate list with the original design decisions.
 
-- Terminal state: (cleared on resume 2026-11-13 — Sam answered part of the gate; see "Gate answers" below)
+- Terminal state: stopped awaiting user (2026-11-13, second posing) — section 12 of the doc holds 17 open decisions; the run resumes when Sam answers them.
 
 ### Gate answers (Sam, 2026-11-13, in this session's chat)
 
@@ -156,6 +160,16 @@ Sam's words: "Steelman all of this, then get an independent Fable review. Read t
 | K22 | 4 | seams & contracts, failure modes | genuine choice | confirmed | open — gate (item 11) |
 | K23 | 4 | requirements trace | — | duplicate of P0-1 | closed |
 | X4 | M2 | requirements trace, downstream readiness | documentary gap | confirmed | fixed |
+| V1 | 4w | repair integration | forced correction | confirmed | fixed |
+| V2 | 4w | repair integration | forced correction | confirmed | fixed |
+| V3 | 4w | repair integration | forced correction | confirmed | fixed |
+| V4 | 4w | repair integration | forced correction | confirmed | fixed; item 11 restated |
+| V5 | 4w | repair integration | forced correction | confirmed | fixed |
+| V6 | 4w | repair integration | forced correction | confirmed | fixed |
+| V7 | 4w | repair integration | forced correction | confirmed | fixed |
+| V8 | 4w | repair integration | forced correction | confirmed | fixed |
+| V9 | 4w | repair integration | forced correction | confirmed | fixed |
+| V10 | 4w | repair integration | forced correction | confirmed | fixed |
 
 ### Detail — P0-1
 
@@ -623,6 +637,21 @@ Codex's first launch failed at once (`Missing optional dependency @openai/codex-
 **X4 (requirement FEED-1 landed, 2026-11-13):** the requesting session reported FEED-1 merged to `dev` at `9bcf4ab` (pull request 234). Read at `origin/dev`: `order=asc&after=`, `feed_seq` drawn under the org's transaction-scoped advisory lock (commit `18be575` message: commits become visible in position order, exactly once with no overlap window), `next_cursor` on every page in that order including empty ones, start from the beginning with no `after`, versioned cursor (`v: 1`) refused with 400 "invalid after" when unknown, `limit` up to 1,000 and 100 with `expand=rule`, `last_match_state` and `since` refused with `order=asc`, a reopen moves the event to a new position. **Action:** 1 "Depends on other work"; 2 events row; 5.2 `events list` split into feed order and `--newest` (since `--open` cannot combine with feed order); 5.3 `next_cursor` sentence; 7.4 `list_alert_events` row (`open_only` dropped, `order=asc`); 7.7 reopen note; 9.2 feed-order test; 10 FEED-1 row rewritten as landed and closing paragraph; 13 events moved into the first pull request, list of pull requests reduced to three. Hand-over note in the shared notes folder updated.
 
 **Taken (round 4 wave, span-local edits):** K1 7.3 identity/transport paragraphs; K2 7.1 table row and inputs sentence, 7.3 identity paragraph, 7.4 first paragraph, 7.8 cost paragraph, 7.9, 10 `whoami` row; K3 7.2 logging bullet, 9.3 guarantee bullet; K4 7.4 first paragraph, 9.3 write-tools bullet, 9.4 first bullet; K5 12 preamble, items 7, 8, 11, 13; K6 and K12 item 14 rewritten, 7.6 untrusted-text bullet; K7 4.2 build-time bullet, item 3, 8.2; K8 4.2 enumerations bullet, 7.5, 7.6 test sentence, 9.1; K9 5.2 `--all` paragraphs, 5.4 exit 2 row; K10 7.8 `check_components` bullet; K11 7.7 size paragraph and per-tool lists; K13 7.7 per-tool list (twelve tools), 5.3 other-commands sentence, 8.1 policy fields, 7.3 allowlist paragraph, 2 score-filter row and 13, 7.4 unknown-name sentence, 5.6, 7.5 `validate_rule` sentence, 5.2 page sizes, 9.3 and 9.4 gate observation, 9.2 rate-limit bullet, 5.1 organisation row, 7.7 omitted-score sentence; K14 superseded by X4 (FEED-1 landed exactly-once, so the at-least-once fallback was not written); K15 1 MCP-1 bullet, 7.1 last paragraph, item 5; K16 7.3 loopback paragraph, 7.7 `EXTERNAL_URL` sentence; K17 7.2 Origin bullet, 7.8 deadline bullet (50 s), 7.2 limits bullet; K18 5.5 retry bullet; K19 5.6, 4.2 reach bullet; K20 1 ID paragraph and each bare use (script check: only the explaining line remains); K21 2 new row, 5.5, 6.2 step 4, 13. Facts re-checked at write time: Claude Code 25,000-token default (web search of its MCP docs); Codex `tool_timeout_sec` 60 s (secondary sources, flagged in 7.8 for the plan to confirm); `validateRuleResponse` fields (`internal/api/alert_rules.go`); FEED-1 behaviour (`origin/dev` source and commit message).
+
+### Round 4w — repair-wave integration read (elective; raw `round-4-wave-read.md`, D1–D10)
+
+Fresh-context Opus read of `808b0db..e7295cf`. Runner re-checked: `implementation-pitfalls.md` API-12 ("A Sequence or Timestamp Cursor Skips Rows That Commit Out of Order") exists; the delete-item handler answers 404 "not found" for every miss (`internal/api/watchlists.go`).
+
+- **V1 (D1):** the `whoami` tool over HTTP does call `GET /whoami` through the in-process transport, contradicting 7.8, 10 and 9.3. **Action:** say that identity for building the server costs no request, and the `whoami` tool is one ordinary charged request.
+- **V2 (D2):** no `next_cursor` on the first poll of an org with no events (no `after`, no events; `omitempty`). **Action:** 5.2, 5.3, 7.7, 10: `next_cursor` is null in that case; an empty `--after` means "from the start"; scripts store `.next_cursor // empty`.
+- **V3 (D3):** pacing named every `--all`, including `cves search`, which neither calls `whoami` nor is rate-limited; item 9 said every CLI run. **Action:** item 13 limits pacing to org-scoped long runs; item 9 says org-scoped runs.
+- **V4 (D4):** a 404 on remove cannot tell "already gone" from a wrong ID; a 409 on add returns no item; the `remove` row was not marked pending. **Action:** item 11 keeps the 404 for remove (no `already_absent`) and reports `already_present` with the requested item and no ID; 7.7 and 5.2 aligned; `DELETE` taken back out of the retry list (a retry after a lost response would report a 404 for a completed delete).
+- **V5 (D5):** "CNA text" read two ways; full cleaning's tag regex would mangle `<2.0`. **Action:** item 14: full cleaning on CVE descriptions only; light cleaning on every other string.
+- **V6 (D6):** allowlist defined two ways (13 vs 12 operations). **Action:** 7.3 and 9.1: exactly the operations the MCP tools call.
+- **V7 (D7):** two stdio `whoami` retry rules. **Action:** 7.8 aligned with 7.9 ("the first tool call that needs the org").
+- **V8 (D8):** the NOTIFY-20 clause reads as fixing the evaluator. **Action:** 10 cites implementation pitfall API-12 for sequence cursors, with NOTIFY-20 as its timestamp form.
+- **V9 (D9):** two clauses shaped as answers to a reviewer. **Action:** rewritten as plain text.
+- **V10 (D10):** the 100-row `expand=rule` cap and `limit` apply in both orders. **Action:** 2 events row corrected.
 
 ### Detail — F38, F39
 

@@ -34,6 +34,16 @@ func eventFor(t *testing.T, ctx context.Context, f *cveListFixture, cveID string
 	return id, open
 }
 
+// feedSeqOf returns the event's position in the ascending alert-event feed.
+func feedSeqOf(t *testing.T, ctx context.Context, f *cveListFixture, id uuid.UUID) int64 {
+	t.Helper()
+	var seq int64
+	if err := f.db.QueryRowContext(ctx, `SELECT feed_seq FROM alert_events WHERE id = $1`, id).Scan(&seq); err != nil {
+		t.Fatalf("read feed_seq of %s: %v", id, err)
+	}
+	return seq
+}
+
 func TestLateBinding_MovesOpenAlertToNewCVE(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -44,10 +54,12 @@ func TestLateBinding_MovesOpenAlertToNewCVE(t *testing.T) {
 
 	orgs := []*cveListFixture{newCVEListFixture(t, ctx, tdb, kevCondition), newCVEListFixture(t, ctx, tdb, kevCondition)}
 	ids := make([]uuid.UUID, len(orgs))
+	seqs := make([]int64, len(orgs))
 	for i, f := range orgs {
 		f.push(t, ctx, native, cve)
 		f.evaluateBatch(t, ctx)
 		ids[i], _ = eventFor(t, ctx, f, native)
+		seqs[i] = feedSeqOf(t, ctx, f, ids[i])
 	}
 
 	if err := merge.Ingest(ctx, tdb.AppStore, kevPatch(cve, native), "osv"); err != nil {
@@ -58,6 +70,10 @@ func TestLateBinding_MovesOpenAlertToNewCVE(t *testing.T) {
 		id, open := eventFor(t, ctx, f, cve)
 		if id != ids[i] || !open {
 			t.Errorf("org %d: event %s open=%v, want %s open", i, id, open, ids[i])
+		}
+		// The event now names another CVE, so a feed poller must see it again.
+		if seq := feedSeqOf(t, ctx, f, ids[i]); seq <= seqs[i] {
+			t.Errorf("org %d: feed position %d after the move, want above %d", i, seq, seqs[i])
 		}
 		if n := countAlertEvents(t, f.db, f.rule.ID, native); n != 0 {
 			t.Errorf("org %d: %d events remain under the old ID", i, n)
@@ -82,6 +98,8 @@ func TestLateBinding_EventCollidingAtTargetIsClosed(t *testing.T) {
 	f.push(t, ctx, native, cve)
 	f.evaluateBatch(t, ctx)
 	targetID, _ := eventFor(t, ctx, f, cve)
+	collidingID, _ := eventFor(t, ctx, f, native)
+	targetSeq, collidingSeq := feedSeqOf(t, ctx, f, targetID), feedSeqOf(t, ctx, f, collidingID)
 
 	if err := merge.Ingest(ctx, tdb.AppStore, kevPatch(cve, native), "osv"); err != nil {
 		t.Fatalf("merge.Ingest (promotion): %v", err)
@@ -92,6 +110,13 @@ func TestLateBinding_EventCollidingAtTargetIsClosed(t *testing.T) {
 	}
 	if id, _ := eventFor(t, ctx, f, cve); id != targetID {
 		t.Errorf("target event = %s, want %s unchanged", id, targetID)
+	}
+	// Closing the colliding event is a change a feed poller must see. The target is unchanged.
+	if seq := feedSeqOf(t, ctx, f, collidingID); seq <= collidingSeq {
+		t.Errorf("closed event's feed position %d, want above %d", seq, collidingSeq)
+	}
+	if seq := feedSeqOf(t, ctx, f, targetID); seq != targetSeq {
+		t.Errorf("target event's feed position %d, want %d unchanged", seq, targetSeq)
 	}
 }
 

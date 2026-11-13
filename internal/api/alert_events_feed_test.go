@@ -111,8 +111,6 @@ func TestAlertEvents_FeedParameterValidation(t *testing.T) {
 		"?order=asc&after=not-a-cursor",   // undecodable
 		"?order=asc&after=" + descCursor,  // a descending cursor is not a feed position
 		"?order=asc&after=" + encodePageCursor(alertEventFeedCursor{V: 2, Seq: 5}), // unknown cursor format
-		"?order=asc&last_match_state=true",                                         // a resolve does not move an event in the feed
-		"?order=asc&since=2026-01-01T00:00:00Z",
 		"?limit=0",
 		"?limit=1001",
 		"?expand=rule&limit=101", // expand=rule pages are capped at 100
@@ -128,6 +126,7 @@ func TestAlertEvents_FeedParameterValidation(t *testing.T) {
 		"?order=asc&after=" + encodeAlertEventFeedCursor(-3), // history positions are negative
 		"?expand=rule&limit=100", "?expand=cve&limit=1000",
 		"?order=asc&rule_id=" + f.ruleID.String() + "&cve_id=" + expandCVEID,
+		"?order=asc&last_match_state=true", "?order=asc&since=2026-01-01T00:00:00Z",
 	} {
 		if status, body := f.list(t, q); status != http.StatusOK {
 			t.Errorf("%s: status = %d, want 200 (body %s)", q, status, body)

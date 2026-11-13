@@ -1663,7 +1663,8 @@ SELECT pg_advisory_xact_lock(1178944836, hashtext($org_id::text));  -- first sta
 INSERT INTO alert_events (..., feed_seq) VALUES (..., nextval('alert_event_feed_seq'));
 ```
 Postgres makes a commit visible before it releases the committing transaction's locks, so the next writer in the org draws a larger value only after the previous row is visible or rolled back: position order is commit order per org. The rules that keep it true:
-- every writer of `feed_seq` (insert, and the reopen that moves an event forward) takes the org lock before touching the row. A writer that locks the row first can deadlock with an insert of the same event, which holds the org lock and waits on the row
+- every writer of `feed_seq` takes the org lock before touching the row: insert, reopen and resolve in the store, and the late-binding move in the merge pipeline (`moveAlertEvents`). A writer that locks the row first can deadlock with an insert of the same event, which holds the org lock and waits on the row
+- a transaction that changes events of several orgs (the late-binding move) takes their locks in lock-key order (`hashtext(org_id::text)`), and changes only the events of orgs it has locked
 - the sequence keeps `CACHE 1`, or cached values are handed out in a different order from the lock
 - the column has no default, so an insert that does not draw a position fails instead of taking one without the lock
 

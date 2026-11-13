@@ -1,5 +1,5 @@
 // ABOUTME: Tests the ascending alert-event feed: positions are drawn under the org's feed lock, so
-// ABOUTME: they become visible in position order and a poller sees each fire exactly once.
+// ABOUTME: they become visible in position order and a poller sees each change to an event exactly once.
 package store_test
 
 import (
@@ -117,64 +117,58 @@ func waitForFeedLockWaiter(t *testing.T, db *sql.DB, org uuid.UUID) {
 	t.Fatalf("no session waited for the feed lock of org %s", org)
 }
 
-// TestAlertEventFeed_WritersTakeFeedLock checks that InsertAlertEvent and
-// ReopenAlertEvent wait for the org's feed lock. Without it, a position drawn by one
-// transaction could become visible before a smaller one drawn by another.
+// TestAlertEventFeed_WritersTakeFeedLock checks that InsertAlertEvent,
+// ReopenAlertEvent and ResolveAlertEvent wait for the org's feed lock. Without it, a
+// position drawn by one transaction could become visible before a smaller one drawn
+// by another.
 func TestAlertEventFeed_WritersTakeFeedLock(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
 	org := s.MustCreateOrg(t, ctx, "FeedLockOrg")
 	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FeedLockRule")
+	const cve = "CVE-2024-82001"
 
 	type result struct {
-		id  uuid.UUID
-		err error
+		changed bool
+		err     error
 	}
+	// Each case changes the event, so it must draw a position under the lock.
 	for _, tc := range []struct {
 		name  string
-		setup func()
-		write func() (uuid.UUID, error)
+		write func() (bool, error)
 	}{
-		{
-			name:  "insert",
-			setup: func() {},
-			write: func() (uuid.UUID, error) {
-				return s.InsertAlertEvent(ctx, org.ID, rule.ID, "CVE-2024-82001", "h", false)
-			},
-		},
-		{
-			name: "reopen",
-			setup: func() {
-				if _, err := s.ResolveAlertEvent(ctx, rule.ID, org.ID, "CVE-2024-82001"); err != nil {
-					t.Fatalf("ResolveAlertEvent: %v", err)
-				}
-			},
-			write: func() (uuid.UUID, error) {
-				return s.ReopenAlertEvent(ctx, org.ID, rule.ID, "CVE-2024-82001", "h", false)
-			},
-		},
+		{"insert", func() (bool, error) {
+			id, err := s.InsertAlertEvent(ctx, org.ID, rule.ID, cve, "h", false)
+			return id != uuid.Nil, err
+		}},
+		{"resolve", func() (bool, error) {
+			return s.ResolveAlertEvent(ctx, rule.ID, org.ID, cve)
+		}},
+		{"reopen", func() (bool, error) {
+			id, err := s.ReopenAlertEvent(ctx, org.ID, rule.ID, cve, "h", false)
+			return id != uuid.Nil, err
+		}},
 	} {
-		tc.setup()
 		holder := mustBegin(t, s.DB())
 		mustExec(t, holder, lockFeedSQL, org.ID)
 
 		done := make(chan result, 1)
 		go func() {
-			id, err := tc.write()
-			done <- result{id, err}
+			changed, err := tc.write()
+			done <- result{changed, err}
 		}()
 		waitForFeedLockWaiter(t, s.DB(), org.ID)
 		select {
 		case r := <-done:
-			t.Fatalf("%s returned (%v, %v) while the feed lock was held", tc.name, r.id, r.err)
+			t.Fatalf("%s returned (%v, %v) while the feed lock was held", tc.name, r.changed, r.err)
 		default:
 		}
 
 		mustCommit(t, holder)
 		r := <-done
-		if r.err != nil || r.id == uuid.Nil {
-			t.Fatalf("%s after the lock was released: id %v, err %v", tc.name, r.id, r.err)
+		if r.err != nil || !r.changed {
+			t.Fatalf("%s after the lock was released: changed %v, err %v", tc.name, r.changed, r.err)
 		}
 	}
 }
@@ -199,10 +193,10 @@ func TestAlertEventFeed_AppRoleCanDrawPositions(t *testing.T) {
 	}
 }
 
-// TestAlertEventFeed_ConcurrentInsertAndReopenDoNotDeadlock races an insert and a
-// reopen of the same event many times. Both take the feed lock before the row, so
-// neither can hold the row while waiting for the lock.
-func TestAlertEventFeed_ConcurrentInsertAndReopenDoNotDeadlock(t *testing.T) {
+// TestAlertEventFeed_ConcurrentWritersDoNotDeadlock races an insert, a reopen and a
+// resolve of the same event many times. Each takes the feed lock before the row, so
+// none can hold the row while waiting for the lock.
+func TestAlertEventFeed_ConcurrentWritersDoNotDeadlock(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -214,10 +208,7 @@ func TestAlertEventFeed_ConcurrentInsertAndReopenDoNotDeadlock(t *testing.T) {
 	}
 
 	for i := range 200 {
-		if _, err := s.ResolveAlertEvent(ctx, rule.ID, org.ID, cve); err != nil {
-			t.Fatalf("iteration %d: ResolveAlertEvent: %v", i, err)
-		}
-		errs := make(chan error, 2)
+		errs := make(chan error, 3)
 		go func() {
 			_, err := s.InsertAlertEvent(ctx, org.ID, rule.ID, cve, "h", false)
 			errs <- err
@@ -226,7 +217,11 @@ func TestAlertEventFeed_ConcurrentInsertAndReopenDoNotDeadlock(t *testing.T) {
 			_, err := s.ReopenAlertEvent(ctx, org.ID, rule.ID, cve, "h", false)
 			errs <- err
 		}()
-		for range 2 {
+		go func() {
+			_, err := s.ResolveAlertEvent(ctx, rule.ID, org.ID, cve)
+			errs <- err
+		}()
+		for range 3 {
 			if err := <-errs; err != nil {
 				var pgErr *pgconn.PgError
 				if errors.As(err, &pgErr) && pgErr.Code == "40P01" {
@@ -314,14 +309,14 @@ func TestListAlertEvents_AscendingPagesInFeedOrder(t *testing.T) {
 	}
 }
 
-// TestListAlertEvents_AscendingReopenReentersFeed returns a reopened event once
-// more, after its resolve, which does not move it.
-func TestListAlertEvents_AscendingReopenReentersFeed(t *testing.T) {
+// TestListAlertEvents_AscendingChangesReenterFeed returns an event again each time it
+// changes: a resolve shows it closed, a reopen shows it firing again.
+func TestListAlertEvents_AscendingChangesReenterFeed(t *testing.T) {
 	t.Parallel()
 	s := testutil.NewTestDB(t)
 	ctx := context.Background()
-	org := s.MustCreateOrg(t, ctx, "FeedReopenOrg")
-	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FeedReopenRule")
+	org := s.MustCreateOrg(t, ctx, "FeedChangesOrg")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, "FeedChangesRule")
 	const cve = "CVE-2024-83001"
 
 	p := &feedPoller{t: t, s: s, org: org.ID, limit: 10}
@@ -331,22 +326,36 @@ func TestListAlertEvents_AscendingReopenReentersFeed(t *testing.T) {
 	if _, err := s.InsertAlertEvent(ctx, org.ID, rule.ID, cve, "h", false); err != nil {
 		t.Fatalf("InsertAlertEvent: %v", err)
 	}
-	p.poll()
+	if rows := p.poll(); len(rows) != 1 || !rows[0].LastMatchState {
+		t.Fatalf("after insert: %+v, want the open event", rows)
+	}
 	if _, err := s.ResolveAlertEvent(ctx, rule.ID, org.ID, cve); err != nil {
 		t.Fatalf("ResolveAlertEvent: %v", err)
 	}
-	if rows := p.poll(); len(rows) != 0 {
-		t.Fatalf("a resolve put the event back in the feed: seen %v", p.seen)
+	if rows := p.poll(); len(rows) != 1 || rows[0].LastMatchState {
+		t.Fatalf("after resolve: %+v, want the event, closed", rows)
 	}
 	if _, err := s.ReopenAlertEvent(ctx, org.ID, rule.ID, cve, "h", false); err != nil {
 		t.Fatalf("ReopenAlertEvent: %v", err)
 	}
 	rows := p.poll()
-	p.poll()
-	p.requireSeen(cve, cve)
-	if rows[0].TimesFired != 2 || !rows[0].LastMatchState {
-		t.Errorf("reopened entry: times_fired %d, last_match_state %v; want 2, true", rows[0].TimesFired, rows[0].LastMatchState)
+	if len(rows) != 1 || rows[0].TimesFired != 2 || !rows[0].LastMatchState {
+		t.Fatalf("after reopen: %+v, want the event open with times_fired 2", rows)
 	}
+	if rows := p.poll(); len(rows) != 0 {
+		t.Fatalf("poll after catching up returned more: seen %v", p.seen)
+	}
+	p.requireSeen(cve, cve, cve)
+
+	// A resolve that changes nothing does not move the event.
+	if _, err := s.ResolveAlertEvent(ctx, rule.ID, org.ID, cve); err != nil {
+		t.Fatalf("ResolveAlertEvent: %v", err)
+	}
+	if _, err := s.ResolveAlertEvent(ctx, rule.ID, org.ID, cve); err != nil {
+		t.Fatalf("ResolveAlertEvent (again): %v", err)
+	}
+	p.poll()
+	p.requireSeen(cve, cve, cve, cve)
 }
 
 // TestListAlertEvents_AscendingResumesAfterDeletedPosition resumes from a position

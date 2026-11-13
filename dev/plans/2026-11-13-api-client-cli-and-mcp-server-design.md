@@ -98,7 +98,7 @@ The CLI's default output is the server's own JSON, so most responses never need 
 | Server URL | `CVERT_URL`, or `--url` | Base URL of the server, such as `https://cvert.example.internal`. The client appends `/api/v1`. `http://` is refused unless the host is a loopback address, because the key would cross the network in clear text. No flag overrides this. |
 | API key | `CVERT_API_KEY`, or `CVERT_API_KEY_FILE` naming a file that holds it | Exactly one of the two. Both set, or neither, is a configuration error (exit 2). There is no flag for the key, so it never appears in argv or shell history. A file's content is trimmed of surrounding whitespace. The key must match `cvo_` and 64 hex characters before anything is sent; an error message never repeats the value. |
 | Web UI base | `CVERT_WEB_URL` | Optional. Defaults to the server URL, where the server serves the SPA. Used only for links (section 7.4). |
-| Organisation | `GET /whoami` | Not configured. A key belongs to one org; the client asks `whoami` once per process (section 10). |
+| Organisation | `GET /whoami` | Not configured. A key belongs to one org; the client asks `whoami` once per process (section 10). A `CVERT_ORG_ID` setting would save that request, but it could disagree with the key and turn every call into a 403 that names the wrong cause. |
 
 The HTTP client sends the key as `Authorization: Bearer`, keeps no cookie jar, does not follow redirects (a redirect is reported as an error), and sets a `User-Agent` of `cvert/<version>`. Per-request timeout: 60 seconds, which covers the check endpoint's 30-second limit and its 30-second write deadline.
 
@@ -113,23 +113,23 @@ The client never logs a request body or the key. Check items describe what an or
 | `cves get <id>` | `GET /cves/{id}` | Takes any stored record ID, including the advisory IDs the check endpoint returns. |
 | `cves sources <id>` | `GET /cves/{id}/sources` | |
 | `check [--input purls\|json\|trivy] [FILE\|-]` | `POST /orgs/{org}/check`, batched | Section 6. |
-| `events list [--after CURSOR] [--rule ID] [--cve ID] [--open] [--limit N] [--all]` | `GET /orgs/{org}/alert-events?after=...&expand=cve,rule` | Waits for FEED-1 and FEED-2. |
+| `events list [--after CURSOR] [--rule ID] [--cve ID] [--open] [--limit N] [--all]` | `GET /orgs/{org}/alert-events?after=...&expand=cve,rule` | Waits for FEED-1 and FEED-2. `--open` sends `last_match_state=true`, as the MCP tool's `open_only` does. |
 | `rules list [--all]` | `GET /orgs/{org}/alert-rules` | |
 | `rules validate [FILE\|-]` | `POST /orgs/{org}/alert-rules/validate` | Body `{logic, conditions, watchlist_ids}`. |
 | `rules dry-run <rule-id>` | `POST /orgs/{org}/alert-rules/{id}/dry-run` | |
 | `watchlists list` | `GET /orgs/{org}/watchlists` | Added so a script can find a watchlist ID. |
 | `watchlists items list <watchlist-id> [--all]` | `GET .../watchlists/{id}/items` | Added so a script can find an item ID to remove. |
-| `watchlists items add <watchlist-id> (--cve ID \| --package ECO/NAME \| --cpe CPE)...` | `POST .../watchlists/{id}/items`, one per item | Repeatable flags; one request each, sequentially. |
-| `watchlists items remove <watchlist-id> <item-id>...` | `DELETE .../items/{item_id}` | |
+| `watchlists items add <watchlist-id> (--cve ID \| --package ECO/NAME \| --cpe CPE)...` | `POST .../watchlists/{id}/items`, one per item | Repeatable flags; one request each, sequentially. `--package` splits at the first `/`, which no OSV ecosystem name contains, so `npm/@scope/name` is ecosystem `npm` and package `@scope/name`. The command stops at the first failed request, prints the items added before it, and exits with that failure's code; an item already on the list fails with 409 (exit 8). A caller that needs a repeatable operation uses `replace`. |
+| `watchlists items remove <watchlist-id> <item-id>...` | `DELETE .../items/{item_id}` | Stops at the first failure, as `add` does. |
 | `watchlists items replace <watchlist-id> (--file ITEMS.json \| --cves FILE\|-)` | `PUT .../watchlists/{id}/items` | `--cves` reads one CVE ID per line, the shape `jq -r` produces from a scanner report. Refused locally, with exit 2, above 10,000 items or 1 MiB encoded. |
 
-`--all` follows `next_cursor` until the server returns none, and prints one envelope `{"items": [...]}` holding every item. It stops with an error above 10,000 items, so `cves search --all` with no filter cannot walk the whole corpus by accident.
+`--all` follows `next_cursor` until the server returns none, and prints one envelope `{"items": [...]}` holding every item. It stops with an error above 10,000 items, so `cves search --all` with no filter cannot walk the whole corpus by accident. One envelope, rather than one JSON object per line, keeps every command's output a single JSON document, so the same `jq` filter works with and without `--all`.
 
 ### 5.3 Output
 
 `--output json` is the default. A single-resource command prints the server's response body unchanged, followed by a newline. A list command without `--all` prints the server's `{items, next_cursor}` envelope unchanged. `check` prints the merged result of its batches in the server's response shape (section 6.3).
 
-`--output table` prints fixed columns for a person at a terminal. It is not a stable interface; scripts use JSON. Columns:
+`--output table` prints fixed columns for a person at a terminal. It is not a stable interface; scripts use JSON. Table cells replace every control character with `?`, because values such as rule names are written by org members and a raw escape sequence would act on the terminal. Columns:
 
 | Command | Columns |
 |---|---|
@@ -157,7 +157,7 @@ Errors go to stderr as one line, `cvert: <message>`, followed by the server's pr
 | 8 | Request rejected | 400, 404 on a path other than a lookup, 409, 413, 422; and `rules validate` when the server answers `valid: false`. |
 | 9 | Partial result | `check` answered some items and could not answer others (section 6.2). The merged output is still printed. |
 
-`check` exits 0 whatever the statuses of its items; a script reads them with `jq`. Distinguishing 401 from 403 matters to a script's operator: 401 means replace the key, 403 means the key's role is wrong.
+`check` exits 0 whatever the statuses of its items. A flag that fails the command when an item is affected was considered and left out: which statuses should fail differs per script (`unresolved` is a failure for some and not others), and `jq -e` expresses each choice in one line. Distinguishing 401 from 403 matters to a script's operator: 401 means replace the key, 403 means the key's role is wrong.
 
 ### 5.5 Retries
 
@@ -167,6 +167,10 @@ Requests are never sent in parallel. The org shares one rate bucket and the serv
 - **503 with `Retry-After` from `/check`:** the check slot was busy. Wait for `Retry-After` plus up to 500 ms of jitter and retry, within the same budget.
 - **Connection failure before a response:** retry once, only for `GET`, `PUT` and the check `POST`, which are safe to repeat. A watchlist item `POST` is not retried.
 - **Everything else** is reported at once.
+
+### 5.6 Compatibility
+
+The application has no users besides its developers, so the JSON output and exit codes carry no compatibility promise until a release says otherwise; `docs/client.md` says so. The client is built and tested against the spec of its own commit. A client calling a server from another commit may send a parameter the server no longer accepts, which the server rejects (exit 8), or read a field the server has renamed, which shows up as a missing value and not as an error. Nothing in this design detects version skew.
 
 ## 6. Batching `check`
 
@@ -202,7 +206,7 @@ The merged output has the endpoint's response shape, plus one field:
 
 - `results`: every batch's results, each `index` rewritten to the item's position in the whole input.
 - `data_complete`: true only if every batch said true.
-- `feeds`: one entry per feed name. Where batches disagree, `complete` is true only if every batch said true, and `last_success_at` is the earliest value reported.
+- `feeds`: one entry per feed name. Where batches disagree, `complete` is true only if every batch said true, and `last_success_at` is null if any batch reported null, and otherwise the earliest value reported.
 - `unanswered`: added by the client, `[{index, problem}]`, where `problem` is the server's problem title. Empty when every item was answered.
 
 Nothing in a result is changed except `index`. The meaning of every status and reason is the server's.
@@ -250,7 +254,7 @@ Input schemas are narrow: enumerations are enumerated, numbers have bounds, stri
 
 Each tool description states what the tool answers, the units and ranges of its numbers, and its enumerations. They are written for an agent that has never seen CVErt Ops. Key content:
 
-- **Units.** CVSS scores are 0.0 to 10.0. EPSS is a probability from 0 to 1, not a percentage. Dates are RFC 3339 in UTC.
+- **Units.** CVSS scores are 0.0 to 10.0, and `min_cvss` compares the CVSS v4 score where a CVE has one and the v3 score otherwise. EPSS is a probability from 0 to 1, not a percentage. Dates are RFC 3339 in UTC. `modified_since` compares the date of the CVE's last material change: its status, severity, CVSS, CWEs, KEV or exploit flag, affected packages or affected CPEs. A change to EPSS, the description, NVD's CPE version ranges or the CNA's product data alone does not move it.
 - **`check_components` statuses.** Only `not_affected` clears a version. `affected`: at least one advisory reports the version affected. `unresolved`: nothing was established as affected, but the data leaves at least one advisory undecided for this version, so this is not a clean result. `cannot_evaluate`: the check could not be completed; read `reason`. `no_advisory_found`: no advisory names the component in the data searched, which is not a statement that it is safe. `invalid`: the item could not be read; read `error`. `data_complete: false` means a feed the item depends on has not finished a full walk or has not succeeded for 7 days, so absence of an advisory means less.
 - **`check_components` reasons**, one line each, including: distro packages are named by source package (`php8.5`, not `php8.5-cli`); a .NET SDK version must be sent as the runtime version; `fix_ecosystem` of the form `Ubuntu:Pro:<release>` means the fix ships only through Ubuntu Pro; `distro_lists_fixes_only` means the distribution's feed records issued fixes only, so a clean answer is never given for it.
 - **`validate_rule`:** the DSL's fields and operators, so an agent can write a rule without another call.
@@ -278,7 +282,7 @@ A failed API call returns a tool error, not a protocol error, with a fixed sente
 
 ### 7.5 Limits inside a tool call
 
-Tool calls follow section 5.5 with a budget of 5 seconds instead of 2 minutes. A busy check slot (`Retry-After: 1`) is retried inside the call. A 429 (`Retry-After: 60`) is returned to the agent as an error that says when to retry, because blocking a tool call for a minute stalls the agent with no explanation.
+Tool calls follow section 5.5 with a budget of 5 seconds instead of 2 minutes. An MCP host may send several tool calls at once; the server still sends one API request at a time, and a call waiting for its turn does not spend its retry budget while it waits. A busy check slot (`Retry-After: 1`) is retried inside the call. A 429 (`Retry-After: 60`) is returned to the agent as an error that says when to retry, because blocking a tool call for a minute stalls the agent with no explanation.
 
 One MCP session costs one request at startup (`whoami`) and one request per tool call, except `check_components`, which costs one per batch of 500 items.
 

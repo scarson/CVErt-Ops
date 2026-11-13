@@ -80,6 +80,9 @@ var operationAccess = map[string]accessRule{
 	"DELETE /auth/mfa/methods/{method}":        sessionOp(),
 	"POST /auth/mfa/recovery-codes/regenerate": sessionOp(),
 
+	// The calling credential: any authenticated caller.
+	"GET /whoami": anyCredentialOp(),
+
 	// CVE corpus: any authenticated caller.
 	"GET /cves":                  anyCredentialOp(),
 	"GET /cves/{cve_id}":         anyCredentialOp(),

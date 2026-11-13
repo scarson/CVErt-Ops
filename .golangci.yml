@@ -67,6 +67,11 @@ linters:
         - "-ST1003" # Allow ALL_CAPS constants (uuid, etc.)
 
   exclusions:
+    # npm packages can ship Go sources (flatted does, without its own go.mod), so
+    # `./...` includes them once `npm ci` has populated web/node_modules, as it has
+    # in the CI lint job. That is third-party code, not ours to lint.
+    paths:
+      - "web/node_modules"
     # Test files: relax exhaustruct (test structs rarely need all fields set),
     # allow unhandled errors in test assertions.
     # NOTE: gosec and noctx are NOT listed here — golangci-lint v2 path-based

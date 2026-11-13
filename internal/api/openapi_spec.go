@@ -63,6 +63,7 @@ func registerAllSpecOps(api huma.API) {
 	registerIngestSpecOps(api)
 	registerCheckSpecOps(api)
 	registerOrgTierSpecOps(api)
+	registerWhoamiSpecOps(api)
 	registerAdminFeedsSpecOps(api)
 	registerAdminSystemSpecOps(api)
 	registerAdminReloadSpecOps(api)
@@ -887,6 +888,7 @@ type specListAlertEventsInput struct {
 	LastMatchState string `query:"last_match_state" doc:"Filter by last match state"`
 	Since          string `query:"since" doc:"Filter events since timestamp (RFC3339)"`
 	Cursor         string `query:"cursor" doc:"Pagination cursor"`
+	Expand         string `query:"expand" doc:"Comma-separated context to embed in each event, read in the same query: cve (severity, CVSS, KEV, EPSS, status) and rule (name and the watchlist items that match the CVE). Example: cve,rule."`
 }
 type specListAlertEventsOutput struct {
 	Body struct {
@@ -2017,5 +2019,24 @@ func registerAdminSecurityEventsSpecOps(api huma.API) {
 		Limit      int    `query:"limit,omitempty" doc:"Max items per page (1-100, default 50)"`
 	}, struct {
 		Body listResponse[store.SecurityEventRow]
+	}]())
+}
+
+// ── Credential self-description spec-only declarations ───────────────────
+
+func registerWhoamiSpecOps(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID:   "whoami",
+		Method:        http.MethodGet,
+		Path:          "/whoami",
+		Summary:       "Describe the calling credential",
+		DefaultStatus: http.StatusOK,
+		Description: "For an API key: the key's ID, name, role and expiry, and its org with the role the key acts with, " +
+			"the org's tier and its rate limit. A key's request counts against its org's rate limit. For a browser " +
+			"session: the user and each org where the membership is active. Answers 403 for a key whose creator is " +
+			"no longer an active member of the key's org.",
+		Tags: []string{"Auth"},
+	}, noopHandler[struct{}, struct {
+		Body callerIdentity
 	}]())
 }

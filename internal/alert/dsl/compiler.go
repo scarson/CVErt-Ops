@@ -12,7 +12,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
-
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
@@ -137,9 +136,7 @@ func watchlistExpr(watchlistIDs []uuid.UUID, orgID uuid.UUID) sq.Sqlizer {
     OR EXISTS (
         SELECT 1 FROM watchlist_items wi
         JOIN cve_affected_packages cap
-          ON (lower(cap.ecosystem) = lower(wi.ecosystem)
-              OR starts_with(lower(cap.ecosystem), lower(wi.ecosystem) || ':'))
-         AND `+ecosystem.FoldedNameSQL("cap.ecosystem", "cap.package_name")+` = `+ecosystem.FoldedNameSQL("cap.ecosystem", "wi.package_name")+`
+          ON `+WatchlistPackageMatchSQL("cap", "wi")+`
         WHERE wi.watchlist_id = ANY(?)
           AND wi.org_id       = ?
           AND wi.item_type    = 'package'
@@ -149,7 +146,7 @@ func watchlistExpr(watchlistIDs []uuid.UUID, orgID uuid.UUID) sq.Sqlizer {
     OR EXISTS (
         SELECT 1 FROM watchlist_items wi
         JOIN cve_affected_cpes cac
-          ON cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
+          ON `+WatchlistCPEMatchSQL("cac", "wi")+`
         WHERE wi.watchlist_id = ANY(?)
           AND wi.org_id       = ?
           AND wi.item_type    = 'cpe'
@@ -157,6 +154,24 @@ func watchlistExpr(watchlistIDs []uuid.UUID, orgID uuid.UUID) sq.Sqlizer {
           AND cac.cve_id      = cves.cve_id
     )
 )`, ids, orgID, ids, orgID, ids, orgID)
+}
+
+// WatchlistPackageMatchSQL is the condition under which the cve_affected_packages row
+// aliased pkg matches the package watchlist item aliased item: the stored ecosystem equals
+// the item's or starts with it followed by a colon, and the names are equal once folded
+// by the stored ecosystem's rule. Rule evaluation and the alert-event listing both use it,
+// so an event's listed matches are the items that make the rule fire.
+func WatchlistPackageMatchSQL(pkg, item string) string {
+	return `(lower(` + pkg + `.ecosystem) = lower(` + item + `.ecosystem)
+              OR starts_with(lower(` + pkg + `.ecosystem), lower(` + item + `.ecosystem) || ':'))
+         AND ` + ecosystem.FoldedNameSQL(pkg+".ecosystem", pkg+".package_name") +
+		` = ` + ecosystem.FoldedNameSQL(pkg+".ecosystem", item+".package_name")
+}
+
+// WatchlistCPEMatchSQL is the condition under which the cve_affected_cpes row aliased
+// cpe matches the CPE watchlist item aliased item: the item is a prefix of the stored CPE.
+func WatchlistCPEMatchSQL(cpe, item string) string {
+	return cpe + `.cpe_normalized LIKE (` + item + `.cpe_normalized || '%')`
 }
 
 // conditionToSQL converts a single validated Condition to a squirrel Sqlizer.

@@ -25,21 +25,14 @@ func (srv *Server) tierMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Check the tier cache first; fall back to DB on miss.
-		tierName, overrides, cached := srv.tierCache.Get(orgID)
-		if !cached {
-			var err error
-			tierName, overrides, err = srv.store.GetOrgTier(r.Context(), orgID)
-			if err != nil {
-				slog.ErrorContext(r.Context(), "tier middleware: failed to load org tier",
-					"org_id", orgID, "error", err)
-				writeProblem(w, http.StatusInternalServerError, "internal server error")
-				return
-			}
-			srv.tierCache.Set(orgID, tierName, overrides)
+		resolver, err := srv.orgTierResolver(r.Context(), orgID)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "tier middleware: failed to load org tier",
+				"org_id", orgID, "error", err)
+			writeProblem(w, http.StatusInternalServerError, "internal server error")
+			return
 		}
 
-		resolver := &tier.Resolver{Tier: tierName, Overrides: overrides}
 		ctx := context.WithValue(r.Context(), ctxTierResolver, resolver)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -56,22 +49,57 @@ func (srv *Server) orgRateLimitMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Resolve rate from tier; default free=60, pro=300, enterprise=1000 req/min.
-		ratePerMin := 60
+		limit := orgRateLimitFromPerMinute(60)
 		if resolver, ok := r.Context().Value(ctxTierResolver).(*tier.Resolver); ok {
-			ratePerMin = resolver.ResolveInt(tier.LimitAPIRate)
+			limit = orgRateLimitFor(resolver)
 		}
-
-		ratePerSec := rate.Limit(float64(ratePerMin) / 60.0)
-		burst := ratePerMin / 6 // ~10-second burst window
-		if burst < 1 {
-			burst = 1
-		}
-		if !srv.orgRL.Allow(orgID, ratePerSec, burst) {
-			w.Header().Set("Retry-After", "60")
-			writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
+		if !srv.allowOrgRequest(w, orgID, limit) {
 			return
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// orgTierResolver returns a resolver for the org's tier and overrides, read from the
+// tier cache when it holds them and from the store otherwise.
+func (srv *Server) orgTierResolver(ctx context.Context, orgID uuid.UUID) (*tier.Resolver, error) {
+	tierName, overrides, cached := srv.tierCache.Get(orgID)
+	if !cached {
+		var err error
+		tierName, overrides, err = srv.store.GetOrgTier(ctx, orgID)
+		if err != nil {
+			return nil, err
+		}
+		srv.tierCache.Set(orgID, tierName, overrides)
+	}
+	return &tier.Resolver{Tier: tierName, Overrides: overrides}, nil
+}
+
+// orgRateLimit is an org's API rate limit: a token bucket refilled at perMinute
+// requests a minute that holds at most burst tokens.
+type orgRateLimit struct {
+	perMinute int
+	burst     int
+}
+
+// orgRateLimitFor returns the API rate limit of the resolver's tier.
+func orgRateLimitFor(resolver *tier.Resolver) orgRateLimit {
+	return orgRateLimitFromPerMinute(resolver.ResolveInt(tier.LimitAPIRate))
+}
+
+// orgRateLimitFromPerMinute sets the burst to about ten seconds of requests, and at least one.
+func orgRateLimitFromPerMinute(perMinute int) orgRateLimit {
+	return orgRateLimit{perMinute: perMinute, burst: max(perMinute/6, 1)}
+}
+
+// allowOrgRequest spends one request from the org's bucket. When the bucket is
+// empty it writes a 429 and returns false.
+func (srv *Server) allowOrgRequest(w http.ResponseWriter, orgID uuid.UUID, limit orgRateLimit) bool {
+	if srv.orgRL.Allow(orgID, rate.Limit(float64(limit.perMinute)/60.0), limit.burst) {
+		return true
+	}
+	w.Header().Set("Retry-After", "60")
+	writeProblem(w, http.StatusTooManyRequests, "rate limit exceeded")
+	return false
 }

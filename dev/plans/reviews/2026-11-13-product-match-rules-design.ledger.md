@@ -8,7 +8,7 @@
 - **Mode:** light — **surface fired:** none — **evidence:** no schema migration, no new boundary between separately deployed, persisted or trust-separated systems, no concurrency or crash-recovery mechanism; the material-hash change in section 7 is an alert-dedupe semantics choice posed to Sam, not a data-integrity mechanism.
 - **Requirements:** unpinned — section 1 paraphrases requirement MATCH-2 of the private homelab integration requirements and Sam has not confirmed that wording. This session was started by another session, not by Sam, so the confirmation question was not asked; requirements trace runs narrowed to internal consistency, and standing entry P0-1 routes completeness to the gate.
 - **Repo tier:** 1 (git work tree on the session's own branch; committing allowed).
-- **Current phase:** 2
+- **Current phase:** terminated (circuit breaker) before the gate
 - **Rounds** (logical dispatch and prospective ordinal written BEFORE LAUNCH, completed at return):
 
 | Round | Route (reviewer · slice · scope · shape · context · model+effort · prompts vN) | Snapshot | Roster | Status | Breaker evidence |
@@ -18,6 +18,7 @@
 | 3 | Self-review of the round 2 repair wave (session), all lenses, whole doc | `39a4a13` + working tree | runner | complete | ineligible — self-review · ordinal — |
 | 4 | Independent — dispatched subagent (Claude Opus 5.5, high; cross-provider not used, as round 2), all lenses, whole doc, single agent, cold, prompts v4 | `2713b8b` | 1 agent, all lenses | dispatched → 1 of 1 returned | grouped as-raised substantive 14 · previous-wave repairs judged defective / independently reviewed 5/16 (L8, L12, L14, L15, L18) · review-record substantive / total substantive 0/14 · backstop ordinal 2 · evaluation: no trigger (plateau needs a second stalled round; recursion 31% < 33%) |
 | 5 | Self-review of the round 4 repair wave (session), all lenses, whole doc (wave read as one diff) | `2713b8b` + working tree | runner | complete | ineligible — self-review · ordinal — |
+| 6 | Independent — dispatched subagent (Claude Opus 5.5, high; cross-provider not used, as round 2), all lenses, whole doc, single agent, cold, prompts v4 | `6ea11a3` | 1 agent, all lenses | dispatched → 1 of 1 returned | grouped as-raised substantive 11 · previous-wave repairs judged defective / independently reviewed 3/15 (L26, L26, L31) · review-record substantive / total substantive 0/11 · backstop ordinal 3 · evaluation: **plateau fired** — round 4 raised 14 (≥ 7.5, half of round 2's 15) and round 6 raised 11 (≥ 7, half of round 4's 14) |
 
 - **Per-lens coverage** (one row per whole-doc round; cell = finding IDs or NSF):
 
@@ -28,17 +29,18 @@
 | 3 | NSF (narrowed) | L24 | NSF | NSF | NSF | NSF | L25 | NSF |
 | 4 | L27, L33, L40 (standing) | L28, L29, L31 | L28, L29, L30, L37 | L26, L32, L35 | L26, L28, L31, L32, L33, L37 | L36, L38 | L26, L33, L34, L36, L39 | L30 |
 | 5 | NSF (narrowed) | L41 | NSF | NSF | NSF | NSF | NSF | NSF |
+| 6 | L42, L50, L53 (standing) | L45, L46, L49, L52 | L47, L48 | L43, L44, L46 | L43, L44, L49 | L43, L48, L50 | L42, L45, L51 | NSF |
 
-- **Gate:** not posed
-- **Breaker:** eligible after round 4 (independent re-review of the rounds 2–3 repair wave) · next backstop ordinal `3` · active trigger `none` · one-additional-read authorization `none` · in-flight `none`
-- **Closure:** cold reader — pending · verifier — pending · pooled attempt — · live-vs-snapshot re-compare — pending
-- Terminal state:
+- **Gate:** not posed in-session — the breaker fired first. The six open questions in doc section 15 and P0-1 (confirm section 1) are posed to Sam on the pull request; this session was started by another session and has no user turn in hand.
+- **Breaker:** eligible after round 4 (independent re-review of the rounds 2–3 repair wave) · next backstop ordinal `3` · active trigger `plateau` — rounds 2, 4, 6 raised 15, 14, 11 substantive · fired unattended (no user turn in hand) · **firing diagnostic:** doc size 283 lines at baseline `ec239ff`, 401 at `6ea11a3` (+42%); decision-level content: 5 open questions at baseline, 6 now, no gate answered; last two qualifying rounds' substantive findings spread over sections 3.2, 3.3, 3.5, 4.1, 4.2, 5.1, 5.3, 7, 8, 12, 13, with 5.1 (query SQL) and 7 (hash) most frequent. Mild specification drift in section 5.1 and Appendix A: SQL-level detail belongs to the implementation plan, which should re-derive it from the annotated spans · one-additional-read authorization `none` · in-flight `none`
+- **Closure:** cold reader — not dispatched (breaker) · verifier — not dispatched (breaker) · pooled attempt — · live-vs-snapshot re-compare — pending
+- Terminal state: terminated-for-execution — TERMINATED-FOR-EXECUTION after 6 rounds — 11 verify-first flags annotated in place; the design is partially verified, not certified clean.
 
 ### Index (append-only rows; State cells edited in place)
 
 | ID | Round | Lens(es) | Class | Disposition | State |
 |---|---|---|---|---|---|
-| P0-1 | P0 | requirements trace | genuine choice | confirmed | open — gate item |
+| P0-1 | P0 | requirements trace | genuine choice | annotated for execution | open — section 1 status line and the PR ask Sam to confirm the requirements |
 | L1 | 1 | downstream readiness | documentary gap | confirmed | fixed |
 | L2 | 1 | failure modes, seams & contracts | forced correction | confirmed | fixed |
 | L3 | 1 | downstream readiness, change & reversibility | documentary gap | confirmed | fixed |
@@ -49,11 +51,11 @@
 | L8 | 2 | failure modes, unstated assumptions, seams & contracts | forced correction | confirmed | fixed |
 | L9 | 2 | failure modes, unstated assumptions | documentary gap | confirmed | fixed |
 | L10 | 2 | failure modes, change & reversibility | forced correction | confirmed | fixed |
-| L11 | 2 | alternatives & rationale, simplicity & proportionality | genuine choice | confirmed | escalated — folded into open question 2 |
+| L11 | 2 | alternatives & rationale, simplicity & proportionality | genuine choice | confirmed | annotated for execution — open question 2 stands for Sam |
 | L12 | 2 | downstream readiness, seams & contracts | forced correction | confirmed | fixed |
 | L13 | 2 | seams & contracts, downstream readiness | forced correction | confirmed | fixed |
 | L14 | 2 | requirements trace (consistency), downstream readiness | forced correction | confirmed | fixed |
-| L15 | 2 | requirements trace, simplicity & proportionality, alternatives & rationale | genuine choice (scope) + forced correction (false workaround) | confirmed | false sentence fixed; scope escalated as open question 6, doc carries the recommended option |
+| L15 | 2 | requirements trace, simplicity & proportionality, alternatives & rationale | genuine choice (scope) + forced correction (false workaround) | confirmed | false sentence fixed; scope annotated for execution — open question 6 stands for Sam |
 | L16 | 2 | failure modes, alternatives & rationale | forced correction | confirmed | fixed |
 | L17 | 2 | seams & contracts | forced correction | confirmed | fixed |
 | L18 | 2 | unstated assumptions, downstream readiness | forced correction | confirmed | fixed |
@@ -80,6 +82,18 @@
 | L39 | 4 | downstream readiness | forced correction | confirmed | fixed |
 | L40 | 4 | requirements trace | — | duplicate of P0-1 | closed |
 | L41 | 5 | unstated assumptions | forced correction | confirmed | fixed |
+| L42 | 6 | downstream readiness, requirements trace | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L43 | 6 | seams & contracts, failure modes, change & reversibility | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L44 | 6 | failure modes, seams & contracts | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L45 | 6 | unstated assumptions, downstream readiness | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L46 | 6 | unstated assumptions, seams & contracts | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L47 | 6 | alternatives & rationale | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L48 | 6 | alternatives & rationale, change & reversibility | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L49 | 6 | failure modes, unstated assumptions | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L50 | 6 | requirements trace (consistency), change & reversibility | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L51 | 6 | downstream readiness | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L52 | 6 | unstated assumptions | — (breaker fired before classification) | annotated for execution | open — verify-first annotation in the doc |
+| L53 | 6 | requirements trace | — | duplicate of P0-1 | closed |
 
 ### Detail — P0-1
 
@@ -417,3 +431,86 @@
 - **Source raw:** round 5 (runner)
 - **Action:** state the bound as a judgment and give the derived worst-case parameter count. · **taken:** rewrote the sentence · **Before:** "the project has no users, and 100 is far above any rule seen." · **After:** "100 is a judgment, not a measurement ... under 3,000 parameters." (derived: 50 x ~40 + 100 x 4 = 2,400)
 
+### Detail — L42
+
+- **Anchor:** 12. Tests — "matches CVE-2026-107832 with no NVD row"
+- **Claim:** the seeded acceptance test cannot pass: the CVE's only severity in the golden fixtures is CVSS 3.1 3.7 LOW. · **Evidence:** runner re-read `internal/feed/nvd/testdata/golden/page-001.json`: cvssMetricV31 Secondary 3.7 LOW.
+- **Source raw:** round-6-independent.md, local ID R1
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L43
+
+- **Anchor:** 8. Validation and messages — "warnings are returned with a valid rule"
+- **Claim:** create and PATCH return only blocking errors; warnings reach only the validate endpoint, and saved searches and AI search drop them, so stored rules of the several-ecosystems shape stop matching with no signal. · **Evidence:** reviewer read `internal/api/alert_rules.go`, `saved_searches.go`, `ai.go`.
+- **Source raw:** round-6-independent.md, local ID R2
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L44
+
+- **Anchor:** 3.2 Operators — "as the compiler binds `in` lists today"
+- **Claim:** false: `setSQL` uses `sq.Eq{expr: vals}`, which squirrel expands to one placeholder per value, so one `in` condition can pass 65,535 parameters inside 1 MiB and the 100-condition bound does not close DB-12. The L26 repair is defective here. · **Evidence:** runner re-read squirrel `expr.go`: `fmt.Sprintf("%s %s (%s)", key, inOpr, Placeholders(valVal.Len()))`.
+- **Source raw:** round-6-independent.md, local ID R3
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L45
+
+- **Anchor:** 5.1 — "`AND (cap.ecosystem = ANY($ecos1) OR cap.ecosystem LIKE ANY($releases1))`"
+- **Claim:** the measured fast package plan had no release arm; OR-ing `LIKE ANY` into every ecosystem line may stop the index serving `npm`; the arm is only needed for ecosystems that take a release suffix.
+- **Source raw:** round-6-independent.md, local ID R4
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L46
+
+- **Anchor:** 3.3 Sources — "a `cve_cna_affected` row whose vendor and product ... equal one of the product's CNA names"
+- **Claim:** CNA rows match whatever their status, while NVD rows are filtered to `vulnerable`; an entry whose versions are all unaffected still matches, and `check/cna.go` `readEntry` reads it as no statement.
+- **Source raw:** round-6-independent.md, local ID R5
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L47
+
+- **Anchor:** 3.5 step 3 — "closing it would put the vulnerable flag into the hash, which changes the hash of every NVD-analysed CVE"
+- **Claim:** the rationale is weak beside section 7, which recommends a corpus-wide hash move for CNA products; both could share one move, or the separate signal could close both (pitfall NOTIFY-2).
+- **Source raw:** round-6-independent.md, local ID R6
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L48
+
+- **Anchor:** 7. Material hash and CNA product names
+- **Claim:** neither option covers MATCH-3's inputs (CNA versions, NVD ranges); a pair-only hash may be followed by another corpus-wide hash move.
+- **Source raw:** round-6-independent.md, local ID R7
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L49
+
+- **Anchor:** 5.3 Measurements and 13
+- **Claim:** under `or`, the `IN` set is a SubPlan hashed only when its estimate fits in hash_mem (default `work_mem` 4 MB × `hash_mem_multiplier` 2); a wide `or` product rule in dry-run or saved search may fall back to a per-row SubPlan; unmeasured.
+- **Source raw:** round-6-independent.md, local ID R8
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L50
+
+- **Anchor:** 4.1 Exact match — "ecosystems are compared exactly, where today's compiler lower-cases them"
+- **Claim:** conflicts with PLAN.md §10.2's case-insensitive `eq` and with `watchlistExpr`'s `lower()`, and section 11 does not list the PLAN change.
+- **Source raw:** round-6-independent.md, local ID R9
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L51
+
+- **Anchor:** 5.2, 8 and 10
+- **Claim:** left to the plan author: the field kind that gives the field its own `TypeDesc`; whether `Compile` re-applies parsing and limits to stored rules; how duplicate values count toward the 50; create and PATCH symmetry tests (testing-pitfalls §4).
+- **Source raw:** round-6-independent.md, local ID R10
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L52
+
+- **Anchor:** 13. Measure during implementation — "if CI or a deployment runs a PostgreSQL major other than 18"
+- **Claim:** every test helper and compose file pins `postgres:18-alpine`, so 15 to 17 are never measured, and PostgreSQL 18 adds planner features (btree skip scan, OR lists to arrays) the measured plans may rely on. The L31 repair is incomplete here.
+- **Source raw:** round-6-independent.md, local ID R11
+- **Action:** convergence circuit breaker (plateau) fired; one-line verify-first annotation written at the span · **taken:** annotation added
+
+### Detail — L53
+
+- **Anchor:** 1. Requirements — "Status: unconfirmed."
+- **Claim:** requirements completeness unverifiable — unpinned (standing finding).
+- **Source raw:** round-6-independent.md, standing finding
+- **Action:** none; duplicate of P0-1.

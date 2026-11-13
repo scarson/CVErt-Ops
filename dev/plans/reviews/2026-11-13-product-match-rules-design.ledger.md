@@ -524,18 +524,19 @@
 - **Mode:** light — **surface fired:** none — **evidence:** as run 1.
 - **Requirements:** unpinned — section 1 still awaits Sam's confirmation (open question 7); requirements trace narrowed to internal consistency.
 - **Repo tier:** 1.
-- **Current phase:** 3 (fixes applied; ledger-briefed fix check by the same reviewer)
+- **Current phase:** stopped at the gate — every finding fixed or an open question; the last one-line fix (M22) had no further check
 - **Rounds:**
 
 | Round | Route (reviewer · slice · scope · shape · context · model+effort · prompts vN) | Snapshot | Roster | Status | Breaker evidence |
 |---|---|---|---|---|---|
 | 1 | Independent — dispatched subagent (Claude Fable, on Sam's request), all lenses, whole doc, single agent, cold, prompts v4; followed by a ledger-briefed discussion with the same agent on M2, M5, M7 and the CNA all-unaffected question | `7369080` | 1 agent, all lenses | complete; 11 raised, 11 substantive; discussion converged on all contested items | ordinal 1 · exempt (first independent round of this run) |
 | 2 | Ledger-briefed fix check — same Fable agent, the diff from `7369080` against the agreed dispositions | `bdb2d5f` | 1 agent | complete: resolved R1, R3, R6, R8–R11 and R7's conditions; conceded R2 on PostgreSQL 18; raised 10 problems in the fix wave (M12–M21) | elective, additive; does not count toward closure |
+| 3 | Ledger-briefed fix check — same Fable agent, `git diff bdb2d5f ecedc92` | `ecedc92` | 1 agent | complete: all 10 resolved; raised 1 new problem (M22) | elective, additive |
 
 - **Gate:** not posed in-session: open questions 1–12 in doc section 15 go to Sam on PR 236 (8–12 are new in this run)
 - **Breaker:** next backstop ordinal `2` · active trigger `none` · in-flight `none`
-- **Closure:** cold reader — pending · verifier — pending
-- Terminal state:
+- **Closure:** cold reader — not dispatched · verifier — not dispatched (the gate questions come first; a closure pair runs after Sam answers them)
+- Terminal state: stopped awaiting user — open questions 1–12 in doc section 15 are posed to Sam on PR 236
 
 ### Index (append-only rows; State cells edited in place)
 
@@ -563,6 +564,7 @@
 | M19 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
 | M20 | 2 | downstream readiness, failure modes | genuine choice | confirmed | recommendation stated; open question 12 for Sam |
 | M21 | 2 | downstream readiness, failure modes | forced correction | confirmed | fixed |
+| M22 | 3 | downstream readiness | forced correction | confirmed | fixed |
 
 ### Detail — M1
 
@@ -710,3 +712,10 @@
 - **Claim:** overclaim: the test runs on `lower(a.product)`, and `lower()` follows the ctype (KELVIN SIGN).
 - **Source raw:** Fable fix check of `bdb2d5f` (reported in conversation; this row is its record)
 - **Action:** limit the claim to the boundary test and point to the `lower()` paragraph.
+
+### Detail — M22
+
+- **Anchor:** 13 — "plus 50 one-value `affected.package` conditions"
+- **Claim:** the limit rule's logic is unstated; under `and` it matches nothing, so batch and activation would understate the worst case and never run the per-match statements.
+- **Source raw:** Fable fix check of `ecedc92` (reported in conversation)
+- **Action:** measure under `or` and `and`, thresholds on `or`; activation under `or`. · **taken:** section 13's limit-rule and activation bullets state it · **Before:** "measured realtime against one CVE, dry-run, and" · **After:** "measured under `or` and under `and` (under `and` it can match nothing ...)"

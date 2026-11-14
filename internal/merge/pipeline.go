@@ -603,12 +603,26 @@ func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 	} else {
 		err = migrateCVEPKRename(ctx, tx, oldID, newID)
 	}
-	if err != nil || !alertsMoved {
+	if err != nil {
 		return err
 	}
 
-	// A moved alert may not match its new CVE. With an unchanged hash the batch
-	// evaluator would not revisit that CVE, so the alert could never resolve.
+	// The CVE ID is a match input for rules keyed on it (CVE-ID watchlist items,
+	// cve_id conditions), and neither change hash covers it. Without this stamp a
+	// failed realtime evaluation of the new ID would never be retried by the batch
+	// evaluator. The merge's later UpsertCVE keeps the stamp when match_inputs_hash
+	// is unchanged and replaces it with its own clock value when the hash changes.
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE cves SET date_match_inputs_changed = now() WHERE cve_id = $1", newID); err != nil {
+		return fmt.Errorf("mark renamed CVE for re-check (%s -> %s): %w", oldID, newID, err)
+	}
+	if !alertsMoved {
+		return nil
+	}
+
+	// A moved alert may not match its new CVE, and must resolve when it does not.
+	// The re-check stamp above brings the CVE to the batch evaluator, which selects
+	// on either date; a CVE whose alerts moved is also marked modified here.
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE cves SET date_modified_canonical = now() WHERE cve_id = $1", newID); err != nil {
 		return fmt.Errorf("mark moved alert target (%s→%s): %w", oldID, newID, err)

@@ -227,9 +227,12 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 
 	// Collect all candidate IDs across pages before evaluating rules.
 	// This avoids creating duplicate rule run records per page (one run per rule per batch).
-	// Rows stamped after batchTime are left to the next run, whose scan starts at
-	// batchTime minus cursorRescanWindow or earlier (see changeScan).
-	allCandidateIDs, err := cfg.getCandidates(ctx, since, batchTime, candidatePageSize)
+	// The scan reads changes stamped up to cursorRescanWindow after batchTime, so a
+	// stamping clock that runs ahead of this one by less than the window delays nothing.
+	// Later changes are left to the next run, whose scan starts before batchTime (see
+	// changeScan).
+	until := batchTime.Add(cursorRescanWindow)
+	allCandidateIDs, err := cfg.getCandidates(ctx, since, until, candidatePageSize)
 	if err != nil {
 		return fmt.Errorf("get %s candidates: %w", cfg.feedName, err)
 	}
@@ -761,7 +764,7 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 // A CVE whose date moves forward to a time at or before until is read at its new
 // position, a second time if the scan had already read it; changedCVEs removes the
 // duplicate. A CVE whose date moves past until is not read; the next run's scan starts
-// at this run's until minus cursorRescanWindow or earlier, so that run reads it. A CVE
+// before this run's until, so that run reads it. A CVE
 // whose date moves backward behind the scan's position is stamped by a writer that
 // committed during this run, which is the case cursorRescanWindow exists for: the next
 // run reads it. until also ends the scan: every page holds keys after the previous

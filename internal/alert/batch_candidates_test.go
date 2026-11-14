@@ -147,7 +147,7 @@ func TestBatchCandidates_RowsMovedDuringScan(t *testing.T) {
 	//   - CVE-2026-92060, already read, moves to just before until: it is read again.
 	//   - CVE-2026-92040, not yet read, moves forward within the window: it is read once, at its new date.
 	//   - CVE-2026-92030, not yet read, moves past until: this scan does not read it. The next run's
-	//     scan starts at until minus cursorRescanWindow, so that run reads it.
+	//     scan starts before this run's until, so that run reads it.
 	page := e.changePage(modifiedScan, scanSince, scanUntil, 2)
 	pages := 0
 	moved := func(ctx context.Context, after *changeKey) ([]changeKey, error) {

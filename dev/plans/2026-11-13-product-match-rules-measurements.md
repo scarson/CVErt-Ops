@@ -240,7 +240,40 @@ The copy at migration 63, with `UPDATE cves SET date_match_inputs_changed = date
 | Sparse: `since` = 99th percentile of modification times | first | 26,197 | same; the eligible rows sit at the end of `cve_id` order, so each walk reads most of the index (1.27 s for the `date_modified_canonical` arm, 2.43 s for the new arm) | **3,699 ms** |
 | Sparse | from the `CVE-` range | 26,197 | bitmap scans of `cves_date_modified_canonical_idx` and `cves_date_match_inputs_changed_idx`, then sort | 127 ms |
 
-Threshold: 3 s per page. **The sparse first page fails (3.7 s).** The planner walks the primary key when it expects more eligible rows than a page, which goes wrong when they are clustered at the end of the ID order; the existing arm alone took 1.27 s on the same page. A window of fewer eligible CVEs than a page uses the index-and-sort plan. Planning time is under 0.4 ms in every case. Sam accepted the sparse first page on 2026-11-14.
+Threshold: 3 s per page. **The sparse first page fails (3.7 s).** The planner walks the primary key when it expects more eligible rows than a page, which goes wrong when they are clustered at the end of the ID order; the existing arm alone took 1.27 s on the same page. A window of fewer eligible CVEs than a page uses the index-and-sort plan. Planning time is under 0.4 ms in every case. Sam accepted the sparse first page on 2026-11-14. It was fixed the same day by paging on `(date, cve_id)` (next section).
+
+## Task 5.5 re-run: candidate scans paged on (date, cve_id) (disposable copy, 2026-11-14)
+
+The fix: each change date is its own keyset scan, `(date_col, cve_id) > ($date, $id) AND date_col <= $until ORDER BY date_col, cve_id LIMIT 1000`, and the IDs of all scans are sorted and de-duplicated afterwards (`changeScan` in `internal/alert/evaluator.go`). Migration 000065 replaces the three single-column change-date indexes with `(date, cve_id)` indexes. The EPSS path is split the same way: `date_epss_updated`, and retracted CVEs by `date_modified_canonical`.
+
+**Where:** the Task 5.5 copy no longer existed, so a new disposable container was filled by piping a read-only `pg_dump -t cves` of the kept ingest (2,628,861 CVEs, migration 61) into it; the kept container was only read. As in Task 5.5: `date_match_inputs_changed = date_modified_canonical` with the migration-63 partial index, then `VACUUM ANALYZE`. Each statement ran three times with `EXPLAIN (ANALYZE, BUFFERS)`, read-only, with JIT and parallel query off. "Warm" is the mean execution time of runs 2 and 3. Planning time is under 0.2 ms in every row. The container was removed afterwards.
+
+**Windows:** dense `since` = 35th percentile of `date_modified_canonical` (1,708,759 eligible CVEs, about Task 5.5's 1,703,192); sparse `since` = 99th percentile (26,288 eligible). EPSS dense = every scored CVE (533,190 eligible with retracted CVEs); EPSS sparse = 99th percentile of `date_epss_updated` (7,910). "Later page" starts after the 3,000th key of its scan. `until` = `now()` plus 2 minutes, as the evaluator sets it.
+
+| Window | Page | Scan | Old indexes: plan, warm exec | Migration 000065: plan | First run exec | Warm exec |
+|---|---|---|---|---|---|---|
+| Dense | first | `date_modified_canonical` | index scan + incremental sort, 0.29 ms | Index Only Scan, `(date_modified_canonical, cve_id)` | 0.13 ms | 0.20 ms |
+| Dense | first | `date_match_inputs_changed` | same, 0.31 ms | Index Only Scan, `(date_match_inputs_changed, cve_id)` | 0.15 ms | 0.14 ms |
+| Dense | later | `date_modified_canonical` | same, 0.27 ms | Index Only Scan | 0.16 ms | 0.16 ms |
+| Dense | later | `date_match_inputs_changed` | same, 0.29 ms | Index Only Scan | 0.17 ms | 0.15 ms |
+| Sparse | first | `date_modified_canonical` | same, 0.49 ms | Index Only Scan | 0.14 ms | 0.15 ms |
+| Sparse | first | `date_match_inputs_changed` | same, 0.37 ms | Index Only Scan | 0.15 ms | 0.15 ms |
+| Sparse | later | `date_modified_canonical` | same, 0.49 ms | Index Only Scan | 0.16 ms | 0.14 ms |
+| Sparse | later | `date_match_inputs_changed` | same, 0.50 ms | Index Only Scan | 0.21 ms | 0.16 ms |
+| EPSS dense | first | `date_epss_updated` | same, 0.35 ms | Index Only Scan, `(date_epss_updated, cve_id)` | 0.13 ms | 0.13 ms |
+| EPSS sparse | first | `date_epss_updated` | same, 0.76 ms | Index Only Scan | 0.15 ms | 0.14 ms |
+| EPSS dense | first | retracted, by `date_modified_canonical` | same, 10.1 ms | Index Scan, filter on status | 22.8 ms | 11.0 ms |
+| EPSS sparse | first | retracted, by `date_modified_canonical` | same, 3.5 ms | bitmap scan + sort (630 rows, under a page) | 60.3 ms | 64.7 ms |
+
+The old statements on the same copy, before migration 000065: the `UNION` sparse first page 443 ms warm (the same plan as Task 5.5, a `Merge Append` of two `cves_pkey` walks), dense first page 47 ms; the old EPSS `OR` first page 70 ms sparse, 12 ms dense.
+
+### Reading
+
+- **The sparse first page passes: 0.15 ms per scan, two scans per page, against 3 s.** Every batch-path page, first or later, dense or sparse, is an index-only scan that reads one page of the `(date, cve_id)` index, so its cost no longer depends on where the eligible CVEs sit in `cve_id` order.
+- The old form did not reproduce 3.7 s on this copy (443 ms, same plan). That copy had been restored from a full backup, migrated and used for the M8 activation; this one is a fresh dump of one table, so its heap and index layout differ. The plan shape is what the fix removes: the new statements cannot walk the primary key, because their order is the date's.
+- The slowest new statement is the EPSS path's retracted-CVE scan (up to 65 ms), which reads `date_modified_canonical` in the window and keeps the rejected and withdrawn CVEs. It is run once per page of retracted CVEs, of which there are few.
+- The single-column indexes with an incremental sort were already fast here, because no change date has large ties on this copy (at most 248 rows share a `date_epss_updated`). The composite indexes keep a later page's start exact when many rows share a date (one EPSS batch stamps all its rows with one `now()`), and give index-only scans.
+- Sizes: each composite index is 118 MB on this copy.
 
 ## M8 after batched activation inserts (2026-11-14)
 

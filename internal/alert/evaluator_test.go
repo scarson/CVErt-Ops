@@ -1467,6 +1467,39 @@ func TestEvaluatorBatch_CursorAdvancement(t *testing.T) {
 	}
 }
 
+// TestEvaluatorBatch_ChangeStampedAheadOfEvaluatorClock verifies that a run evaluates a
+// CVE whose change date is ahead of the evaluator's clock, as when the clock that stamps
+// it (the merge worker's, or the database's now()) runs ahead, by less than
+// cursorRescanWindow.
+func TestEvaluatorBatch_ChangeStampedAheadOfEvaluatorClock(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	const cvssCondition = `[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`
+	score := 9.0
+	rule := mustRule(t, ctx, tdb.Store, orgID, "and", cvssCondition, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("first EvaluateBatch: %v", err)
+	}
+
+	insertCVE(t, tdb.DB(), "CVE-BATCHSKEW-001", "Analyzed", "stamped ahead", &score, "batchskew1")
+	ahead := time.Now().UTC().Add(time.Minute) // half of cursorRescanWindow
+	if _, err := tdb.DB().ExecContext(ctx,
+		`UPDATE cves SET date_modified_canonical = $2 WHERE cve_id = $1`, "CVE-BATCHSKEW-001", ahead); err != nil {
+		t.Fatalf("stamp ahead: %v", err)
+	}
+
+	if err := ev.EvaluateBatch(ctx); err != nil {
+		t.Fatalf("second EvaluateBatch: %v", err)
+	}
+	if n := countAlertEvents(t, tdb.DB(), rule.ID, "CVE-BATCHSKEW-001"); n != 1 {
+		t.Fatalf("want 1 alert_event for a CVE stamped a minute ahead of the evaluator, got %d", n)
+	}
+}
+
 func TestEvaluatorBatch_SkipsEPSSOnlyRules(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ev := newTestEvaluator(t, tdb)

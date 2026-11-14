@@ -58,7 +58,9 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 				return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
 			}
 			products += len(refs)
-			predicates = append(predicates, func(candidateIDs []string) sq.Sqlizer { return ProductSetSQL(refs, candidateIDs) })
+			predicates = append(predicates, predicate{branches: func(candidateIDs []string) []sqlPart {
+				return productBranches(refs, candidateIDs)
+			}})
 			continue
 		}
 
@@ -78,11 +80,11 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		if spec.kind == kindAffected {
 			// A CVE-ID set, correlated under "and" (design section 4.2); an
 			// ecosystem condition folded into the rule's package sets adds nothing.
-			p, err := affectedPredicate(c, corr)
+			p, ok, err := affectedPredicate(c, corr)
 			if err != nil {
 				return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
 			}
-			if p != nil {
+			if ok {
 				predicates = append(predicates, p)
 			}
 			continue
@@ -92,7 +94,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		if err != nil {
 			return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
 		}
-		predicates = append(predicates, func(_ []string) sq.Sqlizer { return sqlizer })
+		predicates = append(predicates, predicate{scalar: sqlizer})
 	}
 	if products > maxProducts {
 		return nil, fmt.Errorf("compile: %s", msgTooManyProducts)

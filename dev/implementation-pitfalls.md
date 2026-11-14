@@ -897,6 +897,8 @@ An index that no query can use still fails the insert, so drop it rather than bo
 
 An uncorrelated set without the candidate IDs inside it is also slow on the candidate paths: it builds the whole product's set for one CVE (283 ms for `linux:linux_kernel`, against 0.28 ms with the IDs inside).
 
+Several such sets `OR`-ed together are slow too: PostgreSQL cannot pull an `OR`-ed `IN` subquery up into a semi-join, so each set becomes a hashed SubPlan built in full. A rule of 50 product and 50 package conditions under `or` took 27 s as a dry-run and exhausted shared memory, while the 50 package names as one `IN` planned as a merge semi-join in about 100 ms (`dev/plans/2026-11-13-product-match-rules-measurements.md`). Under `or` the compiler therefore puts the branches of every set condition into one `cves.cve_id IN (... UNION ALL ...)`; under `and` each set stays its own `IN`, which plans as a semi-join.
+
 **Why It Matters:** Both settings run in production. A dry-run that times out returns an error to the user, and a realtime predicate that builds a whole set runs for every active rule on every changed CVE during ingest.
 
 **The Fix:** Write each positive condition as `cves.cve_id IN (<uncorrelated set>)`, and repeat the caller's candidate IDs inside every branch of the set (`AND x.cve_id = ANY($candidates)`) when the caller has them. Write ranges and name terms as explicit `OR`-ed predicates, not joins to `unnest()`. Keep negative conditions as correlated `NOT EXISTS`. Verify each new shape with `EXPLAIN ANALYZE` in both settings, on the full ingest; the plans depend on PostgreSQL 18 features (btree skip scan) that 15 to 17 lack. Measurements and statements: `dev/plans/2026-11-13-product-match-rules-design.md` section 5 and Appendix A.

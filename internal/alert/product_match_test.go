@@ -5,6 +5,7 @@ package alert_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -373,7 +374,8 @@ func TestProductMatch_SeededCorpus(t *testing.T) {
 // TestProductMatch_SameAnswerOnEveryPath checks the two forms of one rule agree
 // (design sections 5.2 and 12): store.ExecuteDSLQuery, paged to the end with no
 // candidate IDs, returns the CVEs an activation scan writes events for, in
-// candidate pages, and DryRun counts the same number.
+// candidate pages, and DryRun counts the same number. An "or" rule's search also
+// returns exactly the CVEs its conditions return alone.
 func TestProductMatch_SameAnswerOnEveryPath(t *testing.T) {
 	// Not parallel: the NVD golden fixtures set an environment variable.
 	tdb := testutil.NewTestDB(t)
@@ -394,34 +396,60 @@ func TestProductMatch_SameAnswerOnEveryPath(t *testing.T) {
 		{"correlated package", "and", `[{"field":"affected.ecosystem","operator":"eq","value":"npm"},{"field":"affected.package","operator":"eq","value":"fastify"}]`, true},
 		{"correlated package with a match", "and", `[{"field":"affected.ecosystem","operator":"eq","value":"npm"},{"field":"affected.package","operator":"eq","value":"jspdf"}]`, false},
 		{"package or product", "or", `[{"field":"affected.package","operator":"eq","value":"lodash"},{"field":"affected.cpe_product","operator":"eq","value":"nodejs:node.js"}]`, false},
+		{"product, package, ecosystem or KEV", "or", `[{"field":"affected.cpe_product","operator":"eq","value":"google:brotli"},{"field":"affected.package","operator":"eq","value":"jspdf"},{"field":"affected.ecosystem","operator":"eq","value":"Maven"},{"field":"in_cisa_kev","operator":"eq","value":true}]`, false},
 		{"negative ecosystem", "and", `[{"field":"affected.ecosystem","operator":"neq","value":"npm"},{"field":"severity","operator":"eq","value":"high"}]`, false},
+	}
+	// search pages store.ExecuteDSLQuery to the end and returns the sorted CVE IDs.
+	search := func(t *testing.T, logic, conditions string) []string {
+		t.Helper()
+		rule, err := dsl.Parse([]byte(`{"logic":"` + logic + `","conditions":` + conditions + `}`))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		compiled, err := dsl.Compile(rule, uuid.New(), 1, orgID, nil)
+		if err != nil {
+			t.Fatalf("Compile: %v", err)
+		}
+		var searched []string
+		cursor := ""
+		for {
+			rows, next, err := tdb.ExecuteDSLQuery(ctx, compiled, cursor, 100)
+			if err != nil {
+				t.Fatalf("ExecuteDSLQuery: %v", err)
+			}
+			for _, row := range rows {
+				searched = append(searched, row.CveID)
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+		slices.Sort(searched)
+		return searched
 	}
 	for _, r := range rules {
 		t.Run(r.name, func(t *testing.T) {
-			rule, err := dsl.Parse([]byte(`{"logic":"` + r.logic + `","conditions":` + r.conditions + `}`))
-			if err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
-			compiled, err := dsl.Compile(rule, uuid.New(), 1, orgID, nil)
-			if err != nil {
-				t.Fatalf("Compile: %v", err)
-			}
-			var searched []string
-			cursor := ""
-			for {
-				rows, next, err := tdb.ExecuteDSLQuery(ctx, compiled, cursor, 100)
-				if err != nil {
-					t.Fatalf("ExecuteDSLQuery: %v", err)
+			searched := search(t, r.logic, r.conditions)
+			if r.logic == "or" {
+				// An "or" rule matches each CVE that one of its conditions matches alone,
+				// so the one CVE set its set conditions compile to loses and adds nothing.
+				var conds []json.RawMessage
+				if err := json.Unmarshal([]byte(r.conditions), &conds); err != nil {
+					t.Fatalf("conditions: %v", err)
 				}
-				for _, row := range rows {
-					searched = append(searched, row.CveID)
+				var union []string
+				for _, c := range conds {
+					alone := search(t, "and", "["+string(c)+"]")
+					t.Logf("%s alone: %d CVEs", c, len(alone))
+					union = append(union, alone...)
 				}
-				if next == "" {
-					break
+				slices.Sort(union)
+				union = slices.Compact(union)
+				if !slices.Equal(searched, union) {
+					t.Errorf("or rule returned %v, its conditions alone %v", searched, union)
 				}
-				cursor = next
 			}
-			slices.Sort(searched)
 
 			activated := activationMatches(t, ctx, tdb, ev, orgID, r.logic, r.conditions)
 			if !slices.Equal(searched, activated) {

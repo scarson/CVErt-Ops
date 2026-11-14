@@ -596,10 +596,14 @@ func (e *Evaluator) evaluateRuleInChunks(
 // queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is
 // non-nil, only those CVE IDs are considered; otherwise all CVEs are scanned.
 // Returns (candidates, partial, error). partial=true means > candidateCap
-// rows matched, which triggers fail-closed behavior.
+// rows matched, which triggers fail-closed behavior. The query runs under
+// prepareCandidateTx's settings, which last until tx ends.
 func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule, candidateIDs []string) ([]cveSummary, bool, error) {
 	query, args, err := candidateQuery(compiled, candidateIDs)
 	if err != nil {
+		return nil, false, err
+	}
+	if err := prepareCandidateTx(ctx, tx); err != nil {
 		return nil, false, err
 	}
 
@@ -624,6 +628,21 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		return nil, true, nil
 	}
 	return candidates, false, nil
+}
+
+// candidateJITOff turns JIT compilation off for the rest of the transaction. A
+// rule statement over a large corpus has a high estimated cost, so PostgreSQL
+// JIT-compiles it: about 4 s of a 50-product dry run on a full ingest
+// (dev/plans/2026-11-13-product-match-rules-measurements.md).
+const candidateJITOff = "SET LOCAL jit = off"
+
+// prepareCandidateTx applies the settings a rule's candidate query runs under to
+// tx. They end with the transaction.
+func prepareCandidateTx(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, candidateJITOff); err != nil {
+		return fmt.Errorf("turn off jit: %w", err)
+	}
+	return nil
 }
 
 // candidateQuery builds the statement queryCandidates runs: the rule's WHERE

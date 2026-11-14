@@ -1,14 +1,17 @@
 // ABOUTME: Unit tests for the CVE-ID set predicates of affected.ecosystem, affected.package and affected.cpe_product.
-// ABOUTME: Covers correlation, exact ecosystems, release arms, package folding, product terms, candidate IDs and limits.
+// ABOUTME: Covers correlation, exact ecosystems, release arms, package folding, product terms, candidate IDs, limits and the "or" CVE set.
 package dsl_test
 
 import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/lib/pq"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
@@ -20,11 +23,13 @@ const foldedNameEq = `CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower
 
 const (
 	packageSetHead = "cves.cve_id IN (\n    SELECT cap.cve_id FROM cve_affected_packages cap"
-	candidateLine  = "cap.cve_id = ANY(?)"
-	ecosystemEq    = "cap.ecosystem = ANY(?)"
-	releaseArm     = "cap.ecosystem LIKE ANY(?)"
-	pypiArm        = "(cap.ecosystem = 'PyPI' AND "
-	otherArm       = "(cap.ecosystem <> 'PyPI' AND "
+	// packageBranchJoin is a package branch that follows another branch of one CVE set.
+	packageBranchJoin = "\n    UNION ALL\n    SELECT cap.cve_id FROM cve_affected_packages cap"
+	candidateLine     = "cap.cve_id = ANY(?)"
+	ecosystemEq       = "cap.ecosystem = ANY(?)"
+	releaseArm        = "cap.ecosystem LIKE ANY(?)"
+	pypiArm           = "(cap.ecosystem = 'PyPI' AND "
+	otherArm          = "(cap.ecosystem <> 'PyPI' AND "
 )
 
 func whereOf(t *testing.T, c *dsl.CompiledRule, candidateIDs []string) (string, []interface{}) {
@@ -149,13 +154,15 @@ func TestCompile_PackageEqUnderOrIsNotCorrelated(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"or","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"npm"},{"field":"affected.package","operator":"eq","value":"lodash"}]}`, nil)
 	sql, args := whereOf(t, c, nil)
-	// One ecosystem set and one package set; only the ecosystem set has an ecosystem line.
-	assertCount(t, sql, packageSetHead, 2)
+	// One CVE set of an ecosystem branch and a package branch; only the ecosystem
+	// branch has an ecosystem line.
+	assertCount(t, sql, packageSetHead, 1)
+	assertCount(t, sql, packageBranchJoin, 1)
 	assertCount(t, sql, ecosystemEq, 1)
 	assertCount(t, sql, pypiArm+foldedNameEq+")", 1)
 	assertCount(t, sql, otherArm+foldedNameEq+")", 1)
-	if !strings.Contains(sql, ") OR cves.cve_id IN (") {
-		t.Errorf("expected the two sets joined by OR, got:\n%s", sql)
+	if strings.Contains(sql, ") OR cves.cve_id IN (") {
+		t.Errorf("expected one set with the two branches joined by UNION ALL, got:\n%s", sql)
 	}
 	assertSetShapeRules(t, sql)
 	assertArrayArgs(t, args, []string{"npm"}, []string{"lodash"}, []string{"lodash"})
@@ -527,5 +534,185 @@ func TestCompile_EcosystemNullListBindsEmptyArray(t *testing.T) {
 		if got := args[0].(*pq.StringArray); *got == nil {
 			t.Errorf("%s: array arg is nil, which binds SQL NULL; want an empty array", op)
 		}
+	}
+}
+
+// ─── "or" rules: every set condition in one CVE set ─────────────────────────
+
+const (
+	cveSetHead = "cves.cve_id IN ("
+	unionAll   = "\n    UNION ALL\n    "
+)
+
+// cveSetSpan returns the text of the rule's one CVE set, from its IN to the
+// parenthesis that closes it, the first one at the start of a line.
+func cveSetSpan(t *testing.T, sql string) string {
+	t.Helper()
+	start := strings.Index(sql, cveSetHead)
+	if start < 0 {
+		t.Fatalf("no CVE set in SQL:\n%s", sql)
+	}
+	end := strings.Index(sql[start:], "\n)")
+	if end < 0 {
+		t.Fatalf("CVE set is not closed in SQL:\n%s", sql)
+	}
+	return sql[start : start+end+2]
+}
+
+// TestCompile_OrSetConditionsAreOneCVESet checks two product conditions and a
+// package condition under "or": one IN over five branches (CPE and CNA per
+// product, one package branch), joined by UNION ALL.
+func TestCompile_OrSetConditionsAreOneCVESet(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[`+productEq("nodejs:node.js")+`,`+productEq("php:php")+`,
+		{"field":"affected.package","operator":"eq","value":"lodash"}]}`, nil)
+	sql, args := whereOf(t, c, nil)
+	assertCount(t, sql, cveSetHead, 1)
+	assertCount(t, sql, unionAll, 4)
+	assertCount(t, sql, "SELECT m.cve_id FROM cve_cpe_matches m", 2)
+	assertCount(t, sql, "SELECT a.cve_id FROM cve_cna_affected a", 2)
+	assertCount(t, sql, packageBranchJoin, 1)
+	assertCount(t, sql, " OR cves.cve_id IN (", 0)
+	assertSetShapeRules(t, sql)
+	if span := cveSetSpan(t, sql); "("+span+")" != sql {
+		t.Errorf("a rule of set conditions only should be its CVE set, got:\n%s", sql)
+	}
+	// The branches keep rule order, so the arguments are each condition's own,
+	// in turn: the two product sets as each compiles alone, then the package's.
+	var want []interface{}
+	for _, v := range []string{"nodejs:node.js", "php:php"} {
+		_, a := whereOf(t, compileRule(t, productRule(productEq(v)), nil), nil)
+		want = append(want, a...)
+	}
+	_, pkgArgs := whereOf(t, compileRule(t, `{"logic":"and","conditions":[{"field":"affected.package","operator":"eq","value":"lodash"}]}`, nil), nil)
+	want = append(want, pkgArgs...)
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+}
+
+// TestCompile_OrSetsBesideScalars checks an "or" rule that mixes sets with scalar
+// conditions: the one CVE set stands where the first set condition is, and the
+// scalars, including the NOT EXISTS of a negative ecosystem, stay OR-ed beside it.
+func TestCompile_OrSetsBesideScalars(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[
+		{"field":"severity","operator":"eq","value":"critical"},
+		`+productEq("nodejs:node.js")+`,
+		{"field":"affected.ecosystem","operator":"neq","value":"npm"},
+		{"field":"affected.package","operator":"in","value":["lodash","express"]},
+		{"field":"in_cisa_kev","operator":"eq","value":true},
+		{"field":"affected.ecosystem","operator":"eq","value":"PyPI"}]}`, nil)
+	sql, _ := whereOf(t, c, nil)
+	assertCount(t, sql, cveSetHead, 1)
+	assertCount(t, sql, unionAll, 3)
+	assertCount(t, sql, "NOT EXISTS (", 1)
+	assertSetShapeRules(t, sql)
+	if !strings.HasPrefix(sql, "(lower(cves.severity) = ? OR "+cveSetHead) {
+		t.Errorf("expected severity, then the CVE set, got:\n%s", sql)
+	}
+	span := cveSetSpan(t, sql)
+	for _, scalar := range []string{"lower(cves.severity) = ?", "NOT EXISTS (", "cves.in_cisa_kev = ?"} {
+		assertCount(t, span, scalar, 0)
+		assertCount(t, sql, scalar, 1)
+	}
+	if !strings.HasSuffix(sql, span+" OR NOT EXISTS (\n    SELECT 1 FROM cve_affected_packages cap\n    WHERE cap.cve_id = cves.cve_id\n      AND "+ecosystemEq+"\n) OR cves.in_cisa_kev = ?)") {
+		t.Errorf("expected the CVE set, then the NOT EXISTS and KEV, got:\n%s", sql)
+	}
+}
+
+// TestCompile_OrCVESetExactSQL pins a small mixed "or" rule's SQL and arguments
+// with candidate IDs: each branch repeats the candidates before its own lines,
+// and the arguments follow the placeholders in order.
+func TestCompile_OrCVESetExactSQL(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[
+		{"field":"severity","operator":"eq","value":"high"},
+		{"field":"affected.package","operator":"eq","value":"lodash"},
+		{"field":"affected.ecosystem","operator":"eq","value":"npm"},
+		{"field":"in_cisa_kev","operator":"eq","value":true}]}`, nil)
+	sql, args := whereOf(t, c, []string{"CVE-1"})
+	want := `(lower(cves.severity) = ? OR cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND ((cap.ecosystem = 'PyPI' AND ` + foldedNameEq + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))
+    UNION ALL
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND cap.ecosystem = ANY(?)
+) OR cves.in_cisa_kev = ?)`
+	if sql != want {
+		t.Errorf("SQL:\n%s\nwant:\n%s", sql, want)
+	}
+	if len(args) != 7 || args[0] != "high" || args[6] != true {
+		t.Fatalf("args = %v, want high, five arrays, true", args)
+	}
+	assertArrayArgs(t, args[1:6], []string{"CVE-1"}, []string{"lodash"}, []string{"lodash"}, []string{"CVE-1"}, []string{"npm"})
+
+	dollar, err := sq.Dollar.ReplacePlaceholders(sql)
+	if err != nil {
+		t.Fatalf("ReplacePlaceholders: %v", err)
+	}
+	// Placeholders run $1..$n, once each, in order, for n arguments.
+	marks := regexp.MustCompile(`\$(\d+)`).FindAllStringSubmatch(dollar, -1)
+	if len(marks) != len(args) {
+		t.Fatalf("%d placeholders for %d args:\n%s", len(marks), len(args), dollar)
+	}
+	for i, m := range marks {
+		if m[1] != strconv.Itoa(i+1) {
+			t.Errorf("placeholder %d is $%s, want $%d", i+1, m[1], i+1)
+		}
+	}
+}
+
+// TestCompile_OrCandidatesInEveryBranch checks the candidate line appears once in
+// every branch of the one CVE set when there are candidates, and never without.
+func TestCompile_OrCandidatesInEveryBranch(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[`+productEq("nodejs:node.js")+`,
+		{"field":"affected.package","operator":"contains","value":"log"},
+		{"field":"affected.ecosystem","operator":"in","value":["Debian"]},
+		{"field":"cvss_v3_score","operator":"gte","value":9}]}`, nil)
+	sql, _ := whereOf(t, c, nil)
+	for _, line := range []string{nvdCandidate, cnaCandidate, candidateLine} {
+		assertCount(t, sql, line, 0)
+	}
+	ids := []string{"CVE-1", "CVE-2"}
+	sql, args := whereOf(t, c, ids)
+	assertCount(t, sql, cveSetHead, 1)
+	assertCount(t, sql, unionAll, 3)
+	assertCount(t, sql, nvdCandidate, 1)
+	assertCount(t, sql, cnaCandidate, 1)
+	assertCount(t, sql, candidateLine, 2)
+	n := 0
+	for _, a := range args {
+		if arr, ok := a.(*pq.StringArray); ok && reflect.DeepEqual(*arr, pq.StringArray(ids)) {
+			n++
+		}
+	}
+	if n != 4 {
+		t.Errorf("candidate arrays = %d, want 4 (one per branch)", n)
+	}
+}
+
+// TestCompile_OrWhereIsDeterministic checks Where returns the same SQL and
+// arguments on every call, with and without candidates in between: the shared
+// compiled rule is never changed by building its SQL.
+func TestCompile_OrWhereIsDeterministic(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[`+productEq("microsoft:.net")+`,
+		{"field":"affected.package","operator":"in","value":["a","b"]},
+		{"field":"affected.ecosystem","operator":"eq","value":"npm"},
+		{"field":"severity","operator":"eq","value":"low"}]}`, nil)
+	sql1, args1 := whereOf(t, c, nil)
+	whereOf(t, c, []string{"CVE-9"})
+	sql2, args2 := whereOf(t, c, nil)
+	if sql1 != sql2 || !reflect.DeepEqual(args1, args2) {
+		t.Errorf("Where changed between calls:\n%s\n%v\nthen\n%s\n%v", sql1, args1, sql2, args2)
+	}
+	with1, wargs1 := whereOf(t, c, []string{"CVE-9"})
+	with2, wargs2 := whereOf(t, c, []string{"CVE-9"})
+	if with1 != with2 || !reflect.DeepEqual(wargs1, wargs2) {
+		t.Errorf("Where with candidates changed between calls")
 	}
 }

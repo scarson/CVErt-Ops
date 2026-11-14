@@ -48,31 +48,63 @@ type CompiledRule struct {
 	HasWatchlist bool         // compiled SQL includes watchlist subquery (needs RLS bypass)
 }
 
-// predicate builds one compiled condition's SQL. candidateIDs limits a CVE-set
-// condition to those IDs; nil or empty means the whole corpus. A predicate is a
-// pure closure over values computed in Compile and must not mutate them.
-type predicate func(candidateIDs []string) sq.Sqlizer
+// predicate is one compiled condition: a scalar condition on the cves row, or a
+// CVE-ID set given as its SELECT branches. Exactly one of scalar and branches is
+// set. branches limits each branch to candidateIDs; nil or empty means the whole
+// corpus. branches is a pure closure over values computed in Compile and must
+// not mutate them.
+type predicate struct {
+	scalar   sq.Sqlizer
+	branches func(candidateIDs []string) []sqlPart
+}
 
 // Where returns the rule's WHERE predicate (no FROM, no LIMIT): its conditions
 // combined by Logic, and the watchlist pre-filter ANDed on when the rule has one.
 // It returns nil for a rule with neither. A set condition repeats candidateIDs
 // inside each of its branches (pitfall DB-27); callers that have candidate IDs
 // also filter cves.cve_id on them themselves.
+//
+// Under "and" each set condition is its own cves.cve_id IN predicate, which
+// PostgreSQL plans as a semi-join. Under "or" the branches of every set condition
+// form one IN predicate, placed where the first set condition is: PostgreSQL
+// cannot turn OR-ed IN subqueries into semi-joins and builds each as a hashed
+// SubPlan over its whole set, which one IN over a UNION ALL avoids.
 func (c *CompiledRule) Where(candidateIDs []string) sq.Sqlizer {
 	if len(c.predicates) == 0 {
 		// All conditions are regex PostFilters; Compile requires a watchlist then.
 		return c.watchlist
 	}
-	parts := make([]sq.Sqlizer, len(c.predicates))
-	for i, p := range c.predicates {
-		parts[i] = p(candidateIDs)
-	}
 	// Compile refuses any logic other than and/or.
 	if c.Logic == LogicOr {
+		parts := make([]sq.Sqlizer, 0, len(c.predicates))
+		setAt := -1
+		var branches []sqlPart
+		for _, p := range c.predicates {
+			if p.branches == nil {
+				parts = append(parts, p.scalar)
+				continue
+			}
+			if setAt < 0 {
+				setAt = len(parts)
+				parts = append(parts, nil)
+			}
+			branches = append(branches, p.branches(candidateIDs)...)
+		}
+		if setAt >= 0 {
+			parts[setAt] = cveSet(branches)
+		}
 		if c.watchlist != nil {
 			return sq.And{sq.Or(parts), c.watchlist}
 		}
 		return sq.Or(parts)
+	}
+	parts := make([]sq.Sqlizer, len(c.predicates))
+	for i, p := range c.predicates {
+		if p.branches == nil {
+			parts[i] = p.scalar
+			continue
+		}
+		parts[i] = cveSet(p.branches(candidateIDs))
 	}
 	if c.watchlist != nil {
 		return append(sq.And(parts), c.watchlist)

@@ -58,14 +58,14 @@ func correlationFor(r Rule) (packageCorrelation, error) {
 }
 
 // affectedPredicate compiles an affected.ecosystem or affected.package condition.
-// It returns a nil predicate for an eq/in ecosystem condition that corr folds
-// into the rule's package sets.
-func affectedPredicate(c Condition, corr packageCorrelation) (predicate, error) {
+// It returns ok false for an eq/in ecosystem condition that corr folds into the
+// rule's package sets.
+func affectedPredicate(c Condition, corr packageCorrelation) (p predicate, ok bool, err error) {
 	switch c.Field {
 	case "affected.ecosystem":
 		vals, err := conditionValues(c)
 		if err != nil {
-			return nil, err
+			return predicate{}, false, err
 		}
 		line := ecosystemLine(vals)
 		switch c.Op {
@@ -78,33 +78,55 @@ func affectedPredicate(c Condition, corr packageCorrelation) (predicate, error) 
     WHERE cap.cve_id = cves.cve_id
       AND `+line.sql+`
 )`, line.args...)
-			return func(_ []string) sq.Sqlizer { return notExists }, nil
+			return predicate{scalar: notExists}, true, nil
 		case "eq", "in":
 			if corr.active {
-				return nil, nil
+				return predicate{}, false, nil
 			}
 			lines := []sqlPart{line}
-			return func(candidateIDs []string) sq.Sqlizer { return packageSet(candidateIDs, lines) }, nil
+			return predicate{branches: func(candidateIDs []string) []sqlPart {
+				return []sqlPart{packageBranch(candidateIDs, lines)}
+			}}, true, nil
 		default:
-			return nil, fmt.Errorf("unsupported ecosystem op %q", c.Op)
+			return predicate{}, false, fmt.Errorf("unsupported ecosystem op %q", c.Op)
 		}
 	case "affected.package":
 		match, err := packageMatch(c, corr)
 		if err != nil {
-			return nil, err
+			return predicate{}, false, err
 		}
 		lines := append(slices.Clone(corr.lines), match)
-		return func(candidateIDs []string) sq.Sqlizer { return packageSet(candidateIDs, lines) }, nil
+		return predicate{branches: func(candidateIDs []string) []sqlPart {
+			return []sqlPart{packageBranch(candidateIDs, lines)}
+		}}, true, nil
 	default:
-		return nil, fmt.Errorf("unknown affected field %q", c.Field)
+		return predicate{}, false, fmt.Errorf("unknown affected field %q", c.Field)
 	}
 }
 
-// packageSet is the set of CVE IDs with one cve_affected_packages row that meets
-// every line. With candidate IDs, the set reads only their rows. It reads lines
+// cveSet is the predicate that cves.cve_id is in the union of branches, each a
+// SELECT of one cve_id column. It never changes branches or their args. With no
+// branches it is FALSE.
+func cveSet(branches []sqlPart) sq.Sqlizer {
+	if len(branches) == 0 {
+		return sq.Expr("FALSE")
+	}
+	sqls := make([]string, 0, len(branches))
+	var args []any
+	for _, b := range branches {
+		sqls = append(sqls, b.sql)
+		args = append(args, b.args...)
+	}
+	return sq.Expr(`cves.cve_id IN (
+    `+strings.Join(sqls, "\n    UNION ALL\n    ")+`
+)`, args...)
+}
+
+// packageBranch selects the IDs of CVEs with one cve_affected_packages row that
+// meets every line. With candidate IDs, it reads only their rows. It reads lines
 // and candidateIDs and never changes them, because the compiled rule that holds
 // lines is shared across goroutines.
-func packageSet(candidateIDs []string, lines []sqlPart) sq.Sqlizer {
+func packageBranch(candidateIDs []string, lines []sqlPart) sqlPart {
 	conds := make([]string, 0, len(lines)+1)
 	args := make([]any, 0, len(lines)+2)
 	if len(candidateIDs) > 0 {
@@ -115,10 +137,10 @@ func packageSet(candidateIDs []string, lines []sqlPart) sq.Sqlizer {
 		conds = append(conds, l.sql)
 		args = append(args, l.args...)
 	}
-	return sq.Expr(`cves.cve_id IN (
-    SELECT cap.cve_id FROM cve_affected_packages cap
-    WHERE `+strings.Join(conds, "\n      AND ")+`
-)`, args...)
+	return sqlPart{
+		sql:  "SELECT cap.cve_id FROM cve_affected_packages cap\n    WHERE " + strings.Join(conds, "\n      AND "),
+		args: args,
+	}
 }
 
 // ecosystemLine matches a stored ecosystem that equals one of vals, compared
@@ -225,6 +247,12 @@ func ProductSetSQL(values []check.ProductRef, candidateIDs []string) sq.Sqlizer 
 	if len(values) == 0 {
 		return sq.Expr("FALSE")
 	}
+	return cveSet(productBranches(values, candidateIDs))
+}
+
+// productBranches are ProductSetSQL's two SELECT branches, NVD then CNA, for a
+// rule that combines them with other sets. values must not be empty.
+func productBranches(values []check.ProductRef, candidateIDs []string) []sqlPart {
 	nvd := []sqlPart{{sql: "m.vulnerable"}}
 	var cna []sqlPart
 	if len(candidateIDs) > 0 {
@@ -240,13 +268,10 @@ func ProductSetSQL(values []check.ProductRef, candidateIDs []string) sq.Sqlizer 
 
 	nvdWhere, nvdArgs := allOf(nvd)
 	cnaWhere, cnaArgs := allOf(cna)
-	return sq.Expr(`cves.cve_id IN (
-    SELECT m.cve_id FROM cve_cpe_matches m
-    WHERE `+nvdWhere+`
-    UNION ALL
-    SELECT a.cve_id FROM cve_cna_affected a
-    WHERE `+cnaWhere+`
-)`, append(nvdArgs, cnaArgs...)...)
+	return []sqlPart{
+		{sql: "SELECT m.cve_id FROM cve_cpe_matches m\n    WHERE " + nvdWhere, args: nvdArgs},
+		{sql: "SELECT a.cve_id FROM cve_cna_affected a\n    WHERE " + cnaWhere, args: cnaArgs},
+	}
 }
 
 // cpeRanges returns one range term per CPE spelling of each value and per part,

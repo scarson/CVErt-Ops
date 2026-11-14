@@ -678,7 +678,7 @@ func TestKeptIngestMergedForms(t *testing.T) {
 		m.first, m.warm = measure(ctx, t, db, q, args, settings...)
 		rows = append(rows, m)
 	}
-	jitOff := "SET LOCAL jit = off"
+	jitOff := candidateJITOff
 	for _, jit := range []struct {
 		suffix   string
 		settings []string

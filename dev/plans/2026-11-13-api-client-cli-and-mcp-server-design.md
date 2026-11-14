@@ -17,7 +17,7 @@ The requirements come from the private homelab integration requirements (section
 
 Requirement IDs in this document (CLI-1, MCP-1, AUTH-3 and the like) are the private requirements' labels. Several collide with entries in `dev/implementation-pitfalls.md` that mean something else, so the document writes "requirement AUTH-3" for a requirement and "implementation pitfall NOTIFY-20" for a pitfall.
 
-**Not in scope:** scoped API keys (requirement AUTH-3; a viewer-role key is how an agent is made read-only for now), MCP resources and prompts (requirement MCP-2), the MCP authorization profile based on OAuth 2.1 (section 7.10), rule creation or editing from either client, key rotation (requirement AUTH-6), private advisories (requirement INV-3), and a non-interactive bootstrap command (requirement OPS-2).
+**Not in scope:** scoped API keys (requirement AUTH-3; a viewer-role key is how an agent is made read-only for now), MCP resources and prompts (requirement MCP-2), the MCP authorization profile based on OAuth 2.1 (section 7.10), rule creation or editing from either client, key rotation (requirement AUTH-6), private advisories (requirement INV-3), and a non-interactive bootstrap command (requirement OPS-2), and the MCP Events extension (tracked in section 7.4).
 
 **Depends on other work.** Three API changes from a parallel session, all on `dev`: `GET /api/v1/whoami` (requirement AUTH-5, pull request 232), `expand=cve,rule` on alert events (requirement FEED-2, pull request 233), and the ascending alert-event feed with an `after` cursor (requirement FEED-1, pull request 234). Section 10 records what this design uses from each.
 
@@ -345,6 +345,13 @@ Read tools are always offered. A write tool is offered only when both hold: the 
 `list_watchlists` and `list_watchlist_items` are not in the requirement's list. Without them an agent cannot find the IDs that the write tools take, or see which components the org watches, which the requirement's orientation use case asks for. Replacing a whole watchlist is CLI-only: one wrong call could empty a list of 10,000 items, and a scanner script, not an agent, is its caller.
 
 Write tools are named one by one rather than switched on together, so a write tool a later release adds is not offered until someone names it. This answers the requirement's "a server flag enables them per deployment" over HTTP, where the deployment is the server; whether the list form or a single switch is wanted is a decision for Sam (section 12).
+
+**Tracked, not built: the MCP Events extension.** [SEP-3415](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3415), "Events Extension", gives agents a standard way to list event streams and receive their events. On 2026-11-14 its pull request was open and labelled `accepted`, with final wording and a reference implementation still to come. It defines `events/list` and three optional delivery modes:
+- **Poll** (`events/poll`): the client passes an opaque cursor and the server keeps no state per client. It fits the stateless server of section 7.2 and could be served from the same feed as `list_alert_events`, so `list_alert_events` keeps its cursor opaque and forward-only.
+- **Stream** (`events/stream`): one SSE response per request. It conflicts with answering every request with one JSON object (section 7.2) and holds a connection open per agent.
+- **Webhook** (`events/subscribe`): the server stores each subscription with its callback URL, secret and expiry, and must check the callback for SSRF at delivery. That is new durable state, and it duplicates the notification channels (PLAN.md §11).
+
+Poll mode is added when the SEP merges in its final form and the MCP SDK (section 4.1) implements it. Webhook mode is considered only if agents subscribe through it and a user needs updates faster than a polling interval without configuring a channel. Drasi, a CNCF sandbox project that turns database changes into agent events and has an MCP integration, was evaluated on 2026-11-14 and is not used. It reads PostgreSQL through logical replication, which gives its role every org's rows outside both tenant-isolation layers, and its MCP output has no authentication or per-client filtering.
 
 ### 7.5 Input schemas
 

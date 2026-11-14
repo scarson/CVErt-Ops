@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -76,11 +75,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		}
 
 		if c.Op == "regex" {
-			var pattern string
-			if err := decodeScalar(c.Value, &pattern); err != nil {
-				return nil, fmt.Errorf("compile: regex value: %w", err)
-			}
-			re, err := regexp.Compile(pattern)
+			re, err := compileRegex(c.Value)
 			if err != nil {
 				return nil, fmt.Errorf("compile: regex compile: %w", err)
 			}

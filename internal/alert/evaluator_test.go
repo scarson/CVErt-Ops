@@ -463,6 +463,50 @@ func TestEvaluatorRealtime(t *testing.T) {
 		}
 	})
 
+	// A regex matches regardless of case (PLAN.md §10.2), so a pattern written
+	// with an upper-case literal matches a description in any case.
+	t.Run("RegexUpperCaseLiteral", func(t *testing.T) {
+		cveID := "CVE-RT-REGEX-003"
+		score := 8.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "apache http server vulnerability", &score, "hashregex3")
+
+		const regexConds = `[
+			{"field":"cvss_v3_score","operator":"gte","value":7.0},
+			{"field":"description_primary","operator":"regex","value":"Apache HTTP"}
+		]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", regexConds, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+			t.Fatalf("EvaluateRealtime: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for an upper-case regex literal, got %d", n)
+		}
+	})
+
+	// A pattern that turns case-insensitivity off matches the description as
+	// stored, so the description must not be lower-cased before matching.
+	t.Run("RegexPatternFlagsCaseSensitive", func(t *testing.T) {
+		cveID := "CVE-RT-REGEX-004"
+		score := 8.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "Apache HTTP server vulnerability", &score, "hashregex4")
+
+		const regexConds = `[
+			{"field":"cvss_v3_score","operator":"gte","value":7.0},
+			{"field":"description_primary","operator":"regex","value":"(?-i)apache"}
+		]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", regexConds, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+			t.Fatalf("EvaluateRealtime: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 0 {
+			t.Fatalf("want 0 alert_events for a case-sensitive pattern of another case, got %d", n)
+		}
+	})
+
 	t.Run("RejectedCVE", func(t *testing.T) {
 		cveID := "CVE-RT-REJECTED-001"
 		score := 9.5

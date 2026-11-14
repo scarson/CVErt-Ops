@@ -109,15 +109,6 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 
 		if c.Op == "regex" {
 			hasRegex = true
-			var pattern string
-			if err := json.Unmarshal(c.Value, &pattern); err == nil && len(pattern) > 256 {
-				errs = append(errs, ValidationError{
-					Index:    i,
-					Field:    c.Field,
-					Message:  "regex pattern must not exceed 256 characters",
-					Severity: "error",
-				})
-			}
 		}
 
 		if c.Op == "contains" {
@@ -165,6 +156,15 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 	var errs []ValidationError
 	add := func(msg string) {
 		errs = append(errs, ValidationError{Index: idx, Field: c.Field, Message: msg, Severity: "error"})
+	}
+
+	// Every field that takes regex (cve_id, description_primary) checks its
+	// pattern as Compile compiles it.
+	if c.Op == "regex" {
+		if _, err := compileRegex(c.Value); err != nil {
+			add(err.Error())
+		}
+		return errs
 	}
 
 	switch spec.kind {
@@ -220,18 +220,9 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 		}
 
 	case kindText:
-		if c.Op == "regex" {
-			var pattern string
-			if err := decodeScalar(c.Value, &pattern); err != nil {
-				add(fmt.Sprintf("regex value must be a JSON string: %v", err))
-			} else if _, err := regexp.Compile(pattern); err != nil {
-				add(fmt.Sprintf("invalid regex: %v", err))
-			}
-		} else {
-			var v string
-			if err := decodeScalar(c.Value, &v); err != nil {
-				add(fmt.Sprintf("value must be a JSON string: %v", err))
-			}
+		var v string
+		if err := decodeScalar(c.Value, &v); err != nil {
+			add(fmt.Sprintf("value must be a JSON string: %v", err))
 		}
 
 	case kindFTS:
@@ -529,6 +520,33 @@ func decodeScalar(raw json.RawMessage, v any) error {
 		return errors.New("null is not allowed")
 	}
 	return json.Unmarshal(raw, v)
+}
+
+// maxRegexLength bounds a regex pattern as the rule writes it (PLAN.md §10.2).
+const maxRegexLength = 256
+
+// compileRegex reads a regex condition's pattern and compiles it to match
+// regardless of case, as PLAN.md §10.2 requires. "(?i)" goes before the
+// pattern, so flags the pattern sets itself, such as "(?-i)", override it.
+// The pattern is first compiled as written, so an error quotes only what the
+// rule wrote. Validate and Compile both call it, so they accept the same
+// patterns.
+func compileRegex(raw json.RawMessage) (*regexp.Regexp, error) {
+	var pattern string
+	if err := decodeScalar(raw, &pattern); err != nil {
+		return nil, fmt.Errorf("regex value must be a JSON string: %w", err)
+	}
+	if len(pattern) > maxRegexLength {
+		return nil, errors.New("regex pattern must not exceed 256 characters")
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return re, nil
 }
 
 func containsStr(slice []string, s string) bool {

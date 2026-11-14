@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
@@ -22,6 +23,7 @@ var selectiveFields = map[string]bool{
 	"date_modified_source_max": true,
 	"affected.ecosystem":       true,
 	"affected.package":         true,
+	"affected.cpe_product":     true,
 	"fts_query":                true,
 }
 
@@ -29,11 +31,23 @@ var selectiveFields = map[string]bool{
 // candidate IDs one statement carries (design section 3.2).
 const maxConditions = 100
 
+// maxProducts bounds a rule's affected.cpe_product values, each of which adds
+// its own OR terms and bind parameters (design section 3.2). Values are counted
+// per condition after normalisation and de-duplication, and the counts summed:
+// each condition compiles to its own set with its own parameters, so the same
+// product in two conditions counts twice.
+const maxProducts = 50
+
 // Messages that Validate and Compile share, verbatim from design section 8.
 const (
 	msgTooManyConditions = "a rule may hold at most 100 conditions"
+	msgTooManyProducts   = "a rule may name at most 50 products in total"
 	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
 	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
+	msgEmptyList         = "value must list at least one item"
+	// The value and names are printable ASCII (check.ParseProductValue), so they
+	// are quoted as written rather than with %q, which would double a backslash.
+	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor "%s" and product "%s"`
 )
 
 // Validate performs semantic validation of a Rule. All errors are collected and returned together
@@ -120,6 +134,7 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 	}
 
 	errs = append(errs, validatePackageCorrelation(r)...)
+	errs = append(errs, validateProducts(r)...)
 
 	if len(r.Conditions) > maxConditions {
 		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyConditions, Severity: "error"})
@@ -231,7 +246,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			// Existing fields keep accepting an empty in; a package list must name a package.
 			if c.Field == "affected.package" {
 				if len(vals) == 0 {
-					add("value must list at least one item")
+					add(msgEmptyList)
 				} else if slices.ContainsFunc(vals, isBlank) {
 					add("value must not be empty")
 				}
@@ -249,6 +264,91 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 				add("value must not be empty")
 			}
 		}
+
+	case kindProduct:
+		if c.Op == "in" {
+			var vals []string
+			if err := json.Unmarshal(c.Value, &vals); err != nil {
+				add(fmt.Sprintf("value must be a JSON array of strings: %v", err))
+				return errs
+			}
+			if len(vals) == 0 {
+				add(msgEmptyList)
+				return errs
+			}
+		} else {
+			var v string
+			if err := json.Unmarshal(c.Value, &v); err != nil {
+				add(fmt.Sprintf("value must be a JSON string: %v", err))
+				return errs
+			}
+		}
+		// The value's JSON parsed above, so productValues returns no error.
+		_, refused, _ := productValues(c)
+		for _, e := range refused {
+			add(e.Error())
+		}
+	}
+	return errs
+}
+
+// productValues reads an affected.cpe_product condition's value, eq's string or
+// in's list. It returns the values check.ParseProductValue accepts, normalised
+// and without duplicates, in first-seen order, and the parser's error for each
+// value it refuses. Validate and Compile both count a condition's products as
+// len(refs), so they apply the same limit.
+func productValues(c Condition) (refs []check.ProductRef, refused []error, err error) {
+	raw, err := conditionValues(c)
+	if err != nil {
+		return nil, nil, err
+	}
+	seen := make(map[check.ProductRef]bool, len(raw))
+	for _, v := range raw {
+		p, perr := check.ParseProductValue(v)
+		if perr != nil {
+			refused = append(refused, perr)
+			continue
+		}
+		if !seen[p] {
+			seen[p] = true
+			refs = append(refs, p)
+		}
+	}
+	return refs, refused, nil
+}
+
+// validateProducts applies the rule-level product checks: the 50-product limit
+// (maxProducts) and a warning for each product the name table does not map,
+// which before NVD's analysis matches only a CNA record that spells it as the
+// CPE does. Value errors are validateValue's; a value that fails to parse is not
+// counted.
+func validateProducts(r Rule) []ValidationError {
+	var errs []ValidationError
+	total := 0
+	for i, c := range r.Conditions {
+		if c.Field != "affected.cpe_product" || (c.Op != "eq" && c.Op != "in") {
+			continue
+		}
+		refs, _, err := productValues(c)
+		if err != nil {
+			continue // reported by validateValue
+		}
+		total += len(refs)
+		for _, p := range refs {
+			names, _, mapped := check.NamesFor(p)
+			if mapped {
+				continue
+			}
+			errs = append(errs, ValidationError{
+				Index:    i,
+				Field:    c.Field,
+				Message:  fmt.Sprintf(msgUnmappedProduct, p.Vendor+":"+p.Product, names[0].Vendor, names[0].Product),
+				Severity: "warning",
+			})
+		}
+	}
+	if total > maxProducts {
+		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyProducts, Severity: "error"})
 	}
 	return errs
 }

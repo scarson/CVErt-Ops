@@ -1729,7 +1729,7 @@ func TestExportFieldDescriptions(t *testing.T) {
 		"cve_id", "severity", "cvss_v3_score", "cvss_v4_score", "epss_score",
 		"date_published", "date_modified_source_max", "cwe_ids",
 		"in_cisa_kev", "exploit_available", "affected.ecosystem",
-		"affected.package", "description_primary", "fts_query",
+		"affected.package", "affected.cpe_product", "description_primary", "fts_query",
 	}
 	for _, name := range expectedFields {
 		if _, ok := byName[name]; !ok {
@@ -1739,15 +1739,16 @@ func TestExportFieldDescriptions(t *testing.T) {
 
 	// Check type descriptions
 	typeChecks := map[string]string{
-		"cvss_v3_score":       "number",
-		"date_published":      "datetime (RFC 3339)",
-		"in_cisa_kev":         "boolean",
-		"cve_id":              "string",
-		"severity":            "enum",
-		"cwe_ids":             "string array",
-		"description_primary": "text",
-		"affected.ecosystem":  "affected product",
-		"fts_query":           "full-text search",
+		"cvss_v3_score":        "number",
+		"date_published":       "datetime (RFC 3339)",
+		"in_cisa_kev":          "boolean",
+		"cve_id":               "string",
+		"severity":             "enum",
+		"cwe_ids":              "string array",
+		"description_primary":  "text",
+		"affected.ecosystem":   "affected product",
+		"affected.cpe_product": "CPE vendor:product",
+		"fts_query":            "full-text search",
 	}
 	for name, wantType := range typeChecks {
 		if got := byName[name].TypeDesc; got != wantType {
@@ -2184,5 +2185,213 @@ func TestValidate_PackageMatchWithoutEcosystemWarns(t *testing.T) {
 				t.Errorf("%s: unexpected error %+v", tt.name, e)
 			}
 		}
+	}
+}
+
+// ─── affected.cpe_product validation (design sections 3 and 8) ──────────────
+
+const (
+	msgProductNotPair    = `value must be "vendor:product", the vendor and product of a CPE 2.3 name, for example "nodejs:node.js"`
+	msgProductNotLiteral = `vendor and product must be literal names, not "*", "-" or a pattern with "*" or "?"`
+	msgProductBackslash  = "vendor and product must not end in an unescaped backslash"
+	msgProductNotASCII   = "value must be printable ASCII with no spaces, as a CPE 2.3 name is"
+	msgProductTooLong    = "value must not exceed 255 characters"
+	msgTooManyProducts   = "a rule may name at most 50 products in total"
+)
+
+// productCond is an affected.cpe_product condition; value is raw JSON.
+func productCond(op, value string) string {
+	return `{"field":"affected.cpe_product","operator":"` + op + `","value":` + value + `}`
+}
+
+// productInCond is an affected.cpe_product in condition listing vals.
+func productInCond(t *testing.T, vals []string) string {
+	t.Helper()
+	b, err := json.Marshal(vals)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return productCond("in", string(b))
+}
+
+// distinctProducts returns n distinct product values with no name table row.
+func distinctProducts(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("vendor%d:product%d", i, i)
+	}
+	return out
+}
+
+// blockingErrors returns the entries of errs with severity error.
+func blockingErrors(errs []dsl.ValidationError) []dsl.ValidationError {
+	var out []dsl.ValidationError
+	for _, e := range errs {
+		if e.Severity == "error" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestValidate_ProductValueErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, op, value, msg string
+	}{
+		{"no colon", "eq", `"nodejs"`, msgProductNotPair},
+		{"empty product", "eq", `"nodejs:"`, msgProductNotPair},
+		{"empty vendor", "eq", `":node.js"`, msgProductNotPair},
+		{"three components", "eq", `"nodejs:node.js:24"`, msgProductNotPair},
+		{"vendor is *", "eq", `"*:node.js"`, msgProductNotLiteral},
+		{"product is -", "eq", `"nodejs:-"`, msgProductNotLiteral},
+		{"unescaped *", "eq", `"nodejs:node*"`, msgProductNotLiteral},
+		{"unescaped ?", "eq", `"nodejs:node?"`, msgProductNotLiteral},
+		{"trailing backslash", "eq", `"nodejs:node.js\\"`, msgProductBackslash},
+		{"unescaped +", "eq", `"notepad-plus-plus:notepad++"`, `character "+" must be escaped with a backslash, as NVD writes CPE names (for example "notepad\+\+")`},
+		{"a space", "eq", `"nodejs node.js"`, msgProductNotASCII},
+		{"256 characters", "eq", `"a:` + strings.Repeat("b", 254) + `"`, msgProductTooLong},
+		{"in holding a bad value", "in", `["nodejs:node.js","nodejs"]`, msgProductNotPair},
+		{"in with no values", "in", `[]`, msgEmptyList},
+		{"in null", "in", `null`, msgEmptyList},
+		{"eq with a number", "eq", `7`, "value must be a JSON string: "},
+		{"in with a string", "in", `"nodejs:node.js"`, "value must be a JSON array of strings: "},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productCond(tt.op, tt.value))), false)
+		if len(errs) != 1 || !strings.HasPrefix(errs[0].Message, tt.msg) || errs[0].Index != 0 ||
+			errs[0].Field != "affected.cpe_product" || errs[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one error %q at index 0", tt.name, errs, tt.msg)
+		}
+		// The prefix match is for the JSON decoder's text only.
+		if !strings.HasSuffix(tt.msg, ": ") && len(errs) == 1 && errs[0].Message != tt.msg {
+			t.Errorf("%s: message = %q, want %q", tt.name, errs[0].Message, tt.msg)
+		}
+	}
+}
+
+func TestValidate_ProductValidValues(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		`"nodejs:node.js"`,
+		`"NodeJS:Node.js"`,
+		`"nodejs:node\\.js"`,
+		`"1und1:1\\&1_online_storage"`,
+		`"a:` + strings.Repeat("b", 253) + `"`,
+	} {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productCond("eq", value))), false)
+		if blocking := blockingErrors(errs); len(blocking) != 0 {
+			t.Errorf("%s: unexpected errors %+v", value, blocking)
+		}
+	}
+}
+
+func TestValidate_ProductOperators(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"neq", "not_in", "contains", "starts_with", "ends_with", "regex"} {
+		value := `"nodejs:node.js"`
+		if op == "not_in" {
+			value = `["nodejs:node.js"]`
+		}
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productCond(op, value))), false)
+		want := fmt.Sprintf("operator %q is not valid for field %q", op, "affected.cpe_product")
+		if len(errs) != 1 || errs[0].Message != want || errs[0].Index != 0 || errs[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one error %q", op, errs, want)
+		}
+	}
+}
+
+func TestValidate_ProductUnmappedWarning(t *testing.T) {
+	t.Parallel()
+	severity := `{"field":"severity","operator":"eq","value":"high"}`
+	tests := []struct {
+		name string
+		cond string
+		want []string // warning messages at index 1, in order
+	}{
+		{"unmapped", productCond("eq", `"example:widget"`),
+			[]string{`no other CNA spelling is known for "example:widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "example" and product "widget"`}},
+		{"unmapped in another case, listed twice", productCond("in", `["Example:Widget","example:widget"]`),
+			[]string{`no other CNA spelling is known for "example:widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "example" and product "widget"`}},
+		{"underscore read as a space and escapes dropped", productCond("eq", `"acme_corp:big\\&small_widget"`),
+			[]string{`no other CNA spelling is known for "acme_corp:big\&small_widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "acme corp" and product "big&small widget"`}},
+		{"mapped", productCond("eq", `"nodejs:node.js"`), nil},
+		{"second spelling of a mapped row", productCond("eq", `"nodejs:nodejs"`), nil},
+		{"one unmapped value in a list", productCond("in", `["nodejs:node.js","example:widget"]`),
+			[]string{`no other CNA spelling is known for "example:widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "example" and product "widget"`}},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", severity, tt.cond)), false)
+		var got []string
+		for _, e := range errs {
+			if e.Severity != "warning" || e.Index != 1 || e.Field != "affected.cpe_product" {
+				t.Errorf("%s: unexpected entry %+v", tt.name, e)
+				continue
+			}
+			got = append(got, e.Message)
+		}
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: warnings = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestValidate_ProductLimit checks the 50-product limit: values are de-duplicated
+// after normalisation within a condition and summed across conditions, so the same
+// product in two conditions counts twice.
+func TestValidate_ProductLimit(t *testing.T) {
+	t.Parallel()
+	vals := distinctProducts(51)
+	node := productCond("eq", `"nodejs:node.js"`)
+	repeat := func(cond string, n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = cond
+		}
+		return out
+	}
+	tests := []struct {
+		name    string
+		conds   []string
+		refused bool
+	}{
+		{"50 values over several conditions", []string{
+			productInCond(t, vals[:10]), productInCond(t, vals[10:30]), productCond("eq", `"`+vals[30]+`"`), productInCond(t, vals[31:50]),
+		}, false},
+		{"51 values over several conditions", []string{
+			productInCond(t, vals[:10]), productInCond(t, vals[10:30]), productCond("eq", `"`+vals[30]+`"`), productInCond(t, vals[31:51]),
+		}, true},
+		{"duplicates after normalisation in one condition count once", []string{
+			productInCond(t, vals[:49]), productInCond(t, []string{"NodeJS:Node.js", `nodejs:node\.js`, "nodejs:node.js"}),
+		}, false},
+		{"the same product in two conditions counts twice", append([]string{productInCond(t, vals[:49])}, node, node), true},
+		{"48 values and the same product in two conditions", append([]string{productInCond(t, vals[:48])}, node, node), false},
+		{"100 conditions each listing the same 50 products", repeat(productInCond(t, vals[:50]), 100), true},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON("and", tt.conds...))
+		errs, _, _ := dsl.Validate(r, false)
+		blocking := blockingErrors(errs)
+		if !tt.refused {
+			if len(blocking) != 0 {
+				t.Errorf("%s: unexpected errors %+v", tt.name, blocking)
+			}
+			continue
+		}
+		if len(blocking) != 1 || blocking[0].Message != msgTooManyProducts || blocking[0].Index != -1 {
+			t.Errorf("%s: errors = %+v, want one rule-level %q", tt.name, blocking, msgTooManyProducts)
+		}
+	}
+}
+
+// TestValidate_RegexRuleWithProductIsSelective checks a product condition lets a
+// regex rule pass without a watchlist.
+func TestValidate_RegexRuleWithProductIsSelective(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, ruleJSON("and",
+		`{"field":"description_primary","operator":"regex","value":"remote code"}`,
+		productCond("eq", `"nodejs:node.js"`)))
+	if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+		t.Errorf("unexpected entries %+v", errs)
 	}
 }

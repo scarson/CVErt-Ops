@@ -16,6 +16,7 @@ const (
 	kindText                      // contains/starts_with/ends_with/regex; string value
 	kindAffected                  // EXISTS subquery on cve_affected_packages
 	kindFTS                       // matches; websearch_to_tsquery
+	kindProduct                   // affected.cpe_product: eq/in; CPE vendor:product
 )
 
 type fieldSpec struct {
@@ -54,6 +55,7 @@ var fields = map[string]fieldSpec{
 	"exploit_available":        {kindBool, "cves.exploit_available", []string{"eq"}, false, nil},
 	"affected.ecosystem":       {kindAffected, "", setOps, false, ecosystemEnum},
 	"affected.package":         {kindAffected, "", packageOps, false, nil},
+	"affected.cpe_product":     {kindProduct, "", []string{"eq", "in"}, false, nil},
 	"description_primary":      {kindText, "cves.description_primary", textOps, false, nil},
 	"fts_query":                {kindFTS, "", ftsOps, false, nil},
 }
@@ -97,6 +99,8 @@ func ExportFieldDescriptions() []FieldDescription {
 			fd.EnumValues = spec.enumValues
 		case kindFTS:
 			fd.TypeDesc = "full-text search"
+		case kindProduct:
+			fd.TypeDesc = "CPE vendor:product"
 		}
 		result = append(result, fd)
 	}

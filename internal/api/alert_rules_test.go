@@ -362,10 +362,11 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	}
 }
 
-// TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch verifies that create
-// and PATCH refuse an "and" rule whose correlated ecosystem conditions no ecosystem
-// satisfies together, with the same error list (testing-pitfalls §4).
-func TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch(t *testing.T) {
+// TestAlertRule_ValidationErrorsSameOnCreateAndPatch verifies that create and PATCH
+// refuse the same conditions with the same error list (testing-pitfalls §4): an
+// "and" rule whose correlated ecosystem conditions no ecosystem satisfies together,
+// a rule naming more than 50 products, and a malformed product value.
+func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
@@ -376,18 +377,12 @@ func TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch(t *testing.
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
-	const conditions = `[
-    {"field": "affected.ecosystem", "operator": "eq", "value": "npm"},
-    {"field": "affected.ecosystem", "operator": "eq", "value": "PyPI"},
-    {"field": "affected.package", "operator": "contains", "value": "lodash"}
-  ]`
-	const wantMessage = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
-
+	type problemError struct {
+		Message  string `json:"message"`
+		Location string `json:"location"`
+	}
 	type problem struct {
-		Errors []struct {
-			Message  string `json:"message"`
-			Location string `json:"location"`
-		} `json:"errors"`
+		Errors []problemError `json:"errors"`
 	}
 	decodeProblem := func(t *testing.T, resp *http.Response, what string) problem {
 		t.Helper()
@@ -401,16 +396,42 @@ func TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch(t *testing.
 		return p
 	}
 
-	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, `{
-  "name": "Never Matching Rule",
-  "logic": "and",
-  "conditions": `+conditions+`,
-  "watchlist_ids": []
-}`)
-	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
-	created := decodeProblem(t, createResp, "create")
-	if len(created.Errors) != 1 || created.Errors[0].Message != wantMessage || created.Errors[0].Location != "body.conditions" {
-		t.Fatalf("create errors = %+v, want one rule-level %q", created.Errors, wantMessage)
+	// The same mapped product in 51 one-value conditions counts 51 times and has
+	// no unmapped-product warning, so the rule-level error is the only entry.
+	nodeConds := make([]string, 51)
+	for i := range nodeConds {
+		nodeConds[i] = `{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs:node.js"}`
+	}
+	cases := []struct {
+		name       string
+		conditions string
+		want       []problemError
+	}{
+		{
+			name: "never matching ecosystems",
+			conditions: `[
+    {"field": "affected.ecosystem", "operator": "eq", "value": "npm"},
+    {"field": "affected.ecosystem", "operator": "eq", "value": "PyPI"},
+    {"field": "affected.package", "operator": "contains", "value": "lodash"}
+  ]`,
+			want: []problemError{{
+				Message:  `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`,
+				Location: "body.conditions",
+			}},
+		},
+		{
+			name:       "51 products",
+			conditions: "[" + strings.Join(nodeConds, ",") + "]",
+			want:       []problemError{{Message: "a rule may name at most 50 products in total", Location: "body.conditions"}},
+		},
+		{
+			name:       "malformed product value",
+			conditions: `[{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs node.js"}]`,
+			want: []problemError{{
+				Message:  "value must be printable ASCII with no spaces, as a CPE 2.3 name is",
+				Location: "body.conditions[0].affected.cpe_product",
+			}},
+		},
 	}
 
 	// Create a valid rule and make it active so a conditions change is allowed (activating → 409).
@@ -429,11 +450,25 @@ func TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch(t *testing.
 		t.Fatalf("set status to active: %v", err)
 	}
 
-	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"and","conditions":`+conditions+`}`)
-	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
-	patched := decodeProblem(t, patchResp, "patch")
-	if !reflect.DeepEqual(patched.Errors, created.Errors) {
-		t.Errorf("patch errors = %+v, want the create errors %+v", patched.Errors, created.Errors)
+	for _, tc := range cases {
+		createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, `{
+  "name": "Refused Rule",
+  "logic": "and",
+  "conditions": `+tc.conditions+`,
+  "watchlist_ids": []
+}`)
+		created := decodeProblem(t, createResp, tc.name+": create")
+		createResp.Body.Close() //nolint:errcheck,gosec // G104
+		if !reflect.DeepEqual(created.Errors, tc.want) {
+			t.Errorf("%s: create errors = %+v, want %+v", tc.name, created.Errors, tc.want)
+		}
+
+		patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"and","conditions":`+tc.conditions+`}`)
+		patched := decodeProblem(t, patchResp, tc.name+": patch")
+		patchResp.Body.Close() //nolint:errcheck,gosec // G104
+		if !reflect.DeepEqual(patched.Errors, created.Errors) {
+			t.Errorf("%s: patch errors = %+v, want the create errors %+v", tc.name, patched.Errors, created.Errors)
+		}
 	}
 }
 

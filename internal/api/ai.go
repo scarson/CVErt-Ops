@@ -68,8 +68,7 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body.
 	var req nlSearchRequest
-	if detail := decodeJSON(r, &req); detail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", detail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

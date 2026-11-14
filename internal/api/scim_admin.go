@@ -198,8 +198,7 @@ func (srv *Server) patchSCIMConfigHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	var req patchSCIMConfigBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -421,8 +420,7 @@ func (srv *Server) patchSCIMGroupMappingHandler(w http.ResponseWriter, r *http.R
 	}
 
 	var req patchSCIMGroupMappingBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

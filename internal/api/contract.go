@@ -6,7 +6,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
@@ -14,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 )
 
 // writeJSON writes v as JSON with the given status code.
@@ -96,17 +101,84 @@ func typedProblem(status int, problemType, detail string) error {
 	}
 }
 
-// decodeJSON decodes JSON from the request body into dst.
-// Returns a *huma.ErrorDetail on malformed JSON, nil on success.
+// decodeJSON decodes the request body into dst and reports whether it succeeded.
+// On failure it has already written the problem response: 422 for an object
+// member that dst does not define, which the published request schemas forbid
+// with additionalProperties false, and 400 for anything else that does not
+// decode into dst. Member names match case-sensitively, as in the schemas.
 // The caller is responsible for semantic validation after decode.
-func decodeJSON(r *http.Request, dst any) *huma.ErrorDetail {
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		return &huma.ErrorDetail{
-			Message:  fmt.Sprintf("invalid JSON: %s", err.Error()),
-			Location: "body",
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	body, err := io.ReadAll(r.Body)
+	if err == nil {
+		err = jsonv2.Unmarshal(withoutSchemaLink(body), dst, jsonv2.RejectUnknownMembers(true))
+	}
+	if err == nil {
+		return true
+	}
+	if semErr, ok := errors.AsType[*jsonv2.SemanticError](err); ok && errors.Is(semErr.Err, jsonv2.ErrUnknownName) {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", &huma.ErrorDetail{
+			Message:  validation.MsgUnexpectedProperty,
+			Location: bodyLocation(semErr.JSONPointer),
+		})
+		return false
+	}
+	writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", &huma.ErrorDetail{
+		Message:  fmt.Sprintf("invalid JSON: %s", err.Error()),
+		Location: "body",
+	})
+	return false
+}
+
+// withoutSchemaLink returns body without its top-level "$schema" member. huma
+// declares that member, read-only, on every published request schema so that
+// editors can find the schema; it carries no request data. A body that is not
+// a JSON object is returned unchanged for the decode to report.
+func withoutSchemaLink(body []byte) []byte {
+	var members map[string]jsontext.Value
+	if err := jsonv2.Unmarshal(body, &members); err != nil {
+		return body
+	}
+	if _, ok := members["$schema"]; !ok {
+		return body
+	}
+	delete(members, "$schema")
+	stripped, err := jsonv2.Marshal(members)
+	if err != nil {
+		return body
+	}
+	return stripped
+}
+
+// bodyLocation renders the JSON Pointer to an unknown member in the location
+// format huma uses for validation errors, such as body.items[1].name. The last
+// token is the member name; a numeric token before it is an array index,
+// because no request struct has numeric member names.
+func bodyLocation(ptr jsontext.Pointer) string {
+	var b strings.Builder
+	b.WriteString("body")
+	last := ptr.LastToken()
+	for tok := range ptr.Parent().Tokens() {
+		if isArrayIndex(tok) {
+			b.WriteString("[" + tok + "]")
+		} else {
+			b.WriteString("." + tok)
 		}
 	}
-	return nil
+	b.WriteString("." + last)
+	return b.String()
+}
+
+// isArrayIndex reports whether a JSON Pointer token is a base-10 array index.
+func isArrayIndex(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for _, c := range tok {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // clearableField is a PATCH request field that can be left unchanged, cleared

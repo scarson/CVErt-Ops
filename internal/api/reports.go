@@ -108,8 +108,7 @@ func (srv *Server) createReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createReportBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -245,8 +244,7 @@ func (srv *Server) patchReportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req patchReportBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

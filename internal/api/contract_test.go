@@ -156,26 +156,125 @@ func TestWriteProblemTyped_IncludesType(t *testing.T) {
 	}
 }
 
-func TestDecodeJSON_MalformedInput(t *testing.T) {
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader("{bad"))
-	detail := decodeJSON(r, &struct{}{})
-	if detail == nil {
-		t.Fatal("expected error detail for malformed JSON")
+// decodeTestBody stands in for a request body struct with a nested object and
+// an array of objects, the shapes whose unknown members need a nested location.
+type decodeTestBody struct {
+	Name  string `json:"name"`
+	Inner struct {
+		A int `json:"a"`
+	} `json:"inner"`
+	Items []struct {
+		ID string `json:"id"`
+	} `json:"items"`
+}
+
+// decodeProblem runs decodeJSON on body and returns its result, the response
+// status and the decoded problem body (zero when decodeJSON succeeded).
+func decodeProblem(t *testing.T, body string, dst any) (bool, int, huma.ErrorModel) {
+	t.Helper()
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	ok := decodeJSON(rec, r, dst)
+	var problem huma.ErrorModel
+	if !ok {
+		if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+			t.Errorf("Content-Type = %q, want application/problem+json", ct)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &problem); err != nil {
+			t.Fatalf("decode problem body %q: %v", rec.Body.String(), err)
+		}
 	}
-	if detail.Location != "body" {
-		t.Errorf("location = %q, want 'body'", detail.Location)
+	return ok, rec.Code, problem
+}
+
+func TestDecodeJSON_MalformedInput(t *testing.T) {
+	ok, status, problem := decodeProblem(t, "{bad", &struct{}{})
+	if ok {
+		t.Fatal("decodeJSON accepted malformed JSON")
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+	if len(problem.Errors) != 1 || problem.Errors[0].Location != "body" {
+		t.Errorf("errors = %+v, want one error at location body", problem.Errors)
+	}
+}
+
+// TestDecodeJSON_TrailingData verifies that a second JSON value after the body
+// is refused rather than ignored.
+func TestDecodeJSON_TrailingData(t *testing.T) {
+	var dst decodeTestBody
+	ok, status, _ := decodeProblem(t, `{"name":"test"} {"name":"other"}`, &dst)
+	if ok {
+		t.Fatal("decodeJSON accepted a body with a second JSON value")
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
 	}
 }
 
 func TestDecodeJSON_ValidInput(t *testing.T) {
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(`{"name":"test"}`))
-	var dst struct{ Name string `json:"name"` }
-	detail := decodeJSON(r, &dst)
-	if detail != nil {
-		t.Fatalf("unexpected error: %v", detail)
+	var dst decodeTestBody
+	ok, status, problem := decodeProblem(t, `{"name":"test","inner":{"a":1},"items":[{"id":"x"}]}`, &dst)
+	if !ok {
+		t.Fatalf("decodeJSON refused a valid body: %d %+v", status, problem)
+	}
+	if dst.Name != "test" || dst.Inner.A != 1 || len(dst.Items) != 1 || dst.Items[0].ID != "x" {
+		t.Errorf("decoded %+v", dst)
+	}
+}
+
+// TestDecodeJSON_UnknownMember verifies that a member the body struct does not
+// define is refused with the 422 problem huma writes for a schema with
+// additionalProperties false, located with huma's path format.
+func TestDecodeJSON_UnknownMember(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantLocation string
+	}{
+		{name: "misspelled top-level field", body: `{"nme":"test"}`, wantLocation: "body.nme"},
+		{name: "field name in another case", body: `{"Name":"test"}`, wantLocation: "body.Name"},
+		{name: "nested object member", body: `{"inner":{"b":1}}`, wantLocation: "body.inner.b"},
+		{name: "member of an array element", body: `{"items":[{"id":"x"},{"idd":"y"}]}`, wantLocation: "body.items[1].idd"},
+		{name: "numeric member name", body: `{"0":"x"}`, wantLocation: "body.0"},
+		{name: "schema link inside a nested object", body: `{"inner":{"$schema":"x"}}`, wantLocation: "body.inner.$schema"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dst decodeTestBody
+			ok, status, problem := decodeProblem(t, tt.body, &dst)
+			if ok {
+				t.Fatal("decodeJSON accepted a body with an unknown member")
+			}
+			if status != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want 422", status)
+			}
+			if problem.Detail != "validation failed" {
+				t.Errorf("detail = %q, want %q", problem.Detail, "validation failed")
+			}
+			if len(problem.Errors) != 1 {
+				t.Fatalf("errors = %+v, want exactly one", problem.Errors)
+			}
+			if got := problem.Errors[0]; got.Location != tt.wantLocation || got.Message != "unexpected property" {
+				t.Errorf("error = {message %q, location %q}, want {message %q, location %q}",
+					got.Message, got.Location, "unexpected property", tt.wantLocation)
+			}
+		})
+	}
+}
+
+// TestDecodeJSON_AcceptsSchemaLink verifies that the top-level "$schema" member,
+// which the published request schemas declare as a read-only property, is
+// accepted and ignored, as huma-registered operations do.
+func TestDecodeJSON_AcceptsSchemaLink(t *testing.T) {
+	var dst decodeTestBody
+	ok, status, problem := decodeProblem(t, `{"$schema":"https://example.com/schemas/Body.json","name":"test"}`, &dst)
+	if !ok {
+		t.Fatalf("decodeJSON refused a body with $schema: %d %+v", status, problem)
 	}
 	if dst.Name != "test" {
-		t.Errorf("name = %q, want 'test'", dst.Name)
+		t.Errorf("name = %q, want test", dst.Name)
 	}
 }
 
@@ -198,10 +297,9 @@ func TestClearableField_Decode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/", strings.NewReader(tt.input))
 			var dst body
-			if detail := decodeJSON(r, &dst); detail != nil {
-				t.Fatalf("unexpected error: %v", detail)
+			if ok, status, problem := decodeProblem(t, tt.input, &dst); !ok {
+				t.Fatalf("unexpected error: %d %+v", status, problem)
 			}
 			if dst.GroupID.Sent != tt.wantSent {
 				t.Errorf("Sent = %v, want %v", dst.GroupID.Sent, tt.wantSent)
@@ -219,12 +317,15 @@ func TestClearableField_Decode(t *testing.T) {
 // TestClearableField_DecodeWrongType verifies that a value of the wrong JSON
 // type is rejected rather than treated as null.
 func TestClearableField_DecodeWrongType(t *testing.T) {
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodPatch, "/", strings.NewReader(`{"group_id":42}`))
 	var dst struct {
 		GroupID clearableField[string] `json:"group_id,omitempty"`
 	}
-	if detail := decodeJSON(r, &dst); detail == nil {
-		t.Fatal("expected error detail for a number in a string field")
+	ok, status, _ := decodeProblem(t, `{"group_id":42}`, &dst)
+	if ok {
+		t.Fatal("decodeJSON accepted a number in a string field")
+	}
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
@@ -282,6 +283,58 @@ func TestLoginSuccess(t *testing.T) {
 	}
 	if cookieValue(resp, "refresh_token") == "" {
 		t.Error("refresh_token cookie not set")
+	}
+}
+
+// TestLoginUnknownFieldRefused verifies that a huma-registered operation refuses
+// a body member its schema does not define, with the same 422 problem that
+// decodeJSON writes for chi handlers, and accepts the read-only "$schema"
+// member its published schema declares.
+func TestLoginUnknownFieldRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	doRegister(t, ctx, ts, "loginextra@example.com", "test-password-1234")
+
+	postLogin := func(body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("login request: %v", err)
+		}
+		return resp
+	}
+
+	resp := postLogin(`{"email":"loginextra@example.com","password":"test-password-1234","remember_me":true}`)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown field: got %d, want 422", resp.StatusCode)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if problem.Detail != "validation failed" {
+		t.Errorf("detail = %q, want %q", problem.Detail, "validation failed")
+	}
+	found := false
+	for _, e := range problem.Errors {
+		if e.Location == "body.remember_me" && e.Message == "unexpected property" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("errors = %+v, want unexpected property at body.remember_me", problem.Errors)
+	}
+
+	schemaResp := postLogin(`{"$schema":"https://example.com/schemas/LoginInputBody.json","email":"loginextra@example.com","password":"test-password-1234"}`)
+	defer schemaResp.Body.Close() //nolint:errcheck,gosec // G104
+	if schemaResp.StatusCode != http.StatusOK {
+		t.Errorf("login with $schema: got %d, want 200", schemaResp.StatusCode)
 	}
 }
 

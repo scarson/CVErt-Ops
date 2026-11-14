@@ -16,17 +16,33 @@ import (
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
-// selectiveFields are non-regex fields that provide meaningful filtering,
-// used to determine whether a regex-only rule is allowed without watchlists.
-var selectiveFields = map[string]bool{
-	"severity":                 true,
-	"in_cisa_kev":              true,
-	"date_published":           true,
-	"date_modified_source_max": true,
-	"affected.ecosystem":       true,
-	"affected.package":         true,
-	"affected.cpe_product":     true,
-	"fts_query":                true,
+// narrowingOps lists, per field, the operators whose condition narrows the SQL
+// candidates a regex post-filter runs on (PLAN.md §10.2), so that a regex rule
+// with one needs no watchlist. Negative operators and an upper bound on a date
+// keep nearly every CVE, so they are not listed. in_cisa_kev narrows only with
+// the value true (narrowsCandidates).
+var narrowingOps = map[string][]string{
+	"severity":                 {"eq", "in"},
+	"in_cisa_kev":              {"eq"},
+	"date_published":           {"gt", "gte", "eq"},
+	"date_modified_source_max": {"gt", "gte", "eq"},
+	"affected.ecosystem":       {"eq", "in"},
+	"affected.package":         packageOps,
+	"affected.cpe_product":     {"eq", "in"},
+	"fts_query":                ftsOps,
+}
+
+// narrowsCandidates reports whether c narrows the CVEs a regex rule's post-filter
+// is checked on (narrowingOps).
+func narrowsCandidates(c Condition) bool {
+	if !slices.Contains(narrowingOps[c.Field], c.Op) {
+		return false
+	}
+	if c.Field == "in_cisa_kev" {
+		var v bool
+		return decodeScalar(c.Value, &v) == nil && v
+	}
+	return true
 }
 
 // maxConditions bounds a rule's conditions, and with them the copies of the
@@ -47,14 +63,15 @@ const maxAndSets = 10
 
 // Messages that Validate and Compile share, verbatim from design sections 8 and 17.
 const (
-	msgTooManyConditions = "a rule may hold at most 100 conditions"
-	msgTooManyProducts   = "a rule may name at most 50 products in total"
-	msgTooManyAndSets    = `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`
-	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
-	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
-	msgEmptyList         = "value must list at least one item"
-	msgInvalidOperator   = "operator %q is not valid for field %q"
-	msgOrRegexMixed      = `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`
+	msgTooManyConditions   = "a rule may hold at most 100 conditions"
+	msgTooManyProducts     = "a rule may name at most 50 products in total"
+	msgTooManyAndSets      = `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`
+	msgNeverMatches        = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
+	msgNoEcosystemFirst    = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
+	msgEmptyList           = "value must list at least one item"
+	msgInvalidOperator     = "operator %q is not valid for field %q"
+	msgRegexNeedsNarrowing = `a regex rule needs a condition that narrows the CVEs it is checked on (severity eq or in; in_cisa_kev eq true; date_published or date_modified_source_max gt, gte or eq; affected.ecosystem or affected.cpe_product eq or in; any affected.package condition; fts_query), or watchlist IDs`
+	msgOrRegexMixed        = `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`
 	// The value and names are printable ASCII (check.ParseProductValue), so they
 	// are quoted as written rather than with %q, which would double a backslash.
 	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor "%s" and product "%s"`
@@ -92,7 +109,7 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 			allEPSS = false
 		}
 
-		if selectiveFields[c.Field] && c.Op != "regex" {
+		if narrowsCandidates(c) {
 			hasSelective = true
 		}
 
@@ -129,7 +146,7 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 		errs = append(errs, ValidationError{
 			Index:    -1,
 			Field:    "",
-			Message:  "regex-only rule must have at least one selective non-regex condition or watchlist IDs assigned",
+			Message:  msgRegexNeedsNarrowing,
 			Severity: "error",
 		})
 	}

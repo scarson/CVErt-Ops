@@ -1034,6 +1034,8 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
   - `date_published` / `date_modified_*` bounded window (e.g., last N days), **or**
   - `affected.ecosystem/package` filter, **or**
   - `affected.cpe_product` filter
+
+  A condition counts only if it narrows the candidates: `severity`, `affected.ecosystem` or `affected.cpe_product` with `eq` or `in`, `in_cisa_kev eq true`, a date with `gt`, `gte` or `eq`, any `affected.package` condition, or `fts_query`. Negative operators (`neq`, `not_in`), `in_cisa_kev eq false` and an upper bound on a date keep nearly every CVE and do not count (`internal/alert/dsl/validator.go` `narrowingOps`).
 - An `or` rule may not combine a regex condition with conditions of other operators. The regex is checked only on the CVEs the SQL conditions select, so under `or` a CVE that only the regex matches would never be checked, and a CVE that only a SQL condition matches would be dropped by the regex. Such a rule is refused at save, and `Compile` refuses a stored one (§10.5). An `or` rule of regex conditions alone is valid with a watchlist, which selects its candidates.
 - Candidate cap: the SQL prefilter may return at most **N candidates** (default `N=5,000`). If the cap is exceeded:
   - the run is marked `status=partial` with a warning

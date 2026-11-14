@@ -27,6 +27,9 @@ const (
 	cvePkgNpmA       = "CVE-2026-30007"
 	cvePkgRejected   = "CVE-2026-30008" // npm lodash, rejected
 	cvePkgNpmLodash  = "CVE-2026-30009"
+	// Go lower-cases "İ" (U+0130) to "i" and a combining dot; a libc database's
+	// lower() gives "i" alone. A rule must still match its own spelling.
+	cvePkgHexNonASCII = "CVE-2026-30010"
 )
 
 var packageMatchCorpus = []struct {
@@ -42,6 +45,7 @@ var packageMatchCorpus = []struct {
 	{cvePkgNpmA, []feed.AffectedPackage{{Ecosystem: "npm", PackageName: "a"}}},
 	{cvePkgRejected, []feed.AffectedPackage{{Ecosystem: "npm", PackageName: "lodash"}}},
 	{cvePkgNpmLodash, []feed.AffectedPackage{{Ecosystem: "npm", PackageName: "lodash"}}},
+	{cvePkgHexNonASCII, []feed.AffectedPackage{{Ecosystem: "Hex", PackageName: "İzmir"}}},
 }
 
 // ingestPackageMatchCorpus runs every corpus CVE through the merge pipeline, and
@@ -146,6 +150,21 @@ func TestPackageMatch_RuleConditions(t *testing.T) {
 			"substring match correlates too", "and",
 			`[{"field":"affected.ecosystem","operator":"eq","value":"npm"},{"field":"affected.package","operator":"contains","value":"lodash"}]`,
 			[]string{cvePkgNpmLodash},
+		},
+		{
+			"a non-ASCII name matches its own spelling, folded by the database", "and",
+			`[{"field":"affected.package","operator":"eq","value":"İzmir"}]`,
+			[]string{cvePkgHexNonASCII},
+		},
+		{
+			"a non-ASCII name matches in a list with an ecosystem", "and",
+			`[{"field":"affected.ecosystem","operator":"eq","value":"Hex"},{"field":"affected.package","operator":"in","value":["İZMIR"]}]`,
+			[]string{cvePkgHexNonASCII},
+		},
+		{
+			"a non-ASCII substring matches its own spelling", "and",
+			`[{"field":"affected.package","operator":"starts_with","value":"İzm"}]`,
+			[]string{cvePkgHexNonASCII},
 		},
 	}
 	for _, tt := range tests {

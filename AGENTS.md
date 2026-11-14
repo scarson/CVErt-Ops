@@ -296,7 +296,7 @@ Mailpit UI: http://localhost:8025
 - Single binary: HTTP server + worker pool via cobra subcommands (`serve`, `worker`, `migrate`, `import-bulk`, `doctor`, `quota`, `validate`, `rotate`); no external queue
 - CVE corpus is global/shared; all tenant data is org-scoped — every org-scoped store method MUST take `orgID` as a parameter
 - `cve_search_index(cve_id, fts_document tsvector)` is a separate 1:1 table — never put FTS on `cves`; GIN rewrites on every timestamp/score update cause severe write amplification
-- `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: normalize CVSS vectors to canonical spec metric order; sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
+- `material_hash = sha256(jcs(material_fields))`; EPSS score explicitly excluded (§5.3). Before hashing: sort each CVSS vector's metrics after the version prefix (hash input only; stored vectors keep the source's order); sort all string arrays (URLs, CWE IDs, CPEs) lexicographically
 - Merge re-reads all `cve_sources` rows and recomputes the canonical `cves` row from scratch on every source write — not incremental; field precedence is per-field (§5.1)
 - `cve_sources` is keyed `(cve_id, source_name, source_id)`: one row per advisory, so a feed can hold several rows for one CVE. A withdrawn advisory contributes nothing; a CVE is tombstoned only when its status authority says so or every row is withdrawn
 - `cve_affected_packages` holds every distinct range; `material_hash` covers ecosystem, folded package name, `introduced`, `fixed`, `last_affected` and range class, under a sort that compares all of them

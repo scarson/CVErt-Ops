@@ -292,8 +292,9 @@ func (p *Pool) runPeriodic(ctx context.Context, task PeriodicTask) {
 	}
 }
 
-// runStaleRecovery periodically resets jobs stuck in 'running' state. Uses
-// time.NewTicker (not time.After) to avoid timer leaks.
+// runStaleRecovery periodically releases jobs stuck in 'running' state: a job with
+// attempts left is re-queued, and a job that has used its last attempt becomes
+// 'dead'. Uses time.NewTicker (not time.After) to avoid timer leaks.
 func (p *Pool) runStaleRecovery(ctx context.Context) {
 	ticker := time.NewTicker(staleCheckInterval)
 	defer ticker.Stop()

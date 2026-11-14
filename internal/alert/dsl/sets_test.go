@@ -18,9 +18,19 @@ import (
 	"github.com/scarson/cvert-ops/internal/check"
 )
 
-// foldedNameEq is the package predicate's folded-name comparison, the expression
+// foldedName is the row's folded package name, the expression
 // cve_affected_packages_check_idx indexes.
-const foldedNameEq = `CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)`
+const foldedName = `CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END`
+
+// foldedNameEq and foldedNameEqPyPI compare the folded name with the rule's values
+// as written, folded by the database the way it folds stored names (lower case, and
+// for PyPI separators collapsed), so the two sides cannot fold differently.
+const (
+	foldedValues     = `ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v)`
+	foldedValuesPyPI = `ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v)`
+	foldedNameEq     = foldedName + ` = ANY(` + foldedValues + `)`
+	foldedNameEqPyPI = foldedName + ` = ANY(` + foldedValuesPyPI + `)`
+)
 
 const (
 	packageSetHead = "cves.cve_id IN (\n    SELECT cap.cve_id FROM cve_affected_packages cap"
@@ -68,9 +78,13 @@ func assertCount(t *testing.T, sql, sub string, n int) {
 }
 
 // assertSetShapeRules fails on any shape the set form must not use (pitfall DB-27,
-// design section 13) and on lower-cased ecosystems (design section 4.1).
+// design section 13) and on lower-cased ecosystems (design section 4.1). The banned
+// unnest( is a lookup joined to unnest(); the package values' fold is an
+// uncorrelated ARRAY(SELECT ...) computed once per statement, which keeps the index
+// (DB-27), so it is removed before the check.
 func assertSetShapeRules(t *testing.T, sql string) {
 	t.Helper()
+	sql = strings.NewReplacer(foldedValues, "", foldedValuesPyPI, "").Replace(sql)
 	for _, banned := range []string{"lower(cap.ecosystem)", "unnest(", "NOT IN", "WITH "} {
 		if strings.Contains(sql, banned) {
 			t.Errorf("SQL contains %q:\n%s", banned, sql)
@@ -127,28 +141,28 @@ func TestCompile_PackageEqMixedEcosystemsHasTwoArms(t *testing.T) {
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]},{"field":"affected.package","operator":"eq","value":"Foo_Bar"}]}`, nil)
 	sql, args := whereOf(t, c, nil)
 	assertCount(t, sql, packageSetHead, 1)
-	assertCount(t, sql, pypiArm+foldedNameEq+")", 1)
+	assertCount(t, sql, pypiArm+foldedNameEqPyPI+")", 1)
 	assertCount(t, sql, otherArm+foldedNameEq+")", 1)
 	assertSetShapeRules(t, sql)
-	assertArrayArgs(t, args, []string{"npm", "PyPI"}, []string{"foo-bar"}, []string{"foo_bar"})
+	assertArrayArgs(t, args, []string{"npm", "PyPI"}, []string{"Foo_Bar"}, []string{"Foo_Bar"})
 }
 
-func TestCompile_PackageInPyPIOnlyFoldsAndDeduplicates(t *testing.T) {
+func TestCompile_PackageInPyPIOnlyFoldsInSQLAndDeduplicates(t *testing.T) {
 	t.Parallel()
-	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"PyPI"},{"field":"affected.package","operator":"in","value":["Foo_Bar","foo.bar","X"]}]}`, nil)
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"PyPI"},{"field":"affected.package","operator":"in","value":["Foo_Bar","foo.bar","Foo_Bar","X"]}]}`, nil)
+	sql, args := whereOf(t, c, nil)
+	assertCount(t, sql, foldedNameEqPyPI, 1)
+	assertCount(t, sql, pypiArm, 0)
+	assertArrayArgs(t, args, []string{"PyPI"}, []string{"Foo_Bar", "foo.bar", "X"})
+}
+
+func TestCompile_PackageInWithoutPyPIFoldsInSQLAndDeduplicates(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"npm"},{"field":"affected.package","operator":"in","value":["Lodash","lodash","Lodash","İzmir"]}]}`, nil)
 	sql, args := whereOf(t, c, nil)
 	assertCount(t, sql, foldedNameEq, 1)
 	assertCount(t, sql, pypiArm, 0)
-	assertArrayArgs(t, args, []string{"PyPI"}, []string{"foo-bar", "x"})
-}
-
-func TestCompile_PackageInWithoutPyPILowerCasesAndDeduplicates(t *testing.T) {
-	t.Parallel()
-	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"npm"},{"field":"affected.package","operator":"in","value":["Lodash","lodash","Foo_Bar"]}]}`, nil)
-	sql, args := whereOf(t, c, nil)
-	assertCount(t, sql, foldedNameEq, 1)
-	assertCount(t, sql, pypiArm, 0)
-	assertArrayArgs(t, args, []string{"npm"}, []string{"lodash", "foo_bar"})
+	assertArrayArgs(t, args, []string{"npm"}, []string{"Lodash", "lodash", "İzmir"})
 }
 
 func TestCompile_PackageEqUnderOrIsNotCorrelated(t *testing.T) {
@@ -160,7 +174,7 @@ func TestCompile_PackageEqUnderOrIsNotCorrelated(t *testing.T) {
 	assertCount(t, sql, packageSetHead, 1)
 	assertCount(t, sql, packageBranchJoin, 1)
 	assertCount(t, sql, ecosystemEq, 1)
-	assertCount(t, sql, pypiArm+foldedNameEq+")", 1)
+	assertCount(t, sql, pypiArm+foldedNameEqPyPI+")", 1)
 	assertCount(t, sql, otherArm+foldedNameEq+")", 1)
 	if strings.Contains(sql, ") OR cves.cve_id IN (") {
 		t.Errorf("expected one set with the two branches joined by UNION ALL, got:\n%s", sql)
@@ -178,7 +192,7 @@ func TestCompile_NegativeEcosystemStaysNotExists(t *testing.T) {
 	// The package set has no ecosystem line: the only ecosystem comparison is in NOT EXISTS.
 	assertCount(t, sql, packageSetHead, 1)
 	assertCount(t, sql, ecosystemEq, 1)
-	assertCount(t, sql, pypiArm+foldedNameEq+")", 1)
+	assertCount(t, sql, pypiArm+foldedNameEqPyPI+")", 1)
 	// The correlated NOT EXISTS does not carry the candidate IDs; the package set does.
 	assertCount(t, sql, candidateLine, 1)
 	assertSetShapeRules(t, sql)
@@ -244,8 +258,10 @@ func TestCompile_PackageContainsIsASet(t *testing.T) {
 	assertCount(t, sql, "lower(cap.package_name) ILIKE ?", 1)
 	assertCount(t, sql, ecosystemEq, 0)
 	assertSetShapeRules(t, sql)
-	if len(args) != 1 || args[0] != "%lodash%" {
-		t.Errorf("args = %v, want [%%lodash%%]", args)
+	// The pattern keeps the value's case: ILIKE folds it the way the database
+	// folds the name.
+	if len(args) != 1 || args[0] != "%LoDash%" {
+		t.Errorf("args = %v, want [%%LoDash%%]", args)
 	}
 }
 
@@ -640,7 +656,7 @@ func TestCompile_OrCVESetExactSQL(t *testing.T) {
 	want := `(lower(cves.severity) = ? OR cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY(?)
-      AND ((cap.ecosystem = 'PyPI' AND ` + foldedNameEq + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))
+      AND ((cap.ecosystem = 'PyPI' AND ` + foldedNameEqPyPI + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))
     UNION ALL
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY(?)
@@ -949,12 +965,12 @@ func TestCompile_OrPackageNamesAreOneBranch(t *testing.T) {
 		{"field":"affected.package","operator":"in","value":["B_c","d","A"]},
 		`+productEq("nodejs:node.js")+`,
 		{"field":"severity","operator":"eq","value":"high"}]}`, nil)
-	names := [][]string{{"a", "b-c", "d"}, {"a", "b_c", "d"}}
+	names := [][]string{{"a", "B_c", "d", "A"}, {"a", "B_c", "d", "A"}}
 
 	sql, args := whereOf(t, c, nil)
 	assertCount(t, sql, cveSetHead, 1)
 	assertCount(t, sql, packageBranchHead, 1)
-	assertCount(t, sql, pypiArm+foldedNameEq+")", 1)
+	assertCount(t, sql, pypiArm+foldedNameEqPyPI+")", 1)
 	assertCount(t, sql, otherArm+foldedNameEq+")", 1)
 	assertCount(t, sql, unionAll, 2)
 	assertSetShapeRules(t, sql)
@@ -970,7 +986,7 @@ func TestCompile_OrPackageNamesAreOneBranch(t *testing.T) {
 	sql, args = whereOf(t, c, []string{"CVE-1"})
 	want := "(" + cveSetHead + "\n    " + packageBranchHead + `
     WHERE cap.cve_id = ANY(?)
-      AND ((cap.ecosystem = 'PyPI' AND ` + foldedNameEq + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))` +
+      AND ((cap.ecosystem = 'PyPI' AND ` + foldedNameEqPyPI + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))` +
 		unionAll + strings.TrimPrefix(productCandidateSet, cveSetHead+"\n    ") + " OR lower(cves.severity) = ?)"
 	if sql != want {
 		t.Errorf("SQL:\n%s\nwant:\n%s", sql, want)
@@ -1029,7 +1045,7 @@ func TestCompile_OrPackageSubstringsAndEcosystemsKeepTheirBranches(t *testing.T)
 	sql, args := whereOf(t, c, nil)
 	want := "(" + cveSetHead + "\n    " + packageBranchHead + `
     WHERE lower(cap.package_name) ILIKE ?` + unionAll + packageBranchHead + `
-    WHERE ((cap.ecosystem = 'PyPI' AND ` + foldedNameEq + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))` +
+    WHERE ((cap.ecosystem = 'PyPI' AND ` + foldedNameEqPyPI + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))` +
 		unionAll + packageBranchHead + `
     WHERE ` + ecosystemEq + "\n))"
 	if sql != want {

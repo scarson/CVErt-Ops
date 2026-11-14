@@ -578,7 +578,8 @@ func alertEPSSHandler(eval *alert.Evaluator) worker.Handler {
 	}
 }
 
-// alertZombieSweepHandler returns a worker.Handler that sweeps stuck activation jobs.
+// alertZombieSweepHandler returns a worker.Handler that moves rules stuck in
+// 'activating' with no pending or running activation job to 'error'.
 func alertZombieSweepHandler(eval *alert.Evaluator) worker.Handler {
 	return func(ctx context.Context, _ json.RawMessage) error {
 		return eval.SweepZombieActivations(ctx)

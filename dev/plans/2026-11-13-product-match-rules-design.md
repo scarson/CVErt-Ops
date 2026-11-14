@@ -335,7 +335,7 @@ Errors stop a save. Messages follow the existing `ValidationError` list (`intern
 | More than 100 conditions | error, rule-level (index -1) | `a rule may hold at most 100 conditions` |
 | An `and` rule with a package condition and `eq`/`in` ecosystem conditions that no ecosystem satisfies together (the empty intersection defined above) | error, rule-level | `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough` |
 | An operator other than `eq` or `in` on `affected.cpe_product` | error | the existing `operator %q is not valid for field %q` |
-| A product with no row in the name table | warning | `no other CNA spelling is known for "x:y"; before NVD analyses a CVE, it matches only if the CNA record names vendor "x" and product "y"` (with `_` shown as a space where the own names do) |
+| A product with no row in the name table | warning | `no other CNA spelling is known for "x:y"; before NVD analyses a CVE, it matches only if the CNA record names vendor "x" and product "y"`. A part with an unescaped `_` lists both of its own names, with `_` read as a space first: `vendor "foo bar" or "foo_bar"`. Any vendor spelling pairs with any product spelling, as the own names do (section 4.5 of the version check design). |
 | `affected.package` `eq` or `in` with an empty or whitespace-only value | error | `value must not be empty` |
 | `affected.package` `eq` or `in` in an `or` rule, or in an `and` rule that has no `affected.ecosystem` condition with `eq` or `in` | warning | `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18` |
 

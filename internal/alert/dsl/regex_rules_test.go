@@ -106,3 +106,59 @@ func TestValidateCompile_OrRuleOfOnlyRegexWithWatchlist(t *testing.T) {
 		t.Errorf("PostFilters = %d, want 2", len(c.PostFilters))
 	}
 }
+
+const msgRegexNeedsNarrowing = `a regex rule needs a condition that narrows the CVEs it is checked on (severity eq or in; in_cisa_kev eq true; date_published or date_modified_source_max gt, gte or eq; affected.ecosystem or affected.cpe_product eq or in; any affected.package condition; fts_query), or watchlist IDs`
+
+// TestValidate_RegexNeedsANarrowingCondition checks PLAN.md §10.2's guardrail:
+// a regex is a post-filter, so a rule without a watchlist needs a condition that
+// narrows the SQL candidates. A condition on a selective field that keeps nearly
+// every CVE does not count.
+func TestValidate_RegexNeedsANarrowingCondition(t *testing.T) {
+	t.Parallel()
+	const regex = `{"field":"description_primary","operator":"regex","value":"apache"}`
+	tests := []struct {
+		cond   string
+		narrow bool
+	}{
+		{`{"field":"severity","operator":"eq","value":"critical"}`, true},
+		{`{"field":"severity","operator":"in","value":["critical","high"]}`, true},
+		{`{"field":"severity","operator":"neq","value":"low"}`, false},
+		{`{"field":"severity","operator":"not_in","value":["low"]}`, false},
+		{`{"field":"in_cisa_kev","operator":"eq","value":true}`, true},
+		{`{"field":"in_cisa_kev","operator":"eq","value":false}`, false},
+		{`{"field":"date_published","operator":"gte","value":"2026-01-01T00:00:00Z"}`, true},
+		{`{"field":"date_modified_source_max","operator":"gt","value":"2026-01-01T00:00:00Z"}`, true},
+		{`{"field":"date_published","operator":"lt","value":"2026-01-01T00:00:00Z"}`, false},
+		{`{"field":"date_published","operator":"neq","value":"2026-01-01T00:00:00Z"}`, false},
+		{`{"field":"affected.ecosystem","operator":"eq","value":"npm"}`, true},
+		{`{"field":"affected.ecosystem","operator":"neq","value":"npm"}`, false},
+		{`{"field":"affected.ecosystem","operator":"not_in","value":["npm"]}`, false},
+		{`{"field":"affected.package","operator":"contains","value":"lodash"}`, true},
+		{`{"field":"affected.cpe_product","operator":"eq","value":"nodejs:node.js"}`, true},
+		{`{"field":"fts_query","operator":"matches","value":"apache"}`, true},
+		{`{"field":"cvss_v3_score","operator":"gte","value":9}`, false},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON("and", tt.cond, regex))
+		errs, _, _ := dsl.Validate(r, false)
+		got := false
+		for _, e := range errs {
+			if e.Message == msgRegexNeedsNarrowing {
+				got = true
+				if e.Index != -1 || e.Severity != "error" {
+					t.Errorf("%s: error %+v, want rule-level error", tt.cond, e)
+				}
+			}
+		}
+		if got == tt.narrow {
+			t.Errorf("%s: narrowing error = %v, want %v (errors %+v)", tt.cond, got, !tt.narrow, errs)
+		}
+		// A watchlist narrows the candidates whatever the conditions.
+		errs, _, _ = dsl.Validate(r, true)
+		for _, e := range errs {
+			if e.Message == msgRegexNeedsNarrowing {
+				t.Errorf("%s with a watchlist: unexpected narrowing error", tt.cond)
+			}
+		}
+	}
+}

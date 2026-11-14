@@ -25,6 +25,15 @@ var AlertMatchesTotal = promauto.NewCounterVec(
 	[]string{"path"},
 )
 
+// AlertCandidateCapExceededTotal counts candidate queries that returned more
+// rows than the candidate cap, so the rule's run matched nothing (fail-closed).
+var AlertCandidateCapExceededTotal = promauto.NewCounter(
+	prometheus.CounterOpts{
+		Name: "cvertops_alert_candidate_cap_exceeded_total",
+		Help: "Total alert candidate queries that exceeded the candidate cap and matched nothing.",
+	},
+)
+
 // AlertEvaluationDuration observes alert evaluation latency, labeled by path.
 var AlertEvaluationDuration = promauto.NewHistogramVec(
 	prometheus.HistogramOpts{

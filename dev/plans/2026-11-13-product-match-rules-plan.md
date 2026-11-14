@@ -156,6 +156,15 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 - Kept ingest pre-flight (Task 4.1, 2026-11-14): PostgreSQL 18.4, 2,628,861 CVEs, migrations at 61 (62 `alert_events_feed_seq` not applied; the measurements do not read `alert_events`); all three check indexes match `check.CPEIndexExpr`, `check.CNANameIndexExpr` and `ecosystem.FoldedNameSQL`.
 - Production shared memory (2026-11-14): no compose file sets `shm_size` for Postgres (`docker/compose.yml`, `docker/compose.prod.yml`), so a deployed Postgres has Docker's default 64 MB `/dev/shm`, the same as the kept ingest container. The limit rule's dry-run and batch statements failed there with `could not resize shared memory segment ... No space left on device` (a parallel hash), so they would fail the same way in a default deployment.
 - Fixed after MATCH-2 (2026-11-14, branch `fix/alert-dsl-predating-bugs`): regex conditions now ignore case by default and match the description as stored; an `or` rule combining regex with other conditions is refused at save and fails closed when stored; `Compile` refuses operators a field does not take; and a JSON `null` single value is refused (it was confirmed: `cvss_v3_score gt null` compiled to `> 0`). Entries in `dev/implementation-log/` dated 2026-11-14T0746Z, T0750Z and T0754Z. The other older findings above remain open.
+- Fixed after MATCH-2 (2026-11-14, branch `claude/match2-followups`), the remaining findings above, one log entry each in `dev/implementation-log/`:
+  - Candidate cap: `cvertops_alert_candidate_cap_exceeded_total` and a warning log (T0744Z). Only a dry-run can exceed the cap; every evaluation path passes at most 5,000 candidate IDs per statement.
+  - CVSS normalisation: PLAN.md §5.3, CLAUDE.md and AGENTS.md now describe the metric sort the hash uses (T0750Z). The code is unchanged: stored vectors keep the source's order, and switching to spec order would change every `material_hash` once and re-fire matching rules for no change in behaviour.
+  - Zombie activations (T0753Z): the worker pool's stale-job recovery re-queues a stuck job until `max_attempts`, then marks it `dead` (it re-queued forever on every queue, and reclaimed jobs at 12 minutes, before the 15-minute sweeper could see them); the sweeper moves a rule left `activating` with no pending or running job to `error`.
+  - Package names: `eq`/`in` values are bound as written and folded in the database by the index expression's rule, and substring patterns keep their case for `ILIKE` (T0805Z). EXPLAINed on the kept ingest; DB-27 records it.
+  - Regex rules: only conditions that narrow the candidates count toward the guardrail (T0809Z); conditions under `or` were settled by the `or` refusal above.
+  - Unmapped-product warning: design section 8 first, then the message lists every CNA spelling of each part (T0810Z).
+  - `cve_id`: values shaped like a CVE ID compare upper case (T0813Z).
+  - Still open: `fire_on_non_material_changes` (§10.4) is stored but never read; whether to build or remove it is Sam's decision.
 
 ---
 

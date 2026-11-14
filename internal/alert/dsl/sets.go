@@ -223,7 +223,9 @@ func ecosystemLine(vals []string) sqlPart {
 
 // packageMatch builds an affected.package condition's line. eq and in compare
 // the row's name, folded for the row's ecosystem by the index expression, with
-// the values folded in Go; the substring operators match the lower-cased name.
+// the values folded the same way by the database, never in Go: Go's case rules
+// need not match the database's. The substring operators match the lower-cased
+// name with ILIKE, which folds the pattern by the database's rules too.
 func packageMatch(c Condition, corr packageCorrelation) (sqlPart, error) {
 	switch c.Op {
 	case "eq", "in":
@@ -231,31 +233,30 @@ func packageMatch(c Condition, corr packageCorrelation) (sqlPart, error) {
 		if err != nil {
 			return sqlPart{}, err
 		}
-		folded := ecosystem.FoldedNameSQL("cap.ecosystem", "cap.package_name") + " = ANY(?)"
-		pypiNames := foldedNames("PyPI", vals)
-		// FoldPackageName folds every ecosystem but PyPI to lower case.
-		otherNames := foldedNames("npm", vals)
+		vals = distinctValues(vals)
+		pypiMatch := foldedNameMatch("PyPI")
+		otherMatch := foldedNameMatch("")
 		if len(corr.lines) > 0 {
 			anyPyPI := slices.Contains(corr.ecosystems, "PyPI")
 			allPyPI := anyPyPI && !slices.ContainsFunc(corr.ecosystems, func(e string) bool { return e != "PyPI" })
 			if allPyPI {
-				return sqlPart{sql: folded, args: []any{pq.Array(pypiNames)}}, nil
+				return sqlPart{sql: pypiMatch, args: []any{pq.Array(vals)}}, nil
 			}
 			if !anyPyPI {
-				return sqlPart{sql: folded, args: []any{pq.Array(otherNames)}}, nil
+				return sqlPart{sql: otherMatch, args: []any{pq.Array(vals)}}, nil
 			}
 		}
 		// The row may be PyPI or not, so each arm compares names folded its way.
 		return sqlPart{
-			sql:  "((cap.ecosystem = 'PyPI' AND " + folded + ") OR (cap.ecosystem <> 'PyPI' AND " + folded + "))",
-			args: []any{pq.Array(pypiNames), pq.Array(otherNames)},
+			sql:  "((cap.ecosystem = 'PyPI' AND " + pypiMatch + ") OR (cap.ecosystem <> 'PyPI' AND " + otherMatch + "))",
+			args: []any{pq.Array(vals), pq.Array(vals)},
 		}, nil
 	case "contains", "starts_with", "ends_with":
 		var v string
 		if err := decodeScalar(c.Value, &v); err != nil {
 			return sqlPart{}, fmt.Errorf("package value: %w", err)
 		}
-		escaped := escapeLike(strings.ToLower(v))
+		escaped := escapeLike(v)
 		var pattern string
 		switch c.Op {
 		case "contains":
@@ -271,16 +272,26 @@ func packageMatch(c Condition, corr packageCorrelation) (sqlPart, error) {
 	}
 }
 
-// foldedNames folds each value as FoldPackageName does for eco, without duplicates,
-// in first-seen order. A list can hold tens of thousands of names, so duplicates
-// are found with a map, not by scanning the output.
-func foldedNames(eco string, vals []string) []string {
+// foldedNameMatch compares a row's folded name, the expression
+// cve_affected_packages_check_idx indexes, with one bound array of values folded
+// in the database as a name of eco is. The folded values are an uncorrelated
+// subquery, computed once per statement, so the index still serves the = ANY.
+func foldedNameMatch(eco string) string {
+	return ecosystem.FoldedNameSQL("cap.ecosystem", "cap.package_name") +
+		" = ANY(ARRAY(SELECT " + ecosystem.FoldedValueSQL(eco, "v") + " FROM unnest(?::text[]) AS v))"
+}
+
+// distinctValues returns vals without exact duplicates, in first-seen order. A
+// list can hold tens of thousands of names, so duplicates are found with a map,
+// not by scanning the output. Values that differ only in case stay: the database
+// folds them, and a duplicate after folding changes no match.
+func distinctValues(vals []string) []string {
 	out := make([]string, 0, len(vals))
 	seen := make(map[string]bool, len(vals))
 	for _, v := range vals {
-		if f := ecosystem.FoldPackageName(eco, v); !seen[f] {
-			seen[f] = true
-			out = append(out, f)
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
 		}
 	}
 	return out

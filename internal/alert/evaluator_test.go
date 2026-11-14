@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/scarson/cvert-ops/internal/alert"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -703,58 +705,126 @@ func TestEvaluator_CVEWithoutStatus(t *testing.T) {
 	})
 }
 
-func TestEvaluatorSweepZombieActivations(t *testing.T) {
-	tdb := testutil.NewTestDB(t)
-	ev := newTestEvaluator(t, tdb)
-	ctx := context.Background()
-	orgID := createTestOrg(t, tdb.DB())
-
-	// Create a rule in 'activating' status
-	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "zombie-test-rule",
-		Logic:      "and",
-		Conditions: conds,
-		Status:     "activating",
-	})
-	if err != nil {
-		t.Fatalf("create alert rule: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
-	})
-
-	// Directly insert a 'running' activation job with old locked_at to simulate zombie
+// insertActivationJob inserts an alert_activation job for ruleID in the given status,
+// with the lock key and payload the API enqueues. A running job is locked lockedAgo
+// before now; a dead job has used all its attempts.
+func insertActivationJob(t *testing.T, db *sql.DB, orgID, ruleID uuid.UUID, status string, lockedAgo time.Duration) uuid.UUID {
+	t.Helper()
 	payload, _ := json.Marshal(map[string]string{
-		"rule_id": row.ID.String(),
+		"rule_id": ruleID.String(),
 		"org_id":  orgID.String(),
 	})
 	var jobID uuid.UUID
-	err = tdb.DB().QueryRowContext(ctx, `
-		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
-		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '20 minutes')
+	if err := db.QueryRowContext(context.Background(), `
+		INSERT INTO job_queue (queue, lock_key, payload, status, attempts, max_attempts, locked_by, locked_at, finished_at)
+		VALUES ('alert_activation', $1, $2, $3,
+		        CASE WHEN $3 = 'dead' THEN 3 ELSE 1 END, 3,
+		        CASE WHEN $3 = 'running' THEN 'worker-1' END,
+		        CASE WHEN $3 = 'running' THEN now() - $4::interval END,
+		        CASE WHEN $3 = 'dead' THEN now() END)
 		RETURNING id
-	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
-	if err != nil {
-		t.Fatalf("insert zombie job: %v", err)
+	`, alert.ActivationLockKey(ruleID), payload, status, fmt.Sprintf("%d seconds", int(lockedAgo.Seconds()))).Scan(&jobID); err != nil {
+		t.Fatalf("insert %s activation job: %v", status, err)
+	}
+	return jobID
+}
+
+// TestEvaluatorSweepZombieActivations checks that the sweeper moves a rule from
+// 'activating' to 'error' only when the rule was last updated over 15 minutes ago and
+// has no pending or running activation job, and that it leaves job rows as they are.
+func TestEvaluatorSweepZombieActivations(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+	otherOrgID := createTestOrg(t, tdb.DB())
+	// The app role is NOBYPASSRLS, so rules of every org are visible to the sweep only
+	// through its RLS bypass transaction.
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	ev := alert.New(tdb.AppStore.DB(), tdb.AppStore, alert.NewRuleCache(), log, 0)
+
+	type job struct {
+		status    string
+		lockedAgo time.Duration
+	}
+	cases := []struct {
+		name       string
+		orgID      uuid.UUID
+		status     string
+		updatedAgo time.Duration
+		jobs       []job
+		deleted    bool
+		wantStatus string
+	}{
+		{name: "dead job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "dead"}}, wantStatus: "error"},
+		{name: "no job", orgID: otherOrgID, status: "activating", updatedAgo: 20 * time.Minute,
+			wantStatus: "error"},
+		{name: "pending job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "pending"}}, wantStatus: "activating"},
+		{name: "running job locked long ago", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "running", lockedAgo: 20 * time.Minute}}, wantStatus: "activating"},
+		{name: "dead job then pending job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "dead"}, {status: "pending"}}, wantStatus: "activating"},
+		{name: "no job, recently updated", orgID: orgID, status: "activating", updatedAgo: 5 * time.Minute,
+			wantStatus: "activating"},
+		{name: "active rule, no job", orgID: orgID, status: "active", updatedAgo: 20 * time.Minute,
+			wantStatus: "active"},
+		{name: "active rule, dead job", orgID: orgID, status: "active", updatedAgo: 20 * time.Minute,
+			jobs: []job{{status: "dead"}}, wantStatus: "active"},
+		{name: "deleted rule, no job", orgID: orgID, status: "activating", updatedAgo: 20 * time.Minute,
+			deleted: true, wantStatus: "activating"},
+	}
+
+	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
+	ruleIDs := make([]uuid.UUID, len(cases))
+	jobStatuses := make([]map[uuid.UUID]string, len(cases))
+	for i, tc := range cases {
+		row, err := tdb.CreateAlertRule(ctx, tc.orgID, store.CreateAlertRuleParams{
+			Name:       tc.name,
+			Logic:      "and",
+			Conditions: conds,
+			Status:     tc.status,
+		})
+		if err != nil {
+			t.Fatalf("%s: create alert rule: %v", tc.name, err)
+		}
+		ruleIDs[i] = row.ID
+		jobStatuses[i] = map[uuid.UUID]string{}
+		for _, j := range tc.jobs {
+			jobStatuses[i][insertActivationJob(t, tdb.DB(), tc.orgID, row.ID, j.status, j.lockedAgo)] = j.status
+		}
+		if tc.deleted {
+			if err := tdb.SoftDeleteAlertRule(ctx, tc.orgID, row.ID); err != nil {
+				t.Fatalf("%s: delete rule: %v", tc.name, err)
+			}
+		}
+		if _, err := tdb.DB().ExecContext(ctx,
+			`UPDATE alert_rules SET updated_at = now() - $2::interval WHERE id = $1`,
+			row.ID, fmt.Sprintf("%d seconds", int(tc.updatedAgo.Seconds())),
+		); err != nil {
+			t.Fatalf("%s: set updated_at: %v", tc.name, err)
+		}
 	}
 
 	if err := ev.SweepZombieActivations(ctx); err != nil {
 		t.Fatalf("SweepZombieActivations: %v", err)
 	}
 
-	// Rule should now be 'error'
-	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "error" {
-		t.Fatalf("want rule status 'error', got %q", s)
-	}
-
-	// Job should be 'failed'
-	var jobStatus string
-	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
-		t.Fatalf("get job status: %v", err)
-	}
-	if jobStatus != "failed" {
-		t.Fatalf("want job status 'failed', got %q", jobStatus)
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := getRuleStatus(t, tdb.DB(), ruleIDs[i]); got != tc.wantStatus {
+				t.Errorf("rule status = %q, want %q", got, tc.wantStatus)
+			}
+			for jobID, want := range jobStatuses[i] {
+				var got string
+				if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&got); err != nil {
+					t.Fatalf("get job status: %v", err)
+				}
+				if got != want {
+					t.Errorf("job %s status = %q, want %q (sweep must not change jobs)", jobID, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -1256,12 +1326,17 @@ func TestDryRun_CandidateCapFailClosed(t *testing.T) {
 	rule := mustRule(t, ctx, tdb.Store, orgID, "and", broadCondition, nil)
 	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
 
+	capHitsBefore := promtestutil.ToFloat64(metrics.AlertCandidateCapExceededTotal)
 	result, err := ev.DryRun(ctx, rule.ID, orgID)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
 	if result == nil {
 		t.Fatal("DryRun returned nil result")
+	}
+	// PLAN.md §10.2: exceeding the cap emits an operator-facing metric.
+	if got := promtestutil.ToFloat64(metrics.AlertCandidateCapExceededTotal) - capHitsBefore; got != 1 {
+		t.Errorf("candidate cap metric rose by %v, want 1", got)
 	}
 	if !result.Partial {
 		t.Fatalf("want Partial=true when candidates exceed 5000, got false (MatchCount=%d, CandidatesEvaluated=%d)",
@@ -1620,61 +1695,6 @@ func TestSweepZombieActivations_NoZombies(t *testing.T) {
 	}
 }
 
-func TestSweepZombieActivations_RecentJobNotSwept(t *testing.T) {
-	tdb := testutil.NewTestDB(t)
-	ev := newTestEvaluator(t, tdb)
-	ctx := context.Background()
-	orgID := createTestOrg(t, tdb.DB())
-
-	// Create a rule in 'activating' status
-	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "recent-job-rule",
-		Logic:      "and",
-		Conditions: conds,
-		Status:     "activating",
-	})
-	if err != nil {
-		t.Fatalf("create alert rule: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
-	})
-
-	// Insert a 'running' job with RECENT locked_at (5 minutes ago, within 15-minute threshold)
-	payload, _ := json.Marshal(map[string]string{
-		"rule_id": row.ID.String(),
-		"org_id":  orgID.String(),
-	})
-	var jobID uuid.UUID
-	err = tdb.DB().QueryRowContext(ctx, `
-		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
-		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '5 minutes')
-		RETURNING id
-	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
-	if err != nil {
-		t.Fatalf("insert recent job: %v", err)
-	}
-
-	if err := ev.SweepZombieActivations(ctx); err != nil {
-		t.Fatalf("SweepZombieActivations: %v", err)
-	}
-
-	// Rule should still be 'activating' (not swept)
-	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "activating" {
-		t.Fatalf("want rule status 'activating' (not swept), got %q", s)
-	}
-
-	// Job should still be 'running'
-	var jobStatus string
-	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
-		t.Fatalf("get job status: %v", err)
-	}
-	if jobStatus != "running" {
-		t.Fatalf("want job status 'running', got %q", jobStatus)
-	}
-}
-
 // ──────────────────────────────────────────────────────────────────────────────
 // RuleCache — concurrent access tests
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1826,62 +1846,6 @@ func TestEvaluateActivation_DoesNotOverrideDisabledStatus(t *testing.T) {
 	// Rule should remain 'disabled' — NOT overwritten to 'active'
 	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "disabled" {
 		t.Fatalf("want rule status 'disabled' (user-set), got %q", s)
-	}
-}
-
-func TestSweepZombieActivations_SkipsCompletedJobs(t *testing.T) {
-	tdb := testutil.NewTestDB(t)
-	ev := newTestEvaluator(t, tdb)
-	ctx := context.Background()
-	orgID := createTestOrg(t, tdb.DB())
-
-	// Create a rule that successfully completed activation (status = 'active')
-	conds := json.RawMessage(`[{"field":"cvss_v3_score","operator":"gte","value":7.0}]`)
-	row, err := tdb.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "completed-activation-rule",
-		Logic:      "and",
-		Conditions: conds,
-		Status:     "active", // already completed activation
-	})
-	if err != nil {
-		t.Fatalf("create alert rule: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = tdb.SoftDeleteAlertRule(context.Background(), orgID, row.ID)
-	})
-
-	// Insert a zombie job for this rule (old locked_at) — simulates a TOCTOU race where
-	// the activation completed just before the sweep query ran
-	payload, _ := json.Marshal(map[string]string{
-		"rule_id": row.ID.String(),
-		"org_id":  orgID.String(),
-	})
-	var jobID uuid.UUID
-	err = tdb.DB().QueryRowContext(ctx, `
-		INSERT INTO job_queue (queue, lock_key, payload, status, locked_by, locked_at)
-		VALUES ('alert_activation', $1, $2, 'running', 'worker-1', now() - interval '20 minutes')
-		RETURNING id
-	`, "alert:activation:"+row.ID.String(), payload).Scan(&jobID)
-	if err != nil {
-		t.Fatalf("insert zombie job: %v", err)
-	}
-
-	if err := ev.SweepZombieActivations(ctx); err != nil {
-		t.Fatalf("SweepZombieActivations: %v", err)
-	}
-
-	// Rule should STILL be 'active' — sweep must NOT overwrite to 'error'
-	if s := getRuleStatus(t, tdb.DB(), row.ID); s != "active" {
-		t.Fatalf("want rule status 'active' (completed), got %q", s)
-	}
-
-	// Job should be marked 'failed' (zombie cleanup is fine for the job row)
-	var jobStatus string
-	if err := tdb.DB().QueryRowContext(ctx, `SELECT status FROM job_queue WHERE id = $1`, jobID).Scan(&jobStatus); err != nil {
-		t.Fatalf("get job status: %v", err)
-	}
-	if jobStatus != "failed" {
-		t.Fatalf("want job status 'failed', got %q", jobStatus)
 	}
 }
 

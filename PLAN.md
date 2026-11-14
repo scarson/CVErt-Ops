@@ -480,7 +480,7 @@ A "material change" is any change to one of these, after normalization:
 
 Implementation: `material_hash = sha256(json_canonical(material_fields))`. If hash changes, alerts may re-fire depending on rule settings. JSON canonicalization uses deterministic key ordering and encoding (e.g., `github.com/cyberphone/json-canonicalization` or equivalent).
 
-**CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: parse the vector into its structured metric components per the CVSS specification, then re-serialize in canonical CVSS spec metric order (the order defined in the spec, not alphabetical). This ensures the hash is stable regardless of which source provided the vector.
+**CVSS vector normalization (required before hashing):** Different sources may represent the same CVSS vector with components in different order (e.g., `AV:N/AC:L` vs `AC:L/AV:N`) or with minor formatting differences. Including a raw CVSS vector string in `material_hash` would cause cosmetic source differences to trigger false material changes and spurious alerts. Before computing `material_hash`, CVSS vector strings must be normalized: split the vector into its metric components after the version prefix (`CVSS:3.1`) and sort them lexicographically. This ensures the hash is stable regardless of which source provided the vector or in which order it listed the metrics. Any fixed order would do; the sort is not the spec's metric order, and changing the order would change every stored `material_hash` once. The normalized form is hash input only: the stored vector keeps the source's order.
 
 **Array fields must be sorted before hashing (required):** JSON canonicalization libraries sort object keys deterministically but leave JSON arrays in their original order by specification. Feed sources routinely reorder reference URLs, CWE tags, and CPE strings between updates with no semantic change to the vulnerability. If these arrays are included in `material_hash` without sorting, a cosmetic reordering (e.g., NVD swaps `[Link B, Link A]` to `[Link A, Link B]`) changes the hash, bypasses the dedup engine, and fires a "Vulnerability Updated" alert for a CVE where nothing of substance changed. Before marshaling material fields for hashing, all string-typed arrays MUST be sorted lexicographically: reference URLs sorted by canonical URL, CWE IDs sorted alphabetically, CPE strings sorted by normalized CPE string. This applies to both array fields in `material_hash` and any array used in the `cve_search_index` FTS document to ensure stability.
 
@@ -969,7 +969,7 @@ Only these fields can be referenced in rules:
 
 | Field | Type | Notes |
 |---|---|---|
-| `cve_id` | string | |
+| `cve_id` | string | `eq`, `neq`, `in` and `not_in` compare a value shaped like a CVE ID in upper case, as CVE IDs are stored; other IDs (GHSA, which is mixed case) compare as written |
 | `severity` | enum | |
 | `cvss_v3_score` | float | |
 | `cvss_v4_score` | float | |
@@ -1034,6 +1034,8 @@ Regex is enabled using Go's `regexp` package (RE2-equivalent semantics: linear t
   - `date_published` / `date_modified_*` bounded window (e.g., last N days), **or**
   - `affected.ecosystem/package` filter, **or**
   - `affected.cpe_product` filter
+
+  A condition counts only if it narrows the candidates: `severity`, `affected.ecosystem` or `affected.cpe_product` with `eq` or `in`, `in_cisa_kev eq true`, a date with `gt`, `gte` or `eq`, any `affected.package` condition, or `fts_query`. Negative operators (`neq`, `not_in`), `in_cisa_kev eq false` and an upper bound on a date keep nearly every CVE and do not count (`internal/alert/dsl/validator.go` `narrowingOps`).
 - An `or` rule may not combine a regex condition with conditions of other operators. The regex is checked only on the CVEs the SQL conditions select, so under `or` a CVE that only the regex matches would never be checked, and a CVE that only a SQL condition matches would be dropped by the regex. Such a rule is refused at save, and `Compile` refuses a stored one (§10.5). An `or` rule of regex conditions alone is valid with a watchlist, which selects its candidates.
 - Candidate cap: the SQL prefilter may return at most **N candidates** (default `N=5,000`). If the cap is exceeded:
   - the run is marked `status=partial` with a warning
@@ -1111,7 +1113,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
   }
   ```
 
-  **Zombie activating rule recovery (required):** If the worker processing an activation scan crashes mid-run (OOM-kill, deployment restart), the rule remains permanently in `status = 'activating'`. A periodic sweeper goroutine (runs every 5 minutes) must identify `job_queue` rows where `queue = 'alert_activation'`, `status = 'running'`, and `locked_at < now() - interval '15 minutes'`. For each such zombie job, the sweeper transitions the associated alert rule to `status = 'error'`, logs the failure, and re-enqueues the activation scan job. Users can retry by PATCH-ing the rule (which sets `status = 'activating'` and enqueues a new scan).
+  **Zombie activating rule recovery (required):** If the worker processing an activation scan crashes mid-run (OOM-kill, deployment restart), the rule remains permanently in `status = 'activating'`. Two mechanisms prevent this. The worker pool's stale lock recovery re-enqueues a job whose worker stopped responding until the job has used its `max_attempts`, then marks it `dead`. A periodic sweeper (runs every 5 minutes) finds rules in `status = 'activating'`, not deleted, with `updated_at` more than 15 minutes ago and no `pending` or `running` `alert_activation` job holding the rule's lock key (`activation:<rule_id>`); it logs each one and transitions it to `status = 'error'`. The 15-minute margin covers the gap between saving the rule and enqueueing its job. Users can retry by PATCH-ing the rule (which sets `status = 'activating'` and enqueues a new scan).
 
 **Rejected CVE filtering in all evaluation passes (required):**
 
@@ -1724,7 +1726,7 @@ ALTER TABLE job_queue SET (
 **Worker goroutines:**
 - One goroutine per queue type (configurable concurrency per queue).
 - Each goroutine polls with `SKIP LOCKED`, processes the job, and updates status — all within a single transaction.
-- Stale lock detection: a periodic goroutine reclaims jobs where `locked_at` exceeds a timeout (e.g., 5 min), to handle worker crashes.
+- Stale lock detection: a periodic goroutine reclaims jobs where `locked_at` exceeds a timeout (e.g., 5 min), to handle worker crashes. A reclaimed job with attempts left returns to `pending`; one that has used `max_attempts` becomes `dead`, so a job that keeps killing its worker is not retried forever.
 
 **Why not an external queue for MVP:**
 - No Redis dependency → simpler Docker Compose stack → better for self-hosted/homelab persona.

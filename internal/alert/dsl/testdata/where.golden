@@ -2,7 +2,7 @@
 (cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.ecosystem = ANY(?)
-      AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)
+      AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))
 ) AND lower(cves.severity) = ?)
 arg 0: ["npm"]
 arg 1: ["lodash"]
@@ -12,7 +12,7 @@ arg 2: string "high"
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY(?)
       AND cap.ecosystem = ANY(?)
-      AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)
+      AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))
 ) AND lower(cves.severity) = ?)
 arg 0: ["CVE-1" "CVE-2"]
 arg 1: ["npm"]
@@ -37,7 +37,7 @@ arg 3: string "high"
         OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
 ) AND cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
-    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v))) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))))
 ) AND cves.in_cisa_kev = ? AND cves.cvss_v3_score >= ?)
 arg 0: string "cpe:2.3:a:nodejs:node.js:"
 arg 1: string "cpe:2.3:a:nodejs:node.js;"
@@ -77,8 +77,8 @@ arg 34: string "the node.js project"
 arg 35: string "node.js"
 arg 36: string "the node.js project"
 arg 37: string "node.js"
-arg 38: ["foo-bar" "express"]
-arg 39: ["foo_bar" "express"]
+arg 38: ["Foo_Bar" "express"]
+arg 39: ["Foo_Bar" "express"]
 arg 40: bool true
 arg 41: float64 7
 === and: product, package list, KEV, CVSS, candidates ["CVE-1" "CVE-2"]
@@ -104,7 +104,7 @@ arg 41: float64 7
 ) AND cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY(?)
-      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v))) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))))
 ) AND cves.in_cisa_kev = ? AND cves.cvss_v3_score >= ?)
 arg 0: ["CVE-1" "CVE-2"]
 arg 1: ["cpe:2.3:a:nodejs:node.js:" "cpe:2.3:o:nodejs:node.js:" "cpe:2.3:h:nodejs:node.js:" "cpe:2.3:a:nodejs:nodejs:" "cpe:2.3:o:nodejs:nodejs:" "cpe:2.3:h:nodejs:nodejs:"]
@@ -118,8 +118,8 @@ arg 8: []
 arg 9: []
 arg 10: *pq.BoolArray &pq.BoolArray{}
 arg 11: ["CVE-1" "CVE-2"]
-arg 12: ["foo-bar" "express"]
-arg 13: ["foo_bar" "express"]
+arg 12: ["Foo_Bar" "express"]
+arg 13: ["Foo_Bar" "express"]
 arg 14: bool true
 arg 15: float64 7
 === and: negative ecosystem, package contains, release ecosystem, candidates []
@@ -518,7 +518,7 @@ arg 12: bool true
       AND cap.ecosystem = ANY(?)
 ) OR cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
-    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v))) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))))
 ) OR cves.cwe_ids && ?) AND (
     EXISTS (
         SELECT 1 FROM watchlist_items wi
@@ -569,7 +569,7 @@ arg 9: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22,
 ) OR cves.cve_id IN (
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY(?)
-      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v))) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))))
 ) OR cves.cwe_ids && ?) AND (
     EXISTS (
         SELECT 1 FROM watchlist_items wi
@@ -649,7 +649,7 @@ arg 10: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22
         OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
     UNION ALL
     SELECT cap.cve_id FROM cve_affected_packages cap
-    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v))) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))))
 ) OR lower(cves.severity) = ?)
 arg 0: string "cpe:2.3:a:openssl:openssl:"
 arg 1: string "cpe:2.3:a:openssl:openssl;"
@@ -759,7 +759,7 @@ arg 84: string "critical"
     UNION ALL
     SELECT cap.cve_id FROM cve_affected_packages cap
     WHERE cap.cve_id = ANY(?)
-      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT regexp_replace(lower(v), '[-_.]+', '-', 'g') FROM unnest(?::text[]) AS v))) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(ARRAY(SELECT lower(v) FROM unnest(?::text[]) AS v))))
 ) OR lower(cves.severity) = ?)
 arg 0: ["CVE-1" "CVE-2"]
 arg 1: ["cpe:2.3:a:openssl:openssl:" "cpe:2.3:o:openssl:openssl:" "cpe:2.3:h:openssl:openssl:" "cpe:2.3:a:microsoft:.net:" "cpe:2.3:o:microsoft:.net:" "cpe:2.3:h:microsoft:.net:" "cpe:2.3:a:microsoft:.net_core:" "cpe:2.3:o:microsoft:.net_core:" "cpe:2.3:h:microsoft:.net_core:" "cpe:2.3:a:acme_corp:web_server:" "cpe:2.3:o:acme_corp:web_server:" "cpe:2.3:h:acme_corp:web_server:"]

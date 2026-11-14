@@ -115,10 +115,21 @@ func FoldPackageName(ecosystem, name string) string {
 }
 
 // FoldedNameSQL returns a SQL expression that applies FoldPackageName's rule to a
-// name column, for queries that compare package names in the database.
+// name column, for queries that compare package names in the database. Indexes are
+// built on its exact text.
 func FoldedNameSQL(ecosystemColumn, nameColumn string) string {
-	return fmt.Sprintf(`CASE WHEN %s = 'PyPI' THEN regexp_replace(lower(%s), '[-_.]+', '-', 'g') ELSE lower(%s) END`,
-		ecosystemColumn, nameColumn, nameColumn)
+	return fmt.Sprintf(`CASE WHEN %s = 'PyPI' THEN %s ELSE %s END`,
+		ecosystemColumn, FoldedValueSQL("PyPI", nameColumn), FoldedValueSQL("", nameColumn))
+}
+
+// FoldedValueSQL returns a SQL expression that folds expr as FoldedNameSQL folds a
+// name of the given ecosystem. Values folded with it in the database compare equal
+// to stored names whatever the database's case rules, which Go's need not match.
+func FoldedValueSQL(ecosystem, expr string) string {
+	if ecosystem == "PyPI" {
+		return fmt.Sprintf(`regexp_replace(lower(%s), '[-_.]+', '-', 'g')`, expr)
+	}
+	return fmt.Sprintf(`lower(%s)`, expr)
 }
 
 // TakesSuffix reports whether base is a canonical base name that OSV data uses

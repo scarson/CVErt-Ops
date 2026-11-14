@@ -175,8 +175,8 @@ func compileProducts(c Condition) ([]check.ProductRef, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(refused) > 0 {
-		return nil, refused[0]
+	if refused != nil {
+		return nil, refused
 	}
 	if len(refs) == 0 {
 		return nil, errors.New(msgEmptyList)

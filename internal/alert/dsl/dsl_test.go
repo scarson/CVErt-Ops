@@ -2455,6 +2455,66 @@ func TestValidate_ProductLimit(t *testing.T) {
 	}
 }
 
+// TestValidate_ProductValueErrorsBounded checks a product condition reports only its
+// first refused value, so a body of 100,000 bad values gives one entry, and Compile
+// refuses the condition with the same error.
+func TestValidate_ProductValueErrorsBounded(t *testing.T) {
+	t.Parallel()
+	vals := []string{"nodejs:node.js", "nodejs node.js", "nodejs", "*:node.js"}
+	for len(vals) < 100000 {
+		vals = append(vals, fmt.Sprintf("bad%d", len(vals)))
+	}
+	r := mustParse(t, ruleJSON("and", `{"field":"severity","operator":"eq","value":"high"}`, productInCond(t, vals)))
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 || errs[0].Message != msgProductNotASCII || errs[0].Index != 1 ||
+		errs[0].Field != "affected.cpe_product" || errs[0].Severity != "error" {
+		t.Errorf("errors = %d entries (first %+v), want one error %q at index 1", len(errs), firstEntry(errs), msgProductNotASCII)
+	}
+	if _, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil); err == nil || !strings.Contains(err.Error(), msgProductNotASCII) {
+		t.Errorf("Compile error = %v, want %q", err, msgProductNotASCII)
+	}
+}
+
+// TestValidate_ProductWarningsWithinLimit checks unmapped-product warnings are given
+// only for a rule within the 50-product limit, so a rule has at most 50 of them.
+func TestValidate_ProductWarningsWithinLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		products int
+		warnings int
+		refused  bool
+	}{
+		{"50 unmapped products", 50, 50, false},
+		{"51 unmapped products", 51, 0, true},
+		{"100,000 unmapped products", 100000, 0, true},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productInCond(t, distinctProducts(tt.products)))), false)
+		warnings := 0
+		for _, e := range errs {
+			if e.Severity == "warning" {
+				warnings++
+			}
+		}
+		if warnings != tt.warnings {
+			t.Errorf("%s: %d warnings, want %d", tt.name, warnings, tt.warnings)
+		}
+		blocking := blockingErrors(errs)
+		if tt.refused != (len(blocking) == 1 && blocking[0].Message == msgTooManyProducts) || (!tt.refused && len(blocking) != 0) {
+			t.Errorf("%s: errors = %+v, want refused %v by %q alone", tt.name, blocking, tt.refused, msgTooManyProducts)
+		}
+	}
+}
+
+// firstEntry returns errs[0], or the zero entry for an empty list.
+func firstEntry(errs []dsl.ValidationError) dsl.ValidationError {
+	if len(errs) == 0 {
+		return dsl.ValidationError{}
+	}
+	return errs[0]
+}
+
 // TestValidate_RegexRuleWithProductIsSelective checks a product condition lets a
 // regex rule pass without a watchlist.
 func TestValidate_RegexRuleWithProductIsSelective(t *testing.T) {

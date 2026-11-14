@@ -287,9 +287,8 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		}
 		// The value's JSON parsed above, so productValues returns no error.
-		_, refused, _ := productValues(c)
-		for _, e := range refused {
-			add(e.Error())
+		if _, refused, _ := productValues(c); refused != nil {
+			add(refused.Error())
 		}
 	}
 	return errs
@@ -297,10 +296,12 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 
 // productValues reads an affected.cpe_product condition's value, eq's string or
 // in's list. It returns the values check.ParseProductValue accepts, normalised
-// and without duplicates, in first-seen order, and the parser's error for each
-// value it refuses. Validate and Compile both count a condition's products as
-// len(refs), so they apply the same limit.
-func productValues(c Condition) (refs []check.ProductRef, refused []error, err error) {
+// and without duplicates, in first-seen order. At the first value the parser
+// refuses it stops and returns only the parser's error for that value, so a
+// condition gives at most one value error however many values it lists.
+// Validate and Compile both count a condition's products as len(refs), so they
+// apply the same limit.
+func productValues(c Condition) (refs []check.ProductRef, refused error, err error) {
 	raw, err := conditionValues(c)
 	if err != nil {
 		return nil, nil, err
@@ -309,49 +310,57 @@ func productValues(c Condition) (refs []check.ProductRef, refused []error, err e
 	for _, v := range raw {
 		p, perr := check.ParseProductValue(v)
 		if perr != nil {
-			refused = append(refused, perr)
-			continue
+			return nil, perr, nil
 		}
 		if !seen[p] {
 			seen[p] = true
 			refs = append(refs, p)
 		}
 	}
-	return refs, refused, nil
+	return refs, nil, nil
 }
 
 // validateProducts applies the rule-level product checks: the 50-product limit
-// (maxProducts) and a warning for each product the name table does not map,
-// which before NVD's analysis matches only a CNA record that spells it as the
-// CPE does. Value errors are validateValue's; a value that fails to parse is not
-// counted.
+// (maxProducts) and, for a rule within it, a warning for each product the name
+// table does not map, which before NVD's analysis matches only a CNA record that
+// spells it as the CPE does. Giving warnings only within the limit bounds them
+// at 50 per rule. Value errors are validateValue's; a condition with a value
+// that fails to parse is not counted.
 func validateProducts(r Rule) []ValidationError {
-	var errs []ValidationError
+	type productCondition struct {
+		index int
+		refs  []check.ProductRef
+	}
+	var conds []productCondition
 	total := 0
 	for i, c := range r.Conditions {
 		if c.Field != "affected.cpe_product" || (c.Op != "eq" && c.Op != "in") {
 			continue
 		}
-		refs, _, err := productValues(c)
-		if err != nil {
+		refs, refused, err := productValues(c)
+		if err != nil || refused != nil {
 			continue // reported by validateValue
 		}
 		total += len(refs)
-		for _, p := range refs {
+		conds = append(conds, productCondition{index: i, refs: refs})
+	}
+	if total > maxProducts {
+		return []ValidationError{{Index: -1, Field: "", Message: msgTooManyProducts, Severity: "error"}}
+	}
+	var errs []ValidationError
+	for _, pc := range conds {
+		for _, p := range pc.refs {
 			names, _, mapped := check.NamesFor(p)
 			if mapped {
 				continue
 			}
 			errs = append(errs, ValidationError{
-				Index:    i,
-				Field:    c.Field,
+				Index:    pc.index,
+				Field:    "affected.cpe_product",
 				Message:  fmt.Sprintf(msgUnmappedProduct, p.Vendor+":"+p.Product, names[0].Vendor, names[0].Product),
 				Severity: "warning",
 			})
 		}
-	}
-	if total > maxProducts {
-		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyProducts, Severity: "error"})
 	}
 	return errs
 }

@@ -116,8 +116,8 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Name table and value parser in `internal/check` | ✅ Shipped 2026-11-14 (branch; PR pending) | `cc883cd`, `3bf8255`, `43c878f` | Name table digest pinned at `f91e7929…a18b` |
-| 2 — CVE-set form, `CompiledRule.Where`, package correlation | 🚧 In progress (claimed 2026-11-14T02:40Z, `claude/lucid-moser-fef966`) | — | — |
-| 3 — The `affected.cpe_product` field | ⬜ Not started | — | — |
+| 2 — CVE-set form, `CompiledRule.Where`, package correlation | ✅ Shipped 2026-11-14 (branch; PR pending) | `7668072`, `c551369`, `f2f6f0e`, `1d0f6e6`, `daddbc2` | No existing integration test depended on uncorrelated matching |
+| 3 — The `affected.cpe_product` field | 🚧 In progress (claimed 2026-11-14T03:35Z, `claude/lucid-moser-fef966`) | — | — |
 | 4 — Measurements on the kept full ingest (gate) | ⬜ Not started | — | — |
 | 5 — Re-check signal | ⬜ Not started | — | — |
 | 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
@@ -127,6 +127,12 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 - Task 1.2: the printable-ASCII refusal uses the message in the task's row 2 (`value must be printable ASCII with no spaces, as a CPE 2.3 name is`), which design section 8 does not list. `internal/check/input.go` `errProductValueNotASCII`.
 - Task 1.2: `escapedAsCPERequires` does not call `firstUnescapedInvalid` (which would stop at the `*` and `?` the check must still accept). One iterator, `unescapedBytes`, does the escape walk, and `firstUnescapedInvalid`, `escapedAsCPERequires` and `hasUnescapedWildcard` read it. Check behaviour unchanged. `internal/check/input.go`.
 - Task 1.1 also touched `internal/store/export_test.go` (removed aliases of the deleted helpers) and `internal/store/check_index_test.go` (the migration-pinning tests call the exported helpers). Task 1.3 also updated `TestKeysFor` and `TestKeysForItemUses` in `internal/check/keys_test.go`, which enumerate the Node names through their keys.
+- Task 2.1 (`7668072`) also updated `TestCompile_EnumIn` (`internal/alert/dsl/dsl_test.go:~364`), which asserted the old placeholder count; the subject reads "..., strengthen tests".
+- Task 2.2 (`c551369`): `ExecuteDSLQuery` keeps a nil guard (`if where := compiled.Where(nil); where != nil`) because `TestExecuteDSLQuery_NilSQL` passes a zero `CompiledRule`; `Where` returns nil for a rule with no predicates and no watchlist. `Where` treats any logic other than `or` as `and`; `Compile` still refuses unknown logic. SQL identity before and after was checked for six rule shapes with a throwaway capture test (not committed).
+- Task 2.3 (`f2f6f0e`): `textOpsNoRegex` in `internal/alert/dsl/field.go` served only `affected.package` and was replaced by `packageOps`. Ecosystem lists are bound as written (only package-name lists are de-duplicated). A JSON `null` ecosystem list binds an empty array, keeping `in null` matching nothing and `not_in null` matching everything (`internal/alert/dsl/sets.go` `conditionValues`). Rewritten shape tests: `TestCompile_AffectedEcosystemEq`, `...EcosystemIn`, `...EcosystemMatchesExactOrSuffixed`, `...EcosystemEscapesLikeMetacharacters`.
+- Task 2.3 meaning detail beyond correlation (design 4.1, ecosystems compared exactly): the `:%` release arm now applies only to bases that take a suffix, so `npm` no longer also matches a stored `npm:...`; canonical stored data has none.
+- Task 2.4 (`1d0f6e6`): the never-matching check skips a rule whose `eq`/`in` ecosystem value fails to parse (that value already has its own error). A `neq` ecosystem condition does not suppress the no-ecosystem warning, per design section 8's wording.
+- Task 2.5 (`daddbc2`): commit subject is `test(alert): add integration tests for package correlation and exact match`; cases run through both realtime and activation.
 
 ### Discoveries
 - Found while planning (2026-11-14): design section 12's line "Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE" contradicts design section 3.1, which says the check accepts unescaped `*` and `?`. Task 1.2 tests section 3.1's invariant (every value a rule accepts, the check accepts). Flagged only; the design text is unchanged.
@@ -313,7 +319,7 @@ Review the batch once, from a perspective the individual tasks did not apply (he
 
 ## Phase 2 — CVE-set form, `CompiledRule.Where`, package correlation
 
-**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T02:40Z on branch `claude/lucid-moser-fef966`
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — `7668072` (2.1), `c551369` (2.2), `f2f6f0e` (2.3), `1d0f6e6` (2.4), `daddbc2` (2.5). Pitfall check on 2.2: no findings. After-group review: one round, no material findings.
 
 Design sections 3.2 (array binding, 100-condition limit), 4 (exact match and correlation), 5.1 (package SQL), 5.2 (compiler contract), 8 (validation), 12 (tests). Tasks are sequential; all touch `internal/alert/dsl`.
 
@@ -492,7 +498,7 @@ Do NOT use `unnest()` joins, `NOT IN`, or a CTE for candidate IDs (DB-27; design
 
 ## Phase 3 — The `affected.cpe_product` field
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T03:35Z on branch `claude/lucid-moser-fef966`
 
 Design sections 3 (field), 5.1 (product SQL), 5.2 (compiler decisions), 8 (messages), 10 (AI prompt), 12 (tests).
 

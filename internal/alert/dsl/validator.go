@@ -38,10 +38,16 @@ const maxConditions = 100
 // product in two conditions counts twice.
 const maxProducts = 50
 
-// Messages that Validate and Compile share, verbatim from design section 8.
+// maxAndSets bounds the set conditions of an "and" rule (design section 17).
+// Under "and" each set is its own IN, and planning time grows with them; realtime
+// evaluates every organisation's rules on each changed CVE.
+const maxAndSets = 10
+
+// Messages that Validate and Compile share, verbatim from design sections 8 and 17.
 const (
 	msgTooManyConditions = "a rule may hold at most 100 conditions"
 	msgTooManyProducts   = "a rule may name at most 50 products in total"
+	msgTooManyAndSets    = `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`
 	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
 	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
 	msgEmptyList         = "value must list at least one item"
@@ -142,6 +148,9 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 		errs = append(errs, validatePackageCorrelation(r)...)
 	}
 	errs = append(errs, validateProducts(r)...)
+	if tooManyAndSets(r) {
+		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyAndSets, Severity: "error"})
+	}
 
 	isEPSSOnly = hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	hasEPSS = hasEPSSCond
@@ -363,6 +372,29 @@ func validateProducts(r Rule) []ValidationError {
 		}
 	}
 	return errs
+}
+
+// tooManyAndSets reports whether r is an "and" rule with more than maxAndSets set
+// conditions: every affected.cpe_product and affected.package condition, and every
+// affected.ecosystem eq/in condition when the rule has no affected.package
+// condition. Beside a package condition those ecosystem conditions are folded into
+// the package sets and add no set of their own. An "or" rule is not limited,
+// because its sets compile to one predicate.
+func tooManyAndSets(r Rule) bool {
+	if r.Logic != LogicAnd {
+		return false
+	}
+	hasPackage := slices.ContainsFunc(r.Conditions, func(c Condition) bool { return c.Field == "affected.package" })
+	sets := 0
+	for _, c := range r.Conditions {
+		switch {
+		case c.Field == "affected.cpe_product", c.Field == "affected.package":
+			sets++
+		case c.Field == "affected.ecosystem" && (c.Op == "eq" || c.Op == "in") && !hasPackage:
+			sets++
+		}
+	}
+	return sets > maxAndSets
 }
 
 // isBlank reports whether v is empty or only whitespace.

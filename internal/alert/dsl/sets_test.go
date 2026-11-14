@@ -462,7 +462,8 @@ func TestCompile_ProductStoredRuleFailsClosed(t *testing.T) {
 	}{
 		{"malformed value", productRule(productEq("nodejs node.js")), "printable ASCII"},
 		{"51 values", productRule(list(vals)), "a rule may name at most 50 products in total"},
-		{"100 conditions of the same 50 values", productRule(sameFifty...), "a rule may name at most 50 products in total"},
+		// "or": an "and" rule of 100 product conditions is refused first by the 10-set limit.
+		{"100 conditions of the same 50 values", ruleJSON("or", sameFifty...), "a rule may name at most 50 products in total"},
 		{"empty list", productRule(`{"field":"affected.cpe_product","operator":"in","value":[]}`), "value must list at least one item"},
 		{"operator neq", productRule(`{"field":"affected.cpe_product","operator":"neq","value":"nodejs:node.js"}`), "operator"},
 		{"operator regex", productRule(`{"field":"affected.cpe_product","operator":"regex","value":"node"}`, `{"field":"severity","operator":"eq","value":"high"}`), "operator"},
@@ -487,23 +488,23 @@ var nameTableCPEs = []string{
 }
 
 // TestCompile_WorstRuleStaysUnderTheParameterLimit builds the worst rule the
-// validator accepts (design section 5.2): 50 one-value product conditions, the
-// name table's CPEs (which carry the most spellings, names and other products)
-// and unmapped values with "_" in vendor and product (four own names each), plus
-// 50 affected.package in conditions, with a 5,000-ID batch chunk. It binds 700
-// arguments: 11 arrays per product set, which hold its candidates, prefixes,
-// names and other products whatever their number, and 3 per package set.
+// validator accepts, with a 5,000-ID batch chunk. An "and" rule holds at most 10
+// set conditions (design section 17), and every package set carries the line of
+// each correlated ecosystem condition, so the most arguments come from 10
+// affected.package in conditions beside 90 affected.ecosystem in conditions. Each
+// ecosystem value list names a release, so its line binds two arrays, and PyPI,
+// so each package match binds two name arrays. A package set binds the candidate
+// IDs, 90 lines of 2 and its match of 2: 183 arguments, 1,830 in all. A product
+// set binds 11 arrays whatever its values, so product conditions in place of
+// package conditions bind fewer.
 func TestCompile_WorstRuleStaysUnderTheParameterLimit(t *testing.T) {
 	t.Parallel()
 	var conds []string
-	for _, cpe := range nameTableCPEs {
-		conds = append(conds, productEq(cpe))
-	}
-	for i := len(conds); i < 50; i++ {
-		conds = append(conds, productEq(fmt.Sprintf("v_endor%d:p_roduct%d", i, i)))
-	}
-	for i := range 50 {
+	for i := range 10 {
 		conds = append(conds, fmt.Sprintf(`{"field":"affected.package","operator":"in","value":["pkg%d","other%d"]}`, i, i))
+	}
+	for range 90 {
+		conds = append(conds, `{"field":"affected.ecosystem","operator":"in","value":["Debian:12","PyPI"]}`)
 	}
 	r := mustParse(t, productRule(conds...))
 	errs, _, _ := dsl.Validate(r, false)
@@ -524,8 +525,8 @@ func TestCompile_WorstRuleStaysUnderTheParameterLimit(t *testing.T) {
 	if len(args) >= 10000 {
 		t.Errorf("got %d args, want fewer than 10,000", len(args))
 	}
-	if len(args) != 700 {
-		t.Errorf("got %d args, want 700 as counted in the comment", len(args))
+	if len(args) != 1830 {
+		t.Errorf("got %d args, want 1,830 as counted in the comment", len(args))
 	}
 }
 

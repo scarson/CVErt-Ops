@@ -365,7 +365,8 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 // TestAlertRule_ValidationErrorsSameOnCreateAndPatch verifies that create and PATCH
 // refuse the same conditions with the same error list (testing-pitfalls §4): an
 // "and" rule whose correlated ecosystem conditions no ecosystem satisfies together,
-// a rule naming more than 50 products, and a malformed product value.
+// a rule naming more than 50 products, an "and" rule of more than 10 set
+// conditions, and a malformed product value.
 func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -397,18 +398,21 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 	}
 
 	// The same mapped product in 51 one-value conditions counts 51 times and has
-	// no unmapped-product warning, so the rule-level error is the only entry.
+	// no unmapped-product warning, so under "or" the rule-level error is the only
+	// entry. Under "and" eleven of them are over the 10-set limit.
 	nodeConds := make([]string, 51)
 	for i := range nodeConds {
 		nodeConds[i] = `{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs:node.js"}`
 	}
 	cases := []struct {
 		name       string
+		logic      string
 		conditions string
 		want       []problemError
 	}{
 		{
-			name: "never matching ecosystems",
+			name:  "never matching ecosystems",
+			logic: "and",
 			conditions: `[
     {"field": "affected.ecosystem", "operator": "eq", "value": "npm"},
     {"field": "affected.ecosystem", "operator": "eq", "value": "PyPI"},
@@ -421,11 +425,22 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 		},
 		{
 			name:       "51 products",
+			logic:      "or",
 			conditions: "[" + strings.Join(nodeConds, ",") + "]",
 			want:       []problemError{{Message: "a rule may name at most 50 products in total", Location: "body.conditions"}},
 		},
 		{
+			name:       "11 set conditions in an and rule",
+			logic:      "and",
+			conditions: "[" + strings.Join(nodeConds[:11], ",") + "]",
+			want: []problemError{{
+				Message:  `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`,
+				Location: "body.conditions",
+			}},
+		},
+		{
 			name:       "malformed product value",
+			logic:      "and",
 			conditions: `[{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs node.js"}]`,
 			want: []problemError{{
 				Message:  "value must be printable ASCII with no spaces, as a CPE 2.3 name is",
@@ -453,7 +468,7 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 	for _, tc := range cases {
 		createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, `{
   "name": "Refused Rule",
-  "logic": "and",
+  "logic": "`+tc.logic+`",
   "conditions": `+tc.conditions+`,
   "watchlist_ids": []
 }`)
@@ -463,7 +478,7 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 			t.Errorf("%s: create errors = %+v, want %+v", tc.name, created.Errors, tc.want)
 		}
 
-		patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"and","conditions":`+tc.conditions+`}`)
+		patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"`+tc.logic+`","conditions":`+tc.conditions+`}`)
 		patched := decodeProblem(t, patchResp, tc.name+": patch")
 		patchResp.Body.Close() //nolint:errcheck,gosec // G104
 		if !reflect.DeepEqual(patched.Errors, created.Errors) {

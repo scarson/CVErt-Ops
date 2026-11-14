@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2034,6 +2035,72 @@ func TestValidate_ConditionLimit(t *testing.T) {
 	}
 }
 
+const msgTooManyAndSets = `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`
+
+// TestValidate_AndSetConditionLimit checks an "and" rule may hold at most 10 set
+// conditions: every product and package condition counts, and an eq/in ecosystem
+// condition counts only in a rule with no package condition, where it is not folded
+// into the package sets. An "or" rule is not limited. Compile refuses the same rules.
+func TestValidate_AndSetConditionLimit(t *testing.T) {
+	t.Parallel()
+	conds := func(n int, cond string) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = cond
+		}
+		return out
+	}
+	product := productCond("eq", `"nodejs:node.js"`)
+	pkg := `{"field":"affected.package","operator":"eq","value":"lodash"}`
+	pkgContains := `{"field":"affected.package","operator":"contains","value":"lodash"}`
+	ecoEq := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`
+	ecoIn := `{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]}`
+	ecoNeq := `{"field":"affected.ecosystem","operator":"neq","value":"PyPI"}`
+	severity := `{"field":"severity","operator":"eq","value":"high"}`
+	tests := []struct {
+		name    string
+		logic   string
+		conds   []string
+		refused bool
+	}{
+		{"10 products", "and", conds(10, product), false},
+		{"11 products", "and", conds(11, product), true},
+		{"10 packages", "and", conds(10, pkg), false},
+		{"11 packages", "and", conds(11, pkg), true},
+		{"a substring package condition counts", "and", append(conds(10, product), pkgContains), true},
+		{"10 ecosystem conditions with no package", "and", append(conds(5, ecoEq), conds(5, ecoIn)...), false},
+		{"11 ecosystem conditions with no package", "and", append(conds(6, ecoEq), conds(5, ecoIn)...), true},
+		{"6 products and 5 ecosystem conditions", "and", append(conds(6, product), conds(5, ecoEq)...), true},
+		{"ecosystem conditions beside a package do not count", "and",
+			slices.Concat(conds(5, product), conds(5, pkg), conds(20, ecoEq), conds(20, ecoIn)), false},
+		{"negative ecosystem conditions do not count", "and", append(conds(10, product), conds(5, ecoNeq)...), false},
+		{"other conditions do not count", "and", append(conds(10, product), conds(50, severity)...), false},
+		{"or rule with 50", "or", slices.Concat(conds(20, product), conds(20, pkg), conds(10, ecoIn)), false},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON(tt.logic, tt.conds...))
+		errs, _, _ := dsl.Validate(r, false)
+		blocking := blockingErrors(errs)
+		_, compileErr := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+		if !tt.refused {
+			if len(blocking) != 0 {
+				t.Errorf("%s: unexpected errors %+v", tt.name, blocking)
+			}
+			if compileErr != nil {
+				t.Errorf("%s: Compile: %v", tt.name, compileErr)
+			}
+			continue
+		}
+		if len(blocking) != 1 || blocking[0].Message != msgTooManyAndSets || blocking[0].Index != -1 || blocking[0].Field != "" {
+			t.Errorf("%s: errors = %+v, want one rule-level %q", tt.name, blocking, msgTooManyAndSets)
+		}
+		// A stored rule past the limit fails closed when compiled.
+		if compileErr == nil || !strings.Contains(compileErr.Error(), msgTooManyAndSets) {
+			t.Errorf("%s: Compile error = %v, want %q", tt.name, compileErr, msgTooManyAndSets)
+		}
+	}
+}
+
 // TestValidate_OverConditionLimitSkipsEcosystemCheck pins that a rule over the
 // condition limit is refused without running the never-matching ecosystem check.
 // That check costs values times conditions, so within the limit it is linear in
@@ -2423,24 +2490,26 @@ func TestValidate_ProductLimit(t *testing.T) {
 	}
 	tests := []struct {
 		name    string
+		logic   string
 		conds   []string
 		refused bool
 	}{
-		{"50 values over several conditions", []string{
+		{"50 values over several conditions", "and", []string{
 			productInCond(t, vals[:10]), productInCond(t, vals[10:30]), productCond("eq", `"`+vals[30]+`"`), productInCond(t, vals[31:50]),
 		}, false},
-		{"51 values over several conditions", []string{
+		{"51 values over several conditions", "and", []string{
 			productInCond(t, vals[:10]), productInCond(t, vals[10:30]), productCond("eq", `"`+vals[30]+`"`), productInCond(t, vals[31:51]),
 		}, true},
-		{"duplicates after normalisation in one condition count once", []string{
+		{"duplicates after normalisation in one condition count once", "and", []string{
 			productInCond(t, vals[:49]), productInCond(t, []string{"NodeJS:Node.js", `nodejs:node\.js`, "nodejs:node.js"}),
 		}, false},
-		{"the same product in two conditions counts twice", append([]string{productInCond(t, vals[:49])}, node, node), true},
-		{"48 values and the same product in two conditions", append([]string{productInCond(t, vals[:48])}, node, node), false},
-		{"100 conditions each listing the same 50 products", repeat(productInCond(t, vals[:50]), 100), true},
+		{"the same product in two conditions counts twice", "and", append([]string{productInCond(t, vals[:49])}, node, node), true},
+		{"48 values and the same product in two conditions", "and", append([]string{productInCond(t, vals[:48])}, node, node), false},
+		// "or": an "and" rule of 100 product conditions is also over the 10-set limit.
+		{"100 conditions each listing the same 50 products", "or", repeat(productInCond(t, vals[:50]), 100), true},
 	}
 	for _, tt := range tests {
-		r := mustParse(t, ruleJSON("and", tt.conds...))
+		r := mustParse(t, ruleJSON(tt.logic, tt.conds...))
 		errs, _, _ := dsl.Validate(r, false)
 		blocking := blockingErrors(errs)
 		if !tt.refused {

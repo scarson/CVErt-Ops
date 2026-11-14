@@ -25,6 +25,9 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	if len(r.Conditions) > maxConditions {
 		return nil, fmt.Errorf("compile: %s", msgTooManyConditions)
 	}
+	if tooManyAndSets(r) {
+		return nil, fmt.Errorf("compile: %s", msgTooManyAndSets)
+	}
 
 	var predicates []predicate
 	var postFilters []PostFilter

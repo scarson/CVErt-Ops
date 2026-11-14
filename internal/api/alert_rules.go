@@ -200,8 +200,7 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	var req createAlertRuleBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -411,8 +410,7 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	oldState := alertRuleToEntry(*current)
 
 	var req patchAlertRuleBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -612,8 +610,7 @@ func (srv *Server) validateAlertRuleHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req validateRuleBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

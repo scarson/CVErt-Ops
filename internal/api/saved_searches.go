@@ -85,8 +85,7 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 	userID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	var req createSavedSearchRequest
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -256,8 +255,7 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req patchSavedSearchRequest
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

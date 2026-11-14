@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert"
@@ -2084,6 +2085,57 @@ func TestCreateAlertRule_MalformedJSON(t *testing.T) {
 	}
 }
 
+// TestCreateAlertRule_UnknownFieldRefused verifies that a misspelled field is
+// refused with 422 naming it, rather than dropped. Dropping watchlist_id would
+// create a rule that runs against every CVE instead of the watchlist.
+func TestCreateAlertRule_UnknownFieldRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	body := `{
+  "name": "Misspelled Watchlist Rule",
+  "logic": "and",
+  "conditions": [{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}],
+  "watchlist_id": ["00000000-0000-0000-0000-000000000001"],
+  "enabled": true
+}`
+	resp := doCreateAlertRuleRaw(t, ctx, ts, token, aliceReg.OrgID, body)
+	defer resp.Body.Close() //nolint:errcheck,gosec // G104
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("misspelled field: got %d, want 422", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Errorf("Content-Type = %q, want application/problem+json", ct)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) != 1 || problem.Errors[0].Location != "body.watchlist_id" {
+		t.Errorf("errors = %+v, want one error at body.watchlist_id", problem.Errors)
+	}
+
+	// The refused request must not have created a rule.
+	listResp := doListAlertRules(t, ctx, ts, token, aliceReg.OrgID)
+	defer listResp.Body.Close() //nolint:errcheck,gosec // G104
+	var list struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("rules after refused create = %d, want 0", len(list.Items))
+	}
+}
+
 // TestCreateAlertRule_LocationHeader verifies Location header on 201 and 202 responses.
 func TestCreateAlertRule_LocationHeader(t *testing.T) {
 	t.Parallel()
@@ -2274,10 +2326,10 @@ func TestCreateAlertRule_DuplicateName(t *testing.T) {
 	}
 }
 
-// TestAlertRule_NoFireOnNonMaterialChanges checks the API no longer returns
-// fire_on_non_material_changes, which was removed because nothing read it
-// (dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md). The JSON
-// decoder ignores unknown fields, so a client that still sends it is not refused.
+// TestAlertRule_NoFireOnNonMaterialChanges checks the API neither accepts nor
+// returns fire_on_non_material_changes, which was removed because nothing read it
+// (dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md). A client
+// that still sends it is refused like any other field the body does not define.
 func TestAlertRule_NoFireOnNonMaterialChanges(t *testing.T) {
 	t.Parallel()
 	db := testutil.NewTestDB(t)
@@ -2290,7 +2342,20 @@ func TestAlertRule_NoFireOnNonMaterialChanges(t *testing.T) {
 	token := cookieValue(loginResp, "access_token")
 
 	withFlag := strings.Replace(validRuleDSL, `"enabled": true`, `"enabled": true, "fire_on_non_material_changes": true`, 1)
-	created := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, withFlag)
+	refused := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, withFlag)
+	defer refused.Body.Close() //nolint:errcheck,gosec // G104
+	if refused.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("create with removed field: got %d, want 422", refused.StatusCode)
+	}
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(refused.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) != 1 || problem.Errors[0].Location != "body.fire_on_non_material_changes" {
+		t.Errorf("errors = %+v, want one error at body.fire_on_non_material_changes", problem.Errors)
+	}
+
+	created := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, validRuleDSL)
 	defer created.Body.Close() //nolint:errcheck,gosec // G104
 	if created.StatusCode != http.StatusAccepted {
 		t.Fatalf("create: got %d, want 202", created.StatusCode)

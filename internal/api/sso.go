@@ -139,8 +139,7 @@ func (srv *Server) createSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req createSSOBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
@@ -307,8 +306,7 @@ func (srv *Server) patchSSOHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req patchSSOBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -511,8 +509,7 @@ func (srv *Server) putSSODomainsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req putSSODomainsBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 
@@ -586,8 +583,7 @@ func validateDomain(d string) error {
 // Public endpoint (no auth). Extracts domain from email and looks up SSO connection.
 func (srv *Server) discoverHandler(w http.ResponseWriter, r *http.Request) {
 	var req discoverBody
-	if errDetail := decodeJSON(r, &req); errDetail != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", errDetail)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	email := strings.TrimSpace(req.Email)

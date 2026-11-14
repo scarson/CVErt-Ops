@@ -101,8 +101,7 @@ func (srv *Server) adminPatchOrgHandler(w http.ResponseWriter, r *http.Request) 
 		Tier    *string `json:"tier"`
 		Suspend *bool   `json:"suspend"`
 	}
-	if errDetail := decodeJSON(r, &body); errDetail != nil {
-		writeProblem(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeJSON(w, r, &body) {
 		return
 	}
 

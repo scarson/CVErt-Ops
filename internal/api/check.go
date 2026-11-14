@@ -172,8 +172,7 @@ func (srv *Server) checkComponentsHandler(w http.ResponseWriter, r *http.Request
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	var req CheckRequest
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 	if len(req.Items) == 0 {

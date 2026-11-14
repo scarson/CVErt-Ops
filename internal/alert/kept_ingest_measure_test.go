@@ -794,3 +794,46 @@ func TestKeptIngestLimitSerial(t *testing.T) {
 	}
 	writeResults(t, filepath.Join(dir, "serial.md"), rows, m8Result{})
 }
+
+// TestKeptIngestContainsInterleaved compares M7d's two forms with their runs
+// interleaved (old, new, old, new, ...), so drift during a run affects both alike.
+func TestKeptIngestContainsInterleaved(t *testing.T) {
+	ctx := context.Background()
+	db := openMeasuredDB(t, "KEPT_INGEST_DATABASE_URL", "KEPT_INGEST_USER", "KEPT_INGEST_PASSWORD")
+	dir := resultsDir(t)
+	newQ, newArgs, err := candidateQuery(compileMeasured(t, dsl.LogicAnd, condition(t, "affected.package", "contains", "lodash")), nil)
+	if err != nil {
+		t.Fatalf("candidateQuery: %v", err)
+	}
+	oldQ, oldArgs, err := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).
+		Select("cves.cve_id", "COALESCE(cves.material_hash, '')", "COALESCE(lower(cves.description_primary), '')").
+		From("cves").
+		Where(sq.And{
+			sq.Expr(`EXISTS (SELECT 1 FROM cve_affected_packages cap WHERE cap.cve_id = cves.cve_id AND lower(cap.package_name) ILIKE ?)`, "%lodash%"),
+			sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
+		}).
+		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
+		ToSql()
+	if err != nil {
+		t.Fatalf("old form: %v", err)
+	}
+	var b strings.Builder
+	b.WriteString("| Run | Before (per-row EXISTS) plan+exec ms | Set form plan+exec ms |\n|---|---|---|\n")
+	var oldSum, newSum float64
+	const runs = 5
+	for i := 1; i <= runs; i++ {
+		o := explainOnce(ctx, db, oldQ, oldArgs, candidateTxSettings...)
+		n := explainOnce(ctx, db, newQ, newArgs, candidateTxSettings...)
+		if o.err != nil || n.err != nil {
+			t.Fatalf("run %d: %v / %v", i, o.err, n.err)
+		}
+		oldSum += o.totalMS()
+		newSum += n.totalMS()
+		fmt.Fprintf(&b, "| %d | %.1f | %.1f |\n", i, o.totalMS(), n.totalMS())
+	}
+	fmt.Fprintf(&b, "| mean | %.1f | %.1f |\n", oldSum/runs, newSum/runs)
+	if err := os.WriteFile(filepath.Join(dir, "contains-interleaved.md"), []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Log("\n" + b.String())
+}

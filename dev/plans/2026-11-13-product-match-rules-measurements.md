@@ -175,3 +175,56 @@ Sweep after the merge and JIT off, before the array form (same inputs; for the l
 - **Still failing:** M5a realtime 26.4 ms (6.5 ms planning, 19.9 ms execution) against 5 ms; M5b dry-run 11.0 s against 5 s (no candidate IDs, so the array form does not apply; the cost is the 50 kernel package sets with no ecosystem, hashed in full); M5c batch 3.2 s (0.8 s planning) against 3 s; M8 read-only estimate stopped by the shared-memory error at page 1,422 of about 2,629 after 12 minutes, so a full activation would take about 22 minutes against 7.
 - **Regression, still within thresholds:** single-product batch rows M2a to M2c rose from about 30 ms to 140 to 505 ms. With 5,000 candidate IDs and the array form, the planner chooses parallel sequential scans of `cve_cpe_matches` (about 1.08 M rows filtered out) and `cve_cna_affected` (about 685 K) with `cve_id = ANY(...)` as a filter, where the range form read the check index.
 - **M7d** passes on this run (1.24 s against 1.29 s); on the run before it was 2% slower than the old form, within run-to-run variation.
+
+## After parallel query off and one package branch per `or` rule (2026-11-14)
+
+Sam's third step (`9d58ee1`): the evaluator's candidate statement also runs with `SET LOCAL max_parallel_workers_per_gather = 0`, and under `or` every package `eq`/`in` condition compiles into one branch. Evaluator-shaped rows run with both settings; M4 keeps the server defaults.
+
+| # | Measurement | Statement shape | Args | First run plan / exec (ms) | Warm plan / exec (ms) | Rows | Plan notes | Threshold | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| M1a | linux:linux_kernel, and | realtime | 12 | 1.20 / 0.20 | 0.32 / 0.10 | 1 |  | warm <= 5 ms | pass |
+| M1b | linux:linux_kernel or in_cisa_kev | realtime | 13 | 0.32 / 0.19 | 0.31 / 0.16 | 1 | hashed SubPlan | warm <= 5 ms | pass |
+| M2a | linux:linux_kernel, and | batch 5,000 | 12 | 26.01 / 6.77 | 30.03 / 3.10 | 0 |  | warm <= 3000 ms | pass |
+| M2b | linux:linux_kernel or in_cisa_kev | batch 5,000 | 13 | 37.27 / 1139.53 | 28.24 / 1122.00 | 0 | hashed SubPlan; seq scan: cve_cpe_matches | warm <= 3000 ms | pass |
+| M2c | nodejs:node.js, and | batch 5,000 | 12 | 33.16 / 3.02 | 30.99 / 2.92 | 0 |  | warm <= 3000 ms | pass |
+| M3a | nodejs:node.js and severity critical/high | dry-run | 39 | 0.88 / 6.50 | 0.63 / 2.80 | 146 |  | warm <= 5000 ms | pass |
+| M3b | nodejs:node.js alone | dry-run | 38 | 0.56 / 2.98 | 0.64 / 2.84 | 249 |  | warm <= 5000 ms | pass |
+| M3c | nodejs:node.js or in_cisa_kev | dry-run | 39 | 0.54 / 355.58 | 0.59 / 359.51 | 2026 | hashed SubPlan; seq scan: cves | warm <= 5000 ms | pass |
+| M3d | linux:linux_kernel alone | dry-run | 17 | 0.40 / 334.17 | 0.40 / 252.23 | 5001 |  | warm <= 5000 ms | pass |
+| M3e | linux:linux_kernel or in_cisa_kev | dry-run | 18 | 0.35 / 354.13 | 0.36 / 348.88 | 5001 | hashed SubPlan; seq scan: cves | warm <= 5000 ms | pass |
+| M4 | linux:linux_kernel | saved search, page of 50 | 17 | 0.79 / 156.17 | 0.42 / 167.12 | 51 |  | warm <= 5000 ms | pass |
+| M5a | limit rule, or | realtime | 15 | 4.64 / 0.14 | 4.53 / 0.14 | 1 |  | warm <= 5 ms | pass |
+| M5b | limit rule, or | dry-run | 736 | 12.58 / 4321.03 | 12.65 / 4289.32 | 5001 | seq scan: cves | warm <= 5000 ms | pass |
+| M5c | limit rule, or | batch 5,000 | 15 | 44.87 / 380.75 | 44.90 / 402.27 | 4564 |  | warm <= 3000 ms | pass |
+| M5d | limit rule, and (information) | realtime | 701 | 182.88 / 3.92 | 178.07 / 3.78 | 0 |  | information only | - |
+| M5e | limit rule, and (information) | dry-run | 834 | 210.48 / 1070.86 | 214.29 / 1062.11 | 0 |  | information only | - |
+| M5f | limit rule, and (information) | batch 5,000 | 701 | 2212.55 / 21.47 | 2547.29 / 18.84 | 0 |  | information only | - |
+| M6 | 50 products, or | dry-run | 734 | 19.64 / 1531.43 | 14.57 / 1382.58 | 5001 | SubPlan NOT hashed | warm <= 5000 ms | pass (not hashed; within threshold) |
+| M7a | npm, package in 50 names | dry-run | 2 | 0.47 / 1206.94 | 0.47 / 1151.69 | 0 |  | warm <= 5000 ms | pass |
+| M7b | Debian, package eq openssl | dry-run | 3 | 0.48 / 19.70 | 0.39 / 8.81 | 395 |  | warm <= 5000 ms | pass |
+| M7c | package eq openssl, no ecosystem | dry-run | 2 | 0.33 / 37.43 | 0.30 / 23.62 | 2037 |  | first run <= 5000 ms | pass |
+| M7d-old | package contains lodash, no ecosystem, per-row EXISTS (before) | dry-run | 1 | 0.24 / 3219.45 | 0.26 / 3253.23 | 135 | seq scan: cve_affected_packages | information only | - |
+| M7d | package contains lodash, no ecosystem, set form | dry-run | 1 | 0.26 / 3232.65 | 0.26 / 3335.76 | 135 | seq scan: cve_affected_packages | not slower than M7d-old | FAIL (slower than M7d-old) |
+
+M8 read-only estimate (kept ingest): 2502 pages of 1000 IDs, 200438 matches, 4m10s read time.
+
+M7d compared fairly: the two forms interleaved, five runs each (`TestKeptIngestContainsInterleaved`), because single triples flipped between pass and fail by a few percent:
+
+| Run | Before (per-row EXISTS) plan+exec ms | Set form plan+exec ms |
+|---|---|---|
+| 1 | 3332.2 | 3300.5 |
+| 2 | 3345.0 | 3314.2 |
+| 3 | 3283.0 | 3348.6 |
+| 4 | 3353.6 | 3341.8 |
+| 5 | 3336.5 | 3316.5 |
+| mean | 3330.1 | 3324.3 |
+
+The set form is not slower (mean 3,324 ms against 3,330 ms): **pass**. Both forms take about 3.3 s serially, against 1.2 s for each with parallel query; both are under the design's 4.7 s reference and the 5 s dry-run threshold.
+
+M8 full activation (disposable copy): 12m5s wall clock, 200252 events, rule status active, threshold 7 min, FAIL.
+
+### Reading
+
+- **Every statement threshold passes**: M5a realtime 4.7 ms, M5b dry-run 4.3 s, M5c batch 0.45 s, M6 1.4 s, M7d equal to the old form. The read-only M8 estimate covers the whole corpus in 4 min 10 s (200,438 matches) with no shared-memory error.
+- **M8 fails on wall clock: 12 min 5 s against 7 minutes.** The activation completed (rule `active`, 200,252 events), inside the 15 minutes after which `SweepZombieActivations` fails a job. About 4 minutes are reads; about 8 are the 200,252 `InsertAlertEvent` calls, one transaction each (about 2.4 ms per event). That cost follows the number of matching CVEs, not the rule's shape: `severity in [critical, high]` matches 182,637 of the kept ingest's CVEs (critical 46,442, high 136,195), so an activation of that ordinary rule spends about the same time on inserts.
+- Single-product rows are close to the design's figures; one single-product batch (M2b, `linux:linux_kernel` or `in_cisa_kev`) takes 1.1 s with a sequential scan of `cve_cpe_matches`, within the 3 s threshold.

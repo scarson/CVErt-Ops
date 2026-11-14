@@ -1108,7 +1108,7 @@ A nil dereference panics the worker goroutine, drops the entire pending alert ba
   }
   ```
 
-  **Zombie activating rule recovery (required):** If the worker processing an activation scan crashes mid-run (OOM-kill, deployment restart), the rule remains permanently in `status = 'activating'`. A periodic sweeper goroutine (runs every 5 minutes) must identify `job_queue` rows where `queue = 'alert_activation'`, `status = 'running'`, and `locked_at < now() - interval '15 minutes'`. For each such zombie job, the sweeper transitions the associated alert rule to `status = 'error'`, logs the failure, and re-enqueues the activation scan job. Users can retry by PATCH-ing the rule (which sets `status = 'activating'` and enqueues a new scan).
+  **Zombie activating rule recovery (required):** If the worker processing an activation scan crashes mid-run (OOM-kill, deployment restart), the rule remains permanently in `status = 'activating'`. Two mechanisms prevent this. The worker pool's stale lock recovery re-enqueues a job whose worker stopped responding until the job has used its `max_attempts`, then marks it `dead`. A periodic sweeper (runs every 5 minutes) finds rules in `status = 'activating'`, not deleted, with `updated_at` more than 15 minutes ago and no `pending` or `running` `alert_activation` job holding the rule's lock key (`activation:<rule_id>`); it logs each one and transitions it to `status = 'error'`. The 15-minute margin covers the gap between saving the rule and enqueueing its job. Users can retry by PATCH-ing the rule (which sets `status = 'activating'` and enqueues a new scan).
 
 **Rejected CVE filtering in all evaluation passes (required):**
 
@@ -1720,7 +1720,7 @@ ALTER TABLE job_queue SET (
 **Worker goroutines:**
 - One goroutine per queue type (configurable concurrency per queue).
 - Each goroutine polls with `SKIP LOCKED`, processes the job, and updates status — all within a single transaction.
-- Stale lock detection: a periodic goroutine reclaims jobs where `locked_at` exceeds a timeout (e.g., 5 min), to handle worker crashes.
+- Stale lock detection: a periodic goroutine reclaims jobs where `locked_at` exceeds a timeout (e.g., 5 min), to handle worker crashes. A reclaimed job with attempts left returns to `pending`; one that has used `max_attempts` becomes `dead`, so a job that keeps killing its worker is not retried forever.
 
 **Why not an external queue for MVP:**
 - No Redis dependency → simpler Docker Compose stack → better for self-hosted/homelab persona.

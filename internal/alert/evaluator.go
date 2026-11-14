@@ -27,7 +27,16 @@ const (
 	activationQueue = "alert_activation"
 	activationBatch = 1000
 	candidateCap    = 5000
+
+	// activationLockKeyPrefix starts the lock_key of a rule's activation job; the
+	// rule ID follows it. The lock key allows one pending or running job per rule.
+	activationLockKeyPrefix = "activation:"
 )
+
+// ActivationLockKey returns the job_queue lock_key of the activation job for ruleID.
+func ActivationLockKey(ruleID uuid.UUID) string {
+	return activationLockKeyPrefix + ruleID.String()
+}
 
 // cveSummary is a lightweight CVE record produced by the candidate query.
 type cveSummary struct {
@@ -360,51 +369,56 @@ func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.U
 	return nil
 }
 
-// SweepZombieActivations finds activation jobs stuck in 'running' for more than 15 minutes,
-// marks the associated rule as 'error', and marks the job as 'failed'. Does not auto-retry.
+// SweepZombieActivations moves to 'error' every rule left in 'activating' with no
+// activation job that could still finish it: no pending or running alert_activation
+// job holds the rule's lock key. A rule updated within the last 15 minutes is skipped,
+// which covers the gap between saving the rule and enqueueing its job. The sweep does
+// not change job rows: the worker pool's stale recovery re-queues a job whose worker
+// stopped responding until its attempts are used up, then marks it 'dead', and the
+// next sweep finds the rule. Users retry by PATCHing the rule, which enqueues a new job.
 func (e *Evaluator) SweepZombieActivations(ctx context.Context) error {
 	type zombie struct {
-		JobID  uuid.UUID
 		RuleID uuid.UUID
 		OrgID  uuid.UUID
 	}
 
 	var zombies []zombie
-	rows, err := e.db.QueryContext(ctx, `
-		SELECT jq.id,
-		       (jq.payload->>'rule_id')::uuid,
-		       (jq.payload->>'org_id')::uuid
-		FROM job_queue jq
-		WHERE jq.queue     = $1
-		  AND jq.status    = 'running'
-		  AND jq.locked_at < now() - interval '15 minutes'
-	`, activationQueue)
-	if err != nil {
-		return fmt.Errorf("query zombie jobs: %w", err)
-	}
-	defer rows.Close() //nolint:errcheck
-	for rows.Next() {
-		var z zombie
-		if err := rows.Scan(&z.JobID, &z.RuleID, &z.OrgID); err != nil {
-			return fmt.Errorf("scan zombie: %w", err)
+	err := e.bypassTx(ctx, 0, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT r.id, r.org_id
+			FROM alert_rules r
+			WHERE r.status     = 'activating'
+			  AND r.deleted_at IS NULL
+			  AND r.updated_at < now() - interval '15 minutes'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM job_queue jq
+			      WHERE jq.lock_key = $2 || r.id::text
+			        AND jq.queue    = $1
+			        AND jq.status   IN ('pending', 'running')
+			  )
+		`, activationQueue, activationLockKeyPrefix)
+		if err != nil {
+			return fmt.Errorf("query zombie rules: %w", err)
 		}
-		zombies = append(zombies, z)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate zombies: %w", err)
+		defer rows.Close() //nolint:errcheck
+		for rows.Next() {
+			var z zombie
+			if err := rows.Scan(&z.RuleID, &z.OrgID); err != nil {
+				return fmt.Errorf("scan zombie rule: %w", err)
+			}
+			zombies = append(zombies, z)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return fmt.Errorf("find zombie activating rules: %w", err)
 	}
 
 	for _, z := range zombies {
-		e.log.Warn("zombie activation job detected", "job_id", z.JobID, "rule_id", z.RuleID)
-
+		e.log.Warn("rule stuck in activating with no pending or running activation job; setting status to error",
+			"rule_id", z.RuleID, "org_id", z.OrgID)
 		if _, err := e.rules.SetAlertRuleStatusIf(ctx, z.OrgID, z.RuleID, "error", "activating"); err != nil {
 			e.log.Error("set zombie rule to error", "rule_id", z.RuleID, "err", err)
-		}
-		if _, err := e.db.ExecContext(ctx,
-			`UPDATE job_queue SET status = 'failed', finished_at = now() WHERE id = $1 AND status = 'running'`,
-			z.JobID,
-		); err != nil {
-			e.log.Error("fail zombie job", "job_id", z.JobID, "err", err)
 		}
 	}
 	return nil

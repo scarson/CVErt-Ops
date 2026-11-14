@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/scarson/cvert-ops/internal/alert"
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
 	"github.com/scarson/cvert-ops/internal/audit"
 	"github.com/scarson/cvert-ops/internal/store"
@@ -819,14 +820,14 @@ func (srv *Server) unbindRuleChannelHandler(w http.ResponseWriter, r *http.Reque
 }
 
 // enqueueActivation enqueues an alert_activation job for the given rule.
-// Errors are logged but not propagated — the rule is already persisted and
-// the sweep zombie mechanism will recover stuck activations.
+// Errors are logged but not propagated — the rule is already persisted, and the
+// zombie activation sweeper moves a rule left activating with no job to 'error'.
 func (srv *Server) enqueueActivation(ctx context.Context, orgID, ruleID uuid.UUID) {
 	payload, _ := json.Marshal(map[string]string{
 		"rule_id": ruleID.String(),
 		"org_id":  orgID.String(),
 	})
-	lockKey := "activation:" + ruleID.String()
+	lockKey := alert.ActivationLockKey(ruleID)
 	if _, err := srv.store.EnqueueJob(ctx, "alert_activation", 10, payload, &lockKey, 3, nil); err != nil {
 		slog.ErrorContext(ctx, "enqueue activation job", "rule_id", ruleID, "error", err)
 	}

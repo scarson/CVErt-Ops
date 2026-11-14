@@ -1933,10 +1933,16 @@ func TestAlertRule_ActivatingEnqueuesJob(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
-	// Verify a job was enqueued with queue = 'alert_activation'.
+	// Verify a job was enqueued with queue = 'alert_activation' under the rule's
+	// activation lock key, which the zombie activation sweeper looks up.
+	ruleID, err := uuid.Parse(created.ID)
+	if err != nil {
+		t.Fatalf("parse rule id: %v", err)
+	}
 	var count int
-	err := db.DB().QueryRowContext(ctx,
-		`SELECT count(*) FROM job_queue WHERE queue = 'alert_activation' AND status = 'pending'`,
+	err = db.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM job_queue WHERE queue = 'alert_activation' AND status = 'pending' AND lock_key = $1`,
+		alert.ActivationLockKey(ruleID),
 	).Scan(&count)
 	if err != nil {
 		t.Fatalf("query job_queue: %v", err)

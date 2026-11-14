@@ -190,7 +190,7 @@ const (
 type batchConfig struct {
 	feedName      string
 	metricsLabel  string
-	getCandidates func(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error)
+	getCandidates func(ctx context.Context, since, until time.Time, pageSize int) ([]string, error)
 	listRules     func(ctx context.Context) ([]store.AlertRuleRow, error)
 	maxHeldRuns   int
 }
@@ -227,27 +227,11 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 
 	// Collect all candidate IDs across pages before evaluating rules.
 	// This avoids creating duplicate rule run records per page (one run per rule per batch).
-	var allCandidateIDs []string
-	var afterID string
-
-	for {
-		candidateIDs, pageErr := cfg.getCandidates(ctx, since, afterID, candidatePageSize)
-		if pageErr != nil {
-			return fmt.Errorf("get %s candidates: %w", cfg.feedName, pageErr)
-		}
-		if len(candidateIDs) == 0 {
-			break
-		}
-
-		allCandidateIDs = append(allCandidateIDs, candidateIDs...)
-
-		// Advance keyset cursor to last ID in this page.
-		afterID = candidateIDs[len(candidateIDs)-1]
-
-		// If this page was smaller than the page size, we've reached the end.
-		if len(candidateIDs) < candidatePageSize {
-			break
-		}
+	// Rows stamped after batchTime are left to the next run, whose scan starts at
+	// batchTime minus cursorRescanWindow or earlier (see changeScan).
+	allCandidateIDs, err := cfg.getCandidates(ctx, since, batchTime, candidatePageSize)
+	if err != nil {
+		return fmt.Errorf("get %s candidates: %w", cfg.feedName, err)
 	}
 
 	listChanges, err := e.getWatchlistCVEChangesSince(ctx, since)
@@ -767,97 +751,174 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 	return tx.Commit()
 }
 
-// getCVEsModifiedSince returns a page of CVE IDs whose date_modified_canonical or
-// date_match_inputs_changed is after since, ordered by cve_id ASC for keyset pagination.
+// changeScan selects the CVEs whose change-date column dateCol lies in (since, until]
+// and that satisfy filter (an SQL predicate on cves, or empty). It reads them page by
+// page in (dateCol, cve_id) order with a keyset on that pair, which an index on
+// (dateCol, cve_id) serves (migration 000065), so each page starts where the previous
+// one ended however the changed CVEs are spread over the cve_id order.
+//
+// Each page is its own statement, so a merge can move a CVE's date while the scan runs.
+// A CVE whose date moves forward to a time at or before until is read at its new
+// position, a second time if the scan had already read it; changedCVEs removes the
+// duplicate. A CVE whose date moves past until is not read; the next run's scan starts
+// at this run's until minus cursorRescanWindow or earlier, so that run reads it. A CVE
+// whose date moves backward behind the scan's position is stamped by a writer that
+// committed during this run, which is the case cursorRescanWindow exists for: the next
+// run reads it. until also ends the scan: every page holds keys after the previous
+// page's last key and at or before (until, the largest cve_id), and only a writer whose
+// clock reads at or before until can add a key to that range.
+type changeScan struct {
+	dateCol string
+	filter  string
+}
+
+var (
+	modifiedScan    = changeScan{dateCol: "date_modified_canonical"}
+	matchInputsScan = changeScan{dateCol: "date_match_inputs_changed"}
+	epssScan        = changeScan{dateCol: "date_epss_updated"}
+	retractedScan   = changeScan{dateCol: "date_modified_canonical", filter: retractedCVE}
+)
+
+// changeKey is one CVE's position in a scan: its change date (zero in a scan by ID
+// alone) and its ID.
+type changeKey struct {
+	date  time.Time
+	cveID string
+}
+
+// changePageFunc reads the page of a scan that follows after, or the first page when
+// after is nil.
+type changePageFunc func(ctx context.Context, after *changeKey) ([]changeKey, error)
+
+// collectChanges reads every page of a scan and returns the CVE IDs in scan order. A
+// page shorter than pageSize is the last.
+func collectChanges(ctx context.Context, pageSize int, page changePageFunc) ([]string, error) {
+	var ids []string
+	var after *changeKey
+	for {
+		keys, err := page(ctx, after)
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			ids = append(ids, k.cveID)
+		}
+		if len(keys) < pageSize {
+			return ids, nil
+		}
+		after = &keys[len(keys)-1]
+	}
+}
+
+// changePage returns the page reader of scan s over (since, until].
+func (e *Evaluator) changePage(s changeScan, since, until time.Time, pageSize int) changePageFunc {
+	filter := ""
+	if s.filter != "" {
+		filter = " AND (" + s.filter + ")"
+	}
+	order := ` ORDER BY ` + s.dateCol + `, cve_id`
+	// The later pages need no lower bound on since: the previous page's last date is after it.
+	//nolint:gosec // G202: the column names and filters come from the changeScan values above, never from input.
+	first := `SELECT ` + s.dateCol + `, cve_id FROM cves
+		WHERE ` + s.dateCol + ` > $1 AND ` + s.dateCol + ` <= $2` + filter + order + ` LIMIT $3`
+	//nolint:gosec // G202: as above.
+	next := `SELECT ` + s.dateCol + `, cve_id FROM cves
+		WHERE (` + s.dateCol + `, cve_id) > ($1, $2) AND ` + s.dateCol + ` <= $3` + filter + order + ` LIMIT $4`
+	return func(ctx context.Context, after *changeKey) ([]changeKey, error) {
+		var (
+			rows *sql.Rows
+			err  error
+		)
+		if after == nil {
+			rows, err = e.db.QueryContext(ctx, first, since, until, pageSize)
+		} else {
+			rows, err = e.db.QueryContext(ctx, next, after.date, after.cveID, until, pageSize)
+		}
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close() //nolint:errcheck
+		var keys []changeKey
+		for rows.Next() {
+			var k changeKey
+			if err := rows.Scan(&k.date, &k.cveID); err != nil {
+				return nil, err
+			}
+			keys = append(keys, k)
+		}
+		return keys, rows.Err()
+	}
+}
+
+// idPage returns the page reader of a scan of every CVE that satisfies filter (an SQL
+// predicate on cves, or empty), in cve_id order.
+func (e *Evaluator) idPage(filter string, pageSize int) changePageFunc {
+	if filter != "" {
+		filter = " AND (" + filter + ")"
+	}
+	query := `SELECT cve_id FROM cves WHERE cve_id > $1` + filter + ` ORDER BY cve_id LIMIT $2`
+	return func(ctx context.Context, after *changeKey) ([]changeKey, error) {
+		afterID := ""
+		if after != nil {
+			afterID = after.cveID
+		}
+		ids, err := scanCVEIDs(e.db.QueryContext(ctx, query, afterID, pageSize))
+		if err != nil {
+			return nil, err
+		}
+		keys := make([]changeKey, len(ids))
+		for i, id := range ids {
+			keys[i].cveID = id
+		}
+		return keys, nil
+	}
+}
+
+// changedCVEs runs each scan over (since, until] and returns the IDs they read, sorted,
+// each once: evaluateRuleInChunks relies on disjoint chunks.
+func (e *Evaluator) changedCVEs(ctx context.Context, since, until time.Time, pageSize int, scans ...changeScan) ([]string, error) {
+	var ids []string
+	for _, s := range scans {
+		got, err := collectChanges(ctx, pageSize, e.changePage(s, since, until, pageSize))
+		if err != nil {
+			return nil, fmt.Errorf("scan %s: %w", s.dateCol, err)
+		}
+		ids = append(ids, got...)
+	}
+	slices.Sort(ids)
+	return slices.Compact(ids), nil
+}
+
+// getCVEsModifiedSince returns the IDs of the CVEs whose date_modified_canonical or
+// date_match_inputs_changed lies in (since, until], sorted, each once.
 // date_match_inputs_changed moves when a rule match input outside material_hash changes
 // (a CNA product name, an NVD vulnerable flag), so a CVE whose realtime evaluation of such
-// a change failed is evaluated here. Both dates are stamped from the merge worker's clock,
-// so cursorRescanWindow covers both. The two conditions are a UNION of two keyset scans,
-// one per column, so each can use its own index; each branch is limited to the page size,
-// which does not change the result, because the first limit IDs of the union are among
-// the first limit IDs of each branch. A zero since scans every CVE. afterID is the last CVE
-// ID from the previous page (empty string for the first page). Rejected and withdrawn
-// CVEs are included: evaluateRule resolves open events only for CVEs in its candidate
-// list, and queryCandidates keeps them from matching.
-func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	switch {
-	case since.IsZero() && afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 ORDER BY cve_id ASC LIMIT $1`, limit)
-	case since.IsZero():
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE cve_id > $1
-			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
-	case afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`(SELECT cve_id FROM cves
-			  WHERE date_modified_canonical > $1
-			  ORDER BY cve_id LIMIT $2)
-			 UNION
-			 (SELECT cve_id FROM cves
-			  WHERE date_match_inputs_changed > $1
-			  ORDER BY cve_id LIMIT $2)
-			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
-	default:
-		rows, err = e.db.QueryContext(ctx,
-			`(SELECT cve_id FROM cves
-			  WHERE date_modified_canonical > $1
-			    AND cve_id > $2
-			  ORDER BY cve_id LIMIT $3)
-			 UNION
-			 (SELECT cve_id FROM cves
-			  WHERE date_match_inputs_changed > $1
-			    AND cve_id > $2
-			  ORDER BY cve_id LIMIT $3)
-			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
+// a change failed is evaluated here. Both dates are stamped from the merge worker's clock
+// or the database clock, so cursorRescanWindow covers both. Each date is its own scan
+// (see changeScan). A zero since returns every CVE, in cve_id order. Rejected and
+// withdrawn CVEs are included: evaluateRule resolves open events only for CVEs in its
+// candidate list, and queryCandidates keeps them from matching.
+func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since, until time.Time, pageSize int) ([]string, error) {
+	if since.IsZero() {
+		return collectChanges(ctx, pageSize, e.idPage("", pageSize))
 	}
-	return scanCVEIDs(rows, err)
+	return e.changedCVEs(ctx, since, until, pageSize, modifiedScan, matchInputsScan)
 }
 
 // retractedCVE is the SQL predicate for a CVE that a feed has rejected or withdrawn.
 const retractedCVE = `COALESCE(lower(status), '') IN ('rejected', 'withdrawn')`
 
-// getCVEsEPSSUpdatedSince returns a page of CVE IDs whose EPSS score was updated after
-// since, ordered by cve_id ASC for keyset pagination. It also returns CVEs retracted after
-// since: EPSS-only rules are evaluated on this path alone, and a tombstone clears
-// epss_score without touching date_epss_updated, so their open events would otherwise
-// never resolve.
-func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	switch {
-	case since.IsZero() && afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE (epss_score IS NOT NULL OR `+retractedCVE+`)
-			 ORDER BY cve_id ASC LIMIT $1`, limit)
-	case since.IsZero():
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE cve_id > $1
-			   AND (epss_score IS NOT NULL OR `+retractedCVE+`)
-			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
-	case afterID == "":
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE (date_epss_updated > $1 OR (`+retractedCVE+` AND date_modified_canonical > $1))
-			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
-	default:
-		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE (date_epss_updated > $1 OR (`+retractedCVE+` AND date_modified_canonical > $1))
-			   AND cve_id > $2
-			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
+// getCVEsEPSSUpdatedSince returns the IDs of the CVEs whose EPSS score was updated in
+// (since, until], and of the CVEs retracted in that window, sorted, each once:
+// EPSS-only rules are evaluated on this path alone, and a tombstone clears epss_score
+// without touching date_epss_updated, so their open events would otherwise never
+// resolve. Each is its own scan (see changeScan). A zero since returns every CVE that
+// has a score or is retracted, in cve_id order.
+func (e *Evaluator) getCVEsEPSSUpdatedSince(ctx context.Context, since, until time.Time, pageSize int) ([]string, error) {
+	if since.IsZero() {
+		return collectChanges(ctx, pageSize, e.idPage("epss_score IS NOT NULL OR "+retractedCVE, pageSize))
 	}
-	return scanCVEIDs(rows, err)
+	return e.changedCVEs(ctx, since, until, pageSize, epssScan, retractedScan)
 }
 
 // getWatchlistCVEChangesSince returns, per watchlist, the CVE IDs added to or removed from

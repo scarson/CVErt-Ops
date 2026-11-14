@@ -86,7 +86,7 @@ Organizations can configure OIDC-based single sign-on with domain-based auto-dis
 
 ### SCIM Provisioning
 
-Full SCIM 2.0 support for automated user lifecycle management via your identity provider (Okta, Azure AD, Google Workspace, etc.). Bearer-token authenticated endpoints expose standard `/Users` and `/Groups` resources with create/read/update/patch/delete and filter parsing. Group-to-role mappings let you drive RBAC membership directly from IdP groups — changes take effect on the next SCIM sync with no admin action required. Org members can be flagged `scim_exempt` to keep local accounts (emergency access, service accounts) from being deactivated by an IdP sync. A dedicated per-org rate limiter isolates SCIM traffic from the main API budget.
+Full SCIM 2.0 support for automated user lifecycle management via your identity provider (Okta, Microsoft Entra ID, Google Workspace, etc.). Bearer-token authenticated endpoints expose standard `/Users` and `/Groups` resources with create/read/update/patch/delete and filter parsing. Group-to-role mappings let you drive RBAC membership directly from IdP groups — changes take effect on the next SCIM sync with no admin action required. Org members can be flagged `scim_exempt` to keep local accounts (emergency access, service accounts) from being deactivated by an IdP sync. A dedicated per-org rate limiter isolates SCIM traffic from the main API budget.
 
 ### Site Administration
 
@@ -187,7 +187,6 @@ internal/
   tier/              Subscription tier logic
   worker/            Job queue and worker pool
 migrations/          SQL migration files (embedded)
-templates/           Notification and report templates (embedded)
 web/                 Vue 3 SPA
 ```
 

@@ -421,7 +421,6 @@ internal/tier/       # subscription tier logic
 internal/version/    # version checks against affected ranges, by ecosystem
 internal/worker/     # job queue + goroutine pool
 migrations/          # SQL files (embedded)
-templates/           # notification + watchlist templates (embedded)
 web/                 # Vue 3 SPA (Vite + TypeScript + Tailwind 4)
 dev/                 # plans, research, bug hunts, test coverage reports
 ```

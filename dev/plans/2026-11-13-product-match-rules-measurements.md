@@ -240,7 +240,7 @@ The copy at migration 63, with `UPDATE cves SET date_match_inputs_changed = date
 | Sparse: `since` = 99th percentile of modification times | first | 26,197 | same; the eligible rows sit at the end of `cve_id` order, so each walk reads most of the index (1.27 s for the `date_modified_canonical` arm, 2.43 s for the new arm) | **3,699 ms** |
 | Sparse | from the `CVE-` range | 26,197 | bitmap scans of `cves_date_modified_canonical_idx` and `cves_date_match_inputs_changed_idx`, then sort | 127 ms |
 
-Threshold: 3 s per page. **The sparse first page fails (3.7 s).** The planner walks the primary key when it expects more eligible rows than a page, which goes wrong when they are clustered at the end of the ID order; the existing arm alone took 1.27 s on the same page. A window of fewer eligible CVEs than a page uses the index-and-sort plan. Planning time is under 0.4 ms in every case. With Sam.
+Threshold: 3 s per page. **The sparse first page fails (3.7 s).** The planner walks the primary key when it expects more eligible rows than a page, which goes wrong when they are clustered at the end of the ID order; the existing arm alone took 1.27 s on the same page. A window of fewer eligible CVEs than a page uses the index-and-sort plan. Planning time is under 0.4 ms in every case. Sam accepted the sparse first page on 2026-11-14.
 
 ## M8 after batched activation inserts (2026-11-14)
 

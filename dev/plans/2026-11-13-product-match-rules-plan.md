@@ -119,8 +119,8 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 | 2 — CVE-set form, `CompiledRule.Where`, package correlation | ✅ Shipped 2026-11-14 (branch; PR pending) | `7668072`, `c551369`, `f2f6f0e`, `1d0f6e6`, `daddbc2` | No existing integration test depended on uncorrelated matching |
 | 3 — The `affected.cpe_product` field | ✅ Shipped 2026-11-14 (branch; PR pending) | `76359bc`, `71b4e9b`, `ead194c`, `fcde2c5`; review fix `d69081d` | Adversarial review found one branch defect (quadratic Validate cost), fixed |
 | 4 — Measurements on the kept full ingest (gate) | ✅ Complete 2026-11-14: statement thresholds pass after Sam's remedy (`7ad8080`, `fe0e32f`, `9d58ee1`); M8 12 min accepted by Sam, follow-up separate | evidence `4d72221`, `bea8e03`, see next commit | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
-| 5 — Re-check signal | 🚧 In progress (claimed 2026-11-14T05:25Z, `claude/lucid-moser-fef966`) | — | — |
-| 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
+| 5 — Re-check signal | ✅ Shipped 2026-11-14 (branch; PR pending) | `fdbf47f`, `3232759`, `ce2b731` | Task 5.5 sparse page 3.7 s accepted by Sam; M8 2 min 4 s after PR 243 |
+| 6 — PLAN.md, reviews, full suite, PR | 🚧 In progress (claimed 2026-11-14T06:55Z, `claude/lucid-moser-fef966`) | — | — |
 
 ### Deviations
 - Setup step 1: the work runs in the session's existing worktree, branch `claude/lucid-moser-fef966`, reset to `origin/dev` at `f593d74` before any change, instead of a new `claude/match2-impl` worktree. Same base, one writer.
@@ -696,7 +696,7 @@ Record both numbers. If step 2 cannot be run (no backup access, no disk), M8 is 
 
 ## Phase 5 — Re-check signal
 
-**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T05:25Z on branch `claude/lucid-moser-fef966` — code done: `fdbf47f` (5.1–5.2, migration 000063), `3232759` (5.3), `ce2b731` (5.4–5.6); verify-first span 5.3 confirmed (ASCII-only lower-casing separates KELVIN SIGN + `node` from `knode`; `strings.ToLower` does not). Task 5.5's measurement on the copy fails its 3 s per-page threshold in one case (a sparse window's first page, 3.7 s); with Sam. Merged `origin/dev` (`e72f6a9`, PR 243 batched activation inserts) before re-measuring M8.
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — code: `fdbf47f` (5.1–5.2, migration 000063), `3232759` (5.3), `ce2b731` (5.4–5.6); verify-first span 5.3 confirmed (ASCII-only lower-casing separates KELVIN SIGN + `node` from `knode`; `strings.ToLower` does not). Task 5.5's measurement on the copy fails its 3 s per-page threshold in one case (a sparse window's first page, 3.7 s); **Sam accepted it on 2026-11-14 ("Accept, record it")**: it occurs only when a window holds more than a page of changes clustered at high CVE IDs, stays far under the 14 s statement timeout, and the existing arm alone already takes 1.27 s on that page. Paging by `(date, cve_id)` would remove it and is left for a later change if backlogs matter. Merged `origin/dev` (`e72f6a9`, PR 243 batched activation inserts) before re-measuring M8.
 
 Design section 7 (Sam's ruling 15.1: a separate signal, not a `material_hash` change) and section 12's re-check tests. `material_hash` and its golden hashes do not change (design 16): run `go test ./internal/merge/... -run 'Hash|Golden'` at the end of the phase and confirm no golden file changed.
 
@@ -802,7 +802,7 @@ The zero-`since` cases (full scan) are unchanged. `cursorRescanWindow` already a
 
 ## Phase 6 — PLAN.md, reviews, full suite, PR
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T06:55Z on branch `claude/lucid-moser-fef966`
 
 ### Task 6.1: Documentation in the implementation PR
 

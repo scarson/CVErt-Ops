@@ -111,7 +111,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-14 — 8 rounds (4 independent, all cross-model Codex cold reads), 2 verify-first flags annotated in place (Tasks 2.1 and 5.3)
-**Overall:** 🚧 Phases 1–4 complete on branch `claude/lucid-moser-fef966` (no PR yet); Phase 4 needed Sam's query-shape remedy (design section 17). Phase 5 in progress.
+**Overall:** ✅ All six phases complete on branch `claude/lucid-moser-fef966`; Phase 4 needed Sam's query-shape remedy (design section 17). PR to `dev`: [scarson/CVErt-Ops#244](https://github.com/scarson/CVErt-Ops/pull/244).
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
@@ -120,7 +120,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 | 3 — The `affected.cpe_product` field | ✅ Shipped 2026-11-14 (branch; PR pending) | `76359bc`, `71b4e9b`, `ead194c`, `fcde2c5`; review fix `d69081d` | Adversarial review found one branch defect (quadratic Validate cost), fixed |
 | 4 — Measurements on the kept full ingest (gate) | ✅ Complete 2026-11-14: statement thresholds pass after Sam's remedy (`7ad8080`, `fe0e32f`, `9d58ee1`); M8 12 min accepted by Sam, follow-up separate | evidence `4d72221`, `bea8e03`, see next commit | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
 | 5 — Re-check signal | ✅ Shipped 2026-11-14 (branch; PR pending) | `fdbf47f`, `3232759`, `ce2b731` | Task 5.5 sparse page 3.7 s accepted by Sam; M8 2 min 4 s after PR 243 |
-| 6 — PLAN.md, reviews, full suite, PR | 🚧 In progress (claimed 2026-11-14T06:55Z, `claude/lucid-moser-fef966`) | — | — |
+| 6 — PLAN.md, reviews, full suite, PR | ✅ Complete 2026-11-14 | `2a49cdb` … `4b65c2f` | Full suite passed at `4b65c2f`; PR [#244](https://github.com/scarson/CVErt-Ops/pull/244) |
 
 ### Deviations
 - Phase 6 review fixes, decided by Claude under Sam's delegation (2026-11-14, "bias to action"): (1) a late-binding CVE ID rename or merge stamps `date_match_inputs_changed` so ID-keyed rules are re-checked by batch if realtime fails; (2) the never-matching ecosystem check runs only when every ecosystem value is valid (it was quadratic in a refused value's length); (3) validation reports one error per product condition and unmapped-product warnings only within the 50-product limit (a 1 MiB body produced up to 333,334 entries); (4) an `and` rule may hold at most 10 set conditions (measured: 10 sets 4.3 ms realtime, 20 sets 15.9 ms). Recorded in design section 17, PLAN.md §10.2 and the measurements file.
@@ -142,6 +142,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 - Task 4.2 (M8): the copy was migrated to the committed head before the activation test with a binary built from a `git archive` export of `HEAD`, because the working tree was mid-edit at the time; the test's own migration step then found nothing to apply. The copy was analysed after its restore.
 
 ### Discoveries
+- `/plan-check` (Task 6.2, 2026-11-14): every PLAN.md §5.3 and §10 requirement this branch adds or touches is met. Older requirements this branch does not touch, not fixed here: regex conditions compile without the `(?i)` default and run against a lower-cased description, so a pattern with an upper-case literal never matches (`internal/alert/dsl/compiler.go` regex PostFilter, `internal/alert/evaluator.go` `cveSummary`); an `or` rule with a regex condition behaves as `and` (`internal/alert/dsl/postfilter.go`); `fire_on_non_material_changes` (§10.4) is stored but never read by `internal/alert`; the zombie-activation sweeper marks the rule `error` without re-enqueueing (§10.3); no metric when a run hits the candidate cap; CVSS vector normalisation sorts metrics alphabetically where §5.3 says spec order (hash still stable); `cve_id` `eq`/`in` compare exactly; the regex selective-constraint check counts conditions that narrow nothing (`in_cisa_kev eq false`, conditions under `or`).
 - Code review (2026-11-14), minor, not fixed here: `affected.package` `eq`/`in` values are folded in Go (`ecosystem.FoldPackageName`, `strings.ToLower`) while stored names are folded in SQL (`ecosystem.FoldedNameSQL`, PostgreSQL `lower()`); for a non-ASCII upper-case package name the two can differ under some database character types, so a rule might not match its own spelling. Package names are almost always ASCII. `internal/alert/dsl/sets.go` (package match).
 - Code review (2026-11-14), minor, not fixed here: the unmapped-product warning (design section 8's text) names only the spelling with `_` read as a space, but the value's own spelling with `_` (and mixed pairs) also match a CNA row. Wording fix belongs in the design first. `internal/alert/dsl/validator.go` (unmapped warning).
 - Task 6.1 (2026-11-14): no CLI or MCP code exists on this branch (the only hits for `affected.package` outside `internal/alert` and `internal/api` are the AI prompt notes Task 3.4 updated). When the CLI/MCP design (`dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`) is built, it must carry `affected.cpe_product`, `affected.package` `eq`/`in`, the limits (50 product values, 100 conditions, 10 set conditions per `and` rule) and the never-matching ecosystem error.
@@ -807,7 +808,7 @@ The zero-`since` cases (full scan) are unchanged. `cursorRescanWindow` already a
 
 ## Phase 6 — PLAN.md, reviews, full suite, PR
 
-**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T06:55Z on branch `claude/lucid-moser-fef966`
+**Execution Status:** ✅ COMPLETE 2026-11-14 on branch `claude/lucid-moser-fef966` — 6.1 docs `2a49cdb`; 6.2 `/plan-check` all MATCH-2 markers met; 6.3 code review (no critical or important findings) and security review, fixes `0afb1dc`, `7e521af`, `d0e13d5`, `85baca7`, `d63337f`; 6.4 lint clean and full suite passed at `4b65c2f`; PR to `dev`: [scarson/CVErt-Ops#244](https://github.com/scarson/CVErt-Ops/pull/244).
 
 ### Task 6.1: Documentation in the implementation PR
 

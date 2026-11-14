@@ -3,7 +3,9 @@
 package dsl
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -51,6 +53,7 @@ const (
 	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
 	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
 	msgEmptyList         = "value must list at least one item"
+	msgInvalidOperator   = "operator %q is not valid for field %q"
 	// The value and names are printable ASCII (check.ParseProductValue), so they
 	// are quoted as written rather than with %q, which would double a backslash.
 	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor "%s" and product "%s"`
@@ -96,7 +99,7 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 			errs = append(errs, ValidationError{
 				Index:    i,
 				Field:    c.Field,
-				Message:  fmt.Sprintf("operator %q is not valid for field %q", c.Op, c.Field),
+				Message:  fmt.Sprintf(msgInvalidOperator, c.Op, c.Field),
 				Severity: "error",
 			})
 			continue
@@ -167,13 +170,13 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 	switch spec.kind {
 	case kindFloat:
 		var v float64
-		if err := json.Unmarshal(c.Value, &v); err != nil {
+		if err := decodeScalar(c.Value, &v); err != nil {
 			add(fmt.Sprintf("value must be a number: %v", err))
 		}
 
 	case kindTime:
 		var s string
-		if err := json.Unmarshal(c.Value, &s); err != nil {
+		if err := decodeScalar(c.Value, &s); err != nil {
 			add(fmt.Sprintf("value must be a JSON string: %v", err))
 		} else if _, err := time.Parse(time.RFC3339, s); err != nil {
 			add(fmt.Sprintf("value must be RFC 3339 time: %v", err))
@@ -181,7 +184,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 
 	case kindBool:
 		var v bool
-		if err := json.Unmarshal(c.Value, &v); err != nil {
+		if err := decodeScalar(c.Value, &v); err != nil {
 			add(fmt.Sprintf("value must be a JSON boolean: %v", err))
 		}
 
@@ -201,7 +204,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
@@ -219,21 +222,21 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 	case kindText:
 		if c.Op == "regex" {
 			var pattern string
-			if err := json.Unmarshal(c.Value, &pattern); err != nil {
+			if err := decodeScalar(c.Value, &pattern); err != nil {
 				add(fmt.Sprintf("regex value must be a JSON string: %v", err))
 			} else if _, err := regexp.Compile(pattern); err != nil {
 				add(fmt.Sprintf("invalid regex: %v", err))
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 			}
 		}
 
 	case kindFTS:
 		var s string
-		if err := json.Unmarshal(c.Value, &s); err != nil {
+		if err := decodeScalar(c.Value, &s); err != nil {
 			errs = append(errs, ValidationError{Index: idx, Field: c.Field, Message: "value must be a string", Severity: "error"})
 			return errs
 		}
@@ -265,7 +268,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
@@ -290,7 +293,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
@@ -514,6 +517,18 @@ func affectedValueValid(field string, spec fieldSpec, v string) bool {
 		return ecosystem.Valid(v)
 	}
 	return containsStr(spec.enumValues, v)
+}
+
+// decodeScalar unmarshals a condition's single value into v. It refuses JSON
+// null, which json.Unmarshal accepts by leaving v at its zero value: without
+// this, "cvss_v3_score gt null" would read as "gt 0" and "description_primary
+// contains null" would match every CVE. Validate and Compile both decode
+// single values through it, so a stored rule with a null value fails closed.
+func decodeScalar(raw json.RawMessage, v any) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("null is not allowed")
+	}
+	return json.Unmarshal(raw, v)
 }
 
 func containsStr(slice []string, s string) bool {

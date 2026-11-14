@@ -111,14 +111,14 @@ Why this matters here: this plan runs over several sessions (code, a measurement
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-14 — 8 rounds (4 independent, all cross-model Codex cold reads), 2 verify-first flags annotated in place (Tasks 2.1 and 5.3)
-**Overall:** 🚧 In progress on branch `claude/lucid-moser-fef966` (claimed 2026-11-14T02:12Z).
+**Overall:** ⏸ Phases 1–3 shipped on branch `claude/lucid-moser-fef966` (no PR yet); stopped at the Phase 4 gate, which failed for the 50-product/100-condition limit rule. Waiting on Sam's remedy choice.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Name table and value parser in `internal/check` | ✅ Shipped 2026-11-14 (branch; PR pending) | `cc883cd`, `3bf8255`, `43c878f` | Name table digest pinned at `f91e7929…a18b` |
 | 2 — CVE-set form, `CompiledRule.Where`, package correlation | ✅ Shipped 2026-11-14 (branch; PR pending) | `7668072`, `c551369`, `f2f6f0e`, `1d0f6e6`, `daddbc2` | No existing integration test depended on uncorrelated matching |
-| 3 — The `affected.cpe_product` field | 🚧 In progress (claimed 2026-11-14T03:35Z, `claude/lucid-moser-fef966`) | — | — |
-| 4 — Measurements on the kept full ingest (gate) | ⬜ Not started | — | — |
+| 3 — The `affected.cpe_product` field | ✅ Shipped 2026-11-14 (branch; PR pending) | `76359bc`, `71b4e9b`, `ead194c`, `fcde2c5`; review fix `d69081d` | Adversarial review found one branch defect (quadratic Validate cost), fixed |
+| 4 — Measurements on the kept full ingest (gate) | ⏸ Deferred 2026-11-14: thresholds failed, waiting on Sam | evidence commit below | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
 | 5 — Re-check signal | ⬜ Not started | — | — |
 | 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
 
@@ -133,12 +133,20 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 - Task 2.3 meaning detail beyond correlation (design 4.1, ecosystems compared exactly): the `:%` release arm now applies only to bases that take a suffix, so `npm` no longer also matches a stored `npm:...`; canonical stored data has none.
 - Task 2.4 (`1d0f6e6`): the never-matching check skips a rule whose `eq`/`in` ecosystem value fails to parse (that value already has its own error). A `neq` ecosystem condition does not suppress the no-ecosystem warning, per design section 8's wording.
 - Task 2.5 (`daddbc2`): commit subject is `test(alert): add integration tests for package correlation and exact match`; cases run through both realtime and activation.
+- Task 3.1 (`76359bc`): the unmapped-product warning quotes values with `"%s"`, not `%q`, so an escaped value such as `1und1:1\&1_online_storage` is shown as written (`internal/alert/dsl/validator.go:~50`). The create/PATCH symmetry test is renamed `TestAlertRule_ValidationErrorsSameOnCreateAndPatch` and made table-driven; its 51-product case is 51 one-value `eq nodejs:node.js` conditions (51 by Sam's per-condition ruling); the malformed `nodejs node.js` case returns the printable-ASCII message (`internal/api/alert_rules_test.go:~369`).
+- Task 3.2 (`71b4e9b`): other-product vendor and product are lower-cased in Go before binding (no change for the all-lower-case table). `ProductSetSQL` with no values returns `FALSE`; `compileProducts` also refuses an empty list and any operator other than `eq`/`in`, so such a stored rule fails closed. The product branch in `Compile` runs before the regex branch, so a stored `regex` product condition is a compile error. `nameTableCPEs` in `sets_test.go` hard-codes the table's 10 CPE spellings (the digest test pins the table). Worst accepted rule with 5,000 candidate IDs: 1,590 args.
+- Task 3.3 (`ead194c`): the every-path rule `{and: ecosystem eq npm, package eq fastify}` matches nothing in SeedCorpus (fastify is only a CNA product there); it is kept and pinned empty, and `{and: ecosystem eq npm, package eq jspdf}` (CVE-2026-31938) is added so a correlated package set is compared on a real match. The SeedCorpus, every-path and acceptance tests are not parallel (`SeedCorpus` and `GoldenPatch` call `t.Setenv`). Match sets are asserted exactly. Falsification probe of the full-vendor recheck: removing `lower(a.vendor) = ?` made both rows match; restored.
+- Task 4.2: the harness writes its tables and inputs to a results directory (`KEPT_INGEST_RESULTS_DIR`, outside the repository) and the results file is assembled from them, rather than the harness writing `dev/plans/2026-11-13-product-match-rules-measurements.md` itself. M8's full activation is a separate file, `internal/alert/kept_ingest_activation_test.go`, because it writes (to the copy only; it refuses to run unless `KEPT_INGEST_COPY_CONFIRM` names the copy). A third test, `TestKeptIngestLimitSweep`, measures smaller limits and the full limit rule with parallel query off, as evidence for the gate decision. The kept ingest's TLS server is reached with `sslmode=prefer`.
+- Task 4.2 (M8): the copy was migrated to the committed head before the activation test with a binary built from a `git archive` export of `HEAD`, because the working tree was mid-edit at the time; the test's own migration step then found nothing to apply. The copy was analysed after its restore.
 
 ### Discoveries
 - Found while planning (2026-11-14): design section 12's line "Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE" contradicts design section 3.1, which says the check accepts unescaped `*` and `?`. Task 1.2 tests section 3.1's invariant (every value a rule accepts, the check accepts). Flagged only; the design text is unchanged.
 - Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships. (Recorded.)
 - Found while executing (2026-11-14): the host's `golangci-lint` (v2.10.1, built with Go 1.26) refuses to load `.golangci.yml` under Go 1.27. Lint runs with the CI pin instead: `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --allow-parallel-runners ./cmd/... ./internal/... ./migrations/...`.
 - Verified 2026-11-14 (verify-first, Task 2.1): `internal/alert/dsl/dsl_test.go` is package `dsl_test` with no `TestMain` and no database, so the shape and parameter-count tests belong there; `internal/store/main_test.go` calls `testutil.Run`, so the `null`/empty-list cases run in `internal/store/dsl_executor_test.go`. `json.Unmarshal` of `null` into `[]string` gives nil with no error, so the nil-to-empty normalisation is required.
+- Found by the after-Phase-3 review (2026-11-14), older than this branch, not fixed here: for a stored rule holding an operator `Validate` refuses, `Compile` builds wrong SQL instead of failing closed. `severity gte "high"` or `contains` compiles to `lower(cves.severity) <> ?` (`internal/alert/dsl/compiler.go` `setSQL`/enum path treats any other operator as `neq`); `in_cisa_kev neq true` compiles to `= ?` (bool path ignores the operator); `fts_query eq` compiles to an FTS match. Suspected, unconfirmed: `cvss_v3_score gt null` validates and compiles to `> 0`. Only reachable through a rule edited in the database; PLAN.md §10.5 expects fail-closed.
+- Kept ingest pre-flight (Task 4.1, 2026-11-14): PostgreSQL 18.4, 2,628,861 CVEs, migrations at 61 (62 `alert_events_feed_seq` not applied; the measurements do not read `alert_events`); all three check indexes match `check.CPEIndexExpr`, `check.CNANameIndexExpr` and `ecosystem.FoldedNameSQL`.
+- Production shared memory (2026-11-14): no compose file sets `shm_size` for Postgres (`docker/compose.yml`, `docker/compose.prod.yml`), so a deployed Postgres has Docker's default 64 MB `/dev/shm`, the same as the kept ingest container. The limit rule's dry-run and batch statements failed there with `could not resize shared memory segment ... No space left on device` (a parallel hash), so they would fail the same way in a default deployment.
 
 ---
 
@@ -498,7 +506,7 @@ Do NOT use `unnest()` joins, `NOT IN`, or a CTE for candidate IDs (DB-27; design
 
 ## Phase 3 — The `affected.cpe_product` field
 
-**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T03:35Z on branch `claude/lucid-moser-fef966`
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — `76359bc` (3.1), `71b4e9b` (3.2), `ead194c` (3.3), `fcde2c5` (3.4). After-group review (independent adversarial reviewer, one round): no rule value reaches SQL text; worst valid rule about 5,100 parameters with 5,000 candidate IDs; one defect introduced by this branch, `Validate` ran the never-matching check (values times conditions) before the 100-condition limit, so a 1 MiB rule cost about 5 s of CPU per request; fixed in `d69081d`. A second round on the fix was not run: the fix only reorders an existing check behind an existing limit.
 
 Design sections 3 (field), 5.1 (product SQL), 5.2 (compiler decisions), 8 (messages), 10 (AI prompt), 12 (tests).
 
@@ -605,7 +613,7 @@ Test: `BuildSchemaDescription()` contains `affected.cpe_product (type: CPE vendo
 
 ## Phase 4 — Measurements on the kept full ingest (gate)
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ⏸ DEFERRED 2026-11-14 — the gate failed (Task 4.3). Failing rows: M5a limit rule `or` realtime 23.3 ms (threshold 5 ms); M5b dry-run and M5c batch failed with a shared-memory error (64 MB `/dev/shm`), and serially take 27.6 s and 17.7 s (thresholds 5 s, 3 s); M6 50 products `or` dry-run 16.2 s (5 s); M8 full activation failed on page 1 with the shared-memory error. Every single-product, package-with-ecosystem and saved-search row passes. Full table, inputs and a read-only sweep of smaller limits: `dev/plans/2026-11-13-product-match-rules-measurements.md`. **Unblock condition:** Sam chooses the remedy (design section 13's fallback is a lower limit on set-type conditions); the chosen limits are re-measured with this harness before Phase 5 starts. The disposable copy `cvert-match2-activation-copy` is kept for that re-measurement and Task 5.5.
 
 Design section 13 (every measurement and threshold) and section 5.3 (earlier numbers to compare against). This phase changes no production code. Its result decides whether Phase 5 starts or the work goes back to Sam.
 

@@ -27,6 +27,9 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	if tooManyAndSets(r) {
 		return nil, fmt.Errorf("compile: %s", msgTooManyAndSets)
 	}
+	if orMixesRegex(r) {
+		return nil, fmt.Errorf("compile: %s", msgOrRegexMixed)
+	}
 
 	var predicates []predicate
 	var postFilters []PostFilter

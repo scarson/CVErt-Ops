@@ -54,6 +54,7 @@ const (
 	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
 	msgEmptyList         = "value must list at least one item"
 	msgInvalidOperator   = "operator %q is not valid for field %q"
+	msgOrRegexMixed      = `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`
 	// The value and names are printable ASCII (check.ParseProductValue), so they
 	// are quoted as written rather than with %q, which would double a backslash.
 	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor "%s" and product "%s"`
@@ -144,6 +145,9 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 	errs = append(errs, validateProducts(r)...)
 	if tooManyAndSets(r) {
 		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyAndSets, Severity: "error"})
+	}
+	if orMixesRegex(r) {
+		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgOrRegexMixed, Severity: "error"})
 	}
 
 	isEPSSOnly = hasEPSSCond && allEPSS && len(r.Conditions) > 0
@@ -389,6 +393,22 @@ func tooManyAndSets(r Rule) bool {
 		}
 	}
 	return sets > maxAndSets
+}
+
+// orMixesRegex reports whether r is an "or" rule with a regex condition beside
+// a condition of another operator. A regex runs in Go only on the CVEs the
+// rule's SQL conditions select (PLAN.md §10.2), so under "or" a CVE that only
+// the regex matches would never be checked, and a CVE that only a SQL
+// condition matches would be dropped by the regex: the rule would read as
+// "and". An "or" rule of regex conditions alone is evaluated correctly, on the
+// CVEs its watchlist selects.
+func orMixesRegex(r Rule) bool {
+	if r.Logic != LogicOr {
+		return false
+	}
+	isRegex := func(c Condition) bool { return c.Op == "regex" }
+	isOther := func(c Condition) bool { return c.Op != "regex" }
+	return slices.ContainsFunc(r.Conditions, isRegex) && slices.ContainsFunc(r.Conditions, isOther)
 }
 
 // isBlank reports whether v is empty or only whitespace.

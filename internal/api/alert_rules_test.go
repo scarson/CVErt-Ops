@@ -462,6 +462,18 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 				Location: "body.conditions[0].cvss_v3_score",
 			}},
 		},
+		{
+			name:  "or rule combining regex with another condition",
+			logic: "or",
+			conditions: `[
+    {"field": "severity", "operator": "eq", "value": "critical"},
+    {"field": "description_primary", "operator": "regex", "value": "remote code"}
+  ]`,
+			want: []problemError{{
+				Message:  `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`,
+				Location: "body.conditions",
+			}},
+		},
 	}
 
 	// Create a valid rule and make it active so a conditions change is allowed (activating → 409).

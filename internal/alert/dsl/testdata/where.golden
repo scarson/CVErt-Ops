@@ -1,0 +1,778 @@
+=== and: correlated ecosystem and package, severity, candidates []
+(cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.ecosystem = ANY(?)
+      AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)
+) AND lower(cves.severity) = ?)
+arg 0: ["npm"]
+arg 1: ["lodash"]
+arg 2: string "high"
+=== and: correlated ecosystem and package, severity, candidates ["CVE-1" "CVE-2"]
+(cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND cap.ecosystem = ANY(?)
+      AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)
+) AND lower(cves.severity) = ?)
+arg 0: ["CVE-1" "CVE-2"]
+arg 1: ["npm"]
+arg 2: ["lodash"]
+arg 3: string "high"
+=== and: product, package list, KEV, CVSS, candidates []
+(cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND ((left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?)))
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE (((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
+) AND cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+) AND cves.in_cisa_kev = ? AND cves.cvss_v3_score >= ?)
+arg 0: string "cpe:2.3:a:nodejs:node.js:"
+arg 1: string "cpe:2.3:a:nodejs:node.js;"
+arg 2: string "cpe:2.3:a:nodejs:node.js:"
+arg 3: string "cpe:2.3:o:nodejs:node.js:"
+arg 4: string "cpe:2.3:o:nodejs:node.js;"
+arg 5: string "cpe:2.3:o:nodejs:node.js:"
+arg 6: string "cpe:2.3:h:nodejs:node.js:"
+arg 7: string "cpe:2.3:h:nodejs:node.js;"
+arg 8: string "cpe:2.3:h:nodejs:node.js:"
+arg 9: string "cpe:2.3:a:nodejs:nodejs:"
+arg 10: string "cpe:2.3:a:nodejs:nodejs;"
+arg 11: string "cpe:2.3:a:nodejs:nodejs:"
+arg 12: string "cpe:2.3:o:nodejs:nodejs:"
+arg 13: string "cpe:2.3:o:nodejs:nodejs;"
+arg 14: string "cpe:2.3:o:nodejs:nodejs:"
+arg 15: string "cpe:2.3:h:nodejs:nodejs:"
+arg 16: string "cpe:2.3:h:nodejs:nodejs;"
+arg 17: string "cpe:2.3:h:nodejs:nodejs:"
+arg 18: string "nodejs"
+arg 19: string "node.js"
+arg 20: string "nodejs"
+arg 21: string "node.js"
+arg 22: string "nodejs"
+arg 23: string "nodejs"
+arg 24: string "nodejs"
+arg 25: string "nodejs"
+arg 26: string "nodejs"
+arg 27: string "node"
+arg 28: string "nodejs"
+arg 29: string "node"
+arg 30: string "node.js"
+arg 31: string "node.js"
+arg 32: string "node.js"
+arg 33: string "node.js"
+arg 34: string "the node.js project"
+arg 35: string "node.js"
+arg 36: string "the node.js project"
+arg 37: string "node.js"
+arg 38: ["foo-bar" "express"]
+arg 39: ["foo_bar" "express"]
+arg 40: bool true
+arg 41: float64 7
+=== and: product, package list, KEV, CVSS, candidates ["CVE-1" "CVE-2"]
+(cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )
+) AND cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+) AND cves.in_cisa_kev = ? AND cves.cvss_v3_score >= ?)
+arg 0: ["CVE-1" "CVE-2"]
+arg 1: ["cpe:2.3:a:nodejs:node.js:" "cpe:2.3:o:nodejs:node.js:" "cpe:2.3:h:nodejs:node.js:" "cpe:2.3:a:nodejs:nodejs:" "cpe:2.3:o:nodejs:nodejs:" "cpe:2.3:h:nodejs:nodejs:"]
+arg 2: ["nodejs" "nodejs" "nodejs" "node.js" "the node.js project"]
+arg 3: ["node.js" "nodejs" "node" "node.js" "node.js"]
+arg 4: *pq.BoolArray &pq.BoolArray{false, false, false, false, false}
+arg 5: *pq.Int64Array &pq.Int64Array{0, 0, 0, 0, 0}
+arg 6: ["CVE-1" "CVE-2"]
+arg 7: *pq.Int64Array &pq.Int64Array{}
+arg 8: []
+arg 9: []
+arg 10: *pq.BoolArray &pq.BoolArray{}
+arg 11: ["CVE-1" "CVE-2"]
+arg 12: ["foo-bar" "express"]
+arg 13: ["foo_bar" "express"]
+arg 14: bool true
+arg 15: float64 7
+=== and: negative ecosystem, package contains, release ecosystem, candidates []
+(NOT EXISTS (
+    SELECT 1 FROM cve_affected_packages cap
+    WHERE cap.cve_id = cves.cve_id
+      AND cap.ecosystem = ANY(?)
+) AND cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE (cap.ecosystem = ANY(?) OR cap.ecosystem LIKE ANY(?))
+      AND lower(cap.package_name) ILIKE ?
+))
+arg 0: ["npm"]
+arg 1: ["Debian" "PyPI"]
+arg 2: ["Debian:%"]
+arg 3: string "%ssl%"
+=== and: negative ecosystem, package contains, release ecosystem, candidates ["CVE-1" "CVE-2"]
+(NOT EXISTS (
+    SELECT 1 FROM cve_affected_packages cap
+    WHERE cap.cve_id = cves.cve_id
+      AND cap.ecosystem = ANY(?)
+) AND cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND (cap.ecosystem = ANY(?) OR cap.ecosystem LIKE ANY(?))
+      AND lower(cap.package_name) ILIKE ?
+))
+arg 0: ["npm"]
+arg 1: ["CVE-1" "CVE-2"]
+arg 2: ["Debian" "PyPI"]
+arg 3: ["Debian:%"]
+arg 4: string "%ssl%"
+=== and: two products, ecosystem without package, candidates []
+(cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND ((left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?)))
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE ((((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" >= ? AND left(lower(a.product), 256) COLLATE "C" < ? AND lower(a.vendor) = ?)) AND NOT ((lower(a.vendor) = ? AND starts_with(lower(a.product), ?) AND substr(lower(a.product), char_length(?) + 1) !~ '^[a-z0-9]')
+        OR (lower(a.vendor) = ? AND starts_with(lower(a.product), ?) AND substr(lower(a.product), char_length(?) + 1) !~ '^[a-z0-9]')
+        OR (lower(a.vendor) = ? AND lower(a.product) = ?)))
+        OR ((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
+) AND cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND ((left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?)))
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE (((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
+) AND cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.ecosystem = ANY(?)
+))
+arg 0: string "cpe:2.3:a:microsoft:.net:"
+arg 1: string "cpe:2.3:a:microsoft:.net;"
+arg 2: string "cpe:2.3:a:microsoft:.net:"
+arg 3: string "cpe:2.3:o:microsoft:.net:"
+arg 4: string "cpe:2.3:o:microsoft:.net;"
+arg 5: string "cpe:2.3:o:microsoft:.net:"
+arg 6: string "cpe:2.3:h:microsoft:.net:"
+arg 7: string "cpe:2.3:h:microsoft:.net;"
+arg 8: string "cpe:2.3:h:microsoft:.net:"
+arg 9: string "cpe:2.3:a:microsoft:.net_core:"
+arg 10: string "cpe:2.3:a:microsoft:.net_core;"
+arg 11: string "cpe:2.3:a:microsoft:.net_core:"
+arg 12: string "cpe:2.3:o:microsoft:.net_core:"
+arg 13: string "cpe:2.3:o:microsoft:.net_core;"
+arg 14: string "cpe:2.3:o:microsoft:.net_core:"
+arg 15: string "cpe:2.3:h:microsoft:.net_core:"
+arg 16: string "cpe:2.3:h:microsoft:.net_core;"
+arg 17: string "cpe:2.3:h:microsoft:.net_core:"
+arg 18: string "cpe:2.3:a:php:php:"
+arg 19: string "cpe:2.3:a:php:php;"
+arg 20: string "cpe:2.3:a:php:php:"
+arg 21: string "cpe:2.3:o:php:php:"
+arg 22: string "cpe:2.3:o:php:php;"
+arg 23: string "cpe:2.3:o:php:php:"
+arg 24: string "cpe:2.3:h:php:php:"
+arg 25: string "cpe:2.3:h:php:php;"
+arg 26: string "cpe:2.3:h:php:php:"
+arg 27: string "microsoft"
+arg 28: string ".net"
+arg 29: string "microsoft"
+arg 30: string ".net"
+arg 31: string "microsoft"
+arg 32: string ".net core"
+arg 33: string "microsoft"
+arg 34: string ".net core"
+arg 35: string "microsoft"
+arg 36: string ".net_core"
+arg 37: string "microsoft"
+arg 38: string ".net_core"
+arg 39: string "microsoft"
+arg 40: string ".net "
+arg 41: string ".net!"
+arg 42: string "microsoft"
+arg 43: string "microsoft"
+arg 44: string ".net framework"
+arg 45: string ".net framework"
+arg 46: string "microsoft"
+arg 47: string "microsoft .net framework"
+arg 48: string "microsoft .net framework"
+arg 49: string "microsoft"
+arg 50: string "openapi.net"
+arg 51: string "php"
+arg 52: string "php"
+arg 53: string "php"
+arg 54: string "php"
+arg 55: string "php group"
+arg 56: string "php"
+arg 57: string "php group"
+arg 58: string "php"
+arg 59: string "cpe:2.3:a:acme:widget:"
+arg 60: string "cpe:2.3:a:acme:widget;"
+arg 61: string "cpe:2.3:a:acme:widget:"
+arg 62: string "cpe:2.3:o:acme:widget:"
+arg 63: string "cpe:2.3:o:acme:widget;"
+arg 64: string "cpe:2.3:o:acme:widget:"
+arg 65: string "cpe:2.3:h:acme:widget:"
+arg 66: string "cpe:2.3:h:acme:widget;"
+arg 67: string "cpe:2.3:h:acme:widget:"
+arg 68: string "acme"
+arg 69: string "widget"
+arg 70: string "acme"
+arg 71: string "widget"
+arg 72: ["PyPI"]
+=== and: two products, ecosystem without package, candidates ["CVE-1" "CVE-2"]
+(cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )
+) AND cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )
+) AND cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND cap.ecosystem = ANY(?)
+))
+arg 0: ["CVE-1" "CVE-2"]
+arg 1: ["cpe:2.3:a:microsoft:.net:" "cpe:2.3:o:microsoft:.net:" "cpe:2.3:h:microsoft:.net:" "cpe:2.3:a:microsoft:.net_core:" "cpe:2.3:o:microsoft:.net_core:" "cpe:2.3:h:microsoft:.net_core:" "cpe:2.3:a:php:php:" "cpe:2.3:o:php:php:" "cpe:2.3:h:php:php:"]
+arg 2: ["microsoft" "microsoft" "microsoft" "microsoft" "php" "php group"]
+arg 3: [".net" ".net core" ".net_core" ".net " "php" "php"]
+arg 4: *pq.BoolArray &pq.BoolArray{false, false, false, true, false, false}
+arg 5: *pq.Int64Array &pq.Int64Array{0, 0, 0, 0, 1, 1}
+arg 6: ["CVE-1" "CVE-2"]
+arg 7: *pq.Int64Array &pq.Int64Array{0, 0, 0}
+arg 8: ["microsoft" "microsoft" "microsoft"]
+arg 9: [".net framework" "microsoft .net framework" "openapi.net"]
+arg 10: *pq.BoolArray &pq.BoolArray{true, true, false}
+arg 11: ["CVE-1" "CVE-2"]
+arg 12: ["cpe:2.3:a:acme:widget:" "cpe:2.3:o:acme:widget:" "cpe:2.3:h:acme:widget:"]
+arg 13: ["acme"]
+arg 14: ["widget"]
+arg 15: *pq.BoolArray &pq.BoolArray{false}
+arg 16: *pq.Int64Array &pq.Int64Array{0}
+arg 17: ["CVE-1" "CVE-2"]
+arg 18: *pq.Int64Array &pq.Int64Array{}
+arg 19: []
+arg 20: []
+arg 21: *pq.BoolArray &pq.BoolArray{}
+arg 22: ["CVE-1" "CVE-2"]
+arg 23: ["PyPI"]
+=== and: package, FTS, watchlist, candidates []
+(cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE lower(cap.package_name) ILIKE ?
+) AND si.fts_document @@ websearch_to_tsquery('english', ?) AND (
+    EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cve'
+          AND wi.deleted_at IS NULL
+          AND wi.cve_id       = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_packages cap
+          ON (lower(cap.ecosystem) = lower(wi.ecosystem)
+              OR starts_with(lower(cap.ecosystem), lower(wi.ecosystem) || ':'))
+         AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(wi.package_name), '[-_.]+', '-', 'g') ELSE lower(wi.package_name) END
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'package'
+          AND wi.deleted_at IS NULL
+          AND cap.cve_id      = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_cpes cac
+          ON cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cpe'
+          AND wi.deleted_at IS NULL
+          AND cac.cve_id      = cves.cve_id
+    )
+))
+arg 0: string "log%"
+arg 1: string "remote code"
+arg 2: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 3: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 4: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 5: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 6: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 7: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+=== and: package, FTS, watchlist, candidates ["CVE-1" "CVE-2"]
+(cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND lower(cap.package_name) ILIKE ?
+) AND si.fts_document @@ websearch_to_tsquery('english', ?) AND (
+    EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cve'
+          AND wi.deleted_at IS NULL
+          AND wi.cve_id       = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_packages cap
+          ON (lower(cap.ecosystem) = lower(wi.ecosystem)
+              OR starts_with(lower(cap.ecosystem), lower(wi.ecosystem) || ':'))
+         AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(wi.package_name), '[-_.]+', '-', 'g') ELSE lower(wi.package_name) END
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'package'
+          AND wi.deleted_at IS NULL
+          AND cap.cve_id      = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_cpes cac
+          ON cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cpe'
+          AND wi.deleted_at IS NULL
+          AND cac.cve_id      = cves.cve_id
+    )
+))
+arg 0: ["CVE-1" "CVE-2"]
+arg 1: string "log%"
+arg 2: string "remote code"
+arg 3: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 4: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 5: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 6: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 7: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 8: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+=== or: one product, severity, KEV, candidates []
+(lower(cves.severity) = ? OR cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND ((left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?)))
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE (((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
+) OR cves.in_cisa_kev = ?)
+arg 0: string "critical"
+arg 1: string "cpe:2.3:a:nodejs:node.js:"
+arg 2: string "cpe:2.3:a:nodejs:node.js;"
+arg 3: string "cpe:2.3:a:nodejs:node.js:"
+arg 4: string "cpe:2.3:o:nodejs:node.js:"
+arg 5: string "cpe:2.3:o:nodejs:node.js;"
+arg 6: string "cpe:2.3:o:nodejs:node.js:"
+arg 7: string "cpe:2.3:h:nodejs:node.js:"
+arg 8: string "cpe:2.3:h:nodejs:node.js;"
+arg 9: string "cpe:2.3:h:nodejs:node.js:"
+arg 10: string "cpe:2.3:a:nodejs:nodejs:"
+arg 11: string "cpe:2.3:a:nodejs:nodejs;"
+arg 12: string "cpe:2.3:a:nodejs:nodejs:"
+arg 13: string "cpe:2.3:o:nodejs:nodejs:"
+arg 14: string "cpe:2.3:o:nodejs:nodejs;"
+arg 15: string "cpe:2.3:o:nodejs:nodejs:"
+arg 16: string "cpe:2.3:h:nodejs:nodejs:"
+arg 17: string "cpe:2.3:h:nodejs:nodejs;"
+arg 18: string "cpe:2.3:h:nodejs:nodejs:"
+arg 19: string "nodejs"
+arg 20: string "node.js"
+arg 21: string "nodejs"
+arg 22: string "node.js"
+arg 23: string "nodejs"
+arg 24: string "nodejs"
+arg 25: string "nodejs"
+arg 26: string "nodejs"
+arg 27: string "nodejs"
+arg 28: string "node"
+arg 29: string "nodejs"
+arg 30: string "node"
+arg 31: string "node.js"
+arg 32: string "node.js"
+arg 33: string "node.js"
+arg 34: string "node.js"
+arg 35: string "the node.js project"
+arg 36: string "node.js"
+arg 37: string "the node.js project"
+arg 38: string "node.js"
+arg 39: bool true
+=== or: one product, severity, KEV, candidates ["CVE-1" "CVE-2"]
+(lower(cves.severity) = ? OR cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )
+) OR cves.in_cisa_kev = ?)
+arg 0: string "critical"
+arg 1: ["CVE-1" "CVE-2"]
+arg 2: ["cpe:2.3:a:nodejs:node.js:" "cpe:2.3:o:nodejs:node.js:" "cpe:2.3:h:nodejs:node.js:" "cpe:2.3:a:nodejs:nodejs:" "cpe:2.3:o:nodejs:nodejs:" "cpe:2.3:h:nodejs:nodejs:"]
+arg 3: ["nodejs" "nodejs" "nodejs" "node.js" "the node.js project"]
+arg 4: ["node.js" "nodejs" "node" "node.js" "node.js"]
+arg 5: *pq.BoolArray &pq.BoolArray{false, false, false, false, false}
+arg 6: *pq.Int64Array &pq.Int64Array{0, 0, 0, 0, 0}
+arg 7: ["CVE-1" "CVE-2"]
+arg 8: *pq.Int64Array &pq.Int64Array{}
+arg 9: []
+arg 10: []
+arg 11: *pq.BoolArray &pq.BoolArray{}
+arg 12: bool true
+=== or: one package, negative ecosystem, CWE, watchlist, candidates []
+((NOT EXISTS (
+    SELECT 1 FROM cve_affected_packages cap
+    WHERE cap.cve_id = cves.cve_id
+      AND cap.ecosystem = ANY(?)
+) OR cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+) OR cves.cwe_ids && ?) AND (
+    EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cve'
+          AND wi.deleted_at IS NULL
+          AND wi.cve_id       = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_packages cap
+          ON (lower(cap.ecosystem) = lower(wi.ecosystem)
+              OR starts_with(lower(cap.ecosystem), lower(wi.ecosystem) || ':'))
+         AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(wi.package_name), '[-_.]+', '-', 'g') ELSE lower(wi.package_name) END
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'package'
+          AND wi.deleted_at IS NULL
+          AND cap.cve_id      = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_cpes cac
+          ON cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cpe'
+          AND wi.deleted_at IS NULL
+          AND cac.cve_id      = cves.cve_id
+    )
+))
+arg 0: ["npm"]
+arg 1: ["lodash"]
+arg 2: ["lodash"]
+arg 3: ["CWE-79"]
+arg 4: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 5: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 6: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 7: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 8: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 9: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+=== or: one package, negative ecosystem, CWE, watchlist, candidates ["CVE-1" "CVE-2"]
+((NOT EXISTS (
+    SELECT 1 FROM cve_affected_packages cap
+    WHERE cap.cve_id = cves.cve_id
+      AND cap.ecosystem = ANY(?)
+) OR cves.cve_id IN (
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+) OR cves.cwe_ids && ?) AND (
+    EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cve'
+          AND wi.deleted_at IS NULL
+          AND wi.cve_id       = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_packages cap
+          ON (lower(cap.ecosystem) = lower(wi.ecosystem)
+              OR starts_with(lower(cap.ecosystem), lower(wi.ecosystem) || ':'))
+         AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(wi.package_name), '[-_.]+', '-', 'g') ELSE lower(wi.package_name) END
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'package'
+          AND wi.deleted_at IS NULL
+          AND cap.cve_id      = cves.cve_id
+    )
+    OR EXISTS (
+        SELECT 1 FROM watchlist_items wi
+        JOIN cve_affected_cpes cac
+          ON cac.cpe_normalized LIKE (wi.cpe_normalized || '%')
+        WHERE wi.watchlist_id = ANY(?)
+          AND wi.org_id       = ?
+          AND wi.item_type    = 'cpe'
+          AND wi.deleted_at IS NULL
+          AND cac.cve_id      = cves.cve_id
+    )
+))
+arg 0: ["npm"]
+arg 1: ["CVE-1" "CVE-2"]
+arg 2: ["lodash"]
+arg 3: ["lodash"]
+arg 4: ["CWE-79"]
+arg 5: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 6: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 7: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 8: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+arg 9: pq.GenericArray pq.GenericArray{A:[]uuid.UUID{uuid.UUID{0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33}}}
+arg 10: uuid.UUID uuid.UUID{0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22, 0x22}
+=== or: two products, package, severity, candidates []
+(cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND ((left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?)))
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE ((((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)) AND NOT ((lower(a.vendor) = ? AND lower(a.product) = ?))))
+    UNION ALL
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND ((left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?))
+        OR (left(m.cpe_normalized, 512) COLLATE "C" >= ? AND left(m.cpe_normalized, 512) COLLATE "C" < ? AND starts_with(m.cpe_normalized, ?)))
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE ((((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" >= ? AND left(lower(a.product), 256) COLLATE "C" < ? AND lower(a.vendor) = ?)) AND NOT ((lower(a.vendor) = ? AND starts_with(lower(a.product), ?) AND substr(lower(a.product), char_length(?) + 1) !~ '^[a-z0-9]')
+        OR (lower(a.vendor) = ? AND starts_with(lower(a.product), ?) AND substr(lower(a.product), char_length(?) + 1) !~ '^[a-z0-9]')
+        OR (lower(a.vendor) = ? AND lower(a.product) = ?)))
+        OR ((left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)
+        OR (left(lower(a.vendor), 256) COLLATE "C" = ? AND left(lower(a.product), 256) COLLATE "C" = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)))
+    UNION ALL
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+) OR lower(cves.severity) = ?)
+arg 0: string "cpe:2.3:a:openssl:openssl:"
+arg 1: string "cpe:2.3:a:openssl:openssl;"
+arg 2: string "cpe:2.3:a:openssl:openssl:"
+arg 3: string "cpe:2.3:o:openssl:openssl:"
+arg 4: string "cpe:2.3:o:openssl:openssl;"
+arg 5: string "cpe:2.3:o:openssl:openssl:"
+arg 6: string "cpe:2.3:h:openssl:openssl:"
+arg 7: string "cpe:2.3:h:openssl:openssl;"
+arg 8: string "cpe:2.3:h:openssl:openssl:"
+arg 9: string "openssl"
+arg 10: string "openssl"
+arg 11: string "openssl"
+arg 12: string "openssl"
+arg 13: string "openssl"
+arg 14: string "openssl extension of ruby (git trunk)"
+arg 15: string "cpe:2.3:a:microsoft:.net:"
+arg 16: string "cpe:2.3:a:microsoft:.net;"
+arg 17: string "cpe:2.3:a:microsoft:.net:"
+arg 18: string "cpe:2.3:o:microsoft:.net:"
+arg 19: string "cpe:2.3:o:microsoft:.net;"
+arg 20: string "cpe:2.3:o:microsoft:.net:"
+arg 21: string "cpe:2.3:h:microsoft:.net:"
+arg 22: string "cpe:2.3:h:microsoft:.net;"
+arg 23: string "cpe:2.3:h:microsoft:.net:"
+arg 24: string "cpe:2.3:a:microsoft:.net_core:"
+arg 25: string "cpe:2.3:a:microsoft:.net_core;"
+arg 26: string "cpe:2.3:a:microsoft:.net_core:"
+arg 27: string "cpe:2.3:o:microsoft:.net_core:"
+arg 28: string "cpe:2.3:o:microsoft:.net_core;"
+arg 29: string "cpe:2.3:o:microsoft:.net_core:"
+arg 30: string "cpe:2.3:h:microsoft:.net_core:"
+arg 31: string "cpe:2.3:h:microsoft:.net_core;"
+arg 32: string "cpe:2.3:h:microsoft:.net_core:"
+arg 33: string "cpe:2.3:a:acme_corp:web_server:"
+arg 34: string "cpe:2.3:a:acme_corp:web_server;"
+arg 35: string "cpe:2.3:a:acme_corp:web_server:"
+arg 36: string "cpe:2.3:o:acme_corp:web_server:"
+arg 37: string "cpe:2.3:o:acme_corp:web_server;"
+arg 38: string "cpe:2.3:o:acme_corp:web_server:"
+arg 39: string "cpe:2.3:h:acme_corp:web_server:"
+arg 40: string "cpe:2.3:h:acme_corp:web_server;"
+arg 41: string "cpe:2.3:h:acme_corp:web_server:"
+arg 42: string "microsoft"
+arg 43: string ".net"
+arg 44: string "microsoft"
+arg 45: string ".net"
+arg 46: string "microsoft"
+arg 47: string ".net core"
+arg 48: string "microsoft"
+arg 49: string ".net core"
+arg 50: string "microsoft"
+arg 51: string ".net_core"
+arg 52: string "microsoft"
+arg 53: string ".net_core"
+arg 54: string "microsoft"
+arg 55: string ".net "
+arg 56: string ".net!"
+arg 57: string "microsoft"
+arg 58: string "microsoft"
+arg 59: string ".net framework"
+arg 60: string ".net framework"
+arg 61: string "microsoft"
+arg 62: string "microsoft .net framework"
+arg 63: string "microsoft .net framework"
+arg 64: string "microsoft"
+arg 65: string "openapi.net"
+arg 66: string "acme corp"
+arg 67: string "web server"
+arg 68: string "acme corp"
+arg 69: string "web server"
+arg 70: string "acme corp"
+arg 71: string "web_server"
+arg 72: string "acme corp"
+arg 73: string "web_server"
+arg 74: string "acme_corp"
+arg 75: string "web server"
+arg 76: string "acme_corp"
+arg 77: string "web server"
+arg 78: string "acme_corp"
+arg 79: string "web_server"
+arg 80: string "acme_corp"
+arg 81: string "web_server"
+arg 82: ["lodash"]
+arg 83: ["lodash"]
+arg 84: string "critical"
+=== or: two products, package, severity, candidates ["CVE-1" "CVE-2"]
+(cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )
+    UNION ALL
+    SELECT cap.cve_id FROM cve_affected_packages cap
+    WHERE cap.cve_id = ANY(?)
+      AND ((cap.ecosystem = 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)) OR (cap.ecosystem <> 'PyPI' AND CASE WHEN cap.ecosystem = 'PyPI' THEN regexp_replace(lower(cap.package_name), '[-_.]+', '-', 'g') ELSE lower(cap.package_name) END = ANY(?)))
+) OR lower(cves.severity) = ?)
+arg 0: ["CVE-1" "CVE-2"]
+arg 1: ["cpe:2.3:a:openssl:openssl:" "cpe:2.3:o:openssl:openssl:" "cpe:2.3:h:openssl:openssl:" "cpe:2.3:a:microsoft:.net:" "cpe:2.3:o:microsoft:.net:" "cpe:2.3:h:microsoft:.net:" "cpe:2.3:a:microsoft:.net_core:" "cpe:2.3:o:microsoft:.net_core:" "cpe:2.3:h:microsoft:.net_core:" "cpe:2.3:a:acme_corp:web_server:" "cpe:2.3:o:acme_corp:web_server:" "cpe:2.3:h:acme_corp:web_server:"]
+arg 2: ["openssl" "microsoft" "microsoft" "microsoft" "microsoft" "acme corp" "acme corp" "acme_corp" "acme_corp"]
+arg 3: ["openssl" ".net" ".net core" ".net_core" ".net " "web server" "web_server" "web server" "web_server"]
+arg 4: *pq.BoolArray &pq.BoolArray{false, false, false, false, true, false, false, false, false}
+arg 5: *pq.Int64Array &pq.Int64Array{0, 1, 1, 1, 1, 2, 2, 2, 2}
+arg 6: ["CVE-1" "CVE-2"]
+arg 7: *pq.Int64Array &pq.Int64Array{0, 1, 1, 1}
+arg 8: ["openssl" "microsoft" "microsoft" "microsoft"]
+arg 9: ["openssl extension of ruby (git trunk)" ".net framework" "microsoft .net framework" "openapi.net"]
+arg 10: *pq.BoolArray &pq.BoolArray{false, true, true, false}
+arg 11: ["CVE-1" "CVE-2"]
+arg 12: ["lodash"]
+arg 13: ["lodash"]
+arg 14: string "critical"

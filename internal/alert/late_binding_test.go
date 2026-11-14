@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -145,6 +146,62 @@ func TestLateBinding_UnchangedTargetResolvesMovedAlert(t *testing.T) {
 
 	if _, open := eventFor(t, ctx, f, cve); open {
 		t.Error("the moved alert is still open although the rule no longer matches the CVE")
+	}
+}
+
+// TestLateBinding_RenamedCVEReachesBatch renames a record with no alerts to its CVE ID and
+// skips the realtime evaluation the ingest handler would run. Neither hash covers the ID, so
+// only the rename's re-check stamp brings the CVE into the next batch run, where a rule whose
+// watchlist names the new ID matches it.
+func TestLateBinding_RenamedCVEReachesBatch(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ctx := context.Background()
+	const native, cve = "GHSA-late-recheck", "CVE-2026-40005"
+	if err := merge.Ingest(ctx, tdb.Store, kevPatch(native, native), "osv"); err != nil {
+		t.Fatalf("merge.Ingest: %v", err)
+	}
+	f := newCVEListFixture(t, ctx, tdb, kevCondition)
+	f.push(t, ctx, cve)
+	f.evaluateBatch(t, ctx)
+	cursor := getCursorSince(t, f.db, "alert:batch")
+	if cursor.IsZero() {
+		t.Fatal("batch cursor is zero after the first run")
+	}
+	ageCorpus(t, ctx, f.db)
+	// A recently listed CVE is a batch candidate by its listing; age that out too.
+	if _, err := f.db.ExecContext(ctx,
+		`UPDATE watchlist_items SET created_at = now() - interval '1 hour' WHERE watchlist_id = $1`, f.watchlist); err != nil {
+		t.Fatalf("age watchlist items: %v", err)
+	}
+	f.evaluateBatch(t, ctx)
+
+	before, err := tdb.GetCVEChangeHashes(ctx, native)
+	if err != nil {
+		t.Fatalf("GetCVEChangeHashes(%s): %v", native, err)
+	}
+	if err := merge.Ingest(ctx, tdb.AppStore, kevPatch(cve, native), "osv"); err != nil {
+		t.Fatalf("merge.Ingest (promotion): %v", err)
+	}
+	after, err := tdb.GetCVEChangeHashes(ctx, cve)
+	if err != nil {
+		t.Fatalf("GetCVEChangeHashes(%s): %v", cve, err)
+	}
+	if before != after {
+		t.Fatalf("change hashes %+v -> %+v, want unchanged by the rename", before, after)
+	}
+	if modified := dateModified(t, ctx, f.db, cve); !modified.Before(cursor.Add(-2 * time.Minute)) {
+		t.Fatalf("date_modified_canonical %v is inside the batch rescan window of cursor %v", modified, cursor)
+	}
+	if n := countAlertEvents(t, f.db, f.rule.ID, cve); n != 0 {
+		t.Fatalf("%d events before the batch run, want 0", n)
+	}
+
+	f.evaluateBatch(t, ctx)
+	if n := countAlertEvents(t, f.db, f.rule.ID, cve); n != 1 {
+		t.Errorf("%d events under %s after the batch run, want 1", n, cve)
+	}
+	if n := f.fanouts(cve); n != 1 {
+		t.Errorf("%d notifications for %s, want 1", n, cve)
 	}
 }
 

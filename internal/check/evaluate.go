@@ -234,7 +234,7 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	for _, k := range use.cnaNames {
 		kr := data.CNANames[k]
 		for _, row := range kr.Rows {
-			if isOtherProduct(use.otherProducts, row.Vendor, row.Product) {
+			if IsOtherProduct(use.otherProducts, row.Vendor, row.Product) {
 				continue
 			}
 			r.cnaNameFound = true
@@ -251,7 +251,7 @@ func rowsOf(use itemKeys, data Candidates) itemRows {
 	for _, k := range use.near {
 		kr := data.CNANear[k]
 		for _, row := range kr.Rows {
-			if nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] || isOtherProduct(use.otherProducts, row.Vendor, row.Product) {
+			if nameRows[nameRow{row.CVEID, row.Vendor, row.Product}] || IsOtherProduct(use.otherProducts, row.Vendor, row.Product) {
 				continue
 			}
 			r.advisory(row.CVEID, row.Status).nearby = true

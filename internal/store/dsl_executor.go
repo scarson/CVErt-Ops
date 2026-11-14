@@ -131,9 +131,9 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		sb = sb.Join(j)
 	}
 
-	// Apply the compiled WHERE clause.
-	if compiled.SQL != nil {
-		sb = sb.Where(compiled.SQL)
+	// Apply the compiled WHERE clause. Saved and AI searches have no candidate IDs.
+	if where := compiled.Where(nil); where != nil {
+		sb = sb.Where(where)
 	}
 
 	// Filter out rejected and withdrawn CVEs (§10 alert evaluation). COALESCE keeps

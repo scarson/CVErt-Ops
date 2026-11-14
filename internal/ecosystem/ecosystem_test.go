@@ -108,6 +108,21 @@ func TestOrdersBySemver(t *testing.T) {
 	}
 }
 
+func TestTakesSuffix(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"Debian", "Ubuntu", "Packagist", "Red Hat", "Red Hat Lightwell", "Alpine"} {
+		if !TakesSuffix(name) {
+			t.Errorf("TakesSuffix(%q) = false, want true", name)
+		}
+	}
+	// A suffixed value is not a base name; callers pass the part before the first colon.
+	for _, name := range []string{"npm", "PyPI", "Go", "Maven", "debian", "Debian:13", ""} {
+		if TakesSuffix(name) {
+			t.Errorf("TakesSuffix(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestIsSubStream(t *testing.T) {
 	t.Parallel()
 	for _, eco := range []string{

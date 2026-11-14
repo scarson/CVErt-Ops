@@ -3,9 +3,11 @@
 package check
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -48,8 +50,11 @@ type cnaMapping struct {
 var cnaTable = []cnaMapping{
 	{
 		// NVD files Node 0.6 to 0.10 under nodejs:nodejs.
-		CPEs:     []string{"nodejs:node.js", "nodejs:nodejs"},
-		Names:    []CNAName{{Vendor: "nodejs", Product: "node"}, {Vendor: "nodejs", Product: "nodejs"}},
+		CPEs: []string{"nodejs:node.js", "nodejs:nodejs"},
+		Names: []CNAName{
+			{Vendor: "nodejs", Product: "node"}, {Vendor: "nodejs", Product: "nodejs"},
+			{Vendor: "node.js", Product: "node.js"}, {Vendor: "the node.js project", Product: "node.js"},
+		},
 		Fragment: "node", Vendor: "nodejs",
 	},
 	{CPEs: []string{"php:php"}, Names: []CNAName{{Vendor: "php group", Product: "php"}}, Fragment: "php", Vendor: "php group"},
@@ -104,18 +109,51 @@ var dotNetOtherProducts = []CNAName{
 	{Vendor: "microsoft", Product: "openapi.net"},
 }
 
-// isOtherProduct reports whether a stored CNA vendor and product is one of
+// OtherProductsFor returns the CNA products that a name of p would find but
+// that are other products (otherProducts), or nil.
+func OtherProductsFor(p ProductRef) []CNAName { return otherProducts[p.Vendor+":"+p.Product] }
+
+// IsOtherProduct reports whether a stored CNA vendor and product is one of
 // names, the other products of an item's CPE. A prefix name matches only up to
 // a word boundary: ".net framework" matches ".NET Framework 4.8" and not
-// ".NET FrameworkExtensions".
-func isOtherProduct(names []CNAName, vendor, product string) bool {
+// ".NET FrameworkExtensions". Any character other than an ASCII letter or digit
+// is a boundary, as the SQL exclusion's `!~ '^[a-z0-9]'` tests it, so the two
+// agree whatever the database's character type.
+func IsOtherProduct(names []CNAName, vendor, product string) bool {
 	return slices.ContainsFunc(names, func(n CNAName) bool {
 		if !n.Matches(vendor, product) {
 			return false
 		}
 		rest := []rune(strings.ToLower(product))[utf8.RuneCountInString(n.Product):]
-		return !n.Prefix || len(rest) == 0 || !unicode.IsLetter(rest[0]) && !unicode.IsDigit(rest[0])
+		return !n.Prefix || len(rest) == 0 || !isASCIILowerOrDigit(rest[0])
 	})
+}
+
+// isASCIILowerOrDigit reports whether r is an ASCII lower-case letter or digit.
+func isASCIILowerOrDigit(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+}
+
+// nameTableDigest is digestOf the name table in code. A test pins it, because
+// an edit to the table changes which stored CVEs a product rule matches, and
+// nothing re-evaluates those CVEs (re-check step:
+// dev/plans/2026-11-13-product-match-rules-design.md section 3.4).
+func nameTableDigest() string { return digestOf(cnaTable, otherProducts) }
+
+// digestOf returns the hex SHA-256 of table and other as JSON: every row's CPE
+// spellings, CNA names, fragment and nearby-name vendor, and every other
+// product. json.Marshal writes map keys sorted, so the digest is the same on
+// every run.
+func digestOf(table []cnaMapping, other map[string][]CNAName) string {
+	b, err := json.Marshal(struct {
+		Table []cnaMapping
+		Other map[string][]CNAName
+	}{table, other})
+	if err != nil {
+		panic("check: marshal name table: " + err.Error()) // strings and bools only; cannot fail
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // cnaNames finds cnaTable's row for a CPE "vendor:product".

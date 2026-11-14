@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"testing"
 	"time"
@@ -261,6 +262,88 @@ func TestExecuteDSLQuery_ExcludesRejectedWithdrawn(t *testing.T) {
 	}
 	if !found {
 		t.Error("published CVE-2024-S001 should be in results")
+	}
+}
+
+// TestExecuteDSLQuery_EmptySeverityLists checks a null or empty severity list binds
+// as an empty array: not_in matches every CVE that is not rejected or withdrawn,
+// including CVEs with no severity, and in matches none. Not parallel: SeedCorpus
+// sets environment variables.
+func TestExecuteDSLQuery_EmptySeverityLists(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	testutil.SeedCorpus(t, tdb)
+	ctx := context.Background()
+
+	want := map[string]bool{}
+	nullSeverity := 0
+	rows, err := tdb.DB().QueryContext(ctx, `
+		SELECT cve_id, severity IS NULL FROM cves
+		WHERE COALESCE(lower(status), '') NOT IN ('rejected', 'withdrawn')`)
+	if err != nil {
+		t.Fatalf("read visible CVEs: %v", err)
+	}
+	for rows.Next() {
+		var id string
+		var isNull bool
+		if err := rows.Scan(&id, &isNull); err != nil {
+			t.Fatalf("scan visible CVE: %v", err)
+		}
+		want[id] = true
+		if isNull {
+			nullSeverity++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read visible CVEs: %v", err)
+	}
+	_ = rows.Close()
+	if len(want) == 0 || len(want) > 100 {
+		t.Fatalf("corpus has %d visible CVEs; the test reads one page of at most 100", len(want))
+	}
+	if nullSeverity == 0 {
+		t.Fatal("corpus has no visible CVE with NULL severity; the not_in case would not cover one")
+	}
+
+	run := func(op, value string) []string {
+		t.Helper()
+		rule := dsl.Rule{
+			Logic: dsl.LogicAnd,
+			Conditions: []dsl.Condition{
+				{Field: "severity", Op: op, Value: json.RawMessage(value)},
+			},
+		}
+		compiled, err := dsl.Compile(rule, uuid.Nil, 0, uuid.Nil, nil)
+		if err != nil {
+			t.Fatalf("Compile severity %s %s: %v", op, value, err)
+		}
+		results, next, err := tdb.ExecuteDSLQuery(ctx, compiled, "", 100)
+		if err != nil {
+			t.Fatalf("ExecuteDSLQuery severity %s %s: %v", op, value, err)
+		}
+		if next != "" {
+			t.Fatalf("severity %s %s: unexpected next page", op, value)
+		}
+		ids := make([]string, len(results))
+		for i, r := range results {
+			ids[i] = r.CveID
+		}
+		return ids
+	}
+
+	for _, value := range []string{"null", "[]"} {
+		got := run("not_in", value)
+		gotSet := map[string]bool{}
+		for _, id := range got {
+			gotSet[id] = true
+		}
+		if len(got) != len(want) || !reflect.DeepEqual(gotSet, want) {
+			t.Errorf("severity not_in %s matched %d CVEs, want all %d visible CVEs (%d with NULL severity)",
+				value, len(got), len(want), nullSeverity)
+		}
+
+		if got := run("in", value); len(got) != 0 {
+			t.Errorf("severity in %s matched %v, want none", value, got)
+		}
 	}
 }
 

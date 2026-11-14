@@ -41,7 +41,8 @@ const maxIndexedPackageNameBytes = 1024
 //  3. Insert cve_raw_payloads — store original payload for audit/debugging
 //  4. Read all cve_sources → resolve() — compute canonical field values
 //  5. Compute material_hash — detect material changes
-//  6. Upsert cves — update canonical row (IS DISTINCT FROM guard on hash)
+//     5.5. Compute match_inputs_hash — detect changes to rule match inputs outside material_hash
+//  6. Upsert cves — update canonical row (IS DISTINCT FROM guard on each hash)
 //  7. Tombstone — NULL out CVSS/EPSS/KEV if status is rejected/withdrawn
 //  8. Delete + re-insert child tables — references, packages, CPEs, CPE matches, CNA affected
 //     8.5. Upsert vendor enrichment — optional, only vendor-specific adapters
@@ -171,6 +172,11 @@ func canonicalize(ctx context.Context, q *generated.Queries, cveID string) error
 		AffectedCPEs: buildCPEStrings(resolved.AffectedCPEs),
 	})
 
+	// Step 5.5: compute match_inputs_hash over the alert rule match inputs that
+	// material_hash leaves out, so a change to them re-checks the CVE without
+	// firing rules whose match did not change.
+	matchInputsHash := ComputeMatchInputsHash(resolved.CNAAffected, resolved.CPEMatches)
+
 	// Ensure slices are non-nil so pq.Array sends "[]" not "null".
 	cweIDs := resolved.CWEIDs
 	if cweIDs == nil {
@@ -178,7 +184,8 @@ func canonicalize(ctx context.Context, q *generated.Queries, cveID string) error
 	}
 
 	// Step 6: upsert cves. All resolved fields are always written; date_modified_canonical
-	// is only bumped when material_hash changes (CASE expression in SQL).
+	// is only bumped when material_hash changes, and date_match_inputs_changed only
+	// when match_inputs_hash changes, both to this one clock value (CASE expressions in SQL).
 	if err := q.UpsertCVE(ctx, generated.UpsertCVEParams{
 		CveID:                 cveID,
 		Status:                dbutil.NullString(resolved.Status),
@@ -198,6 +205,7 @@ func canonicalize(ctx context.Context, q *generated.Queries, cveID string) error
 		ExploitAvailable:      resolved.ExploitAvailable,
 		InCisaKev:             resolved.InCISAKEV,
 		MaterialHash:          dbutil.NullString(materialHash),
+		MatchInputsHash:       dbutil.NullString(matchInputsHash),
 	}); err != nil {
 		return fmt.Errorf("merge: upsert cves: %w", err)
 	}
@@ -269,7 +277,8 @@ func canonicalize(ctx context.Context, q *generated.Queries, cveID string) error
 	}
 
 	// CPE match ranges and CNA affected entries. Neither is a material_hash input,
-	// so a change here alone does not fire alerts or bump date_modified_canonical.
+	// so a change here alone does not bump date_modified_canonical. Their CNA names
+	// and vulnerable CPE products are match_inputs_hash inputs (step 5.5).
 	if err := replaceVersionRanges(ctx, q, cveID, resolved); err != nil {
 		return err
 	}
@@ -594,12 +603,26 @@ func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 	} else {
 		err = migrateCVEPKRename(ctx, tx, oldID, newID)
 	}
-	if err != nil || !alertsMoved {
+	if err != nil {
 		return err
 	}
 
-	// A moved alert may not match its new CVE. With an unchanged hash the batch
-	// evaluator would not revisit that CVE, so the alert could never resolve.
+	// The CVE ID is a match input for rules keyed on it (CVE-ID watchlist items,
+	// cve_id conditions), and neither change hash covers it. Without this stamp a
+	// failed realtime evaluation of the new ID would never be retried by the batch
+	// evaluator. The merge's later UpsertCVE keeps the stamp when match_inputs_hash
+	// is unchanged and replaces it with its own clock value when the hash changes.
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE cves SET date_match_inputs_changed = now() WHERE cve_id = $1", newID); err != nil {
+		return fmt.Errorf("mark renamed CVE for re-check (%s→%s): %w", oldID, newID, err)
+	}
+	if !alertsMoved {
+		return nil
+	}
+
+	// A moved alert may not match its new CVE, and must resolve when it does not.
+	// The re-check stamp above brings the CVE to the batch evaluator, which selects
+	// on either date; a CVE whose alerts moved is also marked modified here.
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE cves SET date_modified_canonical = now() WHERE cve_id = $1", newID); err != nil {
 		return fmt.Errorf("mark moved alert target (%s→%s): %w", oldID, newID, err)

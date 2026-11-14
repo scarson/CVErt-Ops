@@ -614,33 +614,15 @@ func (e *Evaluator) evaluateRuleInChunks(
 // queryCandidates runs the compiled DSL query against CVEs. If candidateIDs is
 // non-nil, only those CVE IDs are considered; otherwise all CVEs are scanned.
 // Returns (candidates, partial, error). partial=true means > candidateCap
-// rows matched, which triggers fail-closed behavior.
+// rows matched, which triggers fail-closed behavior. The query runs under
+// prepareCandidateTx's settings, which last until tx ends.
 func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule, candidateIDs []string) ([]cveSummary, bool, error) {
-	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	combined := sq.And{
-		compiled.SQL,
-		// COALESCE keeps CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
-		sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
-	}
-	if len(candidateIDs) > 0 {
-		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
-	}
-	sb := psql.
-		Select(
-			"cves.cve_id",
-			"COALESCE(cves.material_hash, '')",
-			"COALESCE(lower(cves.description_primary), '')",
-		).
-		From("cves")
-	for _, j := range compiled.Joins {
-		sb = sb.Join(j)
-	}
-	query, args, err := sb.
-		Where(combined).
-		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
-		ToSql()
+	query, args, err := candidateQuery(compiled, candidateIDs)
 	if err != nil {
-		return nil, false, fmt.Errorf("build candidate query: %w", err)
+		return nil, false, err
+	}
+	if err := prepareCandidateTx(ctx, tx); err != nil {
+		return nil, false, err
 	}
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -664,6 +646,65 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		return nil, true, nil
 	}
 	return candidates, false, nil
+}
+
+// candidateTxSettings are the settings a rule's candidate query runs under, in
+// the order prepareCandidateTx applies them, each for the rest of the
+// transaction (dev/plans/2026-11-13-product-match-rules-measurements.md):
+//
+//   - JIT off. A rule statement over a large corpus has a high estimated cost,
+//     so PostgreSQL JIT-compiles it: about 4 s of a 50-product dry run on a full
+//     ingest.
+//   - Parallel query off. On a full ingest PostgreSQL planned a parallel plan
+//     for one realtime CVE (about 20 ms of 26 ms), and an activation page's
+//     parallel hashes exhausted the container's 64 MB of shared memory.
+var candidateTxSettings = []string{
+	"SET LOCAL jit = off",
+	"SET LOCAL max_parallel_workers_per_gather = 0",
+}
+
+// prepareCandidateTx applies candidateTxSettings to tx. They end with the
+// transaction.
+func prepareCandidateTx(ctx context.Context, tx *sql.Tx) error {
+	for _, s := range candidateTxSettings {
+		if _, err := tx.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("prepare candidate transaction (%s): %w", s, err)
+		}
+	}
+	return nil
+}
+
+// candidateQuery builds the statement queryCandidates runs: the rule's WHERE
+// predicate for candidateIDs, the rejected/withdrawn filter, the outer filter on
+// candidateIDs when there are any, and a LIMIT one past candidateCap.
+func candidateQuery(compiled *dsl.CompiledRule, candidateIDs []string) (string, []any, error) {
+	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
+	combined := sq.And{
+		compiled.Where(candidateIDs),
+		// COALESCE keeps CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
+		sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
+	}
+	if len(candidateIDs) > 0 {
+		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
+	}
+	sb := psql.
+		Select(
+			"cves.cve_id",
+			"COALESCE(cves.material_hash, '')",
+			"COALESCE(lower(cves.description_primary), '')",
+		).
+		From("cves")
+	for _, j := range compiled.Joins {
+		sb = sb.Join(j)
+	}
+	query, args, err := sb.
+		Where(combined).
+		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
+		ToSql()
+	if err != nil {
+		return "", nil, fmt.Errorf("build candidate query: %w", err)
+	}
+	return query, args, nil
 }
 
 // failUncompilableRule logs a rule whose stored conditions do not compile and marks it
@@ -733,11 +774,18 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 	return tx.Commit()
 }
 
-// getCVEsModifiedSince returns a page of CVE IDs modified after since, ordered by cve_id
-// ASC for keyset pagination. afterID is the last CVE ID from the previous page (empty
-// string for the first page). Rejected and withdrawn CVEs are included: evaluateRule
-// resolves open events only for CVEs in its candidate list, and queryCandidates keeps
-// them from matching.
+// getCVEsModifiedSince returns a page of CVE IDs whose date_modified_canonical or
+// date_match_inputs_changed is after since, ordered by cve_id ASC for keyset pagination.
+// date_match_inputs_changed moves when a rule match input outside material_hash changes
+// (a CNA product name, an NVD vulnerable flag), so a CVE whose realtime evaluation of such
+// a change failed is evaluated here. Both dates are stamped from the merge worker's clock,
+// so cursorRescanWindow covers both. The two conditions are a UNION of two keyset scans,
+// one per column, so each can use its own index; each branch is limited to the page size,
+// which does not change the result, because the first limit IDs of the union are among
+// the first limit IDs of each branch. A zero since scans every CVE. afterID is the last CVE
+// ID from the previous page (empty string for the first page). Rejected and withdrawn
+// CVEs are included: evaluateRule resolves open events only for CVEs in its candidate
+// list, and queryCandidates keeps them from matching.
 func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	var (
 		rows *sql.Rows
@@ -755,14 +803,25 @@ func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, a
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_modified_canonical > $1
+			`(SELECT cve_id FROM cves
+			  WHERE date_modified_canonical > $1
+			  ORDER BY cve_id LIMIT $2)
+			 UNION
+			 (SELECT cve_id FROM cves
+			  WHERE date_match_inputs_changed > $1
+			  ORDER BY cve_id LIMIT $2)
 			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
 	default:
 		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_modified_canonical > $1
-			   AND cve_id > $2
+			`(SELECT cve_id FROM cves
+			  WHERE date_modified_canonical > $1
+			    AND cve_id > $2
+			  ORDER BY cve_id LIMIT $3)
+			 UNION
+			 (SELECT cve_id FROM cves
+			  WHERE date_match_inputs_changed > $1
+			    AND cve_id > $2
+			  ORDER BY cve_id LIMIT $3)
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)

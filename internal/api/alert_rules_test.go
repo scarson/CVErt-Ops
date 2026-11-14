@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -358,6 +359,131 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
 	if patchResp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("patch invalid DSL: got %d, want 422", patchResp.StatusCode)
+	}
+}
+
+// TestAlertRule_ValidationErrorsSameOnCreateAndPatch verifies that create and PATCH
+// refuse the same conditions with the same error list (testing-pitfalls §4): an
+// "and" rule whose correlated ecosystem conditions no ecosystem satisfies together,
+// a rule naming more than 50 products, an "and" rule of more than 10 set
+// conditions, and a malformed product value.
+func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	type problemError struct {
+		Message  string `json:"message"`
+		Location string `json:"location"`
+	}
+	type problem struct {
+		Errors []problemError `json:"errors"`
+	}
+	decodeProblem := func(t *testing.T, resp *http.Response, what string) problem {
+		t.Helper()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: got %d, want 422", what, resp.StatusCode)
+		}
+		var p problem
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("%s: decode problem: %v", what, err)
+		}
+		return p
+	}
+
+	// The same mapped product in 51 one-value conditions counts 51 times and has
+	// no unmapped-product warning, so under "or" the rule-level error is the only
+	// entry. Under "and" eleven of them are over the 10-set limit.
+	nodeConds := make([]string, 51)
+	for i := range nodeConds {
+		nodeConds[i] = `{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs:node.js"}`
+	}
+	cases := []struct {
+		name       string
+		logic      string
+		conditions string
+		want       []problemError
+	}{
+		{
+			name:  "never matching ecosystems",
+			logic: "and",
+			conditions: `[
+    {"field": "affected.ecosystem", "operator": "eq", "value": "npm"},
+    {"field": "affected.ecosystem", "operator": "eq", "value": "PyPI"},
+    {"field": "affected.package", "operator": "contains", "value": "lodash"}
+  ]`,
+			want: []problemError{{
+				Message:  `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`,
+				Location: "body.conditions",
+			}},
+		},
+		{
+			name:       "51 products",
+			logic:      "or",
+			conditions: "[" + strings.Join(nodeConds, ",") + "]",
+			want:       []problemError{{Message: "a rule may name at most 50 products in total", Location: "body.conditions"}},
+		},
+		{
+			name:       "11 set conditions in an and rule",
+			logic:      "and",
+			conditions: "[" + strings.Join(nodeConds[:11], ",") + "]",
+			want: []problemError{{
+				Message:  `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`,
+				Location: "body.conditions",
+			}},
+		},
+		{
+			name:       "malformed product value",
+			logic:      "and",
+			conditions: `[{"field": "affected.cpe_product", "operator": "eq", "value": "nodejs node.js"}]`,
+			want: []problemError{{
+				Message:  "value must be printable ASCII with no spaces, as a CPE 2.3 name is",
+				Location: "body.conditions[0].affected.cpe_product",
+			}},
+		},
+	}
+
+	// Create a valid rule and make it active so a conditions change is allowed (activating → 409).
+	validResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer validResp.Body.Close() //nolint:errcheck,gosec // G104
+	if validResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create valid rule: got %d, want 202", validResp.StatusCode)
+	}
+	var rule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(validResp.Body).Decode(&rule); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if err := db.SetAlertRuleStatus(ctx, mustParseUUID(t, aliceReg.OrgID), mustParseUUID(t, rule.ID), "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
+	}
+
+	for _, tc := range cases {
+		createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, `{
+  "name": "Refused Rule",
+  "logic": "`+tc.logic+`",
+  "conditions": `+tc.conditions+`,
+  "watchlist_ids": []
+}`)
+		created := decodeProblem(t, createResp, tc.name+": create")
+		createResp.Body.Close() //nolint:errcheck,gosec // G104
+		if !reflect.DeepEqual(created.Errors, tc.want) {
+			t.Errorf("%s: create errors = %+v, want %+v", tc.name, created.Errors, tc.want)
+		}
+
+		patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"`+tc.logic+`","conditions":`+tc.conditions+`}`)
+		patched := decodeProblem(t, patchResp, tc.name+": patch")
+		patchResp.Body.Close() //nolint:errcheck,gosec // G104
+		if !reflect.DeepEqual(patched.Errors, created.Errors) {
+			t.Errorf("%s: patch errors = %+v, want the create errors %+v", tc.name, patched.Errors, created.Errors)
+		}
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -333,11 +334,43 @@ func compileRule(t *testing.T, jsonStr string, watchlistIDs []uuid.UUID) *dsl.Co
 
 func sqlOf(t *testing.T, c *dsl.CompiledRule) (string, []interface{}) {
 	t.Helper()
-	sql, args, err := c.SQL.ToSql()
+	sql, args, err := c.Where(nil).ToSql()
 	if err != nil {
 		t.Fatalf("ToSql: %v", err)
 	}
 	return sql, args
+}
+
+// TestWhere_IsDeterministicAcrossCalls checks a compiled rule, which the rule cache
+// shares across goroutines, builds the same SQL and arguments on every call.
+func TestWhere_IsDeterministicAcrossCalls(t *testing.T) {
+	t.Parallel()
+	watchlists := []uuid.UUID{uuid.MustParse("33333333-3333-3333-3333-333333333333")}
+	rules := map[string]string{
+		"and":          `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["critical","high"]},{"field":"affected.ecosystem","operator":"not_in","value":["npm"]},{"field":"cvss_v3_score","operator":"gte","value":7}]}`,
+		"or":           `{"logic":"or","conditions":[{"field":"cve_id","operator":"in","value":["CVE-1","CVE-2"]},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
+		"package sets": `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","Debian"]},{"field":"affected.package","operator":"in","value":["Foo_Bar","lodash"]},{"field":"affected.package","operator":"contains","value":"ssl"}]}`,
+		"product sets": `{"logic":"or","conditions":[{"field":"affected.cpe_product","operator":"in","value":["microsoft:.net","nodejs:node.js"]},{"field":"affected.cpe_product","operator":"eq","value":"example:widget"}]}`,
+	}
+	for name, rule := range rules {
+		c := compileRule(t, rule, watchlists)
+		for _, candidates := range [][]string{nil, {"CVE-1"}} {
+			sql1, args1, err := c.Where(candidates).ToSql()
+			if err != nil {
+				t.Fatalf("%s %v: first ToSql: %v", name, candidates, err)
+			}
+			sql2, args2, err := c.Where(candidates).ToSql()
+			if err != nil {
+				t.Fatalf("%s %v: second ToSql: %v", name, candidates, err)
+			}
+			if sql1 != sql2 {
+				t.Errorf("%s %v: SQL differs between calls:\n%s\n%s", name, candidates, sql1, sql2)
+			}
+			if !reflect.DeepEqual(args1, args2) {
+				t.Errorf("%s %v: args differ between calls: %v vs %v", name, candidates, args1, args2)
+			}
+		}
+	}
 }
 
 func TestCompile_FloatGTE(t *testing.T) {
@@ -365,12 +398,10 @@ func TestCompile_EnumIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["high","critical"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.severity") {
+	if !strings.Contains(sql, "lower(cves.severity) = ANY(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for IN, got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "high", "critical")
 }
 
 func TestCompile_BoolEq(t *testing.T) {
@@ -437,12 +468,12 @@ func TestCompile_AffectedEcosystemEq(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"npm"}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cve_affected_packages") || !strings.Contains(sql, "lower(cap.ecosystem)") {
+	// Ecosystems compare exactly, so the index on cap.ecosystem can serve = ANY.
+	if !strings.Contains(sql, "cves.cve_id IN (") || !strings.Contains(sql, "cap.ecosystem = ANY(") ||
+		strings.Contains(sql, "lower(cap.ecosystem)") || strings.Contains(sql, "LIKE ANY(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 1 {
-		t.Errorf("expected 1 arg, got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "npm")
 }
 
 func TestCompile_AffectedPackageContains(t *testing.T) {
@@ -611,7 +642,7 @@ func TestCompile_FTSQuery(t *testing.T) {
 	if compiled.Joins[0] != "cve_search_index si ON cves.cve_id = si.cve_id" {
 		t.Errorf("join = %q, want FTS join", compiled.Joins[0])
 	}
-	query, args, err := compiled.SQL.ToSql()
+	query, args, err := compiled.Where(nil).ToSql()
 	if err != nil {
 		t.Fatalf("ToSql: %v", err)
 	}
@@ -730,7 +761,7 @@ func TestCompile_FTSValueIsParameterized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	query, args, err := compiled.SQL.ToSql()
+	query, args, err := compiled.Where(nil).ToSql()
 	if err != nil {
 		t.Fatalf("ToSql: %v", err)
 	}
@@ -838,11 +869,73 @@ func TestCompile_EnumNotIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","none"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.severity") {
+	if !strings.Contains(sql, "lower(cves.severity) <> ALL(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
+	assertOneArrayArg(t, args, "low", "none")
+}
+
+// assertOneArrayArg fails unless args is exactly one array parameter holding want.
+func assertOneArrayArg(t *testing.T, args []interface{}, want ...string) {
+	t.Helper()
+	if len(args) != 1 {
+		t.Fatalf("expected 1 array arg, got %d: %v", len(args), args)
+	}
+	got, ok := args[0].(*pq.StringArray)
+	if !ok {
+		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
+	}
+	if !reflect.DeepEqual(*got, pq.StringArray(want)) {
+		t.Errorf("array arg = %v, want %v", *got, want)
+	}
+}
+
+// TestCompile_SetListIsOneParameter checks a list longer than PostgreSQL's 65,535
+// parameter limit binds as one array parameter, not one placeholder per value.
+func TestCompile_SetListIsOneParameter(t *testing.T) {
+	t.Parallel()
+	ids := make([]string, 70000)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("CVE-2024-%05d", i)
+	}
+	value, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatalf("marshal ids: %v", err)
+	}
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"in","value":`+string(value)+`}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if n := strings.Count(sql, "?") + strings.Count(sql, "$"); n != 1 {
+		t.Errorf("SQL has %d placeholders, want 1", n)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+	got, ok := args[0].(*pq.StringArray)
+	if !ok {
+		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
+	}
+	if len(*got) != len(ids) {
+		t.Errorf("array arg holds %d values, want %d", len(*got), len(ids))
+	}
+}
+
+// TestCompile_NullListBindsEmptyArray checks a JSON null list binds an empty array,
+// not SQL NULL: <> ALL(NULL) would make not_in match nothing.
+func TestCompile_NullListBindsEmptyArray(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"in", "not_in"} {
+		c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"`+op+`","value":null}]}`, nil)
+		_, args := sqlOf(t, c)
+		if len(args) != 1 {
+			t.Fatalf("%s: expected 1 arg, got %d: %v", op, len(args), args)
+		}
+		got, ok := args[0].(*pq.StringArray)
+		if !ok {
+			t.Fatalf("%s: arg is %T, want *pq.StringArray", op, args[0])
+		}
+		if *got == nil {
+			t.Errorf("%s: array arg is nil, which binds SQL NULL; want an empty array", op)
+		}
 	}
 }
 
@@ -1369,12 +1462,10 @@ func TestCompile_StringNotIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"not_in","value":["CVE-2024-0001","CVE-2024-0002"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.cve_id") {
-		t.Errorf("SQL missing cve_id reference: %q", sql)
+	if !strings.Contains(sql, "cves.cve_id <> ALL(") {
+		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "CVE-2024-0001", "CVE-2024-0002")
 }
 
 func TestCompile_EnumNeq(t *testing.T) {
@@ -1479,15 +1570,13 @@ func TestCompile_AffectedEcosystemIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "EXISTS") {
-		t.Errorf("expected EXISTS for in: %q", sql)
+	if !strings.Contains(sql, "cves.cve_id IN (") || strings.Contains(sql, "EXISTS") {
+		t.Errorf("expected a CVE-ID set for in: %q", sql)
 	}
-	if !strings.Contains(sql, "ANY(") {
+	if !strings.Contains(sql, "cap.ecosystem = ANY(") {
 		t.Errorf("expected ANY() for in: %q", sql)
 	}
-	if len(args) != 1 { // pq.Array wraps as single arg
-		t.Errorf("expected 1 arg (pq.Array), got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "npm", "PyPI") // pq.Array wraps as single arg
 }
 
 func TestCompile_AffectedEcosystemNotIn(t *testing.T) {
@@ -1531,36 +1620,18 @@ func TestCompile_AffectedEcosystemMatchesExactOrSuffixed(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"Red Hat"}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "lower(cap.ecosystem) LIKE ANY(") {
+	if !strings.Contains(sql, "(cap.ecosystem = ANY(") || !strings.Contains(sql, " OR cap.ecosystem LIKE ANY(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 1 {
-		t.Fatalf("expected 1 arg, got %d: %v", len(args), args)
-	}
-	patterns, ok := args[0].(*pq.StringArray)
-	if !ok {
-		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
-	}
-	if want := (pq.StringArray{"red hat", "red hat:%"}); !reflect.DeepEqual(*patterns, want) {
-		t.Errorf("patterns = %v, want %v", *patterns, want)
-	}
+	assertArrayArgs(t, args, []string{"Red Hat"}, []string{"Red Hat:%"})
 }
 
 func TestCompile_AffectedEcosystemEscapesLikeMetacharacters(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"Red Hat:enterprise_linux:8"}]}`, nil)
 	_, args := sqlOf(t, c)
-	if len(args) != 1 {
-		t.Fatalf("expected 1 arg, got %d: %v", len(args), args)
-	}
-	patterns, ok := args[0].(*pq.StringArray)
-	if !ok {
-		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
-	}
-	want := pq.StringArray{`red hat:enterprise\_linux:8`, `red hat:enterprise\_linux:8:%`}
-	if !reflect.DeepEqual(*patterns, want) {
-		t.Errorf("patterns = %v, want %v", *patterns, want)
-	}
+	// The exact value is compared with =, so only the release pattern is escaped.
+	assertArrayArgs(t, args, []string{"Red Hat:enterprise_linux:8"}, []string{`Red Hat:enterprise\_linux:8:%`})
 }
 
 func TestCompile_AffectedPackageStartsWith(t *testing.T) {
@@ -1660,7 +1731,7 @@ func TestExportFieldDescriptions(t *testing.T) {
 		"cve_id", "severity", "cvss_v3_score", "cvss_v4_score", "epss_score",
 		"date_published", "date_modified_source_max", "cwe_ids",
 		"in_cisa_kev", "exploit_available", "affected.ecosystem",
-		"affected.package", "description_primary", "fts_query",
+		"affected.package", "affected.cpe_product", "description_primary", "fts_query",
 	}
 	for _, name := range expectedFields {
 		if _, ok := byName[name]; !ok {
@@ -1670,15 +1741,16 @@ func TestExportFieldDescriptions(t *testing.T) {
 
 	// Check type descriptions
 	typeChecks := map[string]string{
-		"cvss_v3_score":       "number",
-		"date_published":      "datetime (RFC 3339)",
-		"in_cisa_kev":         "boolean",
-		"cve_id":              "string",
-		"severity":            "enum",
-		"cwe_ids":             "string array",
-		"description_primary": "text",
-		"affected.ecosystem":  "affected product",
-		"fts_query":           "full-text search",
+		"cvss_v3_score":        "number",
+		"date_published":       "datetime (RFC 3339)",
+		"in_cisa_kev":          "boolean",
+		"cve_id":               "string",
+		"severity":             "enum",
+		"cwe_ids":              "string array",
+		"description_primary":  "text",
+		"affected.ecosystem":   "affected product",
+		"affected.cpe_product": "CPE vendor:product",
+		"fts_query":            "full-text search",
 	}
 	for name, wantType := range typeChecks {
 		if got := byName[name].TypeDesc; got != wantType {
@@ -1907,5 +1979,619 @@ func TestCompile_ANDLogicWithWatchlistsArgCount(t *testing.T) {
 	// Should have args for severity, kev, watchlist array, and orgID
 	if len(args) < 4 {
 		t.Errorf("expected at least 4 args, got %d: %v", len(args), args)
+	}
+}
+
+// ─── Package conditions and rule limits (design section 8) ──────────────────
+
+const (
+	msgTooManyConditions = "a rule may hold at most 100 conditions"
+	msgEmptyValue        = "value must not be empty"
+	msgEmptyList         = "value must list at least one item"
+	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
+	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
+)
+
+// ruleJSON builds a rule document from logic and condition objects.
+func ruleJSON(logic string, conds ...string) string {
+	return `{"logic":"` + logic + `","conditions":[` + strings.Join(conds, ",") + `]}`
+}
+
+// findError returns the validation entries with message msg.
+func findError(errs []dsl.ValidationError, msg string) []dsl.ValidationError {
+	var found []dsl.ValidationError
+	for _, e := range errs {
+		if e.Message == msg {
+			found = append(found, e)
+		}
+	}
+	return found
+}
+
+func TestValidate_ConditionLimit(t *testing.T) {
+	t.Parallel()
+	cond := `{"field":"severity","operator":"eq","value":"high"}`
+	conds := make([]string, 101)
+	for i := range conds {
+		conds[i] = cond
+	}
+
+	r := mustParse(t, ruleJSON("and", conds[:100]...))
+	if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+		t.Errorf("100 conditions: unexpected errors %v", errs)
+	}
+	if _, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil); err != nil {
+		t.Errorf("100 conditions: Compile: %v", err)
+	}
+
+	r = mustParse(t, ruleJSON("and", conds...))
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 || errs[0].Message != msgTooManyConditions || errs[0].Index != -1 || errs[0].Severity != "error" {
+		t.Errorf("101 conditions: errors = %+v, want one rule-level %q", errs, msgTooManyConditions)
+	}
+	// A stored rule edited past the limit fails closed when compiled.
+	if _, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil); err == nil || !strings.Contains(err.Error(), msgTooManyConditions) {
+		t.Errorf("101 conditions: Compile error = %v, want %q", err, msgTooManyConditions)
+	}
+}
+
+const msgTooManyAndSets = `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`
+
+// TestValidate_AndSetConditionLimit checks an "and" rule may hold at most 10 set
+// conditions: every product and package condition counts, and an eq/in ecosystem
+// condition counts only in a rule with no package condition, where it is not folded
+// into the package sets. An "or" rule is not limited. Compile refuses the same rules.
+func TestValidate_AndSetConditionLimit(t *testing.T) {
+	t.Parallel()
+	conds := func(n int, cond string) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = cond
+		}
+		return out
+	}
+	product := productCond("eq", `"nodejs:node.js"`)
+	pkg := `{"field":"affected.package","operator":"eq","value":"lodash"}`
+	pkgContains := `{"field":"affected.package","operator":"contains","value":"lodash"}`
+	ecoEq := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`
+	ecoIn := `{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]}`
+	ecoNeq := `{"field":"affected.ecosystem","operator":"neq","value":"PyPI"}`
+	severity := `{"field":"severity","operator":"eq","value":"high"}`
+	tests := []struct {
+		name    string
+		logic   string
+		conds   []string
+		refused bool
+	}{
+		{"10 products", "and", conds(10, product), false},
+		{"11 products", "and", conds(11, product), true},
+		{"10 packages", "and", conds(10, pkg), false},
+		{"11 packages", "and", conds(11, pkg), true},
+		{"a substring package condition counts", "and", append(conds(10, product), pkgContains), true},
+		{"10 ecosystem conditions with no package", "and", append(conds(5, ecoEq), conds(5, ecoIn)...), false},
+		{"11 ecosystem conditions with no package", "and", append(conds(6, ecoEq), conds(5, ecoIn)...), true},
+		{"6 products and 5 ecosystem conditions", "and", append(conds(6, product), conds(5, ecoEq)...), true},
+		{"ecosystem conditions beside a package do not count", "and",
+			slices.Concat(conds(5, product), conds(5, pkg), conds(20, ecoEq), conds(20, ecoIn)), false},
+		{"negative ecosystem conditions do not count", "and", append(conds(10, product), conds(5, ecoNeq)...), false},
+		{"other conditions do not count", "and", append(conds(10, product), conds(50, severity)...), false},
+		{"or rule with 50", "or", slices.Concat(conds(20, product), conds(20, pkg), conds(10, ecoIn)), false},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON(tt.logic, tt.conds...))
+		errs, _, _ := dsl.Validate(r, false)
+		blocking := blockingErrors(errs)
+		_, compileErr := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+		if !tt.refused {
+			if len(blocking) != 0 {
+				t.Errorf("%s: unexpected errors %+v", tt.name, blocking)
+			}
+			if compileErr != nil {
+				t.Errorf("%s: Compile: %v", tt.name, compileErr)
+			}
+			continue
+		}
+		if len(blocking) != 1 || blocking[0].Message != msgTooManyAndSets || blocking[0].Index != -1 || blocking[0].Field != "" {
+			t.Errorf("%s: errors = %+v, want one rule-level %q", tt.name, blocking, msgTooManyAndSets)
+		}
+		// A stored rule past the limit fails closed when compiled.
+		if compileErr == nil || !strings.Contains(compileErr.Error(), msgTooManyAndSets) {
+			t.Errorf("%s: Compile error = %v, want %q", tt.name, compileErr, msgTooManyAndSets)
+		}
+	}
+}
+
+// TestValidate_OverConditionLimitSkipsEcosystemCheck pins that a rule over the
+// condition limit is refused without running the never-matching ecosystem check.
+// That check costs values times conditions, so within the limit it is linear in
+// the request, while a 1 MiB rule of thousands of conditions would take seconds.
+func TestValidate_OverConditionLimitSkipsEcosystemCheck(t *testing.T) {
+	t.Parallel()
+	conds := []string{
+		`{"field":"affected.package","operator":"eq","value":"x"}`,
+		`{"field":"affected.ecosystem","operator":"eq","value":"npm"}`,
+		`{"field":"affected.ecosystem","operator":"eq","value":"PyPI"}`,
+	}
+	for len(conds) < 101 {
+		conds = append(conds, `{"field":"severity","operator":"eq","value":"high"}`)
+	}
+	errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", conds...)), false)
+	if !hasMessage(errs, msgTooManyConditions) {
+		t.Errorf("errors = %+v, want %q", errs, msgTooManyConditions)
+	}
+	if hasMessage(errs, msgNeverMatches) {
+		t.Errorf("errors = %+v: the never-matching check ran on a rule over the condition limit", errs)
+	}
+	// The same shape within the limit is refused as never matching.
+	errs, _, _ = dsl.Validate(mustParse(t, ruleJSON("and", conds[:100]...)), false)
+	if !hasMessage(errs, msgNeverMatches) {
+		t.Errorf("100 conditions: errors = %+v, want %q", errs, msgNeverMatches)
+	}
+}
+
+func hasMessage(errs []dsl.ValidationError, msg string) bool {
+	for _, e := range errs {
+		if e.Message == msg {
+			return true
+		}
+	}
+	return false
+}
+
+func TestValidate_PackageEmptyValues(t *testing.T) {
+	t.Parallel()
+	npm := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`
+	tests := []struct {
+		name, cond, msg string
+	}{
+		{"eq whitespace", `{"field":"affected.package","operator":"eq","value":" "}`, msgEmptyValue},
+		{"eq empty", `{"field":"affected.package","operator":"eq","value":""}`, msgEmptyValue},
+		{"in holding an empty value", `{"field":"affected.package","operator":"in","value":["a",""]}`, msgEmptyValue},
+		{"in holding a whitespace value", `{"field":"affected.package","operator":"in","value":["a","\t "]}`, msgEmptyValue},
+		{"in with no values", `{"field":"affected.package","operator":"in","value":[]}`, msgEmptyList},
+		{"in null", `{"field":"affected.package","operator":"in","value":null}`, msgEmptyList},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON("and", npm, tt.cond))
+		errs, _, _ := dsl.Validate(r, false)
+		if len(errs) != 1 || errs[0].Message != tt.msg || errs[0].Index != 1 ||
+			errs[0].Field != "affected.package" || errs[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one error %q at index 1", tt.name, errs, tt.msg)
+		}
+	}
+}
+
+// TestValidate_EmptyInOnOtherFieldsUnchanged checks the empty-list error is
+// limited to affected.package: existing fields keep accepting an empty in.
+func TestValidate_EmptyInOnOtherFieldsUnchanged(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"field":"severity","operator":"in","value":[]}`,
+		`{"field":"affected.ecosystem","operator":"in","value":[]}`,
+	} {
+		r := mustParse(t, ruleJSON("and", cond))
+		if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+			t.Errorf("%s: unexpected errors %v", cond, errs)
+		}
+	}
+}
+
+func TestValidate_NeverMatchingEcosystems(t *testing.T) {
+	t.Parallel()
+	eco := func(op, value string) string {
+		return `{"field":"affected.ecosystem","operator":"` + op + `","value":` + value + `}`
+	}
+	pkgContains := `{"field":"affected.package","operator":"contains","value":"lodash"}`
+	pkgEq := `{"field":"affected.package","operator":"eq","value":"openssl"}`
+	tests := []struct {
+		name    string
+		rule    string
+		refused bool
+	}{
+		{"npm and PyPI with a package", ruleJSON("and", eco("eq", `"npm"`), eco("eq", `"PyPI"`), pkgContains), true},
+		{"two Debian releases", ruleJSON("and", eco("eq", `"Debian:13"`), eco("eq", `"Debian:12"`), pkgEq), true},
+		{"a base name is not a prefix of another base name", ruleJSON("and", eco("eq", `"Red Hat"`), eco("eq", `"Red Hat Lightwell"`), pkgEq), true},
+		{"a third condition shares no ecosystem", ruleJSON("and", eco("eq", `"Debian:13"`), eco("eq", `"Debian"`), eco("eq", `"Ubuntu"`), pkgEq), true},
+		{"an empty in list", ruleJSON("and", eco("in", `[]`), eco("eq", `"npm"`), pkgEq), true},
+		{"in shares a value with eq", ruleJSON("and", eco("in", `["npm","PyPI"]`), eco("eq", `"npm"`), `{"field":"affected.package","operator":"eq","value":"x"}`), false},
+		{"base name covers its release", ruleJSON("and", eco("eq", `"Debian"`), eco("eq", `"Debian:13"`), pkgEq), false},
+		{"release covers a longer release", ruleJSON("and", eco("eq", `"Ubuntu:22.04"`), eco("in", `["Ubuntu:22.04:LTS","npm"]`), pkgEq), false},
+		{"negative conditions are not correlated", ruleJSON("and", eco("eq", `"npm"`), eco("neq", `"PyPI"`), pkgEq), false},
+		{"no package condition", ruleJSON("and", eco("eq", `"npm"`), eco("eq", `"PyPI"`)), false},
+		{"or rule", ruleJSON("or", eco("eq", `"npm"`), eco("eq", `"PyPI"`), pkgEq), false},
+		{"one ecosystem condition", ruleJSON("and", eco("eq", `"npm"`), pkgEq), false},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, tt.rule), false)
+		found := findError(errs, msgNeverMatches)
+		if !tt.refused {
+			if len(found) != 0 {
+				t.Errorf("%s: refused as never matching: %+v", tt.name, errs)
+			}
+			continue
+		}
+		if len(found) != 1 || found[0].Index != -1 || found[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one rule-level %q", tt.name, errs, msgNeverMatches)
+		}
+	}
+}
+
+// TestValidate_NeverMatchingEcosystemsLargeLists checks the check is linear in the
+// number of values: a pairwise comparison of 30,000 values per condition would make
+// this test take minutes.
+func TestValidate_NeverMatchingEcosystemsLargeLists(t *testing.T) {
+	t.Parallel()
+	debian := make([]string, 30000)
+	ubuntu := make([]string, 30000)
+	for i := range debian {
+		debian[i] = fmt.Sprintf("Debian:%d", i)
+		ubuntu[i] = fmt.Sprintf("Ubuntu:%d", i)
+	}
+	list := func(vals []string) string {
+		b, err := json.Marshal(vals)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return string(b)
+	}
+	pkg := `{"field":"affected.package","operator":"eq","value":"openssl"}`
+
+	refused := ruleJSON("and",
+		`{"field":"affected.ecosystem","operator":"in","value":`+list(debian)+`}`,
+		`{"field":"affected.ecosystem","operator":"in","value":`+list(ubuntu)+`}`, pkg)
+	errs, _, _ := dsl.Validate(mustParse(t, refused), false)
+	if found := findError(errs, msgNeverMatches); len(found) != 1 || found[0].Index != -1 {
+		t.Errorf("Debian and Ubuntu releases: errors = %d entries, want one rule-level %q", len(errs), msgNeverMatches)
+	}
+
+	allowed := ruleJSON("and",
+		`{"field":"affected.ecosystem","operator":"in","value":`+list(debian)+`}`,
+		`{"field":"affected.ecosystem","operator":"eq","value":"Debian"}`, pkg)
+	errs, _, _ = dsl.Validate(mustParse(t, allowed), false)
+	if found := findError(errs, msgNeverMatches); len(found) != 0 {
+		t.Errorf("Debian releases and Debian: refused as never matching")
+	}
+}
+
+// TestValidate_InvalidEcosystemSkipsNeverMatchingCheck checks the never-matching
+// check runs only on valid ecosystem values, which are short canonical names. A
+// 1 MiB value of colons is refused by its value error alone; checking it would
+// cost time quadratic in its length (seconds per request).
+func TestValidate_InvalidEcosystemSkipsNeverMatchingCheck(t *testing.T) {
+	t.Parallel()
+	colons := "Debian" + strings.Repeat(":", 1<<20)
+	pkg := `{"field":"affected.package","operator":"eq","value":"openssl"}`
+	// More than eight values, so the check looks each prefix up in a hashed map.
+	npm := `{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI","Go","Maven","NuGet","RubyGems","crates.io","Hex","Pub"]}`
+	for _, cond := range []string{
+		`{"field":"affected.ecosystem","operator":"eq","value":"` + colons + `"}`,
+		`{"field":"affected.ecosystem","operator":"in","value":["Debian","` + colons + `"]}`,
+	} {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", pkg, npm, cond)), false)
+		if hasMessage(errs, msgNeverMatches) {
+			t.Errorf("the never-matching check ran on an invalid ecosystem value")
+		}
+		blocking := blockingErrors(errs)
+		if len(blocking) != 1 || blocking[0].Index != 2 || blocking[0].Field != "affected.ecosystem" ||
+			!strings.HasPrefix(blocking[0].Message, `value "Debian:::`) {
+			t.Errorf("errors = %d entries, want one value error at index 2", len(blocking))
+		}
+	}
+
+	// A rule of valid values that no ecosystem satisfies together is still refused.
+	errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", pkg, npm,
+		`{"field":"affected.ecosystem","operator":"in","value":["Debian:12","Ubuntu"]}`)), false)
+	if found := findError(errs, msgNeverMatches); len(found) != 1 || found[0].Index != -1 {
+		t.Errorf("valid never-matching rule: errors = %+v, want one rule-level %q", errs, msgNeverMatches)
+	}
+}
+
+func TestValidate_PackageMatchWithoutEcosystemWarns(t *testing.T) {
+	t.Parallel()
+	npm := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`
+	eq := `{"field":"affected.package","operator":"eq","value":"lodash"}`
+	in := `{"field":"affected.package","operator":"in","value":["lodash"]}`
+	tests := []struct {
+		name      string
+		rule      string
+		warnIndex int // -1 for no warning
+	}{
+		{"or rule", ruleJSON("or", eq), 0},
+		{"or rule with an ecosystem", ruleJSON("or", npm, eq), 1},
+		{"and rule with no ecosystem", ruleJSON("and", eq), 0},
+		{"and rule with in and no ecosystem", ruleJSON("and", in), 0},
+		{"and rule with only a negative ecosystem", ruleJSON("and", `{"field":"affected.ecosystem","operator":"neq","value":"npm"}`, eq), 1},
+		{"and rule with an ecosystem", ruleJSON("and", npm, eq), -1},
+		{"and rule with an ecosystem after the package", ruleJSON("and", in, npm), -1},
+		{"contains", ruleJSON("and", `{"field":"affected.package","operator":"contains","value":"lodash"}`), -1},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, tt.rule), false)
+		found := findError(errs, msgNoEcosystemFirst)
+		if tt.warnIndex < 0 {
+			if len(found) != 0 {
+				t.Errorf("%s: unexpected warning %+v", tt.name, found)
+			}
+			continue
+		}
+		if len(found) != 1 || found[0].Index != tt.warnIndex || found[0].Severity != "warning" ||
+			found[0].Field != "affected.package" {
+			t.Errorf("%s: entries = %+v, want one warning at index %d", tt.name, errs, tt.warnIndex)
+		}
+		for _, e := range errs {
+			if e.Severity == "error" {
+				t.Errorf("%s: unexpected error %+v", tt.name, e)
+			}
+		}
+	}
+}
+
+// ─── affected.cpe_product validation (design sections 3 and 8) ──────────────
+
+const (
+	msgProductNotPair    = `value must be "vendor:product", the vendor and product of a CPE 2.3 name, for example "nodejs:node.js"`
+	msgProductNotLiteral = `vendor and product must be literal names, not "*", "-" or a pattern with "*" or "?"`
+	msgProductBackslash  = "vendor and product must not end in an unescaped backslash"
+	msgProductNotASCII   = "value must be printable ASCII with no spaces, as a CPE 2.3 name is"
+	msgProductTooLong    = "value must not exceed 255 characters"
+	msgTooManyProducts   = "a rule may name at most 50 products in total"
+)
+
+// productCond is an affected.cpe_product condition; value is raw JSON.
+func productCond(op, value string) string {
+	return `{"field":"affected.cpe_product","operator":"` + op + `","value":` + value + `}`
+}
+
+// productInCond is an affected.cpe_product in condition listing vals.
+func productInCond(t *testing.T, vals []string) string {
+	t.Helper()
+	b, err := json.Marshal(vals)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return productCond("in", string(b))
+}
+
+// distinctProducts returns n distinct product values with no name table row.
+func distinctProducts(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf("vendor%d:product%d", i, i)
+	}
+	return out
+}
+
+// blockingErrors returns the entries of errs with severity error.
+func blockingErrors(errs []dsl.ValidationError) []dsl.ValidationError {
+	var out []dsl.ValidationError
+	for _, e := range errs {
+		if e.Severity == "error" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestValidate_ProductValueErrors(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, op, value, msg string
+	}{
+		{"no colon", "eq", `"nodejs"`, msgProductNotPair},
+		{"empty product", "eq", `"nodejs:"`, msgProductNotPair},
+		{"empty vendor", "eq", `":node.js"`, msgProductNotPair},
+		{"three components", "eq", `"nodejs:node.js:24"`, msgProductNotPair},
+		{"vendor is *", "eq", `"*:node.js"`, msgProductNotLiteral},
+		{"product is -", "eq", `"nodejs:-"`, msgProductNotLiteral},
+		{"unescaped *", "eq", `"nodejs:node*"`, msgProductNotLiteral},
+		{"unescaped ?", "eq", `"nodejs:node?"`, msgProductNotLiteral},
+		{"trailing backslash", "eq", `"nodejs:node.js\\"`, msgProductBackslash},
+		{"unescaped +", "eq", `"notepad-plus-plus:notepad++"`, `character "+" must be escaped with a backslash, as NVD writes CPE names (for example "notepad\+\+")`},
+		{"a space", "eq", `"nodejs node.js"`, msgProductNotASCII},
+		{"256 characters", "eq", `"a:` + strings.Repeat("b", 254) + `"`, msgProductTooLong},
+		{"in holding a bad value", "in", `["nodejs:node.js","nodejs"]`, msgProductNotPair},
+		{"in with no values", "in", `[]`, msgEmptyList},
+		{"in null", "in", `null`, msgEmptyList},
+		{"eq with a number", "eq", `7`, "value must be a JSON string: "},
+		{"in with a string", "in", `"nodejs:node.js"`, "value must be a JSON array of strings: "},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productCond(tt.op, tt.value))), false)
+		if len(errs) != 1 || !strings.HasPrefix(errs[0].Message, tt.msg) || errs[0].Index != 0 ||
+			errs[0].Field != "affected.cpe_product" || errs[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one error %q at index 0", tt.name, errs, tt.msg)
+		}
+		// The prefix match is for the JSON decoder's text only.
+		if !strings.HasSuffix(tt.msg, ": ") && len(errs) == 1 && errs[0].Message != tt.msg {
+			t.Errorf("%s: message = %q, want %q", tt.name, errs[0].Message, tt.msg)
+		}
+	}
+}
+
+func TestValidate_ProductValidValues(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		`"nodejs:node.js"`,
+		`"NodeJS:Node.js"`,
+		`"nodejs:node\\.js"`,
+		`"1und1:1\\&1_online_storage"`,
+		`"a:` + strings.Repeat("b", 253) + `"`,
+	} {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productCond("eq", value))), false)
+		if blocking := blockingErrors(errs); len(blocking) != 0 {
+			t.Errorf("%s: unexpected errors %+v", value, blocking)
+		}
+	}
+}
+
+func TestValidate_ProductOperators(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"neq", "not_in", "contains", "starts_with", "ends_with", "regex"} {
+		value := `"nodejs:node.js"`
+		if op == "not_in" {
+			value = `["nodejs:node.js"]`
+		}
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productCond(op, value))), false)
+		want := fmt.Sprintf("operator %q is not valid for field %q", op, "affected.cpe_product")
+		if len(errs) != 1 || errs[0].Message != want || errs[0].Index != 0 || errs[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one error %q", op, errs, want)
+		}
+	}
+}
+
+func TestValidate_ProductUnmappedWarning(t *testing.T) {
+	t.Parallel()
+	severity := `{"field":"severity","operator":"eq","value":"high"}`
+	tests := []struct {
+		name string
+		cond string
+		want []string // warning messages at index 1, in order
+	}{
+		{"unmapped", productCond("eq", `"example:widget"`),
+			[]string{`no other CNA spelling is known for "example:widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "example" and product "widget"`}},
+		{"unmapped in another case, listed twice", productCond("in", `["Example:Widget","example:widget"]`),
+			[]string{`no other CNA spelling is known for "example:widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "example" and product "widget"`}},
+		{"underscore read as a space and escapes dropped", productCond("eq", `"acme_corp:big\\&small_widget"`),
+			[]string{`no other CNA spelling is known for "acme_corp:big\&small_widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "acme corp" and product "big&small widget"`}},
+		{"mapped", productCond("eq", `"nodejs:node.js"`), nil},
+		{"second spelling of a mapped row", productCond("eq", `"nodejs:nodejs"`), nil},
+		{"one unmapped value in a list", productCond("in", `["nodejs:node.js","example:widget"]`),
+			[]string{`no other CNA spelling is known for "example:widget"; before NVD analyses a CVE, it matches only if the CNA record names vendor "example" and product "widget"`}},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", severity, tt.cond)), false)
+		var got []string
+		for _, e := range errs {
+			if e.Severity != "warning" || e.Index != 1 || e.Field != "affected.cpe_product" {
+				t.Errorf("%s: unexpected entry %+v", tt.name, e)
+				continue
+			}
+			got = append(got, e.Message)
+		}
+		if !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("%s: warnings = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestValidate_ProductLimit checks the 50-product limit: values are de-duplicated
+// after normalisation within a condition and summed across conditions, so the same
+// product in two conditions counts twice.
+func TestValidate_ProductLimit(t *testing.T) {
+	t.Parallel()
+	vals := distinctProducts(51)
+	node := productCond("eq", `"nodejs:node.js"`)
+	repeat := func(cond string, n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = cond
+		}
+		return out
+	}
+	tests := []struct {
+		name    string
+		logic   string
+		conds   []string
+		refused bool
+	}{
+		{"50 values over several conditions", "and", []string{
+			productInCond(t, vals[:10]), productInCond(t, vals[10:30]), productCond("eq", `"`+vals[30]+`"`), productInCond(t, vals[31:50]),
+		}, false},
+		{"51 values over several conditions", "and", []string{
+			productInCond(t, vals[:10]), productInCond(t, vals[10:30]), productCond("eq", `"`+vals[30]+`"`), productInCond(t, vals[31:51]),
+		}, true},
+		{"duplicates after normalisation in one condition count once", "and", []string{
+			productInCond(t, vals[:49]), productInCond(t, []string{"NodeJS:Node.js", `nodejs:node\.js`, "nodejs:node.js"}),
+		}, false},
+		{"the same product in two conditions counts twice", "and", append([]string{productInCond(t, vals[:49])}, node, node), true},
+		{"48 values and the same product in two conditions", "and", append([]string{productInCond(t, vals[:48])}, node, node), false},
+		// "or": an "and" rule of 100 product conditions is also over the 10-set limit.
+		{"100 conditions each listing the same 50 products", "or", repeat(productInCond(t, vals[:50]), 100), true},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON(tt.logic, tt.conds...))
+		errs, _, _ := dsl.Validate(r, false)
+		blocking := blockingErrors(errs)
+		if !tt.refused {
+			if len(blocking) != 0 {
+				t.Errorf("%s: unexpected errors %+v", tt.name, blocking)
+			}
+			continue
+		}
+		if len(blocking) != 1 || blocking[0].Message != msgTooManyProducts || blocking[0].Index != -1 {
+			t.Errorf("%s: errors = %+v, want one rule-level %q", tt.name, blocking, msgTooManyProducts)
+		}
+	}
+}
+
+// TestValidate_ProductValueErrorsBounded checks a product condition reports only its
+// first refused value, so a body of 100,000 bad values gives one entry, and Compile
+// refuses the condition with the same error.
+func TestValidate_ProductValueErrorsBounded(t *testing.T) {
+	t.Parallel()
+	vals := []string{"nodejs:node.js", "nodejs node.js", "nodejs", "*:node.js"}
+	for len(vals) < 100000 {
+		vals = append(vals, fmt.Sprintf("bad%d", len(vals)))
+	}
+	r := mustParse(t, ruleJSON("and", `{"field":"severity","operator":"eq","value":"high"}`, productInCond(t, vals)))
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 || errs[0].Message != msgProductNotASCII || errs[0].Index != 1 ||
+		errs[0].Field != "affected.cpe_product" || errs[0].Severity != "error" {
+		t.Errorf("errors = %d entries (first %+v), want one error %q at index 1", len(errs), firstEntry(errs), msgProductNotASCII)
+	}
+	if _, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil); err == nil || !strings.Contains(err.Error(), msgProductNotASCII) {
+		t.Errorf("Compile error = %v, want %q", err, msgProductNotASCII)
+	}
+}
+
+// TestValidate_ProductWarningsWithinLimit checks unmapped-product warnings are given
+// only for a rule within the 50-product limit, so a rule has at most 50 of them.
+func TestValidate_ProductWarningsWithinLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		products int
+		warnings int
+		refused  bool
+	}{
+		{"50 unmapped products", 50, 50, false},
+		{"51 unmapped products", 51, 0, true},
+		{"100,000 unmapped products", 100000, 0, true},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", productInCond(t, distinctProducts(tt.products)))), false)
+		warnings := 0
+		for _, e := range errs {
+			if e.Severity == "warning" {
+				warnings++
+			}
+		}
+		if warnings != tt.warnings {
+			t.Errorf("%s: %d warnings, want %d", tt.name, warnings, tt.warnings)
+		}
+		blocking := blockingErrors(errs)
+		if tt.refused != (len(blocking) == 1 && blocking[0].Message == msgTooManyProducts) || (!tt.refused && len(blocking) != 0) {
+			t.Errorf("%s: errors = %+v, want refused %v by %q alone", tt.name, blocking, tt.refused, msgTooManyProducts)
+		}
+	}
+}
+
+// firstEntry returns errs[0], or the zero entry for an empty list.
+func firstEntry(errs []dsl.ValidationError) dsl.ValidationError {
+	if len(errs) == 0 {
+		return dsl.ValidationError{}
+	}
+	return errs[0]
+}
+
+// TestValidate_RegexRuleWithProductIsSelective checks a product condition lets a
+// regex rule pass without a watchlist.
+func TestValidate_RegexRuleWithProductIsSelective(t *testing.T) {
+	t.Parallel()
+	r := mustParse(t, ruleJSON("and",
+		`{"field":"description_primary","operator":"regex","value":"remote code"}`,
+		productCond("eq", `"nodejs:node.js"`)))
+	if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+		t.Errorf("unexpected entries %+v", errs)
 	}
 }

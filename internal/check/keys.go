@@ -3,6 +3,7 @@
 package check
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -18,6 +19,22 @@ const cnaNameRunes = 256
 // CPEKeyRunes is how many characters of cpe_normalized cve_cpe_matches_check_idx
 // holds, as SQL left(cpe_normalized, 512) cuts them.
 const CPEKeyRunes = 512
+
+// CPEIndexExpr is the expression cve_cpe_matches_check_idx indexes, on column:
+// its first CPEKeyRunes characters, so a CPE of any length fits a btree row.
+// The C collation lets a range on a CPE prefix use the index whatever the
+// database collation. A statement ranges on it with a CPEKey's Lo and Hi and
+// rechecks the key's whole Prefix with starts_with.
+func CPEIndexExpr(column string) string {
+	return fmt.Sprintf(`left(%s, %d) COLLATE "C"`, column, CPEKeyRunes)
+}
+
+// CNANameIndexExpr is one of the expressions cve_cna_affected_check_idx
+// indexes, on column (vendor or product): its first cnaNameRunes characters,
+// lower-cased, which CNANameKeyFor cuts its names to match.
+func CNANameIndexExpr(column string) string {
+	return fmt.Sprintf(`left(lower(%s), %d) COLLATE "C"`, column, cnaNameRunes)
+}
 
 // Keys is what the store must read, distinct across the request. Each slice's
 // position is the key index that rows in Candidates refer to.
@@ -147,7 +164,7 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 			}
 		case item.Product != nil:
 			p := *item.Product
-			use.otherProducts = otherProducts[p.Vendor+":"+p.Product]
+			use.otherProducts = OtherProductsFor(p)
 			names, cpes, _ := NamesFor(p)
 			// Every spelling NamesFor lists is this product, with the item's part.
 			var vendorRanges []CPEKey
@@ -158,7 +175,7 @@ func keysWithUses(items []Item) (Keys, []itemKeys) {
 				}
 			}
 			for _, n := range names {
-				k := add(&b.cnaNames, &b.keys.CNANames, cnaNameKey(n))
+				k := add(&b.cnaNames, &b.keys.CNANames, CNANameKeyFor(n))
 				if !slices.Contains(use.cnaNames, k) {
 					use.cnaNames = append(use.cnaNames, k)
 				}
@@ -250,8 +267,8 @@ func (b *keyBuilder) addCPE(key CPEKey, ver string) int {
 	return i
 }
 
-// cnaNameKey builds the key for one CNA name, as CNANameKey describes.
-func cnaNameKey(n CNAName) CNANameKey {
+// CNANameKeyFor builds the key for one CNA name, as CNANameKey describes.
+func CNANameKeyFor(n CNAName) CNANameKey {
 	vendor, product := strings.ToLower(n.Vendor), strings.ToLower(n.Product)
 	lo := cutRunes(product, cnaNameRunes)
 	if n.Prefix {

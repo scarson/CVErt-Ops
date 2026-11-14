@@ -184,27 +184,29 @@ type AuditLog struct {
 }
 
 type CVE struct {
-	CveID                 string
-	Status                sql.NullString
-	DatePublished         sql.NullTime
-	DateModifiedSourceMax sql.NullTime
-	DateModifiedCanonical time.Time
-	DateFirstSeen         time.Time
-	DescriptionPrimary    sql.NullString
-	Severity              sql.NullString
-	CvssV3Score           sql.NullFloat64
-	CvssV3Vector          sql.NullString
-	CvssV3Source          sql.NullString
-	CvssV4Score           sql.NullFloat64
-	CvssV4Vector          sql.NullString
-	CvssV4Source          sql.NullString
-	CvssScoreDiverges     bool
-	CweIds                []string
-	ExploitAvailable      bool
-	InCisaKev             bool
-	EpssScore             sql.NullFloat64
-	DateEpssUpdated       sql.NullTime
-	MaterialHash          sql.NullString
+	CveID                  string
+	Status                 sql.NullString
+	DatePublished          sql.NullTime
+	DateModifiedSourceMax  sql.NullTime
+	DateModifiedCanonical  time.Time
+	DateFirstSeen          time.Time
+	DescriptionPrimary     sql.NullString
+	Severity               sql.NullString
+	CvssV3Score            sql.NullFloat64
+	CvssV3Vector           sql.NullString
+	CvssV3Source           sql.NullString
+	CvssV4Score            sql.NullFloat64
+	CvssV4Vector           sql.NullString
+	CvssV4Source           sql.NullString
+	CvssScoreDiverges      bool
+	CweIds                 []string
+	ExploitAvailable       bool
+	InCisaKev              bool
+	EpssScore              sql.NullFloat64
+	DateEpssUpdated        sql.NullTime
+	MaterialHash           sql.NullString
+	MatchInputsHash        sql.NullString
+	DateMatchInputsChanged sql.NullTime
 }
 
 type CveAffectedCpe struct {

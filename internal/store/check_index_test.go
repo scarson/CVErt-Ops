@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
-	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/migrations"
 )
 
@@ -65,7 +65,7 @@ func latestIndexMigration(t *testing.T, name string) string {
 
 func TestCheckCPEIndexMatchesQuery(t *testing.T) {
 	t.Parallel()
-	want := "ON cve_cpe_matches ((" + store.CPEIndexExpr("cpe_normalized") + "))"
+	want := "ON cve_cpe_matches ((" + check.CPEIndexExpr("cpe_normalized") + "))"
 	if !strings.Contains(latestIndexMigration(t, "cve_cpe_matches_check_idx"), want) {
 		t.Errorf("the last migration that creates cve_cpe_matches_check_idx does not index the CPE expression: want %q", want)
 	}
@@ -73,7 +73,7 @@ func TestCheckCPEIndexMatchesQuery(t *testing.T) {
 
 func TestCheckCNAIndexMatchesQuery(t *testing.T) {
 	t.Parallel()
-	want := "ON cve_cna_affected ((" + store.CNANameIndexExpr("vendor") + "), (" + store.CNANameIndexExpr("product") + "))"
+	want := "ON cve_cna_affected ((" + check.CNANameIndexExpr("vendor") + "), (" + check.CNANameIndexExpr("product") + "))"
 	if !strings.Contains(checkLookupsMigration(t), want) {
 		t.Errorf("check_lookups migration does not index the CNA name expressions: want %q", want)
 	}

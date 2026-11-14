@@ -55,6 +55,8 @@ func TestKeysFor(t *testing.T) {
 			exactName("nodejs", "node.js"),
 			exactName("nodejs", "nodejs"),
 			exactName("nodejs", "node"),
+			exactName("node.js", "node.js"),
+			exactName("the node.js project", "node.js"),
 			exactName("microsoft", ".net"),
 			exactName("microsoft", ".net core"),
 			exactName("microsoft", ".net_core"),
@@ -84,11 +86,11 @@ func TestKeysForItemUses(t *testing.T) {
 		// items use no CNA rows.
 		{pkgs: []int{1, 2}, cnaPackage: -1},
 		// Node reads the NVD rows under both of its spellings.
-		{cpes: []int{0, 1}, cnaNames: []int{0, 1, 2}, cnaPackage: -1, near: []int{0}},
+		{cpes: []int{0, 1}, cnaNames: []int{0, 1, 2, 3, 4}, cnaPackage: -1, near: []int{0}},
 		// Both .NET spellings read the NVD rows under each, and leave out the
 		// CNA rows of the .NET Framework and OpenAPI.NET.
-		{cpes: []int{2, 3}, cnaNames: []int{3, 4, 5, 6}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
-		{cpes: []int{2, 3}, cnaNames: []int{4, 5, 3, 6}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
+		{cpes: []int{2, 3}, cnaNames: []int{5, 6, 7, 8}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
+		{cpes: []int{2, 3}, cnaNames: []int{6, 7, 5, 8}, cnaPackage: -1, near: []int{1}, otherProducts: dotNetOtherProducts},
 		none, // an invalid item uses no keys
 		{pkgs: []int{3}, cnaPackage: 1},
 	}
@@ -287,10 +289,23 @@ func TestCNANamePrefixesHaveUpperBounds(t *testing.T) {
 			if !n.Prefix {
 				continue
 			}
-			k := cnaNameKey(n)
+			k := CNANameKeyFor(n)
 			if k.Lo >= k.Hi || !strings.HasPrefix(k.Lo, strings.ToLower(n.Product)) {
 				t.Errorf("%s: prefix %q gives key %+v", cpe, n.Product, k)
 			}
 		}
+	}
+}
+
+// TestIndexExpressions pins the indexed expressions to the exact text the
+// version check statements have always compared, so moving them here leaves
+// every statement byte-for-byte unchanged.
+func TestIndexExpressions(t *testing.T) {
+	t.Parallel()
+	if got, want := CPEIndexExpr("m.cpe_normalized"), `left(m.cpe_normalized, 512) COLLATE "C"`; got != want {
+		t.Errorf("CPEIndexExpr = %q, want %q", got, want)
+	}
+	if got, want := CNANameIndexExpr("a.vendor"), `left(lower(a.vendor), 256) COLLATE "C"`; got != want {
+		t.Errorf("CNANameIndexExpr = %q, want %q", got, want)
 	}
 }

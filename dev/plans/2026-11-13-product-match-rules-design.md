@@ -1,6 +1,6 @@
 # Design: product conditions and correlated package conditions in alert rules (MATCH-2)
 
-Date: 2026-11-13. Author: Claude, for Sam. Status: approved for planning. Sam answered its two questions on 2026-11-13 (section 15.1). No implementation code or migration exists.
+Date: 2026-11-13. Author: Claude, for Sam. Status: approved for planning; section 5's query shape amended on 2026-11-14 by Sam's decisions at the implementation's measurement gate (section 17). Sam answered its two questions on 2026-11-13 (section 15.1). No implementation code or migration exists.
 
 Review ledger: `dev/plans/reviews/2026-11-13-product-match-rules-design.ledger.md`.
 
@@ -155,6 +155,8 @@ Under rule 1, two `eq` or `in` ecosystem conditions beside a package condition m
 An existing `and` rule with an ecosystem and a package condition matches fewer CVEs once this ships. When a CVE that no longer matches is next evaluated (realtime on its next hash change, or a batch or EPSS run that includes it), its open event resolves and a resolution notification is sent ("no longer matches the rule's conditions"). Until then, events opened under the old reading stay open. Section 7's re-check signal treats a stored NULL `match_inputs_hash` as a change, so each CVE with an event is re-evaluated on its first merge after this ships, and most of these events resolve then. PLAN.md §10.5 says a changed meaning bumps `dsl_version` and keeps the old compiler. This design does not: the project has no users, and keeping the uncorrelated reading would keep the wrong answer. Without a version, reverting the correlation is a code revert: rules widen again from each CVE's next evaluation, and a CVE whose event was resolved by this change reopens at the same hash and notifies (PLAN.md §10.4). Section 15.2 ("No `dsl_version` bump") records the decision.
 
 ## 5. Query shape
+
+> Amended 2026-11-14 by section 17: one CVE set per `or` rule, one package branch per `or` rule, product sets matched against bound arrays when the caller has candidate IDs, and the evaluator's statements run without JIT or parallel query. Read section 17 with this section.
 
 ### 5.1 The CVE-set form
 
@@ -530,6 +532,29 @@ Each decision says what was decided, why, and what was rejected. Sam can overtur
 ## 16. Delivery
 
 One pull request to `dev`, in commits: export the name lookup, value parser and key builders from `internal/check`, move the two index-expression helpers into it, and add the two names; the CVE-set form and `CompiledRule.Where` with the package correlation and `eq`/`in`; `affected.cpe_product`; the re-check signal (migration reviewed with `schema-review` and written with `migration`, then merge, handler and batch changes); PLAN.md. `material_hash` and its golden hashes do not change. `/pitfall-check` before the evaluator commit, `/plan-check` against PLAN.md §10 before merge.
+
+## 17. Amendment (2026-11-14): query shape after the implementation measurements
+
+Sam's decisions of 2026-11-14, made at the implementation plan's measurement gate (`dev/plans/2026-11-13-product-match-rules-plan.md` Phase 4). Results and statements: `dev/plans/2026-11-13-product-match-rules-measurements.md`. This section amends section 5; where they differ, this section holds. Section 5 is left as written so the reasoning that led here stays readable.
+
+**Why.** With the section 5 shape, the limit rule of section 13 (50 one-value product conditions and 50 one-value package conditions, no ecosystem, under `or`) failed every threshold on the kept ingest: realtime 23.3 ms, dry-run and batch out of shared memory (27.6 s and 17.7 s serially), activation out of shared memory on its first page, and 50 products under `or` 16.2 s as a dry-run. Three causes, each measured:
+
+- PostgreSQL does not turn `IN` subqueries joined by `OR` into semi-joins. Each became a hashed SubPlan built over its whole set, whatever the candidate IDs or the row limit.
+- Planning grew with the hundreds of OR-ed range and name terms of the product sets, and with every copy of the candidate-ID array (one per branch).
+- Parallel plans (two workers for one CVE) and JIT added tens of milliseconds to realtime and seconds to dry-runs, and parallel hashes needed more than the 64 MB of shared memory a default Docker container has.
+
+**What changed** (the set form, the limits and every match rule of sections 3 and 4 are unchanged):
+
+1. **One CVE set per `or` rule.** Under `or`, every set-type condition's branches form one `cves.cve_id IN (<branch> UNION ALL <branch> ...)`, with the scalar conditions OR-ed beside it. Under `and`, each set condition keeps its own `IN`, which PostgreSQL plans as a semi-join, and package correlation (section 4.2) is unchanged.
+2. **One package branch per `or` rule.** Under `or`, every `affected.package` condition with `eq` or `in` compiles into one branch holding all their values (folded per arm as section 5.1 says). They are uncorrelated under `or`, so this is the same set. Substring package conditions and ecosystem sets keep their own branches.
+3. **Arrays when the caller has candidate IDs.** With candidate IDs (realtime, batch, EPSS, activation), a product set matches its CPE prefixes with `m.cpe_normalized ^@ ANY(<prefixes>)` and its CNA names and other products through bound arrays (`unnest`), reaching rows through `cve_id = ANY(<candidates>)`. Under `or`, all product conditions share one CPE branch and one CNA branch. The statement's text and parameter count no longer depend on the number of products. With no candidate IDs (dry-run, saved searches), the product set keeps section 5.1's OR-ed range form, which the check indexes serve. A test proves both forms give the same CVEs, including other products limited to their own value.
+4. **The evaluator's candidate statement runs with `SET LOCAL jit = off` and `SET LOCAL max_parallel_workers_per_gather = 0`.** Saved searches (`store.ExecuteDSLQuery`) keep the server defaults.
+
+**Result** on the kept ingest at the original limits: every statement threshold of section 13 passes (realtime 4.7 ms, batch 0.45 s, dry-run 4.3 s for the limit rule); see the measurements file for each row. The full activation of the limit rule completed in 12 minutes against the 7-minute threshold, most of it inserting 200,252 events one transaction at a time, a cost any rule matching that many CVEs has; that row is with Sam. Single-product rows are within a few milliseconds of section 5.3's figures, except that a single-product batch can choose a sequential scan of a child table and take up to about a second (`linux:linux_kernel` or `in_cisa_kev`), inside the 3 s batch threshold.
+
+**Added after the code reviews (2026-11-14, decided by Claude under Sam's delegation):** an `and` rule may hold at most 10 set conditions (its `affected.cpe_product` and `affected.package` conditions, and its `affected.ecosystem` `eq`/`in` conditions when it has no package condition). Under `and` each set stays its own `IN`, and realtime planning grew with them (one CVE: 10 sets 4.3 ms, 20 sets 15.9 ms, 50 sets 74 ms); realtime evaluates every organisation's rules on each changed CVE, so one rule must not cost every tenant tens of milliseconds per CVE. Message: `an "and" rule may hold at most 10 product, package and ecosystem conditions; list more values in one "in" condition, or use an "or" rule`. Validation output is also bounded: one error per product condition (its first refused value), and unmapped-product warnings only for a rule within the 50-product limit.
+
+**Not changed:** a shared candidate CTE is still rejected (section 13). The 64 MB shared-memory default of the Docker images is a deployment matter handled separately; with parallel query off, rule statements no longer depend on it.
 
 ## Appendix A. Measured statements
 

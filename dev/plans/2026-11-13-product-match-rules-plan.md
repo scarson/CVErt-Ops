@@ -111,23 +111,50 @@ Why this matters here: this plan runs over several sessions (code, a measurement
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-14 — 8 rounds (4 independent, all cross-model Codex cold reads), 2 verify-first flags annotated in place (Tasks 2.1 and 5.3)
-**Overall:** Not started.
+**Overall:** ✅ All six phases complete on branch `claude/lucid-moser-fef966`; Phase 4 needed Sam's query-shape remedy (design section 17). PR to `dev`: [scarson/CVErt-Ops#244](https://github.com/scarson/CVErt-Ops/pull/244).
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
-| 1 — Name table and value parser in `internal/check` | ⬜ Not started | — | — |
-| 2 — CVE-set form, `CompiledRule.Where`, package correlation | ⬜ Not started | — | — |
-| 3 — The `affected.cpe_product` field | ⬜ Not started | — | — |
-| 4 — Measurements on the kept full ingest (gate) | ⬜ Not started | — | — |
-| 5 — Re-check signal | ⬜ Not started | — | — |
-| 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
+| 1 — Name table and value parser in `internal/check` | ✅ Shipped 2026-11-14 (branch; PR pending) | `cc883cd`, `3bf8255`, `43c878f` | Name table digest pinned at `f91e7929…a18b` |
+| 2 — CVE-set form, `CompiledRule.Where`, package correlation | ✅ Shipped 2026-11-14 (branch; PR pending) | `7668072`, `c551369`, `f2f6f0e`, `1d0f6e6`, `daddbc2` | No existing integration test depended on uncorrelated matching |
+| 3 — The `affected.cpe_product` field | ✅ Shipped 2026-11-14 (branch; PR pending) | `76359bc`, `71b4e9b`, `ead194c`, `fcde2c5`; review fix `d69081d` | Adversarial review found one branch defect (quadratic Validate cost), fixed |
+| 4 — Measurements on the kept full ingest (gate) | ✅ Complete 2026-11-14: statement thresholds pass after Sam's remedy (`7ad8080`, `fe0e32f`, `9d58ee1`); M8 12 min accepted by Sam, follow-up separate | evidence `4d72221`, `bea8e03`, see next commit | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
+| 5 — Re-check signal | ✅ Shipped 2026-11-14 (branch; PR pending) | `fdbf47f`, `3232759`, `ce2b731` | Task 5.5 sparse page 3.7 s accepted by Sam; M8 2 min 4 s after PR 243 |
+| 6 — PLAN.md, reviews, full suite, PR | ✅ Complete 2026-11-14 | `2a49cdb` … `4b65c2f` | Full suite passed at `4b65c2f`; PR [#244](https://github.com/scarson/CVErt-Ops/pull/244) |
 
 ### Deviations
-- _None yet._
+- Phase 6 review fixes, decided by Claude under Sam's delegation (2026-11-14, "bias to action"): (1) a late-binding CVE ID rename or merge stamps `date_match_inputs_changed` so ID-keyed rules are re-checked by batch if realtime fails; (2) the never-matching ecosystem check runs only when every ecosystem value is valid (it was quadratic in a refused value's length); (3) validation reports one error per product condition and unmapped-product warnings only within the 50-product limit (a 1 MiB body produced up to 333,334 entries); (4) an `and` rule may hold at most 10 set conditions (measured: 10 sets 4.3 ms realtime, 20 sets 15.9 ms). Recorded in design section 17, PLAN.md §10.2 and the measurements file.
+- Setup step 1: the work runs in the session's existing worktree, branch `claude/lucid-moser-fef966`, reset to `origin/dev` at `f593d74` before any change, instead of a new `claude/match2-impl` worktree. Same base, one writer.
+- Task 1.2: the printable-ASCII refusal uses the message in the task's row 2 (`value must be printable ASCII with no spaces, as a CPE 2.3 name is`), which design section 8 does not list. `internal/check/input.go` `errProductValueNotASCII`.
+- Task 1.2: `escapedAsCPERequires` does not call `firstUnescapedInvalid` (which would stop at the `*` and `?` the check must still accept). One iterator, `unescapedBytes`, does the escape walk, and `firstUnescapedInvalid`, `escapedAsCPERequires` and `hasUnescapedWildcard` read it. Check behaviour unchanged. `internal/check/input.go`.
+- Task 1.1 also touched `internal/store/export_test.go` (removed aliases of the deleted helpers) and `internal/store/check_index_test.go` (the migration-pinning tests call the exported helpers). Task 1.3 also updated `TestKeysFor` and `TestKeysForItemUses` in `internal/check/keys_test.go`, which enumerate the Node names through their keys.
+- Task 2.1 (`7668072`) also updated `TestCompile_EnumIn` (`internal/alert/dsl/dsl_test.go:~364`), which asserted the old placeholder count; the subject reads "..., strengthen tests".
+- Task 2.2 (`c551369`): `ExecuteDSLQuery` keeps a nil guard (`if where := compiled.Where(nil); where != nil`) because `TestExecuteDSLQuery_NilSQL` passes a zero `CompiledRule`; `Where` returns nil for a rule with no predicates and no watchlist. `Where` treats any logic other than `or` as `and`; `Compile` still refuses unknown logic. SQL identity before and after was checked for six rule shapes with a throwaway capture test (not committed).
+- Task 2.3 (`f2f6f0e`): `textOpsNoRegex` in `internal/alert/dsl/field.go` served only `affected.package` and was replaced by `packageOps`. Ecosystem lists are bound as written (only package-name lists are de-duplicated). A JSON `null` ecosystem list binds an empty array, keeping `in null` matching nothing and `not_in null` matching everything (`internal/alert/dsl/sets.go` `conditionValues`). Rewritten shape tests: `TestCompile_AffectedEcosystemEq`, `...EcosystemIn`, `...EcosystemMatchesExactOrSuffixed`, `...EcosystemEscapesLikeMetacharacters`.
+- Task 2.3 meaning detail beyond correlation (design 4.1, ecosystems compared exactly): the `:%` release arm now applies only to bases that take a suffix, so `npm` no longer also matches a stored `npm:...`; canonical stored data has none.
+- Task 2.4 (`1d0f6e6`): the never-matching check skips a rule whose `eq`/`in` ecosystem value fails to parse (that value already has its own error). A `neq` ecosystem condition does not suppress the no-ecosystem warning, per design section 8's wording.
+- Task 2.5 (`daddbc2`): commit subject is `test(alert): add integration tests for package correlation and exact match`; cases run through both realtime and activation.
+- Task 3.1 (`76359bc`): the unmapped-product warning quotes values with `"%s"`, not `%q`, so an escaped value such as `1und1:1\&1_online_storage` is shown as written (`internal/alert/dsl/validator.go:~50`). The create/PATCH symmetry test is renamed `TestAlertRule_ValidationErrorsSameOnCreateAndPatch` and made table-driven; its 51-product case is 51 one-value `eq nodejs:node.js` conditions (51 by Sam's per-condition ruling); the malformed `nodejs node.js` case returns the printable-ASCII message (`internal/api/alert_rules_test.go:~369`).
+- Task 3.2 (`71b4e9b`): other-product vendor and product are lower-cased in Go before binding (no change for the all-lower-case table). `ProductSetSQL` with no values returns `FALSE`; `compileProducts` also refuses an empty list and any operator other than `eq`/`in`, so such a stored rule fails closed. The product branch in `Compile` runs before the regex branch, so a stored `regex` product condition is a compile error. `nameTableCPEs` in `sets_test.go` hard-codes the table's 10 CPE spellings (the digest test pins the table). Worst accepted rule with 5,000 candidate IDs: 1,590 args.
+- Task 3.3 (`ead194c`): the every-path rule `{and: ecosystem eq npm, package eq fastify}` matches nothing in SeedCorpus (fastify is only a CNA product there); it is kept and pinned empty, and `{and: ecosystem eq npm, package eq jspdf}` (CVE-2026-31938) is added so a correlated package set is compared on a real match. The SeedCorpus, every-path and acceptance tests are not parallel (`SeedCorpus` and `GoldenPatch` call `t.Setenv`). Match sets are asserted exactly. Falsification probe of the full-vendor recheck: removing `lower(a.vendor) = ?` made both rows match; restored.
+- Task 4.2: the harness writes its tables and inputs to a results directory (`KEPT_INGEST_RESULTS_DIR`, outside the repository) and the results file is assembled from them, rather than the harness writing `dev/plans/2026-11-13-product-match-rules-measurements.md` itself. M8's full activation is a separate file, `internal/alert/kept_ingest_activation_test.go`, because it writes (to the copy only; it refuses to run unless `KEPT_INGEST_COPY_CONFIRM` names the copy). A third test, `TestKeptIngestLimitSweep`, measures smaller limits and the full limit rule with parallel query off, as evidence for the gate decision. The kept ingest's TLS server is reached with `sslmode=prefer`.
+- Phase 4 remedy (Sam, 2026-11-14): `or` rules match all their set-type conditions as one CVE set, and the evaluator's candidate statement runs without JIT. This changes design section 5.1's "one set per condition" for `or` rules only, and adds a JIT setting the design did not have. See the Phase 4 banner.
+- Task 4.2 (M8): the copy was migrated to the committed head before the activation test with a binary built from a `git archive` export of `HEAD`, because the working tree was mid-edit at the time; the test's own migration step then found nothing to apply. The copy was analysed after its restore.
 
 ### Discoveries
+- `/plan-check` (Task 6.2, 2026-11-14): every PLAN.md §5.3 and §10 requirement this branch adds or touches is met. Older requirements this branch does not touch, not fixed here: regex conditions compile without the `(?i)` default and run against a lower-cased description, so a pattern with an upper-case literal never matches (`internal/alert/dsl/compiler.go` regex PostFilter, `internal/alert/evaluator.go` `cveSummary`); an `or` rule with a regex condition behaves as `and` (`internal/alert/dsl/postfilter.go`); `fire_on_non_material_changes` (§10.4) is stored but never read by `internal/alert`; the zombie-activation sweeper marks the rule `error` without re-enqueueing (§10.3); no metric when a run hits the candidate cap; CVSS vector normalisation sorts metrics alphabetically where §5.3 says spec order (hash still stable); `cve_id` `eq`/`in` compare exactly; the regex selective-constraint check counts conditions that narrow nothing (`in_cisa_kev eq false`, conditions under `or`).
+- Code review (2026-11-14), minor, not fixed here: `affected.package` `eq`/`in` values are folded in Go (`ecosystem.FoldPackageName`, `strings.ToLower`) while stored names are folded in SQL (`ecosystem.FoldedNameSQL`, PostgreSQL `lower()`); for a non-ASCII upper-case package name the two can differ under some database character types, so a rule might not match its own spelling. Package names are almost always ASCII. `internal/alert/dsl/sets.go` (package match).
+- Code review (2026-11-14), minor, not fixed here: the unmapped-product warning (design section 8's text) names only the spelling with `_` read as a space, but the value's own spelling with `_` (and mixed pairs) also match a CNA row. Wording fix belongs in the design first. `internal/alert/dsl/validator.go` (unmapped warning).
+- Task 6.1 (2026-11-14): no CLI or MCP code exists on this branch (the only hits for `affected.package` outside `internal/alert` and `internal/api` are the AI prompt notes Task 3.4 updated). When the CLI/MCP design (`dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`) is built, it must carry `affected.cpe_product`, `affected.package` `eq`/`in`, the limits (50 product values, 100 conditions, 10 set conditions per `and` rule) and the never-matching ecosystem error.
+- Security review (2026-11-14), not fixed here, follow-up: saved searches and AI searches (`store.ExecuteDSLQuery`) run rule SQL with the server defaults (JIT and parallel query on), unlike the evaluator; a large `or` rule run as a saved search can be slow or hit the 64 MB shared-memory limit. Each statement is bounded by the statement timeout. Fix by running `ExecuteDSLQuery` in a read-only transaction with the evaluator's settings.
+- Found by Task 5.6's after-group review (2026-11-14), older than this branch, not fixed here: after a late-binding CVE ID rename (`migrateCVEPKRename`), the renamed row keeps its old change dates unless an alert moved with it, so if realtime evaluation fails on the promoting merge, a rule bound to a watchlist that lists the new CVE ID is not evaluated against it by the batch path. Needs Sam's decision.
 - Found while planning (2026-11-14): design section 12's line "Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE" contradicts design section 3.1, which says the check accepts unescaped `*` and `?`. Task 1.2 tests section 3.1's invariant (every value a rule accepts, the check accepts). Flagged only; the design text is unchanged.
-- Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships.
+- Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships. (Recorded.)
+- Found while executing (2026-11-14): the host's `golangci-lint` (v2.10.1, built with Go 1.26) refuses to load `.golangci.yml` under Go 1.27. Lint runs with the CI pin instead: `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --allow-parallel-runners ./cmd/... ./internal/... ./migrations/...`.
+- Verified 2026-11-14 (verify-first, Task 2.1): `internal/alert/dsl/dsl_test.go` is package `dsl_test` with no `TestMain` and no database, so the shape and parameter-count tests belong there; `internal/store/main_test.go` calls `testutil.Run`, so the `null`/empty-list cases run in `internal/store/dsl_executor_test.go`. `json.Unmarshal` of `null` into `[]string` gives nil with no error, so the nil-to-empty normalisation is required.
+- Found by the after-Phase-3 review (2026-11-14), older than this branch, not fixed here: for a stored rule holding an operator `Validate` refuses, `Compile` builds wrong SQL instead of failing closed. `severity gte "high"` or `contains` compiles to `lower(cves.severity) <> ?` (`internal/alert/dsl/compiler.go` `setSQL`/enum path treats any other operator as `neq`); `in_cisa_kev neq true` compiles to `= ?` (bool path ignores the operator); `fts_query eq` compiles to an FTS match. Suspected, unconfirmed: `cvss_v3_score gt null` validates and compiles to `> 0`. Only reachable through a rule edited in the database; PLAN.md §10.5 expects fail-closed.
+- Kept ingest pre-flight (Task 4.1, 2026-11-14): PostgreSQL 18.4, 2,628,861 CVEs, migrations at 61 (62 `alert_events_feed_seq` not applied; the measurements do not read `alert_events`); all three check indexes match `check.CPEIndexExpr`, `check.CNANameIndexExpr` and `ecosystem.FoldedNameSQL`.
+- Production shared memory (2026-11-14): no compose file sets `shm_size` for Postgres (`docker/compose.yml`, `docker/compose.prod.yml`), so a deployed Postgres has Docker's default 64 MB `/dev/shm`, the same as the kept ingest container. The limit rule's dry-run and batch statements failed there with `could not resize shared memory segment ... No space left on device` (a parallel hash), so they would fail the same way in a default deployment.
 
 ---
 
@@ -186,7 +213,7 @@ BEFORE marking this task complete:
 
 ## Phase 1 — Name table and value parser in `internal/check`
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — `cc883cd` (Task 1.1), `3bf8255` (Task 1.2), `43c878f` (Task 1.3). After-phase review: one round, no material findings.
 
 Design section 3.1 (value rules), 3.4 (shared name table), 5.1 (ASCII boundary test), 12 (unit tests). One logical commit in design section 16's order; tasks may commit separately in this order.
 
@@ -308,7 +335,7 @@ Review the batch once, from a perspective the individual tasks did not apply (he
 
 ## Phase 2 — CVE-set form, `CompiledRule.Where`, package correlation
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — `7668072` (2.1), `c551369` (2.2), `f2f6f0e` (2.3), `1d0f6e6` (2.4), `daddbc2` (2.5). Pitfall check on 2.2: no findings. After-group review: one round, no material findings.
 
 Design sections 3.2 (array binding, 100-condition limit), 4 (exact match and correlation), 5.1 (package SQL), 5.2 (compiler contract), 8 (validation), 12 (tests). Tasks are sequential; all touch `internal/alert/dsl`.
 
@@ -487,7 +514,7 @@ Do NOT use `unnest()` joins, `NOT IN`, or a CTE for candidate IDs (DB-27; design
 
 ## Phase 3 — The `affected.cpe_product` field
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — `76359bc` (3.1), `71b4e9b` (3.2), `ead194c` (3.3), `fcde2c5` (3.4). After-group review (independent adversarial reviewer, one round): no rule value reaches SQL text; worst valid rule about 5,100 parameters with 5,000 candidate IDs; one defect introduced by this branch, `Validate` ran the never-matching check (values times conditions) before the 100-condition limit, so a 1 MiB rule cost about 5 s of CPU per request; fixed in `d69081d`. A second round on the fix was not run: the fix only reorders an existing check behind an existing limit.
 
 Design sections 3 (field), 5.1 (product SQL), 5.2 (compiler decisions), 8 (messages), 10 (AI prompt), 12 (tests).
 
@@ -594,7 +621,21 @@ Test: `BuildSchemaDescription()` contains `affected.cpe_product (type: CPE vendo
 
 ## Phase 4 — Measurements on the kept full ingest (gate)
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ COMPLETE 2026-11-14 — every statement threshold passes after Sam's remedy; M8 accepted by Sam (decisions below). History: the first run failed the gate (Task 4.3). Failing rows then: M5a limit rule `or` realtime 23.3 ms (threshold 5 ms); M5b dry-run and M5c batch failed with a shared-memory error (64 MB `/dev/shm`), and serially take 27.6 s and 17.7 s (thresholds 5 s, 3 s); M6 50 products `or` dry-run 16.2 s (5 s); M8 full activation failed on page 1 with the shared-memory error. Every single-product, package-with-ecosystem and saved-search row passes. Full table, inputs and a read-only sweep of smaller limits: `dev/plans/2026-11-13-product-match-rules-measurements.md`. **Unblock condition:** Sam chooses the remedy (design section 13's fallback is a lower limit on set-type conditions); the chosen limits are re-measured with this harness before Phase 5 starts. The disposable copy `cvert-match2-activation-copy` is kept for that re-measurement and Task 5.5.
+
+**Sam's decision (2026-11-14):** the remedy is not a lower limit. Under `or`, every set-type condition compiles into one CVE-ID set (`cves.cve_id IN (<branch> UNION ALL ...)`, candidate IDs inside each branch), with scalar conditions OR-ed beside it; under `and`, one set per condition as before. The evaluator's candidate statement runs with `SET LOCAL jit = off`. Evidence for it: OR-ed `IN` subqueries cannot become semi-joins, so each is a hashed SubPlan built in full; the 50 package names in one `IN` planned as a merge semi-join in about 100 ms; JIT cost about 4 s on a 50-product dry-run (`bea8e03`). The limits (50 product values, 100 conditions) stay. Expected to remain open after it: realtime planning of a 50-product rule (10.7 ms in the two-condition form against 5 ms), which merging conditions does not reduce. Re-measure all of Task 4.2 at the original limits.
+
+**Re-measured after the merge and JIT off (`7ad8080`):** M6 passes (16.2 s → 0.6 s); the limit rule still fails: realtime 81 ms (a parallel plan for one CVE, 16 ms planning), dry-run 11.0 s, batch shared-memory error (serially 4.7 s, 2.0 s of it planning the 5,000-ID array repeated in about 150 branches).
+
+**Sam's second decision (2026-11-14, "Yes, both"):** keep the merged `or` set and JIT off, and when a statement has candidate IDs (realtime, batch, EPSS, activation), match the product set's CPE prefixes and CNA names against bound arrays instead of OR-ed terms, so planning does not grow with the number of products; with no candidate IDs (dry-run, saved searches) keep the OR-ed range form for the check indexes. Both forms must give the same answers. Limits unchanged. Re-measure every Phase 4 row and the original limit rule; if a row still fails, report the numbers to Sam before choosing another remedy. Record the section 5 change as a design amendment.
+
+**Re-measured after both changes (`7ad8080`, `fe0e32f`; 2026-11-14):** M6 passes (0.6 s); candidate-statement planning no longer grows with the number of products (limit rule realtime planning 18.6 → 6.5 ms). Still failing: M5a realtime 26.4 ms; M5b dry-run 11.0 s (no candidates; the 50 no-ecosystem kernel package sets); M5c batch 3.2 s; M8 read-only estimate about 22 minutes with a shared-memory error at page 1,422. Single-product batch rows pass but rose to up to 505 ms (parallel sequential scans of `cve_cpe_matches` and `cve_cna_affected` under the array form). Reported to Sam before any further remedy; Phase 4 is ⏸ until he decides.
+
+**Sam's third decision (2026-11-14, "Yes, both"):** evaluator rule statements also run with parallel query off (`SET LOCAL max_parallel_workers_per_gather = 0`), and under `or` all `affected.package` `eq`/`in` conditions compile into one package branch (exactly equivalent: they are uncorrelated under `or`). Then re-measure; the dry-run limit for no-ecosystem package names is decided with the new number.
+
+**Re-measured after `9d58ee1` (2026-11-14):** every statement threshold passes (M5a realtime 4.7 ms, M5b dry-run 4.3 s, M5c batch 0.45 s, M6 1.4 s; M7d equal to the old form when interleaved), so no dry-run limit is needed. M8 full activation on the copy completed (rule `active`, 200,252 events) in 12 min 5 s against 7 minutes: about 4 minutes of reads and 8 of one-transaction-per-event inserts, a cost that follows the match count (`severity in [critical, high]` matches 182,637 CVEs). Design amendment written: `dev/plans/2026-11-13-product-match-rules-design.md` section 17. M8 is with Sam.
+
+**Sam's decision on M8 (2026-11-14, "Accept, follow up"):** M8 is accepted for MATCH-2 as a limit of the existing activation path (per-event insert transactions), not of the rule shape. Batching activation event inserts is a separate follow-up, started as its own session and branch from `dev` ("Batch alert event inserts in activation scans"); its PR's own record signals completion. Phase 4 is complete. **Re-measured after PR 243 merged into this branch (`e72f6a9`): M8 full activation 2 min 4 s, 200,252 events — passes.**
 
 Design section 13 (every measurement and threshold) and section 5.3 (earlier numbers to compare against). This phase changes no production code. Its result decides whether Phase 5 starts or the work goes back to Sam.
 
@@ -661,7 +702,7 @@ Record both numbers. If step 2 cannot be run (no backup access, no disk), M8 is 
 
 ## Phase 5 — Re-check signal
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — code: `fdbf47f` (5.1–5.2, migration 000063), `3232759` (5.3), `ce2b731` (5.4–5.6); verify-first span 5.3 confirmed (ASCII-only lower-casing separates KELVIN SIGN + `node` from `knode`; `strings.ToLower` does not). Task 5.5's measurement on the copy fails its 3 s per-page threshold in one case (a sparse window's first page, 3.7 s); **Sam accepted it on 2026-11-14 ("Accept, record it")**: it occurs only when a window holds more than a page of changes clustered at high CVE IDs, stays far under the 14 s statement timeout, and the existing arm alone already takes 1.27 s on that page. Paging by `(date, cve_id)` would remove it and is left for a later change if backlogs matter. Merged `origin/dev` (`e72f6a9`, PR 243 batched activation inserts) before re-measuring M8.
 
 Design section 7 (Sam's ruling 15.1: a separate signal, not a `material_hash` change) and section 12's re-check tests. `material_hash` and its golden hashes do not change (design 16): run `go test ./internal/merge/... -run 'Hash|Golden'` at the end of the phase and confirm no golden file changed.
 
@@ -767,7 +808,7 @@ The zero-`since` cases (full scan) are unchanged. `cursorRescanWindow` already a
 
 ## Phase 6 — PLAN.md, reviews, full suite, PR
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ COMPLETE 2026-11-14 on branch `claude/lucid-moser-fef966` — 6.1 docs `2a49cdb`; 6.2 `/plan-check` all MATCH-2 markers met; 6.3 code review (no critical or important findings) and security review, fixes `0afb1dc`, `7e521af`, `d0e13d5`, `85baca7`, `d63337f`; 6.4 lint clean and full suite passed at `4b65c2f`; PR to `dev`: [scarson/CVErt-Ops#244](https://github.com/scarson/CVErt-Ops/pull/244).
 
 ### Task 6.1: Documentation in the implementation PR
 

@@ -19,6 +19,17 @@ type CPERow struct {
 	Below                                                                                              int
 }
 
+// CPEProductKey returns the part:vendor:product of a stored cpe_normalized
+// string, split on its unescaped colons, with escapes kept as stored. It returns
+// "" for a string with fewer than 5 components, which names no product.
+func CPEProductKey(cpeNormalized string) string {
+	components := splitCPE(cpeNormalized)
+	if len(components) < 5 {
+		return ""
+	}
+	return components[2] + ":" + components[3] + ":" + components[4]
+}
+
 // CPERowBelow reports whether row's range lies wholly below ver, by
 // version.ProductRangeBelow: the row answers NotAffected for ver and for every
 // dotted-number version at or above it. The store's CPE lookup states the same

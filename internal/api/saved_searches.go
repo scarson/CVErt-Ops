@@ -4,11 +4,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -59,18 +62,28 @@ func savedSearchToEntry(row *store.SavedSearchRow) savedSearchEntry {
 	return entry
 }
 
-// validateDSL parses and validates a DSL query JSON blob.
-// Returns an error message and HTTP status code if invalid.
-func validateDSL(queryJSON json.RawMessage) (string, int) {
+// validateDSL parses and validates a DSL query JSON blob. It returns the 422
+// error detail for an invalid query, or nil. A key the DSL does not define is
+// located like the request body's own unknown members: at
+// body.query_json.conditions[i].<key>, or body.query_json.<key> for a key of
+// the query object.
+func validateDSL(queryJSON json.RawMessage) *huma.ErrorDetail {
 	rule, err := dsl.Parse(queryJSON)
+	if unknown, ok := errors.AsType[*dsl.UnknownKeyError](err); ok {
+		loc := "body.query_json." + unknown.Key
+		if unknown.Index >= 0 {
+			loc = "body.query_json.conditions[" + strconv.Itoa(unknown.Index) + "]." + unknown.Key
+		}
+		return &huma.ErrorDetail{Message: validation.MsgUnexpectedProperty, Location: loc}
+	}
 	if err != nil {
-		return "invalid query_json: " + err.Error(), http.StatusUnprocessableEntity
+		return &huma.ErrorDetail{Message: "invalid query_json: " + err.Error(), Location: "body.query_json"}
 	}
 	valErrs, _, _ := dsl.Validate(rule, false)
 	if hasBlockingErrors(valErrs) {
-		return "query_json validation failed", http.StatusUnprocessableEntity
+		return &huma.ErrorDetail{Message: "query_json validation failed", Location: "body.query_json"}
 	}
-	return "", 0
+	return nil
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────────
@@ -111,9 +124,8 @@ func (srv *Server) createSavedSearchHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if errMsg, status := validateDSL(req.QueryJSON); errMsg != "" {
-		writeProblemWithErrors(w, status, "validation failed",
-			&huma.ErrorDetail{Message: errMsg, Location: "body.query_json"})
+	if detail := validateDSL(req.QueryJSON); detail != nil {
+		writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
 		return
 	}
 
@@ -290,9 +302,8 @@ func (srv *Server) patchSavedSearchHandler(w http.ResponseWriter, r *http.Reques
 	}
 	if req.QueryJSON != nil {
 		// Validate the provided DSL.
-		if errMsg, status := validateDSL(*req.QueryJSON); errMsg != "" {
-			writeProblemWithErrors(w, status, "validation failed",
-				&huma.ErrorDetail{Message: errMsg, Location: "body.query_json"})
+		if detail := validateDSL(*req.QueryJSON); detail != nil {
+			writeProblemWithErrors(w, http.StatusUnprocessableEntity, "validation failed", detail)
 			return
 		}
 		params.QueryJSON = *req.QueryJSON

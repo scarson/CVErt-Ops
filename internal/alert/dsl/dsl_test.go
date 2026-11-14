@@ -349,6 +349,7 @@ func TestWhere_IsDeterministicAcrossCalls(t *testing.T) {
 		"and":          `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["critical","high"]},{"field":"affected.ecosystem","operator":"not_in","value":["npm"]},{"field":"cvss_v3_score","operator":"gte","value":7}]}`,
 		"or":           `{"logic":"or","conditions":[{"field":"cve_id","operator":"in","value":["CVE-1","CVE-2"]},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
 		"package sets": `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","Debian"]},{"field":"affected.package","operator":"in","value":["Foo_Bar","lodash"]},{"field":"affected.package","operator":"contains","value":"ssl"}]}`,
+		"product sets": `{"logic":"or","conditions":[{"field":"affected.cpe_product","operator":"in","value":["microsoft:.net","nodejs:node.js"]},{"field":"affected.cpe_product","operator":"eq","value":"example:widget"}]}`,
 	}
 	for name, rule := range rules {
 		c := compileRule(t, rule, watchlists)

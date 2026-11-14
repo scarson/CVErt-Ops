@@ -1,8 +1,10 @@
-// ABOUTME: Unit tests for the CVE-ID set predicates of affected.ecosystem and affected.package conditions.
-// ABOUTME: Covers correlation under "and", exact ecosystems, release arms, package folding and candidate IDs.
+// ABOUTME: Unit tests for the CVE-ID set predicates of affected.ecosystem, affected.package and affected.cpe_product.
+// ABOUTME: Covers correlation, exact ecosystems, release arms, package folding, product terms, candidate IDs and limits.
 package dsl_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -263,6 +265,257 @@ func TestCompile_EcosystemValuesAreExactAndReleasesEscaped(t *testing.T) {
 	assertArrayArgs(t, args,
 		[]string{"npm", "Ubuntu:22.04", "Red Hat:enterprise_linux:8"},
 		[]string{"Ubuntu:22.04:%", `Red Hat:enterprise\_linux:8:%`})
+}
+
+// ─── affected.cpe_product sets (design sections 3.2 and 5.1) ────────────────
+
+const (
+	productSetHead = "cves.cve_id IN (\n    SELECT m.cve_id FROM cve_cpe_matches m\n    WHERE m.vulnerable"
+	cnaBranchHead  = "UNION ALL\n    SELECT a.cve_id FROM cve_cna_affected a"
+	cpeRangeTerm   = "starts_with(m.cpe_normalized, ?)"
+	nvdCandidate   = "m.cve_id = ANY(?)"
+	cnaCandidate   = "a.cve_id = ANY(?)"
+	// cnaNameTerm marks a name term: it compares the index expression on the
+	// product, which an other-product exclusion never does.
+	cnaNameTerm   = `left(lower(a.product), 256) COLLATE "C"`
+	asciiBoundary = `!~ '^[a-z0-9]'`
+)
+
+// productRule is an "and" rule of affected.cpe_product conditions; each cond is
+// raw JSON for the operator.
+func productRule(conds ...string) string {
+	return `{"logic":"and","conditions":[` + strings.Join(conds, ",") + `]}`
+}
+
+func productEq(v string) string {
+	return `{"field":"affected.cpe_product","operator":"eq","value":"` + v + `"}`
+}
+
+// TestCompile_ProductSetNode checks nodejs:node.js's arguments (design section
+// 3.2): two CPE spellings in three parts make 6 ranges of 3 arguments, and 5 CNA
+// names make 5 exact-name terms of 4.
+func TestCompile_ProductSetNode(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, productRule(productEq("nodejs:node.js")), nil)
+
+	sql, args := whereOf(t, c, nil)
+	if len(args) != 38 {
+		t.Errorf("got %d args, want 38 (18 range + 20 name): %v", len(args), args)
+	}
+	assertCount(t, sql, productSetHead, 1)
+	assertCount(t, sql, cnaBranchHead, 1)
+	assertCount(t, sql, cpeRangeTerm, 6)
+	assertCount(t, sql, "cve_id = ANY", 0)
+	assertCount(t, sql, cnaNameTerm+" = ?", 5)
+	assertCount(t, sql, "NOT (", 0)
+	assertSetShapeRules(t, sql)
+	var prefixes []string
+	for _, spelling := range []string{"nodejs:node.js", "nodejs:nodejs"} {
+		for _, part := range []string{"a", "o", "h"} {
+			prefixes = append(prefixes, "cpe:2.3:"+part+":"+spelling+":")
+		}
+	}
+	for _, p := range prefixes {
+		lo := strings.TrimSuffix(p, ":")
+		if !containsArgs(args, lo+":", lo+";", p) {
+			t.Errorf("no range arguments %q, %q, %q in %v", lo+":", lo+";", p, args)
+		}
+	}
+	for _, name := range [][2]string{
+		{"nodejs", "node.js"}, {"nodejs", "nodejs"}, {"nodejs", "node"}, {"node.js", "node.js"}, {"the node.js project", "node.js"},
+	} {
+		if !containsArgs(args, name[0], name[1], name[0], name[1]) {
+			t.Errorf("no exact-name arguments for %q / %q in %v", name[0], name[1], args)
+		}
+	}
+
+	sql, args = whereOf(t, c, []string{"CVE-1"})
+	if len(args) != 40 {
+		t.Errorf("with one candidate: got %d args, want 40", len(args))
+	}
+	assertCount(t, sql, nvdCandidate, 1)
+	assertCount(t, sql, cnaCandidate, 1)
+	// Each branch's candidate array comes before its terms.
+	assertArrayArgs(t, args[:1], []string{"CVE-1"})
+	assertArrayArgs(t, args[19:20], []string{"CVE-1"})
+}
+
+// containsArgs reports whether args holds want as a contiguous run.
+func containsArgs(args []interface{}, want ...string) bool {
+	for i := 0; i+len(want) <= len(args); i++ {
+		match := true
+		for j, w := range want {
+			if args[i+j] != w {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCompile_ProductSetDotNetExcludesOtherProducts(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, productRule(productEq("microsoft:.net")), nil)
+	sql, args := whereOf(t, c, nil)
+	assertCount(t, sql, "AND NOT (", 1)
+	// Two prefix other products, each with the ASCII boundary test.
+	assertCount(t, sql, asciiBoundary, 2)
+	// The ".net " prefix name is a range on the product.
+	assertCount(t, sql, cnaNameTerm+" >= ?", 1)
+	assertSetShapeRules(t, sql)
+	if !containsArgs(args, "microsoft", ".net framework", ".net framework") ||
+		!containsArgs(args, "microsoft", "microsoft .net framework", "microsoft .net framework") ||
+		!containsArgs(args, "microsoft", "openapi.net") {
+		t.Errorf("other-product arguments missing from %v", args)
+	}
+}
+
+// TestCompile_ProductSetExcludesOtherProductsPerValue checks each value's other
+// products exclude rows only within that value's group (design section 5.1): the
+// CNA row Microsoft / .NET Framework is an other product of microsoft:.net and a
+// name of microsoft:.net_framework.
+func TestCompile_ProductSetExcludesOtherProductsPerValue(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, productRule(`{"field":"affected.cpe_product","operator":"in","value":["microsoft:.net","microsoft:.net_framework"]}`), nil)
+	sql, _ := whereOf(t, c, nil)
+	assertCount(t, sql, productSetHead, 1)
+	assertCount(t, sql, "AND NOT (", 1)
+	notAt := strings.Index(sql, "AND NOT (")
+	lastBoundary := strings.LastIndex(sql, asciiBoundary)
+	if notAt < 0 || lastBoundary < notAt {
+		t.Fatalf("expected one NOT group, got:\n%s", sql)
+	}
+	// The first value's four names (three exact, one prefix) precede its NOT
+	// group; the second value's two exact names follow it.
+	assertCount(t, sql[:notAt], cnaNameTerm+" = ?", 3)
+	assertCount(t, sql[:notAt], cnaNameTerm+" >= ?", 1)
+	assertCount(t, sql[lastBoundary:], cnaNameTerm+" = ?", 2)
+	assertCount(t, sql[lastBoundary:], "NOT (", 0)
+	// Three CPE spellings in three parts.
+	assertCount(t, sql, cpeRangeTerm, 9)
+}
+
+func TestCompile_ProductSetRangesAreDistinctAcrossValues(t *testing.T) {
+	t.Parallel()
+	// Both spellings of one name table row read the same NVD rows.
+	c := compileRule(t, productRule(`{"field":"affected.cpe_product","operator":"in","value":["nodejs:node.js","nodejs:nodejs"]}`), nil)
+	sql, _ := whereOf(t, c, nil)
+	assertCount(t, sql, cpeRangeTerm, 6)
+	// Each value keeps its own name group.
+	assertCount(t, sql, cnaNameTerm+" = ?", 10)
+}
+
+func TestCompile_ProductValuesAreOnlyArguments(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, productRule(productEq("NodeJS:Node.js")), nil)
+	sql, args := whereOf(t, c, []string{"CVE-2026-56847"})
+	for _, a := range args {
+		s, ok := a.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(sql, s) {
+			t.Errorf("argument %q appears in the SQL text:\n%s", s, sql)
+		}
+	}
+	for _, s := range []string{"nodejs", "NodeJS", "Node.js", "CVE-2026-56847"} {
+		if strings.Contains(sql, s) {
+			t.Errorf("value %q appears in the SQL text", s)
+		}
+	}
+}
+
+func TestCompile_ProductStoredRuleFailsClosed(t *testing.T) {
+	t.Parallel()
+	vals := make([]string, 51)
+	for i := range vals {
+		vals[i] = fmt.Sprintf("vendor%d:product%d", i, i)
+	}
+	list := func(vals []string) string {
+		b, err := json.Marshal(vals)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return `{"field":"affected.cpe_product","operator":"in","value":` + string(b) + `}`
+	}
+	sameFifty := make([]string, 100)
+	for i := range sameFifty {
+		sameFifty[i] = list(vals[:50])
+	}
+	tests := []struct {
+		name, rule, wantErr string
+	}{
+		{"malformed value", productRule(productEq("nodejs node.js")), "printable ASCII"},
+		{"51 values", productRule(list(vals)), "a rule may name at most 50 products in total"},
+		{"100 conditions of the same 50 values", productRule(sameFifty...), "a rule may name at most 50 products in total"},
+		{"empty list", productRule(`{"field":"affected.cpe_product","operator":"in","value":[]}`), "value must list at least one item"},
+		{"operator neq", productRule(`{"field":"affected.cpe_product","operator":"neq","value":"nodejs:node.js"}`), "operator"},
+		{"operator regex", productRule(`{"field":"affected.cpe_product","operator":"regex","value":"node"}`, `{"field":"severity","operator":"eq","value":"high"}`), "operator"},
+	}
+	for _, tt := range tests {
+		_, err := dsl.Compile(mustParse(t, tt.rule), testRuleID, 1, testOrgID, nil)
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%s: Compile error = %v, want one containing %q", tt.name, err, tt.wantErr)
+		}
+	}
+	// 50 values compile.
+	if _, err := dsl.Compile(mustParse(t, productRule(list(vals[:50]))), testRuleID, 1, testOrgID, nil); err != nil {
+		t.Errorf("50 values: Compile: %v", err)
+	}
+}
+
+// nameTableCPEs is every CPE spelling of the name table's rows
+// (internal/check/names.go cnaTable), whose names table digest test pins it.
+var nameTableCPEs = []string{
+	"nodejs:node.js", "nodejs:nodejs", "php:php", "f5:nginx", "nginx:nginx", "f5:nginx_open_source",
+	"microsoft:.net", "microsoft:.net_core", "postgresql:postgresql", "python:python",
+}
+
+// TestCompile_WorstRuleStaysUnderTheParameterLimit builds the worst rule the
+// validator accepts (design section 5.2): 50 one-value product conditions, the
+// name table's CPEs (which carry the most spellings, names and other products)
+// and unmapped values with "_" in vendor and product (four own names each), plus
+// 50 affected.package in conditions, with a 5,000-ID batch chunk. It binds 1,590
+// arguments: 360 for the mapped products, 25 for each of the 40 unmapped ones,
+// 2 candidate arrays per product set and 3 arrays per package set.
+func TestCompile_WorstRuleStaysUnderTheParameterLimit(t *testing.T) {
+	t.Parallel()
+	var conds []string
+	for _, cpe := range nameTableCPEs {
+		conds = append(conds, productEq(cpe))
+	}
+	for i := len(conds); i < 50; i++ {
+		conds = append(conds, productEq(fmt.Sprintf("v_endor%d:p_roduct%d", i, i)))
+	}
+	for i := range 50 {
+		conds = append(conds, fmt.Sprintf(`{"field":"affected.package","operator":"in","value":["pkg%d","other%d"]}`, i, i))
+	}
+	r := mustParse(t, productRule(conds...))
+	errs, _, _ := dsl.Validate(r, false)
+	for _, e := range errs {
+		if e.Severity == "error" {
+			t.Fatalf("Validate: unexpected error %+v", e)
+		}
+	}
+	c, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	ids := make([]string, 5000)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("CVE-2026-%d", i)
+	}
+	_, args := whereOf(t, c, ids)
+	if len(args) >= 10000 {
+		t.Errorf("got %d args, want fewer than 10,000", len(args))
+	}
+	if len(args) != 1590 {
+		t.Errorf("got %d args, want 1590 as counted in the comment", len(args))
+	}
 }
 
 func TestCompile_EcosystemNullListBindsEmptyArray(t *testing.T) {

@@ -1,4 +1,4 @@
-// ABOUTME: Builds the CVE-ID set predicates for child-table conditions.
+// ABOUTME: Builds the CVE-ID set predicates for child-table conditions: packages, ecosystems and CPE products.
 // ABOUTME: Each set repeats the caller's candidate IDs inside its branches (pitfall DB-27).
 package dsl
 
@@ -11,6 +11,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/lib/pq"
 
+	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
@@ -205,6 +206,163 @@ func foldedNames(eco string, vals []string) []string {
 		}
 	}
 	return out
+}
+
+// productParts are the CPE parts a product value matches. A value names no
+// part, so it matches all three (design section 3.2).
+var productParts = []string{"a", "o", "h"}
+
+// ProductSetSQL is the CVE-ID set for one affected.cpe_product condition
+// (design section 5.1): NVD vulnerable CPE rows under any CPE spelling of any
+// value, and CNA rows carrying any name of a value but none of its other
+// products. candidateIDs is repeated inside both branches when non-empty.
+//
+// Ranges and names are OR-ed predicates, not joins to unnest() arrays, so the
+// planner reads cve_cpe_matches_check_idx and cve_cna_affected_check_idx
+// (pitfall DB-27). Every range, name and other product is a bind argument.
+// values must not be empty; with none it returns FALSE.
+func ProductSetSQL(values []check.ProductRef, candidateIDs []string) sq.Sqlizer {
+	if len(values) == 0 {
+		return sq.Expr("FALSE")
+	}
+	nvd := []sqlPart{{sql: "m.vulnerable"}}
+	var cna []sqlPart
+	if len(candidateIDs) > 0 {
+		nvd = append(nvd, sqlPart{sql: "m.cve_id = ANY(?)", args: []any{pq.Array(candidateIDs)}})
+		cna = append(cna, sqlPart{sql: "a.cve_id = ANY(?)", args: []any{pq.Array(candidateIDs)}})
+	}
+	nvd = append(nvd, anyOf(cpeRanges(values)))
+	groups := make([]sqlPart, 0, len(values))
+	for _, v := range values {
+		groups = append(groups, cnaNameGroup(v))
+	}
+	cna = append(cna, anyOf(groups))
+
+	nvdWhere, nvdArgs := allOf(nvd)
+	cnaWhere, cnaArgs := allOf(cna)
+	return sq.Expr(`cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE `+nvdWhere+`
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    WHERE `+cnaWhere+`
+)`, append(nvdArgs, cnaArgs...)...)
+}
+
+// cpeRanges returns one range term per CPE spelling of each value and per part,
+// each listed once: a range on the index expression of cve_cpe_matches_check_idx
+// with the whole prefix rechecked by starts_with (check.CPEKey).
+func cpeRanges(values []check.ProductRef) []sqlPart {
+	expr := check.CPEIndexExpr("m.cpe_normalized")
+	var ranges []sqlPart
+	seen := map[string]bool{}
+	for _, v := range values {
+		_, cpes, _ := check.NamesFor(v)
+		for _, cpe := range cpes {
+			for _, part := range productParts {
+				k := check.CPEKeyFor("cpe:2.3:" + part + ":" + cpe + ":")
+				if seen[k.Prefix] {
+					continue
+				}
+				seen[k.Prefix] = true
+				ranges = append(ranges, sqlPart{
+					sql:  "(" + expr + " >= ? AND " + expr + " < ? AND starts_with(m.cpe_normalized, ?))",
+					args: []any{k.Lo, k.Hi, k.Prefix},
+				})
+			}
+		}
+	}
+	return ranges
+}
+
+// cnaNameGroup matches a CNA row that carries any CNA name of value v and, when
+// v has other products, is none of them. The exclusion covers only v's group:
+// a row that is another product of v can still be a name of another value.
+func cnaNameGroup(v check.ProductRef) sqlPart {
+	names, _, _ := check.NamesFor(v)
+	terms := make([]sqlPart, 0, len(names))
+	for _, n := range names {
+		terms = append(terms, cnaNameTerm(check.CNANameKeyFor(n)))
+	}
+	group := anyOf(terms)
+	others := check.OtherProductsFor(v)
+	if len(others) == 0 {
+		return group
+	}
+	not := otherProductPart("lower(a.vendor)", "lower(a.product)", others)
+	return sqlPart{sql: "(" + group.sql + " AND NOT " + not.sql + ")", args: append(group.args, not.args...)}
+}
+
+// cnaNameTerm matches the CNA rows of one name key on the index expressions of
+// cve_cna_affected_check_idx, then rechecks the whole lower-cased names, which
+// the index cuts to 256 characters: vendor and product for an exact name, the
+// vendor for a prefix name.
+func cnaNameTerm(k check.CNANameKey) sqlPart {
+	v, p := check.CNANameIndexExpr("a.vendor"), check.CNANameIndexExpr("a.product")
+	if k.FullProduct != "" {
+		return sqlPart{
+			sql:  "(" + v + " = ? AND " + p + " = ? AND lower(a.vendor) = ? AND lower(a.product) = ?)",
+			args: []any{k.V, k.Lo, k.FullVendor, k.FullProduct},
+		}
+	}
+	return sqlPart{
+		sql:  "(" + v + " = ? AND " + p + " >= ? AND " + p + " < ? AND lower(a.vendor) = ?)",
+		args: []any{k.V, k.Lo, k.Hi, k.FullVendor},
+	}
+}
+
+// OtherProductSQL is the condition, over the lower-cased vendor and product
+// SQL expressions given, under which a CNA row is one of others: vendor equal,
+// product equal, or for a prefix starting with it and followed by nothing or by
+// a character that is not an ASCII letter or digit (check.IsOtherProduct's rule).
+func OtherProductSQL(vendorExpr, productExpr string, others []check.CNAName) sq.Sqlizer {
+	p := otherProductPart(vendorExpr, productExpr, others)
+	return sq.Expr(p.sql, p.args...)
+}
+
+// otherProductPart builds OtherProductSQL's condition. Names are lower-cased,
+// as check.CNAName.Matches compares them. A row reaching this test matched a
+// name term, so its vendor and product are not NULL.
+func otherProductPart(vendorExpr, productExpr string, others []check.CNAName) sqlPart {
+	terms := make([]sqlPart, 0, len(others))
+	for _, o := range others {
+		vendor, product := strings.ToLower(o.Vendor), strings.ToLower(o.Product)
+		if !o.Prefix {
+			terms = append(terms, sqlPart{
+				sql:  "(" + vendorExpr + " = ? AND " + productExpr + " = ?)",
+				args: []any{vendor, product},
+			})
+			continue
+		}
+		terms = append(terms, sqlPart{
+			sql: "(" + vendorExpr + " = ? AND starts_with(" + productExpr + ", ?) AND substr(" + productExpr +
+				", char_length(?) + 1) !~ '^[a-z0-9]')",
+			args: []any{vendor, product, product},
+		})
+	}
+	return anyOf(terms)
+}
+
+// anyOf joins parts with OR inside parentheses.
+func anyOf(parts []sqlPart) sqlPart {
+	sqls := make([]string, 0, len(parts))
+	var args []any
+	for _, p := range parts {
+		sqls = append(sqls, p.sql)
+		args = append(args, p.args...)
+	}
+	return sqlPart{sql: "(" + strings.Join(sqls, "\n        OR ") + ")", args: args}
+}
+
+// allOf joins parts with AND, one per line, and returns the SQL and its args.
+func allOf(parts []sqlPart) (string, []any) {
+	sqls := make([]string, 0, len(parts))
+	var args []any
+	for _, p := range parts {
+		sqls = append(sqls, p.sql)
+		args = append(args, p.args...)
+	}
+	return strings.Join(sqls, "\n      AND "), args
 }
 
 // conditionValues returns an eq/neq condition's value, or an in/not_in

@@ -4,6 +4,7 @@ package dsl
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/scarson/cvert-ops/internal/check"
 	"github.com/scarson/cvert-ops/internal/ecosystem"
 )
 
@@ -28,6 +30,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	var postFilters []PostFilter
 	hasEPSSCond := false
 	allEPSS := true
+	products := 0 // affected.cpe_product values, counted as Validate counts them
 
 	corr, err := correlationFor(r)
 	if err != nil {
@@ -44,6 +47,19 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 			hasEPSSCond = true
 		} else {
 			allEPSS = false
+		}
+
+		if spec.kind == kindProduct {
+			// Compile re-applies Validate's value checks and product limit, so a
+			// stored rule that fails them fails closed (design section 5.2). A
+			// product set is never correlated with package conditions (section 4.2).
+			refs, err := compileProducts(c)
+			if err != nil {
+				return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
+			}
+			products += len(refs)
+			predicates = append(predicates, func(candidateIDs []string) sq.Sqlizer { return ProductSetSQL(refs, candidateIDs) })
+			continue
 		}
 
 		if c.Op == "regex" {
@@ -77,6 +93,9 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 			return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
 		}
 		predicates = append(predicates, func(_ []string) sq.Sqlizer { return sqlizer })
+	}
+	if products > maxProducts {
+		return nil, fmt.Errorf("compile: %s", msgTooManyProducts)
 	}
 
 	var watchlist sq.Sqlizer
@@ -114,6 +133,27 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		HasEPSS:      hasEPSSCond,
 		HasWatchlist: len(watchlistIDs) > 0,
 	}, nil
+}
+
+// compileProducts returns an affected.cpe_product condition's values, parsed,
+// normalised and de-duplicated by productValues. It refuses what Validate
+// refuses: an operator other than eq or in, a value the parser refuses, and an
+// empty list.
+func compileProducts(c Condition) ([]check.ProductRef, error) {
+	if c.Op != "eq" && c.Op != "in" {
+		return nil, fmt.Errorf("operator %q is not valid for field %q", c.Op, c.Field)
+	}
+	refs, refused, err := productValues(c)
+	if err != nil {
+		return nil, err
+	}
+	if len(refused) > 0 {
+		return nil, refused[0]
+	}
+	if len(refs) == 0 {
+		return nil, errors.New(msgEmptyList)
+	}
+	return refs, nil
 }
 
 // watchlistExpr builds the EXISTS subquery that restricts results to CVEs matching at least

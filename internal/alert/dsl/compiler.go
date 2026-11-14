@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -278,7 +279,11 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 		}
 		return sq.Eq{spec.sqlExpr: v}, nil
 	case kindString, kindEnum:
-		return setSQL(spec.sqlExpr, c.Op, c.Value)
+		canon := func(v string) string { return v }
+		if c.Field == "cve_id" {
+			canon = canonicalCVEID
+		}
+		return setSQL(spec.sqlExpr, c.Op, c.Value, canon)
 	case kindStrArray:
 		var vals []string
 		if err := json.Unmarshal(c.Value, &vals); err != nil {
@@ -328,10 +333,25 @@ func numericSQL(sqlExpr, op string, raw json.RawMessage, parse func(json.RawMess
 	}
 }
 
+// cveIDPattern matches a CVE ID in any case. Stored CVE IDs are upper case;
+// other stored identifiers, such as GHSA IDs, are mixed case.
+var cveIDPattern = regexp.MustCompile(`(?i)^cve-\d{4}-\d+$`)
+
+// canonicalCVEID returns v in upper case when it is a CVE ID, so a rule that
+// writes "cve-2024-1234" matches the stored "CVE-2024-1234". Any other value is
+// returned as written.
+func canonicalCVEID(v string) string {
+	if cveIDPattern.MatchString(v) {
+		return strings.ToUpper(v)
+	}
+	return v
+}
+
 // setSQL builds eq/neq as one bound value and in/not_in as one bound array
 // (pitfall DB-12: one placeholder per list value can pass PostgreSQL's 65,535
-// parameter limit). sqlExpr is a field registry constant, never user input.
-func setSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
+// parameter limit), each value passed through canon first. sqlExpr is a field
+// registry constant, never user input.
+func setSQL(sqlExpr, op string, raw json.RawMessage, canon func(string) string) (sq.Sqlizer, error) {
 	if op == "in" || op == "not_in" {
 		var vals []string
 		if err := json.Unmarshal(raw, &vals); err != nil {
@@ -343,6 +363,9 @@ func setSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 		if vals == nil {
 			vals = []string{}
 		}
+		for i, v := range vals {
+			vals[i] = canon(v)
+		}
 		if op == "in" {
 			return sq.Expr(sqlExpr+" = ANY(?)", pq.Array(vals)), nil
 		}
@@ -352,6 +375,7 @@ func setSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 	if err := decodeScalar(raw, &v); err != nil {
 		return nil, fmt.Errorf("string value: %w", err)
 	}
+	v = canon(v)
 	if op == "eq" {
 		return sq.Eq{sqlExpr: v}, nil
 	}

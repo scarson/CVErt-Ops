@@ -969,7 +969,7 @@ Only these fields can be referenced in rules:
 
 | Field | Type | Notes |
 |---|---|---|
-| `cve_id` | string | |
+| `cve_id` | string | `eq`, `neq`, `in` and `not_in` compare a value shaped like a CVE ID in upper case, as CVE IDs are stored; other IDs (GHSA, which is mixed case) compare as written |
 | `severity` | enum | |
 | `cvss_v3_score` | float | |
 | `cvss_v4_score` | float | |

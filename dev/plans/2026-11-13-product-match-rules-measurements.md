@@ -228,3 +228,22 @@ M8 full activation (disposable copy): 12m5s wall clock, 200252 events, rule stat
 - **Every statement threshold passes**: M5a realtime 4.7 ms, M5b dry-run 4.3 s, M5c batch 0.45 s, M6 1.4 s, M7d equal to the old form. The read-only M8 estimate covers the whole corpus in 4 min 10 s (200,438 matches) with no shared-memory error.
 - **M8 fails on wall clock: 12 min 5 s against 7 minutes.** The activation completed (rule `active`, 200,252 events), inside the 15 minutes after which `SweepZombieActivations` fails a job. About 4 minutes are reads; about 8 are the 200,252 `InsertAlertEvent` calls, one transaction each (about 2.4 ms per event). That cost follows the number of matching CVEs, not the rule's shape: `severity in [critical, high]` matches 182,637 of the kept ingest's CVEs (critical 46,442, high 136,195), so an activation of that ordinary rule spends about the same time on inserts.
 - Single-product rows are close to the design's figures; one single-product batch (M2b, `linux:linux_kernel` or `in_cisa_kev`) takes 1.1 s with a sequential scan of `cve_cpe_matches`, within the 3 s threshold.
+
+## Task 5.5: the batch candidate scan with the re-check arm (disposable copy, 2026-11-14)
+
+The copy at migration 63, with `UPDATE cves SET date_match_inputs_changed = date_modified_canonical` (every CVE merged once since the deploy) and `VACUUM ANALYZE`. The statement is the evaluator's `UNION` of two keyset scans (`getCVEsModifiedSince`, page size 1,000), run read-only with `EXPLAIN (ANALYZE, BUFFERS)`.
+
+| Window | Page | Eligible CVEs | Plan | Execution |
+|---|---|---|---|---|
+| Dense: `since` = newest modification minus one day | first | 1,703,192 | Merge Append of two `cves_pkey` walks, date as filter | 561 ms |
+| Dense | after the 3,000th eligible ID | 1,703,192 | same | 0.8 ms |
+| Sparse: `since` = 99th percentile of modification times | first | 26,197 | same; the eligible rows sit at the end of `cve_id` order, so each walk reads most of the index (1.27 s for the `date_modified_canonical` arm, 2.43 s for the new arm) | **3,699 ms** |
+| Sparse | from the `CVE-` range | 26,197 | bitmap scans of `cves_date_modified_canonical_idx` and `cves_date_match_inputs_changed_idx`, then sort | 127 ms |
+
+Threshold: 3 s per page. **The sparse first page fails (3.7 s).** The planner walks the primary key when it expects more eligible rows than a page, which goes wrong when they are clustered at the end of the ID order; the existing arm alone took 1.27 s on the same page. A window of fewer eligible CVEs than a page uses the index-and-sort plan. Planning time is under 0.4 ms in every case. With Sam.
+
+## M8 after batched activation inserts (2026-11-14)
+
+This branch merged `origin/dev` with PR 243 (each activation page's events written in one transaction). The same limit rule under `or`, the same disposable copy (now at migration 63):
+
+M8 full activation (disposable copy): 2 min 4 s wall clock, 200,252 events, rule status `active`, threshold 7 minutes: **pass** (12 min 5 s with one transaction per event).

@@ -141,6 +141,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 - Task 4.2 (M8): the copy was migrated to the committed head before the activation test with a binary built from a `git archive` export of `HEAD`, because the working tree was mid-edit at the time; the test's own migration step then found nothing to apply. The copy was analysed after its restore.
 
 ### Discoveries
+- Found by Task 5.6's after-group review (2026-11-14), older than this branch, not fixed here: after a late-binding CVE ID rename (`migrateCVEPKRename`), the renamed row keeps its old change dates unless an alert moved with it, so if realtime evaluation fails on the promoting merge, a rule bound to a watchlist that lists the new CVE ID is not evaluated against it by the batch path. Needs Sam's decision.
 - Found while planning (2026-11-14): design section 12's line "Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE" contradicts design section 3.1, which says the check accepts unescaped `*` and `?`. Task 1.2 tests section 3.1's invariant (every value a rule accepts, the check accepts). Flagged only; the design text is unchanged.
 - Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships. (Recorded.)
 - Found while executing (2026-11-14): the host's `golangci-lint` (v2.10.1, built with Go 1.26) refuses to load `.golangci.yml` under Go 1.27. Lint runs with the CI pin instead: `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --allow-parallel-runners ./cmd/... ./internal/... ./migrations/...`.
@@ -628,7 +629,7 @@ Test: `BuildSchemaDescription()` contains `affected.cpe_product (type: CPE vendo
 
 **Re-measured after `9d58ee1` (2026-11-14):** every statement threshold passes (M5a realtime 4.7 ms, M5b dry-run 4.3 s, M5c batch 0.45 s, M6 1.4 s; M7d equal to the old form when interleaved), so no dry-run limit is needed. M8 full activation on the copy completed (rule `active`, 200,252 events) in 12 min 5 s against 7 minutes: about 4 minutes of reads and 8 of one-transaction-per-event inserts, a cost that follows the match count (`severity in [critical, high]` matches 182,637 CVEs). Design amendment written: `dev/plans/2026-11-13-product-match-rules-design.md` section 17. M8 is with Sam.
 
-**Sam's decision on M8 (2026-11-14, "Accept, follow up"):** M8 is accepted for MATCH-2 as a limit of the existing activation path (per-event insert transactions), not of the rule shape. Batching activation event inserts is a separate follow-up, started as its own session and branch from `dev` ("Batch alert event inserts in activation scans"); its PR's own record signals completion. Phase 4 is complete.
+**Sam's decision on M8 (2026-11-14, "Accept, follow up"):** M8 is accepted for MATCH-2 as a limit of the existing activation path (per-event insert transactions), not of the rule shape. Batching activation event inserts is a separate follow-up, started as its own session and branch from `dev` ("Batch alert event inserts in activation scans"); its PR's own record signals completion. Phase 4 is complete. **Re-measured after PR 243 merged into this branch (`e72f6a9`): M8 full activation 2 min 4 s, 200,252 events — passes.**
 
 Design section 13 (every measurement and threshold) and section 5.3 (earlier numbers to compare against). This phase changes no production code. Its result decides whether Phase 5 starts or the work goes back to Sam.
 
@@ -695,7 +696,7 @@ Record both numbers. If step 2 cannot be run (no backup access, no disk), M8 is 
 
 ## Phase 5 — Re-check signal
 
-**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T05:25Z on branch `claude/lucid-moser-fef966`
+**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T05:25Z on branch `claude/lucid-moser-fef966` — code done: `fdbf47f` (5.1–5.2, migration 000063), `3232759` (5.3), `ce2b731` (5.4–5.6); verify-first span 5.3 confirmed (ASCII-only lower-casing separates KELVIN SIGN + `node` from `knode`; `strings.ToLower` does not). Task 5.5's measurement on the copy fails its 3 s per-page threshold in one case (a sparse window's first page, 3.7 s); with Sam. Merged `origin/dev` (`e72f6a9`, PR 243 batched activation inserts) before re-measuring M8.
 
 Design section 7 (Sam's ruling 15.1: a separate signal, not a `material_hash` change) and section 12's re-check tests. `material_hash` and its golden hashes do not change (design 16): run `go test ./internal/merge/... -run 'Hash|Golden'` at the end of the phase and confirm no golden file changed.
 

@@ -30,6 +30,8 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "nodejs", Product: "node.js"},
 				{Vendor: "nodejs", Product: "nodejs"},
 				{Vendor: "nodejs", Product: "node"},
+				{Vendor: "node.js", Product: "node.js"},
+				{Vendor: "the node.js project", Product: "node.js"},
 			},
 			wantCPEs:   node,
 			wantMapped: true,
@@ -42,6 +44,8 @@ func TestNamesFor(t *testing.T) {
 				{Vendor: "nodejs", Product: "nodejs"},
 				{Vendor: "nodejs", Product: "node.js"},
 				{Vendor: "nodejs", Product: "node"},
+				{Vendor: "node.js", Product: "node.js"},
+				{Vendor: "the node.js project", Product: "node.js"},
 			},
 			wantCPEs:   node,
 			wantMapped: true,
@@ -314,6 +318,121 @@ func TestNamesForDoesNotShareTheTable(t *testing.T) {
 	again, againCPEs, _ := NamesFor(node)
 	if again[1].Product != "nodejs" || againCPEs[0] != "nodejs:node.js" {
 		t.Errorf("NamesFor returned the table's own slices: table now gives %+v and %q", again, againCPEs)
+	}
+}
+
+// A prefix other product matches up to a word boundary, and any character
+// other than an ASCII letter or digit is a boundary, so the SQL exclusion's
+// `!~ '^[a-z0-9]'` and this test agree whatever the database's character type.
+func TestIsOtherProduct(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		product string
+		want    bool
+	}{
+		{".NET Framework 4.8", true},
+		{".NET FrameworkExtensions", false},
+		{".NET Framework", true},
+		{".NET Framework" + string(rune(0xE9)), true},
+		{".NET Framework9", false},
+		{"OpenAPI.NET", true},
+		{".NET 9.0 runtime", false},
+	}
+	for _, tt := range tests {
+		if got := IsOtherProduct(dotNetOtherProducts, "Microsoft", tt.product); got != tt.want {
+			t.Errorf("IsOtherProduct(.NET's, Microsoft, %q) = %v, want %v", tt.product, got, tt.want)
+		}
+	}
+}
+
+// pinnedNameTableDigest is nameTableDigest of the table as reviewed. Changing
+// the table changes which stored CVEs a product rule matches, and nothing
+// re-evaluates those CVEs on its own.
+const pinnedNameTableDigest = "f91e7929f51adec89ba190330d9674af25993b48322c2b0b5293072e4394a18b"
+
+func TestNameTableDigest(t *testing.T) {
+	t.Parallel()
+	if got := nameTableDigest(); got != pinnedNameTableDigest {
+		t.Errorf("nameTableDigest() = %s, want %s: "+
+			"the CNA name table changed. Before updating this digest, build the re-check step in "+
+			"dev/plans/2026-11-13-product-match-rules-design.md section 3.4 (re-evaluate rules with "+
+			"affected.cpe_product conditions over CVEs under changed table entries), or confirm with Sam "+
+			"that the edit changes no stored match.", got, pinnedNameTableDigest)
+	}
+}
+
+// Every part of the table feeds the digest, so the pin cannot be met by a
+// digest that leaves a field out.
+func TestNameTableDigestCoversEveryField(t *testing.T) {
+	t.Parallel()
+	base := digestOf(cnaTable, otherProducts)
+	if base != nameTableDigest() {
+		t.Fatalf("digestOf(cnaTable, otherProducts) = %s, nameTableDigest() = %s", base, nameTableDigest())
+	}
+	cloneTable := func() []cnaMapping {
+		table := slices.Clone(cnaTable)
+		for i := range table {
+			table[i].CPEs = slices.Clone(table[i].CPEs)
+			table[i].Names = slices.Clone(table[i].Names)
+		}
+		return table
+	}
+	cloneOther := func() map[string][]CNAName {
+		other := map[string][]CNAName{}
+		for k, v := range otherProducts {
+			other[k] = slices.Clone(v)
+		}
+		return other
+	}
+	mutations := []struct {
+		name  string
+		table func([]cnaMapping) []cnaMapping
+		other func(map[string][]CNAName)
+	}{
+		{name: "row added", table: func(tb []cnaMapping) []cnaMapping {
+			return append(tb, cnaMapping{CPEs: []string{"acme:widget"}, Names: []CNAName{{Vendor: "acme", Product: "widget"}}})
+		}},
+		{name: "CPE spelling added", table: func(tb []cnaMapping) []cnaMapping {
+			tb[0].CPEs = append(tb[0].CPEs, "nodejs:node")
+			return tb
+		}},
+		{name: "CNA name added", table: func(tb []cnaMapping) []cnaMapping {
+			tb[0].Names = append(tb[0].Names, CNAName{Vendor: "openjs", Product: "node.js"})
+			return tb
+		}},
+		{name: "name made a prefix", table: func(tb []cnaMapping) []cnaMapping {
+			tb[0].Names[0].Prefix = true
+			return tb
+		}},
+		{name: "fragment changed", table: func(tb []cnaMapping) []cnaMapping {
+			tb[0].Fragment = "nodejs"
+			return tb
+		}},
+		{name: "nearby vendor changed", table: func(tb []cnaMapping) []cnaMapping {
+			tb[0].Vendor = "openjs"
+			return tb
+		}},
+		{name: "other product added", other: func(o map[string][]CNAName) {
+			o["nodejs:node.js"] = []CNAName{{Vendor: "nodejs", Product: "node-red"}}
+		}},
+		{name: "other product changed", other: func(o map[string][]CNAName) {
+			o["openssl:openssl"] = []CNAName{{Vendor: "openssl", Product: "openssl extension of ruby"}}
+		}},
+	}
+	for _, m := range mutations {
+		table, other := cloneTable(), cloneOther()
+		if m.table != nil {
+			table = m.table(table)
+		}
+		if m.other != nil {
+			m.other(other)
+		}
+		if digestOf(table, other) == base {
+			t.Errorf("%s: digest unchanged", m.name)
+		}
+	}
+	if digestOf(cloneTable(), cloneOther()) != base {
+		t.Error("an unchanged copy of the table gives a different digest")
 	}
 }
 

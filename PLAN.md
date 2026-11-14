@@ -121,9 +121,9 @@ The default schedule is in `internal/ingest/scheduler.go`; each feed runs on its
 | GitHub Security Advisories (GHSA) | `internal/feed/ghsa` | JSON, REST `GET /advisories` with Link-header paging | 6 hours | Packages, ecosystems and ranges |
 | OSV.dev | `internal/feed/osv` | JSON from the public GCS bucket over HTTPS: the first run pages `all.zip`, later runs read `modified_id.csv` and fetch the changed advisories | 24 hours | Package version range data, including distribution advisories (Debian, Ubuntu, Alpine and others) |
 | Microsoft MSRC | `internal/feed/msrc` | CSAF 2.0 documents listed in `changes.csv` | 24 hours | Vendor advisories |
-| Red Hat | `internal/feed/redhat` | Red Hat Security Data API | 12 hours | Vendor advisories, including unfixed package states |
+| Red Hat | `internal/feed/redhat` | Red Hat Security Data API | 12 hours | Vendor advisories; the payload also lists unfixed package states, which nothing reads yet |
 | EPSS | `internal/feed/epss` | gzip CSV from `epss.empiricalsecurity.com` | 24 hours | Exploit prediction score; enriches `epss_score` |
-| Generic feeds | `internal/feed/generic` | JSON or CSAF, mapped by a YAML file in `CVERTOPS_FEEDS_DIR` | Cron schedule from the YAML | Operator-defined sources; check a file with `cvert-ops validate-feeds` |
+| Generic feeds | `internal/feed/generic` | JSON or CSAF, mapped by a YAML file in `CVERTOPS_FEEDS_DIR` A cron expression in the YAML, read as a repeat interval: `*/N` minutes and `0 */N` hours are recognised, anything else runs every 24 hours, and the time of day is ignored | Operator-defined sources; check a file with `cvert-ops validate-feeds` |
 
 Each adapter has a circuit breaker (`internal/feed/breaker.go`), and a site admin can pause a feed (`feed_sync_state.paused_at`). There are no separate distribution adapters; distribution data arrives through OSV and Red Hat. Push delivery (for example GHSA webhooks) is not built; every feed polls. The one push path is the inbound ingest endpoint, `POST /api/v1/orgs/{org_id}/ingest` (member+, `internal/api/ingest.go`), which accepts canonical patches from an org's own tooling; it is specified in `dev/plans/2026-03-10-phase8-ops-extend-design.md` (generic feeds, inbound webhook, `validate-feeds`).
 
@@ -199,7 +199,7 @@ Never use string concatenation (`"?lastModStartDate=" + t.Format(time.RFC3339)`)
 
 **Why this is required:** The merge pipeline uses `cve_id` as the single canonical join key. If OSV ingests `GO-2024-1234` (aliases: `["CVE-2024-56789"]`) using `GO-2024-1234` as the primary key, and NVD ingests the same vulnerability as `CVE-2024-56789`, the database contains two completely separate rows — one from each feed — with different PKs. The merge pipeline never combines them. The canonical `cves` row from NVD misses the OSV-specific severity and package data; alert rules evaluating the CVE ID find only the NVD row and miss any OSV-sourced context.
 
-**Alias resolution logic:** every adapter uses the shared helper `feed.ResolveCanonicalID` (`internal/feed/util.go`):
+**Alias resolution logic:** the GHSA and OSV adapters use the shared helper `feed.ResolveCanonicalID` (`internal/feed/util.go`):
 ```go
 // Sort aliases so the result is deterministic when multiple CVE IDs exist,
 // then promote the first CVE-shaped alias to the primary key.
@@ -672,7 +672,7 @@ token, err := jwt.ParseWithClaims(tokenString, &Claims{}, keyFunc,
 )
 ```
 
-- **Algorithm:** `HS256` (HMAC-SHA256, symmetric), hard-coded. Single binary with a shared signing secret; no key distribution needed. A `JWT_ALGORITHM` config variable exists but is not read.
+- **Algorithm:** `HS256` (HMAC-SHA256, symmetric), hard-coded. Single binary with a shared signing secret; no key distribution needed. A `JWT_ALGORITHM` config variable exists; it is shown by `GET /api/v1/admin/config` but does not affect signing.
 - **Secret rotation:** `JWT_SECRET_PREVIOUS` holds the previous secret during a rotation. A token whose signature fails under `JWT_SECRET` is tried under the previous secret. Both can be reloaded without a restart (`POST /api/v1/admin/reload-config` or SIGHUP).
 - **Secret:** `JWT_SECRET` env var; minimum 32 cryptographically random bytes; validated at startup (reject startup if too short or not set). The server MUST `log.Fatalf` and exit immediately if `JWT_SECRET` is missing or too short — **never auto-generate an ephemeral key**. An auto-generated ephemeral secret invalidates all existing sessions on every restart, creating a confusing and undiscoverable bug: self-hosted operators find users constantly logged out with no error logged, no session, and no explanation. Missing `JWT_SECRET` is a misconfiguration that must be surfaced loudly at startup.
 - **`WithValidMethods` is mandatory** on every parse call — including refresh token validation. Add a linting check or code review gate to prevent unguarded `jwt.Parse`/`jwt.ParseWithClaims` calls.
@@ -688,7 +688,7 @@ The `users` table includes `token_version INT NOT NULL DEFAULT 1`. This value is
 
 **Revocation actions that increment `token_version`:**
 - User changes or resets their password
-- An org admin forces a password reset, or resets the member's MFA
+- An org admin or a site admin forces a password reset, or an org admin resets the member's MFA
 - Refresh-token theft detection (below)
 
 Removing a member and a site admin disabling a user do not increment it. Removal takes effect at once because every org-scoped request reads `org_members`; a disabled user is refused by the auth middleware, which checks `disabled_at` and `force_password_reset` on every cookie request.
@@ -803,7 +803,7 @@ Required pattern:
 **Sign-in methods as built:**
 - Native email/password (argon2id hashing, see 7.1), with MFA (§7.4)
 - GitHub OAuth and Google OIDC, enabled when their client credentials are configured. They create a new user only when `REGISTRATION_MODE=open`, and they cannot be linked to an existing account: an email that already belongs to a user gets 409.
-- **Per-org generic OIDC SSO** (Enterprise tier): one SSO connection per org (`sso_connections`), for an identity provider such as Microsoft Entra ID, Okta or Keycloak. The client secret is encrypted at rest with AES-256-GCM (`internal/crypto`; key storage: `dev/specs/sso-secret-storage.md`). The org lists its email domains (`sso_email_domains`), and `POST /api/v1/auth/discover` maps a sign-in email to its org's connection. There is no just-in-time user creation: a signed-in user links their identity through `GET /api/v1/orgs/{org_id}/sso/link`, and an unlinked OIDC subject gets 403. Users can also be provisioned by SCIM (§7.5). The identity provider key is `oidc:<connection_id>`.
+- **Per-org generic OIDC SSO** (Enterprise tier): one SSO connection per org (`sso_connections`), for an identity provider such as Microsoft Entra ID, Okta or Keycloak. The client secret is encrypted at rest with AES-256-GCM (`internal/crypto`; key storage: `dev/specs/sso-secret-storage.md`). The org lists its email domains (`sso_email_domains`), and `POST /api/v1/auth/discover` maps a sign-in email to its org's connection. There is no just-in-time user creation: a signed-in member (member+) links their identity through `GET /api/v1/orgs/{org_id}/sso/link`, and an unlinked OIDC subject gets 403. Users can also be provisioned by SCIM (§7.5). The identity provider key is `oidc:<connection_id>`.
 - SAML is not built.
 - **Open:** the GitHub, Google and OIDC callbacks issue full tokens without an MFA challenge or a check of the user's MFA mandate (§7.4).
 
@@ -917,7 +917,7 @@ The design split watchlists and alert rules into "own" (member+) and "any" (admi
 - Integration tests cover each role × each endpoint = expected allow/deny.
 - The `owner` role cannot be assigned through the role-assignment endpoint or an invitation.
 
-**Self-hosted first user:** the first user to register is assigned `owner` of a default org (and becomes site admin). This avoids requiring org setup ceremony for simple deployments. Any signed-in user can create further orgs (`POST /api/v1/orgs`).
+**Self-hosted first user:** the first user is assigned `owner` of a default org, and becomes site admin if they registered with a password (a first user who signs in through GitHub or Google does not). This avoids requiring org setup ceremony for simple deployments. Any signed-in user can create further orgs (`POST /api/v1/orgs`).
 
 ### 7.4 Multi-Factor Authentication
 
@@ -929,7 +929,7 @@ Built in Phase 11. Design: `dev/plans/2026-03-16-phase11-mfa-totp-email-otp-desi
 - **Sign-in flow:** a correct password returns, in place of full tokens, a list of pending steps (`mfa_challenge`, `mfa_enrollment_required`, `password_reset`) and a pending token valid `MFA_PENDING_TOKEN_TTL` = 5 minutes. The client completes each step through `/api/v1/auth/mfa/*` (Appendix B).
 - **Mandates:** a user must use MFA if any of these holds: `MFA_REQUIRED_SITE_ADMINS` and they are site admin; `MFA_REQUIRED_ORG_OWNERS` and they own an org; an org they belong to sets `mfa_required_all` (owner, `PATCH /orgs/{org_id}/mfa-settings`); or an admin requires it for them (`POST`/`DELETE /orgs/{org_id}/members/{user_id}/require-mfa`). Removing a method needs the password and is refused while MFA is mandated for the user.
 - **Remember this device:** allowed only if every org the user belongs to allows it, for the smallest number of days among them.
-- **Admin actions:** admin+ can reset a member's MFA and force a password reset, for members at or below their own role; both increment `token_version`. Wrong-length codes count as failed attempts and share the lockout counter (§7.1).
+- **Admin actions:** admin+ can reset a member's MFA and force a password reset, for members below their own role (a site admin can act on anyone); both increment `token_version`. Wrong-length codes count as failed attempts and share the lockout counter (§7.1).
 - **Open:** federated sign-in (GitHub, Google, OIDC) does not apply MFA (§7.2).
 
 ### 7.5 SCIM Provisioning
@@ -1219,7 +1219,7 @@ Deliveries are rows in `notification_deliveries` with `kind` `alert`, `digest` o
 
 ### 11.2 Delivery Guarantees
 - **At-least-once** delivery.
-- Deduplication comes from the debounce window (below): there is at most one pending delivery per `(rule, channel)`, enforced by a partial unique index. A per-delivery idempotency key (`sha256(org_id + event_id + channel_id)`) was planned and is not built.
+- Deduplication comes from the debounce window (below): there is at most one open alert batch, and one open resolution batch, per `(rule, channel)`, enforced by partial unique indexes on rows with `batch_open`. A pending retry is a closed batch and can sit beside a newer open one. Digests have no such index. A per-delivery idempotency key (`sha256(org_id + event_id + channel_id)`) was planned and is not built.
 - Retry policy: `NOTIFY_MAX_ATTEMPTS` (default 4) attempts in total, with exponential backoff from `NOTIFY_BACKOFF_BASE_SECONDS` (default 30) and **full jitter** (required): `next_run_at = now() + base * 2^(n-1) * random(0.5, 1.5)`. Without jitter, if a downstream service (Jira, Splunk) goes offline during a mass alert event and thousands of delivery jobs fail simultaneously, all retries wake up at the exact same millisecond — the "Thundering Herd" instantly re-crashes the recovering service. Full jitter spreads retries across a wide window, allowing the service to recover progressively.
 - **Per-org delivery concurrency limit (noisy neighbor prevention):** Outbound notification delivery is subject to a per-org concurrency cap (default: 5 concurrent deliveries per org). A single org with a broken or slow webhook endpoint cannot monopolize the delivery worker goroutines at the expense of other orgs. Implemented as a per-org semaphore within the notification worker. The cap is configurable via `NOTIFY_MAX_CONCURRENT_PER_ORG` and applies to every org alike.
 
@@ -1635,7 +1635,7 @@ Built in Phase 8 (operational maturity). Designs: `dev/plans/2026-03-10-phase8-o
 
 - **Health:** `GET /healthz` is liveness only. `GET /readyz` checks the database, that the schema version matches the binary, and that the delivery worker is running. The container image has a small `healthcheck` binary (`cmd/healthcheck`) for Docker `HEALTHCHECK`, since the distroless image has no shell.
 - **Metrics:** Prometheus on its own listener, `METRICS_PORT` (default 9090), not on the API port. Grafana dashboards, alert rules and Prometheus/Alloy config are in `deploy/grafana/`.
-- **Doctor:** `cvert-ops doctor` and `GET /api/v1/admin/doctor` run the checks in `internal/doctor`: database connectivity, migration currency, database role permissions, RLS enforcement, the encryption key sentinel, JWT configuration, SMTP connectivity, temp disk space and feed schedule.
+- **Doctor:** `cvert-ops doctor` and `GET /api/v1/admin/doctor` run the checks in `internal/doctor`: database connectivity, migration currency, database role permissions, RLS enforcement, the encryption key sentinel, JWT configuration, SMTP connectivity, temp disk space, feed schedule and security headers.
 - **Site admin API** (`/api/v1/admin`, site admin only; Appendix B) and SPA pages (§20):
   - feeds: status, run now (a normal run; there is no window parameter), pause, resume, fetch logs
   - orgs: list, set tier and overrides, usage
@@ -1680,7 +1680,7 @@ All numbered phases are complete. The record of each is in `dev/implementation-l
 | Frontend | Vue 3 SPA embedded in the binary (§20) | 2026-03-06 |
 | Feed wiring | MSRC and Red Hat adapters, feed scheduler, site admin feed API | 2026-03-06 to 2026-03-08 |
 | 6 — Production readiness | Password reset, email verification, account lockout, CORS, invitation emails, channel test endpoint, channel RBAC fix, Appendix B rewrite, bug-fix pass | 2026-03-09 |
-| 8 — Operational maturity | Metrics, dashboards and alert rules; `/readyz`, auto-migrate, doctor, site admin API and UI, production compose; generic feeds, inbound ingest, `validate-feeds`; JWT and encryption key rotation, config reload, security events (§17) | 2026-03-10 to 2026-03-17 |
+| 8 — Operational maturity | Metrics, dashboards and alert rules; `/readyz`, auto-migrate, doctor, site admin API and UI, production compose; generic feeds, inbound ingest, `validate-feeds`; JWT and encryption key rotation, config reload, security events (§17) | 2026-03-10 to 2026-03-18 |
 | 9 — Health review remediation | 45 findings from the 2026-03-10 health review, API contract convergence, bug hunt fixes | 2026-03-15 to 2026-03-19 |
 | 11 — MFA | TOTP, email codes, recovery codes, org and member mandates (§7.4) | 2026-03-17 to 2026-03-18 |
 | 7 — SCIM | SCIM 2.0 provisioning with group-to-role mapping (§7.5) | 2026-03-19 to 2026-03-26 |
@@ -1689,15 +1689,15 @@ All numbered phases are complete. The record of each is in `dev/implementation-l
 **Work after the phases (November 2026).** Work moved from numbered phases to one design or fix at a time, each in `dev/plans/` and `dev/implementation-log/`. The larger pieces:
 - **Self-hosted deployment:** production compose fixes, database settings under the app role, private webhook destinations (§11.3), SPA sign-in with MFA steps.
 - **Alert correctness:** evaluator cursor re-scan window and failure hold, candidate-cap chunking, resolution notifications and reopening resolved events (§10.3–10.4), activation recovery, CVEs without a status, severity case.
-- **Feeds:** resumable first walks across job limits, OSV incremental runs from `modified_id.csv`, MITRE paging, NVD `caught_up`, EPSS run fixes, MSRC paging, Red Hat unfixed package states.
+- **Feeds:** resumable first walks across job limits, OSV incremental runs from `modified_id.csv`, MITRE paging, NVD `caught_up`, EPSS run fixes, MSRC paging, a complete Red Hat walk.
 - **Range and source data:** one source row per advisory, whole-range union, OSV ecosystem vocabulary (`internal/ecosystem`), NVD CPE match ranges and CNA `affected[]` entries (Appendix A.2).
-- **Version checks (MATCH-1):** `internal/version` with ecosystem-native comparison (§9.2) and `POST /orgs/{org_id}/check` (§16).
+- **Version checks (MATCH-1):** `internal/version` with ecosystem-native comparison (§9.2) and `POST /orgs/{org_id}/check` (§16), including the rule that a distribution whose feed lists only fixes never answers `not_affected`.
 - **Product and package rules (MATCH-2):** `affected.cpe_product`, package correlation, the match-inputs re-check signal, and DSL fail-closed fixes (§5.3, §10).
 - **API for automation:** complete OpenAPI spec with declared credentials, `whoami`, alert-event `expand` and the ascending alert-event feed, watchlist CVE items and whole-list replace, unknown request fields refused.
 - **Platform:** Go 1.27, PostgreSQL 18 minimum, removal of the unread `fire_on_non_material_changes` rule flag.
 
 **Open work.** Each item names where it is described.
-- **Designed, waiting for a decision:** API client CLI and MCP server (`dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`, draft for Sam's review; no code). Red Hat unfixed states, the not-built option B (`dev/plans/2026-11-13-redhat-unfixed-package-states-proposal.md`). Deferred product-rule items (`dev/deferred-features.md` §12).
+- **Designed, waiting for a decision:** API client CLI and MCP server (`dev/plans/2026-11-13-api-client-cli-and-mcp-server-design.md`, draft for Sam's review; no code). Reading Red Hat's unfixed package states in the version check, so RHEL 8–10 main streams can answer `affected` or `not_affected` for CVEs Red Hat has not fixed (proposed, not built: `dev/plans/2026-11-13-redhat-unfixed-package-states-proposal.md` section 3). Deferred product-rule items (`dev/deferred-features.md` §12).
 - **Required before a multi-tenant hosted deployment:** encrypt the alert-event feed cursor or move to per-org positions (Appendix B, alert events); shared rate-limit state before more than one API instance (Decision D6, §16.1).
 - **Gaps between the design and the code, found in the 2026-11-14 review of this document** (marked **Open** where they are described): federated sign-in skips MFA (§7.2, §7.4); webhook signing secrets stored in plaintext (§11.3); refresh-token reuse inside the grace window does not revoke (§7.1); watchlist and rule ownership not enforced (§7.3); TOTP secrets not covered by `rotate-encryption-key` (§7.4); no Content-Security-Policy or HSTS (§18.3); `http.TimeoutHandler` not applied (§18.3); CVE search outside the org rate limit (§16.1); digest watchlist scope ignored (§12); NVD attribution notice missing from the SPA (§3.2).
 - **Planned and not built:** Slack and Teams channels; weekly digests and AI digest summaries; CWE dictionary ingestion (§8.2); `import-bulk` (§17.1); CVE annotations and assignment, watchlist templates (§19.5); org deletion and ownership transfer; a session list and per-device sign-out; ecosystem-aware CVSS precedence (§5.1); CVSS and EPSS search filters (§8.1); SAML and WebAuthn; custom notification templates; tracing; exports and billing; SPA pages for alert rules, channels, reports, saved searches and SSO/SCIM settings (§20).
@@ -1710,11 +1710,11 @@ Go's goroutine model makes the task queue decision fundamentally different from 
 
 The CVErt Ops binary uses cobra for CLI subcommands:
 - `cvert-ops serve` — runs HTTP server + worker pool + delivery worker in one process, and applies pending migrations at startup under a PostgreSQL advisory lock unless `--skip-auto-migrate` is given. Suitable for self-hosted single-instance deployments.
-- `cvert-ops worker` — runs standalone worker pool only. For SaaS scaling where API and workers run separately. Does not migrate.
+- `cvert-ops worker` — runs everything except the HTTP API: the worker pool, the delivery worker (with its digest and retention tickers) and the feed scheduler. For SaaS scaling where API and workers run separately. Does not migrate.
 - `cvert-ops migrate` — runs pending database migrations and exits.
 - `cvert-ops import-bulk` — stub; not built (section 17.1).
 - `cvert-ops quota` (`set`, `get`, `list`, `delete`) — per-org AI quota overrides (§13.4).
-- `cvert-ops validate-feeds` (`--dry-run`) — checks generic feed YAML files (§3.1).
+- `cvert-ops validate-feeds` — checks the syntax of generic feed YAML files (§3.1). Its `--dry-run` flag returns "not yet implemented".
 - `cvert-ops doctor` — runs the health checks (§17).
 - `cvert-ops rotate-encryption-key` — re-encrypts SSO client secrets with the current `SSO_ENCRYPTION_KEY` (§7.4 notes what it does not cover).
 
@@ -1865,7 +1865,7 @@ huma (`github.com/danielgtaylor/huma/v2`) wraps chi as the underlying router. Go
 
 **Timezone database embedding (required):**
 
-Any call to `time.LoadLocation("America/New_York")` (for user-configured digest delivery times or generic feed cron schedules) fails if the host has no IANA timezone database, which leaves users outside UTC with wrong delivery times. The distroless image ships timezone data, but the binary must not depend on its image or host. `cmd/cvert-ops/main.go` has:
+Any call to `time.LoadLocation("America/New_York")` (for user-configured digest delivery times) fails if the host has no IANA timezone database, which leaves users outside UTC with wrong delivery times. The distroless image ships timezone data, but the binary must not depend on its image or host. `cmd/cvert-ops/main.go` has:
 ```go
 import _ "time/tzdata" // embed IANA timezone database in binary
 ```
@@ -2090,7 +2090,7 @@ Connections idle for more than 5 minutes are proactively closed and returned to 
 Configurable via `REGISTRATION_MODE` env var (any value other than `open` acts as `invite-only`):
 - `invite-only` (default): after the first user, register returns 403 and GitHub/Google sign-up is refused. A new person joins through an invitation, which needs an existing account to accept, or through SCIM provisioning (§7.5). **Open:** an invited person with no account has no way to create one except SCIM.
 - `open`: anyone can register, and GitHub and Google sign-in create users. A new user has no org until they create one or accept an invitation.
-- The first user auto-becomes owner of a default org and site admin regardless of mode (preserves homelab single-user simplicity).
+- The first user auto-becomes owner of a default org regardless of mode, and site admin if they registered with a password (§7.3). This preserves homelab single-user simplicity.
 
 ## 19.5 Features from the Competitive Analysis
 
@@ -2161,7 +2161,7 @@ cvert-ops/
 ├── docker/               # Dockerfile, compose.yml, compose.prod.yml, Caddyfile, postgres-tls, init-app-role.sh, smoke-test.sh
 ├── deploy/grafana/       # dashboards, Prometheus alert rules, Prometheus and Alloy config
 ├── dev/                  # internal dev docs: plans, specs, research, pitfalls, implementation log, reviews
-├── docs/                 # deployment and testing documentation
+├── docs/                 # deployment and testing docs, handoffs, performance audits
 ├── openapi.json          # exported OpenAPI spec (generated by huma; §16)
 ├── sqlc.yaml, .golangci.yml, .env.example
 ├── .github/workflows/    # GitHub Actions CI
@@ -2375,7 +2375,7 @@ See section 18.1 for full schema.
 ## A.3 Org/Tenant Tables
 
 Org-scoped, with `org_id`, a `BTREE(org_id)` index and the RLS policy of §6.2:
-- **Org and membership:** `organizations` (tier, tier overrides, MFA policy), `org_members` (`role`, `deactivated_at`, `scim_exempt`), `org_invitations`, `groups` (soft-deleted), `group_members` (`scim_managed`), `api_keys`
+- **Org and membership:** `org_members` (`role`, `deactivated_at`, `scim_exempt`), `org_invitations`, `groups` (soft-deleted), `group_members` (`scim_managed`), `api_keys`
 - **Watchlists:** `watchlists` (`group_id` nullable), `watchlist_items` (package, CPE or CVE items; soft-deleted)
 - **Alerts:** `alert_rules` (`watchlist_ids uuid[]`, `dsl_version`, `status`), `alert_rule_runs`, `alert_rule_channels`, `alert_events` (`last_match_state`, `last_fired_at`, `times_fired`, feed position)
 - **Notifications and reports:** `notification_channels`, `notification_deliveries` (`kind`), `scheduled_reports` (`rescan_sent_cves`), `report_channels`
@@ -2383,7 +2383,7 @@ Org-scoped, with `org_id`, a `BTREE(org_id)` index and the RLS policy of §6.2:
 - **Identity:** `sso_connections`, `sso_email_domains`, `scim_configs`, `scim_groups`, `scim_group_members`, `mfa_requirements`
 - **Audit and AI:** `audit_log`, `ai_usage_counters`, `ai_quota_overrides`, `ai_cache`, `ai_request_log`
 
-User-level, without RLS (read through the bypass helpers, §6.2): `users` (`password_hash_version`, `token_version`, `is_site_admin`, `disabled_at`, `force_password_reset`, lockout counters), `user_identities`, `refresh_tokens`, `password_reset_tokens`, `email_verification_tokens`, `mfa_credentials`, `mfa_recovery_codes`, `mfa_challenges`.
+Without RLS (read through the bypass helpers, §6.2): `organizations` (tier, tier overrides, MFA policy; access is checked through `org_members`), `users` (`password_hash_version`, `token_version`, `is_site_admin`, `disabled_at`, `force_password_reset`, lockout counters), `user_identities`, `refresh_tokens`, `password_reset_tokens`, `email_verification_tokens`, `mfa_credentials`, `mfa_recovery_codes`, `mfa_challenges`.
 
 Planned and not created: `cve_annotations` (§19.5), `report_runs` (digest history).
 

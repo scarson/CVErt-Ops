@@ -3,7 +3,9 @@
 package dsl
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -51,6 +53,8 @@ const (
 	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
 	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
 	msgEmptyList         = "value must list at least one item"
+	msgInvalidOperator   = "operator %q is not valid for field %q"
+	msgOrRegexMixed      = `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`
 	// The value and names are printable ASCII (check.ParseProductValue), so they
 	// are quoted as written rather than with %q, which would double a backslash.
 	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor "%s" and product "%s"`
@@ -96,7 +100,7 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 			errs = append(errs, ValidationError{
 				Index:    i,
 				Field:    c.Field,
-				Message:  fmt.Sprintf("operator %q is not valid for field %q", c.Op, c.Field),
+				Message:  fmt.Sprintf(msgInvalidOperator, c.Op, c.Field),
 				Severity: "error",
 			})
 			continue
@@ -106,15 +110,6 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 
 		if c.Op == "regex" {
 			hasRegex = true
-			var pattern string
-			if err := json.Unmarshal(c.Value, &pattern); err == nil && len(pattern) > 256 {
-				errs = append(errs, ValidationError{
-					Index:    i,
-					Field:    c.Field,
-					Message:  "regex pattern must not exceed 256 characters",
-					Severity: "error",
-				})
-			}
 		}
 
 		if c.Op == "contains" {
@@ -151,6 +146,9 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 	if tooManyAndSets(r) {
 		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyAndSets, Severity: "error"})
 	}
+	if orMixesRegex(r) {
+		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgOrRegexMixed, Severity: "error"})
+	}
 
 	isEPSSOnly = hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	hasEPSS = hasEPSSCond
@@ -164,16 +162,25 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 		errs = append(errs, ValidationError{Index: idx, Field: c.Field, Message: msg, Severity: "error"})
 	}
 
+	// Every field that takes regex (cve_id, description_primary) checks its
+	// pattern as Compile compiles it.
+	if c.Op == "regex" {
+		if _, err := compileRegex(c.Value); err != nil {
+			add(err.Error())
+		}
+		return errs
+	}
+
 	switch spec.kind {
 	case kindFloat:
 		var v float64
-		if err := json.Unmarshal(c.Value, &v); err != nil {
+		if err := decodeScalar(c.Value, &v); err != nil {
 			add(fmt.Sprintf("value must be a number: %v", err))
 		}
 
 	case kindTime:
 		var s string
-		if err := json.Unmarshal(c.Value, &s); err != nil {
+		if err := decodeScalar(c.Value, &s); err != nil {
 			add(fmt.Sprintf("value must be a JSON string: %v", err))
 		} else if _, err := time.Parse(time.RFC3339, s); err != nil {
 			add(fmt.Sprintf("value must be RFC 3339 time: %v", err))
@@ -181,7 +188,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 
 	case kindBool:
 		var v bool
-		if err := json.Unmarshal(c.Value, &v); err != nil {
+		if err := decodeScalar(c.Value, &v); err != nil {
 			add(fmt.Sprintf("value must be a JSON boolean: %v", err))
 		}
 
@@ -201,7 +208,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
@@ -217,23 +224,14 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 		}
 
 	case kindText:
-		if c.Op == "regex" {
-			var pattern string
-			if err := json.Unmarshal(c.Value, &pattern); err != nil {
-				add(fmt.Sprintf("regex value must be a JSON string: %v", err))
-			} else if _, err := regexp.Compile(pattern); err != nil {
-				add(fmt.Sprintf("invalid regex: %v", err))
-			}
-		} else {
-			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
-				add(fmt.Sprintf("value must be a JSON string: %v", err))
-			}
+		var v string
+		if err := decodeScalar(c.Value, &v); err != nil {
+			add(fmt.Sprintf("value must be a JSON string: %v", err))
 		}
 
 	case kindFTS:
 		var s string
-		if err := json.Unmarshal(c.Value, &s); err != nil {
+		if err := decodeScalar(c.Value, &s); err != nil {
 			errs = append(errs, ValidationError{Index: idx, Field: c.Field, Message: "value must be a string", Severity: "error"})
 			return errs
 		}
@@ -265,7 +263,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
@@ -290,7 +288,7 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			}
 		} else {
 			var v string
-			if err := json.Unmarshal(c.Value, &v); err != nil {
+			if err := decodeScalar(c.Value, &v); err != nil {
 				add(fmt.Sprintf("value must be a JSON string: %v", err))
 				return errs
 			}
@@ -395,6 +393,22 @@ func tooManyAndSets(r Rule) bool {
 		}
 	}
 	return sets > maxAndSets
+}
+
+// orMixesRegex reports whether r is an "or" rule with a regex condition beside
+// a condition of another operator. A regex runs in Go only on the CVEs the
+// rule's SQL conditions select (PLAN.md §10.2), so under "or" a CVE that only
+// the regex matches would never be checked, and a CVE that only a SQL
+// condition matches would be dropped by the regex: the rule would read as
+// "and". An "or" rule of regex conditions alone is evaluated correctly, on the
+// CVEs its watchlist selects.
+func orMixesRegex(r Rule) bool {
+	if r.Logic != LogicOr {
+		return false
+	}
+	isRegex := func(c Condition) bool { return c.Op == "regex" }
+	isOther := func(c Condition) bool { return c.Op != "regex" }
+	return slices.ContainsFunc(r.Conditions, isRegex) && slices.ContainsFunc(r.Conditions, isOther)
 }
 
 // isBlank reports whether v is empty or only whitespace.
@@ -514,6 +528,45 @@ func affectedValueValid(field string, spec fieldSpec, v string) bool {
 		return ecosystem.Valid(v)
 	}
 	return containsStr(spec.enumValues, v)
+}
+
+// decodeScalar unmarshals a condition's single value into v. It refuses JSON
+// null, which json.Unmarshal accepts by leaving v at its zero value: without
+// this, "cvss_v3_score gt null" would read as "gt 0" and "description_primary
+// contains null" would match every CVE. Validate and Compile both decode
+// single values through it, so a stored rule with a null value fails closed.
+func decodeScalar(raw json.RawMessage, v any) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("null is not allowed")
+	}
+	return json.Unmarshal(raw, v)
+}
+
+// maxRegexLength bounds a regex pattern as the rule writes it (PLAN.md §10.2).
+const maxRegexLength = 256
+
+// compileRegex reads a regex condition's pattern and compiles it to match
+// regardless of case, as PLAN.md §10.2 requires. "(?i)" goes before the
+// pattern, so flags the pattern sets itself, such as "(?-i)", override it.
+// The pattern is first compiled as written, so an error quotes only what the
+// rule wrote. Validate and Compile both call it, so they accept the same
+// patterns.
+func compileRegex(raw json.RawMessage) (*regexp.Regexp, error) {
+	var pattern string
+	if err := decodeScalar(raw, &pattern); err != nil {
+		return nil, fmt.Errorf("regex value must be a JSON string: %w", err)
+	}
+	if len(pattern) > maxRegexLength {
+		return nil, errors.New("regex pattern must not exceed 256 characters")
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	re, err := regexp.Compile("(?i)" + pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return re, nil
 }
 
 func containsStr(slice []string, s string) bool {

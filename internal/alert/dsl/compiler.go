@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +26,9 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	}
 	if tooManyAndSets(r) {
 		return nil, fmt.Errorf("compile: %s", msgTooManyAndSets)
+	}
+	if orMixesRegex(r) {
+		return nil, fmt.Errorf("compile: %s", msgOrRegexMixed)
 	}
 
 	var predicates []predicate
@@ -50,6 +52,11 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		if !ok {
 			return nil, fmt.Errorf("compile: unknown field %q", c.Field)
 		}
+		// Validate refuses this at save; a stored rule with an operator its field
+		// does not take fails closed here instead of compiling as another operator.
+		if !containsStr(spec.validOps, c.Op) {
+			return nil, fmt.Errorf("compile: condition %q: "+msgInvalidOperator, c.Field, c.Op, c.Field)
+		}
 
 		if c.Field == "epss_score" {
 			hasEPSSCond = true
@@ -71,11 +78,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		}
 
 		if c.Op == "regex" {
-			var pattern string
-			if err := json.Unmarshal(c.Value, &pattern); err != nil {
-				return nil, fmt.Errorf("compile: regex value: %w", err)
-			}
-			re, err := regexp.Compile(pattern)
+			re, err := compileRegex(c.Value)
 			if err != nil {
 				return nil, fmt.Errorf("compile: regex compile: %w", err)
 			}
@@ -172,7 +175,7 @@ func orProductArrays(logic Logic, predicates []predicate) *productArrays {
 // empty list.
 func compileProducts(c Condition) ([]check.ProductRef, error) {
 	if c.Op != "eq" && c.Op != "in" {
-		return nil, fmt.Errorf("operator %q is not valid for field %q", c.Op, c.Field)
+		return nil, fmt.Errorf(msgInvalidOperator, c.Op, c.Field)
 	}
 	refs, refused, err := productValues(c)
 	if err != nil {
@@ -255,7 +258,7 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 	case kindFloat:
 		return numericSQL(spec.sqlExpr, c.Op, c.Value, func(raw json.RawMessage) (interface{}, error) {
 			var v float64
-			if err := json.Unmarshal(raw, &v); err != nil {
+			if err := decodeScalar(raw, &v); err != nil {
 				return nil, err
 			}
 			return v, nil
@@ -263,14 +266,14 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 	case kindTime:
 		return numericSQL(spec.sqlExpr, c.Op, c.Value, func(raw json.RawMessage) (interface{}, error) {
 			var s string
-			if err := json.Unmarshal(raw, &s); err != nil {
+			if err := decodeScalar(raw, &s); err != nil {
 				return nil, err
 			}
 			return time.Parse(time.RFC3339, s)
 		})
 	case kindBool:
 		var v bool
-		if err := json.Unmarshal(c.Value, &v); err != nil {
+		if err := decodeScalar(c.Value, &v); err != nil {
 			return nil, fmt.Errorf("bool value: %w", err)
 		}
 		return sq.Eq{spec.sqlExpr: v}, nil
@@ -293,7 +296,7 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 		return textSQL(spec.sqlExpr, c.Op, c.Value)
 	case kindFTS:
 		var s string
-		if err := json.Unmarshal(c.Value, &s); err != nil {
+		if err := decodeScalar(c.Value, &s); err != nil {
 			return nil, fmt.Errorf("condition %q: value must be a string", c.Field)
 		}
 		return sq.Expr("si.fts_document @@ websearch_to_tsquery('english', ?)", s), nil
@@ -346,7 +349,7 @@ func setSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 		return sq.Expr(sqlExpr+" <> ALL(?)", pq.Array(vals)), nil
 	}
 	var v string
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := decodeScalar(raw, &v); err != nil {
 		return nil, fmt.Errorf("string value: %w", err)
 	}
 	if op == "eq" {
@@ -366,7 +369,7 @@ func escapeLike(s string) string {
 
 func textSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 	var v string
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := decodeScalar(raw, &v); err != nil {
 		return nil, fmt.Errorf("text value: %w", err)
 	}
 	escaped := escapeLike(strings.ToLower(v))

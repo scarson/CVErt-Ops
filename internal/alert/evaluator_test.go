@@ -465,6 +465,50 @@ func TestEvaluatorRealtime(t *testing.T) {
 		}
 	})
 
+	// A regex matches regardless of case (PLAN.md §10.2), so a pattern written
+	// with an upper-case literal matches a description in any case.
+	t.Run("RegexUpperCaseLiteral", func(t *testing.T) {
+		cveID := "CVE-RT-REGEX-003"
+		score := 8.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "apache http server vulnerability", &score, "hashregex3")
+
+		const regexConds = `[
+			{"field":"cvss_v3_score","operator":"gte","value":7.0},
+			{"field":"description_primary","operator":"regex","value":"Apache HTTP"}
+		]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", regexConds, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+			t.Fatalf("EvaluateRealtime: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 1 {
+			t.Fatalf("want 1 alert_event for an upper-case regex literal, got %d", n)
+		}
+	})
+
+	// A pattern that turns case-insensitivity off matches the description as
+	// stored, so the description must not be lower-cased before matching.
+	t.Run("RegexPatternFlagsCaseSensitive", func(t *testing.T) {
+		cveID := "CVE-RT-REGEX-004"
+		score := 8.0
+		insertCVE(t, tdb.DB(), cveID, "Analyzed", "Apache HTTP server vulnerability", &score, "hashregex4")
+
+		const regexConds = `[
+			{"field":"cvss_v3_score","operator":"gte","value":7.0},
+			{"field":"description_primary","operator":"regex","value":"(?-i)apache"}
+		]`
+		rule := mustRule(t, ctx, tdb.Store, orgID, "and", regexConds, nil)
+		activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+		if err := ev.EvaluateRealtime(ctx, cveID); err != nil {
+			t.Fatalf("EvaluateRealtime: %v", err)
+		}
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, cveID); n != 0 {
+			t.Fatalf("want 0 alert_events for a case-sensitive pattern of another case, got %d", n)
+		}
+	})
+
 	t.Run("RejectedCVE", func(t *testing.T) {
 		cveID := "CVE-RT-REJECTED-001"
 		score := 9.5
@@ -1805,6 +1849,9 @@ func TestEvaluateActivation_DoesNotOverrideDisabledStatus(t *testing.T) {
 	}
 }
 
+// TestApplyPostFilters_UsesORLogicForORRules checks an "or" rule of regex
+// conditions matches a CVE that any of them matches. Such a rule needs a
+// watchlist to select its candidates (PLAN.md §10.2).
 func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	tdb := testutil.NewTestDB(t)
 	ev := newTestEvaluator(t, tdb)
@@ -1817,22 +1864,26 @@ func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	insertCVE(t, tdb.DB(), "CVE-ORPF-002", "Analyzed", "Windows kernel overflow", &score, "orpf-hash2")
 	insertCVE(t, tdb.DB(), "CVE-ORPF-003", "Analyzed", "Linux privilege escalation", &score, "orpf-hash3")
 
-	// Create an OR rule with two regex PostFilters:
-	// "apache" OR "windows" — both CVE-ORPF-001 and CVE-ORPF-002 should match
+	wl, err := tdb.CreateWatchlist(ctx, orgID, uuid.NullUUID{}, "or regex", sql.NullString{})
+	if err != nil {
+		t.Fatalf("CreateWatchlist: %v", err)
+	}
+	var items []store.CreateWatchlistItemParams
+	for _, id := range []string{"CVE-ORPF-001", "CVE-ORPF-002", "CVE-ORPF-003"} {
+		items = append(items, store.CreateWatchlistItemParams{ItemType: "cve", CveID: &id})
+	}
+	if _, err := tdb.ReplaceWatchlistItems(ctx, orgID, wl.ID, items); err != nil {
+		t.Fatalf("ReplaceWatchlistItems: %v", err)
+	}
+
+	// "apache" OR "windows": CVE-ORPF-001 and CVE-ORPF-002 match, CVE-ORPF-003 does not.
 	const orRegexConds = `[
 		{"field":"description_primary","operator":"regex","value":"apache"},
 		{"field":"description_primary","operator":"regex","value":"windows"}
 	]`
-	// Need a SQL condition too since all-regex with no watchlist fails compilation
-	const orCondWithCVSS = `[
-		{"field":"cvss_v3_score","operator":"gte","value":7.0},
-		{"field":"description_primary","operator":"regex","value":"apache"},
-		{"field":"description_primary","operator":"regex","value":"windows"}
-	]`
-	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orCondWithCVSS, nil)
+	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orRegexConds, []uuid.UUID{wl.ID})
 	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
 
-	// DryRun to check results
 	result, err := ev.DryRun(ctx, rule.ID, orgID)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
@@ -1840,15 +1891,10 @@ func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	if result == nil {
 		t.Fatal("DryRun returned nil")
 	}
-
-	// With OR logic, any CVE matching "apache" OR "windows" should be included.
-	// CVE-ORPF-001 (apache) and CVE-ORPF-002 (windows) should match.
-	// CVE-ORPF-003 (linux) should NOT match.
 	matched := make(map[string]bool)
 	for _, id := range result.SampleCVEs {
 		matched[id] = true
 	}
-
 	if !matched["CVE-ORPF-001"] {
 		t.Error("CVE-ORPF-001 (apache) should match OR rule")
 	}
@@ -1857,6 +1903,47 @@ func TestApplyPostFilters_UsesORLogicForORRules(t *testing.T) {
 	}
 	if matched["CVE-ORPF-003"] {
 		t.Error("CVE-ORPF-003 (linux) should NOT match OR rule")
+	}
+}
+
+// TestEvaluator_StoredOrRuleMixingRegexFailsClosed checks a stored "or" rule
+// with a regex beside a SQL condition, which Validate refuses, does not
+// evaluate as "and" (CVE-ORMIX-002 would match cvss >= 7 alone): its compile
+// fails, dry-run returns the error, and evaluation sets it to status=error.
+func TestEvaluator_StoredOrRuleMixingRegexFailsClosed(t *testing.T) {
+	tdb := testutil.NewTestDB(t)
+	ev := newTestEvaluator(t, tdb)
+	ctx := context.Background()
+	orgID := createTestOrg(t, tdb.DB())
+
+	score := 8.0
+	insertCVE(t, tdb.DB(), "CVE-ORMIX-001", "Analyzed", "Apache HTTP server exploit", &score, "ormix-hash1")
+	insertCVE(t, tdb.DB(), "CVE-ORMIX-002", "Analyzed", "Linux privilege escalation", &score, "ormix-hash2")
+
+	const orMixedConds = `[
+		{"field":"cvss_v3_score","operator":"gte","value":7.0},
+		{"field":"description_primary","operator":"regex","value":"apache"}
+	]`
+	rule := mustRule(t, ctx, tdb.Store, orgID, "or", orMixedConds, nil)
+	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
+
+	if _, err := ev.DryRun(ctx, rule.ID, orgID); err == nil {
+		t.Fatal("DryRun: want a compile error for an or rule mixing regex with a SQL condition")
+	}
+	if err := ev.EvaluateRealtime(ctx, "CVE-ORMIX-002"); err != nil {
+		t.Fatalf("EvaluateRealtime: %v", err)
+	}
+	for _, id := range []string{"CVE-ORMIX-001", "CVE-ORMIX-002"} {
+		if n := countAlertEvents(t, tdb.DB(), rule.ID, id); n != 0 {
+			t.Errorf("%s: want 0 alert_events from a rule that fails to compile, got %d", id, n)
+		}
+	}
+	got, err := tdb.GetAlertRule(ctx, orgID, rule.ID)
+	if err != nil {
+		t.Fatalf("GetAlertRule: %v", err)
+	}
+	if got.Status != "error" {
+		t.Errorf("rule status = %q, want error", got.Status)
 	}
 }
 

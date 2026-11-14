@@ -42,7 +42,9 @@ func ActivationLockKey(ruleID uuid.UUID) string {
 type cveSummary struct {
 	CVEID        string
 	MaterialHash string
-	Description  string // pre-lowercased for PostFilter matching
+	// Description is matched as stored: regex PostFilters ignore case unless
+	// their pattern turns that off (dsl.compileRegex).
+	Description string
 }
 
 // PostFilterField implements dsl.PostFilterTarget for cveSummary.
@@ -682,7 +684,7 @@ func candidateQuery(compiled *dsl.CompiledRule, candidateIDs []string) (string, 
 		Select(
 			"cves.cve_id",
 			"COALESCE(cves.material_hash, '')",
-			"COALESCE(lower(cves.description_primary), '')",
+			"COALESCE(cves.description_primary, '')",
 		).
 		From("cves")
 	for _, j := range compiled.Joins {

@@ -378,6 +378,12 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
 	token := cookieValue(loginResp, "access_token")
 
+	// Each case sends a create and a PATCH, more than the free tier's burst allows.
+	if _, err := db.DB().ExecContext(ctx,
+		`UPDATE organizations SET tier_overrides = '{"api_rate_limit": 100000}' WHERE id = $1`, aliceReg.OrgID); err != nil {
+		t.Fatalf("raise rate limit: %v", err)
+	}
+
 	type problemError struct {
 		Message  string `json:"message"`
 		Location string `json:"location"`
@@ -445,6 +451,27 @@ func TestAlertRule_ValidationErrorsSameOnCreateAndPatch(t *testing.T) {
 			want: []problemError{{
 				Message:  "value must be printable ASCII with no spaces, as a CPE 2.3 name is",
 				Location: "body.conditions[0].affected.cpe_product",
+			}},
+		},
+		{
+			name:       "null numeric value",
+			logic:      "and",
+			conditions: `[{"field": "cvss_v3_score", "operator": "gt", "value": null}]`,
+			want: []problemError{{
+				Message:  "value must be a number: null is not allowed",
+				Location: "body.conditions[0].cvss_v3_score",
+			}},
+		},
+		{
+			name:  "or rule combining regex with another condition",
+			logic: "or",
+			conditions: `[
+    {"field": "severity", "operator": "eq", "value": "critical"},
+    {"field": "description_primary", "operator": "regex", "value": "remote code"}
+  ]`,
+			want: []problemError{{
+				Message:  `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`,
+				Location: "body.conditions",
 			}},
 		},
 	}

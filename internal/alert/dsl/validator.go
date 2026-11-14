@@ -136,8 +136,9 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 	if len(r.Conditions) > maxConditions {
 		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyConditions, Severity: "error"})
 	} else {
-		// The never-matching check costs values times conditions; within the
-		// condition limit that is linear in the request.
+		// The never-matching check costs values times conditions, and runs only
+		// on valid ecosystem values, which are short; within the condition limit
+		// that is linear in the request.
 		errs = append(errs, validatePackageCorrelation(r)...)
 	}
 	errs = append(errs, validateProducts(r)...)
@@ -379,8 +380,11 @@ func validatePackageCorrelation(r Rule) []ValidationError {
 			}
 		case c.Field == "affected.ecosystem" && (c.Op == "eq" || c.Op == "in"):
 			ecosystemConds++
-			// An unparseable value is already reported by validateValue.
-			if vals, err := conditionValues(c); err == nil {
+			// An unparseable or invalid value is already reported by validateValue,
+			// and the never-matching check then does not run. Valid values are short
+			// canonical names, which bounds the check's cost: an invalid value can be
+			// a megabyte of colons, each of which the check would look up a prefix for.
+			if vals, err := conditionValues(c); err == nil && !slices.ContainsFunc(vals, invalidEcosystem) {
 				ecosystemValues = append(ecosystemValues, vals)
 			}
 		}
@@ -458,6 +462,9 @@ func hasColonPrefixIn(set map[string]bool, w string) bool {
 	}
 	return false
 }
+
+// invalidEcosystem reports whether v is not an allowed affected.ecosystem value.
+func invalidEcosystem(v string) bool { return !ecosystem.Valid(v) }
 
 // affectedValueValid reports whether v is allowed for a kindAffected field with an
 // enum. affected.ecosystem also allows a suffix, so it cannot use the enum alone.

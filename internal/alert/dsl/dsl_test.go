@@ -2186,6 +2186,39 @@ func TestValidate_NeverMatchingEcosystemsLargeLists(t *testing.T) {
 	}
 }
 
+// TestValidate_InvalidEcosystemSkipsNeverMatchingCheck checks the never-matching
+// check runs only on valid ecosystem values, which are short canonical names. A
+// 1 MiB value of colons is refused by its value error alone; checking it would
+// cost time quadratic in its length (seconds per request).
+func TestValidate_InvalidEcosystemSkipsNeverMatchingCheck(t *testing.T) {
+	t.Parallel()
+	colons := "Debian" + strings.Repeat(":", 1<<20)
+	pkg := `{"field":"affected.package","operator":"eq","value":"openssl"}`
+	// More than eight values, so the check looks each prefix up in a hashed map.
+	npm := `{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI","Go","Maven","NuGet","RubyGems","crates.io","Hex","Pub"]}`
+	for _, cond := range []string{
+		`{"field":"affected.ecosystem","operator":"eq","value":"` + colons + `"}`,
+		`{"field":"affected.ecosystem","operator":"in","value":["Debian","` + colons + `"]}`,
+	} {
+		errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", pkg, npm, cond)), false)
+		if hasMessage(errs, msgNeverMatches) {
+			t.Errorf("the never-matching check ran on an invalid ecosystem value")
+		}
+		blocking := blockingErrors(errs)
+		if len(blocking) != 1 || blocking[0].Index != 2 || blocking[0].Field != "affected.ecosystem" ||
+			!strings.HasPrefix(blocking[0].Message, `value "Debian:::`) {
+			t.Errorf("errors = %d entries, want one value error at index 2", len(blocking))
+		}
+	}
+
+	// A rule of valid values that no ecosystem satisfies together is still refused.
+	errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", pkg, npm,
+		`{"field":"affected.ecosystem","operator":"in","value":["Debian:12","Ubuntu"]}`)), false)
+	if found := findError(errs, msgNeverMatches); len(found) != 1 || found[0].Index != -1 {
+		t.Errorf("valid never-matching rule: errors = %+v, want one rule-level %q", errs, msgNeverMatches)
+	}
+}
+
 func TestValidate_PackageMatchWithoutEcosystemWarns(t *testing.T) {
 	t.Parallel()
 	npm := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`

@@ -643,6 +643,9 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		return nil, false, fmt.Errorf("iterate candidates: %w", err)
 	}
 	if len(candidates) > candidateCap {
+		metrics.AlertCandidateCapExceededTotal.Inc()
+		e.log.Warn("alert rule candidate query exceeded the candidate cap; the run matches nothing",
+			"rule_id", compiled.RuleID, "cap", candidateCap)
 		return nil, true, nil
 	}
 	return candidates, false, nil

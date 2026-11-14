@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/scarson/cvert-ops/internal/alert"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -1212,12 +1214,17 @@ func TestDryRun_CandidateCapFailClosed(t *testing.T) {
 	rule := mustRule(t, ctx, tdb.Store, orgID, "and", broadCondition, nil)
 	activateRule(t, ctx, tdb.Store, orgID, rule.ID)
 
+	capHitsBefore := promtestutil.ToFloat64(metrics.AlertCandidateCapExceededTotal)
 	result, err := ev.DryRun(ctx, rule.ID, orgID)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
 	if result == nil {
 		t.Fatal("DryRun returned nil result")
+	}
+	// PLAN.md §10.2: exceeding the cap emits an operator-facing metric.
+	if got := promtestutil.ToFloat64(metrics.AlertCandidateCapExceededTotal) - capHitsBefore; got != 1 {
+		t.Errorf("candidate cap metric rose by %v, want 1", got)
 	}
 	if !result.Partial {
 		t.Fatalf("want Partial=true when candidates exceed 5000, got false (MatchCount=%d, CandidatesEvaluated=%d)",

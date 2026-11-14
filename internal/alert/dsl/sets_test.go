@@ -930,3 +930,125 @@ func TestProductSetSQL_FormFollowsCandidates(t *testing.T) {
 		t.Errorf("got %d args, want 11", len(args))
 	}
 }
+
+// ─── Package names under "or": one branch ───────────────────────────────────
+
+// packageBranchHead starts every package branch.
+const packageBranchHead = "SELECT cap.cve_id FROM cve_affected_packages cap"
+
+// TestCompile_OrPackageNamesAreOneBranch checks that under "or" every package
+// eq and in condition shares one package branch, whose names are their values
+// concatenated, folded and de-duplicated per arm as one in condition holding
+// them all would be, placed where the first of them is, with the product
+// branches after it in the one CVE set and the scalar OR-ed beside it.
+func TestCompile_OrPackageNamesAreOneBranch(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[
+		{"field":"affected.package","operator":"eq","value":"a"},
+		{"field":"affected.package","operator":"in","value":["B_c","d","A"]},
+		`+productEq("nodejs:node.js")+`,
+		{"field":"severity","operator":"eq","value":"high"}]}`, nil)
+	names := [][]string{{"a", "b-c", "d"}, {"a", "b_c", "d"}}
+
+	sql, args := whereOf(t, c, nil)
+	assertCount(t, sql, cveSetHead, 1)
+	assertCount(t, sql, packageBranchHead, 1)
+	assertCount(t, sql, pypiArm+foldedNameEq+")", 1)
+	assertCount(t, sql, otherArm+foldedNameEq+")", 1)
+	assertCount(t, sql, unionAll, 2)
+	assertSetShapeRules(t, sql)
+	if !strings.HasPrefix(sql, "("+cveSetHead+"\n    "+packageBranchHead) {
+		t.Errorf("expected the CVE set first, opening with the package branch, got:\n%s", sql)
+	}
+	if !strings.HasSuffix(sql, cveSetSpan(t, sql)+" OR lower(cves.severity) = ?)") {
+		t.Errorf("expected the severity scalar OR-ed after the CVE set, got:\n%s", sql)
+	}
+	assertArrayArgs(t, args[:2], names...)
+	assertPlaceholdersInOrder(t, sql, len(args))
+
+	sql, args = whereOf(t, c, []string{"CVE-1"})
+	want := "(" + cveSetHead + "\n    " + packageBranchHead + `
+    WHERE cap.cve_id = ANY(?)
+      AND ((cap.ecosystem = 'PyPI' AND ` + foldedNameEq + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))` +
+		unionAll + strings.TrimPrefix(productCandidateSet, cveSetHead+"\n    ") + " OR lower(cves.severity) = ?)"
+	if sql != want {
+		t.Errorf("SQL:\n%s\nwant:\n%s", sql, want)
+	}
+	if len(args) != 15 {
+		t.Fatalf("got %d args, want 15 (3 package, 11 product, severity)", len(args))
+	}
+	assertArrayArgs(t, args[:3], []string{"CVE-1"}, names[0], names[1])
+	if args[14] != "high" {
+		t.Errorf("last arg = %#v, want high", args[14])
+	}
+	assertPlaceholdersInOrder(t, sql, len(args))
+}
+
+// TestCompile_OrPackageBranchDoesNotGrowWithConditions checks an "or" rule of 50
+// one-value package eq conditions binds as many arguments as one, with and
+// without candidate IDs, and holds the 50 names in its two arrays.
+func TestCompile_OrPackageBranchDoesNotGrowWithConditions(t *testing.T) {
+	t.Parallel()
+	conds := make([]string, 0, 50)
+	pkgNames := make([]string, 0, 50)
+	for i := range 50 {
+		n := fmt.Sprintf("pkg%d", i)
+		pkgNames = append(pkgNames, n)
+		conds = append(conds, `{"field":"affected.package","operator":"eq","value":"`+n+`"}`)
+	}
+	one := compileRule(t, `{"logic":"or","conditions":[`+conds[0]+`]}`, nil)
+	fifty := compileRule(t, `{"logic":"or","conditions":[`+strings.Join(conds, ",")+`]}`, nil)
+	for _, ids := range [][]string{nil, {"CVE-1", "CVE-2"}} {
+		oneSQL, oneArgs := whereOf(t, one, ids)
+		fiftySQL, fiftyArgs := whereOf(t, fifty, ids)
+		if oneSQL != fiftySQL {
+			t.Errorf("candidates %v: SQL differs between 1 and 50 package conditions:\n%s\nand\n%s", ids, oneSQL, fiftySQL)
+		}
+		if len(oneArgs) != len(fiftyArgs) {
+			t.Errorf("candidates %v: %d args for 1 package condition, %d for 50", ids, len(oneArgs), len(fiftyArgs))
+		}
+		assertCount(t, fiftySQL, packageBranchHead, 1)
+		assertPlaceholdersInOrder(t, fiftySQL, len(fiftyArgs))
+		t.Logf("candidates %v: %d placeholders for 1 package condition, %d for 50", ids, len(oneArgs), len(fiftyArgs))
+		assertArrayArgs(t, fiftyArgs[len(fiftyArgs)-2:], pkgNames, pkgNames)
+	}
+}
+
+// TestCompile_OrPackageSubstringsAndEcosystemsKeepTheirBranches checks that
+// under "or" only package eq and in conditions share a branch: a substring
+// package condition and an ecosystem set keep their own, in rule order after
+// the shared branch, which stands where the first name condition is.
+func TestCompile_OrPackageSubstringsAndEcosystemsKeepTheirBranches(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[
+		{"field":"affected.package","operator":"contains","value":"log"},
+		{"field":"affected.package","operator":"eq","value":"a"},
+		{"field":"affected.ecosystem","operator":"eq","value":"npm"},
+		{"field":"affected.package","operator":"eq","value":"b"}]}`, nil)
+	sql, args := whereOf(t, c, nil)
+	want := "(" + cveSetHead + "\n    " + packageBranchHead + `
+    WHERE lower(cap.package_name) ILIKE ?` + unionAll + packageBranchHead + `
+    WHERE ((cap.ecosystem = 'PyPI' AND ` + foldedNameEq + `) OR (cap.ecosystem <> 'PyPI' AND ` + foldedNameEq + `))` +
+		unionAll + packageBranchHead + `
+    WHERE ` + ecosystemEq + "\n))"
+	if sql != want {
+		t.Errorf("SQL:\n%s\nwant:\n%s", sql, want)
+	}
+	if len(args) != 4 || args[0] != "%log%" {
+		t.Fatalf("args = %v, want the pattern then three arrays", args)
+	}
+	assertArrayArgs(t, args[1:], []string{"a", "b"}, []string{"a", "b"}, []string{"npm"})
+}
+
+// TestCompile_AndPackageNamesKeepTheirSets checks that under "and" two package
+// eq conditions keep a set each: a CVE must have a row for each name.
+func TestCompile_AndPackageNamesKeepTheirSets(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"and","conditions":[
+		{"field":"affected.package","operator":"eq","value":"a"},
+		{"field":"affected.package","operator":"eq","value":"b"}]}`, nil)
+	sql, args := whereOf(t, c, []string{"CVE-1"})
+	assertCount(t, sql, cveSetHead, 2)
+	assertCount(t, sql, unionAll, 0)
+	assertArrayArgs(t, args, []string{"CVE-1"}, []string{"a"}, []string{"a"}, []string{"CVE-1"}, []string{"b"}, []string{"b"})
+}

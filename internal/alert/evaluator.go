@@ -630,17 +630,28 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 	return candidates, false, nil
 }
 
-// candidateJITOff turns JIT compilation off for the rest of the transaction. A
-// rule statement over a large corpus has a high estimated cost, so PostgreSQL
-// JIT-compiles it: about 4 s of a 50-product dry run on a full ingest
-// (dev/plans/2026-11-13-product-match-rules-measurements.md).
-const candidateJITOff = "SET LOCAL jit = off"
+// candidateTxSettings are the settings a rule's candidate query runs under, in
+// the order prepareCandidateTx applies them, each for the rest of the
+// transaction (dev/plans/2026-11-13-product-match-rules-measurements.md):
+//
+//   - JIT off. A rule statement over a large corpus has a high estimated cost,
+//     so PostgreSQL JIT-compiles it: about 4 s of a 50-product dry run on a full
+//     ingest.
+//   - Parallel query off. On a full ingest PostgreSQL planned a parallel plan
+//     for one realtime CVE (about 20 ms of 26 ms), and an activation page's
+//     parallel hashes exhausted the container's 64 MB of shared memory.
+var candidateTxSettings = []string{
+	"SET LOCAL jit = off",
+	"SET LOCAL max_parallel_workers_per_gather = 0",
+}
 
-// prepareCandidateTx applies the settings a rule's candidate query runs under to
-// tx. They end with the transaction.
+// prepareCandidateTx applies candidateTxSettings to tx. They end with the
+// transaction.
 func prepareCandidateTx(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, candidateJITOff); err != nil {
-		return fmt.Errorf("turn off jit: %w", err)
+	for _, s := range candidateTxSettings {
+		if _, err := tx.ExecContext(ctx, s); err != nil {
+			return fmt.Errorf("prepare candidate transaction (%s): %w", s, err)
+		}
 	}
 	return nil
 }

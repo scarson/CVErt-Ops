@@ -387,7 +387,13 @@ func TestProductMatch_SameAnswerOnEveryPath(t *testing.T) {
 	ev := newTestEvaluator(t, tdb)
 	ctx := context.Background()
 	orgID := createTestOrg(t, tdb.DB())
+	// PyPI and npm rows named foo-bar, and npm and PyPI lodash rows, for the
+	// package names rule.
+	ingestPackageMatchCorpus(t, ctx, tdb)
 
+	// Package names under "or" share one branch: Foo_Bar folds to foo-bar for the
+	// PyPI row only, and lodash and jspdf are npm names.
+	const packageNames = `[{"field":"affected.package","operator":"eq","value":"Foo_Bar"},{"field":"affected.package","operator":"eq","value":"lodash"},{"field":"affected.package","operator":"in","value":["jspdf"]}]`
 	rules := []struct {
 		name, logic, conditions string
 		// empty marks a rule the seeded corpus gives no match: fastify is there
@@ -402,6 +408,7 @@ func TestProductMatch_SameAnswerOnEveryPath(t *testing.T) {
 		{"package or product", "or", `[{"field":"affected.package","operator":"eq","value":"lodash"},{"field":"affected.cpe_product","operator":"eq","value":"nodejs:node.js"}]`, false},
 		{"product, package, ecosystem or KEV", "or", `[{"field":"affected.cpe_product","operator":"eq","value":"google:brotli"},{"field":"affected.package","operator":"eq","value":"jspdf"},{"field":"affected.ecosystem","operator":"eq","value":"Maven"},{"field":"in_cisa_kev","operator":"eq","value":true}]`, false},
 		{"negative ecosystem", "and", `[{"field":"affected.ecosystem","operator":"neq","value":"npm"},{"field":"severity","operator":"eq","value":"high"}]`, false},
+		{"package names", "or", packageNames, false},
 	}
 	// search pages store.ExecuteDSLQuery to the end and returns the sorted CVE IDs.
 	search := func(t *testing.T, logic, conditions string) []string {
@@ -473,6 +480,23 @@ func TestProductMatch_SameAnswerOnEveryPath(t *testing.T) {
 			}
 			t.Logf("%s: %d CVEs", r.name, len(searched))
 		})
+	}
+
+	// The package names rule reaches the PyPI foo-bar row through folding, not the
+	// npm one, and both lodash rows, with candidate IDs and without.
+	searched := search(t, "or", packageNames)
+	activated := activationMatches(t, ctx, tdb, ev, orgID, "or", packageNames)
+	for _, got := range [][]string{searched, activated} {
+		for _, id := range []string{cvePkgPyPIFooBar, cvePkgMixed, cvePkgPyPILodash, cvePkgNpmLodash} {
+			if !slices.Contains(got, id) {
+				t.Errorf("package names: %s not matched; matched %v", id, got)
+			}
+		}
+		for _, id := range []string{cvePkgNpmFooBar, cvePkgRejected} {
+			if slices.Contains(got, id) {
+				t.Errorf("package names: %s matched; it must not be", id)
+			}
+		}
 	}
 }
 

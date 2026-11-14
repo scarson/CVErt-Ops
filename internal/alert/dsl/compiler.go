@@ -32,6 +32,11 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	allEPSS := true
 	products := 0 // affected.cpe_product values, counted as Validate counts them
 
+	// Under "or" every package eq and in condition shares one package branch.
+	r, err := mergeOrPackageNames(r)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
 	corr, err := correlationFor(r)
 	if err != nil {
 		return nil, fmt.Errorf("compile: %w", err)

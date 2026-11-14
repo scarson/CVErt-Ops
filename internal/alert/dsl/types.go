@@ -72,7 +72,9 @@ type predicate struct {
 // PostgreSQL plans as a semi-join. Under "or" the branches of every set condition
 // form one IN predicate, placed where the first set condition is: PostgreSQL
 // cannot turn OR-ed IN subqueries into semi-joins and builds each as a hashed
-// SubPlan over its whole set, which one IN over a UNION ALL avoids.
+// SubPlan over its whole set, which one IN over a UNION ALL avoids. Compile has
+// already merged an "or" rule's package eq and in conditions into one
+// (mergeOrPackageNames), so they give one package branch.
 //
 // With candidate IDs, a product set matches its CPE prefixes and CNA names as
 // bound arrays (productArrays), and under "or" every product condition shares

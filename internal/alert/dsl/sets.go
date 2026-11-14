@@ -57,6 +57,62 @@ func correlationFor(r Rule) (packageCorrelation, error) {
 	return corr, nil
 }
 
+// isPackageName reports whether c is an affected.package condition that compares
+// whole names (eq or in), not substrings.
+func isPackageName(c Condition) bool {
+	return c.Field == "affected.package" && (c.Op == "eq" || c.Op == "in")
+}
+
+// mergeOrPackageNames returns r with, under "or", every affected.package eq and
+// in condition replaced by one in condition holding all their values, in rule
+// order, where the first of them stands. Under "or" package conditions are not
+// correlated (design section 4.2), and a CVE has a row matching one of several
+// names exactly when it has a row matching one of all of them, so the rule
+// matches the same CVEs through one package branch, whose names packageMatch
+// folds and de-duplicates per arm as for any in list. The candidate IDs and
+// name arrays are then bound once, whatever the number of conditions. Under
+// "and", or with no such condition, it returns r as it is. It never changes
+// r.Conditions.
+func mergeOrPackageNames(r Rule) (Rule, error) {
+	if r.Logic != LogicOr {
+		return r, nil
+	}
+	first := -1
+	names := []string{}
+	for i, c := range r.Conditions {
+		if !isPackageName(c) {
+			continue
+		}
+		vals, err := conditionValues(c)
+		if err != nil {
+			return Rule{}, fmt.Errorf("condition %q %s: %w", c.Field, c.Op, err)
+		}
+		if first < 0 {
+			first = i
+		}
+		names = append(names, vals...)
+	}
+	if first < 0 {
+		return r, nil
+	}
+	value, err := json.Marshal(names)
+	if err != nil {
+		return Rule{}, fmt.Errorf("package names: %w", err)
+	}
+	conds := make([]Condition, 0, len(r.Conditions))
+	for i, c := range r.Conditions {
+		switch {
+		case i == first:
+			conds = append(conds, Condition{Field: "affected.package", Op: "in", Value: value})
+		case isPackageName(c):
+			// Its values are in the merged condition.
+		default:
+			conds = append(conds, c)
+		}
+	}
+	return Rule{Logic: r.Logic, Conditions: conds}, nil
+}
+
 // affectedPredicate compiles an affected.ecosystem or affected.package condition.
 // It returns ok false for an eq/in ecosystem condition that corr folds into the
 // rule's package sets.

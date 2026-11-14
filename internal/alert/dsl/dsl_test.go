@@ -333,11 +333,41 @@ func compileRule(t *testing.T, jsonStr string, watchlistIDs []uuid.UUID) *dsl.Co
 
 func sqlOf(t *testing.T, c *dsl.CompiledRule) (string, []interface{}) {
 	t.Helper()
-	sql, args, err := c.SQL.ToSql()
+	sql, args, err := c.Where(nil).ToSql()
 	if err != nil {
 		t.Fatalf("ToSql: %v", err)
 	}
 	return sql, args
+}
+
+// TestWhere_IsDeterministicAcrossCalls checks a compiled rule, which the rule cache
+// shares across goroutines, builds the same SQL and arguments on every call.
+func TestWhere_IsDeterministicAcrossCalls(t *testing.T) {
+	t.Parallel()
+	watchlists := []uuid.UUID{uuid.MustParse("33333333-3333-3333-3333-333333333333")}
+	rules := map[string]string{
+		"and": `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["critical","high"]},{"field":"affected.ecosystem","operator":"not_in","value":["npm"]},{"field":"cvss_v3_score","operator":"gte","value":7}]}`,
+		"or":  `{"logic":"or","conditions":[{"field":"cve_id","operator":"in","value":["CVE-1","CVE-2"]},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
+	}
+	for name, rule := range rules {
+		c := compileRule(t, rule, watchlists)
+		for _, candidates := range [][]string{nil, {"CVE-1"}} {
+			sql1, args1, err := c.Where(candidates).ToSql()
+			if err != nil {
+				t.Fatalf("%s %v: first ToSql: %v", name, candidates, err)
+			}
+			sql2, args2, err := c.Where(candidates).ToSql()
+			if err != nil {
+				t.Fatalf("%s %v: second ToSql: %v", name, candidates, err)
+			}
+			if sql1 != sql2 {
+				t.Errorf("%s %v: SQL differs between calls:\n%s\n%s", name, candidates, sql1, sql2)
+			}
+			if !reflect.DeepEqual(args1, args2) {
+				t.Errorf("%s %v: args differ between calls: %v vs %v", name, candidates, args1, args2)
+			}
+		}
+	}
 }
 
 func TestCompile_FloatGTE(t *testing.T) {
@@ -609,7 +639,7 @@ func TestCompile_FTSQuery(t *testing.T) {
 	if compiled.Joins[0] != "cve_search_index si ON cves.cve_id = si.cve_id" {
 		t.Errorf("join = %q, want FTS join", compiled.Joins[0])
 	}
-	query, args, err := compiled.SQL.ToSql()
+	query, args, err := compiled.Where(nil).ToSql()
 	if err != nil {
 		t.Fatalf("ToSql: %v", err)
 	}
@@ -728,7 +758,7 @@ func TestCompile_FTSValueIsParameterized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	query, args, err := compiled.SQL.ToSql()
+	query, args, err := compiled.Where(nil).ToSql()
 	if err != nil {
 		t.Fatalf("ToSql: %v", err)
 	}

@@ -19,7 +19,7 @@ import (
 // watchlistIDs (if non-empty) are appended as an additional AND EXISTS pre-filter.
 // The caller must call Validate before Compile.
 func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlistIDs []uuid.UUID) (*CompiledRule, error) {
-	var sqlParts []sq.Sqlizer
+	var predicates []predicate
 	var postFilters []PostFilter
 	hasEPSSCond := false
 	allEPSS := true
@@ -53,41 +53,21 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		if err != nil {
 			return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
 		}
-		sqlParts = append(sqlParts, sqlizer)
+		predicates = append(predicates, func(_ []string) sq.Sqlizer { return sqlizer })
 	}
 
-	var combined sq.Sqlizer
-	if len(sqlParts) > 0 {
-		switch r.Logic {
-		case LogicAnd:
-			if len(watchlistIDs) > 0 {
-				all := make(sq.And, len(sqlParts)+1)
-				copy(all, sqlParts)
-				all[len(sqlParts)] = watchlistExpr(watchlistIDs, orgID)
-				combined = all
-			} else {
-				and := make(sq.And, len(sqlParts))
-				copy(and, sqlParts)
-				combined = and
-			}
-		case LogicOr:
-			or := make(sq.Or, len(sqlParts))
-			copy(or, sqlParts)
-			if len(watchlistIDs) > 0 {
-				combined = sq.And{or, watchlistExpr(watchlistIDs, orgID)}
-			} else {
-				combined = or
-			}
-		default:
+	var watchlist sq.Sqlizer
+	if len(watchlistIDs) > 0 {
+		watchlist = watchlistExpr(watchlistIDs, orgID)
+	}
+	if len(predicates) > 0 {
+		// CompiledRule.Where combines the predicates by Logic.
+		if r.Logic != LogicAnd && r.Logic != LogicOr {
 			return nil, fmt.Errorf("compile: unknown logic %q", r.Logic)
 		}
-	} else {
+	} else if watchlist == nil {
 		// All conditions are regex PostFilters.
-		if len(watchlistIDs) > 0 {
-			combined = watchlistExpr(watchlistIDs, orgID)
-		} else {
-			return nil, fmt.Errorf("compile: all conditions are regex with no watchlist IDs; add selective conditions")
-		}
+		return nil, fmt.Errorf("compile: all conditions are regex with no watchlist IDs; add selective conditions")
 	}
 
 	var joins []string
@@ -102,7 +82,8 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	return &CompiledRule{
 		RuleID:       ruleID,
 		DSLVersion:   dslVersion,
-		SQL:          combined,
+		predicates:   predicates,
+		watchlist:    watchlist,
 		Joins:        joins,
 		PostFilters:  postFilters,
 		Logic:        r.Logic,

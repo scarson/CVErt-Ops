@@ -598,31 +598,9 @@ func (e *Evaluator) evaluateRuleInChunks(
 // Returns (candidates, partial, error). partial=true means > candidateCap
 // rows matched, which triggers fail-closed behavior.
 func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *dsl.CompiledRule, candidateIDs []string) ([]cveSummary, bool, error) {
-	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-	combined := sq.And{
-		compiled.SQL,
-		// COALESCE keeps CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
-		sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
-	}
-	if len(candidateIDs) > 0 {
-		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
-	}
-	sb := psql.
-		Select(
-			"cves.cve_id",
-			"COALESCE(cves.material_hash, '')",
-			"COALESCE(lower(cves.description_primary), '')",
-		).
-		From("cves")
-	for _, j := range compiled.Joins {
-		sb = sb.Join(j)
-	}
-	query, args, err := sb.
-		Where(combined).
-		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
-		ToSql()
+	query, args, err := candidateQuery(compiled, candidateIDs)
 	if err != nil {
-		return nil, false, fmt.Errorf("build candidate query: %w", err)
+		return nil, false, err
 	}
 
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -646,6 +624,39 @@ func (e *Evaluator) queryCandidates(ctx context.Context, tx *sql.Tx, compiled *d
 		return nil, true, nil
 	}
 	return candidates, false, nil
+}
+
+// candidateQuery builds the statement queryCandidates runs: the rule's WHERE
+// predicate for candidateIDs, the rejected/withdrawn filter, the outer filter on
+// candidateIDs when there are any, and a LIMIT one past candidateCap.
+func candidateQuery(compiled *dsl.CompiledRule, candidateIDs []string) (string, []any, error) {
+	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
+	combined := sq.And{
+		compiled.Where(candidateIDs),
+		// COALESCE keeps CVEs with no status: NULL NOT IN (...) is NULL, which drops the row.
+		sq.Expr("COALESCE(lower(cves.status), '') NOT IN ('rejected', 'withdrawn')"),
+	}
+	if len(candidateIDs) > 0 {
+		combined = append(combined, sq.Expr("cves.cve_id = ANY(?)", pq.Array(candidateIDs)))
+	}
+	sb := psql.
+		Select(
+			"cves.cve_id",
+			"COALESCE(cves.material_hash, '')",
+			"COALESCE(lower(cves.description_primary), '')",
+		).
+		From("cves")
+	for _, j := range compiled.Joins {
+		sb = sb.Join(j)
+	}
+	query, args, err := sb.
+		Where(combined).
+		Limit(uint64(candidateCap + 1)). //nolint:gosec // G115: constant, not user input
+		ToSql()
+	if err != nil {
+		return "", nil, fmt.Errorf("build candidate query: %w", err)
+	}
+	return query, args, nil
 }
 
 // failUncompilableRule logs a rule whose stored conditions do not compile and marks it

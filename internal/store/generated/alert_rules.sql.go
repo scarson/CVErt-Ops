@@ -139,6 +139,44 @@ func (q *Queries) GetUnresolvedAlertEventCVEs(ctx context.Context, arg GetUnreso
 	return items, nil
 }
 
+const insertActivationAlertEvents = `-- name: InsertActivationAlertEvents :execrows
+INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, feed_seq)
+SELECT $1::uuid, $2::uuid, m.cve_id, m.material_hash, true, true,
+       nextval('alert_event_feed_seq')
+FROM (
+    SELECT unnest($3::text[])         AS cve_id,
+           unnest($4::text[]) AS material_hash
+) m
+WHERE EXISTS (SELECT 1 FROM cves c WHERE c.cve_id = m.cve_id)
+ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING
+`
+
+type InsertActivationAlertEventsParams struct {
+	OrgID          uuid.UUID
+	RuleID         uuid.UUID
+	CveIds         []string
+	MaterialHashes []string
+}
+
+// Inserts an activation-scan page of matches as events with suppress_delivery = true,
+// pairing cve_ids and material_hashes by position. A pair whose event exists is skipped
+// (ON CONFLICT DO NOTHING), and so is a pair repeated in the page after its first row.
+// A CVE no longer in cves is skipped: a late-binding merge can rename a CVE after the
+// candidate query returned it, and an event under the old ID could never resolve.
+// The caller holds the org's feed lock (LockAlertEventFeed).
+func (q *Queries) InsertActivationAlertEvents(ctx context.Context, arg InsertActivationAlertEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertActivationAlertEvents,
+		arg.OrgID,
+		arg.RuleID,
+		pq.Array(arg.CveIds),
+		pq.Array(arg.MaterialHashes),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertAlertEvent = `-- name: InsertAlertEvent :one
 INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, feed_seq)
 VALUES ($1, $2, $3, $4, true, $5, nextval('alert_event_feed_seq'))
@@ -301,6 +339,50 @@ SELECT pg_advisory_xact_lock(1178944836, hashtext($1::uuid::text))
 func (q *Queries) LockAlertEventFeed(ctx context.Context, orgID uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, lockAlertEventFeed, orgID)
 	return err
+}
+
+const reopenActivationAlertEvents = `-- name: ReopenActivationAlertEvents :execrows
+UPDATE alert_events ae
+SET last_match_state  = true,
+    suppress_delivery = true,
+    last_fired_at     = now(),
+    times_fired       = ae.times_fired + 1,
+    feed_seq          = nextval('alert_event_feed_seq')
+FROM (
+    SELECT unnest($3::text[])         AS cve_id,
+           unnest($4::text[]) AS material_hash
+) m
+WHERE ae.org_id = $1::uuid
+  AND ae.rule_id = $2::uuid
+  AND ae.cve_id = m.cve_id
+  AND ae.material_hash = m.material_hash
+  AND ae.last_match_state = false
+  AND EXISTS (SELECT 1 FROM cves c WHERE c.cve_id = m.cve_id)
+`
+
+type ReopenActivationAlertEventsParams struct {
+	OrgID          uuid.UUID
+	RuleID         uuid.UUID
+	CveIds         []string
+	MaterialHashes []string
+}
+
+// Reopens the resolved events of an activation-scan page, the set-based form of
+// ReopenAlertEvent with suppress_delivery = true. Pairs are matched by position as in
+// InsertActivationAlertEvents, with the same skip of CVEs no longer in cves. A pair
+// repeated in the page updates its event once. The caller holds the org's feed lock
+// (LockAlertEventFeed), taken before this statement locks the rows.
+func (q *Queries) ReopenActivationAlertEvents(ctx context.Context, arg ReopenActivationAlertEventsParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, reopenActivationAlertEvents,
+		arg.OrgID,
+		arg.RuleID,
+		pq.Array(arg.CveIds),
+		pq.Array(arg.MaterialHashes),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const reopenAlertEvent = `-- name: ReopenAlertEvent :one

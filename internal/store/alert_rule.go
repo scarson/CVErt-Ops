@@ -125,6 +125,7 @@ type AlertRuleStore interface {
 	UpdateAlertRuleRun(ctx context.Context, id uuid.UUID, status string, candidatesEvaluated, matchesFound int32, errorMsg *string) error
 	InsertAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error)
 	ReopenAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, cveID, materialHash string, suppressDelivery bool) (uuid.UUID, error)
+	RecordActivationAlertEvents(ctx context.Context, orgID, ruleID uuid.UUID, matches []AlertEventMatch) (int64, error)
 	GetUnresolvedAlertEventCVEs(ctx context.Context, ruleID, orgID uuid.UUID) ([]string, error)
 	ResolveAlertEvent(ctx context.Context, ruleID, orgID uuid.UUID, cveID string) (bool, error)
 	ListAlertEvents(ctx context.Context, orgID uuid.UUID, p ListAlertEventsParams) ([]AlertEventListRow, error)
@@ -394,6 +395,63 @@ func (s *Store) ReopenAlertEvent(ctx context.Context, orgID, ruleID uuid.UUID, c
 		return uuid.Nil, fmt.Errorf("reopen alert event: %w", err)
 	}
 	return id, nil
+}
+
+// AlertEventMatch is a CVE that a rule matched and the material_hash it matched at.
+type AlertEventMatch struct {
+	CVEID        string
+	MaterialHash string
+}
+
+// RecordActivationAlertEvents records one page of an activation scan's matches in one
+// transaction, with the same results as InsertAlertEvent followed, when the event exists,
+// by ReopenAlertEvent, each with suppressDelivery set, for every match whose CVE still
+// exists. New events are inserted with ON CONFLICT DO NOTHING; resolved events at a
+// matched hash reopen; open events are left as they are. It takes the org's feed lock
+// once, before any position is drawn or row locked, and returns the number of events
+// inserted or reopened.
+// Worker path: uses bypass_rls since this is called from the alert evaluator.
+func (s *Store) RecordActivationAlertEvents(ctx context.Context, orgID, ruleID uuid.UUID, matches []AlertEventMatch) (int64, error) {
+	if len(matches) == 0 {
+		return 0, nil
+	}
+	cveIDs := make([]string, len(matches))
+	hashes := make([]string, len(matches))
+	for i, m := range matches {
+		cveIDs[i] = m.CVEID
+		hashes[i] = m.MaterialHash
+	}
+	var written int64
+	err := s.withBypassTx(ctx, func(q *generated.Queries) error {
+		if err := q.LockAlertEventFeed(ctx, orgID); err != nil {
+			return fmt.Errorf("lock alert event feed: %w", err)
+		}
+		inserted, err := q.InsertActivationAlertEvents(ctx, generated.InsertActivationAlertEventsParams{
+			OrgID:          orgID,
+			RuleID:         ruleID,
+			CveIds:         cveIDs,
+			MaterialHashes: hashes,
+		})
+		if err != nil {
+			return fmt.Errorf("insert events: %w", err)
+		}
+		// Runs after the insert, so the events it just created are open and not touched.
+		reopened, err := q.ReopenActivationAlertEvents(ctx, generated.ReopenActivationAlertEventsParams{
+			OrgID:          orgID,
+			RuleID:         ruleID,
+			CveIds:         cveIDs,
+			MaterialHashes: hashes,
+		})
+		if err != nil {
+			return fmt.Errorf("reopen events: %w", err)
+		}
+		written = inserted + reopened
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("record activation alert events: %w", err)
+	}
+	return written, nil
 }
 
 // GetUnresolvedAlertEventCVEs returns the CVE IDs of alert events for ruleID that are

@@ -296,7 +296,8 @@ func (e *Evaluator) evaluateBatchPath(ctx context.Context, cfg batchConfig) erro
 }
 
 // EvaluateActivation runs the activation scan for a newly created rule. Iterates the full
-// CVE corpus in 1,000-row keyset pages, writes events with suppress_delivery=true, then
+// CVE corpus in 1,000-row keyset pages, writes each page's events with
+// suppress_delivery=true in one transaction, then
 // transitions the rule to 'active'. Called by the worker processing 'alert_activation' jobs.
 func (e *Evaluator) EvaluateActivation(ctx context.Context, ruleID, orgID uuid.UUID) error {
 	rule, err := e.rules.GetAlertRule(ctx, orgID, ruleID)
@@ -463,7 +464,8 @@ func (e *Evaluator) DryRun(ctx context.Context, ruleID, orgID uuid.UUID) (*DryRu
 
 // evaluateRule runs the DSL query against candidateIDs, applies PostFilters, inserts
 // alert_events, and detects resolutions. suppressDelivery=true marks events from the
-// activation scan baseline. suppressResolution=true skips resolution detection (activation).
+// activation scan baseline and writes all of them in one transaction, since none is
+// fanned out. suppressResolution=true skips resolution detection (activation).
 // statementTimeoutMS overrides the connection-level statement_timeout when > 0.
 // Returns (matchCount, partial, candidatesEval, err).
 func (e *Evaluator) evaluateRule(
@@ -500,32 +502,48 @@ func (e *Evaluator) evaluateRule(
 		}
 	}
 
-	// Record alert_events for matches that are new or have returned after resolving.
 	matchedIDs := make(map[string]bool, len(matched))
 	for _, m := range matched {
 		matchedIDs[m.CVEID] = true
-		exists, err := e.cveExists(ctx, m.CVEID)
-		if err != nil {
-			return len(matched), false, len(candidateIDs), fmt.Errorf("check CVE %s: %w", m.CVEID, err)
+	}
+
+	// Record alert_events for matches that are new or have returned after resolving.
+	if suppressDelivery {
+		// Suppressed events are not fanned out, so the page's events are written in one
+		// transaction. The store skips CVEs renamed since the candidate query, as
+		// cveExists does for the per-event path.
+		page := make([]store.AlertEventMatch, len(matched))
+		for i, m := range matched {
+			page[i] = store.AlertEventMatch{CVEID: m.CVEID, MaterialHash: m.MaterialHash}
 		}
-		if !exists {
-			continue
+		if _, err := e.rules.RecordActivationAlertEvents(ctx, orgID, compiled.RuleID, page); err != nil {
+			return len(matched), false, len(candidateIDs), fmt.Errorf("record alert events: %w", err)
 		}
-		eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
-		if err != nil {
-			return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
-		}
-		if eventID == uuid.Nil {
-			// The rule already fired at this hash. It fires again only if the event was resolved.
-			eventID, err = e.rules.ReopenAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, suppressDelivery)
+	} else {
+		for _, m := range matched {
+			exists, err := e.cveExists(ctx, m.CVEID)
 			if err != nil {
-				return len(matched), false, len(candidateIDs), fmt.Errorf("reopen alert event %s: %w", m.CVEID, err)
+				return len(matched), false, len(candidateIDs), fmt.Errorf("check CVE %s: %w", m.CVEID, err)
 			}
-		}
-		if e.dispatcher != nil && !suppressDelivery && eventID != uuid.Nil {
-			if fErr := e.dispatcher.Fanout(ctx, orgID, compiled.RuleID, m.CVEID); fErr != nil {
-				e.log.Error("fanout notification", "rule_id", compiled.RuleID, "cve_id", m.CVEID, "err", fErr)
-				// Do not return: alert_event is committed; log and continue.
+			if !exists {
+				continue
+			}
+			eventID, err := e.rules.InsertAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, false)
+			if err != nil {
+				return len(matched), false, len(candidateIDs), fmt.Errorf("insert alert event %s: %w", m.CVEID, err)
+			}
+			if eventID == uuid.Nil {
+				// The rule already fired at this hash. It fires again only if the event was resolved.
+				eventID, err = e.rules.ReopenAlertEvent(ctx, orgID, compiled.RuleID, m.CVEID, m.MaterialHash, false)
+				if err != nil {
+					return len(matched), false, len(candidateIDs), fmt.Errorf("reopen alert event %s: %w", m.CVEID, err)
+				}
+			}
+			if e.dispatcher != nil && eventID != uuid.Nil {
+				if fErr := e.dispatcher.Fanout(ctx, orgID, compiled.RuleID, m.CVEID); fErr != nil {
+					e.log.Error("fanout notification", "rule_id", compiled.RuleID, "cve_id", m.CVEID, "err", fErr)
+					// Do not return: alert_event is committed; log and continue.
+				}
 			}
 		}
 	}

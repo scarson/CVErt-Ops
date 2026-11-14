@@ -421,14 +421,12 @@ func TestKeptIngestMeasure(t *testing.T) {
 		rows = append(rows, m)
 	}
 
-	// M5: the limit rule. Thresholds apply under or; and is for information.
-	limitOr, limitAnd := limitRule(t, dsl.LogicOr, in), limitRule(t, dsl.LogicAnd, in)
+	// M5: the limit rule under or. Under and it would exceed the limit of 10 set
+	// conditions per and rule, which Validate refuses.
+	limitOr := limitRule(t, dsl.LogicOr, in)
 	add("M5a", "limit rule, or", "realtime", limitOr, one, 5)
 	add("M5b", "limit rule, or", "dry-run", limitOr, nil, 5000)
 	add("M5c", "limit rule, or", "batch 5,000", limitOr, in.Recent, 3000)
-	add("M5d", "limit rule, and (information)", "realtime", limitAnd, one, 0).thresholdMS = -1
-	add("M5e", "limit rule, and (information)", "dry-run", limitAnd, nil, 0).thresholdMS = -1
-	add("M5f", "limit rule, and (information)", "batch 5,000", limitAnd, in.Recent, 0).thresholdMS = -1
 
 	// M6: or rule of the 50 products, dry-run; the set SubPlan should stay hashed.
 	{
@@ -855,7 +853,7 @@ func TestKeptIngestAndSetSweep(t *testing.T) {
 	}
 	one := []string{keptIngestRealtimeCVE}
 	var rows []*measured
-	for _, k := range []int{1, 2, 3, 5, 10, 25} {
+	for _, k := range []int{1, 2, 3, 5} { // 10 set conditions is the "and" limit
 		r := limitRule(t, dsl.LogicAnd, keptInputs{Products: in.Products[:k], Packages: in.Packages[:k]})
 		for _, c := range []struct {
 			shape       string

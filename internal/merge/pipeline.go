@@ -614,7 +614,7 @@ func migrateCVEPK(ctx context.Context, tx *sql.Tx, oldID, newID string) error {
 	// is unchanged and replaces it with its own clock value when the hash changes.
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE cves SET date_match_inputs_changed = now() WHERE cve_id = $1", newID); err != nil {
-		return fmt.Errorf("mark renamed CVE for re-check (%s -> %s): %w", oldID, newID, err)
+		return fmt.Errorf("mark renamed CVE for re-check (%s→%s): %w", oldID, newID, err)
 	}
 	if !alertsMoved {
 		return nil

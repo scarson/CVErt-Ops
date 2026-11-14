@@ -46,6 +46,12 @@ services:
   postgres:
     container_name: cvert-ops-postgres
     image: postgres:18-alpine
+    # /dev/shm holds the shared state of parallel queries (a parallel hash's
+    # table, a parallel bitmap scan's bitmap). Docker's 64 MB default is too
+    # small for large parallel hashes over the full CVE corpus, which fail with
+    # "could not resize shared memory segment ... No space left on device".
+    # Pages count against the container's memory only while in use.
+    shm_size: 256mb
     environment:
       POSTGRES_DB:       ${POSTGRES_DB:-cvert_ops}
       POSTGRES_USER:     ${POSTGRES_USER:-cvert_ops}

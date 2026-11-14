@@ -164,6 +164,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
   - Regex rules: only conditions that narrow the candidates count toward the guardrail (T0809Z); conditions under `or` were settled by the `or` refusal above.
   - Unmapped-product warning: design section 8 first, then the message lists every CNA spelling of each part (T0810Z).
   - `cve_id`: values shaped like a CVE ID compare upper case (T0813Z).
+- Fixed after MATCH-2 (2026-11-14, branch `claude/postgres-shm-size`): the Postgres service in `docker/compose.yml` sets `shm_size: 256mb`, which the production overlay inherits, and `docker/compose_test.go` checks it in both stacks (T0858Z). Rule statements already run with parallel query off; the larger `/dev/shm` covers the queries that still run in parallel (search, facets, reports). `docs/deployment/production.md` explains the setting for operators who run their own Postgres container.
   - `fire_on_non_material_changes` (§10.4), stored but never read: removed on Sam's decision (2026-11-14), from the API, the `alert_rules` table (migration 000064) and PLAN.md §10.4. Reasons in `dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md`; log entry T0835Z.
 
 ---

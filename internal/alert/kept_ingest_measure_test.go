@@ -392,7 +392,7 @@ func TestKeptIngestMeasure(t *testing.T) {
 			t.Fatalf("%s: candidateQuery: %v", id, err)
 		}
 		m := &measured{id: id, name: name, shape: shape, thresholdMS: thresholdMS, statement: q, argCount: len(args)}
-		m.first, m.warm = measure(ctx, t, db, q, args)
+		m.first, m.warm = measure(ctx, t, db, q, args, candidateJITOff) // as queryCandidates runs it
 		rows = append(rows, m)
 		return m
 	}
@@ -462,7 +462,7 @@ func TestKeptIngestMeasure(t *testing.T) {
 			t.Fatalf("old contains form: %v", err)
 		}
 		oldRow := &measured{id: "M7d-old", name: "package contains lodash, no ecosystem, per-row EXISTS (before)", shape: "dry-run", thresholdMS: -1, statement: old, argCount: len(oldArgs)}
-		oldRow.first, oldRow.warm = measure(ctx, t, db, old, oldArgs)
+		oldRow.first, oldRow.warm = measure(ctx, t, db, old, oldArgs, candidateJITOff)
 		rows = append(rows, oldRow)
 		add("M7d", "package contains lodash, no ecosystem, set form", "dry-run",
 			compileMeasured(t, dsl.LogicAnd, condition(t, "affected.package", "contains", "lodash")), nil, 0).compareTo = oldRow
@@ -618,7 +618,7 @@ func TestKeptIngestLimitSweep(t *testing.T) {
 			t.Fatalf("%s: candidateQuery: %v", id, err)
 		}
 		m := &measured{id: id, name: name, shape: shape, thresholdMS: thresholdMS, statement: q, argCount: len(args)}
-		m.first, m.warm = measure(ctx, t, db, q, args, settings...)
+		m.first, m.warm = measure(ctx, t, db, q, args, append([]string{candidateJITOff}, settings...)...) // as queryCandidates runs it
 		rows = append(rows, m)
 	}
 	for _, k := range []int{5, 10, 15, 25} {
@@ -694,4 +694,103 @@ func TestKeptIngestMergedForms(t *testing.T) {
 	run("G-products-dry", "product in 50 (one condition)", "dry-run", productsOnly, nil, 5000)
 	run("G-products-dry-nojit", "product in 50 (one condition), jit off", "dry-run", productsOnly, nil, 5000, jitOff)
 	writeResults(t, filepath.Join(dir, "merged.md"), rows, m8Result{})
+}
+
+// TestKeptIngestExplainPlans writes the text plans of the limit rule's realtime
+// and batch statements under "or", for reading why a row fails. Batch runs with
+// parallel query off so it completes inside the container's shared memory.
+func TestKeptIngestExplainPlans(t *testing.T) {
+	ctx := context.Background()
+	db := openMeasuredDB(t, "KEPT_INGEST_DATABASE_URL", "KEPT_INGEST_USER", "KEPT_INGEST_PASSWORD")
+	dir := resultsDir(t)
+	raw, err := os.ReadFile(filepath.Join(dir, "inputs.json"))
+	if err != nil {
+		t.Fatalf("read inputs: %v", err)
+	}
+	var in keptInputs
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatalf("parse inputs: %v", err)
+	}
+	limitOr := limitRule(t, dsl.LogicOr, in)
+	node := compileMeasured(t, dsl.LogicAnd, condition(t, "affected.cpe_product", "eq", "nodejs:node.js"))
+	var b strings.Builder
+	for _, c := range []struct {
+		name     string
+		rule     *dsl.CompiledRule
+		ids      []string
+		settings []string
+	}{
+		{"limit rule, or, realtime", limitOr, []string{keptIngestRealtimeCVE}, []string{candidateJITOff}},
+		{"limit rule, or, batch 5,000", limitOr, in.Recent, []string{candidateJITOff}},
+		{"nodejs:node.js, and, batch 5,000", node, in.Recent, []string{candidateJITOff}},
+	} {
+		q, args, err := candidateQuery(c.rule, c.ids)
+		if err != nil {
+			t.Fatalf("candidateQuery: %v", err)
+		}
+		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		for _, s := range append([]string{"SET LOCAL statement_timeout = '120s'"}, c.settings...) {
+			if _, err := tx.ExecContext(ctx, s); err != nil {
+				t.Fatalf("%s: %v", s, err)
+			}
+		}
+		rows, err := tx.QueryContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) "+q, args...)
+		if err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("explain %s: %s", c.name, errorClass(err))
+		}
+		fmt.Fprintf(&b, "==== %s\n", c.name)
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			b.WriteString(line + "\n")
+		}
+		_ = rows.Close()
+		_ = tx.Rollback()
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plans.txt"), []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("write plans: %v", err)
+	}
+}
+
+// TestKeptIngestLimitSerial measures the limit rule under "or" with JIT off and
+// parallel query off, as evidence for the gate decision.
+func TestKeptIngestLimitSerial(t *testing.T) {
+	ctx := context.Background()
+	db := openMeasuredDB(t, "KEPT_INGEST_DATABASE_URL", "KEPT_INGEST_USER", "KEPT_INGEST_PASSWORD")
+	dir := resultsDir(t)
+	raw, err := os.ReadFile(filepath.Join(dir, "inputs.json"))
+	if err != nil {
+		t.Fatalf("read inputs: %v", err)
+	}
+	var in keptInputs
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatalf("parse inputs: %v", err)
+	}
+	limitOr := limitRule(t, dsl.LogicOr, in)
+	serial := []string{candidateJITOff, "SET LOCAL max_parallel_workers_per_gather = 0"}
+	var rows []*measured
+	for _, c := range []struct {
+		id, shape   string
+		ids         []string
+		thresholdMS float64
+	}{
+		{"P5a", "realtime", []string{keptIngestRealtimeCVE}, 5},
+		{"P5b", "dry-run", nil, 5000},
+		{"P5c", "batch 5,000", in.Recent, 3000},
+	} {
+		q, args, err := candidateQuery(limitOr, c.ids)
+		if err != nil {
+			t.Fatalf("candidateQuery: %v", err)
+		}
+		m := &measured{id: c.id, name: "limit rule, or, JIT and parallel query off", shape: c.shape, thresholdMS: c.thresholdMS, statement: q, argCount: len(args)}
+		m.first, m.warm = measure(ctx, t, db, q, args, serial...)
+		rows = append(rows, m)
+	}
+	writeResults(t, filepath.Join(dir, "serial.md"), rows, m8Result{})
 }

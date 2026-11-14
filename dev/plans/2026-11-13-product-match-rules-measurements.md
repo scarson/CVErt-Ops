@@ -115,3 +115,63 @@ Flagged, not failing: M1a's first run took 7.2 ms (6.1 ms planning) against 5 ms
 | G-products-dry-nojit | product in 50 (one condition), jit off | dry-run | 734 | 9.85 / 3846.99 | 9.91 / 3908.36 | 5001 |  | warm <= 5000 ms | pass |
 
 Reading: batch passes in this form (1.7 s; 0.51 s with JIT off), against 17.7 s serially for 100 one-value conditions. Dry-run of products and packages together still fails with the shared-memory error. 50 products in one condition take 8.0 s dry-run with JIT on and 3.9 s with it off, so JIT costs about 4 s there. Realtime still fails on planning (10.7 ms): the cost is the number of OR-ed range and name terms inside the product set, which merging conditions does not reduce.
+
+## After the remedy Sam chose (2026-11-14)
+
+Two changes: under `or`, every set condition is one `cves.cve_id IN (... UNION ALL ...)` and the evaluator's candidate statement runs with `SET LOCAL jit = off` (`7ad8080`); with candidate IDs, a product set matches its CPE prefixes and CNA names against bound arrays (`fe0e32f`). Every evaluator-shaped row below runs with JIT off, as `queryCandidates` does; the saved-search row (M4) keeps the server default, as `ExecuteDSLQuery` does.
+
+| # | Measurement | Statement shape | Args | First run plan / exec (ms) | Warm plan / exec (ms) | Rows | Plan notes | Threshold | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| M1a | linux:linux_kernel, and | realtime | 12 | 2.12 / 0.25 | 0.38 / 0.14 | 1 |  | warm <= 5 ms | pass |
+| M1b | linux:linux_kernel or in_cisa_kev | realtime | 13 | 0.41 / 0.23 | 0.34 / 0.16 | 1 | hashed SubPlan | warm <= 5 ms | pass |
+| M2a | linux:linux_kernel, and | batch 5,000 | 12 | 27.44 / 557.10 | 26.48 / 478.07 | 0 | seq scan: cve_cna_affected, cve_cpe_matches | warm <= 3000 ms | pass |
+| M2b | linux:linux_kernel or in_cisa_kev | batch 5,000 | 13 | 25.95 / 461.24 | 26.62 / 479.69 | 0 | hashed SubPlan; seq scan: cve_cna_affected, cve_cpe_matches | warm <= 3000 ms | pass |
+| M2c | nodejs:node.js, and | batch 5,000 | 12 | 25.68 / 114.09 | 26.33 / 115.75 | 0 | seq scan: cve_cna_affected, cve_cpe_matches | warm <= 3000 ms | pass |
+| M3a | nodejs:node.js and severity critical/high | dry-run | 39 | 0.90 / 6.35 | 0.67 / 2.85 | 146 |  | warm <= 5000 ms | pass |
+| M3b | nodejs:node.js alone | dry-run | 38 | 0.62 / 3.23 | 0.62 / 2.97 | 249 |  | warm <= 5000 ms | pass |
+| M3c | nodejs:node.js or in_cisa_kev | dry-run | 39 | 0.57 / 400.34 | 0.58 / 372.12 | 2026 | hashed SubPlan; seq scan: cves | warm <= 5000 ms | pass |
+| M3d | linux:linux_kernel alone | dry-run | 17 | 0.40 / 161.50 | 0.40 / 156.49 | 5001 |  | warm <= 5000 ms | pass |
+| M3e | linux:linux_kernel or in_cisa_kev | dry-run | 18 | 0.36 / 213.57 | 0.38 / 250.18 | 5001 | hashed SubPlan; seq scan: cves | warm <= 5000 ms | pass |
+| M4 | linux:linux_kernel | saved search, page of 50 | 17 | 0.76 / 156.66 | 0.43 / 160.82 | 51 |  | warm <= 5000 ms | pass |
+| M5a | limit rule, or | realtime | 162 | 6.79 / 22.45 | 6.47 / 19.94 | 1 |  | warm <= 5 ms | FAIL |
+| M5b | limit rule, or | dry-run | 834 | 14.90 / 10910.94 | 16.34 / 10984.17 | 5001 | seq scan: cves | warm <= 5000 ms | FAIL |
+| M5c | limit rule, or | batch 5,000 | 162 | 814.17 / 2460.32 | 793.87 / 2371.01 | 4564 | seq scan: cve_cna_affected | warm <= 3000 ms | FAIL |
+| M5d | limit rule, and (information) | realtime | 701 | 191.42 / 3.87 | 186.78 / 4.60 | 0 |  | information only | - |
+| M5e | limit rule, and (information) | dry-run | 834 | 214.78 / 1099.93 | 225.12 / 1109.81 | 0 |  | information only | - |
+| M5f | limit rule, and (information) | batch 5,000 | 701 | 2287.43 / 945.27 | 2311.62 / 941.05 | 0 | seq scan: cve_cna_affected, cve_cpe_matches | information only | - |
+| M6 | 50 products, or | dry-run | 734 | 12.27 / 570.73 | 12.73 / 573.15 | 5001 | SubPlan NOT hashed | warm <= 5000 ms | pass (not hashed; within threshold) |
+| M7a | npm, package in 50 names | dry-run | 2 | 0.53 / 581.65 | 0.50 / 499.42 | 0 |  | warm <= 5000 ms | pass |
+| M7b | Debian, package eq openssl | dry-run | 3 | 0.46 / 20.05 | 0.37 / 8.60 | 395 |  | warm <= 5000 ms | pass |
+| M7c | package eq openssl, no ecosystem | dry-run | 2 | 0.35 / 40.20 | 0.33 / 24.43 | 2037 |  | first run <= 5000 ms | pass |
+| M7d-old | package contains lodash, no ecosystem, per-row EXISTS (before) | dry-run | 1 | 0.25 / 1276.54 | 0.31 / 1293.75 | 135 | seq scan: cve_affected_packages | information only | - |
+| M7d | package contains lodash, no ecosystem, set form | dry-run | 1 | 0.45 / 1308.27 | 0.29 / 1241.78 | 135 | seq scan: cve_affected_packages | not slower than M7d-old | pass (not slower than M7d-old) |
+
+M8 read-only estimate (kept ingest): 1421 pages of 1000 IDs, 33361 matches, 12m2s read time, stopped by error (*fmt.wrapError <- *pgconn.PgError).
+
+Sweep after the merge and JIT off, before the array form (same inputs; for the limit choice):
+
+| # | Measurement | Statement shape | Args | First run plan / exec (ms) | Warm plan / exec (ms) | Rows | Plan notes | Threshold | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| S5-rt | 5 products + 5 packages, or | realtime | 95 | 5.02 / 0.45 | 1.49 / 0.29 | 1 |  | warm <= 5 ms | pass; first run over threshold |
+| S5-dry | 5 products + 5 packages, or | dry-run | 79 | 2.07 / 1660.22 | 1.36 / 1685.66 | 5001 | seq scan: cves | warm <= 5000 ms | pass |
+| S5-batch | 5 products + 5 packages, or | batch 5,000 | 95 | 207.65 / 394.85 | 379.09 / 1328.93 | 4485 |  | warm <= 3000 ms | pass |
+| S10-rt | 10 products + 10 packages, or | realtime | 193 | 5.77 / 69.05 | 3.57 / 32.58 | 1 |  | warm <= 5 ms | FAIL |
+| S10-dry | 10 products + 10 packages, or | dry-run | 162 | 2.55 / 5194.42 | 4.00 / 7263.74 | 5001 | seq scan: cves | warm <= 5000 ms | FAIL |
+| S10-batch | 10 products + 10 packages, or | batch 5,000 | 193 | 436.07 / 786.51 | 474.88 / 1106.10 | 4562 |  | warm <= 3000 ms | pass |
+| S15-rt | 15 products + 15 packages, or | realtime | 295 | 7.30 / 46.37 | 6.00 / 31.80 | 1 |  | warm <= 5 ms | FAIL |
+| S15-dry | 15 products + 15 packages, or | dry-run | 249 | 3.90 / 4932.91 | 3.65 / 4312.54 | 5001 | seq scan: cves | warm <= 5000 ms | pass |
+| S15-batch | 15 products + 15 packages, or | batch 5,000 | 295 | 694.32 / 1163.04 | 675.13 / 1120.74 | 4563 |  | warm <= 3000 ms | pass |
+| S25-rt | 25 products + 25 packages, or | realtime | 499 | 7.92 / 32.67 | 7.70 / 26.56 | 1 |  | warm <= 5 ms | FAIL |
+| S25-dry | 25 products + 25 packages, or | dry-run | 423 | 6.29 / 6225.98 | 6.96 / 6164.42 | 5001 | seq scan: cves | warm <= 5000 ms | FAIL |
+| S25-batch | 25 products + 25 packages, or | batch 5,000 | 499 | 1332.82 / 1893.59 | 1135.56 / 1663.73 | 4564 |  | warm <= 3000 ms | pass; first run over threshold |
+| S10-products | 10 products, or | dry-run | 142 | 2.12 / 323.76 | 2.24 / 298.71 | 5001 |  | warm <= 5000 ms | pass |
+| S25-products | 25 products, or | dry-run | 373 | 5.35 / 417.83 | 5.24 / 407.52 | 5001 |  | warm <= 5000 ms | pass |
+| S50-dry-serial | limit rule, or, parallel query off | dry-run | 834 | 13.52 / 12595.21 | 16.78 / 13122.20 | 5001 | seq scan: cves | warm <= 5000 ms | FAIL |
+| S50-batch-serial | limit rule, or, parallel query off | batch 5,000 | 985 | 2689.40 / 3734.69 | 2657.31 / 3607.04 | 4564 |  | warm <= 3000 ms | FAIL |
+
+### Reading
+
+- **Fixed:** 50 products under `or` (M6), 16.2 s to 0.6 s. Planning of candidate statements no longer grows with the number of products: the limit rule's realtime planning fell from 18.6 ms to 6.5 ms and its arguments from 985 to 162.
+- **Still failing:** M5a realtime 26.4 ms (6.5 ms planning, 19.9 ms execution) against 5 ms; M5b dry-run 11.0 s against 5 s (no candidate IDs, so the array form does not apply; the cost is the 50 kernel package sets with no ecosystem, hashed in full); M5c batch 3.2 s (0.8 s planning) against 3 s; M8 read-only estimate stopped by the shared-memory error at page 1,422 of about 2,629 after 12 minutes, so a full activation would take about 22 minutes against 7.
+- **Regression, still within thresholds:** single-product batch rows M2a to M2c rose from about 30 ms to 140 to 505 ms. With 5,000 candidate IDs and the array form, the planner chooses parallel sequential scans of `cve_cpe_matches` (about 1.08 M rows filtered out) and `cve_cna_affected` (about 685 K) with `cve_id = ANY(...)` as a filter, where the range form read the check index.
+- **M7d** passes on this run (1.24 s against 1.29 s); on the run before it was 2% slower than the old form, within run-to-run variation.

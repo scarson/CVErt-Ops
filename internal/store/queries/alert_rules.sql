@@ -104,6 +104,46 @@ WHERE org_id = $1
   AND last_match_state = false
 RETURNING id;
 
+-- name: InsertActivationAlertEvents :execrows
+-- Inserts an activation-scan page of matches as events with suppress_delivery = true,
+-- pairing cve_ids and material_hashes by position. A pair whose event exists is skipped
+-- (ON CONFLICT DO NOTHING), and so is a pair repeated in the page after its first row.
+-- A CVE no longer in cves is skipped: a late-binding merge can rename a CVE after the
+-- candidate query returned it, and an event under the old ID could never resolve.
+-- The caller holds the org's feed lock (LockAlertEventFeed).
+INSERT INTO alert_events (org_id, rule_id, cve_id, material_hash, last_match_state, suppress_delivery, feed_seq)
+SELECT sqlc.arg(org_id)::uuid, sqlc.arg(rule_id)::uuid, m.cve_id, m.material_hash, true, true,
+       nextval('alert_event_feed_seq')
+FROM (
+    SELECT unnest(sqlc.arg(cve_ids)::text[])         AS cve_id,
+           unnest(sqlc.arg(material_hashes)::text[]) AS material_hash
+) m
+WHERE EXISTS (SELECT 1 FROM cves c WHERE c.cve_id = m.cve_id)
+ON CONFLICT (org_id, rule_id, cve_id, material_hash) DO NOTHING;
+
+-- name: ReopenActivationAlertEvents :execrows
+-- Reopens the resolved events of an activation-scan page, the set-based form of
+-- ReopenAlertEvent with suppress_delivery = true. Pairs are matched by position as in
+-- InsertActivationAlertEvents, with the same skip of CVEs no longer in cves. A pair
+-- repeated in the page updates its event once. The caller holds the org's feed lock
+-- (LockAlertEventFeed), taken before this statement locks the rows.
+UPDATE alert_events ae
+SET last_match_state  = true,
+    suppress_delivery = true,
+    last_fired_at     = now(),
+    times_fired       = ae.times_fired + 1,
+    feed_seq          = nextval('alert_event_feed_seq')
+FROM (
+    SELECT unnest(sqlc.arg(cve_ids)::text[])         AS cve_id,
+           unnest(sqlc.arg(material_hashes)::text[]) AS material_hash
+) m
+WHERE ae.org_id = sqlc.arg(org_id)::uuid
+  AND ae.rule_id = sqlc.arg(rule_id)::uuid
+  AND ae.cve_id = m.cve_id
+  AND ae.material_hash = m.material_hash
+  AND ae.last_match_state = false
+  AND EXISTS (SELECT 1 FROM cves c WHERE c.cve_id = m.cve_id);
+
 -- name: GetUnresolvedAlertEventCVEs :many
 -- Returns CVE IDs of events that last matched for this rule, used for resolution detection.
 SELECT cve_id FROM alert_events

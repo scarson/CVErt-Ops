@@ -98,3 +98,20 @@ The same harness, same inputs: the K largest products and the K most common pack
 | M8 limit rule `or`, full activation | shared-memory error on page 1 | 7 minutes |
 
 Flagged, not failing: M1a's first run took 7.2 ms (6.1 ms planning) against 5 ms; warm 0.6 ms.
+
+## The same content as two set conditions (read-only, for the gate decision)
+
+`TestKeptIngestMergedForms`: the limit rule's 50 products as one `affected.cpe_product in` condition and its 50 packages as one `affected.package in` condition, under `or`, with JIT on (the server default) and off (`SET LOCAL jit = off`). The compiler emits this form today for a list. It is still two `IN` sets joined by `OR`, so each is a hashed SubPlan; a single `IN (... UNION ALL ...)` over every set, which a separate read-only test on the copy found to plan as a merge semi-join (101 ms, then 55 ms, for the 50 package names alone), is not a form the compiler emits and is not measured here.
+
+| # | Measurement | Statement shape | Args | First run plan / exec (ms) | Warm plan / exec (ms) | Rows | Plan notes | Threshold | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| G-rt | product in 50 or package in 50 | realtime | 740 | 17.23 / 0.70 | 10.71 / 0.68 | 1 | hashed SubPlan | warm <= 5 ms | FAIL |
+| G-dry | product in 50 or package in 50 | dry-run | 736 | 0.00 / 0.00 | 0.00 / 0.00 | 0 | error: *pgconn.PgError | warm <= 5000 ms | FAIL (error) |
+| G-batch | product in 50 or package in 50 | batch 5,000 | 740 | 60.88 / 1500.63 | 115.42 / 1612.79 | 4564 | hashed SubPlan | warm <= 3000 ms | pass |
+| G-rt-nojit | product in 50 or package in 50, jit off | realtime | 740 | 63.65 / 1.47 | 30.01 / 2.50 | 1 | hashed SubPlan | warm <= 5 ms | FAIL |
+| G-dry-nojit | product in 50 or package in 50, jit off | dry-run | 736 | 0.00 / 0.00 | 0.00 / 0.00 | 0 | error: *pgconn.PgError | warm <= 5000 ms | FAIL (error) |
+| G-batch-nojit | product in 50 or package in 50, jit off | batch 5,000 | 740 | 52.56 / 441.62 | 51.31 / 454.73 | 4564 | hashed SubPlan | warm <= 3000 ms | pass |
+| G-products-dry | product in 50 (one condition) | dry-run | 734 | 10.46 / 9229.15 | 9.99 / 8036.55 | 5001 |  | warm <= 5000 ms | FAIL |
+| G-products-dry-nojit | product in 50 (one condition), jit off | dry-run | 734 | 9.85 / 3846.99 | 9.91 / 3908.36 | 5001 |  | warm <= 5000 ms | pass |
+
+Reading: batch passes in this form (1.7 s; 0.51 s with JIT off), against 17.7 s serially for 100 one-value conditions. Dry-run of products and packages together still fails with the shared-memory error. 50 products in one condition take 8.0 s dry-run with JIT on and 3.9 s with it off, so JIT costs about 4 s there. Realtime still fails on planning (10.7 ms): the cost is the number of OR-ed range and name terms inside the product set, which merging conditions does not reduce.

@@ -642,3 +642,56 @@ func TestKeptIngestLimitSweep(t *testing.T) {
 	run("S50-batch-serial", "limit rule, or, parallel query off", "batch 5,000", full, in.Recent, 3000, noParallel)
 	writeResults(t, filepath.Join(dir, "sweep.md"), rows, m8Result{})
 }
+
+// TestKeptIngestMergedForms measures the limit rule's content as two set conditions,
+// one product "in" of the 50 products and one package "in" of the 50 names, under
+// "or": the form the compiler already emits for a list, against the 100 one-value
+// conditions of M5 and M6. JIT is measured on (the server default) and off.
+func TestKeptIngestMergedForms(t *testing.T) {
+	ctx := context.Background()
+	db := openMeasuredDB(t, "KEPT_INGEST_DATABASE_URL", "KEPT_INGEST_USER", "KEPT_INGEST_PASSWORD")
+	var ro string
+	if err := db.QueryRowContext(ctx, "SHOW default_transaction_read_only").Scan(&ro); err != nil || ro != "on" {
+		t.Fatalf("connection is not read-only (default_transaction_read_only=%q, err %v)", ro, err)
+	}
+	dir := resultsDir(t)
+	raw, err := os.ReadFile(filepath.Join(dir, "inputs.json"))
+	if err != nil {
+		t.Fatalf("read inputs: %v", err)
+	}
+	var in keptInputs
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatalf("parse inputs: %v", err)
+	}
+	one := []string{keptIngestRealtimeCVE}
+	merged := compileMeasured(t, dsl.LogicOr,
+		condition(t, "affected.cpe_product", "in", in.Products),
+		condition(t, "affected.package", "in", in.Packages))
+	productsOnly := compileMeasured(t, dsl.LogicOr, condition(t, "affected.cpe_product", "in", in.Products))
+	var rows []*measured
+	run := func(id, name, shape string, compiled *dsl.CompiledRule, ids []string, thresholdMS float64, settings ...string) {
+		q, args, err := candidateQuery(compiled, ids)
+		if err != nil {
+			t.Fatalf("%s: candidateQuery: %v", id, err)
+		}
+		m := &measured{id: id, name: name, shape: shape, thresholdMS: thresholdMS, statement: q, argCount: len(args)}
+		m.first, m.warm = measure(ctx, t, db, q, args, settings...)
+		rows = append(rows, m)
+	}
+	jitOff := "SET LOCAL jit = off"
+	for _, jit := range []struct {
+		suffix   string
+		settings []string
+	}{{"", nil}, {"-nojit", []string{jitOff}}} {
+		label := "product in 50 or package in 50"
+		if jit.suffix != "" {
+			label += ", jit off"
+		}
+		run("G-rt"+jit.suffix, label, "realtime", merged, one, 5, jit.settings...)
+		run("G-dry"+jit.suffix, label, "dry-run", merged, nil, 5000, jit.settings...)
+		run("G-batch"+jit.suffix, label, "batch 5,000", merged, in.Recent, 3000, jit.settings...)
+	}
+	run("G-products-dry", "product in 50 (one condition)", "dry-run", productsOnly, nil, 5000)
+	run("G-products-dry-nojit", "product in 50 (one condition), jit off", "dry-run", productsOnly, nil, 5000, jitOff)
+	writeResults(t, filepath.Join(dir, "merged.md"), rows, m8Result{})
+}

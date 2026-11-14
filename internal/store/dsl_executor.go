@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -274,10 +273,12 @@ type cvePostFilterTarget struct {
 	cve *generated.CVE
 }
 
-// PostFilterField implements dsl.PostFilterTarget for generated.CVE.
+// PostFilterField implements dsl.PostFilterTarget for generated.CVE. Values are
+// matched as stored: regex PostFilters ignore case unless their pattern turns
+// that off, as in the alert evaluator.
 func (c cvePostFilterTarget) PostFilterField(field string) string {
 	if field == "cve_id" {
 		return c.cve.CveID
 	}
-	return strings.ToLower(c.cve.DescriptionPrimary.String)
+	return c.cve.DescriptionPrimary.String
 }

@@ -252,7 +252,7 @@ func packageMatch(c Condition, corr packageCorrelation) (sqlPart, error) {
 		}, nil
 	case "contains", "starts_with", "ends_with":
 		var v string
-		if err := json.Unmarshal(c.Value, &v); err != nil {
+		if err := decodeScalar(c.Value, &v); err != nil {
 			return sqlPart{}, fmt.Errorf("package value: %w", err)
 		}
 		escaped := escapeLike(strings.ToLower(v))
@@ -577,7 +577,8 @@ func allOf(parts []sqlPart) (string, []any) {
 
 // conditionValues returns an eq/neq condition's value, or an in/not_in
 // condition's list. A JSON null list returns an empty list, not nil: pq.Array(nil)
-// binds SQL NULL, and = ANY(NULL) and LIKE ANY(NULL) are NULL, not false.
+// binds SQL NULL, and = ANY(NULL) and LIKE ANY(NULL) are NULL, not false. A JSON
+// null eq/neq value is an error (decodeScalar).
 func conditionValues(c Condition) ([]string, error) {
 	if c.Op == "in" || c.Op == "not_in" {
 		var vals []string
@@ -590,7 +591,7 @@ func conditionValues(c Condition) ([]string, error) {
 		return vals, nil
 	}
 	var v string
-	if err := json.Unmarshal(c.Value, &v); err != nil {
+	if err := decodeScalar(c.Value, &v); err != nil {
 		return nil, fmt.Errorf("string value: %w", err)
 	}
 	return []string{v}, nil

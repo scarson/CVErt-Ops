@@ -2034,6 +2034,43 @@ func TestValidate_ConditionLimit(t *testing.T) {
 	}
 }
 
+// TestValidate_OverConditionLimitSkipsEcosystemCheck pins that a rule over the
+// condition limit is refused without running the never-matching ecosystem check.
+// That check costs values times conditions, so within the limit it is linear in
+// the request, while a 1 MiB rule of thousands of conditions would take seconds.
+func TestValidate_OverConditionLimitSkipsEcosystemCheck(t *testing.T) {
+	t.Parallel()
+	conds := []string{
+		`{"field":"affected.package","operator":"eq","value":"x"}`,
+		`{"field":"affected.ecosystem","operator":"eq","value":"npm"}`,
+		`{"field":"affected.ecosystem","operator":"eq","value":"PyPI"}`,
+	}
+	for len(conds) < 101 {
+		conds = append(conds, `{"field":"severity","operator":"eq","value":"high"}`)
+	}
+	errs, _, _ := dsl.Validate(mustParse(t, ruleJSON("and", conds...)), false)
+	if !hasMessage(errs, msgTooManyConditions) {
+		t.Errorf("errors = %+v, want %q", errs, msgTooManyConditions)
+	}
+	if hasMessage(errs, msgNeverMatches) {
+		t.Errorf("errors = %+v: the never-matching check ran on a rule over the condition limit", errs)
+	}
+	// The same shape within the limit is refused as never matching.
+	errs, _, _ = dsl.Validate(mustParse(t, ruleJSON("and", conds[:100]...)), false)
+	if !hasMessage(errs, msgNeverMatches) {
+		t.Errorf("100 conditions: errors = %+v, want %q", errs, msgNeverMatches)
+	}
+}
+
+func hasMessage(errs []dsl.ValidationError, msg string) bool {
+	for _, e := range errs {
+		if e.Message == msg {
+			return true
+		}
+	}
+	return false
+}
+
 func TestValidate_PackageEmptyValues(t *testing.T) {
 	t.Parallel()
 	npm := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`

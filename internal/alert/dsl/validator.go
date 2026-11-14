@@ -133,12 +133,14 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 		})
 	}
 
-	errs = append(errs, validatePackageCorrelation(r)...)
-	errs = append(errs, validateProducts(r)...)
-
 	if len(r.Conditions) > maxConditions {
 		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyConditions, Severity: "error"})
+	} else {
+		// The never-matching check costs values times conditions; within the
+		// condition limit that is linear in the request.
+		errs = append(errs, validatePackageCorrelation(r)...)
 	}
+	errs = append(errs, validateProducts(r)...)
 
 	isEPSSOnly = hasEPSSCond && allEPSS && len(r.Conditions) > 0
 	hasEPSS = hasEPSSCond
@@ -404,8 +406,10 @@ func validatePackageCorrelation(r Rule) []ValidationError {
 // condition, the longest of the values that match it is itself one. It is
 // therefore enough to try each value w as the stored ecosystem. The values that
 // can match w are w and its colon-prefixes, so each condition is checked with a
-// few map lookups: the cost is linear in the number of values, where comparing
-// values pairwise would not be (a request can hold tens of thousands).
+// few map lookups: the cost is the number of values times the number of
+// conditions, which Validate runs only within the 100-condition limit, where
+// comparing values pairwise would be quadratic in the values (a request can hold
+// tens of thousands).
 func ecosystemsSatisfiable(conds [][]string) bool {
 	sets := make([]map[string]bool, len(conds))
 	for i, vals := range conds {

@@ -121,6 +121,13 @@ func FoldedNameSQL(ecosystemColumn, nameColumn string) string {
 		ecosystemColumn, nameColumn, nameColumn)
 }
 
+// TakesSuffix reports whether base is a canonical base name that OSV data uses
+// with a suffix after a colon, such as Debian in Debian:13. base is the part of
+// a value before its first colon; a suffixed value itself reports false.
+func TakesSuffix(base string) bool {
+	return takesSuffix[base]
+}
+
 // IsDistro reports whether value names a distribution's packages.
 func IsDistro(value string) bool {
 	base, _, _ := strings.Cut(value, ":")

@@ -24,6 +24,11 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	hasEPSSCond := false
 	allEPSS := true
 
+	corr, err := correlationFor(r)
+	if err != nil {
+		return nil, fmt.Errorf("compile: %w", err)
+	}
+
 	for _, c := range r.Conditions {
 		spec, ok := fields[c.Field]
 		if !ok {
@@ -46,6 +51,19 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 				return nil, fmt.Errorf("compile: regex compile: %w", err)
 			}
 			postFilters = append(postFilters, PostFilter{Field: c.Field, Negate: false, Pattern: re})
+			continue
+		}
+
+		if spec.kind == kindAffected {
+			// A CVE-ID set, correlated under "and" (design section 4.2); an
+			// ecosystem condition folded into the rule's package sets adds nothing.
+			p, err := affectedPredicate(c, corr)
+			if err != nil {
+				return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
+			}
+			if p != nil {
+				predicates = append(predicates, p)
+			}
 			continue
 		}
 
@@ -197,8 +215,6 @@ func conditionToSQL(c Condition, spec fieldSpec) (sq.Sqlizer, error) {
 		}
 	case kindText:
 		return textSQL(spec.sqlExpr, c.Op, c.Value)
-	case kindAffected:
-		return affectedSQL(c)
 	case kindFTS:
 		var s string
 		if err := json.Unmarshal(c.Value, &s); err != nil {
@@ -288,72 +304,4 @@ func textSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 	default:
 		return nil, fmt.Errorf("unsupported text op %q", op)
 	}
-}
-
-func affectedSQL(c Condition) (sq.Sqlizer, error) {
-	switch c.Field {
-	case "affected.ecosystem":
-		return affectedEcosystemSQL(c)
-	case "affected.package":
-		return affectedPackageSQL(c)
-	default:
-		return nil, fmt.Errorf("unknown affected field %q", c.Field)
-	}
-}
-
-// affectedEcosystemSQL matches a stored ecosystem that equals a rule value or
-// starts with it followed by a colon, so "Debian" covers every Debian release.
-func affectedEcosystemSQL(c Condition) (sq.Sqlizer, error) {
-	var vals []string
-	if c.Op == "in" || c.Op == "not_in" {
-		if err := json.Unmarshal(c.Value, &vals); err != nil {
-			return nil, fmt.Errorf("ecosystem array value: %w", err)
-		}
-	} else {
-		var v string
-		if err := json.Unmarshal(c.Value, &v); err != nil {
-			return nil, fmt.Errorf("ecosystem value: %w", err)
-		}
-		vals = []string{v}
-	}
-
-	patterns := make([]string, 0, len(vals)*2)
-	for _, v := range vals {
-		escaped := escapeLike(strings.ToLower(v))
-		patterns = append(patterns, escaped, escaped+":%")
-	}
-
-	exists := `EXISTS (
-    SELECT 1 FROM cve_affected_packages cap
-    WHERE cap.cve_id = cves.cve_id
-      AND lower(cap.ecosystem) LIKE ANY(?)
-)`
-	if c.Op == "neq" || c.Op == "not_in" {
-		exists = "NOT " + exists
-	}
-	return sq.Expr(exists, pq.Array(patterns)), nil
-}
-
-func affectedPackageSQL(c Condition) (sq.Sqlizer, error) {
-	var v string
-	if err := json.Unmarshal(c.Value, &v); err != nil {
-		return nil, fmt.Errorf("package value: %w", err)
-	}
-	escaped := escapeLike(strings.ToLower(v))
-	var pattern string
-	switch c.Op {
-	case "contains":
-		pattern = "%" + escaped + "%"
-	case "starts_with":
-		pattern = escaped + "%"
-	case "ends_with":
-		pattern = "%" + escaped
-	default:
-		return nil, fmt.Errorf("unsupported package op %q", c.Op)
-	}
-	return sq.Expr(`EXISTS (
-    SELECT 1 FROM cve_affected_packages cap
-    WHERE cap.cve_id = cves.cve_id
-      AND lower(cap.package_name) ILIKE ?
-)`, pattern), nil
 }

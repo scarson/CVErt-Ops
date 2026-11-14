@@ -346,8 +346,9 @@ func TestWhere_IsDeterministicAcrossCalls(t *testing.T) {
 	t.Parallel()
 	watchlists := []uuid.UUID{uuid.MustParse("33333333-3333-3333-3333-333333333333")}
 	rules := map[string]string{
-		"and": `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["critical","high"]},{"field":"affected.ecosystem","operator":"not_in","value":["npm"]},{"field":"cvss_v3_score","operator":"gte","value":7}]}`,
-		"or":  `{"logic":"or","conditions":[{"field":"cve_id","operator":"in","value":["CVE-1","CVE-2"]},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
+		"and":          `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["critical","high"]},{"field":"affected.ecosystem","operator":"not_in","value":["npm"]},{"field":"cvss_v3_score","operator":"gte","value":7}]}`,
+		"or":           `{"logic":"or","conditions":[{"field":"cve_id","operator":"in","value":["CVE-1","CVE-2"]},{"field":"in_cisa_kev","operator":"eq","value":true}]}`,
+		"package sets": `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","Debian"]},{"field":"affected.package","operator":"in","value":["Foo_Bar","lodash"]},{"field":"affected.package","operator":"contains","value":"ssl"}]}`,
 	}
 	for name, rule := range rules {
 		c := compileRule(t, rule, watchlists)
@@ -465,12 +466,12 @@ func TestCompile_AffectedEcosystemEq(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"npm"}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cve_affected_packages") || !strings.Contains(sql, "lower(cap.ecosystem)") {
+	// Ecosystems compare exactly, so the index on cap.ecosystem can serve = ANY.
+	if !strings.Contains(sql, "cves.cve_id IN (") || !strings.Contains(sql, "cap.ecosystem = ANY(") ||
+		strings.Contains(sql, "lower(cap.ecosystem)") || strings.Contains(sql, "LIKE ANY(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 1 {
-		t.Errorf("expected 1 arg, got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "npm")
 }
 
 func TestCompile_AffectedPackageContains(t *testing.T) {
@@ -1567,15 +1568,13 @@ func TestCompile_AffectedEcosystemIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"in","value":["npm","PyPI"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "EXISTS") {
-		t.Errorf("expected EXISTS for in: %q", sql)
+	if !strings.Contains(sql, "cves.cve_id IN (") || strings.Contains(sql, "EXISTS") {
+		t.Errorf("expected a CVE-ID set for in: %q", sql)
 	}
-	if !strings.Contains(sql, "ANY(") {
+	if !strings.Contains(sql, "cap.ecosystem = ANY(") {
 		t.Errorf("expected ANY() for in: %q", sql)
 	}
-	if len(args) != 1 { // pq.Array wraps as single arg
-		t.Errorf("expected 1 arg (pq.Array), got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "npm", "PyPI") // pq.Array wraps as single arg
 }
 
 func TestCompile_AffectedEcosystemNotIn(t *testing.T) {
@@ -1619,36 +1618,18 @@ func TestCompile_AffectedEcosystemMatchesExactOrSuffixed(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"Red Hat"}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "lower(cap.ecosystem) LIKE ANY(") {
+	if !strings.Contains(sql, "(cap.ecosystem = ANY(") || !strings.Contains(sql, " OR cap.ecosystem LIKE ANY(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 1 {
-		t.Fatalf("expected 1 arg, got %d: %v", len(args), args)
-	}
-	patterns, ok := args[0].(*pq.StringArray)
-	if !ok {
-		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
-	}
-	if want := (pq.StringArray{"red hat", "red hat:%"}); !reflect.DeepEqual(*patterns, want) {
-		t.Errorf("patterns = %v, want %v", *patterns, want)
-	}
+	assertArrayArgs(t, args, []string{"Red Hat"}, []string{"Red Hat:%"})
 }
 
 func TestCompile_AffectedEcosystemEscapesLikeMetacharacters(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"affected.ecosystem","operator":"eq","value":"Red Hat:enterprise_linux:8"}]}`, nil)
 	_, args := sqlOf(t, c)
-	if len(args) != 1 {
-		t.Fatalf("expected 1 arg, got %d: %v", len(args), args)
-	}
-	patterns, ok := args[0].(*pq.StringArray)
-	if !ok {
-		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
-	}
-	want := pq.StringArray{`red hat:enterprise\_linux:8`, `red hat:enterprise\_linux:8:%`}
-	if !reflect.DeepEqual(*patterns, want) {
-		t.Errorf("patterns = %v, want %v", *patterns, want)
-	}
+	// The exact value is compared with =, so only the release pattern is escaped.
+	assertArrayArgs(t, args, []string{"Red Hat:enterprise_linux:8"}, []string{`Red Hat:enterprise\_linux:8:%`})
 }
 
 func TestCompile_AffectedPackageStartsWith(t *testing.T) {

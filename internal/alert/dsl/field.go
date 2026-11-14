@@ -33,7 +33,10 @@ var numericOps = []string{"gt", "gte", "lt", "lte", "eq", "neq"}
 var setOps = []string{"eq", "neq", "in", "not_in"}
 var arrayOps = []string{"contains_any", "contains_all"}
 var textOps = []string{"contains", "starts_with", "ends_with", "regex"}
-var textOpsNoRegex = []string{"contains", "starts_with", "ends_with"}
+
+// packageOps adds exact match to the substring operators: eq and in compare
+// names after folding for the row's ecosystem (ecosystem.FoldPackageName).
+var packageOps = []string{"contains", "starts_with", "ends_with", "eq", "in"}
 var ftsOps = []string{"matches"}
 
 // fields is the authoritative registry of all supported DSL fields.
@@ -50,7 +53,7 @@ var fields = map[string]fieldSpec{
 	"in_cisa_kev":              {kindBool, "cves.in_cisa_kev", []string{"eq"}, false, nil},
 	"exploit_available":        {kindBool, "cves.exploit_available", []string{"eq"}, false, nil},
 	"affected.ecosystem":       {kindAffected, "", setOps, false, ecosystemEnum},
-	"affected.package":         {kindAffected, "", textOpsNoRegex, false, nil},
+	"affected.package":         {kindAffected, "", packageOps, false, nil},
 	"description_primary":      {kindText, "cves.description_primary", textOps, false, nil},
 	"fts_query":                {kindFTS, "", ftsOps, false, nil},
 }

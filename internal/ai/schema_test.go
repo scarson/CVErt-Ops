@@ -78,6 +78,23 @@ func TestBuildSchemaDescription_EnumValues(t *testing.T) {
 	}
 }
 
+// TestBuildSchemaDescription_ProductAndPackageNotes checks the product field and
+// the notes on product values, package correlation and exact package match.
+func TestBuildSchemaDescription_ProductAndPackageNotes(t *testing.T) {
+	t.Parallel()
+	desc := ai.BuildSchemaDescription()
+	for _, want := range []string{
+		"affected.cpe_product (type: CPE vendor:product)",
+		"- \"affected.cpe_product\" takes \"vendor:product\" from a CPE name, such as \"nodejs:node.js\".\n",
+		"- In an \"and\" rule, \"affected.ecosystem\" and \"affected.package\" describe the same package, so name the package's ecosystem with it.\n",
+		"- \"affected.package\" with \"eq\" matches a whole package name.\n",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("schema description missing %q", want)
+		}
+	}
+}
+
 func TestBuildSchemaDescription_FieldsSortedByName(t *testing.T) {
 	t.Parallel()
 	desc := ai.BuildSchemaDescription()

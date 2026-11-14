@@ -247,3 +247,24 @@ Threshold: 3 s per page. **The sparse first page fails (3.7 s).** The planner wa
 This branch merged `origin/dev` with PR 243 (each activation page's events written in one transaction). The same limit rule under `or`, the same disposable copy (now at migration 63):
 
 M8 full activation (disposable copy): 2 min 4 s wall clock, 200,252 events, rule status `active`, threshold 7 minutes: **pass** (12 min 5 s with one transaction per event).
+
+## Set conditions in "and" rules (read-only, 2026-11-14)
+
+Raised by the security review: under `and` each set condition stays its own `IN`, and realtime evaluates every organisation's active rules on each changed CVE. `TestKeptIngestAndSetSweep`: K of the largest products and K of the most common packages under `and`, with the evaluator's settings (JIT and parallel query off). These rules match nothing; the cost is planning.
+
+| # | Measurement | Statement shape | Args | First run plan / exec (ms) | Warm plan / exec (ms) | Rows | Plan notes | Threshold | Result |
+|---|---|---|---|---|---|---|---|---|---|
+| A2-re | 1 products + 1 packages, and (2 sets) | realtime | 15 | 7.72 / 1.12 | 0.61 / 0.14 | 0 |  | warm <= 5 ms | pass; first run over threshold |
+| A2-ba | 1 products + 1 packages, and (2 sets) | batch 5,000 | 15 | 45.41 / 19.93 | 66.58 / 4.37 | 0 |  | warm <= 3000 ms | pass |
+| A4-re | 2 products + 2 packages, and (4 sets) | realtime | 29 | 1.86 / 1.07 | 1.60 / 0.27 | 0 |  | warm <= 5 ms | pass |
+| A4-ba | 2 products + 2 packages, and (4 sets) | batch 5,000 | 29 | 90.81 / 3.03 | 92.57 / 4.12 | 0 |  | warm <= 3000 ms | pass |
+| A6-re | 3 products + 3 packages, and (6 sets) | realtime | 43 | 1.96 / 0.28 | 2.03 / 0.29 | 0 |  | warm <= 5 ms | pass |
+| A6-ba | 3 products + 3 packages, and (6 sets) | batch 5,000 | 43 | 138.68 / 2.92 | 138.30 / 2.95 | 0 |  | warm <= 3000 ms | pass |
+| A10-re | 5 products + 5 packages, and (10 sets) | realtime | 71 | 3.89 / 0.37 | 3.93 / 0.34 | 0 |  | warm <= 5 ms | pass |
+| A10-ba | 5 products + 5 packages, and (10 sets) | batch 5,000 | 71 | 235.21 / 49.47 | 219.16 / 13.30 | 0 |  | warm <= 3000 ms | pass |
+| A20-re | 10 products + 10 packages, and (20 sets) | realtime | 141 | 10.57 / 0.65 | 15.15 / 0.76 | 0 |  | warm <= 5 ms | FAIL |
+| A20-ba | 10 products + 10 packages, and (20 sets) | batch 5,000 | 141 | 442.22 / 14.37 | 435.16 / 17.15 | 0 |  | warm <= 3000 ms | pass |
+| A50-re | 25 products + 25 packages, and (50 sets) | realtime | 351 | 58.05 / 2.07 | 72.29 / 2.20 | 0 |  | warm <= 5 ms | FAIL |
+| A50-ba | 25 products + 25 packages, and (50 sets) | batch 5,000 | 351 | 1246.36 / 16.19 | 1129.95 / 15.65 | 0 |  | warm <= 3000 ms | pass |
+
+Decision (2026-11-14): an `and` rule may hold at most 10 set conditions, the largest size that passed the 5 ms realtime threshold here (4.3 ms).

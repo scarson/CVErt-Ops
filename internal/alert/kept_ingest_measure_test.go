@@ -529,7 +529,7 @@ func m8Estimate(ctx context.Context, t *testing.T, db *sql.DB, compiled *dsl.Com
 		lastID = batch[len(batch)-1]
 	}
 	res.elapsed = time.Since(start)
-	t.Logf("M8 estimate: %d pages, %d matches, %s, err %v", res.pages, res.matches, res.elapsed, res.err)
+	t.Logf("M8, read-only estimate of the limit rule's activation scan: %d pages, %d matches, %s, err %v", res.pages, res.matches, res.elapsed, res.err)
 	return res
 }
 
@@ -575,7 +575,7 @@ func writeResults(t *testing.T, path string, rows []*measured, m8 m8Result) {
 			m.warm.rows, strings.Join(notes, "; "), threshold, result)
 	}
 	if m8.pages > 0 || m8.err != nil {
-		fmt.Fprintf(&b, "\nM8 read-only estimate (kept ingest): %d pages of %d IDs, %d matches, %s read time",
+		fmt.Fprintf(&b, "\nM8, read-only estimate of the limit rule's activation scan (kept ingest): %d pages of %d IDs, %d matches, %s read time",
 			m8.pages, activationBatch, m8.matches, m8.elapsed.Round(time.Second))
 		if m8.err != nil {
 			fmt.Fprintf(&b, ", stopped by error (%s)", errorClass(m8.err))
@@ -836,4 +836,40 @@ func TestKeptIngestContainsInterleaved(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	t.Log("\n" + b.String())
+}
+
+// TestKeptIngestAndSetSweep measures "and" rules of K product and K package
+// conditions (each its own set under "and"), realtime and batch, with the
+// evaluator's settings, to choose a limit on set conditions in "and" rules.
+func TestKeptIngestAndSetSweep(t *testing.T) {
+	ctx := context.Background()
+	db := openMeasuredDB(t, "KEPT_INGEST_DATABASE_URL", "KEPT_INGEST_USER", "KEPT_INGEST_PASSWORD")
+	dir := resultsDir(t)
+	raw, err := os.ReadFile(filepath.Join(dir, "inputs.json"))
+	if err != nil {
+		t.Fatalf("read inputs: %v", err)
+	}
+	var in keptInputs
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatalf("parse inputs: %v", err)
+	}
+	one := []string{keptIngestRealtimeCVE}
+	var rows []*measured
+	for _, k := range []int{1, 2, 3, 5, 10, 25} {
+		r := limitRule(t, dsl.LogicAnd, keptInputs{Products: in.Products[:k], Packages: in.Packages[:k]})
+		for _, c := range []struct {
+			shape       string
+			ids         []string
+			thresholdMS float64
+		}{{"realtime", one, 5}, {"batch 5,000", in.Recent, 3000}} {
+			q, args, err := candidateQuery(r, c.ids)
+			if err != nil {
+				t.Fatalf("candidateQuery: %v", err)
+			}
+			m := &measured{id: fmt.Sprintf("A%d-%s", 2*k, c.shape[:2]), name: fmt.Sprintf("%d products + %d packages, and (%d sets)", k, k, 2*k), shape: c.shape, thresholdMS: c.thresholdMS, statement: q, argCount: len(args)}
+			m.first, m.warm = measure(ctx, t, db, q, args, candidateTxSettings...)
+			rows = append(rows, m)
+		}
+	}
+	writeResults(t, filepath.Join(dir, "and-sweep.md"), rows, m8Result{})
 }

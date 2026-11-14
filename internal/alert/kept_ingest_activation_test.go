@@ -70,11 +70,11 @@ func TestKeptIngestActivation(t *testing.T) {
 	pool := copyPool(ctx, t)
 	st := store.New(pool)
 	orgID := uuid.New()
-	if _, err := db.ExecContext(ctx, `INSERT INTO organizations (id, name) VALUES ($1, $2)`, orgID, "M8 activation "+orgID.String()[:8]); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO organizations (id, name) VALUES ($1, $2)`, orgID, "limit-rule activation measurement "+orgID.String()[:8]); err != nil {
 		t.Fatalf("create organisation: %v", err)
 	}
 	rule, err := st.CreateAlertRule(ctx, orgID, store.CreateAlertRuleParams{
-		Name:       "M8 limit rule, or",
+		Name:       "limit rule (50 products + 50 packages), or",
 		Logic:      string(dsl.LogicOr),
 		Conditions: condJSON,
 		Status:     "activating",
@@ -96,7 +96,7 @@ func TestKeptIngestActivation(t *testing.T) {
 	if err != nil || after == nil {
 		t.Fatalf("read rule after activation: %v", err)
 	}
-	line := fmt.Sprintf("M8 full activation (disposable copy): %s wall clock, %d events, rule status %s, threshold 7 min, %s.\n",
+	line := fmt.Sprintf("M8, full activation of the limit rule under or (disposable copy): %s wall clock, %d events, rule status %s, threshold 7 min, %s.\n",
 		elapsed.Round(time.Second), events, after.Status, map[bool]string{true: "pass", false: "FAIL"}[actErr == nil && elapsed <= 7*time.Minute])
 	if actErr != nil {
 		line = strings.TrimSuffix(line, ".\n") + fmt.Sprintf(" (activation error class %s).\n", errorClass(actErr))
@@ -106,7 +106,7 @@ func TestKeptIngestActivation(t *testing.T) {
 	}
 	t.Log(line)
 	if actErr != nil || elapsed > 7*time.Minute {
-		t.Errorf("M8 fails: %s", line)
+		t.Errorf("full activation of the limit rule fails: %s", line)
 	}
 }
 

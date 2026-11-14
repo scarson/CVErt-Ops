@@ -4,14 +4,16 @@ INSERT INTO cves (
     date_modified_canonical, date_first_seen, description_primary,
     severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source,
     cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges,
-    cwe_ids, exploit_available, in_cisa_kev, material_hash
+    cwe_ids, exploit_available, in_cisa_kev, material_hash,
+    match_inputs_hash, date_match_inputs_changed
 )
 VALUES (
     $1, $2, $3, $4,
     $5, now(), $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14,
-    $15, $16, $17, $18
+    $15, $16, $17, $18,
+    $19, $5
 )
 ON CONFLICT (cve_id) DO UPDATE
     SET status                   = EXCLUDED.status,
@@ -35,7 +37,15 @@ ON CONFLICT (cve_id) DO UPDATE
         cwe_ids                  = EXCLUDED.cwe_ids,
         exploit_available        = EXCLUDED.exploit_available,
         in_cisa_kev              = EXCLUDED.in_cisa_kev,
-        material_hash            = EXCLUDED.material_hash;
+        material_hash            = EXCLUDED.material_hash,
+        -- Stamp a change to the rule match inputs outside material_hash (re-checks
+        -- the CVE without firing unrelated rules). A stored NULL counts as changed.
+        date_match_inputs_changed = CASE
+            WHEN cves.match_inputs_hash IS DISTINCT FROM EXCLUDED.match_inputs_hash
+            THEN EXCLUDED.date_modified_canonical
+            ELSE cves.date_match_inputs_changed
+        END,
+        match_inputs_hash        = EXCLUDED.match_inputs_hash;
 
 -- name: GetCVE :one
 SELECT * FROM cves WHERE cve_id = $1;

@@ -437,3 +437,27 @@ func TestEvaluateCPERowsMeter(t *testing.T) {
 		}
 	})
 }
+
+func TestCPEProductKey(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in, want string
+	}{
+		{cpeNodeAny, "a:nodejs:node.js"},
+		{cpeDotnetPrev1, "a:microsoft:.net"},
+		// Escapes stay as stored, and an escaped colon does not split.
+		{`cpe:2.3:a:1und1:1\&1_online_storage:1.0:*:*:*:*:*:*:*`, `a:1und1:1\&1_online_storage`},
+		{`cpe:2.3:a:ven\:dor:prod:*:*:*:*:*:*:*:*`, `a:ven\:dor:prod`},
+		// Case is kept: the key is compared as stored.
+		{"cpe:2.3:o:Vendor:Product:*:*:*:*:*:*:*:*", "o:Vendor:Product"},
+		// Exactly five components is enough; fewer has no product.
+		{"cpe:2.3:h:vendor:product", "h:vendor:product"},
+		{"cpe:2.3:a:vendor", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := CPEProductKey(tt.in); got != tt.want {
+			t.Errorf("CPEProductKey(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}

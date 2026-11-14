@@ -244,7 +244,7 @@ func (q *Queries) GetAllCVESources(ctx context.Context, cveID string) ([]CveSour
 }
 
 const getCVE = `-- name: GetCVE :one
-SELECT cve_id, status, date_published, date_modified_source_max, date_modified_canonical, date_first_seen, description_primary, severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source, cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges, cwe_ids, exploit_available, in_cisa_kev, epss_score, date_epss_updated, material_hash FROM cves WHERE cve_id = $1
+SELECT cve_id, status, date_published, date_modified_source_max, date_modified_canonical, date_first_seen, description_primary, severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source, cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges, cwe_ids, exploit_available, in_cisa_kev, epss_score, date_epss_updated, material_hash, match_inputs_hash, date_match_inputs_changed FROM cves WHERE cve_id = $1
 `
 
 func (q *Queries) GetCVE(ctx context.Context, cveID string) (CVE, error) {
@@ -272,6 +272,8 @@ func (q *Queries) GetCVE(ctx context.Context, cveID string) (CVE, error) {
 		&i.EpssScore,
 		&i.DateEpssUpdated,
 		&i.MaterialHash,
+		&i.MatchInputsHash,
+		&i.DateMatchInputsChanged,
 	)
 	return i, err
 }
@@ -706,7 +708,7 @@ func (q *Queries) ListCVEIDsAfter(ctx context.Context, arg ListCVEIDsAfterParams
 }
 
 const listCVEs = `-- name: ListCVEs :many
-SELECT c.cve_id, c.status, c.date_published, c.date_modified_source_max, c.date_modified_canonical, c.date_first_seen, c.description_primary, c.severity, c.cvss_v3_score, c.cvss_v3_vector, c.cvss_v3_source, c.cvss_v4_score, c.cvss_v4_vector, c.cvss_v4_source, c.cvss_score_diverges, c.cwe_ids, c.exploit_available, c.in_cisa_kev, c.epss_score, c.date_epss_updated, c.material_hash
+SELECT c.cve_id, c.status, c.date_published, c.date_modified_source_max, c.date_modified_canonical, c.date_first_seen, c.description_primary, c.severity, c.cvss_v3_score, c.cvss_v3_vector, c.cvss_v3_source, c.cvss_v4_score, c.cvss_v4_vector, c.cvss_v4_source, c.cvss_score_diverges, c.cwe_ids, c.exploit_available, c.in_cisa_kev, c.epss_score, c.date_epss_updated, c.material_hash, c.match_inputs_hash, c.date_match_inputs_changed
 FROM cves c
 ORDER BY c.date_modified_canonical DESC, c.cve_id
 LIMIT $1 OFFSET $2
@@ -750,6 +752,8 @@ func (q *Queries) ListCVEs(ctx context.Context, arg ListCVEsParams) ([]CVE, erro
 			&i.EpssScore,
 			&i.DateEpssUpdated,
 			&i.MaterialHash,
+			&i.MatchInputsHash,
+			&i.DateMatchInputsChanged,
 		); err != nil {
 			return nil, err
 		}
@@ -896,14 +900,16 @@ INSERT INTO cves (
     date_modified_canonical, date_first_seen, description_primary,
     severity, cvss_v3_score, cvss_v3_vector, cvss_v3_source,
     cvss_v4_score, cvss_v4_vector, cvss_v4_source, cvss_score_diverges,
-    cwe_ids, exploit_available, in_cisa_kev, material_hash
+    cwe_ids, exploit_available, in_cisa_kev, material_hash,
+    match_inputs_hash, date_match_inputs_changed
 )
 VALUES (
     $1, $2, $3, $4,
     $5, now(), $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14,
-    $15, $16, $17, $18
+    $15, $16, $17, $18,
+    $19, $5
 )
 ON CONFLICT (cve_id) DO UPDATE
     SET status                   = EXCLUDED.status,
@@ -927,7 +933,15 @@ ON CONFLICT (cve_id) DO UPDATE
         cwe_ids                  = EXCLUDED.cwe_ids,
         exploit_available        = EXCLUDED.exploit_available,
         in_cisa_kev              = EXCLUDED.in_cisa_kev,
-        material_hash            = EXCLUDED.material_hash
+        material_hash            = EXCLUDED.material_hash,
+        -- Stamp a change to the rule match inputs outside material_hash (re-checks
+        -- the CVE without firing unrelated rules). A stored NULL counts as changed.
+        date_match_inputs_changed = CASE
+            WHEN cves.match_inputs_hash IS DISTINCT FROM EXCLUDED.match_inputs_hash
+            THEN EXCLUDED.date_modified_canonical
+            ELSE cves.date_match_inputs_changed
+        END,
+        match_inputs_hash        = EXCLUDED.match_inputs_hash
 `
 
 type UpsertCVEParams struct {
@@ -949,6 +963,7 @@ type UpsertCVEParams struct {
 	ExploitAvailable      bool
 	InCisaKev             bool
 	MaterialHash          sql.NullString
+	MatchInputsHash       sql.NullString
 }
 
 func (q *Queries) UpsertCVE(ctx context.Context, arg UpsertCVEParams) error {
@@ -971,6 +986,7 @@ func (q *Queries) UpsertCVE(ctx context.Context, arg UpsertCVEParams) error {
 		arg.ExploitAvailable,
 		arg.InCisaKev,
 		arg.MaterialHash,
+		arg.MatchInputsHash,
 	)
 	return err
 }

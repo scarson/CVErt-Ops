@@ -342,6 +342,102 @@ func TestSplitCPE(t *testing.T) {
 	}
 }
 
+// productValueAsCPE is a rule's product value placed in a full CPE 2.3 name, as
+// the version check endpoint would receive it.
+func productValueAsCPE(v string) RawItem {
+	return RawItem{CPE: "cpe:2.3:a:" + v + ":1.0:*:*:*:*:*:*:*"}
+}
+
+func TestParseProductValueAccepts(t *testing.T) {
+	t.Parallel()
+	long := atLength(t, "acme:", "x", "", 255)
+	tests := []struct {
+		raw  string
+		want ProductRef
+	}{
+		{"nodejs:node.js", ProductRef{Vendor: "nodejs", Product: "node.js"}},
+		{"NodeJS:Node.JS", ProductRef{Vendor: "nodejs", Product: "node.js"}},
+		{`nodejs:node\.js`, ProductRef{Vendor: "nodejs", Product: "node.js"}},
+		{`1und1:1\&1_online_storage`, ProductRef{Vendor: "1und1", Product: `1\&1_online_storage`}},
+		{"microsoft:.net", ProductRef{Vendor: "microsoft", Product: ".net"}},
+		{"f5:nginx_open_source", ProductRef{Vendor: "f5", Product: "nginx_open_source"}},
+		{`notepad-plus-plus:notepad\+\+`, ProductRef{Vendor: "notepad-plus-plus", Product: `notepad\+\+`}},
+		{long, ProductRef{Vendor: "acme", Product: strings.Repeat("x", 250)}},
+		// An escaped wildcard is a literal character, and an escaped backslash
+		// at the end escapes nothing after it.
+		{`nodejs:node\*`, ProductRef{Vendor: "nodejs", Product: `node\*`}},
+		{`nodejs:node.js\\`, ProductRef{Vendor: "nodejs", Product: `node.js\\`}},
+	}
+	for _, tt := range tests {
+		got, err := ParseProductValue(tt.raw)
+		if err != nil {
+			t.Errorf("ParseProductValue(%q) error %q, want %+v", tt.raw, err, tt.want)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("ParseProductValue(%q) = %+v, want %+v", tt.raw, got, tt.want)
+		}
+		// Design section 3.1: every product a rule accepts, the check accepts too.
+		if item := ParseItem(0, productValueAsCPE(tt.raw)); item.Error != nil {
+			t.Errorf("the check refuses accepted value %q: %+v", tt.raw, *item.Error)
+		}
+	}
+}
+
+func TestParseProductValueRefuses(t *testing.T) {
+	t.Parallel()
+	const (
+		tooLong    = "value must not exceed 255 characters"
+		notASCII   = "value must be printable ASCII with no spaces, as a CPE 2.3 name is"
+		notPair    = `value must be "vendor:product", the vendor and product of a CPE 2.3 name, for example "nodejs:node.js"`
+		notLiteral = `vendor and product must be literal names, not "*", "-" or a pattern with "*" or "?"`
+		backslash  = "vendor and product must not end in an unescaped backslash"
+	)
+	kelvin := "nodejs:" + string(rune(0x212A)) + "node"
+	tests := []struct {
+		raw  string
+		want string
+		// checkAccepts is what the version check does with the value in a full
+		// CPE. The rule refuses unescaped "*" and "?" that the check accepts
+		// (design section 3.1); every other refusal here the check makes too,
+		// except the length, whose limit there is the whole CPE's.
+		checkAccepts bool
+	}{
+		{atLength(t, "acme:", "x", "", 256), tooLong, true},
+		{kelvin, notASCII, false},
+		{"nodejs node.js", notASCII, false},
+		{" ", notASCII, false},
+		{"", notPair, false},
+		{"nodejs", notPair, false},
+		{"a:b:c", notPair, false},
+		{":node.js", notPair, false},
+		{"nodejs:", notPair, false},
+		{"*:node.js", notLiteral, false},
+		{"nodejs:-", notLiteral, false},
+		{"nodejs:node*", notLiteral, true},
+		{"nodejs:no?de", notLiteral, true},
+		{`nodejs:\-`, notLiteral, false},
+		{`nodejs:node.js\`, backslash, false},
+		{"notepad-plus-plus:notepad++",
+			`character "+" must be escaped with a backslash, as NVD writes CPE names (for example "notepad\+\+")`, false},
+	}
+	for _, tt := range tests {
+		got, err := ParseProductValue(tt.raw)
+		if err == nil {
+			t.Errorf("ParseProductValue(%q) = %+v, want error %q", tt.raw, got, tt.want)
+		} else if err.Error() != tt.want {
+			t.Errorf("ParseProductValue(%q) error %q, want %q", tt.raw, err, tt.want)
+		}
+		item := ParseItem(0, productValueAsCPE(tt.raw))
+		if accepted := item.Error == nil; accepted != tt.checkAccepts {
+			t.Errorf("the check on %q: accepted %v, want %v (%s)", tt.raw, accepted, tt.checkAccepts, describe(item))
+		}
+		if !tt.checkAccepts && item.Error != nil && item.Error.Code != "invalid_cpe" {
+			t.Errorf("the check refuses %q with %q, want invalid_cpe", tt.raw, item.Error.Code)
+		}
+	}
+}
+
 func assertRefused(t *testing.T, got Item, index int, code string) {
 	t.Helper()
 	if got.Error == nil {

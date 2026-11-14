@@ -1,9 +1,11 @@
-// ABOUTME: Parses version check request items into a package or product and a version.
+// ABOUTME: Parses version check request items into a package or product and a version, and alert rule product values.
 // ABOUTME: Refuses an item with a stable error code so one bad item does not fail the request.
 package check
 
 import (
 	"errors"
+	"fmt"
+	"iter"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -245,25 +247,134 @@ func parseCPE(item Item, raw, version string) Item {
 	return item
 }
 
+// maxProductValueLen is the most characters an alert rule's product value may
+// hold (value rules: dev/plans/2026-11-13-product-match-rules-design.md section 3.1).
+const maxProductValueLen = 255
+
+// The refusals of ParseProductValue, in the order it checks them.
+var (
+	errProductValueTooLong    = errors.New("value must not exceed 255 characters")
+	errProductValueNotASCII   = errors.New("value must be printable ASCII with no spaces, as a CPE 2.3 name is")
+	errProductValueNotPair    = errors.New(`value must be "vendor:product", the vendor and product of a CPE 2.3 name, for example "nodejs:node.js"`)
+	errProductValueNotLiteral = errors.New(`vendor and product must be literal names, not "*", "-" or a pattern with "*" or "?"`)
+	errProductValueBackslash  = errors.New("vendor and product must not end in an unescaped backslash")
+)
+
+// ParseProductValue reads an alert rule's product value, "vendor:product" as a
+// CPE 2.3 name writes them, into a ProductRef with no Part: lower-cased, with
+// the redundant escapes dropRedundantEscapes removes. It applies parseCPE's
+// rules to the two components and refuses, besides, an unescaped "*" or "?",
+// which the check reads as a wildcard, and a trailing unescaped backslash,
+// which would escape the colon that follows the product in a CPE prefix. So
+// every value it accepts, the check accepts inside a full CPE. The first rule
+// a value breaks is the error returned.
+func ParseProductValue(raw string) (ProductRef, error) {
+	if utf8.RuneCountInString(raw) > maxProductValueLen {
+		return ProductRef{}, errProductValueTooLong
+	}
+	// Checked before lower-casing, as parseCPE does, so a character such as
+	// KELVIN SIGN cannot lower-case into an ASCII letter.
+	if strings.ContainsFunc(raw, func(r rune) bool { return r < 0x21 || r > 0x7e }) {
+		return ProductRef{}, errProductValueNotASCII
+	}
+	parts := splitCPE(strings.ToLower(raw))
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ProductRef{}, errProductValueNotPair
+	}
+	// Values are checked after dropping escapes, so "\-" cannot become the NA value "-".
+	vendor, product := dropRedundantEscapes(parts[0]), dropRedundantEscapes(parts[1])
+	for _, v := range []string{vendor, product} {
+		if !literalCPEValue(v) || hasUnescapedWildcard(v) {
+			return ProductRef{}, errProductValueNotLiteral
+		}
+	}
+	for _, v := range []string{vendor, product} {
+		if endsInUnescapedBackslash(v) {
+			return ProductRef{}, errProductValueBackslash
+		}
+	}
+	for _, v := range []string{vendor, product} {
+		if c, found := firstUnescapedInvalid(v); found {
+			return ProductRef{}, fmt.Errorf(
+				`character "%c" must be escaped with a backslash, as NVD writes CPE names (for example "notepad\+\+")`, c)
+		}
+	}
+	return ProductRef{Vendor: vendor, Product: product}, nil
+}
+
 func literalCPEValue(v string) bool {
 	return v != "" && v != "*" && v != "-"
+}
+
+// unescapedBytes yields each byte of a CPE value that a backslash does not
+// escape, skipping the backslashes themselves.
+func unescapedBytes(v string) iter.Seq[byte] {
+	return func(yield func(byte) bool) {
+		for i := 0; i < len(v); i++ {
+			if v[i] == '\\' {
+				i++
+				continue
+			}
+			if !yield(v[i]) {
+				return
+			}
+		}
+	}
+}
+
+// cpeLiteralByte reports whether CPE 2.3 lets c stand unescaped in a
+// lower-cased value as a literal character: a letter, a digit, ".", "-" or "_".
+func cpeLiteralByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == '_'
+}
+
+// firstUnescapedInvalid returns the first byte of a lower-cased CPE value that
+// a backslash does not escape and that is not a letter, a digit, ".", "-" or
+// "_", and whether there is one.
+func firstUnescapedInvalid(v string) (byte, bool) {
+	for c := range unescapedBytes(v) {
+		if !cpeLiteralByte(c) {
+			return c, true
+		}
+	}
+	return 0, false
 }
 
 // escapedAsCPERequires reports whether every character of a lower-cased CPE
 // value that is not escaped by a backslash is a letter, a digit, ".", "-", "_",
 // "*" or "?".
 func escapedAsCPERequires(v string) bool {
-	for i := 0; i < len(v); i++ {
-		c := v[i]
-		switch {
-		case c == '\\':
-			i++
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', strings.IndexByte(".-_*?", c) >= 0:
-		default:
+	for c := range unescapedBytes(v) {
+		if !cpeLiteralByte(c) && c != '*' && c != '?' {
 			return false
 		}
 	}
 	return true
+}
+
+// hasUnescapedWildcard reports whether a CPE value holds a "*" or "?" that a
+// backslash does not escape.
+func hasUnescapedWildcard(v string) bool {
+	for c := range unescapedBytes(v) {
+		if c == '*' || c == '?' {
+			return true
+		}
+	}
+	return false
+}
+
+// endsInUnescapedBackslash reports whether a CPE value's last byte is a
+// backslash that escapes nothing.
+func endsInUnescapedBackslash(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if v[i] == '\\' {
+			if i == len(v)-1 {
+				return true
+			}
+			i++
+		}
+	}
+	return false
 }
 
 // dropRedundantEscapes removes the backslash before ".", "-" or "_" in a CPE

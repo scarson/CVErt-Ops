@@ -252,16 +252,25 @@ func numericSQL(sqlExpr, op string, raw json.RawMessage, parse func(json.RawMess
 	}
 }
 
+// setSQL builds eq/neq as one bound value and in/not_in as one bound array
+// (pitfall DB-12: one placeholder per list value can pass PostgreSQL's 65,535
+// parameter limit). sqlExpr is a field registry constant, never user input.
 func setSQL(sqlExpr, op string, raw json.RawMessage) (sq.Sqlizer, error) {
 	if op == "in" || op == "not_in" {
 		var vals []string
 		if err := json.Unmarshal(raw, &vals); err != nil {
 			return nil, fmt.Errorf("array value: %w", err)
 		}
-		if op == "in" {
-			return sq.Eq{sqlExpr: vals}, nil
+		// A JSON null list unmarshals to nil, and pq.Array(nil) binds SQL NULL:
+		// <> ALL(NULL) is NULL, so not_in null would match nothing. An empty array
+		// gives false for = ANY and true for <> ALL.
+		if vals == nil {
+			vals = []string{}
 		}
-		return sq.NotEq{sqlExpr: vals}, nil
+		if op == "in" {
+			return sq.Expr(sqlExpr+" = ANY(?)", pq.Array(vals)), nil
+		}
+		return sq.Expr(sqlExpr+" <> ALL(?)", pq.Array(vals)), nil
 	}
 	var v string
 	if err := json.Unmarshal(raw, &v); err != nil {

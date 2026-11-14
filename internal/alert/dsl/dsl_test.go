@@ -365,12 +365,10 @@ func TestCompile_EnumIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["high","critical"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.severity") {
+	if !strings.Contains(sql, "lower(cves.severity) = ANY(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for IN, got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "high", "critical")
 }
 
 func TestCompile_BoolEq(t *testing.T) {
@@ -838,11 +836,73 @@ func TestCompile_EnumNotIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"not_in","value":["low","none"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.severity") {
+	if !strings.Contains(sql, "lower(cves.severity) <> ALL(") {
 		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
+	assertOneArrayArg(t, args, "low", "none")
+}
+
+// assertOneArrayArg fails unless args is exactly one array parameter holding want.
+func assertOneArrayArg(t *testing.T, args []interface{}, want ...string) {
+	t.Helper()
+	if len(args) != 1 {
+		t.Fatalf("expected 1 array arg, got %d: %v", len(args), args)
+	}
+	got, ok := args[0].(*pq.StringArray)
+	if !ok {
+		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
+	}
+	if !reflect.DeepEqual(*got, pq.StringArray(want)) {
+		t.Errorf("array arg = %v, want %v", *got, want)
+	}
+}
+
+// TestCompile_SetListIsOneParameter checks a list longer than PostgreSQL's 65,535
+// parameter limit binds as one array parameter, not one placeholder per value.
+func TestCompile_SetListIsOneParameter(t *testing.T) {
+	t.Parallel()
+	ids := make([]string, 70000)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("CVE-2024-%05d", i)
+	}
+	value, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatalf("marshal ids: %v", err)
+	}
+	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"in","value":`+string(value)+`}]}`, nil)
+	sql, args := sqlOf(t, c)
+	if n := strings.Count(sql, "?") + strings.Count(sql, "$"); n != 1 {
+		t.Errorf("SQL has %d placeholders, want 1", n)
+	}
+	if len(args) != 1 {
+		t.Fatalf("expected 1 arg, got %d", len(args))
+	}
+	got, ok := args[0].(*pq.StringArray)
+	if !ok {
+		t.Fatalf("arg is %T, want *pq.StringArray", args[0])
+	}
+	if len(*got) != len(ids) {
+		t.Errorf("array arg holds %d values, want %d", len(*got), len(ids))
+	}
+}
+
+// TestCompile_NullListBindsEmptyArray checks a JSON null list binds an empty array,
+// not SQL NULL: <> ALL(NULL) would make not_in match nothing.
+func TestCompile_NullListBindsEmptyArray(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"in", "not_in"} {
+		c := compileRule(t, `{"logic":"and","conditions":[{"field":"severity","operator":"`+op+`","value":null}]}`, nil)
+		_, args := sqlOf(t, c)
+		if len(args) != 1 {
+			t.Fatalf("%s: expected 1 arg, got %d: %v", op, len(args), args)
+		}
+		got, ok := args[0].(*pq.StringArray)
+		if !ok {
+			t.Fatalf("%s: arg is %T, want *pq.StringArray", op, args[0])
+		}
+		if *got == nil {
+			t.Errorf("%s: array arg is nil, which binds SQL NULL; want an empty array", op)
+		}
 	}
 }
 
@@ -1369,12 +1429,10 @@ func TestCompile_StringNotIn(t *testing.T) {
 	t.Parallel()
 	c := compileRule(t, `{"logic":"and","conditions":[{"field":"cve_id","operator":"not_in","value":["CVE-2024-0001","CVE-2024-0002"]}]}`, nil)
 	sql, args := sqlOf(t, c)
-	if !strings.Contains(sql, "cves.cve_id") {
-		t.Errorf("SQL missing cve_id reference: %q", sql)
+	if !strings.Contains(sql, "cves.cve_id <> ALL(") {
+		t.Errorf("unexpected SQL %q", sql)
 	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for NOT IN, got %d: %v", len(args), args)
-	}
+	assertOneArrayArg(t, args, "CVE-2024-0001", "CVE-2024-0002")
 }
 
 func TestCompile_EnumNeq(t *testing.T) {

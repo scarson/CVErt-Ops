@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/scarson/cvert-ops/internal/ecosystem"
@@ -22,6 +24,17 @@ var selectiveFields = map[string]bool{
 	"affected.package":         true,
 	"fts_query":                true,
 }
+
+// maxConditions bounds a rule's conditions, and with them the copies of the
+// candidate IDs one statement carries (design section 3.2).
+const maxConditions = 100
+
+// Messages that Validate and Compile share, verbatim from design section 8.
+const (
+	msgTooManyConditions = "a rule may hold at most 100 conditions"
+	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
+	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
+)
 
 // Validate performs semantic validation of a Rule. All errors are collected and returned together
 // so the caller can display the full problem list. hasWatchlists relaxes the regex-only guard.
@@ -104,6 +117,12 @@ func Validate(r Rule, hasWatchlists bool) (errs []ValidationError, hasEPSS, isEP
 			Message:  "regex-only rule must have at least one selective non-regex condition or watchlist IDs assigned",
 			Severity: "error",
 		})
+	}
+
+	errs = append(errs, validatePackageCorrelation(r)...)
+
+	if len(r.Conditions) > maxConditions {
+		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgTooManyConditions, Severity: "error"})
 	}
 
 	isEPSSOnly = hasEPSSCond && allEPSS && len(r.Conditions) > 0
@@ -209,6 +228,14 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 					}
 				}
 			}
+			// Existing fields keep accepting an empty in; a package list must name a package.
+			if c.Field == "affected.package" {
+				if len(vals) == 0 {
+					add("value must list at least one item")
+				} else if slices.ContainsFunc(vals, isBlank) {
+					add("value must not be empty")
+				}
+			}
 		} else {
 			var v string
 			if err := json.Unmarshal(c.Value, &v); err != nil {
@@ -218,9 +245,114 @@ func validateValue(idx int, c Condition, spec fieldSpec) []ValidationError {
 			if spec.enumValues != nil && !affectedValueValid(c.Field, spec, v) {
 				add(fmt.Sprintf("value %q is not valid for %q; valid: %v", v, c.Field, spec.enumValues))
 			}
+			if c.Field == "affected.package" && c.Op == "eq" && isBlank(v) {
+				add("value must not be empty")
+			}
 		}
 	}
 	return errs
+}
+
+// isBlank reports whether v is empty or only whitespace.
+func isBlank(v string) bool { return strings.TrimSpace(v) == "" }
+
+// validatePackageCorrelation checks a rule's package conditions against its
+// correlated ecosystem conditions, the eq/in affected.ecosystem conditions that
+// an "and" rule's package conditions must hold with on one row (design section
+// 4.2). Such a rule whose ecosystem conditions no ecosystem satisfies together
+// can never match, and an exact package match with no ecosystem to narrow by
+// first gets a warning.
+func validatePackageCorrelation(r Rule) []ValidationError {
+	var errs []ValidationError
+	hasPackage := false
+	var exactPackages []int // indexes of affected.package eq/in conditions
+	ecosystemConds := 0
+	var ecosystemValues [][]string // values of the parseable ecosystem conditions
+	for i, c := range r.Conditions {
+		switch {
+		case c.Field == "affected.package":
+			hasPackage = true
+			if c.Op == "eq" || c.Op == "in" {
+				exactPackages = append(exactPackages, i)
+			}
+		case c.Field == "affected.ecosystem" && (c.Op == "eq" || c.Op == "in"):
+			ecosystemConds++
+			// An unparseable value is already reported by validateValue.
+			if vals, err := conditionValues(c); err == nil {
+				ecosystemValues = append(ecosystemValues, vals)
+			}
+		}
+	}
+
+	if r.Logic == LogicAnd && hasPackage && ecosystemConds >= 2 &&
+		len(ecosystemValues) == ecosystemConds && !ecosystemsSatisfiable(ecosystemValues) {
+		errs = append(errs, ValidationError{Index: -1, Field: "", Message: msgNeverMatches, Severity: "error"})
+	}
+	if r.Logic != LogicAnd || ecosystemConds == 0 {
+		for _, i := range exactPackages {
+			errs = append(errs, ValidationError{Index: i, Field: "affected.package", Message: msgNoEcosystemFirst, Severity: "warning"})
+		}
+	}
+	return errs
+}
+
+// ecosystemsSatisfiable reports whether some stored ecosystem matches a value of
+// every condition. A value v matches a stored ecosystem s when s equals v, or when
+// v's base takes a suffix and s starts with v followed by a colon.
+//
+// Matches are colon-prefix cones, so if any stored ecosystem satisfies every
+// condition, the longest of the values that match it is itself one. It is
+// therefore enough to try each value w as the stored ecosystem. The values that
+// can match w are w and its colon-prefixes, so each condition is checked with a
+// few map lookups: the cost is linear in the number of values, where comparing
+// values pairwise would not be (a request can hold tens of thousands).
+func ecosystemsSatisfiable(conds [][]string) bool {
+	sets := make([]map[string]bool, len(conds))
+	for i, vals := range conds {
+		sets[i] = make(map[string]bool, len(vals))
+		for _, v := range vals {
+			sets[i][v] = true
+		}
+	}
+	tried := make(map[string]bool)
+	for _, vals := range conds {
+		for _, w := range vals {
+			if tried[w] {
+				continue
+			}
+			tried[w] = true
+			if matchedByEvery(sets, w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// matchedByEvery reports whether every condition's value set holds a value that
+// matches the stored ecosystem w: w itself, or, when w's base takes a suffix, a
+// prefix of w that ends before one of its colons.
+func matchedByEvery(sets []map[string]bool, w string) bool {
+	base, _, _ := strings.Cut(w, ":")
+	takesSuffix := ecosystem.TakesSuffix(base)
+	for _, set := range sets {
+		matched := set[w] || (takesSuffix && hasColonPrefixIn(set, w))
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// hasColonPrefixIn reports whether set holds a prefix of w that ends before one
+// of w's colons.
+func hasColonPrefixIn(set map[string]bool, w string) bool {
+	for i := range len(w) {
+		if w[i] == ':' && set[w[:i]] {
+			return true
+		}
+	}
+	return false
 }
 
 // affectedValueValid reports whether v is allowed for a kindAffected field with an

@@ -1978,3 +1978,211 @@ func TestCompile_ANDLogicWithWatchlistsArgCount(t *testing.T) {
 		t.Errorf("expected at least 4 args, got %d: %v", len(args), args)
 	}
 }
+
+// ─── Package conditions and rule limits (design section 8) ──────────────────
+
+const (
+	msgTooManyConditions = "a rule may hold at most 100 conditions"
+	msgEmptyValue        = "value must not be empty"
+	msgEmptyList         = "value must list at least one item"
+	msgNeverMatches      = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
+	msgNoEcosystemFirst  = `without an ecosystem condition in an "and" rule, this match cannot narrow by ecosystem first and may be slow on PostgreSQL versions before 18`
+)
+
+// ruleJSON builds a rule document from logic and condition objects.
+func ruleJSON(logic string, conds ...string) string {
+	return `{"logic":"` + logic + `","conditions":[` + strings.Join(conds, ",") + `]}`
+}
+
+// findError returns the validation entries with message msg.
+func findError(errs []dsl.ValidationError, msg string) []dsl.ValidationError {
+	var found []dsl.ValidationError
+	for _, e := range errs {
+		if e.Message == msg {
+			found = append(found, e)
+		}
+	}
+	return found
+}
+
+func TestValidate_ConditionLimit(t *testing.T) {
+	t.Parallel()
+	cond := `{"field":"severity","operator":"eq","value":"high"}`
+	conds := make([]string, 101)
+	for i := range conds {
+		conds[i] = cond
+	}
+
+	r := mustParse(t, ruleJSON("and", conds[:100]...))
+	if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+		t.Errorf("100 conditions: unexpected errors %v", errs)
+	}
+	if _, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil); err != nil {
+		t.Errorf("100 conditions: Compile: %v", err)
+	}
+
+	r = mustParse(t, ruleJSON("and", conds...))
+	errs, _, _ := dsl.Validate(r, false)
+	if len(errs) != 1 || errs[0].Message != msgTooManyConditions || errs[0].Index != -1 || errs[0].Severity != "error" {
+		t.Errorf("101 conditions: errors = %+v, want one rule-level %q", errs, msgTooManyConditions)
+	}
+	// A stored rule edited past the limit fails closed when compiled.
+	if _, err := dsl.Compile(r, testRuleID, 1, testOrgID, nil); err == nil || !strings.Contains(err.Error(), msgTooManyConditions) {
+		t.Errorf("101 conditions: Compile error = %v, want %q", err, msgTooManyConditions)
+	}
+}
+
+func TestValidate_PackageEmptyValues(t *testing.T) {
+	t.Parallel()
+	npm := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`
+	tests := []struct {
+		name, cond, msg string
+	}{
+		{"eq whitespace", `{"field":"affected.package","operator":"eq","value":" "}`, msgEmptyValue},
+		{"eq empty", `{"field":"affected.package","operator":"eq","value":""}`, msgEmptyValue},
+		{"in holding an empty value", `{"field":"affected.package","operator":"in","value":["a",""]}`, msgEmptyValue},
+		{"in holding a whitespace value", `{"field":"affected.package","operator":"in","value":["a","\t "]}`, msgEmptyValue},
+		{"in with no values", `{"field":"affected.package","operator":"in","value":[]}`, msgEmptyList},
+		{"in null", `{"field":"affected.package","operator":"in","value":null}`, msgEmptyList},
+	}
+	for _, tt := range tests {
+		r := mustParse(t, ruleJSON("and", npm, tt.cond))
+		errs, _, _ := dsl.Validate(r, false)
+		if len(errs) != 1 || errs[0].Message != tt.msg || errs[0].Index != 1 ||
+			errs[0].Field != "affected.package" || errs[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one error %q at index 1", tt.name, errs, tt.msg)
+		}
+	}
+}
+
+// TestValidate_EmptyInOnOtherFieldsUnchanged checks the empty-list error is
+// limited to affected.package: existing fields keep accepting an empty in.
+func TestValidate_EmptyInOnOtherFieldsUnchanged(t *testing.T) {
+	t.Parallel()
+	for _, cond := range []string{
+		`{"field":"severity","operator":"in","value":[]}`,
+		`{"field":"affected.ecosystem","operator":"in","value":[]}`,
+	} {
+		r := mustParse(t, ruleJSON("and", cond))
+		if errs, _, _ := dsl.Validate(r, false); len(errs) != 0 {
+			t.Errorf("%s: unexpected errors %v", cond, errs)
+		}
+	}
+}
+
+func TestValidate_NeverMatchingEcosystems(t *testing.T) {
+	t.Parallel()
+	eco := func(op, value string) string {
+		return `{"field":"affected.ecosystem","operator":"` + op + `","value":` + value + `}`
+	}
+	pkgContains := `{"field":"affected.package","operator":"contains","value":"lodash"}`
+	pkgEq := `{"field":"affected.package","operator":"eq","value":"openssl"}`
+	tests := []struct {
+		name    string
+		rule    string
+		refused bool
+	}{
+		{"npm and PyPI with a package", ruleJSON("and", eco("eq", `"npm"`), eco("eq", `"PyPI"`), pkgContains), true},
+		{"two Debian releases", ruleJSON("and", eco("eq", `"Debian:13"`), eco("eq", `"Debian:12"`), pkgEq), true},
+		{"a base name is not a prefix of another base name", ruleJSON("and", eco("eq", `"Red Hat"`), eco("eq", `"Red Hat Lightwell"`), pkgEq), true},
+		{"a third condition shares no ecosystem", ruleJSON("and", eco("eq", `"Debian:13"`), eco("eq", `"Debian"`), eco("eq", `"Ubuntu"`), pkgEq), true},
+		{"an empty in list", ruleJSON("and", eco("in", `[]`), eco("eq", `"npm"`), pkgEq), true},
+		{"in shares a value with eq", ruleJSON("and", eco("in", `["npm","PyPI"]`), eco("eq", `"npm"`), `{"field":"affected.package","operator":"eq","value":"x"}`), false},
+		{"base name covers its release", ruleJSON("and", eco("eq", `"Debian"`), eco("eq", `"Debian:13"`), pkgEq), false},
+		{"release covers a longer release", ruleJSON("and", eco("eq", `"Ubuntu:22.04"`), eco("in", `["Ubuntu:22.04:LTS","npm"]`), pkgEq), false},
+		{"negative conditions are not correlated", ruleJSON("and", eco("eq", `"npm"`), eco("neq", `"PyPI"`), pkgEq), false},
+		{"no package condition", ruleJSON("and", eco("eq", `"npm"`), eco("eq", `"PyPI"`)), false},
+		{"or rule", ruleJSON("or", eco("eq", `"npm"`), eco("eq", `"PyPI"`), pkgEq), false},
+		{"one ecosystem condition", ruleJSON("and", eco("eq", `"npm"`), pkgEq), false},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, tt.rule), false)
+		found := findError(errs, msgNeverMatches)
+		if !tt.refused {
+			if len(found) != 0 {
+				t.Errorf("%s: refused as never matching: %+v", tt.name, errs)
+			}
+			continue
+		}
+		if len(found) != 1 || found[0].Index != -1 || found[0].Severity != "error" {
+			t.Errorf("%s: errors = %+v, want one rule-level %q", tt.name, errs, msgNeverMatches)
+		}
+	}
+}
+
+// TestValidate_NeverMatchingEcosystemsLargeLists checks the check is linear in the
+// number of values: a pairwise comparison of 30,000 values per condition would make
+// this test take minutes.
+func TestValidate_NeverMatchingEcosystemsLargeLists(t *testing.T) {
+	t.Parallel()
+	debian := make([]string, 30000)
+	ubuntu := make([]string, 30000)
+	for i := range debian {
+		debian[i] = fmt.Sprintf("Debian:%d", i)
+		ubuntu[i] = fmt.Sprintf("Ubuntu:%d", i)
+	}
+	list := func(vals []string) string {
+		b, err := json.Marshal(vals)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return string(b)
+	}
+	pkg := `{"field":"affected.package","operator":"eq","value":"openssl"}`
+
+	refused := ruleJSON("and",
+		`{"field":"affected.ecosystem","operator":"in","value":`+list(debian)+`}`,
+		`{"field":"affected.ecosystem","operator":"in","value":`+list(ubuntu)+`}`, pkg)
+	errs, _, _ := dsl.Validate(mustParse(t, refused), false)
+	if found := findError(errs, msgNeverMatches); len(found) != 1 || found[0].Index != -1 {
+		t.Errorf("Debian and Ubuntu releases: errors = %d entries, want one rule-level %q", len(errs), msgNeverMatches)
+	}
+
+	allowed := ruleJSON("and",
+		`{"field":"affected.ecosystem","operator":"in","value":`+list(debian)+`}`,
+		`{"field":"affected.ecosystem","operator":"eq","value":"Debian"}`, pkg)
+	errs, _, _ = dsl.Validate(mustParse(t, allowed), false)
+	if found := findError(errs, msgNeverMatches); len(found) != 0 {
+		t.Errorf("Debian releases and Debian: refused as never matching")
+	}
+}
+
+func TestValidate_PackageMatchWithoutEcosystemWarns(t *testing.T) {
+	t.Parallel()
+	npm := `{"field":"affected.ecosystem","operator":"eq","value":"npm"}`
+	eq := `{"field":"affected.package","operator":"eq","value":"lodash"}`
+	in := `{"field":"affected.package","operator":"in","value":["lodash"]}`
+	tests := []struct {
+		name      string
+		rule      string
+		warnIndex int // -1 for no warning
+	}{
+		{"or rule", ruleJSON("or", eq), 0},
+		{"or rule with an ecosystem", ruleJSON("or", npm, eq), 1},
+		{"and rule with no ecosystem", ruleJSON("and", eq), 0},
+		{"and rule with in and no ecosystem", ruleJSON("and", in), 0},
+		{"and rule with only a negative ecosystem", ruleJSON("and", `{"field":"affected.ecosystem","operator":"neq","value":"npm"}`, eq), 1},
+		{"and rule with an ecosystem", ruleJSON("and", npm, eq), -1},
+		{"and rule with an ecosystem after the package", ruleJSON("and", in, npm), -1},
+		{"contains", ruleJSON("and", `{"field":"affected.package","operator":"contains","value":"lodash"}`), -1},
+	}
+	for _, tt := range tests {
+		errs, _, _ := dsl.Validate(mustParse(t, tt.rule), false)
+		found := findError(errs, msgNoEcosystemFirst)
+		if tt.warnIndex < 0 {
+			if len(found) != 0 {
+				t.Errorf("%s: unexpected warning %+v", tt.name, found)
+			}
+			continue
+		}
+		if len(found) != 1 || found[0].Index != tt.warnIndex || found[0].Severity != "warning" ||
+			found[0].Field != "affected.package" {
+			t.Errorf("%s: entries = %+v, want one warning at index %d", tt.name, errs, tt.warnIndex)
+		}
+		for _, e := range errs {
+			if e.Severity == "error" {
+				t.Errorf("%s: unexpected error %+v", tt.name, e)
+			}
+		}
+	}
+}

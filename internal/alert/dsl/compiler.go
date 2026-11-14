@@ -19,6 +19,11 @@ import (
 // watchlistIDs (if non-empty) are appended as an additional AND EXISTS pre-filter.
 // The caller must call Validate before Compile.
 func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlistIDs []uuid.UUID) (*CompiledRule, error) {
+	// Validate refuses this at save; a stored rule past the limit fails closed here.
+	if len(r.Conditions) > maxConditions {
+		return nil, fmt.Errorf("compile: %s", msgTooManyConditions)
+	}
+
 	var predicates []predicate
 	var postFilters []PostFilter
 	hasEPSSCond := false

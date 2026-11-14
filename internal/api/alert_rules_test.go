@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -358,6 +359,81 @@ func TestAlertRule_PatchInvalidDSL(t *testing.T) {
 	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
 	if patchResp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("patch invalid DSL: got %d, want 422", patchResp.StatusCode)
+	}
+}
+
+// TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch verifies that create
+// and PATCH refuse an "and" rule whose correlated ecosystem conditions no ecosystem
+// satisfies together, with the same error list (testing-pitfalls §4).
+func TestAlertRule_NeverMatchingEcosystemsSameErrorsOnCreateAndPatch(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	const conditions = `[
+    {"field": "affected.ecosystem", "operator": "eq", "value": "npm"},
+    {"field": "affected.ecosystem", "operator": "eq", "value": "PyPI"},
+    {"field": "affected.package", "operator": "contains", "value": "lodash"}
+  ]`
+	const wantMessage = `every ecosystem condition must hold on the same package row, and no ecosystem satisfies all of them, so this rule can never match; use one "in" condition if any of them is enough`
+
+	type problem struct {
+		Errors []struct {
+			Message  string `json:"message"`
+			Location string `json:"location"`
+		} `json:"errors"`
+	}
+	decodeProblem := func(t *testing.T, resp *http.Response, what string) problem {
+		t.Helper()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: got %d, want 422", what, resp.StatusCode)
+		}
+		var p problem
+		if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+			t.Fatalf("%s: decode problem: %v", what, err)
+		}
+		return p
+	}
+
+	createResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, `{
+  "name": "Never Matching Rule",
+  "logic": "and",
+  "conditions": `+conditions+`,
+  "watchlist_ids": []
+}`)
+	defer createResp.Body.Close() //nolint:errcheck,gosec // G104
+	created := decodeProblem(t, createResp, "create")
+	if len(created.Errors) != 1 || created.Errors[0].Message != wantMessage || created.Errors[0].Location != "body.conditions" {
+		t.Fatalf("create errors = %+v, want one rule-level %q", created.Errors, wantMessage)
+	}
+
+	// Create a valid rule and make it active so a conditions change is allowed (activating → 409).
+	validResp := doCreateAlertRule(t, ctx, ts, token, aliceReg.OrgID, validRuleDSL)
+	defer validResp.Body.Close() //nolint:errcheck,gosec // G104
+	if validResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create valid rule: got %d, want 202", validResp.StatusCode)
+	}
+	var rule struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(validResp.Body).Decode(&rule); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if err := db.SetAlertRuleStatus(ctx, mustParseUUID(t, aliceReg.OrgID), mustParseUUID(t, rule.ID), "active"); err != nil {
+		t.Fatalf("set status to active: %v", err)
+	}
+
+	patchResp := doPatchAlertRule(t, ctx, ts, token, aliceReg.OrgID, rule.ID, `{"logic":"and","conditions":`+conditions+`}`)
+	defer patchResp.Body.Close() //nolint:errcheck,gosec // G104
+	patched := decodeProblem(t, patchResp, "patch")
+	if !reflect.DeepEqual(patched.Errors, created.Errors) {
+		t.Errorf("patch errors = %+v, want the create errors %+v", patched.Errors, created.Errors)
 	}
 }
 

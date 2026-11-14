@@ -1,5 +1,5 @@
 // ABOUTME: Unit tests for the CVE-ID set predicates of affected.ecosystem, affected.package and affected.cpe_product.
-// ABOUTME: Covers correlation, exact ecosystems, release arms, package folding, product terms, candidate IDs, limits and the "or" CVE set.
+// ABOUTME: Covers correlation, exact ecosystems, release arms, package folding, product terms, candidate IDs, limits, the "or" CVE set and bound arrays.
 package dsl_test
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/check"
 )
 
 // foldedNameEq is the package predicate's folded-name comparison, the expression
@@ -336,15 +337,18 @@ func TestCompile_ProductSetNode(t *testing.T) {
 		}
 	}
 
+	// With candidate IDs the prefixes and names are bound arrays.
 	sql, args = whereOf(t, c, []string{"CVE-1"})
-	if len(args) != 40 {
-		t.Errorf("with one candidate: got %d args, want 40", len(args))
+	if sql != "("+productCandidateSet+")" {
+		t.Errorf("with one candidate, SQL:\n%s\nwant:\n%s", sql, "("+productCandidateSet+")")
 	}
-	assertCount(t, sql, nvdCandidate, 1)
-	assertCount(t, sql, cnaCandidate, 1)
-	// Each branch's candidate array comes before its terms.
-	assertArrayArgs(t, args[:1], []string{"CVE-1"})
-	assertArrayArgs(t, args[19:20], []string{"CVE-1"})
+	if len(args) != 11 {
+		t.Fatalf("with one candidate: got %d args, want 11", len(args))
+	}
+	assertArrayArgs(t, args[:4], []string{"CVE-1"}, prefixes,
+		[]string{"nodejs", "nodejs", "nodejs", "node.js", "the node.js project"},
+		[]string{"node.js", "nodejs", "node", "node.js", "node.js"})
+	assertArrayArgs(t, args[6:7], []string{"CVE-1"})
 }
 
 // containsArgs reports whether args holds want as a contiguous run.
@@ -486,9 +490,9 @@ var nameTableCPEs = []string{
 // validator accepts (design section 5.2): 50 one-value product conditions, the
 // name table's CPEs (which carry the most spellings, names and other products)
 // and unmapped values with "_" in vendor and product (four own names each), plus
-// 50 affected.package in conditions, with a 5,000-ID batch chunk. It binds 1,590
-// arguments: 360 for the mapped products, 25 for each of the 40 unmapped ones,
-// 2 candidate arrays per product set and 3 arrays per package set.
+// 50 affected.package in conditions, with a 5,000-ID batch chunk. It binds 700
+// arguments: 11 arrays per product set, which hold its candidates, prefixes,
+// names and other products whatever their number, and 3 per package set.
 func TestCompile_WorstRuleStaysUnderTheParameterLimit(t *testing.T) {
 	t.Parallel()
 	var conds []string
@@ -520,8 +524,8 @@ func TestCompile_WorstRuleStaysUnderTheParameterLimit(t *testing.T) {
 	if len(args) >= 10000 {
 		t.Errorf("got %d args, want fewer than 10,000", len(args))
 	}
-	if len(args) != 1590 {
-		t.Errorf("got %d args, want 1590 as counted in the comment", len(args))
+	if len(args) != 700 {
+		t.Errorf("got %d args, want 700 as counted in the comment", len(args))
 	}
 }
 
@@ -714,5 +718,215 @@ func TestCompile_OrWhereIsDeterministic(t *testing.T) {
 	with2, wargs2 := whereOf(t, c, []string{"CVE-9"})
 	if with1 != with2 || !reflect.DeepEqual(wargs1, wargs2) {
 		t.Errorf("Where with candidates changed between calls")
+	}
+}
+
+// ─── Product sets with candidate IDs: bound arrays ──────────────────────────
+
+const (
+	// cpePrefixMatch is the candidate form's CPE test: one array of every prefix.
+	cpePrefixMatch = "m.cpe_normalized ^@ ANY(?::text[])"
+	// cnaNameJoin is the candidate form's CNA name join over bound arrays.
+	cnaNameJoin = "JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)"
+	// cpeIndexRange marks the no-candidate form's range on the CPE index expression.
+	cpeIndexRange = `left(m.cpe_normalized, 512) COLLATE "C"`
+)
+
+// productCandidateSet is the whole candidate-form CVE set of one product set.
+const productCandidateSet = `cves.cve_id IN (
+    SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])
+    UNION ALL
+    SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )
+)`
+
+// assertPlaceholdersInOrder fails unless sql's placeholders, numbered by
+// PostgreSQL's $n format, run $1..$n once each, in order, for n arguments.
+func assertPlaceholdersInOrder(t *testing.T, sql string, nArgs int) {
+	t.Helper()
+	dollar, err := sq.Dollar.ReplacePlaceholders(sql)
+	if err != nil {
+		t.Fatalf("ReplacePlaceholders: %v", err)
+	}
+	marks := regexp.MustCompile(`\$(\d+)`).FindAllStringSubmatch(dollar, -1)
+	if len(marks) != nArgs {
+		t.Fatalf("%d placeholders for %d args:\n%s", len(marks), nArgs, dollar)
+	}
+	for i, m := range marks {
+		if m[1] != strconv.Itoa(i+1) {
+			t.Errorf("placeholder %d is $%s, want $%d", i+1, m[1], i+1)
+		}
+	}
+}
+
+// TestCompile_ProductCandidateFormExactSQL pins the candidate form of an "or"
+// rule of two product conditions: one CPE branch and one CNA branch for all
+// three values, with every prefix, name and other product a bound array, and
+// groups numbered per value, so .NET's other products exclude rows only from
+// .NET's names (design section 5.1).
+func TestCompile_ProductCandidateFormExactSQL(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, `{"logic":"or","conditions":[`+productEq("nodejs:node.js")+`,
+		{"field":"affected.cpe_product","operator":"in","value":["microsoft:.net","microsoft:.net_framework"]}]}`, nil)
+	sql, args := whereOf(t, c, []string{"CVE-1"})
+	if want := "(" + productCandidateSet + ")"; sql != want {
+		t.Errorf("SQL:\n%s\nwant:\n%s", sql, want)
+	}
+	assertPlaceholdersInOrder(t, sql, len(args))
+
+	var prefixes []string
+	for _, cpe := range []string{"nodejs:node.js", "nodejs:nodejs", "microsoft:.net", "microsoft:.net_core", "microsoft:.net_framework"} {
+		for _, part := range []string{"a", "o", "h"} {
+			prefixes = append(prefixes, "cpe:2.3:"+part+":"+cpe+":")
+		}
+	}
+	want := []interface{}{
+		pq.Array([]string{"CVE-1"}),
+		pq.Array(prefixes),
+		pq.Array([]string{
+			"nodejs", "nodejs", "nodejs", "node.js", "the node.js project",
+			"microsoft", "microsoft", "microsoft", "microsoft",
+			"microsoft", "microsoft",
+		}),
+		pq.Array([]string{
+			"node.js", "nodejs", "node", "node.js", "node.js",
+			".net", ".net core", ".net_core", ".net ",
+			".net framework", ".net_framework",
+		}),
+		pq.Array([]bool{false, false, false, false, false, false, false, false, true, false, false}),
+		pq.Array([]int64{0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2}),
+		pq.Array([]string{"CVE-1"}),
+		pq.Array([]int64{1, 1, 1}),
+		pq.Array([]string{"microsoft", "microsoft", "microsoft"}),
+		pq.Array([]string{".net framework", "microsoft .net framework", "openapi.net"}),
+		pq.Array([]bool{true, true, false}),
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("args:\n%#v\nwant:\n%#v", args, want)
+	}
+}
+
+// TestCompile_ProductCandidateFormDoesNotGrowWithProducts checks the candidate
+// form's SQL text and placeholders do not depend on the number of product
+// values: an "or" rule of one product and one of 50 one-value conditions both
+// bind 11 arguments, and neither holds a CPE or CNA index range.
+func TestCompile_ProductCandidateFormDoesNotGrowWithProducts(t *testing.T) {
+	t.Parallel()
+	conds := make([]string, 0, 50)
+	for _, cpe := range nameTableCPEs {
+		conds = append(conds, productEq(cpe))
+	}
+	for i := len(conds); i < 50; i++ {
+		conds = append(conds, productEq(fmt.Sprintf("v_endor%d:p_roduct%d", i, i)))
+	}
+	one := compileRule(t, `{"logic":"or","conditions":[`+conds[0]+`]}`, nil)
+	fifty := compileRule(t, `{"logic":"or","conditions":[`+strings.Join(conds, ",")+`]}`, nil)
+	ids := []string{"CVE-1", "CVE-2"}
+	oneSQL, oneArgs := whereOf(t, one, ids)
+	fiftySQL, fiftyArgs := whereOf(t, fifty, ids)
+	if oneSQL != fiftySQL {
+		t.Errorf("SQL differs between 1 and 50 products:\n%s\nand\n%s", oneSQL, fiftySQL)
+	}
+	if len(oneArgs) != 11 || len(fiftyArgs) != 11 {
+		t.Errorf("args: %d for 1 product, %d for 50, want 11 each", len(oneArgs), len(fiftyArgs))
+	}
+	for _, sql := range []string{oneSQL, fiftySQL} {
+		assertCount(t, sql, cpeRangeTerm, 0)
+		assertCount(t, sql, "starts_with(m.cpe_normalized", 0)
+		assertCount(t, sql, cpeIndexRange, 0)
+		assertCount(t, sql, cnaNameTerm, 0)
+		assertCount(t, sql, `left(lower(a.vendor), 256)`, 0)
+		assertCount(t, sql, cpePrefixMatch, 1)
+		assertCount(t, sql, cnaNameJoin, 1)
+		assertCount(t, sql, nvdCandidate, 1)
+		assertCount(t, sql, cnaCandidate, 1)
+	}
+	assertPlaceholdersInOrder(t, fiftySQL, len(fiftyArgs))
+
+	// With no candidate IDs each condition keeps one range per part and CPE
+	// spelling: 60 for the name table's CPEs, each of which reads its row's
+	// spellings, and 3 for each of the 40 others.
+	sql, _ := whereOf(t, fifty, nil)
+	assertCount(t, sql, cpeRangeTerm, 60+3*40)
+	assertCount(t, sql, cpePrefixMatch, 0)
+	assertCount(t, sql, "unnest(", 0)
+}
+
+// TestCompile_ProductCandidateFormAndKeepsEachSet checks that under "and" each
+// product condition keeps its own CPE and CNA branches with candidate IDs, so
+// the rule matches the intersection of its sets.
+func TestCompile_ProductCandidateFormAndKeepsEachSet(t *testing.T) {
+	t.Parallel()
+	c := compileRule(t, productRule(productEq("nodejs:node.js"), productEq("microsoft:.net"),
+		`{"field":"severity","operator":"eq","value":"high"}`), nil)
+	sql, args := whereOf(t, c, []string{"CVE-1"})
+	want := "(" + productCandidateSet + " AND " + productCandidateSet + " AND lower(cves.severity) = ?)"
+	if sql != want {
+		t.Errorf("SQL:\n%s\nwant:\n%s", sql, want)
+	}
+	if len(args) != 23 {
+		t.Fatalf("got %d args, want 23 (11 per product set, then severity)", len(args))
+	}
+	assertPlaceholdersInOrder(t, sql, len(args))
+	// Each set holds only its own value's prefixes, numbered from group 0.
+	assertArrayArgs(t, args[1:2], []string{
+		"cpe:2.3:a:nodejs:node.js:", "cpe:2.3:o:nodejs:node.js:", "cpe:2.3:h:nodejs:node.js:",
+		"cpe:2.3:a:nodejs:nodejs:", "cpe:2.3:o:nodejs:nodejs:", "cpe:2.3:h:nodejs:nodejs:",
+	})
+	assertArrayArgs(t, args[12:13], []string{
+		"cpe:2.3:a:microsoft:.net:", "cpe:2.3:o:microsoft:.net:", "cpe:2.3:h:microsoft:.net:",
+		"cpe:2.3:a:microsoft:.net_core:", "cpe:2.3:o:microsoft:.net_core:", "cpe:2.3:h:microsoft:.net_core:",
+	})
+	if got, want := args[16], pq.Array([]int64{0, 0, 0, 0}); !reflect.DeepEqual(got, want) {
+		t.Errorf(".NET name groups = %#v, want %#v", got, want)
+	}
+	if got, want := args[18], pq.Array([]int64{0, 0, 0}); !reflect.DeepEqual(got, want) {
+		t.Errorf(".NET other-product groups = %#v, want %#v", got, want)
+	}
+	// Node has no other products: its arrays are empty, never NULL.
+	for i, w := range []interface{}{pq.Array([]int64{}), pq.Array([]string{}), pq.Array([]string{}), pq.Array([]bool{})} {
+		if got := args[7+i]; !reflect.DeepEqual(got, w) {
+			t.Errorf("Node other-product array %d = %#v, want %#v", i, got, w)
+		}
+	}
+	if arr := args[7].(*pq.Int64Array); *arr == nil {
+		t.Errorf("Node other-product groups bind NULL; want an empty array")
+	}
+}
+
+// TestProductSetSQL_FormFollowsCandidates checks the exported set: the range
+// form with no candidate IDs, the bound-array form with them.
+func TestProductSetSQL_FormFollowsCandidates(t *testing.T) {
+	t.Parallel()
+	refs := []check.ProductRef{{Part: "a", Vendor: "nodejs", Product: "node.js"}}
+	sql, _, err := dsl.ProductSetSQL(refs, nil).ToSql()
+	if err != nil {
+		t.Fatalf("ToSql: %v", err)
+	}
+	assertCount(t, sql, cpeRangeTerm, 6)
+	assertCount(t, sql, cpePrefixMatch, 0)
+	sql, args, err := dsl.ProductSetSQL(refs, []string{"CVE-1"}).ToSql()
+	if err != nil {
+		t.Fatalf("ToSql: %v", err)
+	}
+	if sql != productCandidateSet {
+		t.Errorf("SQL:\n%s\nwant:\n%s", sql, productCandidateSet)
+	}
+	if len(args) != 11 {
+		t.Errorf("got %d args, want 11", len(args))
 	}
 }

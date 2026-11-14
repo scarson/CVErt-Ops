@@ -211,8 +211,9 @@ func TestProductMatch_RuleConditions(t *testing.T) {
 }
 
 // TestProductMatch_FullNameRecheck checks the exact-name term rechecks the whole
-// vendor, which the index cuts to 256 characters. Rule values are at most 255
-// characters, so the set is built directly with a longer vendor.
+// vendor, which the index cuts to 256 characters, in the range form (no
+// candidate IDs) and the bound-array form (candidate IDs). Rule values are at
+// most 255 characters, so the set is built directly with a longer vendor.
 func TestProductMatch_FullNameRecheck(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)
@@ -227,16 +228,19 @@ func TestProductMatch_FullNameRecheck(t *testing.T) {
 	ingestCNAAndMatches(t, ctx, tdb, cveLongA, []feed.CNAAffected{{Vendor: vendorA, Product: "widget"}}, nil)
 	ingestCNAAndMatches(t, ctx, tdb, cveLongB, []feed.CNAAffected{{Vendor: vendorB, Product: "widget"}}, nil)
 
-	set := dsl.ProductSetSQL([]check.ProductRef{{Vendor: vendorA, Product: "widget"}}, nil)
-	query, args, err := sq.Select("cves.cve_id").From("cves").Where(set).
-		Where(sq.Expr("cves.cve_id = ANY(?)", pq.Array([]string{cveLongA, cveLongB}))).
-		OrderBy("cves.cve_id").PlaceholderFormat(sq.Dollar).ToSql()
-	if err != nil {
-		t.Fatalf("build query: %v", err)
-	}
-	got := queryCVEIDs(t, ctx, tdb.DB(), query, args...)
-	if !slices.Equal(got, []string{cveLongA}) {
-		t.Errorf("matched %v, want only %s (vendor %d characters)", got, cveLongA, len(vendorA))
+	both := []string{cveLongA, cveLongB}
+	for _, candidateIDs := range [][]string{nil, both} {
+		set := dsl.ProductSetSQL([]check.ProductRef{{Vendor: vendorA, Product: "widget"}}, candidateIDs)
+		query, args, err := sq.Select("cves.cve_id").From("cves").Where(set).
+			Where(sq.Expr("cves.cve_id = ANY(?)", pq.Array(both))).
+			OrderBy("cves.cve_id").PlaceholderFormat(sq.Dollar).ToSql()
+		if err != nil {
+			t.Fatalf("build query: %v", err)
+		}
+		got := queryCVEIDs(t, ctx, tdb.DB(), query, args...)
+		if !slices.Equal(got, []string{cveLongA}) {
+			t.Errorf("candidates %v: matched %v, want only %s (vendor %d characters)", candidateIDs, got, cveLongA, len(vendorA))
+		}
 	}
 }
 

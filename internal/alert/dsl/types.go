@@ -8,6 +8,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
+	"github.com/scarson/cvert-ops/internal/check"
 )
 
 // Logic defines how conditions within a rule are combined.
@@ -38,24 +39,27 @@ type Condition struct {
 type CompiledRule struct {
 	RuleID       uuid.UUID
 	DSLVersion   int
-	predicates   []predicate  // one per SQL condition, in rule order
-	watchlist    sq.Sqlizer   // watchlist pre-filter; nil when the rule has no watchlists
-	Joins        []string     // optional JOINs (e.g., FTS cve_search_index)
-	PostFilters  []PostFilter // Go-side regex filters (description_primary only, MVP)
-	Logic        Logic        // and/or — controls PostFilter combination semantics
-	IsEPSSOnly   bool         // all conditions reference epss_score
-	HasEPSS      bool         // any condition references epss_score
-	HasWatchlist bool         // compiled SQL includes watchlist subquery (needs RLS bypass)
+	predicates   []predicate    // one per SQL condition, in rule order
+	orProducts   *productArrays // every product condition's values of an "or" rule; nil otherwise
+	watchlist    sq.Sqlizer     // watchlist pre-filter; nil when the rule has no watchlists
+	Joins        []string       // optional JOINs (e.g., FTS cve_search_index)
+	PostFilters  []PostFilter   // Go-side regex filters (description_primary only, MVP)
+	Logic        Logic          // and/or — controls PostFilter combination semantics
+	IsEPSSOnly   bool           // all conditions reference epss_score
+	HasEPSS      bool           // any condition references epss_score
+	HasWatchlist bool           // compiled SQL includes watchlist subquery (needs RLS bypass)
 }
 
 // predicate is one compiled condition: a scalar condition on the cves row, or a
 // CVE-ID set given as its SELECT branches. Exactly one of scalar and branches is
 // set. branches limits each branch to candidateIDs; nil or empty means the whole
 // corpus. branches is a pure closure over values computed in Compile and must
-// not mutate them.
+// not mutate them. products holds an affected.cpe_product condition's values,
+// and is nil for every other condition.
 type predicate struct {
 	scalar   sq.Sqlizer
 	branches func(candidateIDs []string) []sqlPart
+	products []check.ProductRef
 }
 
 // Where returns the rule's WHERE predicate (no FROM, no LIMIT): its conditions
@@ -69,6 +73,13 @@ type predicate struct {
 // form one IN predicate, placed where the first set condition is: PostgreSQL
 // cannot turn OR-ed IN subqueries into semi-joins and builds each as a hashed
 // SubPlan over its whole set, which one IN over a UNION ALL avoids.
+//
+// With candidate IDs, a product set matches its CPE prefixes and CNA names as
+// bound arrays (productArrays), and under "or" every product condition shares
+// one CPE and one CNA branch, placed where the first product condition's would
+// be, so neither planning time nor the copies of candidateIDs grow with the
+// number of products. Without candidate IDs, each product set keeps its range
+// form, which the check indexes serve.
 func (c *CompiledRule) Where(candidateIDs []string) sq.Sqlizer {
 	if len(c.predicates) == 0 {
 		// All conditions are regex PostFilters; Compile requires a watchlist then.
@@ -79,6 +90,7 @@ func (c *CompiledRule) Where(candidateIDs []string) sq.Sqlizer {
 		parts := make([]sq.Sqlizer, 0, len(c.predicates))
 		setAt := -1
 		var branches []sqlPart
+		productsAdded := false
 		for _, p := range c.predicates {
 			if p.branches == nil {
 				parts = append(parts, p.scalar)
@@ -87,6 +99,13 @@ func (c *CompiledRule) Where(candidateIDs []string) sq.Sqlizer {
 			if setAt < 0 {
 				setAt = len(parts)
 				parts = append(parts, nil)
+			}
+			if p.products != nil && len(candidateIDs) > 0 {
+				if !productsAdded {
+					branches = append(branches, c.orProducts.branches(candidateIDs)...)
+					productsAdded = true
+				}
+				continue
 			}
 			branches = append(branches, p.branches(candidateIDs)...)
 		}

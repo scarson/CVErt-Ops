@@ -54,6 +54,11 @@ var whereGoldenRules = []struct {
 		{"field":"affected.package","operator":"in","value":["lodash"]},
 		{"field":"cwe_ids","operator":"contains_any","value":["CWE-79"]}]}`,
 		[]uuid.UUID{uuid.MustParse("33333333-3333-3333-3333-333333333333")}},
+	{"or: two products, package, severity", `{"logic":"or","conditions":[
+		{"field":"affected.cpe_product","operator":"eq","value":"openssl:openssl"},
+		{"field":"severity","operator":"eq","value":"critical"},
+		{"field":"affected.cpe_product","operator":"in","value":["microsoft:.net","acme_corp:web_server"]},
+		{"field":"affected.package","operator":"eq","value":"lodash"}]}`, nil},
 }
 
 // renderWhere writes a rule's WHERE SQL and arguments, one argument per line.

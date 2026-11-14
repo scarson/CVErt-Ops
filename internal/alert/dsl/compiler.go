@@ -58,9 +58,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 				return nil, fmt.Errorf("compile: condition %q %s: %w", c.Field, c.Op, err)
 			}
 			products += len(refs)
-			predicates = append(predicates, predicate{branches: func(candidateIDs []string) []sqlPart {
-				return productBranches(refs, candidateIDs)
-			}})
+			predicates = append(predicates, predicate{branches: productSet(refs), products: refs})
 			continue
 		}
 
@@ -99,6 +97,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 	if products > maxProducts {
 		return nil, fmt.Errorf("compile: %s", msgTooManyProducts)
 	}
+	orProducts := orProductArrays(r.Logic, predicates)
 
 	var watchlist sq.Sqlizer
 	if len(watchlistIDs) > 0 {
@@ -127,6 +126,7 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		RuleID:       ruleID,
 		DSLVersion:   dslVersion,
 		predicates:   predicates,
+		orProducts:   orProducts,
 		watchlist:    watchlist,
 		Joins:        joins,
 		PostFilters:  postFilters,
@@ -135,6 +135,27 @@ func Compile(r Rule, ruleID uuid.UUID, dslVersion int, orgID uuid.UUID, watchlis
 		HasEPSS:      hasEPSSCond,
 		HasWatchlist: len(watchlistIDs) > 0,
 	}, nil
+}
+
+// orProductArrays returns, for an "or" rule with product conditions, the
+// bound arrays of every product condition's values together, in rule order;
+// otherwise nil. A CVE in any product set is in the set of all their values,
+// because each value's names and other products keep their own group, so
+// CompiledRule.Where matches every product condition of an "or" rule with
+// candidate IDs through one CPE and one CNA branch.
+func orProductArrays(logic Logic, predicates []predicate) *productArrays {
+	if logic != LogicOr {
+		return nil
+	}
+	var values []check.ProductRef
+	for _, p := range predicates {
+		values = append(values, p.products...)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	a := newProductArrays(values)
+	return &a
 }
 
 // compileProducts returns an affected.cpe_product condition's values, parsed,

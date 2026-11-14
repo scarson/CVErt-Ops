@@ -237,34 +237,43 @@ var productParts = []string{"a", "o", "h"}
 // ProductSetSQL is the CVE-ID set for one affected.cpe_product condition
 // (design section 5.1): NVD vulnerable CPE rows under any CPE spelling of any
 // value, and CNA rows carrying any name of a value but none of its other
-// products. candidateIDs is repeated inside both branches when non-empty.
-//
-// Ranges and names are OR-ed predicates, not joins to unnest() arrays, so the
-// planner reads cve_cpe_matches_check_idx and cve_cna_affected_check_idx
-// (pitfall DB-27). Every range, name and other product is a bind argument.
-// values must not be empty; with none it returns FALSE.
+// products. With candidate IDs it is the bound-array form (productArrays);
+// without, the range form (productBranches). values must not be empty; with
+// none it returns FALSE.
 func ProductSetSQL(values []check.ProductRef, candidateIDs []string) sq.Sqlizer {
 	if len(values) == 0 {
 		return sq.Expr("FALSE")
 	}
-	return cveSet(productBranches(values, candidateIDs))
+	return cveSet(productSet(values)(candidateIDs))
 }
 
-// productBranches are ProductSetSQL's two SELECT branches, NVD then CNA, for a
-// rule that combines them with other sets. values must not be empty.
-func productBranches(values []check.ProductRef, candidateIDs []string) []sqlPart {
-	nvd := []sqlPart{{sql: "m.vulnerable"}}
-	var cna []sqlPart
-	if len(candidateIDs) > 0 {
-		nvd = append(nvd, sqlPart{sql: "m.cve_id = ANY(?)", args: []any{pq.Array(candidateIDs)}})
-		cna = append(cna, sqlPart{sql: "a.cve_id = ANY(?)", args: []any{pq.Array(candidateIDs)}})
+// productSet returns the branches of one product set for given candidate IDs:
+// the bound-array form when there are any, the range form when there are none.
+// The arrays are built once, here; the closure only reads them and values, so
+// the compiled rule that holds it can be shared across goroutines.
+func productSet(values []check.ProductRef) func(candidateIDs []string) []sqlPart {
+	arrays := newProductArrays(values)
+	return func(candidateIDs []string) []sqlPart {
+		if len(candidateIDs) > 0 {
+			return arrays.branches(candidateIDs)
+		}
+		return productBranches(values)
 	}
-	nvd = append(nvd, anyOf(cpeRanges(values)))
+}
+
+// productBranches are the range form's two SELECT branches, NVD then CNA, over
+// the whole corpus. values must not be empty.
+//
+// Ranges and names are OR-ed predicates, not joins to unnest() arrays, so the
+// planner reads cve_cpe_matches_check_idx and cve_cna_affected_check_idx
+// (pitfall DB-27). Every range, name and other product is a bind argument.
+func productBranches(values []check.ProductRef) []sqlPart {
+	nvd := []sqlPart{{sql: "m.vulnerable"}, anyOf(cpeRanges(values))}
 	groups := make([]sqlPart, 0, len(values))
 	for _, v := range values {
 		groups = append(groups, cnaNameGroup(v))
 	}
-	cna = append(cna, anyOf(groups))
+	cna := []sqlPart{anyOf(groups)}
 
 	nvdWhere, nvdArgs := allOf(nvd)
 	cnaWhere, cnaArgs := allOf(cna)
@@ -274,30 +283,150 @@ func productBranches(values []check.ProductRef, candidateIDs []string) []sqlPart
 	}
 }
 
-// cpeRanges returns one range term per CPE spelling of each value and per part,
-// each listed once: a range on the index expression of cve_cpe_matches_check_idx
-// with the whole prefix rechecked by starts_with (check.CPEKey).
-func cpeRanges(values []check.ProductRef) []sqlPart {
-	expr := check.CPEIndexExpr("m.cpe_normalized")
-	var ranges []sqlPart
+// cpePrefixes returns the CPE prefix of each CPE spelling of each value and
+// each part, each listed once, in value, spelling and part order.
+func cpePrefixes(values []check.ProductRef) []string {
+	var prefixes []string
 	seen := map[string]bool{}
 	for _, v := range values {
 		_, cpes, _ := check.NamesFor(v)
 		for _, cpe := range cpes {
 			for _, part := range productParts {
-				k := check.CPEKeyFor("cpe:2.3:" + part + ":" + cpe + ":")
-				if seen[k.Prefix] {
+				p := check.CPEKeyFor("cpe:2.3:" + part + ":" + cpe + ":").Prefix
+				if seen[p] {
 					continue
 				}
-				seen[k.Prefix] = true
-				ranges = append(ranges, sqlPart{
-					sql:  "(" + expr + " >= ? AND " + expr + " < ? AND starts_with(m.cpe_normalized, ?))",
-					args: []any{k.Lo, k.Hi, k.Prefix},
-				})
+				seen[p] = true
+				prefixes = append(prefixes, p)
 			}
 		}
 	}
+	return prefixes
+}
+
+// cpeRanges returns one range term per prefix of cpePrefixes: a range on the
+// index expression of cve_cpe_matches_check_idx with the whole prefix rechecked
+// by starts_with (check.CPEKey).
+func cpeRanges(values []check.ProductRef) []sqlPart {
+	expr := check.CPEIndexExpr("m.cpe_normalized")
+	prefixes := cpePrefixes(values)
+	ranges := make([]sqlPart, 0, len(prefixes))
+	for _, p := range prefixes {
+		k := check.CPEKeyFor(p)
+		ranges = append(ranges, sqlPart{
+			sql:  "(" + expr + " >= ? AND " + expr + " < ? AND starts_with(m.cpe_normalized, ?))",
+			args: []any{k.Lo, k.Hi, k.Prefix},
+		})
+	}
 	return ranges
+}
+
+// productArrays are the bound-array form of a product set, used when the caller
+// has candidate IDs: the branches reach rows through cve_id = ANY(candidates)
+// and match them against arrays, so neither the SQL text nor the number of
+// placeholders grows with the number of values, and planning time stays flat
+// (dev/plans/2026-11-13-product-match-rules-measurements.md). The range form
+// (productBranches) serves the whole corpus, where the check indexes must.
+//
+// Both forms match the same rows:
+//
+//   - A CPE prefix p matches cpe_normalized when it starts with p. The range
+//     form's starts_with recheck decides this alone: a CPE starting with p has
+//     first CPEKeyRunes characters starting with check.CPEKey.Lo, p cut to that
+//     length, so it lies in [Lo, Hi) in the C collation.
+//   - An exact name matches when lower(vendor) and lower(product) equal the
+//     whole lower-cased names, which the range form rechecks and which imply its
+//     comparisons of the first 256 characters.
+//   - A prefix name matches when lower(vendor) equals the whole vendor and
+//     lower(product) starts with the prefix. The range form ranges on the first
+//     256 characters of lower(product) from the prefix cut to 256 characters,
+//     which is the same test while the prefix has at most 256 characters. Prefix
+//     names come only from the name table (".net "), whose names are far
+//     shorter; a rule value, at most 255 characters, gives only exact names.
+//   - Other products exclude a row only from the names of the value they belong
+//     to, by group number, with check.IsOtherProduct's word boundary, as
+//     otherProductPart does per value.
+//
+// Groups number values from 0 in the order given. Compile builds the arrays
+// once; branches only reads them.
+type productArrays struct {
+	prefixes []string // CPE prefixes, lower case as ProductRef holds them
+
+	nameVendors  []string // lower-cased CNA vendor of each name
+	nameProducts []string // lower-cased CNA product, or prefix, of each name
+	namePrefixes []bool   // whether each name is a prefix
+	nameGroups   []int64  // the value each name belongs to
+
+	otherGroups   []int64  // the value each other product belongs to
+	otherVendors  []string // lower-cased vendor of each other product
+	otherProducts []string // lower-cased product, or prefix, of each other product
+	otherPrefixes []bool   // whether each other product is a prefix
+}
+
+// newProductArrays builds the arrays of values. Every slice is non-nil, because
+// pq.Array(nil) binds SQL NULL.
+func newProductArrays(values []check.ProductRef) productArrays {
+	a := productArrays{
+		prefixes:    cpePrefixes(values),
+		nameVendors: []string{}, nameProducts: []string{}, namePrefixes: []bool{}, nameGroups: []int64{},
+		otherGroups: []int64{}, otherVendors: []string{}, otherProducts: []string{}, otherPrefixes: []bool{},
+	}
+	for g, v := range values {
+		names, _, _ := check.NamesFor(v)
+		for _, n := range names {
+			a.nameVendors = append(a.nameVendors, strings.ToLower(n.Vendor))
+			a.nameProducts = append(a.nameProducts, strings.ToLower(n.Product))
+			a.namePrefixes = append(a.namePrefixes, n.Prefix)
+			a.nameGroups = append(a.nameGroups, int64(g))
+		}
+		for _, o := range check.OtherProductsFor(v) {
+			a.otherGroups = append(a.otherGroups, int64(g))
+			a.otherVendors = append(a.otherVendors, strings.ToLower(o.Vendor))
+			a.otherProducts = append(a.otherProducts, strings.ToLower(o.Product))
+			a.otherPrefixes = append(a.otherPrefixes, o.Prefix)
+		}
+	}
+	return a
+}
+
+// productCPEBranch selects the CVEs among the candidates with a vulnerable CPE
+// match row under any of the bound prefixes; ^@ is starts_with.
+const productCPEBranch = `SELECT m.cve_id FROM cve_cpe_matches m
+    WHERE m.vulnerable
+      AND m.cve_id = ANY(?)
+      AND m.cpe_normalized ^@ ANY(?::text[])`
+
+// productCNABranch selects the CVEs among the candidates with a CNA row that
+// carries a bound name n and is none of the other products of n's value. The
+// boundary test after a prefix other product is check.IsOtherProduct's, as in
+// otherProductPart. A row matching several names appears once per name, which
+// the CVE set's IN ignores.
+const productCNABranch = `SELECT a.cve_id FROM cve_cna_affected a
+    JOIN unnest(?::text[], ?::text[], ?::boolean[], ?::int[]) AS n(v, p, is_prefix, grp)
+      ON lower(a.vendor) = n.v
+     AND (lower(a.product) = n.p OR (n.is_prefix AND starts_with(lower(a.product), n.p)))
+    WHERE a.cve_id = ANY(?)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(?::int[], ?::text[], ?::text[], ?::boolean[]) AS o(grp, v, p, is_prefix)
+        WHERE o.grp = n.grp
+          AND lower(a.vendor) = o.v
+          AND (lower(a.product) = o.p
+            OR (o.is_prefix AND starts_with(lower(a.product), o.p)
+              AND substr(lower(a.product), char_length(o.p) + 1) !~ '^[a-z0-9]'))
+      )`
+
+// branches returns the bound-array form's two branches, CPE then CNA, limited
+// to candidateIDs, which must not be empty. It never changes a or candidateIDs.
+func (a *productArrays) branches(candidateIDs []string) []sqlPart {
+	candidates := pq.Array(candidateIDs)
+	return []sqlPart{
+		{sql: productCPEBranch, args: []any{candidates, pq.Array(a.prefixes)}},
+		{sql: productCNABranch, args: []any{
+			pq.Array(a.nameVendors), pq.Array(a.nameProducts), pq.Array(a.namePrefixes), pq.Array(a.nameGroups),
+			candidates,
+			pq.Array(a.otherGroups), pq.Array(a.otherVendors), pq.Array(a.otherProducts), pq.Array(a.otherPrefixes),
+		}},
+	}
 }
 
 // cnaNameGroup matches a CNA row that carries any CNA name of value v and, when

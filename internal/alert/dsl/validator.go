@@ -74,7 +74,8 @@ const (
 	msgOrRegexMixed        = `an "or" rule cannot combine regex conditions with other conditions, because a regex is checked only on CVEs the other conditions match; put the regex conditions in a rule of their own`
 	// The value and names are printable ASCII (check.ParseProductValue), so they
 	// are quoted as written rather than with %q, which would double a backslash.
-	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor "%s" and product "%s"`
+	// The vendor and product are each one or more quoted spellings (spellings).
+	msgUnmappedProduct = `no other CNA spelling is known for "%s"; before NVD analyses a CVE, it matches only if the CNA record names vendor %s and product %s`
 )
 
 // Validate performs semantic validation of a Rule. All errors are collected and returned together
@@ -381,12 +382,29 @@ func validateProducts(r Rule) []ValidationError {
 			errs = append(errs, ValidationError{
 				Index:    pc.index,
 				Field:    "affected.cpe_product",
-				Message:  fmt.Sprintf(msgUnmappedProduct, p.Vendor+":"+p.Product, names[0].Vendor, names[0].Product),
+				Message:  fmt.Sprintf(msgUnmappedProduct, p.Vendor+":"+p.Product, spellings(names, vendorOf), spellings(names, productOf)),
 				Severity: "warning",
 			})
 		}
 	}
 	return errs
+}
+
+func vendorOf(n check.CNAName) string  { return n.Vendor }
+func productOf(n check.CNAName) string { return n.Product }
+
+// spellings quotes the distinct values part takes across names, in their order,
+// joined by "or": a CPE part with an unescaped "_" has two CNA spellings (with
+// "_" read as a space, and kept), and any vendor spelling pairs with any product
+// spelling. The names are printable ASCII, so they are quoted as written.
+func spellings(names []check.CNAName, part func(check.CNAName) string) string {
+	var out []string
+	for _, n := range names {
+		if s := `"` + part(n) + `"`; !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, " or ")
 }
 
 // tooManyAndSets reports whether r is an "and" rule with more than maxAndSets set

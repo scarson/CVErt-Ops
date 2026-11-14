@@ -35,15 +35,6 @@ type checkLimits struct {
 // defaultCheckLimits is the limits ReadCheckCandidates applies.
 var defaultCheckLimits = checkLimits{KeyRows: 50_000, RequestRows: 200_000, RequestBytes: 128 << 20}
 
-// cpeIndexExpr is the expression cve_cpe_matches_check_idx indexes, on column:
-// its first check.CPEKeyRunes characters, so a CPE of any length fits a btree
-// row. The C collation lets a range on a CPE prefix use the index whatever the
-// database collation. A statement ranges on it with a check.CPEKey's Lo and Hi
-// and rechecks the key's whole Prefix with starts_with.
-func cpeIndexExpr(column string) string {
-	return fmt.Sprintf(`left(%s, %d) COLLATE "C"`, column, check.CPEKeyRunes)
-}
-
 // The CPE lookup leaves out the rows check.CPERowBelow reports for a key's
 // floor (the lowest version asked of the product), by the same rule in SQL. cpeRangeSQL is the FROM items that read row q
 // of cve_cpe_matches as check's cpeRange reads it, each computed once per row
@@ -101,13 +92,6 @@ var cpeBelowSQL = "(r.stated AND " + version.ProductRangeBelowSQL(
 // and the name table's CPEs are lower-case text.
 const rangeSeparator = "\x1f"
 
-// cnaNameIndexExpr is one of the expressions cve_cna_affected_check_idx indexes,
-// on column (vendor or product): its first 256 characters, lower-cased, which
-// check.Keys cuts its CNA names to match.
-func cnaNameIndexExpr(column string) string {
-	return "left(lower(" + column + `), 256) COLLATE "C"`
-}
-
 // The version check lookups. Each joins unnest of its keys to its table through
 // CROSS JOIN LATERAL, so each key is read by one index scan under a LIMIT, and
 // returns the key's 1-based position first. Its last parameter is that LIMIT.
@@ -155,8 +139,8 @@ CROSS JOIN LATERAL (
     FROM cve_cpe_matches q` + cpeRangeSQL + `
       CROSS JOIN LATERAL (SELECT ` + cpeBelowSQL + ` IS TRUE AS below OFFSET 0) x
     WHERE v.dotted
-      AND ` + cpeIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
-      AND ` + cpeIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
+      AND ` + check.CPEIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
+      AND ` + check.CPEIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
       AND starts_with(q.cpe_normalized, k.prefix)
       AND q.vulnerable
   )
@@ -165,8 +149,8 @@ CROSS JOIN LATERAL (
           COALESCE(q.version_end_excluding, '') AS ee, 0::bigint AS below
    FROM cve_cpe_matches q
    WHERE NOT v.dotted
-     AND ` + cpeIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
-     AND ` + cpeIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
+     AND ` + check.CPEIndexExpr("q.cpe_normalized") + ` >= k.lo COLLATE "C"
+     AND ` + check.CPEIndexExpr("q.cpe_normalized") + ` <  k.hi COLLATE "C"
      AND starts_with(q.cpe_normalized, k.prefix)
      AND q.vulnerable
    LIMIT $5)
@@ -185,9 +169,9 @@ FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) WITH ORD
      AS k(v, lo, hi, full_vendor, full_product, ord)
 CROSS JOIN LATERAL (
   SELECT q.* FROM cve_cna_affected q
-  WHERE ` + cnaNameIndexExpr("q.vendor") + ` = k.v COLLATE "C"
-    AND ` + cnaNameIndexExpr("q.product") + ` >= k.lo COLLATE "C"
-    AND ` + cnaNameIndexExpr("q.product") + ` <  k.hi COLLATE "C"
+  WHERE ` + check.CNANameIndexExpr("q.vendor") + ` = k.v COLLATE "C"
+    AND ` + check.CNANameIndexExpr("q.product") + ` >= k.lo COLLATE "C"
+    AND ` + check.CNANameIndexExpr("q.product") + ` <  k.hi COLLATE "C"
     AND lower(q.vendor) = k.full_vendor
     AND (k.full_product = '' OR lower(q.product) = k.full_product)
   LIMIT $6
@@ -213,7 +197,7 @@ FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text
      AS k(v, full_vendor, frag, los, his, prefixes, ord)
 CROSS JOIN LATERAL (
   SELECT q.cve_id, q.vendor, q.product FROM cve_cna_affected q
-  WHERE ` + cnaNameIndexExpr("q.vendor") + ` = k.v COLLATE "C"
+  WHERE ` + check.CNANameIndexExpr("q.vendor") + ` = k.v COLLATE "C"
     AND lower(q.vendor) = k.full_vendor
     AND strpos(lower(q.product), k.frag) > 0
     AND NOT EXISTS (
@@ -221,8 +205,8 @@ CROSS JOIN LATERAL (
                            string_to_array(k.prefixes, chr(31))) AS r(lo, hi, prefix)
       JOIN cve_cpe_matches m
         ON m.cve_id = q.cve_id
-       AND ` + cpeIndexExpr("m.cpe_normalized") + ` >= r.lo COLLATE "C"
-       AND ` + cpeIndexExpr("m.cpe_normalized") + ` <  r.hi COLLATE "C"
+       AND ` + check.CPEIndexExpr("m.cpe_normalized") + ` >= r.lo COLLATE "C"
+       AND ` + check.CPEIndexExpr("m.cpe_normalized") + ` <  r.hi COLLATE "C"
        AND starts_with(m.cpe_normalized, r.prefix)
     )
   LIMIT $7

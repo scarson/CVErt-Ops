@@ -287,10 +287,23 @@ func TestCNANamePrefixesHaveUpperBounds(t *testing.T) {
 			if !n.Prefix {
 				continue
 			}
-			k := cnaNameKey(n)
+			k := CNANameKeyFor(n)
 			if k.Lo >= k.Hi || !strings.HasPrefix(k.Lo, strings.ToLower(n.Product)) {
 				t.Errorf("%s: prefix %q gives key %+v", cpe, n.Product, k)
 			}
 		}
+	}
+}
+
+// TestIndexExpressions pins the indexed expressions to the exact text the
+// version check statements have always compared, so moving them here leaves
+// every statement byte-for-byte unchanged.
+func TestIndexExpressions(t *testing.T) {
+	t.Parallel()
+	if got, want := CPEIndexExpr("m.cpe_normalized"), `left(m.cpe_normalized, 512) COLLATE "C"`; got != want {
+		t.Errorf("CPEIndexExpr = %q, want %q", got, want)
+	}
+	if got, want := CNANameIndexExpr("a.vendor"), `left(lower(a.vendor), 256) COLLATE "C"`; got != want {
+		t.Errorf("CNANameIndexExpr = %q, want %q", got, want)
 	}
 }

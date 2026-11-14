@@ -104,11 +104,15 @@ var dotNetOtherProducts = []CNAName{
 	{Vendor: "microsoft", Product: "openapi.net"},
 }
 
-// isOtherProduct reports whether a stored CNA vendor and product is one of
+// OtherProductsFor returns the CNA products that a name of p would find but
+// that are other products (otherProducts), or nil.
+func OtherProductsFor(p ProductRef) []CNAName { return otherProducts[p.Vendor+":"+p.Product] }
+
+// IsOtherProduct reports whether a stored CNA vendor and product is one of
 // names, the other products of an item's CPE. A prefix name matches only up to
 // a word boundary: ".net framework" matches ".NET Framework 4.8" and not
 // ".NET FrameworkExtensions".
-func isOtherProduct(names []CNAName, vendor, product string) bool {
+func IsOtherProduct(names []CNAName, vendor, product string) bool {
 	return slices.ContainsFunc(names, func(n CNAName) bool {
 		if !n.Matches(vendor, product) {
 			return false

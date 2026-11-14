@@ -18,13 +18,6 @@ type CheckLimits = checkLimits
 // DefaultCheckLimits is the limits ReadCheckCandidates applies.
 var DefaultCheckLimits = defaultCheckLimits
 
-// CPEIndexExpr and CNANameIndexExpr build the indexed expressions the version
-// check statements compare, for the tests that pin them to migration 000059.
-var (
-	CPEIndexExpr     = cpeIndexExpr
-	CNANameIndexExpr = cnaNameIndexExpr
-)
-
 // ReadCheckCandidatesWith is readCheckCandidates: ReadCheckCandidates with the
 // given limits, calling afterStatement after each statement it runs.
 func (s *Store) ReadCheckCandidatesWith(ctx context.Context, orgID uuid.UUID, keys check.Keys, limits CheckLimits,

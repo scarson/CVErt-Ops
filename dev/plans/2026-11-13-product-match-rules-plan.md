@@ -118,7 +118,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 | 1 — Name table and value parser in `internal/check` | ✅ Shipped 2026-11-14 (branch; PR pending) | `cc883cd`, `3bf8255`, `43c878f` | Name table digest pinned at `f91e7929…a18b` |
 | 2 — CVE-set form, `CompiledRule.Where`, package correlation | ✅ Shipped 2026-11-14 (branch; PR pending) | `7668072`, `c551369`, `f2f6f0e`, `1d0f6e6`, `daddbc2` | No existing integration test depended on uncorrelated matching |
 | 3 — The `affected.cpe_product` field | ✅ Shipped 2026-11-14 (branch; PR pending) | `76359bc`, `71b4e9b`, `ead194c`, `fcde2c5`; review fix `d69081d` | Adversarial review found one branch defect (quadratic Validate cost), fixed |
-| 4 — Measurements on the kept full ingest (gate) | ⏸ Deferred 2026-11-14: thresholds failed, waiting on Sam | evidence commit below | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
+| 4 — Measurements on the kept full ingest (gate) | ⏸ Deferred 2026-11-14: thresholds failed, waiting on Sam | evidence `4d72221` | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
 | 5 — Re-check signal | ⬜ Not started | — | — |
 | 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
 

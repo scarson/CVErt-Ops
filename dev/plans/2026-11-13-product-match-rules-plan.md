@@ -111,23 +111,28 @@ Why this matters here: this plan runs over several sessions (code, a measurement
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-14 — 8 rounds (4 independent, all cross-model Codex cold reads), 2 verify-first flags annotated in place (Tasks 2.1 and 5.3)
-**Overall:** Not started.
+**Overall:** 🚧 In progress on branch `claude/lucid-moser-fef966` (claimed 2026-11-14T02:12Z).
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
-| 1 — Name table and value parser in `internal/check` | ⬜ Not started | — | — |
-| 2 — CVE-set form, `CompiledRule.Where`, package correlation | ⬜ Not started | — | — |
+| 1 — Name table and value parser in `internal/check` | ✅ Shipped 2026-11-14 (branch; PR pending) | `cc883cd`, `3bf8255`, `43c878f` | Name table digest pinned at `f91e7929…a18b` |
+| 2 — CVE-set form, `CompiledRule.Where`, package correlation | 🚧 In progress (claimed 2026-11-14T02:40Z, `claude/lucid-moser-fef966`) | — | — |
 | 3 — The `affected.cpe_product` field | ⬜ Not started | — | — |
 | 4 — Measurements on the kept full ingest (gate) | ⬜ Not started | — | — |
 | 5 — Re-check signal | ⬜ Not started | — | — |
 | 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
 
 ### Deviations
-- _None yet._
+- Setup step 1: the work runs in the session's existing worktree, branch `claude/lucid-moser-fef966`, reset to `origin/dev` at `f593d74` before any change, instead of a new `claude/match2-impl` worktree. Same base, one writer.
+- Task 1.2: the printable-ASCII refusal uses the message in the task's row 2 (`value must be printable ASCII with no spaces, as a CPE 2.3 name is`), which design section 8 does not list. `internal/check/input.go` `errProductValueNotASCII`.
+- Task 1.2: `escapedAsCPERequires` does not call `firstUnescapedInvalid` (which would stop at the `*` and `?` the check must still accept). One iterator, `unescapedBytes`, does the escape walk, and `firstUnescapedInvalid`, `escapedAsCPERequires` and `hasUnescapedWildcard` read it. Check behaviour unchanged. `internal/check/input.go`.
+- Task 1.1 also touched `internal/store/export_test.go` (removed aliases of the deleted helpers) and `internal/store/check_index_test.go` (the migration-pinning tests call the exported helpers). Task 1.3 also updated `TestKeysFor` and `TestKeysForItemUses` in `internal/check/keys_test.go`, which enumerate the Node names through their keys.
 
 ### Discoveries
 - Found while planning (2026-11-14): design section 12's line "Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE" contradicts design section 3.1, which says the check accepts unescaped `*` and `?`. Task 1.2 tests section 3.1's invariant (every value a rule accepts, the check accepts). Flagged only; the design text is unchanged.
-- Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships.
+- Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships. (Recorded.)
+- Found while executing (2026-11-14): the host's `golangci-lint` (v2.10.1, built with Go 1.26) refuses to load `.golangci.yml` under Go 1.27. Lint runs with the CI pin instead: `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run --allow-parallel-runners ./cmd/... ./internal/... ./migrations/...`.
+- Verified 2026-11-14 (verify-first, Task 2.1): `internal/alert/dsl/dsl_test.go` is package `dsl_test` with no `TestMain` and no database, so the shape and parameter-count tests belong there; `internal/store/main_test.go` calls `testutil.Run`, so the `null`/empty-list cases run in `internal/store/dsl_executor_test.go`. `json.Unmarshal` of `null` into `[]string` gives nil with no error, so the nil-to-empty normalisation is required.
 
 ---
 
@@ -186,7 +191,7 @@ BEFORE marking this task complete:
 
 ## Phase 1 — Name table and value parser in `internal/check`
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** ✅ SHIPPED 2026-11-14 on branch `claude/lucid-moser-fef966` — `cc883cd` (Task 1.1), `3bf8255` (Task 1.2), `43c878f` (Task 1.3). After-phase review: one round, no material findings.
 
 Design section 3.1 (value rules), 3.4 (shared name table), 5.1 (ASCII boundary test), 12 (unit tests). One logical commit in design section 16's order; tasks may commit separately in this order.
 
@@ -308,7 +313,7 @@ Review the batch once, from a perspective the individual tasks did not apply (he
 
 ## Phase 2 — CVE-set form, `CompiledRule.Where`, package correlation
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T02:40Z on branch `claude/lucid-moser-fef966`
 
 Design sections 3.2 (array binding, 100-condition limit), 4 (exact match and correlation), 5.1 (package SQL), 5.2 (compiler contract), 8 (validation), 12 (tests). Tasks are sequential; all touch `internal/alert/dsl`.
 

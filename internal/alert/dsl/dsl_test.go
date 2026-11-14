@@ -4,6 +4,7 @@ package dsl_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -65,6 +66,70 @@ func TestParse_EmptyConditions(t *testing.T) {
 	_, err := dsl.Parse([]byte(data))
 	if err == nil {
 		t.Fatal("expected error for empty conditions, got nil")
+	}
+}
+
+// TestParse_UnknownKey verifies that a key the DSL does not define, in the rule
+// or in a condition, is refused with its position rather than dropped. A dropped
+// key such as "negate" would leave a rule that means the opposite of what its
+// writer intended.
+func TestParse_UnknownKey(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		data      string
+		wantIndex int
+		wantKey   string
+	}{
+		{
+			name:      "extra key in the first condition",
+			data:      `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":"critical","negate":true}]}`,
+			wantIndex: 0,
+			wantKey:   "negate",
+		},
+		{
+			name:      "misspelled key in a later condition",
+			data:      `{"logic":"or","conditions":[{"field":"severity","operator":"eq","value":"critical"},{"field":"in_cisa_kev","operater":"eq","value":true}]}`,
+			wantIndex: 1,
+			wantKey:   "operater",
+		},
+		{
+			name:      "key in another case",
+			data:      `{"logic":"and","conditions":[{"Field":"severity","operator":"eq","value":"critical"}]}`,
+			wantIndex: 0,
+			wantKey:   "Field",
+		},
+		{
+			name:      "extra key in the rule",
+			data:      `{"logic":"and","limit":5,"conditions":[{"field":"severity","operator":"eq","value":"critical"}]}`,
+			wantIndex: -1,
+			wantKey:   "limit",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := dsl.Parse([]byte(tt.data))
+			var unknown *dsl.UnknownKeyError
+			if !errors.As(err, &unknown) {
+				t.Fatalf("Parse error = %v, want *dsl.UnknownKeyError", err)
+			}
+			if unknown.Index != tt.wantIndex || unknown.Key != tt.wantKey {
+				t.Errorf("UnknownKeyError = {Index %d, Key %q}, want {Index %d, Key %q}",
+					unknown.Index, unknown.Key, tt.wantIndex, tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestParse_ObjectValueKeysNotChecked verifies that the keys inside a
+// condition's value are left to Validate, which reads each operator's value
+// shape: Parse checks only the rule and condition objects.
+func TestParse_ObjectValueKeysNotChecked(t *testing.T) {
+	t.Parallel()
+	data := `{"logic":"and","conditions":[{"field":"severity","operator":"eq","value":{"anything":1}}]}`
+	if _, err := dsl.Parse([]byte(data)); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
 }
 

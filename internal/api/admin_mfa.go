@@ -317,8 +317,7 @@ func (srv *Server) adminUpdateOrgMFASettingsHandler(w http.ResponseWriter, r *ht
 	callerID, _ := r.Context().Value(ctxUserID).(uuid.UUID)
 
 	var req updateOrgMFASettingsBody
-	if decErr := decodeJSON(r, &req); decErr != nil {
-		writeProblemWithErrors(w, http.StatusBadRequest, "invalid request body", decErr)
+	if !decodeJSON(w, r, &req) {
 		return
 	}
 

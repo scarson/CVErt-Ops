@@ -121,6 +121,12 @@ maintenance_work_mem = 128MB
 random_page_cost = 1.1          # SSD storage
 ```
 
+### PostgreSQL Shared Memory (`/dev/shm`)
+
+PostgreSQL keeps the shared state of parallel queries in `/dev/shm`: the hash table of a parallel hash join and the bitmap of a parallel bitmap scan. Docker gives a container 64 MB of `/dev/shm` by default, which is too small for large parallel hashes over the full CVE corpus. Those queries fail with `could not resize shared memory segment ... No space left on device`. `docker/compose.yml` therefore sets `shm_size: 256mb` on the Postgres service.
+
+Pages in `/dev/shm` count against the container's memory limit while they are in use, so leave room for them beside `shared_buffers`. The overlay's 1 GB limit allows 256 MB of `shared_buffers` and 256 MB of `/dev/shm`. If you run PostgreSQL in your own container rather than from this Compose file, set the same size (`docker run --shm-size=256m`, or `shm_size` in your Compose file). A PostgreSQL outside a container uses the host's `/dev/shm` and needs no change.
+
 ## Monitoring
 
 ### Built-in Endpoints

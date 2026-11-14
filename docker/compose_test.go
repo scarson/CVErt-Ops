@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -112,6 +113,15 @@ type renderedService struct {
 		Published string `json:"published"`
 	} `json:"ports"`
 	Networks map[string]any `json:"networks"`
+	// ShmSize and Deploy.Resources.Limits.Memory are rendered as byte counts in strings.
+	ShmSize string `json:"shm_size"`
+	Deploy  struct {
+		Resources struct {
+			Limits struct {
+				Memory string `json:"memory"`
+			} `json:"limits"`
+		} `json:"resources"`
+	} `json:"deploy"`
 }
 
 type renderedStack struct {
@@ -262,6 +272,49 @@ func TestProductionPublishesOnlyCaddy(t *testing.T) {
 	}
 	if networks := slices.Collect(maps.Keys(stack.Services["postgres"].Networks)); !slices.Equal(networks, []string{"cvert-data-net"}) {
 		t.Errorf("postgres networks = %v, want only cvert-data-net", networks)
+	}
+}
+
+// postgresSharedMemory is the /dev/shm size the Postgres service must get.
+// PostgreSQL keeps the shared state of a parallel query there (a parallel
+// hash's table, a parallel bitmap scan's bitmap); Docker's default of 64 MB
+// made large parallel hashes fail with "could not resize shared memory
+// segment ... No space left on device" on a 2.6 M-CVE corpus.
+const postgresSharedMemory = 256 << 20
+
+func TestPostgresGetsSharedMemoryForParallelQueries(t *testing.T) {
+	t.Parallel()
+	envFile := writeEnvFile(t, requiredWithoutAppPassword+"APP_DB_PASSWORD=test-app-password\n")
+	for name, files := range map[string][]string{
+		"development": {baseFile},
+		"production":  {baseFile, productionFile},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			rendered, err := renderCompose(t, envFile, files...)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			postgres := parseRender(t, rendered).Services["postgres"]
+			shm, err := strconv.ParseInt(postgres.ShmSize, 10, 64)
+			if err != nil {
+				t.Fatalf("postgres shm_size %q is not a byte count: %v", postgres.ShmSize, err)
+			}
+			if shm != postgresSharedMemory {
+				t.Errorf("postgres shm_size = %d bytes, want %d", shm, postgresSharedMemory)
+			}
+			// /dev/shm pages count against the container's memory limit, so
+			// the limit must leave room for them beside shared_buffers.
+			if limit := postgres.Deploy.Resources.Limits.Memory; limit != "" {
+				memory, err := strconv.ParseInt(limit, 10, 64)
+				if err != nil {
+					t.Fatalf("postgres memory limit %q is not a byte count: %v", limit, err)
+				}
+				if shm > memory/2 {
+					t.Errorf("postgres shm_size %d is more than half its memory limit %d", shm, memory)
+				}
+			}
+		})
 	}
 }
 

@@ -18,23 +18,22 @@ const createAlertRule = `-- name: CreateAlertRule :one
 
 INSERT INTO alert_rules (
     org_id, name, logic, conditions, watchlist_ids, dsl_version,
-    has_epss_condition, is_epss_only, status, fire_on_non_material_changes
+    has_epss_condition, is_epss_only, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at
 `
 
 type CreateAlertRuleParams struct {
-	OrgID                    uuid.UUID
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	DslVersion               int32
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	Status                   string
-	FireOnNonMaterialChanges bool
+	OrgID            uuid.UUID
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	DslVersion       int32
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
 }
 
 // ABOUTME: sqlc queries for alert rule, run, and event management.
@@ -50,7 +49,6 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		arg.HasEpssCondition,
 		arg.IsEpssOnly,
 		arg.Status,
-		arg.FireOnNonMaterialChanges,
 	)
 	var i AlertRule
 	err := row.Scan(
@@ -64,7 +62,6 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 		&i.HasEpssCondition,
 		&i.IsEpssOnly,
 		&i.Status,
-		&i.FireOnNonMaterialChanges,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
@@ -73,7 +70,7 @@ func (q *Queries) CreateAlertRule(ctx context.Context, arg CreateAlertRuleParams
 }
 
 const getAlertRule = `-- name: GetAlertRule :one
-SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at FROM alert_rules
+SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at FROM alert_rules
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 LIMIT 1
 `
@@ -97,7 +94,6 @@ func (q *Queries) GetAlertRule(ctx context.Context, arg GetAlertRuleParams) (Ale
 		&i.HasEpssCondition,
 		&i.IsEpssOnly,
 		&i.Status,
-		&i.FireOnNonMaterialChanges,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
@@ -239,7 +235,7 @@ func (q *Queries) InsertAlertRuleRun(ctx context.Context, arg InsertAlertRuleRun
 }
 
 const listActiveRulesForEPSS = `-- name: ListActiveRulesForEPSS :many
-SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at FROM alert_rules
+SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at FROM alert_rules
 WHERE status = 'active' AND has_epss_condition = true AND deleted_at IS NULL
 ORDER BY id
 `
@@ -266,7 +262,6 @@ func (q *Queries) ListActiveRulesForEPSS(ctx context.Context) ([]AlertRule, erro
 			&i.HasEpssCondition,
 			&i.IsEpssOnly,
 			&i.Status,
-			&i.FireOnNonMaterialChanges,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
@@ -285,7 +280,7 @@ func (q *Queries) ListActiveRulesForEPSS(ctx context.Context) ([]AlertRule, erro
 }
 
 const listActiveRulesForEvaluation = `-- name: ListActiveRulesForEvaluation :many
-SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at FROM alert_rules
+SELECT id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at FROM alert_rules
 WHERE status = 'active' AND is_epss_only = false AND deleted_at IS NULL
 ORDER BY id
 `
@@ -312,7 +307,6 @@ func (q *Queries) ListActiveRulesForEvaluation(ctx context.Context) ([]AlertRule
 			&i.HasEpssCondition,
 			&i.IsEpssOnly,
 			&i.Status,
-			&i.FireOnNonMaterialChanges,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
@@ -512,24 +506,22 @@ SET name                       = $3,
     watchlist_ids              = $6,
     has_epss_condition         = $7,
     is_epss_only               = $8,
-    fire_on_non_material_changes = $9,
-    status                     = $10,
+    status                     = $9,
     updated_at                 = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
-RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at
+RETURNING id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at
 `
 
 type UpdateAlertRuleParams struct {
-	ID                       uuid.UUID
-	OrgID                    uuid.UUID
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	FireOnNonMaterialChanges bool
-	Status                   string
+	ID               uuid.UUID
+	OrgID            uuid.UUID
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
 }
 
 // Updates mutable rule fields. has_epss_condition and is_epss_only are
@@ -545,7 +537,6 @@ func (q *Queries) UpdateAlertRule(ctx context.Context, arg UpdateAlertRuleParams
 		pq.Array(arg.WatchlistIds),
 		arg.HasEpssCondition,
 		arg.IsEpssOnly,
-		arg.FireOnNonMaterialChanges,
 		arg.Status,
 	)
 	var i AlertRule
@@ -560,7 +551,6 @@ func (q *Queries) UpdateAlertRule(ctx context.Context, arg UpdateAlertRuleParams
 		&i.HasEpssCondition,
 		&i.IsEpssOnly,
 		&i.Status,
-		&i.FireOnNonMaterialChanges,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,

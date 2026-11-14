@@ -697,9 +697,6 @@
           "created_at": {
             "type": "string"
           },
-          "fire_on_non_material_changes": {
-            "type": "boolean"
-          },
           "has_epss_condition": {
             "type": "boolean"
           },
@@ -739,7 +736,6 @@
           "watchlist_ids",
           "has_epss_condition",
           "is_epss_only",
-          "fire_on_non_material_changes",
           "status",
           "created_at",
           "updated_at"
@@ -2175,9 +2171,6 @@
           "enabled": {
             "type": "boolean"
           },
-          "fire_on_non_material_changes": {
-            "type": "boolean"
-          },
           "logic": {
             "type": "string"
           },
@@ -2199,8 +2192,7 @@
           "logic",
           "conditions",
           "watchlist_ids",
-          "enabled",
-          "fire_on_non_material_changes"
+          "enabled"
         ],
         "type": "object"
       },
@@ -4293,9 +4285,6 @@
           },
           "conditions": {},
           "enabled": {
-            "type": "boolean"
-          },
-          "fire_on_non_material_changes": {
             "type": "boolean"
           },
           "logic": {

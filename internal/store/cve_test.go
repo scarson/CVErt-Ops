@@ -644,6 +644,61 @@ func TestGetCVE_NotFound(t *testing.T) {
 	}
 }
 
+// ── GetCVEChangeHashes tests ──────────────────────────────────────────────────
+
+func TestGetCVEChangeHashes(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	missing, err := db.GetCVEChangeHashes(ctx, "CVE-0000-0000")
+	if err != nil {
+		t.Fatalf("GetCVEChangeHashes(missing): %v", err)
+	}
+	if missing != (store.CVEChangeHashes{}) {
+		t.Errorf("GetCVEChangeHashes(missing) = %+v, want empty strings", missing)
+	}
+
+	desc := "Heap overflow in libfoo"
+	if err := merge.Ingest(ctx, db.Store, feed.CanonicalPatch{
+		CVEID:              "CVE-2024-9002",
+		Status:             "Published",
+		DescriptionPrimary: &desc,
+		CNAAffected:        []feed.CNAAffected{{Vendor: "Example", Product: "libfoo"}},
+	}, "mitre"); err != nil {
+		t.Fatalf("merge.Ingest: %v", err)
+	}
+	var wantMaterial, wantMatchInputs string
+	if err := db.DB().QueryRowContext(ctx,
+		`SELECT material_hash, match_inputs_hash FROM cves WHERE cve_id = $1`, "CVE-2024-9002",
+	).Scan(&wantMaterial, &wantMatchInputs); err != nil {
+		t.Fatalf("read stored hashes: %v", err)
+	}
+	got, err := db.GetCVEChangeHashes(ctx, "CVE-2024-9002")
+	if err != nil {
+		t.Fatalf("GetCVEChangeHashes: %v", err)
+	}
+	if want := (store.CVEChangeHashes{Material: wantMaterial, MatchInputs: wantMatchInputs}); got != want {
+		t.Errorf("GetCVEChangeHashes = %+v, want %+v", got, want)
+	}
+	if got.Material == "" || got.MatchInputs == "" || got.Material == got.MatchInputs {
+		t.Errorf("GetCVEChangeHashes = %+v, want two distinct non-empty hashes", got)
+	}
+
+	// A row merged before match_inputs_hash existed holds NULL there.
+	if _, err := db.DB().ExecContext(ctx,
+		`UPDATE cves SET match_inputs_hash = NULL WHERE cve_id = $1`, "CVE-2024-9002"); err != nil {
+		t.Fatalf("clear match_inputs_hash: %v", err)
+	}
+	got, err = db.GetCVEChangeHashes(ctx, "CVE-2024-9002")
+	if err != nil {
+		t.Fatalf("GetCVEChangeHashes(NULL match_inputs_hash): %v", err)
+	}
+	if want := (store.CVEChangeHashes{Material: wantMaterial}); got != want {
+		t.Errorf("GetCVEChangeHashes(NULL match_inputs_hash) = %+v, want %+v", got, want)
+	}
+}
+
 // ── GetCVEDetail tests ────────────────────────────────────────────────────────
 
 func TestGetCVEDetail_HappyPath(t *testing.T) {

@@ -149,12 +149,15 @@ func applyEPSSScore(t *testing.T, ctx context.Context, tdb *testutil.TestDB, cve
 }
 
 // ageCorpus moves every CVE's change timestamps an hour back, outside the window each
-// evaluator run re-scans behind its cursor.
+// evaluator run re-scans behind its cursor. That includes date_match_inputs_changed,
+// which the batch scan also selects on, so a CVE this leaves unchanged is outside batch
+// selection by both of its change dates.
 func ageCorpus(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
 	if _, err := db.ExecContext(ctx, `
 		UPDATE cves SET date_modified_canonical = now() - interval '1 hour',
-		                date_epss_updated = now() - interval '1 hour'`); err != nil {
+		                date_epss_updated = now() - interval '1 hour',
+		                date_match_inputs_changed = now() - interval '1 hour'`); err != nil {
 		t.Fatalf("age corpus: %v", err)
 	}
 }

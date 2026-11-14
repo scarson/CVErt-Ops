@@ -29,20 +29,27 @@ func (s *Store) GetCVE(ctx context.Context, cveID string) (*generated.CVE, error
 	return &row, nil
 }
 
-// GetCVEMaterialHash returns the material_hash for a CVE, or empty string if
-// the CVE does not exist or has no hash.
-func (s *Store) GetCVEMaterialHash(ctx context.Context, cveID string) (string, error) {
-	var hash sql.NullString
+// CVEChangeHashes holds the two hashes whose change triggers realtime alert
+// evaluation: material_hash and match_inputs_hash. A missing row or value is "".
+type CVEChangeHashes struct {
+	Material    string
+	MatchInputs string
+}
+
+// GetCVEChangeHashes returns the material_hash and match_inputs_hash of a CVE,
+// with empty strings when the CVE does not exist or a hash is NULL.
+func (s *Store) GetCVEChangeHashes(ctx context.Context, cveID string) (CVEChangeHashes, error) {
+	var material, matchInputs sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		"SELECT material_hash FROM cves WHERE cve_id = $1", cveID,
-	).Scan(&hash)
+		"SELECT material_hash, match_inputs_hash FROM cves WHERE cve_id = $1", cveID,
+	).Scan(&material, &matchInputs)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return CVEChangeHashes{}, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("get cve material hash: %w", err)
+		return CVEChangeHashes{}, fmt.Errorf("get cve change hashes: %w", err)
 	}
-	return hash.String, nil
+	return CVEChangeHashes{Material: material.String, MatchInputs: matchInputs.String}, nil
 }
 
 // GetCVEDetail fetches the canonical CVE row plus all child tables (references,

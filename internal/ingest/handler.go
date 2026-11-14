@@ -44,15 +44,15 @@ type HandlerStore interface {
 type MergeFunc func(ctx context.Context, s merge.Store, patch feed.CanonicalPatch, sourceName string) error
 
 // RealtimeEvaluator runs alert evaluation against a single CVE after its
-// material_hash changes. Implemented by *alert.Evaluator.
+// material_hash or match_inputs_hash changes. Implemented by *alert.Evaluator.
 type RealtimeEvaluator interface {
 	EvaluateRealtime(ctx context.Context, cveID string) error
 }
 
-// CVEHashReader reads the material_hash of a CVE. Used to detect hash changes
-// after merge for realtime alert evaluation.
+// CVEHashReader reads the material_hash and match_inputs_hash of a CVE. Used to
+// detect hash changes after merge for realtime alert evaluation.
 type CVEHashReader interface {
-	GetCVEMaterialHash(ctx context.Context, cveID string) (string, error)
+	GetCVEChangeHashes(ctx context.Context, cveID string) (store.CVEChangeHashes, error)
 }
 
 // Handler returns a worker.Handler that fetches from the named feed adapter,
@@ -68,13 +68,14 @@ func HandlerWithFactory(st *store.Store, client *http.Client, mergeFn MergeFunc,
 }
 
 // HandlerWithAlerts returns a worker.Handler like Handler but with realtime
-// alert evaluation triggered after merges that change material_hash.
+// alert evaluation triggered after merges that change material_hash or match_inputs_hash.
 func HandlerWithAlerts(st *store.Store, client *http.Client, mergeFn MergeFunc, eval RealtimeEvaluator) worker.Handler {
 	return handlerWithStore(st, st, client, mergeFn, NewAdapter, eval, st)
 }
 
 // HandlerWithFactoryAndAlerts returns a worker.Handler like HandlerWithFactory
-// but with realtime alert evaluation triggered after merges that change material_hash.
+// but with realtime alert evaluation triggered after merges that change material_hash
+// or match_inputs_hash.
 func HandlerWithFactoryAndAlerts(st *store.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator) worker.Handler {
 	return handlerWithStore(st, st, client, mergeFn, factory, eval, st)
 }
@@ -82,7 +83,7 @@ func HandlerWithFactoryAndAlerts(st *store.Store, client *http.Client, mergeFn M
 // handlerWithStore is the internal implementation that accepts a separate HandlerStore
 // for sync state operations. This enables testing error paths without mocking the full store.
 // eval and hashReader are optional; when both are non-nil, realtime alert evaluation
-// fires after merges that change material_hash.
+// fires after merges that change material_hash or match_inputs_hash.
 func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Client, mergeFn MergeFunc, factory AdapterFactory, eval RealtimeEvaluator, hashReader CVEHashReader) worker.Handler {
 	// Per-feed circuit breakers, lazily created on first use.
 	var breakerMu sync.Mutex
@@ -179,12 +180,12 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 
 			// Merge each patch.
 			for _, patch := range result.Patches {
-				// Read hash before merge for change detection.
-				var hashBefore string
+				// Read hashes before merge for change detection.
+				var hashBefore store.CVEChangeHashes
 				var hashReadOK bool
 				if eval != nil && hashReader != nil {
 					var hashErr error
-					hashBefore, hashErr = hashReader.GetCVEMaterialHash(ctx, patch.CVEID)
+					hashBefore, hashErr = hashReader.GetCVEChangeHashes(ctx, patch.CVEID)
 					if hashErr != nil {
 						slog.Error("pre-merge hash read failed",
 							"feed", p.FeedName,
@@ -207,9 +208,11 @@ func handlerWithStore(syncSt HandlerStore, mergeSt merge.Store, client *http.Cli
 				}
 				itemsUpserted++
 
-				// Check if material_hash changed and trigger realtime alert evaluation.
+				// Check if material_hash or match_inputs_hash changed and trigger realtime
+				// alert evaluation. A match_inputs_hash change alone (a CNA product name, an
+				// NVD vulnerable flag) can change which rules match without being material.
 				if eval != nil && hashReader != nil {
-					hashAfter, hashErr := hashReader.GetCVEMaterialHash(ctx, patch.CVEID)
+					hashAfter, hashErr := hashReader.GetCVEChangeHashes(ctx, patch.CVEID)
 					if hashErr != nil {
 						slog.Error("post-merge hash read failed",
 							"feed", p.FeedName,

@@ -756,11 +756,18 @@ func (e *Evaluator) bypassTx(ctx context.Context, statementTimeoutMS int, fn fun
 	return tx.Commit()
 }
 
-// getCVEsModifiedSince returns a page of CVE IDs modified after since, ordered by cve_id
-// ASC for keyset pagination. afterID is the last CVE ID from the previous page (empty
-// string for the first page). Rejected and withdrawn CVEs are included: evaluateRule
-// resolves open events only for CVEs in its candidate list, and queryCandidates keeps
-// them from matching.
+// getCVEsModifiedSince returns a page of CVE IDs whose date_modified_canonical or
+// date_match_inputs_changed is after since, ordered by cve_id ASC for keyset pagination.
+// date_match_inputs_changed moves when a rule match input outside material_hash changes
+// (a CNA product name, an NVD vulnerable flag), so a CVE whose realtime evaluation of such
+// a change failed is evaluated here. Both dates are stamped from the merge worker's clock,
+// so cursorRescanWindow covers both. The two conditions are a UNION of two keyset scans,
+// one per column, so each can use its own index; each branch is limited to the page size,
+// which does not change the result, because the first limit IDs of the union are among
+// the first limit IDs of each branch. A zero since scans every CVE. afterID is the last CVE
+// ID from the previous page (empty string for the first page). Rejected and withdrawn
+// CVEs are included: evaluateRule resolves open events only for CVEs in its candidate
+// list, and queryCandidates keeps them from matching.
 func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, afterID string, limit int) ([]string, error) {
 	var (
 		rows *sql.Rows
@@ -778,14 +785,25 @@ func (e *Evaluator) getCVEsModifiedSince(ctx context.Context, since time.Time, a
 			 ORDER BY cve_id ASC LIMIT $2`, afterID, limit)
 	case afterID == "":
 		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_modified_canonical > $1
+			`(SELECT cve_id FROM cves
+			  WHERE date_modified_canonical > $1
+			  ORDER BY cve_id LIMIT $2)
+			 UNION
+			 (SELECT cve_id FROM cves
+			  WHERE date_match_inputs_changed > $1
+			  ORDER BY cve_id LIMIT $2)
 			 ORDER BY cve_id ASC LIMIT $2`, since, limit)
 	default:
 		rows, err = e.db.QueryContext(ctx,
-			`SELECT cve_id FROM cves
-			 WHERE date_modified_canonical > $1
-			   AND cve_id > $2
+			`(SELECT cve_id FROM cves
+			  WHERE date_modified_canonical > $1
+			    AND cve_id > $2
+			  ORDER BY cve_id LIMIT $3)
+			 UNION
+			 (SELECT cve_id FROM cves
+			  WHERE date_match_inputs_changed > $1
+			    AND cve_id > $2
+			  ORDER BY cve_id LIMIT $3)
 			 ORDER BY cve_id ASC LIMIT $3`, since, afterID, limit)
 	}
 	return scanCVEIDs(rows, err)

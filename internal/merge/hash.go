@@ -50,12 +50,12 @@ type affectedPkgKey struct {
 
 // ComputeMaterialHash returns the hex-encoded SHA-256 of the JCS (RFC 8785)
 // serialization of f. Before hashing:
-//   - CVSS vectors are normalized to canonical metric order
+//   - CVSS vector metrics are sorted, so metric order does not move the hash
 //   - All string slice fields are sorted lexicographically
 //   - affectedPkgs is sorted by every field, so ranges that tie on some fields
 //     still have one order
 func ComputeMaterialHash(f MaterialFields) string {
-	// Normalize CVSS vectors to canonical metric order.
+	// Sort CVSS vector metrics so metric order does not move the hash.
 	f.CVSSv3Vector = normalizeCVSSVector(f.CVSSv3Vector)
 	f.CVSSv4Vector = normalizeCVSSVector(f.CVSSv4Vector)
 
@@ -100,9 +100,10 @@ func ComputeMaterialHash(f MaterialFields) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// normalizeCVSSVector reorders CVSS vector metrics to the canonical spec order
-// so that semantically identical vectors with different metric orderings produce
-// the same hash.
+// normalizeCVSSVector sorts CVSS vector metrics lexicographically after the
+// version prefix, so that semantically identical vectors with different metric
+// orderings produce the same hash. The result is hash input only; it is not the
+// spec's metric order and is never stored.
 //
 // CVSS v3.x vectors: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
 // CVSS v4.0 vectors: "CVSS:4.0/AV:N/AC:L/..."

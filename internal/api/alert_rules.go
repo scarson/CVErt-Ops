@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
@@ -122,6 +124,13 @@ func parseDSL(logic string, conditionsJSON json.RawMessage, watchlistCount int) 
 		return dsl.Rule{}, dslMeta{}, nil, err
 	}
 	rule, err := dsl.Parse(raw)
+	if unknown, ok := errors.AsType[*dsl.UnknownKeyError](err); ok && unknown.Index >= 0 {
+		// A key the condition does not define: located like the request body's
+		// own unknown members, at body.conditions[i].<key>.
+		return dsl.Rule{}, dslMeta{}, []dsl.ValidationError{
+			{Index: unknown.Index, Field: unknown.Key, Message: validation.MsgUnexpectedProperty, Severity: "error"},
+		}, nil
+	}
 	if err != nil {
 		// Structural parse error — return as a validation error.
 		return dsl.Rule{}, dslMeta{}, []dsl.ValidationError{

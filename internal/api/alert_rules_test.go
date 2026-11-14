@@ -2136,6 +2136,84 @@ func TestCreateAlertRule_UnknownFieldRefused(t *testing.T) {
 	}
 }
 
+// TestAlertRule_UnknownConditionKeyRefused verifies that a key a condition does
+// not define is refused with its location on create, PATCH and validate, rather
+// than dropped. Dropping "negate" would save a rule that matches the opposite of
+// what its writer meant.
+func TestAlertRule_UnknownConditionKeyRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "condkey@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "condkey@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	const negatedConditions = `[{"field": "cvss_v3_score", "operator": "gte", "value": 7.0, "negate": true}]`
+	wantProblem := func(t *testing.T, resp *http.Response) {
+		t.Helper()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("got %d, want 422", resp.StatusCode)
+		}
+		var problem huma.ErrorModel
+		if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+			t.Fatalf("decode problem: %v", err)
+		}
+		if len(problem.Errors) != 1 ||
+			problem.Errors[0].Location != "body.conditions[0].negate" ||
+			problem.Errors[0].Message != "unexpected property" {
+			t.Errorf("errors = %+v, want one unexpected property at body.conditions[0].negate", problem.Errors)
+		}
+	}
+
+	t.Run("create", func(t *testing.T) {
+		body := strings.Replace(validRuleDSL,
+			`[{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}]`, negatedConditions, 1)
+		resp := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		wantProblem(t, resp)
+	})
+
+	t.Run("patch", func(t *testing.T) {
+		// A disabled rule is not activating, so it accepts PATCH at once.
+		disabled := strings.Replace(validRuleDSL, `"enabled": true`, `"enabled": false`, 1)
+		created := doCreateAlertRule(t, ctx, ts, token, reg.OrgID,
+			strings.Replace(disabled, "High CVSS Rule", "Patch Target Rule", 1))
+		defer created.Body.Close() //nolint:errcheck,gosec // G104
+		if created.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", created.StatusCode)
+		}
+		var rule struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(created.Body).Decode(&rule); err != nil {
+			t.Fatalf("decode create: %v", err)
+		}
+		resp := doPatchAlertRule(t, ctx, ts, token, reg.OrgID, rule.ID, `{"conditions": `+negatedConditions+`}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		wantProblem(t, resp)
+	})
+
+	t.Run("validate", func(t *testing.T) {
+		resp := doValidateAlertRule(t, ctx, ts, token, reg.OrgID,
+			`{"logic": "and", "conditions": `+negatedConditions+`, "watchlist_ids": []}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("got %d, want 200", resp.StatusCode)
+		}
+		var result validateRuleResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode validate: %v", err)
+		}
+		want := dslErrorEntry{Index: 0, Field: "negate", Message: "unexpected property", Severity: "error"}
+		if result.Valid || len(result.Errors) != 1 || result.Errors[0] != want {
+			t.Errorf("validate = %+v, want invalid with one error %+v", result, want)
+		}
+	})
+}
+
 // TestCreateAlertRule_LocationHeader verifies Location header on 201 and 202 responses.
 func TestCreateAlertRule_LocationHeader(t *testing.T) {
 	t.Parallel()

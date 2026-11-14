@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
@@ -242,6 +243,63 @@ func TestSavedSearch_CreateValidation(t *testing.T) {
 	if resp2.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("invalid DSL: got %d, want 422", resp2.StatusCode)
 	}
+}
+
+// TestSavedSearch_UnknownQueryKeyRefused verifies that a key the DSL does not
+// define, in a condition or in the query object, is refused with its location
+// on create and PATCH rather than dropped.
+func TestSavedSearch_UnknownQueryKeyRefused(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newSavedSearchTestServer(t, db)
+
+	reg := doRegister(t, ctx, ts, "ss-key@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "ss-key@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	wantProblem := func(t *testing.T, resp *http.Response, wantLocation string) {
+		t.Helper()
+		if resp.StatusCode != http.StatusUnprocessableEntity {
+			t.Fatalf("got %d, want 422", resp.StatusCode)
+		}
+		var problem huma.ErrorModel
+		if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+			t.Fatalf("decode problem: %v", err)
+		}
+		if len(problem.Errors) != 1 ||
+			problem.Errors[0].Location != wantLocation ||
+			problem.Errors[0].Message != "unexpected property" {
+			t.Errorf("errors = %+v, want one unexpected property at %s", problem.Errors, wantLocation)
+		}
+	}
+
+	t.Run("condition key on create", func(t *testing.T) {
+		body := `{"name":"Negated","query_json":{"logic":"and","conditions":[{"field":"severity","operator":"in","value":["critical"],"negate":true}]}}`
+		resp := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID, body)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		wantProblem(t, resp, "body.query_json.conditions[0].negate")
+	})
+
+	t.Run("query key on PATCH", func(t *testing.T) {
+		created := doCreateSavedSearch(t, ctx, ts, token, reg.OrgID,
+			fmt.Sprintf(`{"name":"Patch Key Target","query_json":%s}`, validDSLJSON))
+		defer created.Body.Close() //nolint:errcheck,gosec
+		if created.StatusCode != http.StatusCreated {
+			t.Fatalf("create: got %d, want 201", created.StatusCode)
+		}
+		var search struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(created.Body).Decode(&search); err != nil {
+			t.Fatalf("decode create: %v", err)
+		}
+		resp := doPatchSavedSearch(t, ctx, ts, token, reg.OrgID, search.ID,
+			`{"query_json":{"logic":"and","limit":5,"conditions":[{"field":"severity","operator":"in","value":["critical"]}]}}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		wantProblem(t, resp, "body.query_json.limit")
+	})
 }
 
 // TestSavedSearch_CreateValidation_NameLength tests that names exceeding 255 characters

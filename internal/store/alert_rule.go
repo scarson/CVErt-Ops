@@ -25,27 +25,25 @@ type AlertRuleRow = generated.AlertRule
 
 // CreateAlertRuleParams holds the fields for creating an alert rule.
 type CreateAlertRuleParams struct {
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	Status                   string
-	FireOnNonMaterialChanges bool
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
 }
 
 // UpdateAlertRuleParams holds the mutable fields for updating an alert rule.
 // Status is included so the content update and status transition are atomic.
 type UpdateAlertRuleParams struct {
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	FireOnNonMaterialChanges bool
-	Status                   string
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
 }
 
 // ListAlertEventsParams holds optional filters for listing alert events.
@@ -143,16 +141,15 @@ func (s *Store) CreateAlertRule(ctx context.Context, orgID uuid.UUID, p CreateAl
 	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		var err error
 		row, err = q.CreateAlertRule(ctx, generated.CreateAlertRuleParams{
-			OrgID:                    orgID,
-			Name:                     p.Name,
-			Logic:                    p.Logic,
-			Conditions:               p.Conditions,
-			WatchlistIds:             ids,
-			DslVersion:               1,
-			HasEpssCondition:         p.HasEpssCondition,
-			IsEpssOnly:               p.IsEpssOnly,
-			Status:                   p.Status,
-			FireOnNonMaterialChanges: p.FireOnNonMaterialChanges,
+			OrgID:            orgID,
+			Name:             p.Name,
+			Logic:            p.Logic,
+			Conditions:       p.Conditions,
+			WatchlistIds:     ids,
+			DslVersion:       1,
+			HasEpssCondition: p.HasEpssCondition,
+			IsEpssOnly:       p.IsEpssOnly,
+			Status:           p.Status,
 		})
 		return err
 	})
@@ -190,16 +187,15 @@ func (s *Store) UpdateAlertRule(ctx context.Context, orgID, id uuid.UUID, p Upda
 	var result *AlertRuleRow
 	err := s.withOrgTx(ctx, orgID, func(q *generated.Queries) error {
 		row, err := q.UpdateAlertRule(ctx, generated.UpdateAlertRuleParams{
-			ID:                       id,
-			OrgID:                    orgID,
-			Name:                     p.Name,
-			Logic:                    p.Logic,
-			Conditions:               p.Conditions,
-			WatchlistIds:             ids,
-			HasEpssCondition:         p.HasEpssCondition,
-			IsEpssOnly:               p.IsEpssOnly,
-			FireOnNonMaterialChanges: p.FireOnNonMaterialChanges,
-			Status:                   p.Status,
+			ID:               id,
+			OrgID:            orgID,
+			Name:             p.Name,
+			Logic:            p.Logic,
+			Conditions:       p.Conditions,
+			WatchlistIds:     ids,
+			HasEpssCondition: p.HasEpssCondition,
+			IsEpssOnly:       p.IsEpssOnly,
+			Status:           p.Status,
 		})
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -256,7 +252,7 @@ func (s *Store) SetAlertRuleStatusIf(ctx context.Context, orgID, id uuid.UUID, n
 func (s *Store) ListAlertRules(ctx context.Context, orgID uuid.UUID, status *string, afterTime *time.Time, afterID *uuid.UUID, limit int) ([]AlertRuleRow, error) {
 	psql := sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 	sb := psql.
-		Select("id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, fire_on_non_material_changes, created_at, updated_at, deleted_at").
+		Select("id, org_id, name, logic, conditions, watchlist_ids, dsl_version, has_epss_condition, is_epss_only, status, created_at, updated_at, deleted_at").
 		From("alert_rules").
 		Where(sq.Eq{"org_id": orgID}).
 		Where("deleted_at IS NULL").
@@ -289,7 +285,7 @@ func (s *Store) ListAlertRules(ctx context.Context, orgID uuid.UUID, status *str
 				&r.ID, &r.OrgID, &r.Name, &r.Logic, &r.Conditions,
 				pq.Array(&r.WatchlistIds),
 				&r.DslVersion, &r.HasEpssCondition, &r.IsEpssOnly,
-				&r.Status, &r.FireOnNonMaterialChanges,
+				&r.Status,
 				&r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
 			); err != nil {
 				return fmt.Errorf("list alert rules: scan: %w", err)

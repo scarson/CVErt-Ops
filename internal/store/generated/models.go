@@ -117,20 +117,19 @@ type AlertEvent struct {
 }
 
 type AlertRule struct {
-	ID                       uuid.UUID
-	OrgID                    uuid.UUID
-	Name                     string
-	Logic                    string
-	Conditions               json.RawMessage
-	WatchlistIds             []uuid.UUID
-	DslVersion               int32
-	HasEpssCondition         bool
-	IsEpssOnly               bool
-	Status                   string
-	FireOnNonMaterialChanges bool
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
-	DeletedAt                sql.NullTime
+	ID               uuid.UUID
+	OrgID            uuid.UUID
+	Name             string
+	Logic            string
+	Conditions       json.RawMessage
+	WatchlistIds     []uuid.UUID
+	DslVersion       int32
+	HasEpssCondition bool
+	IsEpssOnly       bool
+	Status           string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DeletedAt        sql.NullTime
 }
 
 type AlertRuleChannel struct {

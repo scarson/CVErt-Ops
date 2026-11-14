@@ -2128,7 +2128,6 @@ export interface components {
             readonly $schema?: string;
             conditions: unknown;
             created_at: string;
-            fire_on_non_material_changes: boolean;
             has_epss_condition: boolean;
             id: string;
             is_epss_only: boolean;
@@ -2651,7 +2650,6 @@ export interface components {
             readonly $schema?: string;
             conditions: unknown;
             enabled: boolean;
-            fire_on_non_material_changes: boolean;
             logic: string;
             name: string;
             watchlist_ids: string[] | null;
@@ -3412,7 +3410,6 @@ export interface components {
             readonly $schema?: string;
             conditions?: unknown;
             enabled?: boolean;
-            fire_on_non_material_changes?: boolean;
             logic?: string;
             name?: string;
             watchlist_ids?: string[];

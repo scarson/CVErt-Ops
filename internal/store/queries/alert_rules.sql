@@ -4,9 +4,9 @@
 -- name: CreateAlertRule :one
 INSERT INTO alert_rules (
     org_id, name, logic, conditions, watchlist_ids, dsl_version,
-    has_epss_condition, is_epss_only, status, fire_on_non_material_changes
+    has_epss_condition, is_epss_only, status
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: GetAlertRule :one
@@ -25,8 +25,7 @@ SET name                       = $3,
     watchlist_ids              = $6,
     has_epss_condition         = $7,
     is_epss_only               = $8,
-    fire_on_non_material_changes = $9,
-    status                     = $10,
+    status                     = $9,
     updated_at                 = now()
 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 RETURNING *;

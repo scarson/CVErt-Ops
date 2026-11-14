@@ -25,38 +25,35 @@ import (
 // ── Request / response types ──────────────────────────────────────────────────
 
 type createAlertRuleBody struct {
-	Name                     string          `json:"name"`
-	Logic                    string          `json:"logic"`
-	Conditions               json.RawMessage `json:"conditions"`
-	WatchlistIDs             []string        `json:"watchlist_ids"`
-	Enabled                  bool            `json:"enabled"`
-	FireOnNonMaterialChanges bool            `json:"fire_on_non_material_changes"`
+	Name         string          `json:"name"`
+	Logic        string          `json:"logic"`
+	Conditions   json.RawMessage `json:"conditions"`
+	WatchlistIDs []string        `json:"watchlist_ids"`
+	Enabled      bool            `json:"enabled"`
 }
 
 // patchAlertRuleBody uses nil-check semantics for all fields.
 // json.RawMessage is nil if the key was absent from the PATCH payload.
 // Enabled maps to the status state machine: true → activating, false → disabled.
 type patchAlertRuleBody struct {
-	Name                     *string         `json:"name,omitempty"`
-	Logic                    *string         `json:"logic,omitempty"`
-	Conditions               json.RawMessage `json:"conditions,omitempty"` // nil = not provided
-	WatchlistIDs             *[]string       `json:"watchlist_ids,omitempty"`
-	Enabled                  *bool           `json:"enabled,omitempty"`
-	FireOnNonMaterialChanges *bool           `json:"fire_on_non_material_changes,omitempty"`
+	Name         *string         `json:"name,omitempty"`
+	Logic        *string         `json:"logic,omitempty"`
+	Conditions   json.RawMessage `json:"conditions,omitempty"` // nil = not provided
+	WatchlistIDs *[]string       `json:"watchlist_ids,omitempty"`
+	Enabled      *bool           `json:"enabled,omitempty"`
 }
 
 type alertRuleEntry struct {
-	ID                       string          `json:"id"`
-	Name                     string          `json:"name"`
-	Logic                    string          `json:"logic"`
-	Conditions               json.RawMessage `json:"conditions"`
-	WatchlistIDs             []string        `json:"watchlist_ids"`
-	HasEPSSCondition         bool            `json:"has_epss_condition"`
-	IsEPSSOnly               bool            `json:"is_epss_only"`
-	FireOnNonMaterialChanges bool            `json:"fire_on_non_material_changes"`
-	Status                   string          `json:"status"`
-	CreatedAt                string          `json:"created_at"`
-	UpdatedAt                string          `json:"updated_at"`
+	ID               string          `json:"id"`
+	Name             string          `json:"name"`
+	Logic            string          `json:"logic"`
+	Conditions       json.RawMessage `json:"conditions"`
+	WatchlistIDs     []string        `json:"watchlist_ids"`
+	HasEPSSCondition bool            `json:"has_epss_condition"`
+	IsEPSSOnly       bool            `json:"is_epss_only"`
+	Status           string          `json:"status"`
+	CreatedAt        string          `json:"created_at"`
+	UpdatedAt        string          `json:"updated_at"`
 }
 
 type alertRuleCursor struct {
@@ -93,17 +90,16 @@ func alertRuleToEntry(r store.AlertRuleRow) alertRuleEntry {
 		ids[i] = id.String()
 	}
 	return alertRuleEntry{
-		ID:                       r.ID.String(),
-		Name:                     r.Name,
-		Logic:                    r.Logic,
-		Conditions:               r.Conditions,
-		WatchlistIDs:             ids,
-		HasEPSSCondition:         r.HasEpssCondition,
-		IsEPSSOnly:               r.IsEpssOnly,
-		FireOnNonMaterialChanges: r.FireOnNonMaterialChanges,
-		Status:                   r.Status,
-		CreatedAt:                r.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:                r.UpdatedAt.Format(time.RFC3339),
+		ID:               r.ID.String(),
+		Name:             r.Name,
+		Logic:            r.Logic,
+		Conditions:       r.Conditions,
+		WatchlistIDs:     ids,
+		HasEPSSCondition: r.HasEpssCondition,
+		IsEPSSOnly:       r.IsEpssOnly,
+		Status:           r.Status,
+		CreatedAt:        r.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        r.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -257,14 +253,13 @@ func (srv *Server) createAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	row, err := srv.store.CreateAlertRule(r.Context(), orgID, store.CreateAlertRuleParams{
-		Name:                     req.Name,
-		Logic:                    req.Logic,
-		Conditions:               req.Conditions,
-		WatchlistIds:             wlUUIDs,
-		HasEpssCondition:         meta.hasEPSS,
-		IsEpssOnly:               meta.isEPSSOnly,
-		Status:                   status,
-		FireOnNonMaterialChanges: req.FireOnNonMaterialChanges,
+		Name:             req.Name,
+		Logic:            req.Logic,
+		Conditions:       req.Conditions,
+		WatchlistIds:     wlUUIDs,
+		HasEpssCondition: meta.hasEPSS,
+		IsEpssOnly:       meta.isEPSSOnly,
+		Status:           status,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -435,7 +430,6 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	logic := current.Logic
 	conditions := current.Conditions
 	wlIDs := current.WatchlistIds
-	fireOnNonMaterial := current.FireOnNonMaterialChanges
 	hasEPSS := current.HasEpssCondition
 	isEPSSOnly := current.IsEpssOnly
 
@@ -459,9 +453,6 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 			return
 		}
 		wlIDs = uuids
-	}
-	if req.FireOnNonMaterialChanges != nil {
-		fireOnNonMaterial = *req.FireOnNonMaterialChanges
 	}
 
 	// Re-validate DSL only if DSL fields changed.
@@ -527,14 +518,13 @@ func (srv *Server) updateAlertRuleHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	row, err := srv.store.UpdateAlertRule(r.Context(), orgID, id, store.UpdateAlertRuleParams{
-		Name:                     name,
-		Logic:                    logic,
-		Conditions:               conditions,
-		WatchlistIds:             wlIDs,
-		HasEpssCondition:         hasEPSS,
-		IsEpssOnly:               isEPSSOnly,
-		FireOnNonMaterialChanges: fireOnNonMaterial,
-		Status:                   newStatus,
+		Name:             name,
+		Logic:            logic,
+		Conditions:       conditions,
+		WatchlistIds:     wlIDs,
+		HasEpssCondition: hasEPSS,
+		IsEpssOnly:       isEPSSOnly,
+		Status:           newStatus,
 	})
 	if err != nil {
 		slog.ErrorContext(r.Context(), "update alert rule", "error", err)

@@ -164,7 +164,7 @@ Why this matters here: this plan runs over several sessions (code, a measurement
   - Regex rules: only conditions that narrow the candidates count toward the guardrail (T0809Z); conditions under `or` were settled by the `or` refusal above.
   - Unmapped-product warning: design section 8 first, then the message lists every CNA spelling of each part (T0810Z).
   - `cve_id`: values shaped like a CVE ID compare upper case (T0813Z).
-  - Still open: `fire_on_non_material_changes` (§10.4) is stored but never read; whether to build or remove it is Sam's decision.
+  - `fire_on_non_material_changes` (§10.4), stored but never read: removed on Sam's decision (2026-11-14), from the API, the `alert_rules` table (migration 000064) and PLAN.md §10.4. Reasons in `dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md`; log entry T0835Z.
 
 ---
 

@@ -101,8 +101,7 @@ const validRuleDSL = `{
   "logic": "and",
   "conditions": [{"field": "cvss_v3_score", "operator": "gte", "value": 7.0}],
   "watchlist_ids": [],
-  "enabled": true,
-  "fire_on_non_material_changes": false
+  "enabled": true
 }`
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -2272,5 +2271,35 @@ func TestCreateAlertRule_DuplicateName(t *testing.T) {
 	}
 	if !strings.Contains(problem.Detail, "already exists") {
 		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
+	}
+}
+
+// TestAlertRule_NoFireOnNonMaterialChanges checks the API no longer returns
+// fire_on_non_material_changes, which was removed because nothing read it
+// (dev/plans/2026-11-14-remove-fire-on-non-material-changes-design.md). The JSON
+// decoder ignores unknown fields, so a client that still sends it is not refused.
+func TestAlertRule_NoFireOnNonMaterialChanges(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "flag@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "flag@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	withFlag := strings.Replace(validRuleDSL, `"enabled": true`, `"enabled": true, "fire_on_non_material_changes": true`, 1)
+	created := doCreateAlertRule(t, ctx, ts, token, reg.OrgID, withFlag)
+	defer created.Body.Close() //nolint:errcheck,gosec // G104
+	if created.StatusCode != http.StatusAccepted {
+		t.Fatalf("create: got %d, want 202", created.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(created.Body).Decode(&body); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if _, ok := body["fire_on_non_material_changes"]; ok {
+		t.Errorf("create response has fire_on_non_material_changes: %v", body)
 	}
 }

@@ -111,15 +111,15 @@ Why this matters here: this plan runs over several sessions (code, a measurement
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ⚠️ TERMINATED-FOR-EXECUTION 2026-11-14 — 8 rounds (4 independent, all cross-model Codex cold reads), 2 verify-first flags annotated in place (Tasks 2.1 and 5.3)
-**Overall:** ⏸ Phases 1–3 shipped on branch `claude/lucid-moser-fef966` (no PR yet); the Phase 4 gate failed for the 50-product/100-condition limit rule; Sam chose the remedy on 2026-11-14 (one CVE set per `or` rule, JIT off); implementing it, then re-measuring.
+**Overall:** 🚧 Phases 1–4 complete on branch `claude/lucid-moser-fef966` (no PR yet); Phase 4 needed Sam's query-shape remedy (design section 17). Phase 5 in progress.
 
 | Phase | Status | Ship SHA(s) | Notes |
 |---|---|---|---|
 | 1 — Name table and value parser in `internal/check` | ✅ Shipped 2026-11-14 (branch; PR pending) | `cc883cd`, `3bf8255`, `43c878f` | Name table digest pinned at `f91e7929…a18b` |
 | 2 — CVE-set form, `CompiledRule.Where`, package correlation | ✅ Shipped 2026-11-14 (branch; PR pending) | `7668072`, `c551369`, `f2f6f0e`, `1d0f6e6`, `daddbc2` | No existing integration test depended on uncorrelated matching |
 | 3 — The `affected.cpe_product` field | ✅ Shipped 2026-11-14 (branch; PR pending) | `76359bc`, `71b4e9b`, `ead194c`, `fcde2c5`; review fix `d69081d` | Adversarial review found one branch defect (quadratic Validate cost), fixed |
-| 4 — Measurements on the kept full ingest (gate) | ⏸ Remedy built (`7ad8080`, `fe0e32f`, `9d58ee1`); statement thresholds pass; M8 activation 12 min vs 7, with Sam | evidence `4d72221`, `bea8e03`, see next commit | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
-| 5 — Re-check signal | ⬜ Not started | — | — |
+| 4 — Measurements on the kept full ingest (gate) | ✅ Complete 2026-11-14: statement thresholds pass after Sam's remedy (`7ad8080`, `fe0e32f`, `9d58ee1`); M8 12 min accepted by Sam, follow-up separate | evidence `4d72221`, `bea8e03`, see next commit | Limit rule fails M5a, M5b, M5c, M8; M6 fails. `dev/plans/2026-11-13-product-match-rules-measurements.md` |
+| 5 — Re-check signal | 🚧 In progress (claimed 2026-11-14T05:25Z, `claude/lucid-moser-fef966`) | — | — |
 | 6 — PLAN.md, reviews, full suite, PR | ⬜ Not started | — | — |
 
 ### Deviations
@@ -614,7 +614,7 @@ Test: `BuildSchemaDescription()` contains `affected.cpe_product (type: CPE vendo
 
 ## Phase 4 — Measurements on the kept full ingest (gate)
 
-**Execution Status:** ⏸ DEFERRED 2026-11-14 — the gate failed (Task 4.3). Failing rows: M5a limit rule `or` realtime 23.3 ms (threshold 5 ms); M5b dry-run and M5c batch failed with a shared-memory error (64 MB `/dev/shm`), and serially take 27.6 s and 17.7 s (thresholds 5 s, 3 s); M6 50 products `or` dry-run 16.2 s (5 s); M8 full activation failed on page 1 with the shared-memory error. Every single-product, package-with-ecosystem and saved-search row passes. Full table, inputs and a read-only sweep of smaller limits: `dev/plans/2026-11-13-product-match-rules-measurements.md`. **Unblock condition:** Sam chooses the remedy (design section 13's fallback is a lower limit on set-type conditions); the chosen limits are re-measured with this harness before Phase 5 starts. The disposable copy `cvert-match2-activation-copy` is kept for that re-measurement and Task 5.5.
+**Execution Status:** ✅ COMPLETE 2026-11-14 — every statement threshold passes after Sam's remedy; M8 accepted by Sam (decisions below). History: the first run failed the gate (Task 4.3). Failing rows then: M5a limit rule `or` realtime 23.3 ms (threshold 5 ms); M5b dry-run and M5c batch failed with a shared-memory error (64 MB `/dev/shm`), and serially take 27.6 s and 17.7 s (thresholds 5 s, 3 s); M6 50 products `or` dry-run 16.2 s (5 s); M8 full activation failed on page 1 with the shared-memory error. Every single-product, package-with-ecosystem and saved-search row passes. Full table, inputs and a read-only sweep of smaller limits: `dev/plans/2026-11-13-product-match-rules-measurements.md`. **Unblock condition:** Sam chooses the remedy (design section 13's fallback is a lower limit on set-type conditions); the chosen limits are re-measured with this harness before Phase 5 starts. The disposable copy `cvert-match2-activation-copy` is kept for that re-measurement and Task 5.5.
 
 **Sam's decision (2026-11-14):** the remedy is not a lower limit. Under `or`, every set-type condition compiles into one CVE-ID set (`cves.cve_id IN (<branch> UNION ALL ...)`, candidate IDs inside each branch), with scalar conditions OR-ed beside it; under `and`, one set per condition as before. The evaluator's candidate statement runs with `SET LOCAL jit = off`. Evidence for it: OR-ed `IN` subqueries cannot become semi-joins, so each is a hashed SubPlan built in full; the 50 package names in one `IN` planned as a merge semi-join in about 100 ms; JIT cost about 4 s on a 50-product dry-run (`bea8e03`). The limits (50 product values, 100 conditions) stay. Expected to remain open after it: realtime planning of a 50-product rule (10.7 ms in the two-condition form against 5 ms), which merging conditions does not reduce. Re-measure all of Task 4.2 at the original limits.
 
@@ -627,6 +627,8 @@ Test: `BuildSchemaDescription()` contains `affected.cpe_product (type: CPE vendo
 **Sam's third decision (2026-11-14, "Yes, both"):** evaluator rule statements also run with parallel query off (`SET LOCAL max_parallel_workers_per_gather = 0`), and under `or` all `affected.package` `eq`/`in` conditions compile into one package branch (exactly equivalent: they are uncorrelated under `or`). Then re-measure; the dry-run limit for no-ecosystem package names is decided with the new number.
 
 **Re-measured after `9d58ee1` (2026-11-14):** every statement threshold passes (M5a realtime 4.7 ms, M5b dry-run 4.3 s, M5c batch 0.45 s, M6 1.4 s; M7d equal to the old form when interleaved), so no dry-run limit is needed. M8 full activation on the copy completed (rule `active`, 200,252 events) in 12 min 5 s against 7 minutes: about 4 minutes of reads and 8 of one-transaction-per-event inserts, a cost that follows the match count (`severity in [critical, high]` matches 182,637 CVEs). Design amendment written: `dev/plans/2026-11-13-product-match-rules-design.md` section 17. M8 is with Sam.
+
+**Sam's decision on M8 (2026-11-14, "Accept, follow up"):** M8 is accepted for MATCH-2 as a limit of the existing activation path (per-event insert transactions), not of the rule shape. Batching activation event inserts is a separate follow-up, started as its own session and branch from `dev` ("Batch alert event inserts in activation scans"); its PR's own record signals completion. Phase 4 is complete.
 
 Design section 13 (every measurement and threshold) and section 5.3 (earlier numbers to compare against). This phase changes no production code. Its result decides whether Phase 5 starts or the work goes back to Sam.
 
@@ -693,7 +695,7 @@ Record both numbers. If step 2 cannot be run (no backup access, no disk), M8 is 
 
 ## Phase 5 — Re-check signal
 
-**Execution Status:** ⬜ NOT STARTED
+**Execution Status:** 🚧 IN PROGRESS — claimed 2026-11-14T05:25Z on branch `claude/lucid-moser-fef966`
 
 Design section 7 (Sam's ruling 15.1: a separate signal, not a `material_hash` change) and section 12's re-check tests. `material_hash` and its golden hashes do not change (design 16): run `go test ./internal/merge/... -run 'Hash|Golden'` at the end of the phase and confirm no golden file changed.
 

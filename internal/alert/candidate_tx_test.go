@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"github.com/scarson/cvert-ops/internal/alert/dsl"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -22,7 +23,7 @@ func show(ctx context.Context, t *testing.T, q interface {
 	return v
 }
 
-func TestPrepareCandidateTx_TurnsJITAndParallelQueryOffForTheTransaction(t *testing.T) {
+func TestPrepareRuleQueryTx_TurnsJITAndParallelQueryOffForTheTransaction(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	tdb := testutil.NewTestDB(t)
@@ -47,8 +48,8 @@ func TestPrepareCandidateTx_TurnsJITAndParallelQueryOffForTheTransaction(t *test
 	if err != nil {
 		t.Fatalf("BeginTx: %v", err)
 	}
-	if err := prepareCandidateTx(ctx, tx); err != nil {
-		t.Fatalf("prepareCandidateTx: %v", err)
+	if err := dsl.PrepareRuleQueryTx(ctx, tx); err != nil {
+		t.Fatalf("PrepareRuleQueryTx: %v", err)
 	}
 	for _, s := range settings {
 		if got := show(ctx, t, tx, s.name); got != s.inTx {

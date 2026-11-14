@@ -126,7 +126,8 @@ Why this matters here: this plan runs over several sessions (code, a measurement
 - _None yet._
 
 ### Discoveries
-- _None yet._
+- Found while planning (2026-11-14): design section 12's line "Each refusal the rule adds to the check's parser (section 3.1) is also refused by the check in a full CPE" contradicts design section 3.1, which says the check accepts unescaped `*` and `?`. Task 1.2 tests section 3.1's invariant (every value a rule accepts, the check accepts). Flagged only; the design text is unchanged.
+- Found while planning (2026-11-14): design section 8's message table has no message for the printable-ASCII refusal that section 3.1 requires; Task 1.2 adds one. Record it under Deviations when Task 1.2 ships.
 
 ---
 

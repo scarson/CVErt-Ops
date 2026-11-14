@@ -114,9 +114,11 @@ func decodeDSLCursor(s string) (dslCursor, error) {
 // pagination. Returns matching CVEs, a cursor for the next page (empty string
 // if no more results), and any error.
 //
-// The cves table is global (no org_id, no RLS). However, compiled rules with
-// watchlist conditions reference the org-scoped watchlist_items table via
-// EXISTS subqueries, so those queries run inside a bypass transaction.
+// The query runs in a read-only transaction under dsl.RuleQuerySettings, as
+// the alert evaluator runs a rule's candidate query. The cves table is global
+// (no org_id, no RLS). However, compiled rules with watchlist conditions
+// reference the org-scoped watchlist_items table via EXISTS subqueries, so
+// those transactions also bypass RLS.
 // PostFilters (regex conditions) are applied in-process after the SQL query.
 func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule, cursor string, limit int) ([]generated.CVE, string, error) {
 	if limit <= 0 || limit > 100 {
@@ -161,28 +163,7 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 		return nil, "", fmt.Errorf("store: build dsl query: %w", err)
 	}
 
-	var results []generated.CVE
-
-	// Watchlist subqueries reference org-scoped watchlist_items (has RLS).
-	// The compiled SQL already embeds the org_id explicitly, but the session
-	// needs bypass_rls to read the table without app.org_id being set.
-	if compiled.HasWatchlist {
-		var tx *sql.Tx
-		tx, err = s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return nil, "", fmt.Errorf("store: begin bypass tx: %w", err)
-		}
-		defer tx.Rollback() //nolint:errcheck // rollback is safe after commit
-		if _, err = tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
-			return nil, "", fmt.Errorf("store: set bypass_rls: %w", err)
-		}
-		err = s.scanDSLRows(ctx, tx.QueryContext, query, args, &results)
-		if commitErr := tx.Commit(); commitErr != nil && err == nil {
-			err = fmt.Errorf("store: commit bypass tx: %w", commitErr)
-		}
-	} else {
-		err = s.scanDSLRows(ctx, s.db.QueryContext, query, args, &results)
-	}
+	results, err := s.queryDSLRows(ctx, compiled.HasWatchlist, query, args)
 	if err != nil {
 		return nil, "", err
 	}
@@ -237,28 +218,55 @@ func (s *Store) ExecuteDSLQuery(ctx context.Context, compiled *dsl.CompiledRule,
 	return results, nextCursor, nil
 }
 
-// queryContextFunc abstracts *sql.DB.QueryContext and *sql.Tx.QueryContext.
-type queryContextFunc func(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error)
-
-// scanDSLRows executes a query via queryFn and scans all rows into results.
-func (s *Store) scanDSLRows(ctx context.Context, queryFn queryContextFunc, query string, args []interface{}, results *[]generated.CVE) error {
-	rows, err := queryFn(ctx, query, args...)
+// queryDSLRows runs a compiled rule's query in a read-only transaction under
+// dsl.RuleQuerySettings and scans every row. bypassRLS is for rules with
+// watchlist subqueries: they read the org-scoped watchlist_items table (has
+// RLS), whose org_id the compiled SQL already embeds, without app.org_id set.
+func (s *Store) queryDSLRows(ctx context.Context, bypassRLS bool, query string, args []interface{}) ([]generated.CVE, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return fmt.Errorf("store: execute dsl query: %w", err)
+		return nil, fmt.Errorf("store: begin dsl query tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback is safe after commit
+	if bypassRLS {
+		if _, err := tx.ExecContext(ctx, "SET LOCAL app.bypass_rls = 'on'"); err != nil {
+			return nil, fmt.Errorf("store: set bypass_rls: %w", err)
+		}
+	}
+	if err := dsl.PrepareRuleQueryTx(ctx, tx); err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+
+	results, err := scanDSLRows(ctx, tx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit dsl query tx: %w", err)
+	}
+	return results, nil
+}
+
+// scanDSLRows executes a query in tx and scans all rows.
+func scanDSLRows(ctx context.Context, tx *sql.Tx, query string, args []interface{}) ([]generated.CVE, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: execute dsl query: %w", err)
 	}
 	defer rows.Close() //nolint:errcheck
 
+	var results []generated.CVE
 	for rows.Next() {
 		c, scanErr := scanCVERow(rows)
 		if scanErr != nil {
-			return fmt.Errorf("store: scan dsl query row: %w", scanErr)
+			return nil, fmt.Errorf("store: scan dsl query row: %w", scanErr)
 		}
-		*results = append(*results, c)
+		results = append(results, c)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: dsl query rows error: %w", err)
+		return nil, fmt.Errorf("store: dsl query rows error: %w", err)
 	}
-	return nil
+	return results, nil
 }
 
 // cvePostFilterTarget wraps generated.CVE to implement dsl.PostFilterTarget.

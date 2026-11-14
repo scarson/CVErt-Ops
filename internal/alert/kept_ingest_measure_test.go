@@ -392,7 +392,7 @@ func TestKeptIngestMeasure(t *testing.T) {
 			t.Fatalf("%s: candidateQuery: %v", id, err)
 		}
 		m := &measured{id: id, name: name, shape: shape, thresholdMS: thresholdMS, statement: q, argCount: len(args)}
-		m.first, m.warm = measure(ctx, t, db, q, args, candidateTxSettings...) // as queryCandidates runs it
+		m.first, m.warm = measure(ctx, t, db, q, args, dsl.RuleQuerySettings...) // as queryCandidates runs it
 		rows = append(rows, m)
 		return m
 	}
@@ -460,7 +460,7 @@ func TestKeptIngestMeasure(t *testing.T) {
 			t.Fatalf("old contains form: %v", err)
 		}
 		oldRow := &measured{id: "M7d-old", name: "package contains lodash, no ecosystem, per-row EXISTS (before)", shape: "dry-run", thresholdMS: -1, statement: old, argCount: len(oldArgs)}
-		oldRow.first, oldRow.warm = measure(ctx, t, db, old, oldArgs, candidateTxSettings...)
+		oldRow.first, oldRow.warm = measure(ctx, t, db, old, oldArgs, dsl.RuleQuerySettings...)
 		rows = append(rows, oldRow)
 		add("M7d", "package contains lodash, no ecosystem, set form", "dry-run",
 			compileMeasured(t, dsl.LogicAnd, condition(t, "affected.package", "contains", "lodash")), nil, 0).compareTo = oldRow
@@ -616,7 +616,7 @@ func TestKeptIngestLimitSweep(t *testing.T) {
 			t.Fatalf("%s: candidateQuery: %v", id, err)
 		}
 		m := &measured{id: id, name: name, shape: shape, thresholdMS: thresholdMS, statement: q, argCount: len(args)}
-		m.first, m.warm = measure(ctx, t, db, q, args, append(slices.Clone(candidateTxSettings), settings...)...) // as queryCandidates runs it
+		m.first, m.warm = measure(ctx, t, db, q, args, append(slices.Clone(dsl.RuleQuerySettings), settings...)...) // as queryCandidates runs it
 		rows = append(rows, m)
 	}
 	for _, k := range []int{5, 10, 15, 25} {
@@ -645,7 +645,7 @@ func TestKeptIngestLimitSweep(t *testing.T) {
 // one product "in" of the 50 products and one package "in" of the 50 names, under
 // "or": the form the compiler already emits for a list, against the 100 one-value
 // conditions of M5 and M6. Each is measured under the server defaults (JIT and
-// parallel query on) and under candidateTxSettings, as queryCandidates runs it.
+// parallel query on) and under dsl.RuleQuerySettings, as queryCandidates runs it.
 func TestKeptIngestMergedForms(t *testing.T) {
 	ctx := context.Background()
 	db := openMeasuredDB(t, "KEPT_INGEST_DATABASE_URL", "KEPT_INGEST_USER", "KEPT_INGEST_PASSWORD")
@@ -680,7 +680,7 @@ func TestKeptIngestMergedForms(t *testing.T) {
 	for _, jit := range []struct {
 		suffix   string
 		settings []string
-	}{{"", nil}, {"-nojit", candidateTxSettings}} {
+	}{{"", nil}, {"-nojit", dsl.RuleQuerySettings}} {
 		label := "product in 50 or package in 50"
 		if jit.suffix != "" {
 			label += ", jit and parallel query off"
@@ -690,7 +690,7 @@ func TestKeptIngestMergedForms(t *testing.T) {
 		run("G-batch"+jit.suffix, label, "batch 5,000", merged, in.Recent, 3000, jit.settings...)
 	}
 	run("G-products-dry", "product in 50 (one condition)", "dry-run", productsOnly, nil, 5000)
-	run("G-products-dry-nojit", "product in 50 (one condition), jit and parallel query off", "dry-run", productsOnly, nil, 5000, candidateTxSettings...)
+	run("G-products-dry-nojit", "product in 50 (one condition), jit and parallel query off", "dry-run", productsOnly, nil, 5000, dsl.RuleQuerySettings...)
 	writeResults(t, filepath.Join(dir, "merged.md"), rows, m8Result{})
 }
 
@@ -718,9 +718,9 @@ func TestKeptIngestExplainPlans(t *testing.T) {
 		ids      []string
 		settings []string
 	}{
-		{"limit rule, or, realtime", limitOr, []string{keptIngestRealtimeCVE}, candidateTxSettings},
-		{"limit rule, or, batch 5,000", limitOr, in.Recent, candidateTxSettings},
-		{"nodejs:node.js, and, batch 5,000", node, in.Recent, candidateTxSettings},
+		{"limit rule, or, realtime", limitOr, []string{keptIngestRealtimeCVE}, dsl.RuleQuerySettings},
+		{"limit rule, or, batch 5,000", limitOr, in.Recent, dsl.RuleQuerySettings},
+		{"nodejs:node.js, and, batch 5,000", node, in.Recent, dsl.RuleQuerySettings},
 	} {
 		q, args, err := candidateQuery(c.rule, c.ids)
 		if err != nil {
@@ -771,7 +771,7 @@ func TestKeptIngestLimitSerial(t *testing.T) {
 		t.Fatalf("parse inputs: %v", err)
 	}
 	limitOr := limitRule(t, dsl.LogicOr, in)
-	serial := candidateTxSettings
+	serial := dsl.RuleQuerySettings
 	var rows []*measured
 	for _, c := range []struct {
 		id, shape   string
@@ -820,8 +820,8 @@ func TestKeptIngestContainsInterleaved(t *testing.T) {
 	var oldSum, newSum float64
 	const runs = 5
 	for i := 1; i <= runs; i++ {
-		o := explainOnce(ctx, db, oldQ, oldArgs, candidateTxSettings...)
-		n := explainOnce(ctx, db, newQ, newArgs, candidateTxSettings...)
+		o := explainOnce(ctx, db, oldQ, oldArgs, dsl.RuleQuerySettings...)
+		n := explainOnce(ctx, db, newQ, newArgs, dsl.RuleQuerySettings...)
 		if o.err != nil || n.err != nil {
 			t.Fatalf("run %d: %v / %v", i, o.err, n.err)
 		}
@@ -865,7 +865,7 @@ func TestKeptIngestAndSetSweep(t *testing.T) {
 				t.Fatalf("candidateQuery: %v", err)
 			}
 			m := &measured{id: fmt.Sprintf("A%d-%s", 2*k, c.shape[:2]), name: fmt.Sprintf("%d products + %d packages, and (%d sets)", k, k, 2*k), shape: c.shape, thresholdMS: c.thresholdMS, statement: q, argCount: len(args)}
-			m.first, m.warm = measure(ctx, t, db, q, args, candidateTxSettings...)
+			m.first, m.warm = measure(ctx, t, db, q, args, dsl.RuleQuerySettings...)
 			rows = append(rows, m)
 		}
 	}

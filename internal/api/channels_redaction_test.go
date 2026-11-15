@@ -128,7 +128,11 @@ func (f *channelRedactionFixture) deliveredConfig(t *testing.T) notify.WebhookCo
 	if err != nil || row == nil {
 		t.Fatalf("load channel for delivery: row=%v err=%v", row, err)
 	}
-	return notify.ChannelWebhookConfig(row)
+	cfg, err := notify.ChannelWebhookConfig(row)
+	if err != nil {
+		t.Fatalf("parse stored webhook config: %v", err)
+	}
+	return cfg
 }
 
 func assertStoredCredentialIntact(t *testing.T, cfg notify.WebhookConfig) {

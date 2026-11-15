@@ -8,7 +8,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,21 +28,20 @@ type WebhookConfig struct {
 }
 
 // ChannelWebhookConfig builds the WebhookConfig for a webhook channel from its stored
-// config JSON ({"url": ..., "custom_headers": {...}}) and signing secrets. Delivery and
-// the channel test endpoint both use it so a test sends exactly what a delivery would.
-// Malformed config yields an empty URL, which Send rejects.
-func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) WebhookConfig {
-	var config struct {
-		URL           string            `json:"url"`
-		CustomHeaders map[string]string `json:"custom_headers"`
+// config JSON ({"url": ..., "custom_headers": {...}}), decoded by ParseWebhookSettings,
+// and its signing secrets. Delivery and the channel test endpoint both use it so a test
+// sends exactly what a delivery would. Config the parser refuses is returned as an error.
+func ChannelWebhookConfig(ch *store.NotificationChannelForDeliveryRow) (WebhookConfig, error) {
+	settings, err := ParseWebhookSettings(ch.Config)
+	if err != nil {
+		return WebhookConfig{}, err
 	}
-	_ = json.Unmarshal(ch.Config, &config) //nolint:errcheck // empty URL on bad JSON causes Send to fail
 	return WebhookConfig{
-		URL:                    config.URL,
+		URL:                    settings.URL,
 		SigningSecret:          ch.SigningSecret.String,
 		SigningSecretSecondary: ch.SigningSecretSecondary.String,
-		CustomHeaders:          config.CustomHeaders,
-	}
+		CustomHeaders:          settings.CustomHeaders,
+	}, nil
 }
 
 // deniedHeaders are custom header keys that callers must not override.

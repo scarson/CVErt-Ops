@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -492,6 +493,128 @@ func TestWorker_EmailChannel_InvalidSMTP(t *testing.T) {
 	if attemptCount != 1 {
 		t.Errorf("attempt_count = %d, want 1", attemptCount)
 	}
+}
+
+// queueDeliveryForStoredConfig stores a channel with config exactly as given (no API
+// validation, as for a row written before validation existed), binds it to a new
+// rule, and queues one alert delivery to it. It returns the channel ID.
+func queueDeliveryForStoredConfig(t *testing.T, s *testutil.TestDB, ctx context.Context, name, chanType, config string) uuid.UUID {
+	t.Helper()
+	org := s.MustCreateOrg(t, ctx, name+"Org")
+	rule := mustCreateAlertRule(t, s, ctx, org.ID, name+"Rule")
+	chanRow, _, err := s.CreateNotificationChannel(ctx, org.ID, name+"Chan", chanType, json.RawMessage(config))
+	if err != nil {
+		t.Fatalf("CreateNotificationChannel: %v", err)
+	}
+	if err := s.BindChannelToRule(ctx, rule.ID, chanRow.ID, org.ID); err != nil {
+		t.Fatalf("BindChannelToRule: %v", err)
+	}
+	payload := json.RawMessage(`{"cve_id":"CVE-2025-9012","severity":"HIGH","description_primary":"Test vulnerability"}`)
+	if err := s.UpsertDelivery(ctx, org.ID, rule.ID, chanRow.ID, payload, 0); err != nil {
+		t.Fatalf("UpsertDelivery: %v", err)
+	}
+	return chanRow.ID
+}
+
+// assertConfigFailure checks that the channel's delivery failed permanently on its
+// first attempt with a reason containing wantReason, shown to org members as well.
+func assertConfigFailure(t *testing.T, s *testutil.TestDB, ctx context.Context, chanID uuid.UUID, wantReason string) {
+	t.Helper()
+	var status string
+	if err := s.DB().QueryRowContext(ctx,
+		"SELECT status FROM notification_deliveries WHERE channel_id=$1",
+		chanID).Scan(&status); err != nil {
+		t.Fatalf("scan delivery row: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("delivery status = %q, want %q (config errors are permanent)", status, "failed")
+	}
+	lastError, lastErrorForOrg := scanDeliveryErrors(t, s, ctx, chanID)
+	if !strings.Contains(lastError, wantReason) {
+		t.Errorf("last_error = %q, want it to contain %q", lastError, wantReason)
+	}
+	// A config error describes the org's own channel, so org members see it too.
+	if lastErrorForOrg != lastError {
+		t.Errorf("last_error_for_org = %q, want %q", lastErrorForOrg, lastError)
+	}
+}
+
+// TestWorker_EmailConfigCaseVariantFailsPermanently covers a stored email config whose
+// recipients key differs only in case: delivery refuses it instead of sending to it.
+func TestWorker_EmailConfigCaseVariantFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	// A local listener stands in for the SMTP server and counts connection attempts.
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close() //nolint:errcheck
+	var smtpConns atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			smtpConns.Add(1)
+			conn.Close() //nolint:errcheck,gosec // G104: test listener only counts connections
+		}
+	}()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerEmailCaseVariant", "email",
+		`{"Recipients":["a@example.com"]}`)
+
+	w := notify.NewWorker(s.Store, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	}, notify.SmtpConfig{
+		Host: "127.0.0.1",
+		Port: ln.Addr().(*net.TCPAddr).Port,
+		From: "test@example.com",
+	}, "https://cvert.example.com")
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := smtpConns.Load(); n != 0 {
+		t.Errorf("SMTP connections = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "parse email config")
+}
+
+// TestWorker_WebhookHeaderNotStringFailsPermanently covers a stored webhook config with a
+// custom header value that is not a string: delivery refuses it instead of sending the
+// header empty.
+func TestWorker_WebhookHeaderNotStringFailsPermanently(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	var called atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	chanID := queueDeliveryForStoredConfig(t, s, ctx, "WorkerWebhookHeaderType", "webhook",
+		`{"url":"`+srv.URL+`","custom_headers":{"X-A":1}}`)
+
+	w := newTestWorker(s, plainHTTPClient(), notify.WorkerConfig{
+		ClaimBatchSize:      10,
+		MaxAttempts:         3,
+		BackoffBaseSeconds:  1,
+		MaxConcurrentPerOrg: 4,
+	})
+	runClaimUntilAttempted(t, s, ctx, w)
+
+	if n := called.Load(); n != 0 {
+		t.Errorf("webhook calls = %d, want 0", n)
+	}
+	assertConfigFailure(t, s, ctx, chanID, "parse webhook config")
 }
 
 // TestWorker_RetentionSchedule verifies that scheduleRetention enqueues a

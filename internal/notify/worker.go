@@ -254,8 +254,12 @@ func (w *Worker) deliverWebhook(ctx context.Context, row store.ClaimedDelivery, 
 	if err != nil {
 		return &permanentDeliveryError{err: fmt.Errorf("build webhook body: %w", err)}
 	}
-	// Bad config JSON yields an empty URL; Send fails and retry/exhaust handles it.
-	return Send(ctx, w.client, ChannelWebhookConfig(ch), body)
+	// Config errors are permanent: the channel data won't change between retries.
+	cfg, err := ChannelWebhookConfig(ch)
+	if err != nil {
+		return &permanentDeliveryError{err: fmt.Errorf("parse webhook config: %w", err)}
+	}
+	return Send(ctx, w.client, cfg, body)
 }
 
 // webhookBody returns the request body for a delivery. A resolution's stored payload is an
@@ -286,10 +290,8 @@ func (w *Worker) ruleIdentity(ctx context.Context, row store.ClaimedDelivery) (n
 func (w *Worker) deliverEmail(ctx context.Context, row store.ClaimedDelivery, ch *store.NotificationChannelForDeliveryRow) error {
 	// Parse channel config for recipients. Config errors are permanent — the
 	// channel data won't change between retries.
-	var emailCfg struct {
-		Recipients []string `json:"recipients"`
-	}
-	if err := json.Unmarshal(ch.Config, &emailCfg); err != nil {
+	emailCfg, err := ParseEmailSettings(ch.Config)
+	if err != nil {
 		return &permanentDeliveryError{err: fmt.Errorf("parse email config: %w", err)}
 	}
 	if len(emailCfg.Recipients) == 0 {

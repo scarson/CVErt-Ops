@@ -561,10 +561,16 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
+	// The parse error names the offending key or JSON pointer, never a stored value.
+	cfg, err := notify.ChannelWebhookConfig(delivery)
+	if err != nil {
+		return fmt.Errorf("parse webhook config: %w", err)
+	}
+
 	// The full error can carry the resolved address (from the SSRF dial check
 	// or DNS), which would let an org admin map internal DNS by testing host
 	// names, so the caller gets only what org members may read.
-	if err := notify.Send(ctx, client, notify.ChannelWebhookConfig(delivery), payload); err != nil {
+	if err := notify.Send(ctx, client, cfg, payload); err != nil {
 		slog.WarnContext(ctx, "channel test webhook failed", "channel_id", channelID, "error", err)
 		return notify.ErrorForOrg(err)
 	}

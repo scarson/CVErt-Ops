@@ -8,6 +8,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -353,11 +356,18 @@ func TestChannelWebhookConfig_CustomHeadersReachReceiver(t *testing.T) {
 	}
 
 	withCustomHeaders := channel(`{"url":"` + srv.URL + `","custom_headers":{"Authorization":"Bearer tk_test"}}`)
-	err := notify.Send(context.Background(), buildTestClient(), notify.ChannelWebhookConfig(withCustomHeaders), []byte(`[]`))
+	cfg, err := notify.ChannelWebhookConfig(withCustomHeaders)
+	require.NoError(t, err)
+	err = notify.Send(context.Background(), buildTestClient(), cfg, []byte(`[]`))
 	require.NoError(t, err, "header set in custom_headers must reach the receiver")
 
+	// Only custom_headers is applied to deliveries; any other key is refused
+	// rather than stored and silently ignored.
 	withOtherKey := channel(`{"url":"` + srv.URL + `","headers":{"Authorization":"Bearer tk_test"}}`)
-	err = notify.Send(context.Background(), buildTestClient(), notify.ChannelWebhookConfig(withOtherKey), []byte(`[]`))
-	require.Error(t, err, "only custom_headers is applied to deliveries")
-	assert.Contains(t, err.Error(), "401")
+	_, err = notify.ChannelWebhookConfig(withOtherKey)
+	require.Error(t, err)
+	semErr, ok := errors.AsType[*jsonv2.SemanticError](err)
+	require.True(t, ok, "error %v must wrap *jsonv2.SemanticError", err)
+	assert.ErrorIs(t, semErr.Err, jsonv2.ErrUnknownName)
+	assert.Equal(t, jsontext.Pointer("/headers"), semErr.JSONPointer)
 }

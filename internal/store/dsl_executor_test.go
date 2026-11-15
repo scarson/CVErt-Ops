@@ -836,3 +836,40 @@ func TestExecuteDSLQuery_PostFilterCaseInsensitive(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateDSLCursor checks ValidateDSLCursor without a database: an empty
+// cursor and a cursor the store issued pass; a cursor ExecuteDSLQuery would
+// refuse returns ErrInvalidCursor.
+func TestValidateDSLCursor(t *testing.T) {
+	t.Parallel()
+
+	issued, err := store.EncodeDSLCursor(time.Date(2026, 3, 4, 5, 6, 7, 123456789, time.UTC), "CVE-2024-0001")
+	if err != nil {
+		t.Fatalf("EncodeDSLCursor: %v", err)
+	}
+	for name, cursor := range map[string]string{"empty": "", "issued": issued} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := store.ValidateDSLCursor(cursor); err != nil {
+				t.Errorf("ValidateDSLCursor(%q) = %v, want nil", cursor, err)
+			}
+		})
+	}
+
+	const d = "2026-01-01T00:00:00Z"
+	invalid := map[string]string{
+		"not base64":     "!!!not-base64!!!",
+		"not JSON":       base64.URLEncoding.EncodeToString([]byte("not-json")),
+		"unknown member": base64.URLEncoding.EncodeToString([]byte(`{"d":"` + d + `","c":"CVE-9999-9999","s":"` + d + `"}`)),
+		"case variant":   base64.URLEncoding.EncodeToString([]byte(`{"D":"` + d + `","c":"CVE-9999-9999"}`)),
+		"duplicate name": base64.URLEncoding.EncodeToString([]byte(`{"d":"` + d + `","c":"CVE-9999-9999","c":"CVE-0000-0000"}`)),
+	}
+	for name, cursor := range invalid {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := store.ValidateDSLCursor(cursor); !errors.Is(err, store.ErrInvalidCursor) {
+				t.Errorf("ValidateDSLCursor(%q) = %v, want store.ErrInvalidCursor", cursor, err)
+			}
+		})
+	}
+}

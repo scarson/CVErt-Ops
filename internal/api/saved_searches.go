@@ -427,6 +427,10 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 
 	// Parse pagination params from query string.
 	cursor := r.URL.Query().Get("cursor")
+	if store.ValidateDSLCursor(cursor) != nil {
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	limit, ok2 := parseLimitParam(w, r, 25, 100)
 	if !ok2 {
 		return
@@ -456,6 +460,8 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
 	if errors.Is(execErr, store.ErrInvalidCursor) {
+		// Backstop: ValidateDSLCursor has already refused any cursor that
+		// ExecuteDSLQuery cannot decode.
 		writeProblem(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}

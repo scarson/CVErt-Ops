@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -44,4 +45,10 @@ func (s *Store) ReadKeyRowsFailingScan(ctx context.Context, orgID uuid.UUID, que
 		return readKeyRows(ctx, r, "failing_scan", query, nil, make([]check.KeyRows[struct{}], 1),
 			func(*sql.Rows) (scanned[struct{}], error) { return scanned[struct{}]{}, ErrScanFailed })
 	})
+}
+
+// EncodeDSLCursor is encodeDSLCursor for a cursor at sortDate and cveID, so
+// tests can check that the cursors the store issues pass ValidateDSLCursor.
+func EncodeDSLCursor(sortDate time.Time, cveID string) (string, error) {
+	return encodeDSLCursor(dslCursor{SortDate: sortDate, CVEID: cveID})
 }

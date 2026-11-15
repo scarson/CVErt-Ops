@@ -118,6 +118,15 @@ func decodeDSLCursor(s string) (dslCursor, error) {
 	return c, nil
 }
 
+// ValidateDSLCursor reports whether ExecuteDSLQuery can decode cursor. It
+// returns nil for an empty cursor and an error wrapping ErrInvalidCursor for
+// one ExecuteDSLQuery would refuse, so a handler can refuse a caller's cursor
+// before doing any other work.
+func ValidateDSLCursor(cursor string) error {
+	_, err := decodeDSLCursor(cursor)
+	return err
+}
+
 // ExecuteDSLQuery runs a compiled DSL rule against the CVE corpus with keyset
 // pagination. Returns matching CVEs, a cursor for the next page (empty string
 // if no more results), and any error.

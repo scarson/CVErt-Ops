@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 )
@@ -525,6 +526,86 @@ func TestCursorSurvivesURLQueryParam(t *testing.T) {
 	}
 	if decoded != orig {
 		t.Errorf("URL round-trip mismatch: got %+v, want %+v", decoded, orig)
+	}
+}
+
+// TestDecodePageCursor_RefusesEditedCursor checks that a cursor whose JSON a
+// caller has edited (a member the cursor type does not define, a member name in
+// another case, or a member given twice) is refused instead of partly applied.
+func TestDecodePageCursor_RefusesEditedCursor(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		enc  *base64.Encoding
+	}{
+		{"unknown member", `{"t":"2026-01-01T00:00:00Z","id":"abc","x":1}`, base64.RawURLEncoding},
+		{"case variant", `{"T":"2026-01-01T00:00:00Z","id":"abc"}`, base64.RawURLEncoding},
+		{"duplicate name", `{"t":"2026-01-01T00:00:00Z","id":"abc","id":"def"}`, base64.RawURLEncoding},
+		{"trailing value", `{"t":"2026-01-01T00:00:00Z","id":"abc"}{}`, base64.RawURLEncoding},
+		{"case variant in padded encoding", `{"t":"2026-01-01T00:00:00Z","ID":"abc"}`, base64.URLEncoding},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var dst alertEventCursor
+			if err := decodePageCursor(tc.enc.EncodeToString([]byte(tc.raw)), &dst); err == nil {
+				t.Errorf("decodePageCursor(%s) accepted the cursor as %+v", tc.raw, dst)
+			}
+		})
+	}
+}
+
+// assertPageCursorRoundTrip encodes orig with encodePageCursor and checks that
+// decodePageCursor gives back an equal value.
+func assertPageCursorRoundTrip[T comparable](t *testing.T, orig T) {
+	t.Helper()
+	encoded := encodePageCursor(orig)
+	if encoded == "" {
+		t.Fatalf("encodePageCursor(%+v) returned empty", orig)
+	}
+	var decoded T
+	if err := decodePageCursor(encoded, &decoded); err != nil {
+		t.Fatalf("decodePageCursor(%T): %v", orig, err)
+	}
+	if decoded != orig {
+		t.Errorf("%T round trip: got %+v, want %+v", orig, decoded, orig)
+	}
+}
+
+// TestPageCursorTypes_RoundTrip checks every cursor type the list handlers pass
+// to encodePageCursor and decodePageCursor.
+func TestPageCursorTypes_RoundTrip(t *testing.T) {
+	ts := time.Date(2026, 3, 4, 5, 6, 7, 123456789, time.UTC)
+	stamp := ts.Format(time.RFC3339Nano)
+	id := "6f1c2b9e-1d2a-4c43-9f0e-2a8b7c6d5e4f"
+
+	assertPageCursorRoundTrip(t, adminDeliveryCursor{T: ts, ID: id})
+	assertPageCursorRoundTrip(t, adminOrgCursor{T: ts, ID: id})
+	assertPageCursorRoundTrip(t, securityEventCursor{T: stamp, ID: id})
+	assertPageCursorRoundTrip(t, adminAuditCursor{T: ts, ID: id})
+	assertPageCursorRoundTrip(t, adminUserCursor{T: ts, ID: id})
+	assertPageCursorRoundTrip(t, alertEventCursor{T: stamp, ID: id})
+	assertPageCursorRoundTrip(t, alertEventFeedCursor{V: alertEventFeedCursorVersion, Seq: 1<<53 + 1})
+	assertPageCursorRoundTrip(t, alertRuleCursor{T: stamp, ID: id})
+	assertPageCursorRoundTrip(t, auditLogCursor{T: stamp, ID: id})
+	assertPageCursorRoundTrip(t, deliveryCursor{T: stamp, ID: id})
+	assertPageCursorRoundTrip(t, feedLogCursor{T: ts, ID: id})
+	assertPageCursorRoundTrip(t, watchlistCursor{T: stamp, ID: id})
+	assertPageCursorRoundTrip(t, watchlistItemCursor{ID: id})
+}
+
+// TestPageCursor_TimeWithOffsetRoundTrip checks that a time.Time cursor field
+// holding a non-UTC offset decodes to the same instant.
+func TestPageCursor_TimeWithOffsetRoundTrip(t *testing.T) {
+	orig := adminAuditCursor{
+		T:  time.Date(2026, 3, 4, 5, 6, 7, 1000, time.FixedZone("", -7*3600)),
+		ID: "6f1c2b9e-1d2a-4c43-9f0e-2a8b7c6d5e4f",
+	}
+	var decoded adminAuditCursor
+	if err := decodePageCursor(encodePageCursor(orig), &decoded); err != nil {
+		t.Fatalf("decodePageCursor: %v", err)
+	}
+	if !decoded.T.Equal(orig.T) || decoded.ID != orig.ID {
+		t.Errorf("round trip: got %+v, want %+v", decoded, orig)
 	}
 }
 

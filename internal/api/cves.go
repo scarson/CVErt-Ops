@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -180,6 +181,8 @@ func encodeCursor(last generated.CVE) string {
 }
 
 // decodeCursor base64-decodes the opaque cursor, returning a parsed cursor or nil.
+// The JSON is decoded strictly (see decodePageCursor): an edited cursor with an
+// unknown, case-variant or duplicate member is invalid.
 func decodeCursor(s string) (*cveListCursor, error) {
 	if s == "" {
 		return nil, nil
@@ -189,7 +192,7 @@ func decodeCursor(s string) (*cveListCursor, error) {
 		return nil, fmt.Errorf("invalid cursor (base64): %w", err)
 	}
 	var c cveListCursor
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("invalid cursor (json): %w", err)
 	}
 	if c.CVEID == "" {

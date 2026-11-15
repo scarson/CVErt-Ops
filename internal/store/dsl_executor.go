@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"time"
 
@@ -93,7 +94,9 @@ func encodeDSLCursor(c dslCursor) (string, error) {
 }
 
 // decodeDSLCursor decodes a base64 JSON cursor. Returns zero-value cursor and
-// nil error for empty input.
+// nil error for empty input. The caller sends the cursor back and can edit it,
+// so the JSON is decoded strictly: an unknown, case-variant or duplicate member
+// or trailing data makes the cursor invalid.
 func decodeDSLCursor(s string) (dslCursor, error) {
 	if s == "" {
 		return dslCursor{}, nil
@@ -103,7 +106,7 @@ func decodeDSLCursor(s string) (dslCursor, error) {
 		return dslCursor{}, fmt.Errorf("decode cursor: %w", err)
 	}
 	var c dslCursor
-	if err := json.Unmarshal(b, &c); err != nil {
+	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return dslCursor{}, fmt.Errorf("unmarshal cursor: %w", err)
 	}
 	return c, nil

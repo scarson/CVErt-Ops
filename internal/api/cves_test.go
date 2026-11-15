@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,27 @@ func TestDecodeCursorMissingCVEID(t *testing.T) {
 	_, err := decodeCursor("e30") // base64url of "{}"
 	if err == nil {
 		t.Error("expected error for cursor missing cve_id, got nil")
+	}
+}
+
+// TestDecodeCursor_RefusesEditedCursor checks that a CVE list cursor whose JSON
+// a caller has edited is refused instead of partly applied.
+func TestDecodeCursor_RefusesEditedCursor(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]string{
+		"unknown member": `{"d":"2026-02-25T12:00:00Z","id":"CVE-2024-99999","x":1}`,
+		"case variant":   `{"D":"2026-02-25T12:00:00Z","id":"CVE-2024-99999"}`,
+		"duplicate name": `{"d":"2026-02-25T12:00:00Z","id":"CVE-2024-99999","id":"CVE-2024-00001"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cur, err := decodeCursor(base64.RawURLEncoding.EncodeToString([]byte(raw)))
+			if err == nil {
+				t.Errorf("decodeCursor(%s) accepted the cursor as %+v", raw, cur)
+			}
+		})
 	}
 }
 

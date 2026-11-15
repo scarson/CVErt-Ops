@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -407,22 +408,72 @@ func TestExecuteDSLQuery_CraftedCursor(t *testing.T) {
 
 	compiled := compileHighSeverity(t)
 
-	// Craft a cursor that skips all CVEs (far future date).
-	farFuture := time.Now().Add(24 * time.Hour)
-	crafted, _ := json.Marshal(map[string]any{
-		"s": farFuture.Format(time.RFC3339Nano),
-		"c": "CVE-9999-9999",
-	})
-	cursor := base64.URLEncoding.EncodeToString(crafted)
-
-	results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
-	if err != nil {
-		t.Fatalf("ExecuteDSLQuery with crafted cursor: %v", err)
+	// craft builds a cursor in the dslCursor wire format: "d" is the sort date,
+	// "c" the CVE ID.
+	craft := func(t *testing.T, d time.Time) string {
+		t.Helper()
+		crafted, err := json.Marshal(map[string]any{
+			"d": d.Format(time.RFC3339Nano),
+			"c": "CVE-9999-9999",
+		})
+		if err != nil {
+			t.Fatalf("marshal crafted cursor: %v", err)
+		}
+		return base64.URLEncoding.EncodeToString(crafted)
 	}
+
 	// Crafted cursor with far-future date: keyset WHERE (date, id) < (far_future, ...)
 	// should still return all CVEs since they are all before the far-future date.
+	results, _, err := s.ExecuteDSLQuery(ctx, compiled, craft(t, base.Add(24*time.Hour)), 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted far-future cursor: %v", err)
+	}
 	if len(results) != 3 {
 		t.Errorf("crafted far-future cursor: got %d results, want 3", len(results))
+	}
+
+	// Crafted cursor dated between K000 and K001: only the two older CVEs are
+	// before it, which shows the crafted date reached the keyset WHERE.
+	results, _, err = s.ExecuteDSLQuery(ctx, compiled, craft(t, base.Add(-30*time.Second)), 25)
+	if err != nil {
+		t.Fatalf("ExecuteDSLQuery with crafted mid-range cursor: %v", err)
+	}
+	var got []string
+	for _, r := range results {
+		got = append(got, r.CveID)
+	}
+	if want := []string{"CVE-2024-K001", "CVE-2024-K002"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("crafted mid-range cursor: got %v, want %v", got, want)
+	}
+}
+
+// TestExecuteDSLQuery_EditedCursor checks that a cursor whose JSON a caller has
+// edited (unknown member, case-variant name, duplicate name) is refused instead
+// of partly applied.
+func TestExecuteDSLQuery_EditedCursor(t *testing.T) {
+	t.Parallel()
+	s := testutil.NewTestDB(t)
+	ctx := context.Background()
+	s.SeedTestCVE(t, "CVE-2024-E001", "critical", nil)
+
+	compiled := compileHighSeverity(t)
+	const d = "2026-01-01T00:00:00Z"
+	cases := map[string]string{
+		"unknown member": `{"d":"` + d + `","c":"CVE-9999-9999","s":"` + d + `"}`,
+		"case variant":   `{"D":"` + d + `","c":"CVE-9999-9999"}`,
+		"duplicate name": `{"d":"` + d + `","c":"CVE-9999-9999","c":"CVE-0000-0000"}`,
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			cursor := base64.URLEncoding.EncodeToString([]byte(raw))
+			results, _, err := s.ExecuteDSLQuery(ctx, compiled, cursor, 25)
+			if err == nil {
+				t.Fatalf("ExecuteDSLQuery accepted cursor %s and returned %d results", raw, len(results))
+			}
+			if !strings.Contains(err.Error(), "dsl query cursor") {
+				t.Errorf("error = %v, want a cursor error", err)
+			}
+		})
 	}
 }
 

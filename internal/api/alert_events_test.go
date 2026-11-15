@@ -4,11 +4,13 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -499,5 +501,64 @@ func TestAlertEvents_MalformedCursor(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck,gosec // G104
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("malformed cursor: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestAlertEvents_EditedCursor verifies that a cursor whose JSON a caller has
+// edited (unknown member, case-variant name, duplicate name) returns the same
+// 400 "invalid cursor" problem as a malformed one, while the unedited cursor
+// is accepted.
+func TestAlertEvents_EditedCursor(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	aliceReg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	const (
+		stamp = "2026-01-01T00:00:00Z"
+		id    = "6f1c2b9e-1d2a-4c43-9f0e-2a8b7c6d5e4f"
+	)
+	list := func(t *testing.T, raw string) *http.Response {
+		t.Helper()
+		cursor := base64.RawURLEncoding.EncodeToString([]byte(raw))
+		return doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?cursor="+cursor)
+	}
+
+	t.Run("unedited cursor", func(t *testing.T) {
+		resp := list(t, `{"t":"`+stamp+`","id":"`+id+`"}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+
+	edited := map[string]string{
+		"unknown member": `{"t":"` + stamp + `","id":"` + id + `","x":1}`,
+		"case variant":   `{"T":"` + stamp + `","ID":"` + id + `"}`,
+		"duplicate name": `{"t":"` + stamp + `","id":"` + id + `","id":"` + id + `"}`,
+	}
+	for name, raw := range edited {
+		t.Run(name, func(t *testing.T) {
+			resp := list(t, raw)
+			defer resp.Body.Close() //nolint:errcheck,gosec // G104
+			var problem huma.ErrorModel
+			if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+				t.Fatalf("decode problem body (status %d): %v", resp.StatusCode, err)
+			}
+			if resp.StatusCode != http.StatusBadRequest || problem.Status != http.StatusBadRequest {
+				t.Errorf("status = %d, problem status = %d, want 400", resp.StatusCode, problem.Status)
+			}
+			if problem.Detail != "invalid cursor" {
+				t.Errorf("detail = %q, want %q", problem.Detail, "invalid cursor")
+			}
+			if len(problem.Errors) != 0 {
+				t.Errorf("errors = %+v, want none", problem.Errors)
+			}
+		})
 	}
 }

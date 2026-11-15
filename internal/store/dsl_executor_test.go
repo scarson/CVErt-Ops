@@ -6,16 +6,17 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/alert/dsl"
+	"github.com/scarson/cvert-ops/internal/store"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
 
@@ -377,6 +378,9 @@ func TestExecuteDSLQuery_InvalidBase64Cursor(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid base64 cursor, got nil")
 	}
+	if !errors.Is(err, store.ErrInvalidCursor) {
+		t.Errorf("error = %v, want store.ErrInvalidCursor", err)
+	}
 }
 
 func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
@@ -390,6 +394,9 @@ func TestExecuteDSLQuery_ValidBase64InvalidJSON(t *testing.T) {
 	_, _, err := s.ExecuteDSLQuery(ctx, compiled, badCursor, 25)
 	if err == nil {
 		t.Fatal("expected error for valid base64 but invalid JSON cursor, got nil")
+	}
+	if !errors.Is(err, store.ErrInvalidCursor) {
+		t.Errorf("error = %v, want store.ErrInvalidCursor", err)
 	}
 }
 
@@ -470,8 +477,8 @@ func TestExecuteDSLQuery_EditedCursor(t *testing.T) {
 			if err == nil {
 				t.Fatalf("ExecuteDSLQuery accepted cursor %s and returned %d results", raw, len(results))
 			}
-			if !strings.Contains(err.Error(), "dsl query cursor") {
-				t.Errorf("error = %v, want a cursor error", err)
+			if !errors.Is(err, store.ErrInvalidCursor) {
+				t.Errorf("error = %v, want store.ErrInvalidCursor", err)
 			}
 		})
 	}

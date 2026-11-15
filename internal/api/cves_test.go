@@ -1,3 +1,5 @@
+// ABOUTME: Unit and integration tests for the CVE list, detail and cursor handlers.
+// ABOUTME: Integration cases use real Postgres via testutil.NewTestDB and the merge pipeline.
 package api
 
 import (

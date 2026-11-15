@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"time"
 
@@ -78,6 +79,11 @@ func scanCVERow(rows *sql.Rows) (generated.CVE, error) {
 	return c, nil
 }
 
+// ErrInvalidCursor reports a DSL query cursor that cannot be decoded: bad
+// base64, malformed JSON, or JSON edited after the store issued it. It is a
+// caller error, not a store failure.
+var ErrInvalidCursor = errors.New("invalid cursor")
+
 // dslCursor is the keyset pagination cursor for DSL query results.
 type dslCursor struct {
 	SortDate time.Time `json:"d"`
@@ -103,11 +109,11 @@ func decodeDSLCursor(s string) (dslCursor, error) {
 	}
 	b, err := base64.URLEncoding.DecodeString(s)
 	if err != nil {
-		return dslCursor{}, fmt.Errorf("decode cursor: %w", err)
+		return dslCursor{}, fmt.Errorf("%w: decode cursor: %w", ErrInvalidCursor, err)
 	}
 	var c dslCursor
 	if err := jsonv2.Unmarshal(b, &c, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return dslCursor{}, fmt.Errorf("unmarshal cursor: %w", err)
+		return dslCursor{}, fmt.Errorf("%w: unmarshal cursor: %w", ErrInvalidCursor, err)
 	}
 	return c, nil
 }

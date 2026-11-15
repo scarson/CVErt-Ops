@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -546,19 +545,7 @@ func TestAlertEvents_EditedCursor(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			resp := list(t, raw)
 			defer resp.Body.Close() //nolint:errcheck,gosec // G104
-			var problem huma.ErrorModel
-			if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
-				t.Fatalf("decode problem body (status %d): %v", resp.StatusCode, err)
-			}
-			if resp.StatusCode != http.StatusBadRequest || problem.Status != http.StatusBadRequest {
-				t.Errorf("status = %d, problem status = %d, want 400", resp.StatusCode, problem.Status)
-			}
-			if problem.Detail != "invalid cursor" {
-				t.Errorf("detail = %q, want %q", problem.Detail, "invalid cursor")
-			}
-			if len(problem.Errors) != 0 {
-				t.Errorf("errors = %+v, want none", problem.Errors)
-			}
+			assertInvalidCursorProblem(t, resp)
 		})
 	}
 }

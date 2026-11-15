@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"fmt"
 	"strings"
 	"testing"
@@ -1069,5 +1070,66 @@ func TestNLSearchHandler_EmptyResultsArray(t *testing.T) {
 	resultsJSON := string(raw["results"])
 	if resultsJSON != "[]" {
 		t.Errorf("results should be empty array [], got %s", resultsJSON)
+	}
+}
+
+// TestNLSearchHandler_InvalidCursor verifies that NL search with a cursor the
+// store cannot decode answers 400 "invalid cursor", not 500, and records the
+// request in ai_request_log with error_type 'invalid_cursor'.
+func TestNLSearchHandler_InvalidCursor(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+
+	_, ts := newAITestServer(t, db)
+	reg := doRegister(t, ctx, ts, "nlsearch-cursor@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "nlsearch-cursor@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec
+	token := cookieValue(loginResp, "access_token")
+
+	search := func(t *testing.T, cursor string) *http.Response {
+		t.Helper()
+		target := ts.URL + "/api/v1/orgs/" + reg.OrgID + "/ai/nl-search?cursor=" + url.QueryEscape(cursor)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(`{"query":"critical CVEs"}`))
+		if err != nil {
+			t.Fatalf("build nl-search request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Cookie", "access_token="+token)
+		req.Header.Set("X-Requested-By", "CVErt-Ops")
+		resp, err := ts.Client().Do(req) //nolint:gosec // G704 false positive
+		if err != nil {
+			t.Fatalf("nl-search request: %v", err)
+		}
+		return resp
+	}
+
+	t.Run("valid cursor", func(t *testing.T) {
+		resp := search(t, dslCursorCases.valid)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+	t.Run("malformed cursor", func(t *testing.T) {
+		resp := search(t, dslCursorCases.malformed)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		assertInvalidCursorProblem(t, resp)
+	})
+	t.Run("edited cursor", func(t *testing.T) {
+		resp := search(t, dslCursorCases.edited)
+		defer resp.Body.Close() //nolint:errcheck,gosec
+		assertInvalidCursorProblem(t, resp)
+	})
+
+	var n int
+	if err := db.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM ai_request_log
+		 WHERE feature = 'nl_search' AND status = 'error' AND error_type = 'invalid_cursor'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("query ai_request_log: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("ai_request_log rows with error_type 'invalid_cursor' = %d, want 2", n)
 	}
 }

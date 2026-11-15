@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -197,6 +198,12 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Execute DSL query.
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
+	if errors.Is(execErr, store.ErrInvalidCursor) {
+		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "invalid_cursor")
+		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	if execErr != nil {
 		slog.ErrorContext(r.Context(), "ai: execute dsl query", "error", execErr)
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "query_exec")

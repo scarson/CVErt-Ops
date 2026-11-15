@@ -455,6 +455,10 @@ func (srv *Server) executeSavedSearchHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
+	if errors.Is(execErr, store.ErrInvalidCursor) {
+		writeProblem(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
 	if execErr != nil {
 		slog.ErrorContext(r.Context(), "saved search: execute dsl query", "error", execErr)
 		writeProblem(w, http.StatusInternalServerError, "internal error")

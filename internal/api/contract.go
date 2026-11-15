@@ -3,7 +3,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/json/jsontext"
@@ -196,16 +195,18 @@ type clearableField[T any] struct {
 	Value *T
 }
 
-// UnmarshalJSON records that the key was sent and decodes its value. encoding/json
-// calls it only for keys present in the input, including those set to null.
-func (f *clearableField[T]) UnmarshalJSON(data []byte) error {
+// UnmarshalJSONFrom records that the key was sent and decodes its value with the
+// decoder's options, so a strict request decode stays strict inside the field.
+// encoding/json/v2 calls it only for keys present in the input, including null.
+func (f *clearableField[T]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	f.Sent = true
-	if bytes.Equal(data, []byte("null")) {
+	if dec.PeekKind() == 'n' {
+		_, err := dec.ReadToken()
 		f.Value = nil
-		return nil
+		return err
 	}
 	var v T
-	if err := json.Unmarshal(data, &v); err != nil {
+	if err := jsonv2.UnmarshalDecode(dec, &v); err != nil {
 		return err
 	}
 	f.Value = &v

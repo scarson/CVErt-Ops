@@ -334,6 +334,75 @@ func TestClearableField_Decode(t *testing.T) {
 	}
 }
 
+// TestClearableField_StrictInsideValue verifies that decodeJSON's strictness
+// reaches the value of a clearableField: an unknown or case-variant member of
+// an object value is refused with the 422 that a member outside the field gets,
+// while null and an omitted key keep their meaning.
+func TestClearableField_StrictInsideValue(t *testing.T) {
+	type value struct {
+		A string `json:"a"`
+	}
+	type body struct {
+		F clearableField[value] `json:"f,omitempty"`
+	}
+
+	refused := []struct {
+		name         string
+		input        string
+		wantLocation string
+	}{
+		{name: "unknown member", input: `{"f":{"a":"x","zz":1}}`, wantLocation: "body.f.zz"},
+		{name: "member name in another case", input: `{"f":{"A":"x"}}`, wantLocation: "body.f.A"},
+	}
+	for _, tt := range refused {
+		t.Run(tt.name, func(t *testing.T) {
+			var dst body
+			ok, status, problem := decodeProblem(t, tt.input, &dst)
+			if ok {
+				t.Fatal("decodeJSON accepted a clearable field value with an unknown member")
+			}
+			if status != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want 422", status)
+			}
+			if len(problem.Errors) != 1 {
+				t.Fatalf("errors = %+v, want exactly one", problem.Errors)
+			}
+			if got := problem.Errors[0]; got.Location != tt.wantLocation || got.Message != "unexpected property" {
+				t.Errorf("error = {message %q, location %q}, want {message %q, location %q}",
+					got.Message, got.Location, "unexpected property", tt.wantLocation)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name      string
+		input     string
+		wantSent  bool
+		wantValue *value
+	}{
+		{name: "value", input: `{"f":{"a":"x"}}`, wantSent: true, wantValue: &value{A: "x"}},
+		{name: "null", input: `{"f":null}`, wantSent: true},
+		{name: "omitted", input: `{}`, wantSent: false},
+	}
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			var dst body
+			if ok, status, problem := decodeProblem(t, tt.input, &dst); !ok {
+				t.Fatalf("unexpected error: %d %+v", status, problem)
+			}
+			if dst.F.Sent != tt.wantSent {
+				t.Errorf("Sent = %v, want %v", dst.F.Sent, tt.wantSent)
+			}
+			switch {
+			case tt.wantValue == nil && dst.F.Value != nil:
+				t.Errorf("Value = %+v, want nil", *dst.F.Value)
+			case tt.wantValue != nil && (dst.F.Value == nil || *dst.F.Value != *tt.wantValue):
+				t.Errorf("Value = %+v, want %+v", dst.F.Value, *tt.wantValue)
+			}
+		})
+	}
+}
+
 // TestClearableField_DecodeWrongType verifies that a value of the wrong JSON
 // type is rejected rather than treated as null.
 func TestClearableField_DecodeWrongType(t *testing.T) {

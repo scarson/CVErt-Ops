@@ -66,12 +66,12 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
      in the Deviations / Discoveries subsections below it — never above the table. -->
 
 **Plan review:** ✅ 2026-11-14 — 5 rounds (2 self, 2 independent cold reads with go1.27.4 probes, 1 self pass on round-4 fixes): 11, 17, 0, 9, 0 findings; all fixed in place
-**Overall:** 🚧 In progress (Phase 1 claimed 2026-11-15T21:28Z)
+**Overall:** 🚧 In progress (Phase 1 shipped 2026-11-15)
 
 | Phase | Status | Ship SHA(s) | PR | Notes |
 |---|---|---|---|---|
 | 0 — Precondition: strict DSL parsing on `dev` | ✅ Merged 2026-11-15 | `49eb674` (merge) | [#252](https://github.com/scarson/CVErt-Ops/pull/252) | `parser.go` on `dev` has `UnknownKeyError`, `unknownKeyError(ptr)` and `RejectUnknownMembers(true)`, as Phase 5 assumes |
-| 1 — Notification channel config: one strict decoder for API and delivery | 🚧 IN PROGRESS 2026-11-15T21:28Z, branch `claude/json-v2-phase-1` | | | Decision 1 accepted 2026-11-15 |
+| 1 — Notification channel config: one strict decoder for API and delivery | ✅ Shipped 2026-11-15 | `2e9e786`, `409af9c`, `58d850c`, `b4640bf`, `4175dff`, `17d6feb`, `e72045b`; merge `e2a1c2f` | [#258](https://github.com/scarson/CVErt-Ops/pull/258) | Full suite passed at `e72045b`. Pre-deploy check: 0 channel rows in every database on the host. Also carries `1e38126` (deterministic deadlock victim in the rebuild retry test) | Decision 1 accepted 2026-11-15 |
 | 2 — SCIM request bodies | ⬜ | | | |
 | 3 — huma-registered request bodies and `clearableField` | ⬜ | | | |
 | 4 — Opaque pagination cursors | ⬜ | | | After Phase 3 (same file) |
@@ -81,10 +81,15 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |
 
 ### Deviations
-(none yet)
+- Phase 1 (Task 1.1): the channel config parsers also refuse JSON `null` for every string value (`url`, a `custom_headers` value, a `recipients` element), because v2 decodes `null` into a Go `string` as `""` without error and `{"X-A":null}` would otherwise reach delivery as an empty header; `"custom_headers":null` and `"recipients":null` stay accepted. Found in the Task 1.1 review; `internal/notify/channel_config.go`.
+- Phase 1 (Task 1.2 Step 4): the stored-row audit check uses a new `assertNoInertValue` plus a positive `[REDACTED]` assertion instead of `assertNoCredential`, which looks only for the webhook credential fixtures and would pass if the stored values leaked. `internal/api/channels_redaction_test.go`.
+- Phase 1 (Task 1.2): create and PATCH validation live in shared helpers (`validateChannelConfig`, `channelConfigParseError`), which also refuse an unknown channel type instead of skipping validation. `internal/api/channels.go`.
+- Phase 1 (phase review): beyond the plan, `internal/notify` now holds one webhook header check (invalid names, control characters in values, names in `deniedHeaders`, names equal under `http.CanonicalHeaderKey`) and one email recipient check (count, RFC 5322, duplicates) that the API and delivery both call; a blank webhook `url` fails delivery permanently; the test endpoint no longer echoes a stored recipient. Each closed a case where the API accepted config that delivery then failed on or read differently. Denied header names are now refused at the API instead of silently dropped at delivery. Task 1.3's SQL checks only the config's shape, not these rules; on 2026-11-15 the only databases on the host (the kept ingest database, and the empty `cvert-ops_postgres_data` volume) hold 0 channel rows, so no stored channel can be affected and no extended check was written.
 
 ### Discoveries
-(none yet)
+- Channel PATCH with `"config":null` decodes to a nil `*json.RawMessage` and is treated as "config not sent" (200, config kept), so the behaviour table's "`null` as `config` → 422" row holds for create only; pre-existing, unchanged by Phase 1. `internal/api/channels.go` (patchChannelBody `Config`), probed on go1.27.4.
+- Channel config parse errors recorded as a delivery's `last_error_for_org` and returned by the test endpoint include Go type names (`cannot unmarshal JSON string into Go notify.WebhookSettings: ...`); harmless, left for a follow-up that words them by JSON Pointer. `internal/notify/worker.go` (`deliverWebhook`), `internal/api/channels.go` (`testWebhookChannel`).
+- Worker tests that end in a permanent delivery failure log `permanent delivery failure` warnings through `slog.Default()`, so `internal/notify` test output is not pristine; pre-existing, also true of the tests Phase 1 added. `internal/notify/worker.go` (permanent-failure log), `internal/notify/worker_test.go`.
 
 ---
 

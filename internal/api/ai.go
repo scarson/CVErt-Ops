@@ -199,8 +199,9 @@ func (srv *Server) nlSearchHandler(w http.ResponseWriter, r *http.Request) {
 	// Execute DSL query.
 	results, nextCursor, execErr := srv.store.ExecuteDSLQuery(r.Context(), compiled, cursor, limit)
 	if errors.Is(execErr, store.ErrInvalidCursor) {
+		// A caller error: recorded in ai_request_log, but not counted in
+		// AIRequestsTotal, like the handler's other caller errors.
 		srv.logAIRequest(r, orgID, userID, feature, inputHash, promptVersion, cached, 0, 0, start, "error", "invalid_cursor")
-		metrics.AIRequestsTotal.WithLabelValues(feature, "error").Inc()
 		writeProblem(w, http.StatusBadRequest, "invalid cursor")
 		return
 	}

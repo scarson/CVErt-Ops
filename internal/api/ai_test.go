@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/scarson/cvert-ops/internal/ai"
 	"github.com/scarson/cvert-ops/internal/config"
+	"github.com/scarson/cvert-ops/internal/metrics"
 	generated "github.com/scarson/cvert-ops/internal/store/generated"
 	"github.com/scarson/cvert-ops/internal/testutil"
 )
@@ -1074,10 +1076,11 @@ func TestNLSearchHandler_EmptyResultsArray(t *testing.T) {
 }
 
 // TestNLSearchHandler_InvalidCursor verifies that NL search with a cursor the
-// store cannot decode answers 400 "invalid cursor", not 500, and records the
-// request in ai_request_log with error_type 'invalid_cursor'.
+// store cannot decode answers 400 "invalid cursor", not 500, records the
+// request in ai_request_log with error_type 'invalid_cursor', and does not
+// count it as a failed AI request. It does not call t.Parallel: it reads the
+// process-wide AIRequestsTotal counter, which parallel AI tests also change.
 func TestNLSearchHandler_InvalidCursor(t *testing.T) {
-	t.Parallel()
 	db := testutil.NewTestDB(t)
 	ctx := context.Background()
 
@@ -1111,6 +1114,7 @@ func TestNLSearchHandler_InvalidCursor(t *testing.T) {
 			t.Errorf("status = %d, want 200", resp.StatusCode)
 		}
 	})
+	errorsBefore := promtestutil.ToFloat64(metrics.AIRequestsTotal.WithLabelValues("nl_search", "error"))
 	t.Run("malformed cursor", func(t *testing.T) {
 		resp := search(t, dslCursorCases.malformed)
 		defer resp.Body.Close() //nolint:errcheck,gosec
@@ -1121,6 +1125,9 @@ func TestNLSearchHandler_InvalidCursor(t *testing.T) {
 		defer resp.Body.Close() //nolint:errcheck,gosec
 		assertInvalidCursorProblem(t, resp)
 	})
+	if got := promtestutil.ToFloat64(metrics.AIRequestsTotal.WithLabelValues("nl_search", "error")) - errorsBefore; got != 0 {
+		t.Errorf("AIRequestsTotal{nl_search,error} rose by %v for invalid cursors, want 0", got)
+	}
 
 	var n int
 	if err := db.DB().QueryRowContext(ctx,

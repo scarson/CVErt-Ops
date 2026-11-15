@@ -548,4 +548,23 @@ func TestAlertEvents_EditedCursor(t *testing.T) {
 			assertInvalidCursorProblem(t, resp)
 		})
 	}
+
+	// The ascending order pages with ?after=, a feed cursor of its own.
+	listAfter := func(t *testing.T, raw string) *http.Response {
+		t.Helper()
+		after := base64.RawURLEncoding.EncodeToString([]byte(raw))
+		return doListAlertEvents(t, ctx, ts, token, aliceReg.OrgID, "?order=asc&after="+after)
+	}
+	t.Run("unedited after", func(t *testing.T) {
+		resp := listAfter(t, `{"v":1,"s":0}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+	t.Run("after with unknown member", func(t *testing.T) {
+		resp := listAfter(t, `{"v":1,"s":0,"x":1}`)
+		defer resp.Body.Close() //nolint:errcheck,gosec // G104
+		assertCursorProblem(t, resp, "invalid after")
+	})
 }

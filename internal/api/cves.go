@@ -362,9 +362,11 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			return nil, huma.Error503ServiceUnavailable("database unavailable")
 		}
 		// Parse optional cursor.
+		// A bad cursor gets the fixed problem every list endpoint gives, with
+		// no errors entries: the decode error would echo caller input.
 		cur, err := decodeCursor(input.Cursor)
 		if err != nil {
-			return nil, huma.Error400BadRequest("invalid cursor", err)
+			return nil, huma.Error400BadRequest("invalid cursor")
 		}
 
 		if input.Ecosystem != "" && !ecosystem.Valid(input.Ecosystem) {
@@ -409,7 +411,7 @@ func listCVEsHandler(s *store.Store) func(context.Context, *ListCVEsInput) (*Lis
 			if err != nil {
 				cursorDate, err = time.Parse(time.RFC3339, cur.SortDate)
 				if err != nil {
-					return nil, huma.Error400BadRequest("invalid cursor (bad date)", nil)
+					return nil, huma.Error400BadRequest("invalid cursor")
 				}
 			}
 			p.CursorDate = &cursorDate

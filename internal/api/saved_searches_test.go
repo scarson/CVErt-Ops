@@ -558,6 +558,13 @@ func TestSavedSearch_Execute(t *testing.T) {
 // problem the list handlers answer for a cursor they cannot decode.
 func assertInvalidCursorProblem(t *testing.T, resp *http.Response) {
 	t.Helper()
+	assertCursorProblem(t, resp, "invalid cursor")
+}
+
+// assertCursorProblem checks that resp is a 400 problem with detail
+// wantDetail and no errors entries.
+func assertCursorProblem(t *testing.T, resp *http.Response, wantDetail string) {
+	t.Helper()
 	var problem huma.ErrorModel
 	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
 		t.Fatalf("decode problem body (status %d): %v", resp.StatusCode, err)
@@ -565,8 +572,8 @@ func assertInvalidCursorProblem(t *testing.T, resp *http.Response) {
 	if resp.StatusCode != http.StatusBadRequest || problem.Status != http.StatusBadRequest {
 		t.Errorf("status = %d, problem status = %d, want 400", resp.StatusCode, problem.Status)
 	}
-	if problem.Detail != "invalid cursor" {
-		t.Errorf("detail = %q, want %q", problem.Detail, "invalid cursor")
+	if problem.Detail != wantDetail {
+		t.Errorf("detail = %q, want %q", problem.Detail, wantDetail)
 	}
 	if len(problem.Errors) != 0 {
 		t.Errorf("errors = %+v, want none", problem.Errors)

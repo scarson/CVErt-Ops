@@ -75,7 +75,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 2 — SCIM request bodies | ✅ Shipped 2026-11-15 | `d119417`, `9a19a70`, `c60ef2c`, `59d4b87`; merge `131f762` | [#259](https://github.com/scarson/CVErt-Ops/pull/259) | Full suite passed at `eb7b30c`. Also carries `f5e722a` (request-limit statement test result larger than the connection buffers) |
 | 3 — huma-registered request bodies and `clearableField` | ✅ Shipped 2026-11-15 | `1cb3844`, `16b17f0`, `74b1af2`; merge `384766b` | [#260](https://github.com/scarson/CVErt-Ops/pull/260) | Full suite passed at `94e3679`. Shipped with a case-variant validation bypass, fixed in #261 (`17d2cc2`, `huma.ValidateStrictCasing`); see Discoveries |
 | 4 — Opaque pagination cursors | ✅ Shipped 2026-11-15 | `02867f3`, `f1c873f`, `38bd58f`, `9e6309a`; merge `af57344` | [#261](https://github.com/scarson/CVErt-Ops/pull/261) | Full suite passed at `7df99cd`. Also carries the Phase 3 regression fix `17d2cc2` |
-| 5 — Stored alert-rule conditions fail closed | ⬜ | | | After Phase 0 |
+| 5 — Stored alert-rule conditions fail closed | 🚧 IN PROGRESS 2026-11-15T23:57Z, branch `claude/json-v2-phase-5` | | | After Phase 0 |
 | 6 — API response encoding | ⬜ | | | After Phase 3 and 4; decision 3 accepted 2026-11-15 |
 | 7 — Replace the JCS dependency with `jsontext.Value.Canonicalize` | ⬜ | | | Decision 2 accepted 2026-11-15 |
 | 8 — Pitfall entries, PLAN.md, final full suite | ⬜ | | | Last |

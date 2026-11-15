@@ -46,13 +46,15 @@ func refuseNullString(dec *jsontext.Decoder, _ *string) error {
 }
 
 // ParseWebhookSettings decodes a webhook channel's config JSON. A decode error
-// is returned wrapped, so callers can read its *jsonv2.SemanticError and JSONPointer.
+// is returned as jsonv2 reports it, so callers can read its *jsonv2.SemanticError
+// and JSONPointer.
 func ParseWebhookSettings(raw []byte) (WebhookSettings, error) {
 	return parseChannelSettings[WebhookSettings](raw)
 }
 
 // ParseEmailSettings decodes an email channel's config JSON. A decode error
-// is returned wrapped, so callers can read its *jsonv2.SemanticError and JSONPointer.
+// is returned as jsonv2 reports it, so callers can read its *jsonv2.SemanticError
+// and JSONPointer.
 func ParseEmailSettings(raw []byte) (EmailSettings, error) {
 	return parseChannelSettings[EmailSettings](raw)
 }

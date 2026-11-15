@@ -2661,6 +2661,7 @@ export interface components {
              * @example /api/v1/schemas/CreateChannelBody.json
              */
             readonly $schema?: string;
+            /** @description A JSON object. Webhook channels take url (required) and custom_headers (an object of header names to string values); email channels take recipients (an array of addresses). Key names are case-sensitive, and any other key is refused. */
             config: unknown;
             name: string;
             type: string;
@@ -3421,7 +3422,7 @@ export interface components {
              * @example /api/v1/schemas/PatchChannelBody.json
              */
             readonly $schema?: string;
-            /** @description Replaces the whole config. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again. */
+            /** @description Replaces the whole config, with the keys the channel's type takes: url and custom_headers for webhook, recipients for email. Key names are case-sensitive, and any other key is refused. Masked values read from this API may be sent back to keep the stored secret while the webhook scheme and host are unchanged. A changed scheme or host needs each secret sent again. */
             config?: unknown;
             name?: string;
         };

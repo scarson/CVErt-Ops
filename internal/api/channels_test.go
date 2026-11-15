@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 	"github.com/google/uuid"
 	"github.com/scarson/cvert-ops/internal/notify"
 	"github.com/scarson/cvert-ops/internal/testutil"
@@ -1599,5 +1601,111 @@ func TestCreateChannel_DuplicateName(t *testing.T) {
 	}
 	if !strings.Contains(problem.Detail, "already exists") {
 		t.Errorf("detail = %q, want substring 'already exists'", problem.Detail)
+	}
+}
+
+// channelConfigProblem decodes a channel problem response and returns its status and first error.
+func channelConfigProblem(t *testing.T, resp *http.Response) (int, huma.ErrorDetail) {
+	t.Helper()
+	var problem huma.ErrorModel
+	if err := json.NewDecoder(resp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if len(problem.Errors) == 0 || problem.Errors[0] == nil {
+		t.Fatalf("status %d: problem has no errors: %+v", resp.StatusCode, problem)
+	}
+	return resp.StatusCode, *problem.Errors[0]
+}
+
+// TestChannelConfig_ParseErrors checks that create and PATCH refuse config the
+// delivery parser refuses, at the location and with the message each error maps to.
+func TestChannelConfig_ParseErrors(t *testing.T) {
+	t.Parallel()
+	db := testutil.NewTestDB(t)
+	ctx := context.Background()
+	_, ts := newRegisterServer(t, db, "open")
+
+	reg := doRegister(t, ctx, ts, "alice@example.com", "test-password-1234")
+	loginResp := doLogin(t, ctx, ts, "alice@example.com", "test-password-1234")
+	defer loginResp.Body.Close() //nolint:errcheck,gosec // G104
+	token := cookieValue(loginResp, "access_token")
+
+	// Pro tier enables email channels and gives a request burst that covers every case.
+	if err := db.UpdateOrgTier(ctx, mustParseUUID(t, reg.OrgID), "pro"); err != nil {
+		t.Fatalf("set pro tier: %v", err)
+	}
+
+	channelIDs := map[string]string{}
+	for chType, config := range map[string]string{
+		"webhook": `{"url":"https://example.com/hook"}`,
+		"email":   `{"recipients":["ops@example.com"]}`,
+	} {
+		resp := doCreateChannel(t, ctx, ts, token, reg.OrgID, `{"name":"Existing `+chType+`","type":"`+chType+`","config":`+config+`}`)
+		var created struct {
+			ID string `json:"id"`
+		}
+		decodeCreated(t, resp, &created)
+		resp.Body.Close() //nolint:errcheck,gosec // G104
+		channelIDs[chType] = created.ID
+	}
+
+	const (
+		notWebhookObject = "webhook config must be valid JSON with a url field"
+		noURL            = "webhook config must include a non-empty url"
+		headerNotString  = "custom_headers values must be strings"
+		headersNotObject = "custom_headers must be an object of header names to strings"
+		noRecipients     = "email config must include a recipients array"
+	)
+	unexpected := validation.MsgUnexpectedProperty
+	cases := []struct {
+		desc         string
+		chType       string
+		config       string
+		createOnly   bool // PATCH decodes "config":null as an omitted config
+		wantLocation string
+		wantMessage  string
+	}{
+		{"webhook url in another case", "webhook", `{"URL":"https://h.example/x"}`, false, "body.config.URL", unexpected},
+		{"webhook unknown key", "webhook", `{"url":"https://h.example/x","note":"x"}`, false, "body.config.note", unexpected},
+		{"webhook header value not a string", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":1}}`, false, "body.config.custom_headers.X-A", headerNotString},
+		{"webhook header value null", "webhook", `{"url":"https://h.example/x","custom_headers":{"X-A":null}}`, false, "body.config.custom_headers.X-A", headerNotString},
+		{"webhook headers not an object", "webhook", `{"url":"https://h.example/x","custom_headers":"x"}`, false, "body.config.custom_headers", headersNotObject},
+		{"webhook url not a string", "webhook", `{"url":1}`, false, "body.config.url", noURL},
+		{"webhook url null", "webhook", `{"url":null}`, false, "body.config.url", noURL},
+		{"webhook config null", "webhook", `null`, true, "body.config", notWebhookObject},
+		{"webhook config array", "webhook", `[]`, false, "body.config", notWebhookObject},
+		{"webhook config string", "webhook", `"x"`, false, "body.config", notWebhookObject},
+		{"email recipients in another case", "email", `{"Recipients":["a@example.com"]}`, false, "body.config.Recipients", unexpected},
+		{"email recipients not an array", "email", `{"recipients":"a@example.com"}`, false, "body.config.recipients", noRecipients},
+		{"email recipient null", "email", `{"recipients":[null]}`, false, "body.config.recipients", noRecipients},
+		{"email config null", "email", `null`, true, "body.config", noRecipients},
+		{"email config array", "email", `[]`, false, "body.config", noRecipients},
+		{"email config string", "email", `"x"`, false, "body.config", noRecipients},
+	}
+	for i, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			assertProblem := func(t *testing.T, resp *http.Response) {
+				t.Helper()
+				status, detail := channelConfigProblem(t, resp)
+				if status != http.StatusUnprocessableEntity || detail.Location != tc.wantLocation || detail.Message != tc.wantMessage {
+					t.Errorf("got %d {location %q, message %q}, want 422 {location %q, message %q}",
+						status, detail.Location, detail.Message, tc.wantLocation, tc.wantMessage)
+				}
+			}
+			t.Run("create", func(t *testing.T) {
+				body := fmt.Sprintf(`{"name":"Case %d","type":%q,"config":%s}`, i, tc.chType, tc.config)
+				resp := doCreateChannel(t, ctx, ts, token, reg.OrgID, body)
+				defer resp.Body.Close() //nolint:errcheck,gosec // G104
+				assertProblem(t, resp)
+			})
+			if tc.createOnly {
+				return
+			}
+			t.Run("patch", func(t *testing.T) {
+				resp := doPatchChannel(t, ctx, ts, token, reg.OrgID, channelIDs[tc.chType], `{"config":`+tc.config+`}`)
+				defer resp.Body.Close() //nolint:errcheck,gosec // G104
+				assertProblem(t, resp)
+			})
+		})
 	}
 }

@@ -81,6 +81,31 @@ func TestParseWebhookSettings(t *testing.T) {
 			wantErr: configErrorWant{fail: true, semantic: true, pointer: "/custom_headers/X-A"},
 		},
 		{
+			name:    "header value null",
+			raw:     `{"url":"https://h.example/x","custom_headers":{"X-A":null}}`,
+			wantErr: configErrorWant{fail: true, semantic: true, pointer: "/custom_headers/X-A"},
+		},
+		{
+			name:    "url null",
+			raw:     `{"url":null}`,
+			wantErr: configErrorWant{fail: true, semantic: true, pointer: "/url"},
+		},
+		{
+			name:    "custom_headers null is no headers",
+			raw:     `{"url":"https://h.example/x","custom_headers":null}`,
+			wantURL: "https://h.example/x",
+		},
+		{
+			name:    "leading whitespace",
+			raw:     ` {"url":"https://h.example/x"}`,
+			wantURL: "https://h.example/x",
+		},
+		{
+			name:    "empty input",
+			raw:     ``,
+			wantErr: configErrorWant{fail: true},
+		},
+		{
 			name:    "array",
 			raw:     `[]`,
 			wantErr: configErrorWant{fail: true},
@@ -149,6 +174,25 @@ func TestParseEmailSettings(t *testing.T) {
 			wantErr: configErrorWant{fail: true, semantic: true, pointer: "/recipients"},
 		},
 		{
+			name:    "recipient null",
+			raw:     `{"recipients":[null]}`,
+			wantErr: configErrorWant{fail: true, semantic: true, pointer: "/recipients/0"},
+		},
+		{
+			name: "recipients null is no recipients",
+			raw:  `{"recipients":null}`,
+		},
+		{
+			name:           "leading whitespace",
+			raw:            ` {"recipients":["a@example.com"]}`,
+			wantRecipients: []string{"a@example.com"},
+		},
+		{
+			name:    "empty input",
+			raw:     ``,
+			wantErr: configErrorWant{fail: true},
+		},
+		{
 			name:    "array",
 			raw:     `[]`,
 			wantErr: configErrorWant{fail: true},
@@ -170,6 +214,12 @@ func TestParseEmailSettings(t *testing.T) {
 			got, err := notify.ParseEmailSettings([]byte(tc.raw))
 			checkConfigError(t, err, tc.wantErr)
 			if tc.wantErr.fail {
+				return
+			}
+			if tc.wantRecipients == nil {
+				if got.Recipients != nil {
+					t.Errorf("Recipients = %v, want nil", got.Recipients)
+				}
 				return
 			}
 			if len(got.Recipients) != len(tc.wantRecipients) {

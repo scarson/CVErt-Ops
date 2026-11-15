@@ -361,8 +361,7 @@ func TestChannelWebhookConfig_CustomHeadersReachReceiver(t *testing.T) {
 	err = notify.Send(context.Background(), buildTestClient(), cfg, []byte(`[]`))
 	require.NoError(t, err, "header set in custom_headers must reach the receiver")
 
-	// Only custom_headers is applied to deliveries; any other key is refused
-	// rather than stored and silently ignored.
+	// Only custom_headers is applied to deliveries; a config with any other key is refused.
 	withOtherKey := channel(`{"url":"` + srv.URL + `","headers":{"Authorization":"Bearer tk_test"}}`)
 	_, err = notify.ChannelWebhookConfig(withOtherKey)
 	require.Error(t, err)

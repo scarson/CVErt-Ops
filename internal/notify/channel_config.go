@@ -6,7 +6,6 @@ import (
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
-	"fmt"
 )
 
 // WebhookSettings is the config JSON stored for a webhook channel.
@@ -23,11 +22,28 @@ type EmailSettings struct {
 }
 
 // channelConfigOptions: v2 defaults (case-sensitive names, no duplicates,
-// valid UTF-8) plus refusal of keys this type does not define.
-var channelConfigOptions = jsonv2.RejectUnknownMembers(true)
+// valid UTF-8) plus refusal of keys this type does not define and of null
+// where a string is expected. v2 decodes null into a string as "" without
+// error, which would deliver an empty header value, recipient or URL.
+var channelConfigOptions = jsonv2.JoinOptions(
+	jsonv2.RejectUnknownMembers(true),
+	jsonv2.WithUnmarshalers(jsonv2.UnmarshalFromFunc(refuseNullString)),
+)
 
 // errConfigNotObject reports a config that is not a JSON object.
 var errConfigNotObject = errors.New("config must be a JSON object")
+
+// errNullString reports JSON null where the config expects a string.
+var errNullString = errors.New("null is not a string")
+
+// refuseNullString refuses JSON null for a string target and leaves every
+// other value to the default decoding (errors.ErrUnsupported).
+func refuseNullString(dec *jsontext.Decoder, _ *string) error {
+	if dec.PeekKind() == jsontext.KindNull {
+		return errNullString
+	}
+	return errors.ErrUnsupported
+}
 
 // ParseWebhookSettings decodes a webhook channel's config JSON. A decode error
 // is returned wrapped, so callers can read its *jsonv2.SemanticError and JSONPointer.
@@ -48,8 +64,6 @@ func parseChannelSettings[T any](raw []byte) (T, error) {
 	if jsontext.Value(raw).Kind() != '{' {
 		return cfg, errConfigNotObject
 	}
-	if err := jsonv2.Unmarshal(raw, &cfg, channelConfigOptions); err != nil {
-		return cfg, fmt.Errorf("decode channel config: %w", err)
-	}
-	return cfg, nil
+	err := jsonv2.Unmarshal(raw, &cfg, channelConfigOptions)
+	return cfg, err
 }

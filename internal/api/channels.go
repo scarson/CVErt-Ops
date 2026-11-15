@@ -561,7 +561,9 @@ func (srv *Server) testWebhookChannel(ctx context.Context, channelID uuid.UUID) 
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	// The parse error names the offending key or JSON pointer, never a stored value.
+	// The parse error names the offending key or JSON pointer but no stored value:
+	// v2 puts the value in the message only for numeric and boolean fields, and
+	// the webhook settings type has none (header names can appear in the pointer).
 	cfg, err := notify.ChannelWebhookConfig(delivery)
 	if err != nil {
 		return fmt.Errorf("parse webhook config: %w", err)

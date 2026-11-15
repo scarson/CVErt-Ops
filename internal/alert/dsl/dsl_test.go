@@ -141,6 +141,97 @@ func TestParse_InvalidJSON(t *testing.T) {
 	}
 }
 
+// ─── ParseConditions ─────────────────────────────────────────────────────────
+
+func TestParseConditions_Valid(t *testing.T) {
+	t.Parallel()
+	conds, err := dsl.ParseConditions([]byte(`[{"field":"severity","operator":"in","value":["critical"]}]`))
+	if err != nil {
+		t.Fatalf("ParseConditions: %v", err)
+	}
+	want := []dsl.Condition{{Field: "severity", Op: "in", Value: json.RawMessage(`["critical"]`)}}
+	if !reflect.DeepEqual(conds, want) {
+		t.Errorf("ParseConditions = %+v, want %+v", conds, want)
+	}
+}
+
+// TestParseConditions_UnknownKey verifies that a stored condition holding a key
+// the DSL does not define, or a known key in another case, is refused with the
+// condition's index, as Parse refuses it.
+func TestParseConditions_UnknownKey(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		data      string
+		wantIndex int
+		wantKey   string
+	}{
+		{
+			name:      "extra key",
+			data:      `[{"field":"severity","operator":"in","value":["critical"],"negate":true}]`,
+			wantIndex: 0,
+			wantKey:   "negate",
+		},
+		{
+			name:      "key in another case",
+			data:      `[{"Field":"severity","operator":"in","value":["critical"]}]`,
+			wantIndex: 0,
+			wantKey:   "Field",
+		},
+		{
+			name:      "misspelled key in a later condition",
+			data:      `[{"field":"severity","operator":"in","value":["critical"]},{"field":"in_cisa_kev","operater":"eq","value":true}]`,
+			wantIndex: 1,
+			wantKey:   "operater",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := dsl.ParseConditions([]byte(tt.data))
+			var unknown *dsl.UnknownKeyError
+			if !errors.As(err, &unknown) {
+				t.Fatalf("ParseConditions error = %v, want *dsl.UnknownKeyError", err)
+			}
+			if unknown.Index != tt.wantIndex || unknown.Key != tt.wantKey {
+				t.Errorf("UnknownKeyError = {Index %d, Key %q}, want {Index %d, Key %q}",
+					unknown.Index, unknown.Key, tt.wantIndex, tt.wantKey)
+			}
+		})
+	}
+}
+
+// TestParseConditions_Refused verifies that stored conditions that are not a
+// non-empty array of objects are refused. Compile builds no predicate from zero
+// conditions, so an empty or null array would otherwise match every CVE.
+func TestParseConditions_Refused(t *testing.T) {
+	t.Parallel()
+	for _, data := range []string{
+		`null`,
+		`[]`,
+		`{}`,
+		`"x"`,
+		`[null]`,
+		`[1]`,
+		`["x"]`,
+		`[[]]`,
+		`[{"field":"severity","operator":"in","value":["critical"]},null]`,
+		`not json`,
+	} {
+		t.Run(data, func(t *testing.T) {
+			t.Parallel()
+			conds, err := dsl.ParseConditions([]byte(data))
+			if err == nil {
+				t.Fatalf("ParseConditions(%s) = %+v, want an error", data, conds)
+			}
+			var unknown *dsl.UnknownKeyError
+			if errors.As(err, &unknown) {
+				t.Errorf("ParseConditions(%s) error = %v, want an error other than *dsl.UnknownKeyError", data, err)
+			}
+		})
+	}
+}
+
 // ─── Validate ────────────────────────────────────────────────────────────────
 
 func mustParse(t *testing.T, data string) dsl.Rule {

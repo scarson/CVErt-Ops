@@ -73,7 +73,7 @@ Why this matters here: the phases ship as separate PRs over several sessions, tw
 | 0 — Precondition: strict DSL parsing on `dev` | ✅ Merged 2026-11-15 | `49eb674` (merge) | [#252](https://github.com/scarson/CVErt-Ops/pull/252) | `parser.go` on `dev` has `UnknownKeyError`, `unknownKeyError(ptr)` and `RejectUnknownMembers(true)`, as Phase 5 assumes |
 | 1 — Notification channel config: one strict decoder for API and delivery | ✅ Shipped 2026-11-15 | `2e9e786`, `409af9c`, `58d850c`, `b4640bf`, `4175dff`, `17d6feb`, `e72045b`; merge `e2a1c2f` | [#258](https://github.com/scarson/CVErt-Ops/pull/258) | Full suite passed at `e72045b`. Pre-deploy check: 0 channel rows in every database on the host. Also carries `1e38126` (deterministic deadlock victim in the rebuild retry test) | Decision 1 accepted 2026-11-15 |
 | 2 — SCIM request bodies | ✅ Shipped 2026-11-15 | `d119417`, `9a19a70`, `c60ef2c`, `59d4b87`; merge `131f762` | [#259](https://github.com/scarson/CVErt-Ops/pull/259) | Full suite passed at `eb7b30c`. Also carries `f5e722a` (request-limit statement test result larger than the connection buffers) |
-| 3 — huma-registered request bodies and `clearableField` | ⬜ | | | |
+| 3 — huma-registered request bodies and `clearableField` | 🚧 IN PROGRESS 2026-11-15T23:08Z, branch `claude/json-v2-phase-3` | | | |
 | 4 — Opaque pagination cursors | ⬜ | | | After Phase 3 (same file) |
 | 5 — Stored alert-rule conditions fail closed | ⬜ | | | After Phase 0 |
 | 6 — API response encoding | ⬜ | | | After Phase 3 and 4; decision 3 accepted 2026-11-15 |

@@ -593,19 +593,28 @@ func TestReadCheckCandidates_ScanErrorStopsStatement(t *testing.T) {
 	}
 }
 
-// TestReadCheckCandidates_RequestLimitStopsStatement reads a key with more rows
-// than pgx buffers, over a request limit of one row. The packages statement must
-// be stopped, not read to its end when its rows are closed, and the store must
-// answer the next read on its one pool connection.
+// TestReadCheckCandidates_RequestLimitStopsStatement reads a key whose rows are
+// far more bytes than the connection can buffer, over a request limit of one
+// row. The packages statement must be stopped, not read to its end when its rows
+// are closed, and the store must answer the next read on its one pool
+// connection.
+//
+// Cancelling the statement's context sets the connection's read deadline from
+// another goroutine, so closing the rows first reads whatever the client side
+// already holds: pgx's read buffer and the socket buffers. A result small enough
+// to fit there (3000 short ranges are about 270 KB) can be read to its end
+// before the deadline is set when that goroutine is slow to run, as under load.
+// Each range's fixed version is padded to make the result about 3.3 MB.
 func TestReadCheckCandidates_RequestLimitStopsStatement(t *testing.T) {
 	t.Parallel()
 	tdb := testutil.NewTestDB(t)
 	ctx := context.Background()
 	const ranges = 3000
+	padding := strings.Repeat("x", 1000)
 	pkgs := make([]feed.AffectedPackage, ranges)
 	for i := range pkgs {
 		pkgs[i] = feed.AffectedPackage{Ecosystem: "npm", PackageName: "many", RangeType: "ECOSYSTEM",
-			Introduced: "0", Fixed: fmt.Sprintf("1.0.%d", i)}
+			Introduced: "0", Fixed: fmt.Sprintf("1.0.%d-%s", i, padding)}
 	}
 	ingestPatch(t, tdb, "osv", feed.CanonicalPatch{CVEID: "CVE-2026-90075", AffectedPackages: pkgs})
 	orgID := checkOrg(t, tdb)

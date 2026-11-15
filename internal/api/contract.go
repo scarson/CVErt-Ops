@@ -189,7 +189,9 @@ func isArrayIndex(tok string) bool {
 // clearableField is a PATCH request field that can be left unchanged, cleared
 // or set. Sent is false when the key is omitted; Value is nil when the key is
 // JSON null. A pointer field cannot make this distinction, because
-// encoding/json decodes both an omitted key and null to a nil pointer.
+// encoding/json decodes both an omitted key and null to a nil pointer. The
+// value is decoded with the request decoder's options, so a strict decode
+// stays strict inside the field.
 type clearableField[T any] struct {
 	Sent  bool
 	Value *T

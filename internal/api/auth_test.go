@@ -354,7 +354,7 @@ func TestLoginMalformedBodyRefused(t *testing.T) {
 	const password = "test-password-1234"
 	doRegister(t, ctx, ts, email, password)
 
-	postLogin := func(contentType string, body []byte) *http.Response {
+	postLogin := func(t *testing.T, contentType string, body []byte) *http.Response {
 		t.Helper()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/auth/login", bytes.NewReader(body))
 		if err != nil {
@@ -393,7 +393,7 @@ func TestLoginMalformedBodyRefused(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := postLogin(tc.contentType, tc.body)
+			resp := postLogin(t, tc.contentType, tc.body)
 			defer resp.Body.Close() //nolint:errcheck,gosec // G104
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", resp.StatusCode)
@@ -418,10 +418,16 @@ func TestLoginMalformedBodyRefused(t *testing.T) {
 	}
 
 	t.Run("valid body", func(t *testing.T) {
-		resp := postLogin("application/json", []byte(`{"email":"`+email+`","password":"`+password+`"}`))
+		resp := postLogin(t, "application/json", []byte(`{"email":"`+email+`","password":"`+password+`"}`))
 		defer resp.Body.Close() //nolint:errcheck,gosec // G104
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if cookieValue(resp, "access_token") == "" {
+			t.Error("access_token cookie not set")
+		}
+		if cookieValue(resp, "refresh_token") == "" {
+			t.Error("refresh_token cookie not set")
 		}
 	})
 }
